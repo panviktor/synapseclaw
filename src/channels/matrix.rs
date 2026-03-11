@@ -1224,9 +1224,6 @@ impl Channel for MatrixChannel {
             anyhow::bail!("Matrix room '{}' is not in joined state", target_room_id);
         }
 
-        // Stop typing indicator before sending the response.
-        let _ = room.typing_notice(false).await;
-
         // Send reaction markers — the LLM decided to react to a message.
         for reaction in &reaction_markers {
             if let Ok(eid) = reaction.event_id.parse::<OwnedEventId>() {
@@ -1649,8 +1646,44 @@ impl Channel for MatrixChannel {
                 };
 
                 // Prepend reply context if this message is a reply to another.
+                // Fetch the original message text so the LLM has context even
+                // when the replied-to message is outside the current conversation.
                 let body = if let Some(matrix_sdk::ruma::events::room::message::Relation::Reply { in_reply_to }) = &event.content.relates_to {
-                    format!("[Reply to {}] {}", in_reply_to.event_id, body)
+                    let target_eid = &in_reply_to.event_id;
+                    // Check voice transcription cache first.
+                    let cached_voice = {
+                        let cache = voice_cache.lock().await;
+                        cache.get(target_eid.as_str()).cloned()
+                    };
+                    let original_text = if let Some(transcript) = cached_voice {
+                        transcript
+                    } else {
+                        // Fetch from server.
+                        match room.event(target_eid, None).await {
+                            Ok(timeline_event) => {
+                                serde_json::to_value(timeline_event.raw())
+                                    .ok()
+                                    .and_then(|v| {
+                                        v.get("content")?
+                                            .get("body")?
+                                            .as_str()
+                                            .map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_default()
+                            }
+                            Err(_) => String::new(),
+                        }
+                    };
+                    if original_text.is_empty() {
+                        format!("[Reply to {}] {}", target_eid, body)
+                    } else {
+                        let preview = if original_text.chars().count() > 200 {
+                            format!("{}…", original_text.chars().take(200).collect::<String>())
+                        } else {
+                            original_text
+                        };
+                        format!("[Reply to {}: \"{}\"] {}", target_eid, preview, body)
+                    }
                 } else {
                     body
                 };
@@ -1663,6 +1696,10 @@ impl Channel for MatrixChannel {
                     Some(Relation::Thread(thread)) => Some(thread.event_id.to_string()),
                     _ => None,
                 };
+
+                // Include the event_id so the LLM can reference it in
+                // [REACT:emoji:event_id] markers without guessing.
+                let body = format!("[msg_id:{}] {}", event_id, body);
 
                 // Mark message as read + start typing indicator.
                 if let Ok(eid) = event_id.parse::<OwnedEventId>() {
@@ -1807,6 +1844,26 @@ impl Channel for MatrixChannel {
             })
             .await?;
 
+        Ok(())
+    }
+
+    async fn start_typing(&self, _recipient: &str) -> anyhow::Result<()> {
+        let client = self.matrix_client().await?;
+        let target_room_id = self.target_room_id().await?;
+        let target_room: OwnedRoomId = target_room_id.parse()?;
+        if let Some(room) = client.get_room(&target_room) {
+            room.typing_notice(true).await?;
+        }
+        Ok(())
+    }
+
+    async fn stop_typing(&self, _recipient: &str) -> anyhow::Result<()> {
+        let client = self.matrix_client().await?;
+        let target_room_id = self.target_room_id().await?;
+        let target_room: OwnedRoomId = target_room_id.parse()?;
+        if let Some(room) = client.get_room(&target_room) {
+            room.typing_notice(false).await?;
+        }
         Ok(())
     }
 
