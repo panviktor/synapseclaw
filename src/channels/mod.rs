@@ -290,6 +290,7 @@ struct ChannelRuntimeContext {
     multimodal: crate::config::MultimodalConfig,
     hooks: Option<Arc<crate::hooks::HookRunner>>,
     non_cli_excluded_tools: Arc<Vec<String>>,
+    tool_call_dedup_exempt: Arc<Vec<String>>,
     model_routes: Arc<Vec<crate::config::ModelRouteConfig>>,
 }
 
@@ -958,6 +959,14 @@ fn should_skip_memory_context_entry(key: &str, content: &str) -> bool {
     }
 
     if key.trim().to_ascii_lowercase().ends_with("_history") {
+        return true;
+    }
+
+    // Skip entries containing image markers to prevent duplication.
+    // When auto_save stores a photo message to memory, a subsequent
+    // memory recall on the same turn would surface the marker again,
+    // causing two identical image blocks in the provider request.
+    if content.contains("[IMAGE:") {
         return true;
     }
 
@@ -1937,6 +1946,7 @@ async fn process_channel_message(
                 } else {
                     ctx.non_cli_excluded_tools.as_ref()
                 },
+                ctx.tool_call_dedup_exempt.as_ref(),
             ),
         ) => LlmExecutionResult::Completed(result),
     };
@@ -2849,7 +2859,84 @@ pub(crate) async fn handle_command(command: crate::ChannelCommands, config: &Con
         crate::ChannelCommands::BindTelegram { identity } => {
             bind_telegram_identity(config, &identity).await
         }
+        crate::ChannelCommands::Send {
+            message,
+            channel_id,
+            recipient,
+        } => send_channel_message(config, &channel_id, &recipient, &message).await,
     }
+}
+
+/// Build a single channel instance by config section name (e.g. "telegram").
+fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn Channel>> {
+    match channel_id {
+        "telegram" => {
+            let tg = config
+                .channels_config
+                .telegram
+                .as_ref()
+                .context("Telegram channel is not configured")?;
+            Ok(Arc::new(
+                TelegramChannel::new(
+                    tg.bot_token.clone(),
+                    tg.allowed_users.clone(),
+                    tg.mention_only,
+                )
+                .with_streaming(tg.stream_mode, tg.draft_update_interval_ms)
+                .with_transcription(config.transcription.clone())
+                .with_workspace_dir(config.workspace_dir.clone()),
+            ))
+        }
+        "discord" => {
+            let dc = config
+                .channels_config
+                .discord
+                .as_ref()
+                .context("Discord channel is not configured")?;
+            Ok(Arc::new(DiscordChannel::new(
+                dc.bot_token.clone(),
+                dc.guild_id.clone(),
+                dc.allowed_users.clone(),
+                dc.listen_to_bots,
+                dc.mention_only,
+            )))
+        }
+        "slack" => {
+            let sl = config
+                .channels_config
+                .slack
+                .as_ref()
+                .context("Slack channel is not configured")?;
+            Ok(Arc::new(
+                SlackChannel::new(
+                    sl.bot_token.clone(),
+                    sl.app_token.clone(),
+                    sl.channel_id.clone(),
+                    Vec::new(),
+                    sl.allowed_users.clone(),
+                )
+                .with_workspace_dir(config.workspace_dir.clone()),
+            ))
+        }
+        other => anyhow::bail!("Unknown channel '{other}'. Supported: telegram, discord, slack"),
+    }
+}
+
+/// Send a one-off message to a configured channel.
+async fn send_channel_message(
+    config: &Config,
+    channel_id: &str,
+    recipient: &str,
+    message: &str,
+) -> Result<()> {
+    let channel = build_channel_by_id(config, channel_id)?;
+    let msg = SendMessage::new(message, recipient);
+    channel
+        .send(&msg)
+        .await
+        .with_context(|| format!("Failed to send message via {channel_id}"))?;
+    println!("Message sent via {channel_id}.");
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3241,6 +3328,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         zeroclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
         secrets_encrypt: config.secrets.encrypt,
         reasoning_enabled: config.runtime.reasoning_enabled,
+        provider_timeout_secs: Some(config.provider_timeout_secs),
     };
     let provider: Arc<dyn Provider> = Arc::from(
         create_resilient_provider_nonblocking(
@@ -3538,6 +3626,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
             None
         },
         non_cli_excluded_tools: Arc::new(config.autonomy.non_cli_excluded_tools.clone()),
+        tool_call_dedup_exempt: Arc::new(config.agent.tool_call_dedup_exempt.clone()),
         model_routes: Arc::new(config.model_routes.clone()),
     });
 
@@ -3638,6 +3727,22 @@ mod tests {
             "fabricated memory"
         ));
         assert!(!should_skip_memory_context_entry("telegram_123_45", "hi"));
+
+        // Entries containing image markers must be skipped to prevent
+        // auto-saved photo messages from duplicating image blocks (#2403).
+        assert!(should_skip_memory_context_entry(
+            "telegram_user_msg_99",
+            "[IMAGE:/tmp/workspace/photo_1_2.jpg]"
+        ));
+        assert!(should_skip_memory_context_entry(
+            "telegram_user_msg_100",
+            "[IMAGE:/tmp/workspace/photo_1_2.jpg]\n\nCheck this screenshot"
+        ));
+        // Plain text without image markers should not be skipped.
+        assert!(!should_skip_memory_context_entry(
+            "telegram_user_msg_101",
+            "Please describe the image"
+        ));
     }
 
     #[test]
@@ -3752,16 +3857,17 @@ mod tests {
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         };
 
         assert!(compact_sender_history(&ctx, &sender));
 
-        let histories = ctx
+        let locked_histories = ctx
             .conversation_histories
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let kept = histories
+        let kept = locked_histories
             .get(&sender)
             .expect("sender history should remain");
         assert_eq!(kept.len(), CHANNEL_HISTORY_COMPACT_KEEP_MESSAGES);
@@ -3802,6 +3908,7 @@ mod tests {
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         };
 
@@ -3855,16 +3962,17 @@ mod tests {
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
 
-        let histories = ctx
+        let locked_histories = ctx
             .conversation_histories
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let turns = histories
+        let turns = locked_histories
             .get(&sender)
             .expect("sender history should remain");
         assert_eq!(turns.len(), 2);
@@ -4329,6 +4437,7 @@ BTC is currently around $65,000 based on latest tool output."#
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: false,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             model_routes: Arc::new(Vec::new()),
@@ -4390,6 +4499,7 @@ BTC is currently around $65,000 based on latest tool output."#
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: false,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             model_routes: Arc::new(Vec::new()),
@@ -4467,6 +4577,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -4527,6 +4638,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -4597,6 +4709,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -4687,6 +4800,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -4759,6 +4873,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -4846,6 +4961,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -4865,10 +4981,10 @@ BTC is currently around $65,000 based on latest tool output."#
         .await;
 
         {
-            let mut store = runtime_config_store()
+            let mut cleanup_store = runtime_config_store()
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
-            store.remove(&config_path);
+            cleanup_store.remove(&config_path);
         }
 
         assert_eq!(provider_impl.call_count.load(Ordering::SeqCst), 1);
@@ -4918,6 +5034,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -4980,6 +5097,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -5153,6 +5271,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -5234,6 +5353,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -5327,6 +5447,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -5402,6 +5523,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -5462,6 +5584,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -5943,6 +6066,47 @@ BTC is currently around $65,000 based on latest tool output."#
         assert!(context.contains("Age is 45"));
     }
 
+    /// Auto-saved photo messages must not surface through memory context,
+    /// otherwise the image marker gets duplicated in the provider request (#2403).
+    #[tokio::test]
+    async fn build_memory_context_excludes_image_marker_entries() {
+        let tmp = TempDir::new().unwrap();
+        let mem = SqliteMemory::new(tmp.path()).unwrap();
+
+        // Simulate auto-save of a photo message containing an [IMAGE:] marker.
+        mem.store(
+            "telegram_user_msg_photo",
+            "[IMAGE:/tmp/workspace/photo_1_2.jpg]\n\nDescribe this screenshot",
+            MemoryCategory::Conversation,
+            None,
+        )
+        .await
+        .unwrap();
+        // Also store a plain text entry that shares a word with the query
+        // so the FTS recall returns both entries.
+        mem.store(
+            "screenshot_preference",
+            "User prefers screenshot descriptions to be concise",
+            MemoryCategory::Conversation,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let context = build_memory_context(&mem, "screenshot", 0.0).await;
+
+        // The image-marker entry must be excluded to prevent duplication.
+        assert!(
+            !context.contains("[IMAGE:"),
+            "memory context must not contain image markers, got: {context}"
+        );
+        // Plain text entries should still be included.
+        assert!(
+            context.contains("screenshot descriptions"),
+            "plain text entry should remain in context, got: {context}"
+        );
+    }
+
     #[tokio::test]
     async fn process_channel_message_restores_per_sender_history_on_follow_ups() {
         let channel_impl = Arc::new(RecordingChannel::default());
@@ -5979,6 +6143,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -6065,6 +6230,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -6151,6 +6317,7 @@ BTC is currently around $65,000 based on latest tool output."#
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -6701,6 +6868,7 @@ This is an example JSON object for profile settings."#;
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -6768,6 +6936,7 @@ This is an example JSON object for profile settings."#;
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
         });
 
@@ -6831,5 +7000,52 @@ This is an example JSON object for profile settings."#;
             turns.iter().all(|turn| !turn.content.contains("[IMAGE:")),
             "failed vision turn must not persist image marker content"
         );
+    }
+
+    #[test]
+    fn build_channel_by_id_unknown_channel_returns_error() {
+        let config = Config::default();
+        match build_channel_by_id(&config, "nonexistent") {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("Unknown channel"),
+                    "expected 'Unknown channel' in error, got: {err_msg}"
+                );
+            }
+            Ok(_) => panic!("should fail for unknown channel"),
+        }
+    }
+
+    #[test]
+    fn build_channel_by_id_unconfigured_telegram_returns_error() {
+        let config = Config::default();
+        match build_channel_by_id(&config, "telegram") {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("not configured"),
+                    "expected 'not configured' in error, got: {err_msg}"
+                );
+            }
+            Ok(_) => panic!("should fail when telegram is not configured"),
+        }
+    }
+
+    #[test]
+    fn build_channel_by_id_configured_telegram_succeeds() {
+        let mut config = Config::default();
+        config.channels_config.telegram = Some(crate::config::schema::TelegramConfig {
+            bot_token: "test-token".to_string(),
+            allowed_users: vec![],
+            stream_mode: crate::config::StreamMode::Off,
+            draft_update_interval_ms: 1000,
+            interrupt_on_new_message: false,
+            mention_only: false,
+        });
+        match build_channel_by_id(&config, "telegram") {
+            Ok(channel) => assert_eq!(channel.name(), "telegram"),
+            Err(e) => panic!("should succeed when telegram is configured: {e}"),
+        }
     }
 }
