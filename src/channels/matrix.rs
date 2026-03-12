@@ -14,9 +14,8 @@ use matrix_sdk::{
             relation::{Annotation, InReplyTo, Thread},
             room::{
                 message::{
-                    AudioMessageEventContent, FileMessageEventContent,
-                    ImageMessageEventContent, LocationMessageEventContent,
-                    MessageType, OriginalSyncRoomMessageEvent,
+                    AudioMessageEventContent, FileMessageEventContent, ImageMessageEventContent,
+                    LocationMessageEventContent, MessageType, OriginalSyncRoomMessageEvent,
                     RoomMessageEventContent,
                 },
                 MediaSource,
