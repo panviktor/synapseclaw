@@ -211,7 +211,7 @@ The IPC DB belongs to the broker (gateway process), not to any specific agent.
 
 # Phase 1: Core IPC (this PR)
 
-**Branch**: `feat/cherry-pick-agents-ipc`
+**Branches**: stacked PRs from `feat/ipc-*` branches, merged into `main`
 **Risk**: Medium — behind a feature flag. `enabled: false` by default.
 
 ## New files
@@ -376,7 +376,7 @@ fn validate_send(
     // Prevents "authoritative injection" — result without a task = spoofed answer.
     if kind == "result" {
         let sid = session_id.ok_or("kind=result requires session_id")?;
-        let has_open_task = ipc_db.session_has_task_for(sid, from_agent)?;
+        let has_open_task = ipc_db.session_has_request_for(sid, from_agent)?;
         if !has_open_task {
             return Err("kind=result only allowed as reply to existing task/query in session".into());
         }
