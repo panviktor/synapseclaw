@@ -60,7 +60,10 @@ pub mod traits;
 pub mod web_fetch;
 pub mod web_search_tool;
 
-pub use agents_ipc::{AgentsInboxTool, AgentsListTool, AgentsSendTool, IpcClient};
+pub use agents_ipc::{
+    AgentsInboxTool, AgentsListTool, AgentsReplyTool, AgentsSendTool, IpcClient, StateGetTool,
+    StateSetTool,
+};
 pub use browser::{BrowserTool, ComputerUseConfig};
 pub use browser_open::BrowserOpenTool;
 pub use composio::ComposioTool;
@@ -332,7 +335,10 @@ pub fn all_tools_with_runtime(
             ));
             tool_arcs.push(Arc::new(AgentsListTool::new(ipc_client.clone())));
             tool_arcs.push(Arc::new(AgentsSendTool::new(ipc_client.clone())));
-            tool_arcs.push(Arc::new(AgentsInboxTool::new(ipc_client)));
+            tool_arcs.push(Arc::new(AgentsInboxTool::new(ipc_client.clone())));
+            tool_arcs.push(Arc::new(AgentsReplyTool::new(ipc_client.clone())));
+            tool_arcs.push(Arc::new(StateGetTool::new(ipc_client.clone())));
+            tool_arcs.push(Arc::new(StateSetTool::new(ipc_client)));
         }
     }
 

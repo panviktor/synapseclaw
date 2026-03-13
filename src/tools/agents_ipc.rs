@@ -324,6 +324,261 @@ impl Tool for AgentsInboxTool {
     }
 }
 
+// ── AgentsReplyTool ─────────────────────────────────────────────
+
+/// Tool for replying to a task or query with a result in the same session.
+pub struct AgentsReplyTool {
+    client: Arc<IpcClient>,
+}
+
+impl AgentsReplyTool {
+    pub fn new(client: Arc<IpcClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for AgentsReplyTool {
+    fn name(&self) -> &str {
+        "agents_reply"
+    }
+
+    fn description(&self) -> &str {
+        "Reply to a task or query from another agent with a result. \
+         Automatically uses kind=result and requires the session_id from the \
+         original task/query message."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "to": {
+                    "type": "string",
+                    "description": "Agent ID to reply to (the original sender)"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Session ID from the original task/query message"
+                },
+                "payload": {
+                    "type": "string",
+                    "description": "Result content"
+                }
+            },
+            "required": ["to", "session_id", "payload"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        let to = args["to"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'to' parameter"))?;
+        let session_id = args["session_id"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'session_id' parameter"))?;
+        let payload = args["payload"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'payload' parameter"))?;
+
+        let body = json!({
+            "to": to,
+            "kind": "result",
+            "payload": payload,
+            "session_id": session_id,
+            "priority": 0,
+        });
+
+        let resp = self
+            .client
+            .post("/api/ipc/send", &body)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to IPC broker: {e}"))?;
+
+        let status = resp.status();
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse broker response: {e}"))?;
+
+        if status.is_success() {
+            Ok(ToolResult {
+                success: true,
+                output: serde_json::to_string_pretty(&resp_body)?,
+                error: None,
+            })
+        } else {
+            let error_msg = resp_body["error"].as_str().unwrap_or("Unknown error");
+            let code = resp_body["code"].as_str().unwrap_or("unknown");
+            Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("[{code}] {error_msg}")),
+            })
+        }
+    }
+}
+
+// ── StateGetTool ────────────────────────────────────────────────
+
+/// Tool for reading a shared state key from the IPC broker.
+pub struct StateGetTool {
+    client: Arc<IpcClient>,
+}
+
+impl StateGetTool {
+    pub fn new(client: Arc<IpcClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for StateGetTool {
+    fn name(&self) -> &str {
+        "state_get"
+    }
+
+    fn description(&self) -> &str {
+        "Read a shared state key from the IPC broker. Keys use namespace format: \
+         scope:owner:key (e.g. public:status, agent:myid:mood, team:config). \
+         Access is controlled by trust level."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "State key in scope:owner:key format"
+                }
+            },
+            "required": ["key"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        let key = args["key"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'key' parameter"))?;
+
+        let path = format!("/api/ipc/state?key={}", urlencoding::encode(key));
+        let resp = self
+            .client
+            .get(&path)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to IPC broker: {e}"))?;
+
+        let status = resp.status();
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse broker response: {e}"))?;
+
+        if status.is_success() {
+            Ok(ToolResult {
+                success: true,
+                output: serde_json::to_string_pretty(&body)?,
+                error: None,
+            })
+        } else {
+            let error_msg = body["error"].as_str().unwrap_or("Unknown error");
+            let code = body["code"].as_str().unwrap_or("unknown");
+            Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("[{code}] {error_msg}")),
+            })
+        }
+    }
+}
+
+// ── StateSetTool ────────────────────────────────────────────────
+
+/// Tool for writing a shared state key to the IPC broker.
+pub struct StateSetTool {
+    client: Arc<IpcClient>,
+}
+
+impl StateSetTool {
+    pub fn new(client: Arc<IpcClient>) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait]
+impl Tool for StateSetTool {
+    fn name(&self) -> &str {
+        "state_set"
+    }
+
+    fn description(&self) -> &str {
+        "Write a shared state key to the IPC broker. Keys use namespace format: \
+         scope:owner:key. Write access depends on trust level: \
+         L4=agent:{self}:* only, L3=+public:*, L2=+team:*, L1=+global:*. \
+         secret:* namespace is reserved."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "key": {
+                    "type": "string",
+                    "description": "State key in scope:owner:key format"
+                },
+                "value": {
+                    "type": "string",
+                    "description": "Value to store"
+                }
+            },
+            "required": ["key", "value"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        let key = args["key"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'key' parameter"))?;
+        let value = args["value"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("Missing 'value' parameter"))?;
+
+        let body = json!({
+            "key": key,
+            "value": value,
+        });
+
+        let resp = self
+            .client
+            .post("/api/ipc/state", &body)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to connect to IPC broker: {e}"))?;
+
+        let status = resp.status();
+        let resp_body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse broker response: {e}"))?;
+
+        if status.is_success() {
+            Ok(ToolResult {
+                success: true,
+                output: serde_json::to_string_pretty(&resp_body)?,
+                error: None,
+            })
+        } else {
+            let error_msg = resp_body["error"].as_str().unwrap_or("Unknown error");
+            let code = resp_body["code"].as_str().unwrap_or("unknown");
+            Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("[{code}] {error_msg}")),
+            })
+        }
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -368,6 +623,39 @@ mod tests {
         let tool = AgentsInboxTool::new(client);
         let spec = tool.spec();
         assert_eq!(spec.name, "agents_inbox");
+    }
+
+    #[test]
+    fn agents_reply_tool_spec() {
+        let client = Arc::new(IpcClient::new("http://localhost:42617", "t", 10));
+        let tool = AgentsReplyTool::new(client);
+        let spec = tool.spec();
+        assert_eq!(spec.name, "agents_reply");
+        let required = spec.parameters["required"].as_array().unwrap();
+        assert!(required.contains(&json!("to")));
+        assert!(required.contains(&json!("session_id")));
+        assert!(required.contains(&json!("payload")));
+    }
+
+    #[test]
+    fn state_get_tool_spec() {
+        let client = Arc::new(IpcClient::new("http://localhost:42617", "t", 10));
+        let tool = StateGetTool::new(client);
+        let spec = tool.spec();
+        assert_eq!(spec.name, "state_get");
+        let required = spec.parameters["required"].as_array().unwrap();
+        assert!(required.contains(&json!("key")));
+    }
+
+    #[test]
+    fn state_set_tool_spec() {
+        let client = Arc::new(IpcClient::new("http://localhost:42617", "t", 10));
+        let tool = StateSetTool::new(client);
+        let spec = tool.spec();
+        assert_eq!(spec.name, "state_set");
+        let required = spec.parameters["required"].as_array().unwrap();
+        assert!(required.contains(&json!("key")));
+        assert!(required.contains(&json!("value")));
     }
 
     #[test]
