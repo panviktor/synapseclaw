@@ -232,6 +232,10 @@ pub struct Config {
     /// Text-to-Speech configuration (`[tts]`).
     #[serde(default)]
     pub tts: TtsConfig,
+
+    /// Inter-agent IPC configuration (`[agents_ipc]`).
+    #[serde(default)]
+    pub agents_ipc: AgentsIpcConfig,
 }
 
 /// Named provider profile definition compatible with Codex app-server style config.
@@ -1001,6 +1005,11 @@ pub struct GatewayConfig {
     /// Maximum distinct idempotency keys retained in memory.
     #[serde(default = "default_gateway_idempotency_max_keys")]
     pub idempotency_max_keys: usize,
+
+    /// IPC token metadata: maps token hash → agent identity.
+    /// Tokens without an entry are treated as legacy human tokens (no IPC).
+    #[serde(default)]
+    pub token_metadata: HashMap<String, TokenMetadata>,
 }
 
 fn default_gateway_port() -> u16 {
@@ -1049,7 +1058,144 @@ impl Default for GatewayConfig {
             rate_limit_max_keys: default_gateway_rate_limit_max_keys(),
             idempotency_ttl_secs: default_idempotency_ttl_secs(),
             idempotency_max_keys: default_gateway_idempotency_max_keys(),
+            token_metadata: HashMap::new(),
         }
+    }
+}
+
+// ── Inter-agent IPC ─────────────────────────────────────────────
+
+/// Inter-agent IPC configuration (`[agents_ipc]` section).
+///
+/// Enables broker-mediated communication between ZeroClaw agent instances
+/// through the gateway HTTP API. Each agent authenticates with a bearer token
+/// that the broker resolves to an `agent_id` and `trust_level`.
+///
+/// Disabled by default — existing single-agent setups are unaffected.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct AgentsIpcConfig {
+    /// Enable inter-agent IPC (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Broker gateway URL (default: "http://127.0.0.1:42617")
+    #[serde(default = "default_broker_url")]
+    pub broker_url: String,
+
+    /// Bearer token for authenticating with the broker gateway.
+    /// Obtained by pairing with the broker instance.
+    #[serde(default)]
+    pub broker_token: Option<String>,
+
+    /// Agent staleness threshold in seconds (default: 120).
+    /// Agents not seen within this window are marked offline.
+    #[serde(default = "default_staleness_secs")]
+    pub staleness_secs: u64,
+
+    /// Message TTL in seconds (default: 86400 = 24h). `None` = no expiry.
+    #[serde(default = "default_message_ttl_secs")]
+    pub message_ttl_secs: Option<u64>,
+
+    /// Trust level for this agent instance (0–4, default: 3).
+    /// Set by the broker admin during pairing, not self-claimed.
+    #[serde(default = "default_trust_level")]
+    pub trust_level: u8,
+
+    /// Role label for this agent (default: "agent")
+    #[serde(default = "default_ipc_role")]
+    pub role: String,
+
+    /// Max outbound messages per hour (default: 60)
+    #[serde(default = "default_max_messages_per_hour")]
+    pub max_messages_per_hour: u32,
+
+    /// HTTP request timeout for IPC calls in seconds (default: 10)
+    #[serde(default = "default_ipc_request_timeout_secs")]
+    pub request_timeout_secs: u64,
+
+    /// Allowlisted lateral text pairs for L3 agents.
+    /// Each entry is `["from_agent", "to_agent"]`.
+    #[serde(default)]
+    pub lateral_text_pairs: Vec<[String; 2]>,
+
+    /// Logical destination names visible to L4 agents (restricts agents_list output).
+    #[serde(default)]
+    pub l4_destinations: Vec<String>,
+}
+
+fn default_broker_url() -> String {
+    "http://127.0.0.1:42617".into()
+}
+
+fn default_staleness_secs() -> u64 {
+    120
+}
+
+fn default_message_ttl_secs() -> Option<u64> {
+    Some(86400)
+}
+
+fn default_trust_level() -> u8 {
+    3
+}
+
+fn default_ipc_role() -> String {
+    "agent".into()
+}
+
+fn default_max_messages_per_hour() -> u32 {
+    60
+}
+
+fn default_ipc_request_timeout_secs() -> u64 {
+    10
+}
+
+impl Default for AgentsIpcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            broker_url: default_broker_url(),
+            broker_token: None,
+            staleness_secs: default_staleness_secs(),
+            message_ttl_secs: default_message_ttl_secs(),
+            trust_level: default_trust_level(),
+            role: default_ipc_role(),
+            max_messages_per_hour: default_max_messages_per_hour(),
+            request_timeout_secs: default_ipc_request_timeout_secs(),
+            lateral_text_pairs: Vec::new(),
+            l4_destinations: Vec::new(),
+        }
+    }
+}
+
+/// Metadata bound to a bearer token for IPC identity resolution.
+///
+/// Stored in `[gateway.token_metadata."<token_hash>"]`. Tokens without
+/// an entry are treated as legacy human tokens (no IPC access).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TokenMetadata {
+    /// Agent identifier (e.g. "opus", "sentinel", "kids")
+    pub agent_id: String,
+
+    /// Trust level (0–4). Determines ACL permissions in the broker.
+    #[serde(default = "default_trust_level")]
+    pub trust_level: u8,
+
+    /// Role label (e.g. "coordinator", "monitor", "worker")
+    #[serde(default = "default_ipc_role")]
+    pub role: String,
+}
+
+impl TokenMetadata {
+    /// Returns the effective trust level for IPC operations.
+    pub fn effective_trust_level(&self) -> u8 {
+        self.trust_level
+    }
+
+    /// Whether this token is eligible for IPC (has an agent_id).
+    pub fn is_ipc_eligible(&self) -> bool {
+        !self.agent_id.is_empty()
     }
 }
 
@@ -3885,6 +4031,7 @@ impl Default for Config {
             query_classification: QueryClassificationConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
+            agents_ipc: AgentsIpcConfig::default(),
         }
     }
 }
@@ -5199,6 +5346,12 @@ impl Config {
             encrypt_optional_secret(&store, &mut agent.api_key, "config.agents.*.api_key")?;
         }
 
+        encrypt_optional_secret(
+            &store,
+            &mut config_to_save.agents_ipc.broker_token,
+            "config.agents_ipc.broker_token",
+        )?;
+
         // Encrypt TTS provider API keys
         if let Some(ref mut openai) = config_to_save.tts.openai {
             encrypt_optional_secret(&store, &mut openai.api_key, "config.tts.openai.api_key")?;
@@ -5850,6 +6003,7 @@ default_temperature = 0.7
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
+            agents_ipc: AgentsIpcConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -6046,6 +6200,7 @@ tool_dispatcher = "xml"
             hardware: HardwareConfig::default(),
             transcription: TranscriptionConfig::default(),
             tts: TtsConfig::default(),
+            agents_ipc: AgentsIpcConfig::default(),
         };
 
         config.save().await.unwrap();
@@ -6705,6 +6860,7 @@ channel_id = "C123"
             rate_limit_max_keys: 2048,
             idempotency_ttl_secs: 600,
             idempotency_max_keys: 4096,
+            token_metadata: HashMap::new(),
         };
         let toml_str = toml::to_string(&g).unwrap();
         let parsed: GatewayConfig = toml::from_str(&toml_str).unwrap();
