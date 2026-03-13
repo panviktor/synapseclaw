@@ -11,7 +11,7 @@ Execution owner: `Opus`
 
 | # | Step | Files | Status | Depends on |
 |---|------|-------|--------|------------|
-| 1 | Config: AgentsIpcConfig + schema | config/schema.rs, config/mod.rs | TODO | — |
+| 1 | Config: AgentsIpcConfig + schema | config/schema.rs, config/mod.rs | DONE (2026-03-13) | — |
 | 2 | Pairing: TokenMetadata + authenticate() | security/pairing.rs | TODO | 1 |
 | 3 | Gateway plumbing: AppState + routes + IpcDb init | gateway/mod.rs, gateway/api.rs | TODO | 1, 2 |
 | 4 | Broker core: IpcDb + schema + ACL | gateway/ipc.rs (new) | TODO | 3 |
@@ -41,7 +41,7 @@ Execution owner: `Opus`
 
 **Verify**: `cargo check`, existing tests pass
 
-**Notes**: —
+**Notes**: Also added `agents_ipc` to wizard.rs (2 constructors). Commit: `731f9115` on `feat/ipc-config`.
 
 ---
 
