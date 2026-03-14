@@ -87,14 +87,23 @@ pub enum AuditEventType {
 
 Add a convenience builder to `AuditEvent`:
 
+The current `AuditEvent` model has `Actor` (channel, user_id, username) and `Action` (command, risk_level, approved, allowed) but no dedicated `target`/`recipient` field. Rather than extending the struct (which would be a breaking change to audit format), encode IPC-specific fields into the existing `action.command` string:
+
 ```rust
 impl AuditEvent {
+    /// Build an IPC audit event. `to_agent` and IPC-specific context are
+    /// encoded into the `action.command` field as a structured string.
     pub fn ipc(
         event_type: AuditEventType,
         from_agent: &str,
         to_agent: Option<&str>,
         detail: &str,
     ) -> Self {
+        // Encode from/to/detail into the action command field
+        let command = match to_agent {
+            Some(to) => format!("ipc: from={from_agent} to={to} {detail}"),
+            None => format!("ipc: from={from_agent} {detail}"),
+        };
         Self::new(event_type)
             .with_actor(
                 "ipc".to_string(),
@@ -102,14 +111,16 @@ impl AuditEvent {
                 None,
             )
             .with_action(
-                detail.to_string(),
-                "high".to_string(),  // IPC events are always security-relevant
-                false,  // not human-approved
+                command,
+                "high".to_string(),
+                false,
                 true,   // will be overridden for blocked events
             )
     }
 }
 ```
+
+This way `to_agent` is persisted in the audit log via the `action.command` field without requiring a schema change to `AuditEvent`.
 
 #### 1.3 Wire AuditLogger into AppState
 
@@ -185,8 +196,9 @@ Similarly for: inbox fetch (`IpcReceived`), state changes (`IpcStateChange`), ad
 
 #### 1.5 Tests
 
-- Unit test: `AuditEvent::ipc()` builder produces correct fields
-- Integration: send -> audit log file contains `IpcSend` event with correct from/to/kind
+- Unit test: `AuditEvent::ipc()` builder — `action.command` contains `from=`, `to=`, and detail
+- Unit test: `AuditEvent::ipc()` without `to_agent` — `action.command` omits `to=`
+- Integration: send -> audit log file contains `IpcSend` event with `from=X to=Y kind=Z`
 - Integration: ACL rejection -> audit log file contains `IpcBlocked` event with `allowed: false`
 
 **Verify**: `cargo check`, `cargo test gateway::ipc::tests`, `cargo test security::audit::tests`
@@ -506,29 +518,30 @@ if let Some(ref detector) = state.ipc_leak_detector {
 
 ```rust
 // In handle_ipc_state_set(), after validate_state_set() passes:
-// Skip leak detection for secret:* namespace (L0-L1 have write access by ACL)
-let skip_leak_scan = body.key.starts_with("secret:");
-if !skip_leak_scan {
-    if let Some(ref detector) = state.ipc_leak_detector {
-        if let LeakResult::Detected { patterns, .. } = detector.scan(&body.value) {
-            if let Some(ref logger) = state.audit_logger {
-                let _ = logger.log(&AuditEvent::ipc(
-                    AuditEventType::IpcLeakDetected,
-                    &meta.agent_id,
-                    None,
-                    &format!("credential_leak in state_set key={}: {patterns:?}", body.key),
-                ));
-            }
-            return Err(IpcError {
-                status: StatusCode::FORBIDDEN,
-                error: "State value blocked: contains credentials or secrets".into(),
-                code: "credential_leak".into(),
-                retryable: false,
-            });
+// Note: secret:* namespace is denied for ALL trust levels by validate_state_set()
+// (reserved, not yet implemented). No exemption needed here — if we reach this
+// point, the key is not secret:*.
+if let Some(ref detector) = state.ipc_leak_detector {
+    if let LeakResult::Detected { patterns, .. } = detector.scan(&body.value) {
+        if let Some(ref logger) = state.audit_logger {
+            let _ = logger.log(&AuditEvent::ipc(
+                AuditEventType::IpcLeakDetected,
+                &meta.agent_id,
+                None,
+                &format!("credential_leak in state_set key={}: {patterns:?}", body.key),
+            ));
         }
+        return Err(IpcError {
+            status: StatusCode::FORBIDDEN,
+            error: "State value blocked: contains credentials or secrets".into(),
+            code: "credential_leak".into(),
+            retryable: false,
+        });
     }
 }
 ```
+
+> **Note on `secret:*`**: `validate_state_set()` currently denies `secret:*` for ALL trust levels (including L0-L1) — it is reserved but not yet implemented. If Phase 3 opens `secret:*` for L0-L1, the LeakDetector exemption should be added at that time.
 
 #### 4.4 Tests
 
@@ -536,7 +549,7 @@ if !skip_leak_scan {
 - Unit: payload with `ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` -> blocked
 - Unit: normal text -> passes
 - Unit: `state_set` with `password=hunter2longpassword` -> blocked
-- Unit: `state_set` to `secret:myapp:api_key` -> NOT blocked (exempt)
+- Unit: `state_set` to `secret:myapp:api_key` -> rejected by ACL before LeakDetector (secret_denied)
 - Unit: audit log contains `IpcLeakDetected` event
 
 **Verify**: `cargo check`, `cargo test gateway::ipc::tests`
@@ -780,11 +793,36 @@ Localhost only.
 
 #### 7.2 Promoted message envelope
 
-Instead of synthesizing a `from=system, trust_level=0, kind=task` (which would erase provenance and make promoted L4 content indistinguishable from a real system task), use a dedicated kind that preserves origin:
+Use a dedicated `kind=promoted_quarantine` that preserves origin. The key challenge: the current quarantine routing is based solely on `from_trust_level >= 4` in `fetch_inbox()`. A promoted message with the original `from_trust_level=4` would go back into the quarantine lane. To solve this, add a `promoted` column to the messages table.
+
+#### Schema change
+
+```sql
+ALTER TABLE messages ADD COLUMN promoted INTEGER DEFAULT 0;
+```
+
+Add to `init_schema()`. The `fetch_inbox()` queries must exclude promoted messages from the quarantine lane:
+
+```rust
+// quarantine=false: normal inbox — from_trust_level < 4 OR promoted = 1
+let normal_query = "SELECT ... FROM messages
+    WHERE to_agent = ?1 AND read = 0 AND blocked = 0
+    AND (from_trust_level < 4 OR promoted = 1)
+    ORDER BY priority DESC, created_at ASC LIMIT ?2";
+
+// quarantine=true: quarantine lane — from_trust_level >= 4 AND NOT promoted
+let quarantine_query = "SELECT ... FROM messages
+    WHERE to_agent = ?1 AND read = 0 AND blocked = 0
+    AND from_trust_level >= 4 AND promoted = 0
+    ORDER BY priority DESC, created_at ASC LIMIT ?2";
+```
+
+This way promoted messages escape the quarantine lane and appear in the normal inbox, while still carrying their original `from_trust_level` for provenance.
+
+#### Promoted message envelope
 
 ```rust
 /// Internal-only message kind for quarantine content promoted by admin.
-/// Carries full provenance metadata so the recipient knows this was L4 content.
 const PROMOTED_KIND: &str = "promoted_quarantine";
 ```
 
@@ -806,22 +844,23 @@ let promoted_payload = serde_json::json!({
 }).to_string();
 ```
 
-The envelope message itself has `from_trust_level` set to the **original sender's trust level**, not 0:
+The envelope message keeps `from_trust_level` as original (for provenance) and sets `promoted = 1` (for routing):
 
 ```rust
-let msg_id = db.insert_message(
+let msg_id = db.insert_promoted_message(
     &msg.from_agent,         // from: original sender (preserved provenance)
     &body.to_agent,          // to: admin-specified recipient
     PROMOTED_KIND,           // kind: promoted_quarantine (not task)
     &promoted_payload,
-    msg.from_trust_level,    // from_trust_level: ORIGINAL level (not 0!)
+    msg.from_trust_level,    // from_trust_level: ORIGINAL level (provenance)
     msg.session_id.as_deref(),
     Some(0),
     state.config.lock().agents_ipc.message_ttl_secs,
+    true,                    // promoted = 1 (escapes quarantine lane)
 )?;
 ```
 
-> **Why not trust_level=0?** Promoting content does not change its origin trust. The recipient should see it as "L4 content that admin approved for review" — still requiring caution, but no longer quarantined.
+> **Why `promoted` column instead of `from_trust_level=0`?** Promoting content does not change its origin trust. The recipient sees it as "L4 content that admin approved for review" with the original `from_trust_level=4` visible for context, but the `promoted=1` flag routes it to the normal inbox.
 
 #### 7.3 Handler
 
@@ -931,10 +970,12 @@ impl IpcDb {
 - Unit: promote quarantine message -> `promoted_quarantine` message created, audit event logged
 - Unit: promote non-quarantine message -> 400 error
 - Unit: promote nonexistent message -> 404
-- Unit: promoted message has `from_agent=original_sender`, `from_trust_level=original_level` (NOT 0)
+- Unit: promoted message has `from_agent=original_sender`, `from_trust_level=original_level`, `promoted=1`
 - Unit: promoted message has `kind=promoted_quarantine` (NOT `task`)
 - Unit: promoted payload contains full provenance (`original.from_agent`, `original.from_trust_level`)
 - Unit: `to_agent` matches admin-specified value, not auto-selected
+- Unit: promoted message appears in normal inbox (`quarantine=false`), NOT in quarantine lane
+- Unit: non-promoted L4 messages still appear only in quarantine lane
 
 **Verify**: `cargo check`, `cargo test gateway::ipc::tests`
 
@@ -1000,7 +1041,7 @@ Both apply to `handle_ipc_send()`. LeakDetector also applies to `handle_ipc_stat
 | `src/security/audit.rs` | New IPC event types (`IpcSend`, `IpcBlocked`, `IpcLeakDetected`, etc.), `AuditEvent::ipc()` builder |
 | `src/config/schema.rs` | `IpcPromptGuardConfig`, `session_max_exchanges`, `coordinator_agent` |
 | `src/gateway/mod.rs` | `AppState`: `audit_logger`, `ipc_prompt_guard`, `ipc_leak_detector` fields; `/admin/ipc/promote` route; test AppState updates |
-| `src/gateway/ipc.rs` | PromptGuard scan + LeakDetector scan in send and state_set, structured output in inbox, sequence integrity check, session limits with provenance-preserving escalation, promote handler with provenance-preserving envelope, audit logging throughout |
+| `src/gateway/ipc.rs` | PromptGuard scan + LeakDetector scan in send and state_set, structured output in inbox, sequence integrity check, session limits with provenance-preserving escalation, promote handler with `promoted` column + provenance-preserving envelope, `fetch_inbox()` quarantine query update, audit logging throughout |
 | `src/tools/agents_ipc.rs` | Updated tool descriptions (trust warnings) |
 | `docs/fork/ipc-phase2-progress.md` | Step statuses |
 | `docs/fork/ipc-quickstart.md` | Phase 2 config examples |

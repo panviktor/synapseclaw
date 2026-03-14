@@ -12,7 +12,7 @@ This directory contains the strategy, plans, and operational docs for the ZeroCl
 | [ipc-plan.md](ipc-plan.md) | Full IPC design: trust model, ACL, quarantine, approvals, phases | Everyone |
 | [ipc-progress.md](ipc-progress.md) | Step-by-step execution checklist (11 steps, Phase 1 — DONE) | Opus |
 | [ipc-phase2-plan.md](ipc-phase2-plan.md) | Phase 2: Hardened Security — PromptGuard, structured output, audit, replay, session limits | Everyone |
-| [ipc-phase2-progress.md](ipc-phase2-progress.md) | Phase 2 execution checklist (9 steps) | Opus |
+| [ipc-phase2-progress.md](ipc-phase2-progress.md) | Phase 2 execution checklist (8 steps) | Opus |
 | [ipc-quickstart.md](ipc-quickstart.md) | Minimal configs, pairing flow, smoke-test curl commands | Everyone |
 
 ## Reading order
