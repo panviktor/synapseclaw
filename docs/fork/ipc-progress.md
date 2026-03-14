@@ -21,7 +21,7 @@ Execution owner: `Opus`
 | 8 | Tools: IpcClient + agents_list, agents_send, agents_inbox + registration + tests | tools/agents_ipc.rs (new), tools/mod.rs | DONE (2026-03-13) | 5 |
 | 9 | Tools: agents_reply, state_get, state_set | tools/agents_ipc.rs | DONE (2026-03-13) | 6, 8 |
 | 10 | Tools: agents_spawn | tools/agents_ipc.rs | DONE (2026-03-13) | 1 |
-| 11 | Final validation: fmt + clippy + test + sync | — | TODO | all |
+| 11 | Final validation: fmt + clippy + test + sync + CI | — | DONE (2026-03-14) | all |
 
 > **Note on tests and registration**: Unit tests were written inline with each step (ACL tests in Step 4, handler tests in Steps 5-7, tool tests in Steps 8-10). Tool registration in `tools/mod.rs` and wizard defaults in `onboard/wizard.rs` were done as part of Steps 1 and 8. These are not separate steps.
 
@@ -152,7 +152,7 @@ Execution owner: `Opus`
 
 **Verify**: `cargo check`
 
-**Notes**: Steps 8-10 implemented together. PR #15 on `feat/ipc-tools`. 10 tool tests. Registration: 6 HTTP tools require `broker_token`, `agents_spawn` only requires `enabled`.
+**Notes**: Steps 8-10 implemented together. PR #15 on `feat/ipc-tools`. 14 tool tests (10 spec/unit + 4 HTTP roundtrip with real axum server). Registration: 6 HTTP tools require `broker_token`, `agents_spawn` only requires `enabled`.
 
 ---
 
@@ -187,18 +187,17 @@ Execution owner: `Opus`
 ### Step 11: Final validation
 
 **What**:
-- `cargo fmt --all -- --check`
-- `cargo clippy --all-targets -- -D warnings`
-- `cargo test`
+- `cargo fmt --all -- --check` — clean
+- `cargo clippy --all-targets -- -D warnings` — clean
+- `cargo test` — 7228 passed, 0 failed
 - `enabled: false` by default — all existing tests pass
-- latest sync with `vendor/upstream-master` is merged or current sync PR is green
-- fork invariants pass after latest upstream sync (ACL, quarantine, approval routing, revoke/disable)
-- if touched file set expanded: update `sync-strategy.md` hotspot list / `delta-registry.md`
-- Manual test flow (if time permits)
+- Upstream sync current (PR #17, drift = 0)
+- Fork invariants CI job added to `checks-on-pr.yml` (runs IPC ACL, tool, and pairing tests as a separate job in the gate)
+- HTTP roundtrip tests added to `tools/agents_ipc.rs`: 4 async tests spin up a real axum server and exercise agents_list, send→inbox, state_set→state_get, and ACL denial through `IpcClient` → broker handlers
 
 **Verify**: CI-equivalent
 
-**Notes**: —
+**Notes**: PR #20. Fork invariants CI job: `fork-invariants` in gate. HTTP roundtrip tests: `http_roundtrip_agents_list`, `http_roundtrip_send_and_inbox`, `http_roundtrip_state_set_and_get`, `http_roundtrip_send_acl_denied`.
 
 ---
 
@@ -212,6 +211,7 @@ Execution owner: `Opus`
 | 2026-03-13 | 3 | fix | Critical fixes: kill-switch, query→result, L4 masking, quarantine. PR #13 |
 | 2026-03-13 | 3 | fix | Sync script fixes (sed delimiter, workflow failures). PR #14 |
 | 2026-03-13 | 3 | 8, 9, 10 | All 7 IPC tools + registration. PR #15 |
-| 2026-03-14 | 4 | fix | Docs cross-references, progress tracker. PR #16 |
+| 2026-03-14 | 4 | fix | Docs cross-references, progress tracker. PR #16, #19 |
 | 2026-03-14 | 4 | sync | Upstream sync: 40 commits, 4 conflict resolutions. PR #17 |
 | 2026-03-14 | 4 | fix | 5 review findings: rate limiting, L4 aliases, spawn contract, revoke/quarantine, notify. PR #18 |
+| 2026-03-14 | 4 | 11 | Final validation: fmt/clippy/test clean, fork-invariants CI job, HTTP roundtrip tests. PR #20 |

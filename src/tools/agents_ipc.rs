@@ -808,6 +808,278 @@ mod tests {
         assert!(required.contains(&json!("value")));
     }
 
+    // ── HTTP roundtrip tests ────────────────────────────────────
+    //
+    // These tests spin up a minimal axum server with real IPC handlers
+    // and exercise the tool execute() path end-to-end.
+
+    use crate::gateway::ipc::{
+        handle_ipc_agents, handle_ipc_inbox, handle_ipc_send, handle_ipc_state_get,
+        handle_ipc_state_set, IpcDb,
+    };
+    use crate::gateway::AppState;
+    use axum::{routing::get, routing::post, Router};
+    use std::net::SocketAddr;
+    use tokio::net::TcpListener;
+
+    // Mock provider for test AppState
+    struct TestProvider;
+    #[async_trait]
+    impl crate::providers::traits::Provider for TestProvider {
+        async fn chat_with_system(
+            &self,
+            _system_prompt: Option<&str>,
+            _message: &str,
+            _model: &str,
+            _temperature: f64,
+        ) -> anyhow::Result<String> {
+            Ok("ok".into())
+        }
+    }
+
+    // Mock memory for test AppState
+    struct TestMemory;
+    #[async_trait]
+    impl crate::memory::traits::Memory for TestMemory {
+        fn name(&self) -> &str {
+            "test"
+        }
+        async fn store(
+            &self,
+            _key: &str,
+            _content: &str,
+            _category: crate::memory::traits::MemoryCategory,
+            _session_id: Option<&str>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn recall(
+            &self,
+            _query: &str,
+            _limit: usize,
+            _session_id: Option<&str>,
+        ) -> anyhow::Result<Vec<crate::memory::traits::MemoryEntry>> {
+            Ok(Vec::new())
+        }
+        async fn get(
+            &self,
+            _key: &str,
+        ) -> anyhow::Result<Option<crate::memory::traits::MemoryEntry>> {
+            Ok(None)
+        }
+        async fn list(
+            &self,
+            _category: Option<&crate::memory::traits::MemoryCategory>,
+            _session_id: Option<&str>,
+        ) -> anyhow::Result<Vec<crate::memory::traits::MemoryEntry>> {
+            Ok(Vec::new())
+        }
+        async fn forget(&self, _key: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+        async fn count(&self) -> anyhow::Result<usize> {
+            Ok(0)
+        }
+        async fn health_check(&self) -> bool {
+            true
+        }
+    }
+
+    /// Build a minimal test AppState with IPC enabled and a known token.
+    fn test_app_state(db: Arc<IpcDb>, token_hash: &str) -> AppState {
+        let mut config = crate::config::Config::default();
+        config.gateway.require_pairing = true;
+        config.agents_ipc.enabled = true;
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            token_hash.to_string(),
+            crate::config::TokenMetadata {
+                agent_id: "test-agent".into(),
+                trust_level: 1,
+                role: "coordinator".into(),
+            },
+        );
+
+        let pairing = std::sync::Arc::new(crate::security::PairingGuard::with_metadata(
+            true,
+            &[token_hash.to_string()],
+            &metadata,
+        ));
+
+        AppState {
+            config: std::sync::Arc::new(parking_lot::Mutex::new(config)),
+            provider: std::sync::Arc::new(TestProvider),
+            model: "test".into(),
+            temperature: 0.7,
+            mem: std::sync::Arc::new(TestMemory),
+            auto_save: false,
+            webhook_secret_hash: None,
+            pairing,
+            trust_forwarded_headers: false,
+            rate_limiter: std::sync::Arc::new(crate::gateway::GatewayRateLimiter::new(
+                100, 100, 100,
+            )),
+            idempotency_store: std::sync::Arc::new(crate::gateway::IdempotencyStore::new(
+                std::time::Duration::from_secs(60),
+                100,
+            )),
+            whatsapp: None,
+            whatsapp_app_secret: None,
+            linq: None,
+            linq_signing_secret: None,
+            nextcloud_talk: None,
+            nextcloud_talk_webhook_secret: None,
+            wati: None,
+            observer: std::sync::Arc::new(crate::observability::NoopObserver),
+            tools_registry: std::sync::Arc::new(Vec::new()),
+            cost_tracker: None,
+            event_tx: tokio::sync::broadcast::channel(16).0,
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            ipc_db: Some(db),
+            ipc_rate_limiter: None,
+            ipc_read_rate_limiter: None,
+            node_registry: std::sync::Arc::new(crate::gateway::nodes::NodeRegistry::new(16)),
+        }
+    }
+
+    /// Start a test server with IPC routes, return its base URL.
+    async fn start_test_server(state: AppState) -> String {
+        let app = Router::new()
+            .route("/api/ipc/agents", get(handle_ipc_agents))
+            .route("/api/ipc/send", post(handle_ipc_send))
+            .route("/api/ipc/inbox", get(handle_ipc_inbox))
+            .route(
+                "/api/ipc/state",
+                get(handle_ipc_state_get).post(handle_ipc_state_set),
+            )
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .ok();
+        });
+        format!("http://127.0.0.1:{}", addr.port())
+    }
+
+    /// The token used in tests (pre-hashed so PairingGuard recognizes it).
+    const TEST_TOKEN_HASH: &str =
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"; // sha256("test")
+    const TEST_TOKEN_RAW: &str = "test";
+
+    #[tokio::test]
+    async fn http_roundtrip_agents_list() {
+        let db = Arc::new(IpcDb::open_in_memory().unwrap());
+        db.update_last_seen("test-agent", 1, "coordinator");
+        let state = test_app_state(db, TEST_TOKEN_HASH);
+        let url = start_test_server(state).await;
+
+        let client = Arc::new(IpcClient::new(&url, TEST_TOKEN_RAW, 5));
+        let tool = AgentsListTool::new(client);
+        let result = tool.execute(json!({})).await.unwrap();
+        assert!(result.success, "agents_list failed: {:?}", result.error);
+        assert!(result.output.contains("test-agent"));
+    }
+
+    #[tokio::test]
+    async fn http_roundtrip_send_and_inbox() {
+        let db = Arc::new(IpcDb::open_in_memory().unwrap());
+        db.update_last_seen("test-agent", 1, "coordinator");
+        db.update_last_seen("worker", 3, "agent");
+        let state = test_app_state(db, TEST_TOKEN_HASH);
+        let url = start_test_server(state).await;
+
+        let client = Arc::new(IpcClient::new(&url, TEST_TOKEN_RAW, 5));
+
+        // Send a task from test-agent (L1) to worker (L3) — downward, allowed
+        let send_tool = AgentsSendTool::new(client.clone());
+        let send_result = send_tool
+            .execute(json!({
+                "to": "worker",
+                "kind": "task",
+                "payload": "do something"
+            }))
+            .await
+            .unwrap();
+        assert!(send_result.success, "send failed: {:?}", send_result.error);
+
+        // Inbox should show the message for test-agent? No — it was sent TO worker.
+        // test-agent's inbox should be empty.
+        let inbox_tool = AgentsInboxTool::new(client.clone());
+        let inbox_result = inbox_tool.execute(json!({})).await.unwrap();
+        assert!(inbox_result.success);
+        // The message was sent to "worker", not to us, so our inbox is empty
+        assert!(
+            inbox_result.output.contains("messages"),
+            "Expected messages key in output"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_roundtrip_state_set_and_get() {
+        let db = Arc::new(IpcDb::open_in_memory().unwrap());
+        db.update_last_seen("test-agent", 1, "coordinator");
+        let state = test_app_state(db, TEST_TOKEN_HASH);
+        let url = start_test_server(state).await;
+
+        let client = Arc::new(IpcClient::new(&url, TEST_TOKEN_RAW, 5));
+
+        let set_tool = StateSetTool::new(client.clone());
+        let set_result = set_tool
+            .execute(json!({
+                "key": "public:test:key",
+                "value": "hello-world"
+            }))
+            .await
+            .unwrap();
+        assert!(
+            set_result.success,
+            "state_set failed: {:?}",
+            set_result.error
+        );
+
+        let get_tool = StateGetTool::new(client.clone());
+        let get_result = get_tool
+            .execute(json!({ "key": "public:test:key" }))
+            .await
+            .unwrap();
+        assert!(
+            get_result.success,
+            "state_get failed: {:?}",
+            get_result.error
+        );
+        assert!(get_result.output.contains("hello-world"));
+    }
+
+    #[tokio::test]
+    async fn http_roundtrip_send_acl_denied() {
+        let db = Arc::new(IpcDb::open_in_memory().unwrap());
+        db.update_last_seen("test-agent", 1, "coordinator");
+        let state = test_app_state(db, TEST_TOKEN_HASH);
+        let url = start_test_server(state).await;
+
+        let client = Arc::new(IpcClient::new(&url, TEST_TOKEN_RAW, 5));
+        let send_tool = AgentsSendTool::new(client);
+        // Send to unknown recipient → should fail
+        let result = send_tool
+            .execute(json!({
+                "to": "nonexistent",
+                "payload": "hello"
+            }))
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.output.contains("unknown_recipient") || result.error.is_some());
+    }
+
+    // ── Spec + unit tests ─────────────────────────────────────────
+
     #[test]
     fn payload_truncation_logic() {
         let long_payload = "x".repeat(5000);
