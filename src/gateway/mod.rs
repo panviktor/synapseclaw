@@ -763,6 +763,11 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/api/ipc/inbox", get(ipc::handle_ipc_inbox))
         .route("/api/ipc/state", get(ipc::handle_ipc_state_get))
         .route("/api/ipc/state", post(ipc::handle_ipc_state_set))
+        .route(
+            "/api/ipc/provision-ephemeral",
+            post(ipc::handle_ipc_provision_ephemeral),
+        )
+        .route("/api/ipc/spawn-status", get(ipc::handle_ipc_spawn_status))
         // ── IPC admin routes (localhost only) ──
         .route("/admin/ipc/agents", get(ipc::handle_admin_ipc_agents))
         .route("/admin/ipc/revoke", post(ipc::handle_admin_ipc_revoke))

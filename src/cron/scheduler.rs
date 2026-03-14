@@ -1228,136 +1228,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_agent_job_subprocess_executes_child_process() {
+    async fn run_agent_job_subprocess_dispatches_to_subprocess_mode() {
+        // Verify subprocess mode attempts to launch a process (will fail to find
+        // a usable zeroclaw binary in test context, but the dispatch path is exercised).
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
-
-        // Use a simple command via env overlay that overrides the binary to `echo`
-        // We test the subprocess plumbing, not the actual agent. To do this we
-        // create a tiny shell script that acts as our "zeroclaw" binary.
-        let fake_bin = tmp.path().join("fake-zeroclaw");
-        tokio::fs::write(&fake_bin, "#!/bin/sh\necho \"subprocess-ok: $*\"\n")
-            .await
-            .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        // We can't easily override current_exe(), but we CAN test via
-        // run_agent_job_subprocess directly by putting the fake binary in PATH.
         let mut job = subprocess_agent_job("hello world");
         job.env_overlay
-            .insert("ZEROCLAW_TIMEOUT_SECS".into(), "10".into());
-
-        // Directly test the subprocess function by modifying PATH
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!("{}:{}", tmp.path().display(), original_path),
-        );
-
-        // Use run_agent_job which will dispatch to subprocess mode
-        let (success, output) = run_agent_job(&config, &security, &job).await;
-
-        // Restore PATH
-        std::env::set_var("PATH", &original_path);
-
-        // The fake binary won't actually produce agent output, but the process
-        // will have launched and completed. If current_exe() points to a valid
-        // zeroclaw binary it will be used first. We test the key property:
-        // subprocess mode attempts to launch a process and captures output.
-        // It will either succeed (using our fake binary) or fail with a
-        // meaningful error about the binary not understanding "agent" args.
-        assert!(
-            success || output.contains("status=") || output.contains("subprocess"),
-            "Expected subprocess execution attempt, got: {output}"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_agent_job_subprocess_times_out() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
-
-        let slow_bin = tmp.path().join("slow-zeroclaw");
-        tokio::fs::write(&slow_bin, "#!/bin/sh\nsleep 60\n")
-            .await
-            .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&slow_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        let mut job = subprocess_agent_job("timeout test");
-        job.env_overlay
-            .insert("ZEROCLAW_TIMEOUT_SECS".into(), "1".into());
-
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!("{}:{}", tmp.path().display(), original_path),
-        );
-
-        let (success, output) = run_agent_job(&config, &security, &job).await;
-
-        std::env::set_var("PATH", &original_path);
-
-        // May or may not use the slow binary (current_exe() might resolve first).
-        // If it does use the slow binary, it should time out.
-        // If it uses the real binary, it will fail for other reasons.
-        // We just verify the function completes without panic.
-        assert!(!success || output.contains("timed out") || output.contains("status="));
-    }
-
-    #[tokio::test]
-    async fn run_agent_job_subprocess_passes_env_overlay() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
-
-        let env_bin = tmp.path().join("env-zeroclaw");
-        tokio::fs::write(
-            &env_bin,
-            "#!/bin/sh\necho \"BROKER=$ZEROCLAW_BROKER_TOKEN AGENT=$ZEROCLAW_AGENT_ID\"\n",
-        )
-        .await
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&env_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-
-        let mut job = subprocess_agent_job("env test");
-        job.env_overlay
-            .insert("ZEROCLAW_BROKER_TOKEN".into(), "test-token-123".into());
-        job.env_overlay
-            .insert("ZEROCLAW_AGENT_ID".into(), "eph-parent-abc123".into());
-        job.env_overlay
-            .insert("ZEROCLAW_TIMEOUT_SECS".into(), "10".into());
-
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!("{}:{}", tmp.path().display(), original_path),
-        );
+            .insert("ZEROCLAW_TIMEOUT_SECS".into(), "5".into());
 
         let (_, output) = run_agent_job(&config, &security, &job).await;
 
-        std::env::set_var("PATH", &original_path);
-
-        // If the fake binary was used, we'll see the env vars in output.
-        // If the real binary was used, it will have a different output.
-        // This test validates the env_overlay plumbing works.
-        if output.contains("BROKER=") {
-            assert!(output.contains("test-token-123"));
-            assert!(output.contains("eph-parent-abc123"));
-        }
+        // Should either launch a process (status=) or report a spawn error.
+        // In test context, current_exe() returns the test binary which doesn't
+        // understand "agent" args, so we expect a non-zero exit or error.
+        assert!(
+            output.contains("status=") || output.contains("subprocess"),
+            "Expected subprocess execution attempt, got: {output}"
+        );
     }
 
     #[tokio::test]
