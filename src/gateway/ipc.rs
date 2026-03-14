@@ -21,7 +21,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::security::audit::{AuditEvent, AuditEventType};
-use crate::security::GuardResult;
+use crate::security::{GuardResult, LeakResult};
 use tracing::{info, warn};
 
 // ── IpcDb (broker-owned SQLite) ─────────────────────────────────
@@ -962,6 +962,28 @@ pub async fn handle_ipc_send(
         }
     }
 
+    // Credential leak scan (after PromptGuard, before INSERT)
+    if let Some(ref detector) = state.ipc_leak_detector {
+        if let LeakResult::Detected { patterns, .. } = detector.scan(&body.payload) {
+            if let Some(ref logger) = state.audit_logger {
+                let _ = logger.log(&AuditEvent::ipc(
+                    AuditEventType::IpcLeakDetected,
+                    &meta.agent_id,
+                    Some(&resolved_to),
+                    &format!("credential_leak: {patterns:?}"),
+                ));
+            }
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "Message blocked: contains credentials or secrets",
+                    "code": "credential_leak",
+                    "retryable": false
+                })),
+            ));
+        }
+    }
+
     let msg_id = db
         .insert_message(
             &meta.agent_id,
@@ -1073,6 +1095,29 @@ pub async fn handle_ipc_state_set(
 
     validate_state_set(meta.trust_level, &meta.agent_id, &body.key)
         .map_err(|e| e.into_response_pair(meta.trust_level))?;
+
+    // Credential leak scan on state values
+    // Note: secret:* is already denied by validate_state_set for all levels
+    if let Some(ref detector) = state.ipc_leak_detector {
+        if let LeakResult::Detected { patterns, .. } = detector.scan(&body.value) {
+            if let Some(ref logger) = state.audit_logger {
+                let _ = logger.log(&AuditEvent::ipc(
+                    AuditEventType::IpcLeakDetected,
+                    &meta.agent_id,
+                    None,
+                    &format!("credential_leak in state_set key={}: {patterns:?}", body.key),
+                ));
+            }
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "State value blocked: contains credentials or secrets",
+                    "code": "credential_leak",
+                    "retryable": false
+                })),
+            ));
+        }
+    }
 
     db.set_state(&body.key, &body.value, &meta.agent_id);
 
@@ -2054,5 +2099,35 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert!(messages[0].trust_warning.as_ref().unwrap().starts_with("QUARANTINE"));
         assert_eq!(messages[0].quarantined, Some(true));
+    }
+
+    // ── LeakDetector tests ──────────────────────────────────────
+
+    #[test]
+    fn leak_detector_blocks_aws_key() {
+        let detector = crate::security::LeakDetector::with_sensitivity(0.7);
+        let result = detector.scan("here is my key: AKIAIOSFODNN7EXAMPLE");
+        assert!(matches!(result, LeakResult::Detected { .. }));
+    }
+
+    #[test]
+    fn leak_detector_blocks_github_token() {
+        let detector = crate::security::LeakDetector::with_sensitivity(0.7);
+        let result = detector.scan("token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn");
+        assert!(matches!(result, LeakResult::Detected { .. }));
+    }
+
+    #[test]
+    fn leak_detector_allows_safe_text() {
+        let detector = crate::security::LeakDetector::with_sensitivity(0.7);
+        let result = detector.scan("The quarterly report shows 15% growth in revenue.");
+        assert!(matches!(result, LeakResult::Clean));
+    }
+
+    #[test]
+    fn leak_detector_blocks_password_in_state() {
+        let detector = crate::security::LeakDetector::with_sensitivity(0.7);
+        let result = detector.scan("password=SuperSecretLongPassword123!");
+        assert!(matches!(result, LeakResult::Detected { .. }));
     }
 }
