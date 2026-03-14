@@ -134,6 +134,21 @@ impl IpcDb {
                 agent_id TEXT PRIMARY KEY,
                 last_seq INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS spawn_runs (
+                id           TEXT PRIMARY KEY,
+                parent_id    TEXT NOT NULL,
+                child_id     TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'running',
+                result       TEXT,
+                created_at   INTEGER NOT NULL,
+                expires_at   INTEGER NOT NULL,
+                completed_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_spawn_runs_parent
+                ON spawn_runs(parent_id, status);
+            CREATE INDEX IF NOT EXISTS idx_spawn_runs_child
+                ON spawn_runs(child_id);
             ",
         )?;
 
@@ -499,6 +514,147 @@ impl IpcDb {
         .is_ok()
     }
 
+    // ── Spawn Runs (Phase 3A) ───────────────────────────────────
+
+    /// Create a spawn_runs row for an ephemeral child agent.
+    pub fn create_spawn_run(
+        &self,
+        session_id: &str,
+        parent_id: &str,
+        child_id: &str,
+        expires_at: i64,
+    ) {
+        let now = unix_now();
+        let conn = self.conn.lock();
+        let _ = conn.execute(
+            "INSERT INTO spawn_runs (id, parent_id, child_id, status, created_at, expires_at)
+             VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
+            params![session_id, parent_id, child_id, now, expires_at],
+        );
+    }
+
+    /// Get the current status and result of a spawn run.
+    pub fn get_spawn_run(&self, session_id: &str) -> Option<SpawnRunInfo> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT id, parent_id, child_id, status, result, created_at, expires_at, completed_at
+             FROM spawn_runs WHERE id = ?1",
+            params![session_id],
+            |row| {
+                Ok(SpawnRunInfo {
+                    id: row.get(0)?,
+                    parent_id: row.get(1)?,
+                    child_id: row.get(2)?,
+                    status: row.get(3)?,
+                    result: row.get(4)?,
+                    created_at: row.get(5)?,
+                    expires_at: row.get(6)?,
+                    completed_at: row.get(7)?,
+                })
+            },
+        )
+        .ok()
+    }
+
+    /// Mark a spawn run as completed with a result payload.
+    pub fn complete_spawn_run(&self, session_id: &str, result: &str) -> bool {
+        let now = unix_now();
+        let conn = self.conn.lock();
+        let changed = conn
+            .execute(
+                "UPDATE spawn_runs SET status = 'completed', result = ?2, completed_at = ?3
+                 WHERE id = ?1 AND status = 'running'",
+                params![session_id, result, now],
+            )
+            .unwrap_or(0);
+        changed > 0
+    }
+
+    /// Mark a spawn run with a terminal status (timeout, revoked, error, interrupted).
+    pub fn fail_spawn_run(&self, session_id: &str, status: &str) -> bool {
+        let now = unix_now();
+        let conn = self.conn.lock();
+        let changed = conn
+            .execute(
+                "UPDATE spawn_runs SET status = ?2, completed_at = ?3
+                 WHERE id = ?1 AND status = 'running'",
+                params![session_id, status, now],
+            )
+            .unwrap_or(0);
+        changed > 0
+    }
+
+    /// Transition all stale running spawn_runs to 'interrupted' (broker restart recovery).
+    /// Returns the number of rows transitioned.
+    pub fn interrupt_stale_spawn_runs(&self) -> usize {
+        let now = unix_now();
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE spawn_runs SET status = 'interrupted', completed_at = ?1
+             WHERE status = 'running' AND expires_at < ?1",
+            params![now],
+        )
+        .unwrap_or(0)
+    }
+
+    /// Transition all running spawn_runs for ephemeral agents to 'interrupted'.
+    /// Called on broker restart to clean up orphaned sessions.
+    pub fn interrupt_all_ephemeral_spawn_runs(&self) -> usize {
+        let now = unix_now();
+        let conn = self.conn.lock();
+        // Transition agents table: ephemeral -> interrupted
+        let agents_updated = conn
+            .execute(
+                "UPDATE agents SET status = 'interrupted'
+                 WHERE status = 'ephemeral'",
+                [],
+            )
+            .unwrap_or(0);
+        // Transition spawn_runs: running -> interrupted
+        let runs_updated = conn
+            .execute(
+                "UPDATE spawn_runs SET status = 'interrupted', completed_at = ?1
+                 WHERE status = 'running'",
+                params![now],
+            )
+            .unwrap_or(0);
+        if agents_updated > 0 || runs_updated > 0 {
+            info!(
+                agents = agents_updated,
+                runs = runs_updated,
+                "Broker restart: interrupted orphaned ephemeral sessions"
+            );
+        }
+        runs_updated
+    }
+
+    /// Register an ephemeral agent in the agents table.
+    pub fn register_ephemeral_agent(
+        &self,
+        agent_id: &str,
+        parent_id: &str,
+        trust_level: u8,
+        role: &str,
+        session_id: &str,
+        expires_at: i64,
+    ) {
+        let now = unix_now();
+        let metadata = serde_json::json!({
+            "parent": parent_id,
+            "session_id": session_id,
+            "expires_at": expires_at,
+        })
+        .to_string();
+        let conn = self.conn.lock();
+        let _ = conn.execute(
+            "INSERT INTO agents (agent_id, role, trust_level, status, metadata, last_seen)
+             VALUES (?1, ?2, ?3, 'ephemeral', ?4, ?5)
+             ON CONFLICT(agent_id) DO UPDATE SET
+                role = ?2, trust_level = ?3, status = 'ephemeral', metadata = ?4, last_seen = ?5",
+            params![agent_id, role, trust_level, metadata, now],
+        );
+    }
+
     /// Check sequence integrity: seq must be strictly greater than the last
     /// seq for this sender-receiver pair. Shared by all insert paths.
     fn check_seq_integrity(
@@ -680,6 +836,19 @@ pub struct StateEntry {
     pub value: String,
     pub owner: String,
     pub updated_at: i64,
+}
+
+/// Status and result of a spawn run (Phase 3A).
+#[derive(Debug, Clone, Serialize)]
+pub struct SpawnRunInfo {
+    pub id: String,
+    pub parent_id: String,
+    pub child_id: String,
+    pub status: String,
+    pub result: Option<String>,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub completed_at: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1451,6 +1620,204 @@ pub async fn handle_ipc_state_set(
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ── Phase 3A: Ephemeral Identity Provisioning ───────────────────
+
+/// Request body for `POST /api/ipc/provision-ephemeral`.
+#[derive(Debug, Deserialize)]
+pub struct ProvisionEphemeralBody {
+    /// Trust level for the child (0–4). Must be >= parent's level.
+    #[serde(default)]
+    pub trust_level: Option<u8>,
+    /// Timeout in seconds for the spawn session (default: 300).
+    #[serde(default = "default_spawn_timeout")]
+    pub timeout: u32,
+    /// Optional workload profile name.
+    pub workload: Option<String>,
+}
+
+fn default_spawn_timeout() -> u32 {
+    300
+}
+
+/// Query params for `GET /api/ipc/spawn-status`.
+#[derive(Debug, Deserialize)]
+pub struct SpawnStatusQuery {
+    pub session_id: String,
+}
+
+/// POST /api/ipc/provision-ephemeral — provision an ephemeral child agent identity.
+///
+/// Parent must be L0-L3. Generates a runtime-only bearer token, registers the
+/// child in the IPC DB, and creates a `spawn_runs` row with status=running.
+pub async fn handle_ipc_provision_ephemeral(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ProvisionEphemeralBody>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let db = require_ipc_db(&state)?;
+    let meta = require_ipc_auth(&state, &headers)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
+    require_agent_active(db, &meta.agent_id)?;
+
+    // L4 agents cannot spawn children
+    if meta.trust_level >= 4 {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "L4 agents cannot spawn children",
+                "code": "trust_level_too_low"
+            })),
+        ));
+    }
+
+    // Trust propagation: child_level = max(parent_level, requested_level)
+    let requested_level = body.trust_level.unwrap_or(meta.trust_level);
+    let child_level = requested_level.max(meta.trust_level);
+
+    // Generate identifiers
+    let uuid_short = &uuid::Uuid::new_v4().to_string()[..8];
+    let agent_id = format!("eph-{}-{uuid_short}", meta.agent_id);
+    let session_id = uuid::Uuid::new_v4().to_string();
+    let role = body.workload.as_deref().unwrap_or("ephemeral");
+
+    // Calculate expiry
+    let timeout_secs = i64::from(body.timeout.clamp(10, 3600));
+    let expires_at = unix_now() + timeout_secs;
+
+    // Register ephemeral token in runtime-only PairingGuard
+    let child_metadata = TokenMetadata {
+        agent_id: agent_id.clone(),
+        trust_level: child_level,
+        role: role.to_string(),
+    };
+    let token = state.pairing.register_ephemeral_token(child_metadata);
+
+    // Register in IPC DB agents table
+    db.register_ephemeral_agent(
+        &agent_id,
+        &meta.agent_id,
+        child_level,
+        role,
+        &session_id,
+        expires_at,
+    );
+
+    // Create spawn_runs row
+    db.create_spawn_run(&session_id, &meta.agent_id, &agent_id, expires_at);
+
+    info!(
+        parent = meta.agent_id,
+        child = agent_id,
+        session = session_id,
+        trust_level = child_level,
+        timeout_secs = timeout_secs,
+        "Provisioned ephemeral agent"
+    );
+
+    if let Some(ref logger) = state.audit_logger {
+        let _ = logger.log(&AuditEvent::ipc(
+            AuditEventType::IpcAdminAction,
+            &meta.agent_id,
+            Some(&agent_id),
+            &format!(
+                "provision_ephemeral: session={session_id}, trust_level={child_level}, timeout={timeout_secs}s"
+            ),
+        ));
+    }
+
+    Ok(Json(serde_json::json!({
+        "agent_id": agent_id,
+        "token": token,
+        "session_id": session_id,
+        "trust_level": child_level,
+        "expires_at": expires_at,
+    })))
+}
+
+/// GET /api/ipc/spawn-status — poll the status of a spawn run.
+///
+/// Returns the current status and result (if completed) of a spawn session.
+/// Used by `agents_spawn(wait=true)` to poll for the child's result.
+pub async fn handle_ipc_spawn_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SpawnStatusQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let db = require_ipc_db(&state)?;
+    let meta = require_ipc_auth(&state, &headers)?;
+    require_agent_active(db, &meta.agent_id)?;
+
+    let run = db.get_spawn_run(&query.session_id).ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "Spawn run not found",
+                "code": "not_found"
+            })),
+        )
+    })?;
+
+    // Only the parent can check spawn status
+    if run.parent_id != meta.agent_id {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "Not the parent of this spawn run",
+                "code": "not_parent"
+            })),
+        ));
+    }
+
+    Ok(Json(serde_json::json!({
+        "session_id": run.id,
+        "status": run.status,
+        "result": run.result,
+        "child_id": run.child_id,
+        "created_at": run.created_at,
+        "expires_at": run.expires_at,
+        "completed_at": run.completed_at,
+    })))
+}
+
+/// Revoke an ephemeral agent: remove token, set status, update spawn_runs.
+///
+/// Called on result delivery, timeout, or manual revoke. Not an HTTP handler
+/// itself — used by the result delivery path and timeout logic.
+pub fn revoke_ephemeral_agent(
+    db: &IpcDb,
+    pairing: &crate::security::PairingGuard,
+    agent_id: &str,
+    session_id: &str,
+    status: &str,
+    audit_logger: Option<&crate::security::audit::AuditLogger>,
+) {
+    // Remove token from runtime state
+    let tokens_revoked = pairing.revoke_by_agent_id(agent_id);
+    // Set agent status in IPC DB
+    db.set_agent_status(agent_id, status);
+    // Block pending messages
+    db.block_pending_messages(agent_id, &format!("ephemeral_{status}"));
+    // Update spawn_runs
+    db.fail_spawn_run(session_id, status);
+
+    info!(
+        agent = agent_id,
+        session = session_id,
+        status = status,
+        tokens_revoked = tokens_revoked,
+        "Ephemeral agent revoked"
+    );
+
+    if let Some(logger) = audit_logger {
+        let _ = logger.log(&AuditEvent::ipc(
+            AuditEventType::IpcAdminAction,
+            "broker",
+            Some(agent_id),
+            &format!("ephemeral_{status}: session={session_id}, tokens_revoked={tokens_revoked}"),
+        ));
+    }
 }
 
 // ── IPC admin endpoint handlers ─────────────────────────────────
@@ -2910,5 +3277,149 @@ mod tests {
             GuardAction::Block,
             "sanitize must be treated as block"
         );
+    }
+
+    // ── Phase 3A: spawn_runs + ephemeral identity tests ─────────
+
+    #[test]
+    fn spawn_runs_create_and_get() {
+        let db = IpcDb::open_in_memory().unwrap();
+        db.create_spawn_run("sess-1", "opus", "eph-opus-abc123", 9_999_999_999);
+
+        let run = db.get_spawn_run("sess-1").unwrap();
+        assert_eq!(run.id, "sess-1");
+        assert_eq!(run.parent_id, "opus");
+        assert_eq!(run.child_id, "eph-opus-abc123");
+        assert_eq!(run.status, "running");
+        assert!(run.result.is_none());
+        assert!(run.completed_at.is_none());
+    }
+
+    #[test]
+    fn spawn_runs_complete() {
+        let db = IpcDb::open_in_memory().unwrap();
+        db.create_spawn_run("sess-2", "opus", "eph-opus-def456", 9_999_999_999);
+
+        let completed = db.complete_spawn_run("sess-2", "analysis results here");
+        assert!(completed);
+
+        let run = db.get_spawn_run("sess-2").unwrap();
+        assert_eq!(run.status, "completed");
+        assert_eq!(run.result.as_deref(), Some("analysis results here"));
+        assert!(run.completed_at.is_some());
+    }
+
+    #[test]
+    fn spawn_runs_complete_only_running() {
+        let db = IpcDb::open_in_memory().unwrap();
+        db.create_spawn_run("sess-3", "opus", "eph-opus-ghi789", 9_999_999_999);
+
+        // Complete once
+        assert!(db.complete_spawn_run("sess-3", "first result"));
+        // Second complete should fail (already completed)
+        assert!(!db.complete_spawn_run("sess-3", "second result"));
+
+        let run = db.get_spawn_run("sess-3").unwrap();
+        assert_eq!(run.result.as_deref(), Some("first result"));
+    }
+
+    #[test]
+    fn spawn_runs_fail_with_timeout() {
+        let db = IpcDb::open_in_memory().unwrap();
+        db.create_spawn_run("sess-4", "opus", "eph-opus-jkl012", 9_999_999_999);
+
+        let failed = db.fail_spawn_run("sess-4", "timeout");
+        assert!(failed);
+
+        let run = db.get_spawn_run("sess-4").unwrap();
+        assert_eq!(run.status, "timeout");
+        assert!(run.completed_at.is_some());
+    }
+
+    #[test]
+    fn spawn_runs_interrupt_stale() {
+        let db = IpcDb::open_in_memory().unwrap();
+        // Create a run that already expired
+        db.create_spawn_run("sess-stale", "opus", "eph-opus-stale", 1);
+
+        let interrupted = db.interrupt_stale_spawn_runs();
+        assert_eq!(interrupted, 1);
+
+        let run = db.get_spawn_run("sess-stale").unwrap();
+        assert_eq!(run.status, "interrupted");
+    }
+
+    #[test]
+    fn spawn_runs_get_nonexistent_returns_none() {
+        let db = IpcDb::open_in_memory().unwrap();
+        assert!(db.get_spawn_run("nonexistent").is_none());
+    }
+
+    #[test]
+    fn register_ephemeral_agent_creates_record() {
+        let db = IpcDb::open_in_memory().unwrap();
+        db.register_ephemeral_agent("eph-opus-abc", "opus", 3, "worker", "sess-1", 9_999_999_999);
+
+        assert!(db.agent_exists("eph-opus-abc"));
+        let agents = db.list_agents(86400);
+        let eph = agents
+            .iter()
+            .find(|a| a.agent_id == "eph-opus-abc")
+            .unwrap();
+        assert_eq!(eph.status, "ephemeral");
+        assert_eq!(eph.trust_level, Some(3));
+    }
+
+    #[test]
+    fn interrupt_all_ephemeral_spawn_runs_on_restart() {
+        let db = IpcDb::open_in_memory().unwrap();
+        db.register_ephemeral_agent("eph-opus-1", "opus", 3, "worker", "sess-r1", 9_999_999_999);
+        db.register_ephemeral_agent("eph-opus-2", "opus", 3, "worker", "sess-r2", 9_999_999_999);
+        db.create_spawn_run("sess-r1", "opus", "eph-opus-1", 9_999_999_999);
+        db.create_spawn_run("sess-r2", "opus", "eph-opus-2", 9_999_999_999);
+
+        let interrupted = db.interrupt_all_ephemeral_spawn_runs();
+        assert_eq!(interrupted, 2);
+
+        // Agents should be interrupted too
+        let agents = db.list_agents(86400);
+        for a in agents
+            .iter()
+            .filter(|a| a.agent_id.starts_with("eph-opus-"))
+        {
+            assert_eq!(a.status, "interrupted");
+        }
+
+        // Spawn runs should be interrupted
+        assert_eq!(db.get_spawn_run("sess-r1").unwrap().status, "interrupted");
+        assert_eq!(db.get_spawn_run("sess-r2").unwrap().status, "interrupted");
+    }
+
+    #[test]
+    fn register_ephemeral_token_works_for_auth() {
+        use crate::security::PairingGuard;
+
+        let guard = PairingGuard::new(true, &["zc_existing".into()]);
+        let meta = crate::config::TokenMetadata {
+            agent_id: "eph-opus-abc".into(),
+            trust_level: 3,
+            role: "worker".into(),
+        };
+
+        let token = guard.register_ephemeral_token(meta);
+
+        // Token should authenticate
+        let result = guard.authenticate(&token);
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.agent_id, "eph-opus-abc");
+        assert_eq!(result.trust_level, 3);
+
+        // Revoke by agent_id
+        let revoked = guard.revoke_by_agent_id("eph-opus-abc");
+        assert_eq!(revoked, 1);
+
+        // Token should no longer authenticate
+        assert!(guard.authenticate(&token).is_none());
     }
 }

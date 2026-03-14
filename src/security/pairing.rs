@@ -300,6 +300,21 @@ impl PairingGuard {
         hashes_to_remove.len()
     }
 
+    /// Register an ephemeral token in runtime-only state (not persisted to config).
+    ///
+    /// Used by Phase 3A `provision-ephemeral` to give child agents a bearer token
+    /// that works with `authenticate()` / `is_authenticated()` but is never written
+    /// to disk. On broker restart, these tokens are lost and children get 401.
+    ///
+    /// Returns the plaintext token (caller sends it to the child).
+    pub fn register_ephemeral_token(&self, metadata: TokenMetadata) -> String {
+        let token = generate_token();
+        let token_hash = hash_token(&token);
+        self.paired_tokens.lock().insert(token_hash.clone());
+        self.token_metadata.lock().insert(token_hash, metadata);
+        token
+    }
+
     /// Generate a new pairing code, even if already paired.
     ///
     /// This allows adding additional clients without restarting the gateway.
