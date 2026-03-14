@@ -318,6 +318,8 @@ pub struct AppState {
     pub audit_logger: Option<Arc<crate::security::AuditLogger>>,
     /// PromptGuard for IPC payload injection scanning
     pub ipc_prompt_guard: Option<crate::security::PromptGuard>,
+    /// LeakDetector for IPC credential leak scanning
+    pub ipc_leak_detector: Option<crate::security::LeakDetector>,
     /// IPC broker database (None when agents_ipc.enabled = false)
     pub ipc_db: Option<Arc<ipc::IpcDb>>,
     /// IPC per-agent send rate limiter (None when IPC is disabled)
@@ -678,6 +680,13 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         None
     };
 
+    // LeakDetector for IPC credential leak scanning
+    let ipc_leak_detector = if config.agents_ipc.enabled {
+        Some(crate::security::LeakDetector::with_sensitivity(0.7))
+    } else {
+        None
+    };
+
     let state = AppState {
         config: config_state,
         provider,
@@ -704,6 +713,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         shutdown_tx,
         audit_logger,
         ipc_prompt_guard,
+        ipc_leak_detector,
         ipc_db: None, // Initialized later when agents_ipc.enabled = true
         ipc_rate_limiter: if config.agents_ipc.enabled {
             Some(Arc::new(SlidingWindowRateLimiter::new(
@@ -1871,6 +1881,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,
+            ipc_leak_detector: None,
             ipc_db: None,
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
@@ -1928,6 +1939,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,
+            ipc_leak_detector: None,
             ipc_db: None,
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
@@ -2309,6 +2321,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,
+            ipc_leak_detector: None,
             ipc_db: None,
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
@@ -2380,6 +2393,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,
+            ipc_leak_detector: None,
             ipc_db: None,
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
@@ -2463,6 +2477,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,
+            ipc_leak_detector: None,
             ipc_db: None,
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
@@ -2518,6 +2533,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,
+            ipc_leak_detector: None,
             ipc_db: None,
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
@@ -2578,6 +2594,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,
+            ipc_leak_detector: None,
             ipc_db: None,
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
@@ -2643,6 +2660,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,
+            ipc_leak_detector: None,
             ipc_db: None,
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
@@ -2704,6 +2722,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,
+            ipc_leak_detector: None,
             ipc_db: None,
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
