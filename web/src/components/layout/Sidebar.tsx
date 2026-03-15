@@ -99,8 +99,11 @@ export default function Sidebar() {
     if (!ipcAvailable) return;
 
     const pollQuarantine = () => {
-      fetchMessages({ quarantine: true, dismissed: false, limit: 0 })
-        .then((msgs) => setQuarantineCount(msgs.length))
+      fetchMessages({ quarantine: true, dismissed: false, limit: 200 })
+        .then((msgs) => {
+          const pending = msgs.filter((m) => !m.promoted && !m.blocked).length;
+          setQuarantineCount(pending);
+        })
         .catch(() => {});
     };
 
