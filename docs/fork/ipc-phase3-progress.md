@@ -113,3 +113,24 @@ All findings from two rounds of code review have been addressed:
 ### Scope clarification
 
 Phase 3B uses **broker-bound public key registration** — the broker stores each agent's pubkey and verifies signatures directly. The delegation certificate primitives exist (`DelegationCertificate` in `identity.rs`) but are not integrated into the transport. Third-party verifiable delegation is deferred to a future phase if needed.
+
+## Phase 3.5: Human Control Plane — DONE
+
+| Step | Title | PR | Status |
+|------|-------|----|--------|
+| 0 | Backend admin read endpoints | #66 | Done |
+| 1 | Frontend types, API client, sidebar, routes | #67 | Done |
+| 2 | Shared IPC components | #68 | Done |
+| 3-4 | Fleet Overview + Agent Detail pages | #69 | Done |
+| 5-8 | Sessions, Spawns, Quarantine, Audit pages | #70 | Done |
+| 9 | Cross-links, quarantine badge, polish | #71 | Done |
+
+### What Phase 3.5 provides
+
+- **Fleet Overview**: agent table with trust/status/key badges, admin actions (revoke/quarantine/disable/downgrade)
+- **Agent Detail**: identity card, recent messages, active spawns, quarantine count
+- **Session Inspector**: filterable message timeline with expand-on-click
+- **Spawn Monitor**: lifecycle tracking with revoke action on running children
+- **Quarantine Review**: dedicated review queue with inspect/promote/dismiss workflow
+- **Audit Viewer**: event stream with filters, HMAC chain verification, JSON export
+- **Sidebar**: IPC section with quarantine pending count badge, localhost-only visibility

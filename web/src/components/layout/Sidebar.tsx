@@ -19,7 +19,7 @@ import {
   FileSearch,
 } from 'lucide-react';
 import { t } from '@/lib/i18n';
-import { checkIpcAccess } from '@/lib/ipc-api';
+import { checkIpcAccess, fetchMessages } from '@/lib/ipc-api';
 
 interface NavItem {
   to: string;
@@ -49,7 +49,7 @@ const ipcNavItems: NavItem[] = [
   { to: '/ipc/audit', icon: FileSearch, labelKey: 'nav.ipc_audit' },
 ];
 
-function NavLinkItem({ to, icon: Icon, labelKey, end, idx }: NavItem & { idx: number }) {
+function NavLinkItem({ to, icon: Icon, labelKey, end, idx, badge }: NavItem & { idx: number; badge?: number }) {
   return (
     <NavLink
       key={to}
@@ -72,7 +72,12 @@ function NavLinkItem({ to, icon: Icon, labelKey, end, idx }: NavItem & { idx: nu
         <>
           <Icon className={`h-5 w-5 flex-shrink-0 transition-colors duration-300 ${isActive ? 'text-[#0080ff]' : 'group-hover:text-[#0080ff80]'}`} />
           <span>{t(labelKey)}</span>
-          {isActive && (
+          {badge !== undefined && badge > 0 && (
+            <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-orange-500/20 text-orange-400 min-w-[20px] text-center">
+              {badge}
+            </span>
+          )}
+          {isActive && !badge && (
             <div className="ml-auto h-1.5 w-1.5 rounded-full bg-[#0080ff] glow-dot" />
           )}
         </>
@@ -83,10 +88,26 @@ function NavLinkItem({ to, icon: Icon, labelKey, end, idx }: NavItem & { idx: nu
 
 export default function Sidebar() {
   const [ipcAvailable, setIpcAvailable] = useState(false);
+  const [quarantineCount, setQuarantineCount] = useState(0);
 
   useEffect(() => {
     checkIpcAccess().then(setIpcAvailable);
   }, []);
+
+  // Poll quarantine pending count
+  useEffect(() => {
+    if (!ipcAvailable) return;
+
+    const pollQuarantine = () => {
+      fetchMessages({ quarantine: true, dismissed: false, limit: 0 })
+        .then((msgs) => setQuarantineCount(msgs.length))
+        .catch(() => {});
+    };
+
+    pollQuarantine();
+    const interval = setInterval(pollQuarantine, 30_000);
+    return () => clearInterval(interval);
+  }, [ipcAvailable]);
 
   return (
     <aside className="fixed top-0 left-0 h-screen w-60 flex flex-col" style={{ background: 'linear-gradient(180deg, #080818 0%, #050510 100%)' }}>
@@ -121,7 +142,12 @@ export default function Sidebar() {
               </div>
             </div>
             {ipcNavItems.map((item, idx) => (
-              <NavLinkItem key={item.to} {...item} idx={navItems.length + idx} />
+              <NavLinkItem
+                key={item.to}
+                {...item}
+                idx={navItems.length + idx}
+                badge={item.to === '/ipc/quarantine' ? quarantineCount : undefined}
+              />
             ))}
           </>
         )}

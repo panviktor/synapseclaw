@@ -172,7 +172,7 @@ function AuditRow({ event, expanded, onToggle }: { event: IpcAuditEvent; expande
         <td className="px-4 py-2 text-[#8892a8] max-w-md truncate">{detail}</td>
         <td className="px-4 py-2 text-center">
           {event.hmac ? (
-            <span className="text-emerald-400 text-xs" title={event.hmac}>&#x1f517;</span>
+            <span className="text-emerald-400 text-xs font-mono" title={event.hmac}>OK</span>
           ) : (
             <span className="text-[#334060] text-xs">-</span>
           )}
