@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import type { IpcMessage } from '@/types/ipc';
 import KindBadge from './KindBadge';
 import LaneDot from './LaneDot';
@@ -31,7 +32,11 @@ export default function MessageDetail({ message }: MessageDetailProps) {
       <div className="flex items-center gap-4 text-xs text-[#556080]">
         <span>ID: {message.id}</span>
         <span>seq: {message.seq}</span>
-        {message.session_id && <span>session: {message.session_id}</span>}
+        {message.session_id && (
+          <Link to={`/ipc/sessions?session_id=${encodeURIComponent(message.session_id)}`} className="text-[#0080ff] hover:underline">
+            session: {message.session_id}
+          </Link>
+        )}
         <span>priority: {message.priority}</span>
         <TimeAbsolute timestamp={message.created_at} />
       </div>
