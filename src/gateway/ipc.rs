@@ -1760,6 +1760,7 @@ pub async fn handle_ipc_provision_ephemeral(
 
     Ok(Json(serde_json::json!({
         "agent_id": agent_id,
+        "parent_id": meta.agent_id,
         "token": token,
         "session_id": session_id,
         "trust_level": child_level,
@@ -1801,9 +1802,25 @@ pub async fn handle_ipc_spawn_status(
         ));
     }
 
+    // Lazy timeout enforcement: if the run is still "running" but past
+    // its expiry, transition to "timeout" and revoke the child token.
+    let effective_status = if run.status == "running" && unix_now() > run.expires_at {
+        revoke_ephemeral_agent(
+            db,
+            &state.pairing,
+            &run.child_id,
+            &run.id,
+            "timeout",
+            state.audit_logger.as_ref().map(|l| l.as_ref()),
+        );
+        "timeout".to_string()
+    } else {
+        run.status
+    };
+
     Ok(Json(serde_json::json!({
         "session_id": run.id,
-        "status": run.status,
+        "status": effective_status,
         "result": run.result,
         "child_id": run.child_id,
         "created_at": run.created_at,

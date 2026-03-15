@@ -740,7 +740,18 @@ impl Tool for AgentsSpawnTool {
                 .await;
         }
 
-        // Legacy mode: fire-and-forget in-process cron job (wait is ignored)
+        // Legacy mode: fire-and-forget in-process cron job
+        if wait {
+            return Ok(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(
+                    "wait=true requires broker connection (agents_ipc.broker_token). \
+                     Without a broker, only fire-and-forget spawn is available."
+                        .into(),
+                ),
+            });
+        }
         self.spawn_legacy(prompt, name, model, child_level)
     }
 }
@@ -853,21 +864,30 @@ impl AgentsSpawnTool {
             });
         }
 
-        // 3. Validate workload profile if specified
-        if let Some(ref workload_name) = workload {
+        // 3. Validate and resolve workload profile if specified
+        let resolved_workload = if let Some(ref workload_name) = workload {
             if let Some(profile) = self.config.agents_ipc.workload_profiles.get(workload_name) {
-                if let Err(e) = crate::security::execution::apply_workload(&boundary, profile) {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(format!("Workload profile invalid: {e}")),
-                    });
+                match crate::security::execution::apply_workload(&boundary, profile) {
+                    Ok(config) => Some(config),
+                    Err(e) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(format!("Workload profile invalid: {e}")),
+                        });
+                    }
                 }
+            } else {
+                None // Unknown workload names are treated as label-only
             }
-            // Unknown workload names are allowed — treated as label-only
-        }
+        } else {
+            None
+        };
 
-        // 4. Build env overlay for the child subprocess
+        // 4. Extract parent_id from provision response
+        let parent_id = provision["parent_id"].as_str().unwrap_or("unknown");
+
+        // 5. Build env overlay for the child subprocess
         let mut env_overlay = std::collections::HashMap::new();
         env_overlay.insert(
             "ZEROCLAW_BROKER_URL".into(),
@@ -876,9 +896,23 @@ impl AgentsSpawnTool {
         env_overlay.insert("ZEROCLAW_BROKER_TOKEN".into(), child_token.to_string());
         env_overlay.insert("ZEROCLAW_AGENT_ID".into(), child_agent_id.to_string());
         env_overlay.insert("ZEROCLAW_SESSION_ID".into(), session_id.to_string());
+        env_overlay.insert("ZEROCLAW_REPLY_TO".into(), parent_id.to_string());
         env_overlay.insert("ZEROCLAW_TIMEOUT_SECS".into(), timeout.to_string());
 
-        // 5. Create one-shot subprocess cron job
+        // Pass resolved workload config to child via env
+        if let Some(ref wl) = resolved_workload {
+            if let Some(ref tools) = wl.allowed_tools {
+                env_overlay.insert("ZEROCLAW_ALLOWED_TOOLS".into(), tools.join(","));
+            }
+            if let Some(ref tpl) = wl.prompt_template {
+                env_overlay.insert("ZEROCLAW_PROMPT_TEMPLATE".into(), tpl.clone());
+            }
+            if let Some(tokens) = wl.max_output_tokens {
+                env_overlay.insert("ZEROCLAW_MAX_OUTPUT_TOKENS".into(), tokens.to_string());
+            }
+        }
+
+        // 6. Create one-shot subprocess cron job
         let run_at = chrono::Utc::now() + chrono::Duration::seconds(1);
         let schedule = crate::cron::Schedule::At { at: run_at };
 
@@ -887,13 +921,19 @@ impl AgentsSpawnTool {
             "[IPC spawned agent | trust_level={child_level} | session={session_id}]\n\n{prompt}"
         );
 
+        // Workload model overrides explicit model param
+        let effective_model = resolved_workload
+            .as_ref()
+            .and_then(|wl| wl.model.clone())
+            .or(model);
+
         let job = crate::cron::add_agent_job_full(
             &self.config,
             Some(job_name.clone()),
             schedule,
             &spawn_prompt,
             crate::cron::SessionTarget::Isolated,
-            model,
+            effective_model,
             None,
             true,
             crate::cron::ExecutionMode::Subprocess,
@@ -928,6 +968,20 @@ impl AgentsSpawnTool {
             tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
 
             if tokio::time::Instant::now() >= deadline {
+                // Attempt to revoke the timed-out child via broker
+                let _ = client
+                    .post(
+                        "/api/ipc/send",
+                        &json!({
+                            "to": child_agent_id,
+                            "kind": "text",
+                            "payload": "timeout: parent revoked your session",
+                        }),
+                    )
+                    .await;
+                // The broker-side timeout will handle cleanup via
+                // interrupt_stale_spawn_runs() or admin revoke.
+                // We signal the timeout to the parent here.
                 return Ok(ToolResult {
                     success: false,
                     output: serde_json::to_string_pretty(&json!({
