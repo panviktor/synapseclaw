@@ -5748,6 +5748,45 @@ impl Config {
             }
         }
 
+        // Phase 3A: Autonomy override for ephemeral agents.
+        // Parent passes the execution boundary's autonomy level via env.
+        // Child clamps its autonomy to at most this level (can only restrict,
+        // never elevate).
+        if let Ok(autonomy_str) = std::env::var("ZEROCLAW_AUTONOMY") {
+            use crate::security::AutonomyLevel;
+            let target = match autonomy_str.trim().to_ascii_lowercase().as_str() {
+                "read_only" | "readonly" => Some(AutonomyLevel::ReadOnly),
+                "supervised" => Some(AutonomyLevel::Supervised),
+                "full" => Some(AutonomyLevel::Full),
+                _ => {
+                    tracing::warn!(
+                        "Ignoring invalid ZEROCLAW_AUTONOMY={autonomy_str:?} \
+                         (valid: read_only|supervised|full)"
+                    );
+                    None
+                }
+            };
+            if let Some(target) = target {
+                // Clamp: only restrict, never elevate
+                let current = &self.autonomy.level;
+                let should_clamp = matches!(
+                    (current, &target),
+                    (
+                        AutonomyLevel::Full,
+                        AutonomyLevel::Supervised | AutonomyLevel::ReadOnly
+                    ) | (AutonomyLevel::Supervised, AutonomyLevel::ReadOnly)
+                );
+                if should_clamp {
+                    tracing::info!(
+                        from = ?self.autonomy.level,
+                        to = ?target,
+                        "IPC bootstrap: clamping autonomy level"
+                    );
+                    self.autonomy.level = target;
+                }
+            }
+        }
+
         if let Err(error) = self.proxy.validate() {
             tracing::warn!("Invalid proxy configuration ignored: {error}");
             self.proxy.enabled = false;

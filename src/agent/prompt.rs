@@ -89,7 +89,18 @@ impl PromptSection for EphemeralAgentSection {
         let agent_id = std::env::var("ZEROCLAW_AGENT_ID").unwrap_or_default();
         let reply_to = std::env::var("ZEROCLAW_REPLY_TO").unwrap_or_else(|_| "parent".into());
 
-        let mut prompt = String::from("## Ephemeral Agent Context\n\n");
+        let mut prompt = String::new();
+
+        // Workload prompt template (operator-defined preamble for this workload type)
+        if let Ok(template) = std::env::var("ZEROCLAW_PROMPT_TEMPLATE") {
+            let template = template.trim();
+            if !template.is_empty() {
+                prompt.push_str(template);
+                prompt.push_str("\n\n");
+            }
+        }
+
+        prompt.push_str("## Ephemeral Agent Context\n\n");
         write!(
             prompt,
             "You are an ephemeral agent (id: {agent_id}) spawned to handle a specific task.\n\
