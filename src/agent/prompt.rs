@@ -87,17 +87,19 @@ impl PromptSection for EphemeralAgentSection {
             _ => return Ok(String::new()),
         };
         let agent_id = std::env::var("ZEROCLAW_AGENT_ID").unwrap_or_default();
+        let reply_to = std::env::var("ZEROCLAW_REPLY_TO").unwrap_or_else(|_| "parent".into());
 
         let mut prompt = String::from("## Ephemeral Agent Context\n\n");
         write!(
             prompt,
             "You are an ephemeral agent (id: {agent_id}) spawned to handle a specific task.\n\
-             Session: {session_id}\n\n\
+             Session: {session_id}\n\
+             Parent: {reply_to}\n\n\
              When you have completed your task, use the `agents_reply` tool to send your \
-             result back to the parent agent. Include the session_id in your reply.\n\n\
+             result back to the parent agent.\n\n\
              Important:\n\
              - You are a disposable worker — focus on the task, produce a result, then reply.\n\
-             - Use `agents_reply` with `to` set to the parent and `session_id` = \"{session_id}\".\n\
+             - Use `agents_reply` with `to` = \"{reply_to}\" and `session_id` = \"{session_id}\".\n\
              - Your identity and token will be revoked after you reply or timeout.\n"
         )?;
 

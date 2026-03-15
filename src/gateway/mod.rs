@@ -713,7 +713,32 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         audit_logger,
         ipc_prompt_guard,
         ipc_leak_detector,
-        ipc_db: None, // Initialized later when agents_ipc.enabled = true
+        ipc_db: if config.agents_ipc.enabled {
+            let ipc_dir = config.workspace_dir.join("ipc");
+            if let Err(e) = std::fs::create_dir_all(&ipc_dir) {
+                tracing::warn!("Failed to create IPC directory: {e}");
+            }
+            match ipc::IpcDb::open(&ipc_dir.join("agents.db")) {
+                Ok(db) => {
+                    let db = Arc::new(db);
+                    // Broker restart recovery: interrupt orphaned ephemeral sessions
+                    let interrupted = db.interrupt_all_ephemeral_spawn_runs();
+                    if interrupted > 0 {
+                        tracing::info!(
+                            interrupted = interrupted,
+                            "IPC DB: interrupted orphaned ephemeral spawn runs on startup"
+                        );
+                    }
+                    Some(db)
+                }
+                Err(e) => {
+                    tracing::error!("Failed to open IPC database: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        },
         ipc_rate_limiter: if config.agents_ipc.enabled {
             Some(Arc::new(SlidingWindowRateLimiter::new(
                 config.agents_ipc.max_messages_per_hour,

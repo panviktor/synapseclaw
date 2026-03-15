@@ -227,22 +227,34 @@ async fn run_agent_job_subprocess(config: &Config, job: &CronJob) -> (bool, Stri
         },
     };
 
-    let mut cmd = Command::new(&binary);
-    cmd.arg("agent").arg("-m").arg(&prompt);
+    // Build std::process::Command first so sandbox can wrap it
+    let mut std_cmd = std::process::Command::new(&binary);
+    std_cmd.arg("agent").arg("-m").arg(&prompt);
 
     // Model override
     if let Some(ref model) = job.model {
-        cmd.arg("--model").arg(model);
+        std_cmd.arg("--model").arg(model);
     }
 
     // Working directory
-    cmd.current_dir(&config.workspace_dir);
+    std_cmd.current_dir(&config.workspace_dir);
 
     // Environment overlay (broker token, agent_id, session_id, etc.)
     for (key, value) in &job.env_overlay {
-        cmd.env(key, value);
+        std_cmd.env(key, value);
     }
 
+    // Apply sandbox wrapping (OS-level isolation)
+    let sandbox = crate::security::detect::create_sandbox(&config.security);
+    if let Err(e) = sandbox.wrap_command(&mut std_cmd) {
+        return (
+            false,
+            format!("sandbox wrap failed ({}): {e}", sandbox.name()),
+        );
+    }
+
+    // Convert to tokio Command for async execution
+    let mut cmd = Command::from(std_cmd);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
