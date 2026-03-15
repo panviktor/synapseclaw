@@ -10,6 +10,7 @@ import LaneDot from '@/components/ipc/LaneDot';
 import AgentLink from '@/components/ipc/AgentLink';
 import TimeAgo, { TimeAbsolute, TimeUntil } from '@/components/ipc/TimeAgo';
 import ConfirmDialog from '@/components/ipc/ConfirmDialog';
+import { redactPayload } from '@/components/ipc/redact';
 
 export default function AgentDetail() {
   const { agentId } = useParams<{ agentId: string }>();
@@ -137,7 +138,7 @@ export default function AgentDetail() {
                       </td>
                       <td className="px-4 py-2"><KindBadge kind={msg.kind} /></td>
                       <td className="px-4 py-2"><LaneDot lane={msg.lane} /></td>
-                      <td className="px-4 py-2 text-[#8892a8] max-w-xs truncate">{msg.payload.slice(0, 100)}</td>
+                      <td className="px-4 py-2 text-[#8892a8] max-w-xs truncate">{redactPayload(msg.payload, msg.kind)}</td>
                     </tr>
                   );
                 })}

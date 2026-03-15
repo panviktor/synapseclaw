@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { t } from '@/lib/i18n';
 import { fetchMessages } from '@/lib/ipc-api';
@@ -8,6 +8,7 @@ import LaneDot from '@/components/ipc/LaneDot';
 import AgentLink from '@/components/ipc/AgentLink';
 import { TimeAbsolute } from '@/components/ipc/TimeAgo';
 import MessageDetail from '@/components/ipc/MessageDetail';
+import { redactPayload } from '@/components/ipc/redact';
 
 const KINDS = ['', 'text', 'task', 'query', 'result'];
 const LANES = ['', 'normal', 'quarantine', 'blocked'];
@@ -48,6 +49,13 @@ export default function Sessions() {
       setLoading(false);
     }
   }, [agentId, sessionId, kind, lane]);
+
+  // Auto-load when arriving with query params (e.g. from cross-links)
+  useEffect(() => {
+    if (agentId || sessionId || kind || lane) {
+      doSearch(0);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const updateParam = (key: string, value: string) => {
     const params = new URLSearchParams(searchParams);
@@ -141,7 +149,7 @@ function MsgRow({ msg, expanded, onToggle }: { msg: IpcMessage; expanded: boolea
         <td className="px-4 py-2"><KindBadge kind={msg.kind} /></td>
         <td className="px-4 py-2 text-center"><LaneDot lane={msg.lane} /></td>
         <td className="px-4 py-2 font-mono text-xs text-[#556080]">{msg.seq}</td>
-        <td className="px-4 py-2 text-[#8892a8] max-w-xs truncate">{msg.payload.slice(0, 200)}</td>
+        <td className="px-4 py-2 text-[#8892a8] max-w-xs truncate">{redactPayload(msg.payload, msg.kind)}</td>
       </tr>
       {expanded && (
         <tr>

@@ -5,6 +5,7 @@ import KindBadge from './KindBadge';
 import LaneDot from './LaneDot';
 import AgentLink from './AgentLink';
 import { TimeAbsolute } from './TimeAgo';
+import { redactPayload } from './redact';
 
 interface MessageDetailProps {
   message: IpcMessage;
@@ -12,10 +13,6 @@ interface MessageDetailProps {
 
 export default function MessageDetail({ message }: MessageDetailProps) {
   const [showRaw, setShowRaw] = useState(false);
-
-  const payloadPreview = message.payload.length > 200
-    ? message.payload.slice(0, 200) + '...'
-    : message.payload;
 
   return (
     <div className="p-4 rounded-lg bg-[#0a0a18] border border-[#1a1a3e]/50 space-y-3">
@@ -56,7 +53,7 @@ export default function MessageDetail({ message }: MessageDetailProps) {
         )}
       </div>
 
-      {/* Payload */}
+      {/* Payload — redacted by default */}
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <span className="text-xs text-[#556080] uppercase tracking-wider">Payload</span>
@@ -64,11 +61,11 @@ export default function MessageDetail({ message }: MessageDetailProps) {
             onClick={() => setShowRaw(!showRaw)}
             className="text-xs text-[#0080ff] hover:text-[#0080ff]/80 transition-colors"
           >
-            {showRaw ? 'Redacted' : 'Raw'}
+            {showRaw ? 'Hide raw' : 'Show raw'}
           </button>
         </div>
         <pre className="text-sm text-[#8892a8] whitespace-pre-wrap break-all bg-[#050510] rounded p-3 max-h-64 overflow-auto">
-          {showRaw ? message.payload : payloadPreview}
+          {showRaw ? message.payload : redactPayload(message.payload, message.kind)}
         </pre>
       </div>
     </div>

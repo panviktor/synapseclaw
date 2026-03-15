@@ -7,6 +7,7 @@ import KindBadge from '@/components/ipc/KindBadge';
 import TimeAgo from '@/components/ipc/TimeAgo';
 import ConfirmDialog from '@/components/ipc/ConfirmDialog';
 import MessageDetail from '@/components/ipc/MessageDetail';
+import { redactPayload } from '@/components/ipc/redact';
 
 type PendingAction = { type: 'promote' | 'dismiss'; msg: IpcMessage };
 
@@ -88,47 +89,57 @@ export default function Quarantine() {
         <div className="glass-card p-12 text-center text-[#556080]">Quarantine queue is empty.</div>
       ) : (
         <div className="space-y-3">
-          {messages.map((msg) => (
-            <div key={msg.id} className="glass-card p-4 space-y-3">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-[#556080]">#{msg.id}</span>
-                  <AgentLink agentId={msg.from_agent} trustLevel={msg.from_trust_level} />
-                  <span className="text-[#556080]">→</span>
-                  <AgentLink agentId={msg.to_agent} showTrust={false} />
-                  <KindBadge kind={msg.kind} />
+          {messages.map((msg) => {
+            const isPending = !msg.promoted && !msg.blocked;
+            return (
+              <div key={msg.id} className={`glass-card p-4 space-y-3 ${!isPending ? 'opacity-60' : ''}`}>
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-[#556080]">#{msg.id}</span>
+                    <AgentLink agentId={msg.from_agent} trustLevel={msg.from_trust_level} />
+                    <span className="text-[#556080]">→</span>
+                    <AgentLink agentId={msg.to_agent} showTrust={false} />
+                    <KindBadge kind={msg.kind} />
+                    {msg.promoted && (
+                      <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">promoted</span>
+                    )}
+                  </div>
+                  <TimeAgo timestamp={msg.created_at} />
                 </div>
-                <TimeAgo timestamp={msg.created_at} />
-              </div>
 
-              {/* Redacted payload preview */}
-              <p className="text-sm text-[#8892a8] line-clamp-2">
-                {msg.payload.slice(0, 200)}{msg.payload.length > 200 ? '...' : ''}
-              </p>
+                {/* Redacted payload preview */}
+                <p className="text-sm text-[#8892a8] line-clamp-2">
+                  {redactPayload(msg.payload, msg.kind)}
+                </p>
 
-              {/* Actions */}
-              <div className="flex gap-2">
-                <button
-                  onClick={() => setInspectMsg(msg)}
-                  className="px-3 py-1.5 text-xs font-medium text-[#0080ff] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#0080ff10] transition-colors"
-                >
-                  Inspect
-                </button>
-                <button
-                  onClick={() => setPendingAction({ type: 'promote', msg })}
-                  className="px-3 py-1.5 text-xs font-medium text-emerald-400 rounded-lg border border-[#1a1a3e]/50 hover:bg-emerald-500/10 transition-colors"
-                >
-                  Promote
-                </button>
-                <button
-                  onClick={() => setPendingAction({ type: 'dismiss', msg })}
-                  className="px-3 py-1.5 text-xs font-medium text-[#556080] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors"
-                >
-                  Dismiss
-                </button>
+                {/* Actions — only for pending messages */}
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setInspectMsg(msg)}
+                    className="px-3 py-1.5 text-xs font-medium text-[#0080ff] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#0080ff10] transition-colors"
+                  >
+                    Inspect
+                  </button>
+                  {isPending && (
+                    <>
+                      <button
+                        onClick={() => setPendingAction({ type: 'promote', msg })}
+                        className="px-3 py-1.5 text-xs font-medium text-emerald-400 rounded-lg border border-[#1a1a3e]/50 hover:bg-emerald-500/10 transition-colors"
+                      >
+                        Promote
+                      </button>
+                      <button
+                        onClick={() => setPendingAction({ type: 'dismiss', msg })}
+                        className="px-3 py-1.5 text-xs font-medium text-[#556080] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors"
+                      >
+                        Dismiss
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
