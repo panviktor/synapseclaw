@@ -50,7 +50,7 @@ With Phase 3.5:
 
 The gateway already serves a React 19 + Vite + Tailwind SPA via `rust-embed`. 10 pages exist. Phase 3.5 adds a new "IPC" sidebar section with 6 pages. Same design system (glass-card, electric theme), same API patterns (`apiFetch`).
 
-**Access model**: Phase 3.5 IPC admin pages work **only when the browser connects to localhost** (or via SSH tunnel / reverse proxy to localhost). This matches the existing `/admin/ipc/*` security model where every handler calls `require_localhost(&peer)` before processing — there is **no bearer token check** on admin endpoints, only peer address validation.
+**Access model**: Phase 3.5 IPC admin pages work **only when the browser connects to localhost** (or via SSH tunnel to localhost). This matches the existing `/admin/ipc/*` security model where every handler calls `require_localhost(&peer)` before processing — there is **no bearer token check** on admin endpoints, only peer address validation.
 
 The frontend uses `apiFetch()` which sends the bearer token, but the backend admin handlers ignore it — they enforce localhost origin only. This is intentional: admin operations (revoke, quarantine, etc.) are too sensitive for bearer-only auth. A leaked gateway token should not grant admin access.
 
@@ -77,7 +77,7 @@ Quarantine messages are shown on a dedicated page with explicit promote/dismiss 
 
 **Why**: if quarantine is "just a filter on the inbox", operators will accidentally treat quarantined content as normal. The separate page + explicit promote action creates a deliberate friction point.
 
-**Consequence**: `GET /admin/ipc/quarantine` returns only quarantine-lane messages. Promote requires confirmation dialog. Dismissed messages are marked but retained for audit.
+**Consequence**: quarantine queue is served by `GET /admin/ipc/messages?quarantine=true&dismissed=false` — a filtered view of the messages endpoint, not a separate endpoint. Promote requires confirmation dialog. Dismissed messages are marked but retained for audit.
 
 ### AD-4: Trust level is always visible
 
@@ -443,7 +443,7 @@ Sees success toast                │
 
 **What**:
 - Add `IpcDb::list_messages_admin()` — paginated, filterable query:
-  - Params: agent_id, session_id, kind, quarantine (bool), dismissed (bool), limit, offset
+  - Params: agent_id, session_id, kind, quarantine (bool), dismissed (bool), lane (normal/quarantine/blocked), from_ts, to_ts, limit, offset
   - Does NOT set `read=1` or update `last_seen`
   - Returns messages with computed field: lane (normal/quarantine/blocked)
   - **Quarantine queue contract**: a message is in the quarantine lane when `from_trust_level >= 4`. Within quarantine:
@@ -453,7 +453,7 @@ Sees success toast                │
   - Filter `dismissed=false` returns pending + promoted (excluding dismissed). Default for Quarantine Review page.
   - Filter `dismissed=true` returns only dismissed items (for audit trail)
 - Add `IpcDb::list_spawn_runs_admin()` — paginated, filterable:
-  - Params: status, parent_id, limit, offset
+  - Params: status, parent_id, from_ts, to_ts, limit, offset
 - Add `IpcDb::agent_detail()` — single agent + recent messages + active spawn runs
 - Add `IpcDb::list_audit_events()` — read from audit log file, paginated:
   - Params: agent_id, event_type, from_ts, to_ts, search, limit, offset
