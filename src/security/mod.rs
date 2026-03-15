@@ -24,6 +24,7 @@ pub mod bubblewrap;
 pub mod detect;
 pub mod docker;
 pub mod execution;
+pub mod identity;
 
 // Prompt injection defense (contributed from RustyClaw, MIT licensed)
 pub mod domain_matcher;

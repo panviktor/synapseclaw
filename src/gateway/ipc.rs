@@ -161,6 +161,15 @@ impl IpcDb {
             conn.execute_batch("ALTER TABLE messages ADD COLUMN promoted INTEGER DEFAULT 0;")?;
         }
 
+        // Idempotent migration: add `public_key` column if missing (Phase 3B).
+        let has_pubkey: bool = conn
+            .prepare("PRAGMA table_info(agents)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .any(|name| name.as_deref() == Ok("public_key"));
+        if !has_pubkey {
+            conn.execute_batch("ALTER TABLE agents ADD COLUMN public_key TEXT;")?;
+        }
+
         Ok(())
     }
 
@@ -653,6 +662,32 @@ impl IpcDb {
                 role = ?2, trust_level = ?3, status = 'ephemeral', metadata = ?4, last_seen = ?5",
             params![agent_id, role, trust_level, metadata, now],
         );
+    }
+
+    // ── Phase 3B: Ed25519 Public Key Management ───────────────────
+
+    /// Register or update an agent's Ed25519 public key.
+    pub fn set_agent_public_key(&self, agent_id: &str, public_key_hex: &str) -> bool {
+        let conn = self.conn.lock();
+        let changed = conn
+            .execute(
+                "UPDATE agents SET public_key = ?2 WHERE agent_id = ?1",
+                params![agent_id, public_key_hex],
+            )
+            .unwrap_or(0);
+        changed > 0
+    }
+
+    /// Get an agent's registered Ed25519 public key.
+    pub fn get_agent_public_key(&self, agent_id: &str) -> Option<String> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT public_key FROM agents WHERE agent_id = ?1",
+            params![agent_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten()
     }
 
     /// Check sequence integrity: seq must be strictly greater than the last
@@ -1827,6 +1862,64 @@ pub async fn handle_ipc_spawn_status(
         "expires_at": run.expires_at,
         "completed_at": run.completed_at,
     })))
+}
+
+/// Request body for `POST /api/ipc/register-key`.
+#[derive(Debug, Deserialize)]
+pub struct RegisterKeyBody {
+    pub public_key: String, // hex-encoded Ed25519 public key
+}
+
+/// POST /api/ipc/register-key — register an agent's Ed25519 public key.
+///
+/// Each agent registers its public key with the broker. The broker stores
+/// it in the agents table for message signature verification (Step 8).
+/// Ephemeral agents call this on startup after generating their keypair.
+pub async fn handle_ipc_register_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<RegisterKeyBody>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let db = require_ipc_db(&state)?;
+    let meta = require_ipc_auth(&state, &headers)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
+    require_agent_active(db, &meta.agent_id)?;
+
+    // Validate hex encoding and key length (Ed25519 pubkey = 32 bytes = 64 hex chars)
+    let key_hex = body.public_key.trim();
+    if key_hex.len() != 64 || !key_hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "Invalid public key: expected 64 hex characters (32 bytes Ed25519)",
+                "code": "invalid_key"
+            })),
+        ));
+    }
+
+    let updated = db.set_agent_public_key(&meta.agent_id, key_hex);
+    if !updated {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": "Agent not found in registry",
+                "code": "agent_not_found"
+            })),
+        ));
+    }
+
+    info!(agent = meta.agent_id, "Ed25519 public key registered");
+
+    if let Some(ref logger) = state.audit_logger {
+        let _ = logger.log(&AuditEvent::ipc(
+            AuditEventType::IpcAdminAction,
+            &meta.agent_id,
+            None,
+            &format!("register_key: pubkey={}", &key_hex[..16]),
+        ));
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 /// Revoke an ephemeral agent: remove token, set status, update spawn_runs.
