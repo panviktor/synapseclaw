@@ -2965,6 +2965,34 @@ pub async fn run(
         tools_registry.extend(peripheral_tools);
     }
 
+    // ── Phase 3A: Ephemeral agent tool allowlist enforcement ─────
+    // When ZEROCLAW_ALLOWED_TOOLS is set, hard-filter the registry to only
+    // those tools. This is a security boundary — not just a hint.
+    if let Ok(allowed_str) = std::env::var("ZEROCLAW_ALLOWED_TOOLS") {
+        let allowed_str = allowed_str.trim();
+        if !allowed_str.is_empty() {
+            let allowed: std::collections::HashSet<&str> = allowed_str
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            let before = tools_registry.len();
+            tools_registry.retain(|tool| allowed.contains(tool.name()));
+            tracing::info!(
+                before = before,
+                after = tools_registry.len(),
+                allowed = %allowed_str,
+                "IPC enforcement: tool allowlist applied"
+            );
+            if tools_registry.is_empty() {
+                anyhow::bail!(
+                    "ZEROCLAW_ALLOWED_TOOLS={allowed_str} filtered out all tools — \
+                     child agent cannot function. Check workload profile configuration."
+                );
+            }
+        }
+    }
+
     // ── Wire MCP tools (non-fatal) — CLI path ────────────────────
     // NOTE: MCP tools are injected after built-in tool filtering
     // (filter_primary_agent_tools_or_fail / agent.allowed_tools / agent.denied_tools).

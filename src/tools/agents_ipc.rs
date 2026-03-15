@@ -899,6 +899,14 @@ impl AgentsSpawnTool {
         env_overlay.insert("ZEROCLAW_REPLY_TO".into(), parent_id.to_string());
         env_overlay.insert("ZEROCLAW_TIMEOUT_SECS".into(), timeout.to_string());
 
+        // Pass execution boundary autonomy to child
+        let autonomy_str = match boundary.autonomy {
+            crate::security::execution::BoundaryAutonomy::Full => "full",
+            crate::security::execution::BoundaryAutonomy::Supervised => "supervised",
+            crate::security::execution::BoundaryAutonomy::ReadOnly => "read_only",
+        };
+        env_overlay.insert("ZEROCLAW_AUTONOMY".into(), autonomy_str.into());
+
         // Pass resolved workload config to child via env
         if let Some(ref wl) = resolved_workload {
             if let Some(ref tools) = wl.allowed_tools {
@@ -907,9 +915,9 @@ impl AgentsSpawnTool {
             if let Some(ref tpl) = wl.prompt_template {
                 env_overlay.insert("ZEROCLAW_PROMPT_TEMPLATE".into(), tpl.clone());
             }
-            if let Some(tokens) = wl.max_output_tokens {
-                env_overlay.insert("ZEROCLAW_MAX_OUTPUT_TOKENS".into(), tokens.to_string());
-            }
+            // max_output_tokens: not yet consumed by child runtime — omit
+            // to avoid false sense of enforcement. Follow-up when provider
+            // contract supports per-request token limits.
         }
 
         // 6. Create one-shot subprocess cron job
