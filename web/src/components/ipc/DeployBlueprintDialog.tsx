@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FLEET_BLUEPRINTS, getPresetById, type FleetBlueprint, type BlueprintAgent } from '@/lib/ipc-presets';
 import { PROVIDERS, getProvidersByTier } from '@/lib/ipc-providers';
 import { CHANNELS } from '@/lib/ipc-channels';
@@ -156,8 +157,8 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
     setTimeout(() => setCopiedIdx(null), 2000);
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center pl-60">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
       <div className="relative w-full max-w-3xl max-h-[85vh] overflow-auto glass-card p-6 animate-fade-in-scale">
         <div className="flex justify-between items-center mb-6">
@@ -420,7 +421,8 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

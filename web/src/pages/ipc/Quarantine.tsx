@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { t } from '@/lib/i18n';
 import { fetchMessages, promoteMessage, dismissMessage } from '@/lib/ipc-api';
 import type { IpcMessage } from '@/types/ipc';
@@ -144,8 +145,8 @@ export default function Quarantine() {
       )}
 
       {/* Inspect modal */}
-      {inspectMsg && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center pl-60">
+      {inspectMsg && createPortal(
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setInspectMsg(null)} />
           <div className="relative w-full max-w-2xl max-h-[80vh] overflow-auto glass-card p-6 animate-fade-in-scale">
             <div className="flex justify-between items-center mb-4">
@@ -154,7 +155,8 @@ export default function Quarantine() {
             </div>
             <MessageDetail message={inspectMsg} />
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Confirm action */}
