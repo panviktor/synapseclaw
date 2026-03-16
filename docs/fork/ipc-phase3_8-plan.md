@@ -29,9 +29,10 @@ Broker becomes the single operator entrypoint. Browser connects only to broker's
 1. Broker dashboard with agent selector dropdown
 2. Broker proxies WS chat + session RPCs to selected agent's gateway
 3. Agent health/status aggregation on broker
-4. Agent registration via existing IPC pairing (no new auth model)
-5. Graceful handling of offline agents
-6. Minimal new CLI surface (reuses `daemon` + config)
+4. Broker-to-agent auth (dedicated proxy token, issued at pairing)
+5. Multi-instance service model (templated systemd/launchd units)
+6. Graceful handling of offline agents
+7. Agent auto-registration with periodic re-registration
 
 ### Non-goals
 
@@ -62,7 +63,7 @@ Broker becomes the single operator entrypoint. Browser connects only to broker's
 │  │  API, admin) │ │  messages)│ │  agent WS)   │ │
 │  └─────────────┘ └───────────┘ └──────────────┘ │
 │  ┌─────────────────────────────────────────────┐ │
-│  │ Agent Registry (live health + gateway URLs) │ │
+│  │ AgentRegistry (live health + gateway URLs)  │ │
 │  └─────────────────────────────────────────────┘ │
 └────────┬──────────────┬──────────────┬──────────┘
          │              │              │
@@ -80,77 +81,192 @@ Broker becomes the single operator entrypoint. Browser connects only to broker's
 
 ### Process count
 
-- **1 broker daemon** — runs gateway + IPC broker + chat proxy
+- **1 broker daemon** — runs gateway + IPC broker + chat proxy + agent registry
 - **N agent daemons** — each runs gateway + channels + agent loop
 - Total: N+1 OS processes
 - Operator connects to broker only (1 tunnel, 1 tab)
 
 ---
 
-## Broker Responsibilities
+## Multi-Instance Service Model
 
-1. **Dashboard host** — serves web UI with agent selector
-2. **Agent registry** — tracks which agents are alive, their gateway URLs, models, status
-3. **Chat proxy** — relays WS chat/session RPCs to selected agent's gateway
-4. **IPC broker** — existing Phase 1-3 IPC (messages, shared state, quarantine)
-5. **Fleet admin** — existing Phase 3.5-3.6 screens (fleet, spawns, quarantine, audit)
-6. **Health aggregation** — polls agent `/health` endpoints, shows combined status
+**Decision:** Current service layer uses fixed names (`zeroclaw.service`, `com.zeroclaw.daemon`). This is a blocker for N+1 processes. We need templated multi-instance units.
 
-### What broker does NOT do
+### Config directory layout
 
-- Does not run agent loops
-- Does not hold agent chat sessions (those stay on agent daemons)
-- Does not make LLM calls for agents
-- Does not merge or transform chat messages
-- Does not replace IPC — chat proxy is a separate parallel path
+```
+~/.zeroclaw/                        # broker (default)
+  config.toml
+  workspace/
+~/.zeroclaw/agents/opus/            # agent: opus
+  config.toml
+  workspace/
+~/.zeroclaw/agents/daily/           # agent: daily
+  config.toml
+  workspace/
+~/.zeroclaw/agents/code/            # agent: code
+  config.toml
+  workspace/
+```
+
+### CLI
+
+New `--instance <name>` flag on `daemon` and `service` commands:
+
+```bash
+# Broker (default instance, no flag needed)
+zeroclaw daemon
+zeroclaw service install
+
+# Agent instances
+zeroclaw daemon --instance opus
+zeroclaw service install --instance opus
+zeroclaw service install --instance daily
+zeroclaw service install --instance code
+```
+
+`--instance <name>` sets config dir to `~/.zeroclaw/agents/<name>/`.
+
+### systemd (Linux)
+
+Templated unit: `zeroclaw@.service`
+
+```ini
+[Unit]
+Description=ZeroClaw Agent (%i)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/zeroclaw daemon --instance %i
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Usage:
+```bash
+# Broker (default instance)
+systemctl --user enable --now zeroclaw.service
+
+# Agents
+systemctl --user enable --now zeroclaw@opus.service
+systemctl --user enable --now zeroclaw@daily.service
+systemctl --user enable --now zeroclaw@code.service
+```
+
+### launchd (macOS)
+
+Per-instance plist: `com.zeroclaw.<instance>.plist`
+
+```bash
+zeroclaw service install                    # → com.zeroclaw.daemon.plist
+zeroclaw service install --instance opus    # → com.zeroclaw.agent-opus.plist
+zeroclaw service install --instance daily   # → com.zeroclaw.agent-daily.plist
+```
+
+### Windows
+
+Per-instance scheduled task: `ZeroClaw Agent (<instance>)`
+
+```bash
+zeroclaw service install --instance opus    # → "ZeroClaw Agent (opus)" task
+```
 
 ---
 
-## Agent Responsibilities
+## Broker → Agent Auth Model
 
-1. **Own daemon** — runs its own gateway, channels, agent loop, scheduler
-2. **Own chat DB** — sessions and messages stay local (Phase 3.7)
-3. **Register with broker** — on startup, POST registration to broker
-4. **Heartbeat** — periodic health ping so broker knows agent is alive
-5. **Accept proxied WS** — broker connects to agent's `/ws/chat` and relays frames
+**Decision:** Dedicated proxy token. Not reuse of `broker_token` (which is agent→broker, not broker→agent).
 
-### Agent config addition
+### The problem with existing tokens
 
-```toml
-[agents_ipc]
-enabled = true
-broker_url = "http://127.0.0.1:42617"
-broker_token = "enc2:..."
+- `broker_token` in agent config = agent's credential to call broker API (agent→broker direction)
+- Broker has no credential to call agent gateway API (broker→agent direction)
+- ipc-quickstart.md: "broker itself does not need broker_url or broker_token"
 
-# NEW: expose gateway URL for broker proxy (auto-detected if not set)
-gateway_url = "http://127.0.0.1:42618"
+### Solution: Bidirectional pairing
+
+When agent pairs with broker (`POST /pair`), broker already stores the agent's token hash in `paired_tokens`. The **same token** that agent uses for IPC can be used by broker to call agent's gateway — but broker doesn't know the raw token (only the hash).
+
+**v1 approach:** During agent registration (`POST /api/ipc/register-gateway`), agent includes a **proxy_token** — a fresh bearer token that broker stores and uses for WS proxy connections to agent's gateway.
+
 ```
+Agent config:
+[agents_ipc]
+broker_url = "http://127.0.0.1:42617"
+broker_token = "enc2:..."        # agent→broker auth (existing)
+gateway_url = "http://127.0.0.1:42618"
+proxy_token = "enc2:..."         # broker→agent auth (NEW, auto-generated on first start)
+```
+
+Registration payload:
+```json
+POST /api/ipc/register-gateway
+Authorization: Bearer <broker_token>
+{
+  "gateway_url": "http://127.0.0.1:42618",
+  "proxy_token": "zc_proxy_<random>"
+}
+```
+
+Broker stores `proxy_token` in `AgentRegistry`. When proxying WS:
+```
+Broker → Agent WS: /ws/chat?token=<proxy_token>
+```
+
+Agent's gateway validates `proxy_token` via normal pairing check. Agent adds it to its own `paired_tokens` on first registration.
+
+### Auth flow summary
+
+```
+Browser ──(operator token)──> Broker ──(proxy_token)──> Agent
+         pairing with broker         stored from registration
+```
+
+Three distinct tokens, three distinct trust relationships. No ambiguity.
 
 ---
 
 ## Agent Registry Model
 
-Broker maintains a live registry (extends existing `NodeRegistry` or new `AgentRegistry`):
+**Decision:** New `AgentRegistry` struct, NOT reuse of `NodeRegistry`.
+
+Rationale: `NodeRegistry` (`nodes.rs`) is for ephemeral capability nodes connected via `/ws/nodes`. Different trust model, different lifecycle, different semantics. Mixing them would be dangerous.
+
+### AgentRegistry fields
 
 | Field | Type | Source |
 |-------|------|--------|
 | `agent_id` | String | From IPC TokenMetadata |
-| `gateway_url` | String | From agent registration |
+| `gateway_url` | String | From registration |
+| `proxy_token` | String | From registration (encrypted at rest) |
 | `trust_level` | u8 | From IPC TokenMetadata |
 | `role` | String | From IPC TokenMetadata |
-| `model` | String | From agent `/api/status` |
-| `status` | enum(online/offline/error) | From heartbeat |
-| `last_seen` | timestamp | Updated on heartbeat |
-| `uptime_seconds` | u64 | From agent `/api/status` |
-| `channels` | Vec\<String\> | From agent `/api/status` |
+| `model` | String | From agent `/api/status` poll |
+| `status` | enum(online/offline/error) | From health poll |
+| `last_seen` | i64 | Updated on health poll |
+| `uptime_seconds` | u64 | From agent `/api/status` poll |
+| `channels` | Vec\<String\> | From agent `/api/status` poll |
 
-### Registration flow
+### Storage
 
-1. Agent daemon starts → pairing with broker (existing flow)
-2. Agent POST `{gateway_url, model, channels}` to broker's new `/api/ipc/register-gateway` endpoint
-3. Broker stores in registry, starts polling agent `/health` every 30s
-4. If agent goes offline (3 missed health checks) → status = `offline`
-5. Agent restart → re-registers automatically
+- **Primary:** `IpcDb` table `agent_gateways` (persisted, survives broker restart)
+- **Enriched:** in-memory cache updated by health polls (model, status, uptime, channels)
+
+This means after broker restart, the registry seed comes from DB (gateway_url + proxy_token), and live metadata refreshes within one poll cycle (30s).
+
+### Registration & discovery flow
+
+1. Agent daemon starts → pairs with broker (existing flow, gets `broker_token`)
+2. Agent generates `proxy_token` if not yet in config (one-time, saved encrypted)
+3. Agent POSTs `{gateway_url, proxy_token}` to broker's `/api/ipc/register-gateway`
+4. Broker stores in `agent_gateways` table + in-memory `AgentRegistry`
+5. Broker polls agent `/health` every 30s; also fetches `/api/status` for metadata
+6. If agent unreachable for 3 consecutive polls → status = `offline`
+7. **Agent periodic re-registration:** every 5 minutes, agent re-POSTs registration (covers broker restart case — broker DB has seed, but if DB was lost, agent re-registers)
 
 ---
 
@@ -172,7 +288,7 @@ Browser                    Broker                      Agent
   │── WS /ws/chat ──────────>│                           │
   │   ?agent=opus            │                           │
   │                          │── WS /ws/chat ───────────>│
-  │                          │   (broker's own token)     │
+  │                          │   ?token=<proxy_token>     │
   │                          │                           │
   │── RPC sessions.list ────>│── RPC sessions.list ─────>│
   │<── rpc_response ─────────│<── rpc_response ──────────│
@@ -185,8 +301,8 @@ Browser                    Broker                      Agent
 
 Broker is a **transparent WS relay** for chat:
 - Browser opens WS to broker with `?agent=<agent_id>` param
-- Broker looks up agent's `gateway_url` in registry
-- Broker opens WS to agent's `/ws/chat` using broker's token
+- Broker looks up agent's `gateway_url` + `proxy_token` in registry
+- Broker opens WS to agent's `/ws/chat?token=<proxy_token>`
 - All frames are forwarded bidirectionally (no parsing, no transformation)
 - If agent disconnects, broker sends error frame to browser and closes
 
@@ -194,18 +310,18 @@ Broker is a **transparent WS relay** for chat:
 
 For `/api/status`, `/api/nodes` on a specific agent:
 - Browser calls broker `GET /api/agents/{agent_id}/status`
-- Broker proxies HTTP GET to agent's `{gateway_url}/api/status`
+- Broker proxies HTTP GET to agent's `{gateway_url}/api/status` with `Authorization: Bearer <proxy_token>`
 - Returns response to browser
 
 ---
 
-## Auth & Trust Model
+## Session Ownership Model
 
-- Browser authenticates with **broker** (existing pairing)
-- Broker authenticates with **agents** (existing IPC pairing / broker_token)
-- Browser never talks to agents directly
-- Agent's chat session ownership uses **broker's token prefix** (not browser's)
-- This means broker sees all sessions on all agents (by design — operator is admin)
+**v1 limitation (explicit):** All operator sessions on a given agent share one session namespace (keyed by broker's `proxy_token` hash prefix). This means:
+- Single-operator lab: perfectly fine, operator sees all their sessions
+- Multi-operator: all operators share one session namespace per agent
+
+This is acceptable for v1 (lab/family use). Future enhancement path: broker injects operator identity into a session namespace prefix, giving each operator isolated sessions.
 
 ---
 
@@ -213,10 +329,13 @@ For `/api/status`, `/api/nodes` on a specific agent:
 
 | Scenario | Behavior |
 |----------|----------|
-| Agent goes offline | Broker marks `offline` in registry. Selecting it shows "Agent offline" in chat. Sessions persist in agent's DB. |
-| Agent restarts | Agent re-registers. Broker reconnects proxy if browser had it selected. Sessions resume from DB. |
-| Broker restarts | Browser reconnects (existing WS reconnect). Agent registry rebuilds from next heartbeat cycle. No data loss — sessions are on agents. |
-| Browser refresh | Reconnects to broker WS. Agent selector restores from localStorage. Sessions loaded from agent via proxy. |
+| **Agent goes offline** | Broker health poll marks `offline` in registry. Browser shows "Agent offline" in selector. Sessions persist in agent's DB, resume when agent returns. |
+| **Agent restarts** | Agent re-registers (immediate POST + periodic 5min). Broker updates registry. If browser had it selected, proxy WS reconnects automatically. Sessions resume from agent's chat DB. |
+| **Broker restarts** | Registry seed loaded from `agent_gateways` DB table. Live metadata (status, model) refreshes within 30s poll. Agents re-register within 5min. Browser reconnects via existing WS auto-reconnect. No session data loss (sessions on agents). |
+| **Machine reboot** | systemd/launchd starts all enabled services. Broker starts first (lower port). Agents start, register with broker. Order doesn't matter — agents retry registration until broker is up. |
+| **One agent restart** | Other agents unaffected. Restarted agent re-registers. Browser can switch to working agents during downtime. |
+| **Config change** | Restart specific instance: `systemctl --user restart zeroclaw@opus`. No impact on other instances. |
+| **Browser refresh** | Reconnects to broker WS. Agent selector restores from localStorage. Sessions loaded from agent via proxy. |
 
 ---
 
@@ -241,43 +360,59 @@ For `/api/status`, `/api/nodes` on a specific agent:
 
 ## Implementation Steps
 
-### Step 1: Agent gateway registration endpoint
-- `POST /api/ipc/register-gateway` on broker — accepts `{gateway_url}` from authenticated agent
-- Store in `IpcDb` or separate in-memory `AgentRegistry`
-- Return OK
+### Step 1: Multi-instance service model
+- Add `--instance <name>` flag to `daemon` and `service` commands
+- Instance resolves config dir: `~/.zeroclaw/agents/<name>/`
+- Default (no flag) = `~/.zeroclaw/` (broker)
+- Templated systemd unit `zeroclaw@.service`
+- Per-instance launchd plist `com.zeroclaw.agent-<name>.plist`
+- Per-instance Windows task `ZeroClaw Agent (<name>)`
 
-### Step 2: Broker health polling
-- Broker polls each registered agent's `/health` every 30s
-- Also fetches `/api/status` for model/channels/uptime
-- Updates registry with status + metadata
+### Step 2: Proxy token generation + config
+- Add `proxy_token: Option<String>` to `[agents_ipc]` config
+- Auto-generate on first daemon start if not set (save encrypted to config)
+- Agent adds `proxy_token` to its own `paired_tokens` for gateway auth
 
-### Step 3: Broker `/api/agents` endpoint
-- `GET /api/agents` — returns list of registered agents with status, model, role
+### Step 3: Agent gateway registration endpoint
+- `POST /api/ipc/register-gateway` on broker
+- Accepts `{gateway_url, proxy_token}` from authenticated agent
+- Creates `agent_gateways` table in IpcDb (agent_id, gateway_url, proxy_token, registered_at)
+- Stores in in-memory `AgentRegistry`
+
+### Step 4: Agent auto-registration + periodic re-registration
+- Agent daemon: after IPC pairing, POST registration to broker
+- Re-register every 5 minutes (covers broker restart, DB loss)
+- Config: `gateway_url` auto-detected from `gateway.host:gateway.port` if not set
+
+### Step 5: Broker health polling + AgentRegistry
+- New `AgentRegistry` struct (not NodeRegistry)
+- Broker polls each registered agent's `/health` + `/api/status` every 30s
+- Updates registry with status, model, channels, uptime
+- 3 missed polls → status = `offline`
+
+### Step 6: Broker `/api/agents` endpoint
+- `GET /api/agents` — returns list of registered agents with live status
 - Used by browser for agent selector dropdown
 
-### Step 4: WS chat proxy on broker
+### Step 7: WS chat proxy on broker
 - New WS endpoint: `/ws/chat/proxy?agent=<agent_id>`
-- Broker looks up `gateway_url` from registry
-- Opens upstream WS to agent's `/ws/chat` with broker's token
+- Broker looks up `gateway_url` + `proxy_token` from AgentRegistry
+- Opens upstream WS to agent's `/ws/chat?token=<proxy_token>`
 - Bidirectional frame relay (transparent, no parsing)
 - Error handling: agent offline → error frame → close
 
-### Step 5: HTTP API proxy
-- `GET /api/agents/{agent_id}/status` → proxies to agent
+### Step 8: HTTP API proxy for per-agent calls
+- `GET /api/agents/{agent_id}/status` → proxies to agent with proxy_token
 - `GET /api/agents/{agent_id}/health` → proxies to agent
 - Generic pattern for future per-agent API calls
 
-### Step 6: Agent auto-registration on startup
-- Agent daemon: after IPC pairing succeeds, POST `gateway_url` to broker
-- Config: `gateway_url` in `[agents_ipc]` section (auto-detect from gateway bind if not set)
-
-### Step 7: Browser agent selector UI
+### Step 9: Browser agent selector UI
 - Dropdown in chat sidebar (above session list)
 - Fetches `/api/agents` from broker
 - On switch: close current proxy WS, open new one with `?agent=<id>`
 - Persist selected agent in localStorage
 
-### Step 8: Agent status display
+### Step 10: Agent status display in sidebar
 - Sidebar info panel (from 3.7b) shows selected agent's model, uptime, status
 - Fetched via proxy `/api/agents/{id}/status`
 
@@ -285,16 +420,38 @@ For `/api/status`, `/api/nodes` on a specific agent:
 
 ## Verification Checklist
 
+### Functional
+
 - [ ] Broker starts with `agents_ipc.enabled = true`
-- [ ] Agent registers `gateway_url` with broker on startup
-- [ ] Broker `/api/agents` returns list with status
-- [ ] Browser agent selector shows all agents
+- [ ] Agent registers `gateway_url` + `proxy_token` with broker on startup
+- [ ] Broker `/api/agents` returns list with live status
+- [ ] Browser agent selector shows all agents with status indicators
 - [ ] Selecting agent opens proxy WS, loads that agent's sessions
-- [ ] Chat works through proxy (send, receive, tool events, abort)
-- [ ] Agent going offline shows "offline" in selector
-- [ ] Agent restart → browser can resume chat through proxy
-- [ ] Broker restart → agents re-register, browser reconnects
+- [ ] Chat works through proxy (send, receive, tool events, abort, lifecycle events)
+- [ ] Agent going offline → selector shows "offline", error in chat
+- [ ] Agent restart → re-registers, proxy reconnects, sessions resume
+- [ ] Broker restart → registry rebuilds from DB seed + agent re-registration
 - [ ] One SSH tunnel to broker is sufficient for full operation
+
+### Service lifecycle (all platforms)
+
+- [ ] `zeroclaw service install` — installs broker service (default instance)
+- [ ] `zeroclaw service install --instance opus` — installs agent service
+- [ ] Multiple instances can run simultaneously on same machine
+- [ ] Machine reboot → all enabled services start automatically
+- [ ] Services start in any order (agents retry registration until broker is up)
+- [ ] Restart one agent → other agents and broker unaffected
+- [ ] Restart broker → agents re-register within 5min, no session loss
+- [ ] `systemctl --user status zeroclaw@opus` shows correct status (Linux)
+- [ ] `launchctl list | grep zeroclaw` shows all instances (macOS)
+
+### Auth
+
+- [ ] Browser authenticates with broker (operator pairing)
+- [ ] Broker authenticates with agent (proxy_token from registration)
+- [ ] proxy_token encrypted at rest in agent config
+- [ ] Agent without proxy_token auto-generates one on first start
+- [ ] Invalid proxy_token → WS proxy fails cleanly, error shown in browser
 
 ---
 
@@ -303,30 +460,42 @@ For `/api/status`, `/api/nodes` on a specific agent:
 | Risk | Mitigation |
 |------|-----------|
 | WS proxy adds latency | Transparent relay (no parsing), same-machine connections are <1ms |
-| Broker becomes SPOF | Agents continue running independently. Only dashboard access lost. |
-| Auth complexity (browser→broker→agent) | Reuse existing pairing. Broker uses its own token with agents. |
-| Session ownership confusion | Sessions use broker's token prefix on all agents. Operator is admin. |
-| Registry stale on broker restart | Agents re-register on next heartbeat. Short gap (30s max). |
-| N+1 process management | Existing `daemon` + systemd/launchd service model. No new commands needed. |
+| Broker becomes SPOF for dashboard | Agents continue running independently. Only dashboard access lost. Broker restarts fast. |
+| Three-layer auth complexity | Clear separation: operator→broker, broker→agent (proxy_token), agent→broker (broker_token). Each is a single bearer token. |
+| Session namespace collision (multi-operator) | v1 limitation: single namespace per agent. Documented. Future: operator identity in namespace prefix. |
+| Registry stale after broker restart | DB-persisted seed + agent 5min re-registration. Max gap: 5 min for full metadata refresh. |
+| N+1 process management | Templated systemd/launchd units. `service install --instance` handles creation. Standard OS tooling for lifecycle. |
+| Agent starts before broker | Agent retries registration with exponential backoff. No crash, no data loss. |
 
 ---
 
 ## CLI Surface
 
-No new subcommands needed:
-- Broker: `zeroclaw daemon` with `[agents_ipc] enabled = true`
-- Agents: `zeroclaw daemon` with `[agents_ipc] broker_url = ...`
-- Both use existing `service install` for systemd/launchd
+### New flag
 
-Configuration is the differentiator, not commands.
+`--instance <name>` on `daemon` and `service` subcommands:
+
+```bash
+zeroclaw daemon                          # broker (default, ~/.zeroclaw/)
+zeroclaw daemon --instance opus          # agent (~/.zeroclaw/agents/opus/)
+zeroclaw service install --instance opus # install agent as OS service
+zeroclaw service status --instance opus  # check agent service status
+```
+
+### No new top-level subcommands
+
+Configuration is the differentiator between broker and agent, not commands. Both run `zeroclaw daemon`.
 
 ---
 
 ## Decisions
 
 1. **Broker is transparent relay, not application proxy** — no message transformation, no session merging, no LLM calls on behalf of agents.
-2. **Sessions remain per-agent** — no cross-agent session model in v1.
+2. **Sessions remain per-agent** — no cross-agent session model in v1. Single session namespace per agent (v1 limitation).
 3. **One process per agent** — no multi-agent-in-one-process model.
-4. **Registration via IPC pairing** — no new auth mechanism.
-5. **WS proxy, not HTTP long-poll** — preserves streaming, tool events, lifecycle events.
-6. **Agent selector in sidebar** — not a separate page, integrated into chat flow.
+4. **Dedicated proxy_token for broker→agent auth** — not reuse of broker_token (wrong direction). Generated by agent, stored by broker.
+5. **New AgentRegistry, not NodeRegistry** — different trust, lifecycle, semantics.
+6. **DB-persisted registry + periodic re-registration** — covers broker restart without manual repair.
+7. **Templated multi-instance service units** — `zeroclaw@.service` on systemd, per-instance plists on launchd.
+8. **WS proxy, not HTTP long-poll** — preserves streaming, tool events, lifecycle events.
+9. **Agent selector in sidebar** — not a separate page, integrated into chat flow.
