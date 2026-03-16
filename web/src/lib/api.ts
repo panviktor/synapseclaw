@@ -120,6 +120,17 @@ export function getHealth(): Promise<HealthSnapshot> {
 }
 
 // ---------------------------------------------------------------------------
+// Summary Model
+// ---------------------------------------------------------------------------
+
+export function putSummaryModel(model: string | null): Promise<{ ok: boolean; summary_model: string | null }> {
+  return apiFetch('/api/summary-model', {
+    method: 'PUT',
+    body: JSON.stringify({ model }),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
 

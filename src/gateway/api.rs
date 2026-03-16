@@ -4,6 +4,7 @@
 
 use super::AppState;
 use axum::{
+    body::Bytes,
     extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Json},
@@ -94,6 +95,7 @@ pub async fn handle_api_status(
     let body = serde_json::json!({
         "provider": config.default_provider,
         "model": state.model,
+        "summary_model": state.summary_model,
         "temperature": state.temperature,
         "uptime_seconds": health.uptime_seconds,
         "gateway_port": config.gateway.port,
@@ -105,6 +107,39 @@ pub async fn handle_api_status(
     });
 
     Json(body).into_response()
+}
+
+/// PUT /api/summary-model — switch the summary model on the fly
+pub async fn handle_api_summary_model_put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let payload: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => {
+            return (StatusCode::BAD_REQUEST, "invalid JSON").into_response();
+        }
+    };
+
+    let model = payload["model"].as_str().map(String::from);
+
+    // Update AppState (summary_model is behind Arc so we need interior mutability)
+    // Since AppState.summary_model is not behind a lock, we store it in config
+    {
+        let mut config = state.config.lock();
+        config.summary_model = model.clone();
+    }
+
+    Json(serde_json::json!({
+        "ok": true,
+        "summary_model": model,
+    }))
+    .into_response()
 }
 
 /// GET /api/config — current config (api_key masked)

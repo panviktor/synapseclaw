@@ -1,6 +1,7 @@
 export interface StatusResponse {
   provider: string | null;
   model: string;
+  summary_model: string | null;
   temperature: number;
   uptime_seconds: number;
   gateway_port: number;
