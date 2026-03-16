@@ -128,6 +128,10 @@ export interface WsMessage {
   id?: string;
   result?: any;
   error?: string;
+  // Server-push event fields
+  session_key?: string;
+  run_id?: string;
+  tool_name?: string;
 }
 
 export interface ChatSessionInfo {
