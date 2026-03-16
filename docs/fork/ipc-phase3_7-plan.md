@@ -1,6 +1,6 @@
-# IPC Phase 3.7: Chat Sessions & Persistence
+# IPC Phase 3.7: Chat Session Continuity
 
-Phase 3.6: agent provisioning | **Phase 3.7: chat sessions** | Phase 4: federated execution
+Phase 3.6: agent provisioning | **Phase 3.7: chat session continuity** | Phase 4: federated execution
 
 ---
 
@@ -11,6 +11,8 @@ Three promises to the operator:
 1. **Chat survives navigation** — switch between tabs and come back. Your conversation is still there.
 2. **Multiple sessions** — start a new chat without losing the old one. Switch between sessions in a sidebar.
 3. **Session management** — list sessions, rename them, delete old ones, see token usage per session.
+
+**Honest scope**: this is **session continuity across navigation and WS reconnects**, not durable persistence. Sessions live in server memory and survive tab switches, page refreshes (while daemon runs), and WS drops. They do **not** survive daemon restarts. Durable disk-backed persistence (via `SessionStore` or SQLite) is deferred to Phase 3.7b.
 
 ---
 
@@ -54,12 +56,11 @@ In openclaw's UI:
 
 ### What's missing
 
-- No `GET /api/chat/history` — can't load history after reconnect
-- No `GET /api/chat/sessions` — can't list/switch sessions
-- No `POST /api/chat/sessions/new` — can't create new session
+- No WS RPC layer — can't request history or session operations over the existing WS
 - WS agent dies on disconnect — history lost
 - No session sidebar in web UI
 - No session switching
+- No session concept at all — one conversation per WS connection
 
 ---
 
@@ -160,6 +161,18 @@ For web chat sessions, the key is `web:<first-8-chars-of-token-sha256>:<session_
 
 Default session: `web:<hash>:default`. New sessions: `web:<hash>:<uuid-short>`.
 
+**Key format is intentionally narrow for v1.** openclaw uses `agent:<agentId>:<channel>:<sender>` — a universal routable key that spans web, channels, cron, and subagents. Our `web:<hash>:<id>` is simpler but web-only. If we later unify web chat, channel sessions, and IPC conversations into a common session model, this key format will need migration. This is accepted for v1 — universal session identity is Phase 4 scope.
+
+### AD-6: SessionStore is not used in v1 (intentionally)
+
+The upstream `session_store.rs` provides disk-backed session persistence via SQLite. Phase 3.7 does **not** use it for three reasons:
+
+1. **SessionStore is channel-oriented** — it stores `ChannelMessage` structs with channel/sender metadata. Web chat uses `Agent` with `ConversationMessage` (role/content). Bridging these requires adapter code that adds complexity without immediate value.
+2. **In-memory is sufficient for v1 scope** — the goal is navigation/reconnect continuity, not surviving daemon restarts. AppState HashMap delivers this with zero dependencies.
+3. **Incremental path is clearer** — v1 proves the WS RPC protocol and session sidebar UX. Phase 3.7b adds SessionStore-backed durable persistence as a standalone step, without conflating transport and storage concerns.
+
+When 3.7b happens, the migration is: on session create, also write to SessionStore. On agent startup, hydrate AppState from SessionStore. WS RPC layer stays unchanged.
+
 ### AD-4: Frontend uses session sidebar like openclaw
 
 The chat page gets a collapsible sidebar with:
@@ -168,15 +181,18 @@ The chat page gets a collapsible sidebar with:
 - Click to switch
 - Right-click / menu for rename, delete
 
-Active session highlighted. Session switch = new `GET /api/chat/history` call.
+Active session highlighted. Session switch = `ws.rpc("chat.history", { session: newKey })`.
 
-### AD-5: History loads on mount, WS for live messages
+### AD-5: History loads on mount via WS RPC
 
 On page mount:
-1. Fetch `GET /api/chat/sessions` → populate sidebar
-2. Fetch `GET /api/chat/history?session=<active>` → populate messages
-3. Open WS → new messages stream in
-4. On WS reconnect after navigation → steps 1-3 again (agent still alive on server)
+1. Open WS connection (or reuse existing)
+2. `ws.rpc("sessions.list")` → populate sidebar
+3. `ws.rpc("chat.history", { session: activeKey, limit: 50 })` → populate messages
+4. Streaming messages (chunks, tool_call, done) arrive as fire-and-forget WS messages
+5. On WS reconnect after navigation → steps 2-3 again (agent still alive on server)
+
+No REST endpoints for chat/session operations. Everything goes through WS RPC.
 
 ---
 
@@ -212,10 +228,10 @@ Session sidebar:
 
 ### Session management
 
-- **New session**: click "+ New" → creates session on server → switches to empty chat
-- **Switch**: click session in sidebar → loads history from server → shows messages
-- **Rename**: pencil icon → inline edit → `POST /api/chat/sessions/:key/rename`
-- **Delete**: trash icon → confirm dialog → `DELETE /api/chat/sessions/:key`
+- **New session**: click "+ New" → `ws.rpc("sessions.new")` → switches to empty chat
+- **Switch**: click session in sidebar → `ws.rpc("chat.history", { session })` → shows messages
+- **Rename**: pencil icon → inline edit → `ws.rpc("sessions.rename", { key, label })`
+- **Delete**: trash icon → confirm dialog → `ws.rpc("sessions.delete", { key })`
 
 ---
 
@@ -417,14 +433,14 @@ web/src/
 
 ## v1 vs future
 
-| Feature | v1 (this phase) | Future |
-|---------|----------------|--------|
-| Session persistence | In-memory (survives navigation, not restart) | SQLite/DB persistence across restarts |
-| Multi-device | Sessions per token hash | Shared sessions across devices |
-| Session export | — | Export as markdown/JSON |
-| Session search | — | Full-text search across sessions |
-| Branching | — | Fork a session at any point |
-| Session sharing | — | Share session link with another user |
+| Feature | v1 (this phase) | Phase 3.7b | Phase 4 |
+|---------|----------------|-----------|---------|
+| Session continuity | In-memory (survives navigation, not restart) | SessionStore disk-backed (survives restart) | — |
+| Session key format | `web:<hash>:<id>` (web-only) | Same | Universal `agent:<id>:<channel>:<sender>` |
+| Multi-device | Sessions per token hash | Same | Shared sessions across devices |
+| Session export | — | Export as markdown/JSON | — |
+| Session search | — | — | Full-text search |
+| Branching | — | — | Fork a session at any point |
 
 ---
 
