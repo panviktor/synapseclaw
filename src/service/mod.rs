@@ -5,8 +5,32 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
-const SERVICE_LABEL: &str = "com.zeroclaw.daemon";
-const WINDOWS_TASK_NAME: &str = "ZeroClaw Daemon";
+const SERVICE_LABEL_DEFAULT: &str = "com.zeroclaw.daemon";
+const WINDOWS_TASK_DEFAULT: &str = "ZeroClaw Daemon";
+
+/// Derive macOS service label from instance name.
+fn service_label(instance: Option<&str>) -> String {
+    match instance {
+        None => SERVICE_LABEL_DEFAULT.to_string(),
+        Some(name) => format!("com.zeroclaw.agent-{name}"),
+    }
+}
+
+/// Derive Windows task name from instance name.
+fn windows_task(instance: Option<&str>) -> String {
+    match instance {
+        None => WINDOWS_TASK_DEFAULT.to_string(),
+        Some(name) => format!("ZeroClaw Agent ({name})"),
+    }
+}
+
+/// Derive systemd unit name from instance name.
+fn systemd_unit(instance: Option<&str>) -> String {
+    match instance {
+        None => "zeroclaw.service".to_string(),
+        Some(name) => format!("zeroclaw@{name}.service"),
+    }
+}
 
 /// Supported init systems for service management
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -85,51 +109,50 @@ fn detect_init_system() -> Result<InitSystem> {
     );
 }
 
-fn windows_task_name() -> &'static str {
-    WINDOWS_TASK_NAME
-}
-
 pub fn handle_command(
     command: &crate::ServiceCommands,
     config: &Config,
     init_system: InitSystem,
+    instance: Option<&str>,
 ) -> Result<()> {
     match command {
-        crate::ServiceCommands::Install => install(config, init_system),
-        crate::ServiceCommands::Start => start(config, init_system),
-        crate::ServiceCommands::Stop => stop(config, init_system),
-        crate::ServiceCommands::Restart => restart(config, init_system),
-        crate::ServiceCommands::Status => status(config, init_system),
-        crate::ServiceCommands::Uninstall => uninstall(config, init_system),
+        crate::ServiceCommands::Install => install(config, init_system, instance),
+        crate::ServiceCommands::Start => start(config, init_system, instance),
+        crate::ServiceCommands::Stop => stop(config, init_system, instance),
+        crate::ServiceCommands::Restart => restart(config, init_system, instance),
+        crate::ServiceCommands::Status => status(config, init_system, instance),
+        crate::ServiceCommands::Uninstall => uninstall(config, init_system, instance),
     }
 }
 
-fn install(config: &Config, init_system: InitSystem) -> Result<()> {
+fn install(config: &Config, init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     if cfg!(target_os = "macos") {
-        install_macos(config)
+        install_macos(config, instance)
     } else if cfg!(target_os = "linux") {
         let resolved = init_system.resolve()?;
-        install_linux(config, resolved)
+        install_linux(config, resolved, instance)
     } else if cfg!(target_os = "windows") {
-        install_windows(config)
+        install_windows(config, instance)
     } else {
         anyhow::bail!("Service management is supported on macOS and Linux only");
     }
 }
 
-fn start(config: &Config, init_system: InitSystem) -> Result<()> {
+fn start(config: &Config, init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     if cfg!(target_os = "macos") {
-        let plist = macos_service_file()?;
+        let label = service_label(instance);
+        let plist = macos_service_file(instance)?;
         run_checked(Command::new("launchctl").arg("load").arg("-w").arg(&plist))?;
-        run_checked(Command::new("launchctl").arg("start").arg(SERVICE_LABEL))?;
+        run_checked(Command::new("launchctl").arg("start").arg(&label))?;
         println!("✅ Service started");
         Ok(())
     } else if cfg!(target_os = "linux") {
         let resolved = init_system.resolve()?;
-        start_linux(resolved)
+        start_linux(resolved, instance)
     } else if cfg!(target_os = "windows") {
         let _ = config;
-        run_checked(Command::new("schtasks").args(["/Run", "/TN", windows_task_name()]))?;
+        let task = windows_task(instance);
+        run_checked(Command::new("schtasks").args(["/Run", "/TN", &task]))?;
         println!("✅ Service started");
         Ok(())
     } else {
@@ -138,13 +161,17 @@ fn start(config: &Config, init_system: InitSystem) -> Result<()> {
     }
 }
 
-fn start_linux(init_system: InitSystem) -> Result<()> {
+fn start_linux(init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     match init_system {
         InitSystem::Systemd => {
+            let unit = systemd_unit(instance);
             run_checked(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
-            run_checked(Command::new("systemctl").args(["--user", "start", "zeroclaw.service"]))?;
+            run_checked(Command::new("systemctl").args(["--user", "start", &unit]))?;
         }
         InitSystem::Openrc => {
+            if instance.is_some() {
+                bail!("OpenRC does not support multi-instance. Use systemd or manage manually.");
+            }
             run_checked(Command::new("rc-service").args(["zeroclaw", "start"]))?;
         }
         InitSystem::Auto => unreachable!("Auto should be resolved before this point"),
@@ -153,10 +180,11 @@ fn start_linux(init_system: InitSystem) -> Result<()> {
     Ok(())
 }
 
-fn stop(config: &Config, init_system: InitSystem) -> Result<()> {
+fn stop(config: &Config, init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     if cfg!(target_os = "macos") {
-        let plist = macos_service_file()?;
-        let _ = run_checked(Command::new("launchctl").arg("stop").arg(SERVICE_LABEL));
+        let label = service_label(instance);
+        let plist = macos_service_file(instance)?;
+        let _ = run_checked(Command::new("launchctl").arg("stop").arg(&label));
         let _ = run_checked(
             Command::new("launchctl")
                 .arg("unload")
@@ -167,11 +195,11 @@ fn stop(config: &Config, init_system: InitSystem) -> Result<()> {
         Ok(())
     } else if cfg!(target_os = "linux") {
         let resolved = init_system.resolve()?;
-        stop_linux(resolved)
+        stop_linux(resolved, instance)
     } else if cfg!(target_os = "windows") {
         let _ = config;
-        let task_name = windows_task_name();
-        let _ = run_checked(Command::new("schtasks").args(["/End", "/TN", task_name]));
+        let task = windows_task(instance);
+        let _ = run_checked(Command::new("schtasks").args(["/End", "/TN", &task]));
         println!("✅ Service stopped");
         Ok(())
     } else {
@@ -180,13 +208,16 @@ fn stop(config: &Config, init_system: InitSystem) -> Result<()> {
     }
 }
 
-fn stop_linux(init_system: InitSystem) -> Result<()> {
+fn stop_linux(init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     match init_system {
         InitSystem::Systemd => {
-            let _ =
-                run_checked(Command::new("systemctl").args(["--user", "stop", "zeroclaw.service"]));
+            let unit = systemd_unit(instance);
+            let _ = run_checked(Command::new("systemctl").args(["--user", "stop", &unit]));
         }
         InitSystem::Openrc => {
+            if instance.is_some() {
+                bail!("OpenRC does not support multi-instance. Use systemd or manage manually.");
+            }
             let _ = run_checked(Command::new("rc-service").args(["zeroclaw", "stop"]));
         }
         InitSystem::Auto => unreachable!("Auto should be resolved before this point"),
@@ -195,22 +226,22 @@ fn stop_linux(init_system: InitSystem) -> Result<()> {
     Ok(())
 }
 
-fn restart(config: &Config, init_system: InitSystem) -> Result<()> {
+fn restart(config: &Config, init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     if cfg!(target_os = "macos") {
-        stop(config, init_system)?;
-        start(config, init_system)?;
+        stop(config, init_system, instance)?;
+        start(config, init_system, instance)?;
         println!("✅ Service restarted");
         return Ok(());
     }
 
     if cfg!(target_os = "linux") {
         let resolved = init_system.resolve()?;
-        return restart_linux(resolved);
+        return restart_linux(resolved, instance);
     }
 
     if cfg!(target_os = "windows") {
-        stop(config, init_system)?;
-        start(config, init_system)?;
+        stop(config, init_system, instance)?;
+        start(config, init_system, instance)?;
         println!("✅ Service restarted");
         return Ok(());
     }
@@ -218,13 +249,17 @@ fn restart(config: &Config, init_system: InitSystem) -> Result<()> {
     anyhow::bail!("Service management is supported on macOS and Linux only")
 }
 
-fn restart_linux(init_system: InitSystem) -> Result<()> {
+fn restart_linux(init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     match init_system {
         InitSystem::Systemd => {
+            let unit = systemd_unit(instance);
             run_checked(Command::new("systemctl").args(["--user", "daemon-reload"]))?;
-            run_checked(Command::new("systemctl").args(["--user", "restart", "zeroclaw.service"]))?;
+            run_checked(Command::new("systemctl").args(["--user", "restart", &unit]))?;
         }
         InitSystem::Openrc => {
+            if instance.is_some() {
+                bail!("OpenRC does not support multi-instance. Use systemd or manage manually.");
+            }
             run_checked(Command::new("rc-service").args(["zeroclaw", "restart"]))?;
         }
         InitSystem::Auto => unreachable!("Auto should be resolved before this point"),
@@ -233,10 +268,11 @@ fn restart_linux(init_system: InitSystem) -> Result<()> {
     Ok(())
 }
 
-fn status(config: &Config, init_system: InitSystem) -> Result<()> {
+fn status(config: &Config, init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     if cfg!(target_os = "macos") {
+        let label = service_label(instance);
         let out = run_capture(Command::new("launchctl").arg("list"))?;
-        let running = out.lines().any(|line| line.contains(SERVICE_LABEL));
+        let running = out.lines().any(|line| line.contains(&label));
         println!(
             "Service: {}",
             if running {
@@ -245,20 +281,20 @@ fn status(config: &Config, init_system: InitSystem) -> Result<()> {
                 "❌ not loaded"
             }
         );
-        println!("Unit: {}", macos_service_file()?.display());
+        println!("Unit: {}", macos_service_file(instance)?.display());
         return Ok(());
     }
 
     if cfg!(target_os = "linux") {
         let resolved = init_system.resolve()?;
-        return status_linux(config, resolved);
+        return status_linux(config, resolved, instance);
     }
 
     if cfg!(target_os = "windows") {
         let _ = config;
-        let task_name = windows_task_name();
+        let task = windows_task(instance);
         let out =
-            run_capture(Command::new("schtasks").args(["/Query", "/TN", task_name, "/FO", "LIST"]));
+            run_capture(Command::new("schtasks").args(["/Query", "/TN", &task, "/FO", "LIST"]));
         match out {
             Ok(text) => {
                 let running = text.contains("Running");
@@ -270,7 +306,7 @@ fn status(config: &Config, init_system: InitSystem) -> Result<()> {
                         "❌ not running"
                     }
                 );
-                println!("Task: {}", task_name);
+                println!("Task: {task}");
             }
             Err(_) => {
                 println!("Service: ❌ not installed");
@@ -282,17 +318,14 @@ fn status(config: &Config, init_system: InitSystem) -> Result<()> {
     anyhow::bail!("Service management is supported on macOS and Linux only")
 }
 
-fn status_linux(config: &Config, init_system: InitSystem) -> Result<()> {
+fn status_linux(config: &Config, init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     match init_system {
         InitSystem::Systemd => {
-            let out = run_capture(Command::new("systemctl").args([
-                "--user",
-                "is-active",
-                "zeroclaw.service",
-            ]))
-            .unwrap_or_else(|_| "unknown".into());
+            let unit = systemd_unit(instance);
+            let out = run_capture(Command::new("systemctl").args(["--user", "is-active", &unit]))
+                .unwrap_or_else(|_| "unknown".into());
             println!("Service state: {}", out.trim());
-            println!("Unit: {}", linux_service_file(config)?.display());
+            println!("Unit: {}", linux_service_file(config, instance)?.display());
         }
         InitSystem::Openrc => {
             let out = run_capture(Command::new("rc-service").args(["zeroclaw", "status"]))
@@ -305,11 +338,11 @@ fn status_linux(config: &Config, init_system: InitSystem) -> Result<()> {
     Ok(())
 }
 
-fn uninstall(config: &Config, init_system: InitSystem) -> Result<()> {
-    stop(config, init_system)?;
+fn uninstall(config: &Config, init_system: InitSystem, instance: Option<&str>) -> Result<()> {
+    stop(config, init_system, instance)?;
 
     if cfg!(target_os = "macos") {
-        let file = macos_service_file()?;
+        let file = macos_service_file(instance)?;
         if file.exists() {
             fs::remove_file(&file)
                 .with_context(|| format!("Failed to remove {}", file.display()))?;
@@ -320,13 +353,12 @@ fn uninstall(config: &Config, init_system: InitSystem) -> Result<()> {
 
     if cfg!(target_os = "linux") {
         let resolved = init_system.resolve()?;
-        return uninstall_linux(config, resolved);
+        return uninstall_linux(config, resolved, instance);
     }
 
     if cfg!(target_os = "windows") {
-        let task_name = windows_task_name();
-        let _ = run_checked(Command::new("schtasks").args(["/Delete", "/TN", task_name, "/F"]));
-        // Remove the wrapper script
+        let task = windows_task(instance);
+        let _ = run_checked(Command::new("schtasks").args(["/Delete", "/TN", &task, "/F"]));
         let wrapper = config
             .config_path
             .parent()
@@ -343,10 +375,10 @@ fn uninstall(config: &Config, init_system: InitSystem) -> Result<()> {
     anyhow::bail!("Service management is supported on macOS and Linux only")
 }
 
-fn uninstall_linux(config: &Config, init_system: InitSystem) -> Result<()> {
+fn uninstall_linux(config: &Config, init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     match init_system {
         InitSystem::Systemd => {
-            let file = linux_service_file(config)?;
+            let file = linux_service_file(config, instance)?;
             if file.exists() {
                 fs::remove_file(&file)
                     .with_context(|| format!("Failed to remove {}", file.display()))?;
@@ -355,6 +387,9 @@ fn uninstall_linux(config: &Config, init_system: InitSystem) -> Result<()> {
             println!("✅ Service uninstalled ({})", file.display());
         }
         InitSystem::Openrc => {
+            if instance.is_some() {
+                bail!("OpenRC does not support multi-instance. Use systemd or manage manually.");
+            }
             let init_script = Path::new("/etc/init.d/zeroclaw");
             if init_script.exists() {
                 if let Err(err) =
@@ -374,8 +409,8 @@ fn uninstall_linux(config: &Config, init_system: InitSystem) -> Result<()> {
     Ok(())
 }
 
-fn install_macos(config: &Config) -> Result<()> {
-    let file = macos_service_file()?;
+fn install_macos(config: &Config, instance: Option<&str>) -> Result<()> {
+    let file = macos_service_file(instance)?;
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -391,6 +426,14 @@ fn install_macos(config: &Config) -> Result<()> {
     let stdout = logs_dir.join("daemon.stdout.log");
     let stderr = logs_dir.join("daemon.stderr.log");
 
+    let label = service_label(instance);
+    let config_dir = config
+        .config_path
+        .parent()
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    let config_dir_escaped = xml_escape(&config_dir.display().to_string());
+    let exe_escaped = xml_escape(&exe.display().to_string());
+
     let plist = format!(
         r#"<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -400,7 +443,9 @@ fn install_macos(config: &Config) -> Result<()> {
   <string>{label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{exe}</string>
+    <string>{exe_escaped}</string>
+    <string>--config-dir</string>
+    <string>{config_dir_escaped}</string>
     <string>daemon</string>
   </array>
   <key>RunAtLoad</key>
@@ -414,8 +459,6 @@ fn install_macos(config: &Config) -> Result<()> {
 </dict>
 </plist>
 "#,
-        label = SERVICE_LABEL,
-        exe = xml_escape(&exe.display().to_string()),
         stdout = xml_escape(&stdout.display().to_string()),
         stderr = xml_escape(&stderr.display().to_string())
     );
@@ -426,31 +469,50 @@ fn install_macos(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn install_linux(config: &Config, init_system: InitSystem) -> Result<()> {
+fn install_linux(config: &Config, init_system: InitSystem, instance: Option<&str>) -> Result<()> {
     match init_system {
-        InitSystem::Systemd => install_linux_systemd(config),
-        InitSystem::Openrc => install_linux_openrc(config),
+        InitSystem::Systemd => install_linux_systemd(config, instance),
+        InitSystem::Openrc => {
+            if instance.is_some() {
+                bail!("OpenRC does not support multi-instance. Use systemd or manage manually.");
+            }
+            install_linux_openrc(config)
+        }
         InitSystem::Auto => unreachable!("Auto should be resolved before this point"),
     }
 }
 
-fn install_linux_systemd(config: &Config) -> Result<()> {
-    let file = linux_service_file(config)?;
+fn install_linux_systemd(config: &Config, instance: Option<&str>) -> Result<()> {
+    let file = linux_service_file(config, instance)?;
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
 
     let exe = std::env::current_exe().context("Failed to resolve current executable")?;
+    let config_dir = config
+        .config_path
+        .parent()
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    let description = match instance {
+        None => "ZeroClaw daemon".to_string(),
+        Some(name) => format!("ZeroClaw Agent ({name})"),
+    };
     let unit = format!(
-        "[Unit]\nDescription=ZeroClaw daemon\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={} daemon\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
-        exe.display()
+        "[Unit]\nDescription={description}\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={exe} --config-dir {config_dir} daemon\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
+        exe = exe.display(),
+        config_dir = config_dir.display(),
     );
 
+    let unit_name = systemd_unit(instance);
     fs::write(&file, unit)?;
     let _ = run_checked(Command::new("systemctl").args(["--user", "daemon-reload"]));
-    let _ = run_checked(Command::new("systemctl").args(["--user", "enable", "zeroclaw.service"]));
+    let _ = run_checked(Command::new("systemctl").args(["--user", "enable", &unit_name]));
     println!("✅ Installed systemd user service: {}", file.display());
-    println!("   Start with: zeroclaw service start");
+    let start_hint = match instance {
+        None => "zeroclaw service start".to_string(),
+        Some(name) => format!("zeroclaw service --instance {name} start"),
+    };
+    println!("   Start with: {start_hint}");
     Ok(())
 }
 
@@ -975,39 +1037,42 @@ fn install_linux_openrc(config: &Config) -> Result<()> {
     Ok(())
 }
 
-fn install_windows(config: &Config) -> Result<()> {
+fn install_windows(config: &Config, instance: Option<&str>) -> Result<()> {
     let exe = std::env::current_exe().context("Failed to resolve current executable")?;
-    let logs_dir = config
+    let config_dir = config
         .config_path
         .parent()
-        .map_or_else(|| PathBuf::from("."), PathBuf::from)
-        .join("logs");
+        .map_or_else(|| PathBuf::from("."), PathBuf::from);
+    let logs_dir = config_dir.join("logs");
     fs::create_dir_all(&logs_dir)?;
 
-    // Create a wrapper script that redirects output to log files
-    let wrapper = logs_dir.join("zeroclaw-daemon.cmd");
+    let wrapper_name = match instance {
+        None => "zeroclaw-daemon.cmd".to_string(),
+        Some(name) => format!("zeroclaw-agent-{name}.cmd"),
+    };
+    let wrapper = logs_dir.join(&wrapper_name);
     let stdout_log = logs_dir.join("daemon.stdout.log");
     let stderr_log = logs_dir.join("daemon.stderr.log");
 
     let wrapper_content = format!(
-        "@echo off\r\n\"{}\" daemon >>\"{}\" 2>>\"{}\"",
+        "@echo off\r\n\"{}\" --config-dir \"{}\" daemon >>\"{}\" 2>>\"{}\"",
         exe.display(),
+        config_dir.display(),
         stdout_log.display(),
         stderr_log.display()
     );
     fs::write(&wrapper, &wrapper_content)?;
 
-    let task_name = windows_task_name();
+    let task = windows_task(instance);
 
-    // Remove any existing task first (ignore errors if it doesn't exist)
     let _ = Command::new("schtasks")
-        .args(["/Delete", "/TN", task_name, "/F"])
+        .args(["/Delete", "/TN", &task, "/F"])
         .output();
 
     run_checked(Command::new("schtasks").args([
         "/Create",
         "/TN",
-        task_name,
+        &task,
         "/SC",
         "ONLOGON",
         "/TR",
@@ -1017,33 +1082,35 @@ fn install_windows(config: &Config) -> Result<()> {
         "/F",
     ]))?;
 
-    println!("✅ Installed Windows scheduled task: {}", task_name);
+    println!("✅ Installed Windows scheduled task: {task}");
     println!("   Wrapper: {}", wrapper.display());
     println!("   Logs: {}", logs_dir.display());
-    println!("   Start with: zeroclaw service start");
+    let start_hint = match instance {
+        None => "zeroclaw service start".to_string(),
+        Some(name) => format!("zeroclaw service --instance {name} start"),
+    };
+    println!("   Start with: {start_hint}");
     Ok(())
 }
 
-fn macos_service_file() -> Result<PathBuf> {
+fn macos_service_file(instance: Option<&str>) -> Result<PathBuf> {
     let home = directories::UserDirs::new()
         .map(|u| u.home_dir().to_path_buf())
         .context("Could not find home directory")?;
+    let label = service_label(instance);
     Ok(home
         .join("Library")
         .join("LaunchAgents")
-        .join(format!("{SERVICE_LABEL}.plist")))
+        .join(format!("{label}.plist")))
 }
 
-fn linux_service_file(config: &Config) -> Result<PathBuf> {
+fn linux_service_file(config: &Config, instance: Option<&str>) -> Result<PathBuf> {
     let home = directories::UserDirs::new()
         .map(|u| u.home_dir().to_path_buf())
         .context("Could not find home directory")?;
     let _ = config;
-    Ok(home
-        .join(".config")
-        .join("systemd")
-        .join("user")
-        .join("zeroclaw.service"))
+    let unit = systemd_unit(instance);
+    Ok(home.join(".config").join("systemd").join("user").join(unit))
 }
 
 fn run_checked(command: &mut Command) -> Result<()> {
@@ -1108,15 +1175,48 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[test]
-    fn linux_service_file_has_expected_suffix() {
-        let file = linux_service_file(&Config::default()).unwrap();
+    fn linux_service_file_default() {
+        let file = linux_service_file(&Config::default(), None).unwrap();
         let path = file.to_string_lossy();
         assert!(path.ends_with(".config/systemd/user/zeroclaw.service"));
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
-    fn windows_task_name_is_constant() {
-        assert_eq!(windows_task_name(), "ZeroClaw Daemon");
+    fn linux_service_file_instance() {
+        let file = linux_service_file(&Config::default(), Some("opus")).unwrap();
+        let path = file.to_string_lossy();
+        assert!(path.ends_with(".config/systemd/user/zeroclaw@opus.service"));
+    }
+
+    #[test]
+    fn service_label_default() {
+        assert_eq!(service_label(None), "com.zeroclaw.daemon");
+    }
+
+    #[test]
+    fn service_label_instance() {
+        assert_eq!(service_label(Some("opus")), "com.zeroclaw.agent-opus");
+    }
+
+    #[test]
+    fn systemd_unit_default() {
+        assert_eq!(systemd_unit(None), "zeroclaw.service");
+    }
+
+    #[test]
+    fn systemd_unit_instance() {
+        assert_eq!(systemd_unit(Some("code")), "zeroclaw@code.service");
+    }
+
+    #[test]
+    fn windows_task_default() {
+        assert_eq!(windows_task(None), "ZeroClaw Daemon");
+    }
+
+    #[test]
+    fn windows_task_instance() {
+        assert_eq!(windows_task(Some("daily")), "ZeroClaw Agent (daily)");
     }
 
     #[cfg(target_os = "windows")]

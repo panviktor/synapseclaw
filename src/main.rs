@@ -267,6 +267,10 @@ Examples:
         /// Host to bind to; defaults to config gateway.host
         #[arg(long)]
         host: Option<String>,
+
+        /// Run as a named agent instance (config dir: ~/.zeroclaw/agents/<name>/)
+        #[arg(long)]
+        instance: Option<String>,
     },
 
     /// Manage OS service lifecycle (launchd/systemd user service)
@@ -274,6 +278,10 @@ Examples:
         /// Init system to use: auto (detect), systemd, or openrc
         #[arg(long, default_value = "auto", value_parser = ["auto", "systemd", "openrc"])]
         service_init: String,
+
+        /// Manage a named agent instance service (default: broker)
+        #[arg(long)]
+        instance: Option<String>,
 
         #[command(subcommand)]
         service_command: ServiceCommands,
@@ -719,6 +727,37 @@ async fn main() -> Result<()> {
         std::env::set_var("ZEROCLAW_CONFIG_DIR", config_dir);
     }
 
+    // --instance flag on daemon/service resolves to ~/.zeroclaw/agents/<name>/
+    // Sets ZEROCLAW_CONFIG_DIR before config loading (lower precedence than explicit --config-dir)
+    if cli.config_dir.is_none() {
+        let instance = match &cli.command {
+            Commands::Daemon { instance, .. } | Commands::Service { instance, .. } => {
+                instance.as_deref()
+            }
+            _ => None,
+        };
+        if let Some(name) = instance {
+            // Validate instance name: ^[a-z0-9][a-z0-9_-]{0,30}$
+            if name.is_empty()
+                || name.len() > 31
+                || !name.chars().next().unwrap_or(' ').is_ascii_alphanumeric()
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+            {
+                bail!("Invalid instance name '{name}'. Must match [a-z0-9][a-z0-9_-]{{0,30}}");
+            }
+            let home = directories::UserDirs::new()
+                .map(|u| u.home_dir().to_path_buf())
+                .context("Could not find home directory")?;
+            let instance_dir = home.join(".zeroclaw").join("agents").join(name);
+            std::env::set_var(
+                "ZEROCLAW_CONFIG_DIR",
+                instance_dir.to_string_lossy().as_ref(),
+            );
+        }
+    }
+
     // Completions must remain stdout-only and should not load config or initialize logging.
     // This avoids warnings/log lines corrupting sourced completion scripts.
     if let Commands::Completions { shell } = &cli.command {
@@ -1010,7 +1049,11 @@ async fn main() -> Result<()> {
             }
         }
 
-        Commands::Daemon { port, host } => {
+        Commands::Daemon {
+            port,
+            host,
+            instance: _,
+        } => {
             let port = port.unwrap_or(config.gateway.port);
             let host = host.unwrap_or_else(|| config.gateway.host.clone());
             if port == 0 {
@@ -1182,9 +1225,10 @@ async fn main() -> Result<()> {
         Commands::Service {
             service_command,
             service_init,
+            instance,
         } => {
             let init_system = service_init.parse()?;
-            service::handle_command(&service_command, &config, init_system)
+            service::handle_command(&service_command, &config, init_system, instance.as_deref())
         }
 
         Commands::Doctor { doctor_command } => match doctor_command {
