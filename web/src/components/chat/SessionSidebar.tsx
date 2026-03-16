@@ -1,16 +1,18 @@
 import { useState } from 'react';
-import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X } from 'lucide-react';
-import type { ChatSessionInfo } from '@/types/api';
+import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Sparkles } from 'lucide-react';
+import type { ChatSessionInfo, StatusResponse } from '@/types/api';
 
 interface SessionSidebarProps {
   sessions: ChatSessionInfo[];
   activeKey: string | null;
   collapsed: boolean;
+  status: StatusResponse | null;
   onToggle: () => void;
   onSelect: (key: string) => void;
   onNew: () => void;
   onRename: (key: string, label: string) => void;
   onDelete: (key: string) => void;
+  onSummaryModelChange: (model: string | null) => void;
 }
 
 function timeAgo(epochSecs: number): string {
@@ -21,18 +23,34 @@ function timeAgo(epochSecs: number): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+function formatUptime(secs: number): string {
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
+  return `${Math.floor(secs / 86400)}d ${Math.floor((secs % 86400) / 3600)}h`;
+}
+
+function shortModel(model: string): string {
+  // "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6"
+  const parts = model.split('/');
+  return parts[parts.length - 1] ?? model;
+}
+
 export default function SessionSidebar({
   sessions,
   activeKey,
   collapsed,
+  status,
   onToggle,
   onSelect,
   onNew,
   onRename,
   onDelete,
+  onSummaryModelChange,
 }: SessionSidebarProps) {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [editingSummaryModel, setEditingSummaryModel] = useState(false);
+  const [summaryModelInput, setSummaryModelInput] = useState('');
 
   const startRename = (key: string, currentLabel: string) => {
     setEditingKey(key);
@@ -70,7 +88,7 @@ export default function SessionSidebar({
   }
 
   return (
-    <div className="flex flex-col w-[200px] border-r border-[#1a1a3e]/40 overflow-hidden" style={{ background: 'linear-gradient(180deg, rgba(8,8,24,0.95), rgba(5,5,16,0.98))' }}>
+    <div className="flex flex-col w-[220px] border-r border-[#1a1a3e]/40 overflow-hidden" style={{ background: 'linear-gradient(180deg, rgba(8,8,24,0.95), rgba(5,5,16,0.98))' }}>
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-[#1a1a3e]/30">
         <button
@@ -88,6 +106,74 @@ export default function SessionSidebar({
           <PanelLeftClose className="h-3.5 w-3.5" />
         </button>
       </div>
+
+      {/* Agent Info Panel */}
+      {status && (
+        <div className="px-3 py-2 border-b border-[#1a1a3e]/30 space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <Cpu className="h-3 w-3 text-[#0080ff] flex-shrink-0" />
+            <span className="text-[10px] text-[#8890a8] truncate" title={status.model}>
+              {shortModel(status.model)}
+            </span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Sparkles className="h-3 w-3 text-[#9966ff] flex-shrink-0" />
+            {editingSummaryModel ? (
+              <div className="flex items-center gap-1 flex-1 min-w-0">
+                <input
+                  type="text"
+                  value={summaryModelInput}
+                  onChange={(e) => setSummaryModelInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const val = summaryModelInput.trim() || null;
+                      onSummaryModelChange(val);
+                      setEditingSummaryModel(false);
+                    }
+                    if (e.key === 'Escape') setEditingSummaryModel(false);
+                  }}
+                  className="flex-1 min-w-0 bg-[#0a0a18] border border-[#0080ff40] rounded px-1 py-0 text-[10px] text-white outline-none"
+                  placeholder="model name or empty"
+                  autoFocus
+                />
+                <button
+                  onClick={() => {
+                    const val = summaryModelInput.trim() || null;
+                    onSummaryModelChange(val);
+                    setEditingSummaryModel(false);
+                  }}
+                  className="text-[#00e68a] hover:text-white"
+                >
+                  <Check className="h-2.5 w-2.5" />
+                </button>
+                <button
+                  onClick={() => setEditingSummaryModel(false)}
+                  className="text-[#ff4466] hover:text-white"
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </div>
+            ) : (
+              <span
+                className="text-[10px] text-[#556080] truncate cursor-pointer hover:text-[#8890a8] transition-colors"
+                title={`Summary: ${status.summary_model ?? 'same as primary'} (click to change)`}
+                onClick={() => {
+                  setSummaryModelInput(status.summary_model ?? '');
+                  setEditingSummaryModel(true);
+                }}
+              >
+                {status.summary_model ? shortModel(status.summary_model) : 'auto'}
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <Clock className="h-3 w-3 text-[#334060] flex-shrink-0" />
+            <span className="text-[10px] text-[#334060]">
+              {formatUptime(status.uptime_seconds)}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Sessions list */}
       <div className="flex-1 overflow-y-auto py-1">

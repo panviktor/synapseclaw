@@ -1164,8 +1164,9 @@ async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
         messages_text,
     );
 
-    let model = state
-        .summary_model
+    // Read summary_model from live config (supports runtime switching)
+    let config_summary_model = state.config.lock().summary_model.clone();
+    let model = config_summary_model
         .as_deref()
         .unwrap_or(&state.model)
         .to_string();

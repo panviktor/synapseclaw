@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Send, Bot, User, AlertCircle, Copy, Check, Square, MoreVertical, Plus, Eraser } from 'lucide-react';
-import type { WsMessage, ChatSessionInfo, ChatMessageInfo } from '@/types/api';
+import type { WsMessage, ChatSessionInfo, ChatMessageInfo, StatusResponse } from '@/types/api';
 import { WebSocketClient } from '@/lib/ws';
 import { generateUUID } from '@/lib/uuid';
+import { getStatus, putSummaryModel } from '@/lib/api';
 import SessionSidebar from '@/components/chat/SessionSidebar';
 import {
   getCachedMessages,
@@ -44,6 +45,7 @@ export default function AgentChat() {
   const [reconnecting, setReconnecting] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [status, setStatus] = useState<StatusResponse | null>(null);
 
   const wsRef = useRef<WebSocketClient | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -87,6 +89,8 @@ export default function AgentChat() {
       setConnected(true);
       setError(null);
       setReconnecting(false);
+      // Fetch agent status (model info, uptime)
+      getStatus().then(setStatus).catch(() => {});
       // Load sessions list
       ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
         .then((res) => {
@@ -320,6 +324,16 @@ export default function AgentChat() {
     [activeSession, setSearchParams, loadHistory],
   );
 
+  // ── Summary model switch ─────────────────────────────────────────
+  const handleSummaryModelChange = useCallback(async (model: string | null) => {
+    try {
+      const res = await putSummaryModel(model);
+      setStatus((prev) => prev ? { ...prev, summary_model: res.summary_model } : prev);
+    } catch {
+      // ignore
+    }
+  }, []);
+
   // ── Clear history ────────────────────────────────────────────────
   const handleClearHistory = useCallback(async () => {
     if (!wsRef.current?.connected || !activeSession) return;
@@ -446,11 +460,13 @@ export default function AgentChat() {
         sessions={sessions}
         activeKey={activeSession}
         collapsed={sidebarCollapsed}
+        status={status}
         onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
         onSelect={handleSelectSession}
         onNew={handleNewSession}
         onRename={handleRenameSession}
         onDelete={handleDeleteSession}
+        onSummaryModelChange={handleSummaryModelChange}
       />
 
       {/* Chat area */}
