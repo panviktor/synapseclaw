@@ -268,12 +268,14 @@ This means after broker restart, the registry seed comes from DB (gateway_url + 
 
 1. Agent daemon starts → pairs with broker (existing flow, gets `broker_token`)
 2. Agent generates `proxy_token` if not yet in config (one-time, saved encrypted)
-3. Agent POSTs `{gateway_url, proxy_token}` to broker's `/api/ipc/register-gateway`
-4. Broker stores in `agent_gateways` table + in-memory `AgentRegistry`
+3. Agent enters **registration loop** (two phases):
+   - **Phase A (fast retry):** POST `{gateway_url, proxy_token}` to broker's `/api/ipc/register-gateway` with exponential backoff (1s, 2s, 4s, 8s, max 30s). Retries indefinitely until first success. This covers "agent starts before broker" — no 5-minute wait.
+   - **Phase B (periodic refresh):** after first successful registration, switch to 5-minute interval re-POST. Covers broker restart / DB loss. If a refresh fails, immediately fall back to Phase A (fast retry).
+4. Broker stores in `agent_gateways` table (persistent) + in-memory `AgentRegistry`
 5. Broker polls agent `/health` every 30s; also fetches `/api/status` for metadata
 6. If agent unreachable for 3 consecutive polls → status = `offline`
-7. **Initial registration with fast retry:** agent retries registration with exponential backoff (1s, 2s, 4s, 8s, max 30s) until first success. This covers "agent starts before broker" scenario — no 5-minute wait.
-8. **Periodic re-registration:** after first success, agent re-POSTs registration every 5 minutes as a refresh (covers broker restart with DB loss).
+
+**Hard rule:** agent never waits 5 minutes for initial registration. Fast retry is always first. 5-minute interval is only a refresh cadence after proven connectivity.
 
 ---
 
@@ -339,7 +341,7 @@ This is acceptable for v1 (lab/family use). Future enhancement path: broker inje
 |----------|----------|
 | **Agent goes offline** | Broker health poll marks `offline` in registry. Browser shows "Agent offline" in selector. Sessions persist in agent's DB, resume when agent returns. |
 | **Agent restarts** | Agent re-registers (immediate POST + periodic 5min). Broker updates registry. If browser had it selected, proxy WS reconnects automatically. Sessions resume from agent's chat DB. |
-| **Broker restarts** | Registry seed loaded from `agent_gateways` DB table. Live metadata (status, model) refreshes within 30s poll. Agents detect failed re-registration and switch to fast retry (backoff). Browser reconnects via existing WS auto-reconnect. No session data loss (sessions on agents). |
+| **Broker restarts** | Registry seed loaded from `agent_gateways` DB table. Live metadata refreshes within 30s poll. Agents detect failed periodic refresh → fall back to Phase A fast retry (backoff from 1s). Browser reconnects via existing WS auto-reconnect. No session data loss (sessions on agents). |
 | **Machine reboot** | systemd/launchd starts all enabled services. Start order does not matter — agents use fast retry with backoff until broker accepts registration. No manual intervention needed. |
 | **One agent restart** | Other agents unaffected. Restarted agent re-registers. Browser can switch to working agents during downtime. |
 | **Config change** | Restart specific instance: `systemctl --user restart zeroclaw@opus`. No impact on other instances. |
@@ -442,17 +444,25 @@ This is acceptable for v1 (lab/family use). Future enhancement path: broker inje
 - [ ] Broker restart → registry rebuilds from DB seed + agent re-registration
 - [ ] One SSH tunnel to broker is sufficient for full operation
 
-### Service lifecycle (all platforms)
+### Service lifecycle — restart matrix
 
-- [ ] `zeroclaw service install` — installs broker service (default instance)
-- [ ] `zeroclaw service install --instance opus` — installs agent service
-- [ ] Multiple instances can run simultaneously on same machine
+Each scenario must pass on every supported platform (systemd, launchd, Windows):
+
+- [ ] `service install` — broker default instance
+- [ ] `service install --instance <name>` — agent instance
+- [ ] Multiple instances run simultaneously on same machine
 - [ ] Machine reboot → all enabled services start automatically
-- [ ] Services start in any order (agents retry registration until broker is up)
+- [ ] Start in any order — agents fast-retry (Phase A) until broker is up
 - [ ] Restart one agent → other agents and broker unaffected
-- [ ] Restart broker → agents re-register within 5min, no session loss
-- [ ] `systemctl --user status zeroclaw@opus` shows correct status (Linux)
-- [ ] `launchctl list | grep zeroclaw` shows all instances (macOS)
+- [ ] Restart broker → agents fall back to Phase A fast retry, re-register within seconds
+- [ ] Broker comes up late (after agents) → agents register once broker appears
+- [ ] One agent config change + restart → no impact on others
+
+Platform-specific:
+- [ ] Linux: `systemctl --user status zeroclaw@opus` shows correct status
+- [ ] macOS: `launchctl list | grep zeroclaw` shows all instances
+- [ ] Windows: Task Scheduler shows all agent tasks
+- [ ] OpenRC: out of scope (documented)
 
 ### Auth
 
@@ -472,7 +482,7 @@ This is acceptable for v1 (lab/family use). Future enhancement path: broker inje
 | Broker becomes SPOF for dashboard | Agents continue running independently. Only dashboard access lost. Broker restarts fast. |
 | Three-layer auth complexity | Clear separation: operator→broker, broker→agent (proxy_token), agent→broker (broker_token). Each is a single bearer token. |
 | Session namespace collision (multi-operator) | v1 limitation: single namespace per agent. Documented. Future: operator identity in namespace prefix. |
-| Registry stale after broker restart | DB-persisted seed + agent 5min re-registration. Max gap: 5 min for full metadata refresh. |
+| Registry stale after broker restart | DB-persisted seed + agent Phase A fast retry (seconds, not minutes). Metadata refresh within 30s poll. |
 | N+1 process management | Templated systemd/launchd units. `service install --instance` handles creation. Standard OS tooling for lifecycle. |
 | Agent starts before broker | Agent retries registration with exponential backoff. No crash, no data loss. |
 
@@ -497,6 +507,95 @@ Configuration is the differentiator between broker and agent, not commands. Both
 
 ---
 
+## UI Agent Provisioning (Broker-Only)
+
+Phase 3.6 introduced config generation + pairing from the web UI. Phase 3.8 adds the infrastructure to actually create and manage agent instances from the broker dashboard.
+
+### Security model
+
+This is a dangerous operation. Not a regular API feature.
+
+**Principles:**
+1. **Broker-only** — only the broker instance can provision agents
+2. **Disabled by default** — must be explicitly enabled in config
+3. **Mode-based escalation** — three levels of capability
+4. **Dual auth** — requires both paired bearer token AND localhost access
+5. **Fixed write paths** — only `~/.zeroclaw/agents/<instance>/`
+6. **No arbitrary commands** — only predefined lifecycle actions
+7. **Audited** — all operations logged as audit events
+8. **Temporary arming** — runtime arm with TTL, auto-disables
+
+### Config
+
+```toml
+[gateway.ui_provisioning]
+enabled = false                    # master switch (requires config edit + restart to enable)
+mode = "config_only"               # config_only | service_install
+agents_root = "~/.zeroclaw/agents" # fixed root, no arbitrary paths
+allow_blueprints = false           # Phase 3.6 fleet blueprints
+```
+
+### Modes
+
+| Mode | What UI can do |
+|------|---------------|
+| `disabled` | Generate + download config only (Phase 3.6 behavior) |
+| `config_only` | Create agent dir, write config.toml, write instructions.md, issue paircode |
+| `service_install` | All above + install OS service instance + enable/start it |
+
+### Runtime arming
+
+Even with `enabled = true`, provisioning requires explicit runtime activation:
+
+```
+POST /admin/provisioning/arm
+{ "minutes": 30 }
+```
+
+- **Localhost-only** — same gate as `/admin/ipc/*`
+- **Paired admin token required** — bearer auth
+- **TTL auto-expire** — after N minutes, provisioning disarmed
+- **Broker restart** — always disarmed (safe default)
+
+### Endpoints
+
+All under `/admin/provisioning/*` (localhost + bearer auth):
+
+| Endpoint | Mode | What it does |
+|----------|------|-------------|
+| `POST /admin/provisioning/arm` | any | Arm provisioning for N minutes |
+| `GET /admin/provisioning/status` | any | Is it armed? Mode? TTL remaining? |
+| `POST /admin/provisioning/create` | config_only+ | Create agent dir + write config.toml |
+| `POST /admin/provisioning/install` | service_install | Install + enable OS service |
+| `POST /admin/provisioning/start` | service_install | Start agent service |
+| `POST /admin/provisioning/stop` | service_install | Stop agent service |
+
+### Instance name validation
+
+`^[a-z0-9][a-z0-9_-]{0,30}$` — lowercase, digits, hyphens, underscores. Max 31 chars.
+
+Write paths are always:
+- `{agents_root}/{instance}/config.toml`
+- `{agents_root}/{instance}/workspace/instructions.md`
+
+### Audit events
+
+| Event | Fields |
+|-------|--------|
+| `provisioning_armed` | operator, minutes, mode |
+| `provisioning_disarmed` | reason (ttl/manual/restart) |
+| `agent_config_written` | instance, operator, path |
+| `agent_service_installed` | instance, operator, platform |
+| `agent_service_started` | instance, operator |
+| `agent_service_stopped` | instance, operator |
+| `provisioning_failed` | instance, operator, error |
+
+### Implementation note
+
+UI provisioning is **Step 11** (optional, after core 3.8 proxy works). It bridges Phase 3.6 (config generation) with Phase 3.8 (multi-instance model). Can ship as a follow-up PR after Steps 1–10.
+
+---
+
 ## Decisions
 
 1. **Broker is transparent relay, not application proxy** — no message transformation, no session merging, no LLM calls on behalf of agents.
@@ -508,3 +607,4 @@ Configuration is the differentiator between broker and agent, not commands. Both
 7. **Templated multi-instance service units** — `zeroclaw@.service` on systemd, per-instance plists on launchd.
 8. **WS proxy, not HTTP long-poll** — preserves streaming, tool events, lifecycle events.
 9. **Agent selector in sidebar** — not a separate page, integrated into chat flow.
+10. **UI provisioning is broker-only, mode-gated, arm-required** — disabled by default, three escalation modes, localhost+bearer dual auth, fixed write paths, audit trail, TTL auto-disarm.
