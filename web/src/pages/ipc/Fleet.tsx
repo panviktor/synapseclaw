@@ -9,6 +9,7 @@ import TimeAgo from '@/components/ipc/TimeAgo';
 import AgentLink from '@/components/ipc/AgentLink';
 import ConfirmDialog from '@/components/ipc/ConfirmDialog';
 import AddAgentDialog from '@/components/ipc/AddAgentDialog';
+import DeployBlueprintDialog from '@/components/ipc/DeployBlueprintDialog';
 
 type ActionType = 'revoke' | 'quarantine' | 'disable' | 'downgrade';
 
@@ -25,6 +26,7 @@ export default function Fleet() {
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
   const [showAddAgent, setShowAddAgent] = useState(false);
+  const [showBlueprint, setShowBlueprint] = useState(false);
   const [showRevoked, setShowRevoked] = useState(false);
 
   const load = useCallback(async () => {
@@ -100,6 +102,9 @@ export default function Fleet() {
             Show revoked
           </label>
           <span className="text-sm text-[#556080]">{agents.length} agents</span>
+          <button onClick={() => setShowBlueprint(true)} className="px-4 py-1.5 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors">
+            Blueprint
+          </button>
           <button onClick={() => setShowAddAgent(true)} className="btn-electric px-4 py-1.5 text-sm font-medium">
             + Add Agent
           </button>
@@ -146,6 +151,13 @@ export default function Fleet() {
       <AddAgentDialog
         open={showAddAgent}
         onClose={() => setShowAddAgent(false)}
+        onCreated={load}
+        brokerUrl={brokerUrl}
+      />
+
+      <DeployBlueprintDialog
+        open={showBlueprint}
+        onClose={() => setShowBlueprint(false)}
         onCreated={load}
         brokerUrl={brokerUrl}
       />
