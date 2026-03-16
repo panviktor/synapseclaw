@@ -200,14 +200,32 @@ async fn handle_socket(
                     .await;
             }
 
-            // Legacy "message" type — wrap into chat.send
+            // Legacy "message" type — route through the same RPC path
             "message" => {
                 let content = parsed["content"].as_str().unwrap_or("").to_string();
                 if content.is_empty() {
                     continue;
                 }
 
-                handle_chat_send_streaming(&content, &state, &session_key, &mut sender).await;
+                let params = serde_json::json!({"session": session_key, "message": content});
+                match handle_chat_send_rpc(&params, &state, &session_key, &token_prefix).await {
+                    Ok(val) => {
+                        if let Some(response) = val["response"].as_str() {
+                            let done = serde_json::json!({
+                                "type": "done",
+                                "full_response": response,
+                            });
+                            let _ = sender.send(Message::Text(done.to_string().into())).await;
+                        }
+                    }
+                    Err(e) => {
+                        let err = serde_json::json!({
+                            "type": "error",
+                            "message": e.to_string(),
+                        });
+                        let _ = sender.send(Message::Text(err.to_string().into())).await;
+                    }
+                }
             }
 
             _ => {}
@@ -271,6 +289,7 @@ fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<()> {
         input_tokens: input_tok,
         output_tokens: output_tok,
         run_id: None,
+        abort_tx: None,
     };
 
     let mut sessions = state
@@ -340,16 +359,25 @@ async fn handle_rpc(
     default_session: &str,
 ) -> anyhow::Result<serde_json::Value> {
     match method {
-        "chat.history" => handle_chat_history(params, state, default_session),
-        "chat.send" => handle_chat_send_rpc(params, state, default_session).await,
-        "chat.abort" => handle_chat_abort(params, state, default_session),
+        "chat.history" => handle_chat_history(params, state, default_session, token_prefix),
+        "chat.send" => handle_chat_send_rpc(params, state, default_session, token_prefix).await,
+        "chat.abort" => handle_chat_abort(params, state, default_session, token_prefix),
         "sessions.list" => handle_sessions_list(state, token_prefix),
         "sessions.new" => handle_sessions_new(params, state, token_prefix),
-        "sessions.rename" => handle_sessions_rename(params, state),
-        "sessions.delete" => handle_sessions_delete(params, state),
-        "sessions.reset" => handle_sessions_reset(params, state),
+        "sessions.rename" => handle_sessions_rename(params, state, token_prefix),
+        "sessions.delete" => handle_sessions_delete(params, state, token_prefix),
+        "sessions.reset" => handle_sessions_reset(params, state, token_prefix),
         _ => Err(anyhow::anyhow!("Unknown RPC method: {method}")),
     }
+}
+
+/// Verify that a session key belongs to the current token's namespace.
+fn check_session_ownership(session_key: &str, token_prefix: &str) -> anyhow::Result<()> {
+    let expected_prefix = format!("web:{token_prefix}:");
+    if !session_key.starts_with(&expected_prefix) {
+        return Err(anyhow::anyhow!("session key does not belong to this token"));
+    }
+    Ok(())
 }
 
 // ── RPC: chat.history ───────────────────────────────────────────────────────
@@ -358,11 +386,13 @@ fn handle_chat_history(
     params: &serde_json::Value,
     state: &AppState,
     default_session: &str,
+    token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let session_key = params["session"]
         .as_str()
         .unwrap_or(default_session)
         .to_string();
+    check_session_ownership(&session_key, token_prefix)?;
     let limit = params["limit"].as_i64().unwrap_or(50).min(500);
 
     // Ensure session is loaded
@@ -424,11 +454,13 @@ async fn handle_chat_send_rpc(
     params: &serde_json::Value,
     state: &AppState,
     default_session: &str,
+    token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let session_key = params["session"]
         .as_str()
         .unwrap_or(default_session)
         .to_string();
+    check_session_ownership(&session_key, token_prefix)?;
     let message = params["message"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'message' param"))?
@@ -436,7 +468,8 @@ async fn handle_chat_send_rpc(
 
     let run_id = uuid::Uuid::new_v4().to_string();
 
-    // Store run_id
+    // Create abort channel and store run_id
+    let (abort_tx, abort_rx) = tokio::sync::watch::channel(false);
     {
         let mut sessions = state
             .chat_sessions
@@ -444,6 +477,8 @@ async fn handle_chat_send_rpc(
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         if let Some(s) = sessions.get_mut(&session_key) {
             s.run_id = Some(run_id.clone());
+            s.abort_tx = Some(abort_tx);
+            s.last_active = Instant::now();
         }
     }
 
@@ -459,31 +494,25 @@ async fn handle_chat_send_rpc(
     );
     auto_label_if_needed(state, &session_key, &message);
 
-    // Update last_active in memory (lock scope ends before await)
-    {
-        let mut sessions = state
-            .chat_sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let Some(s) = sessions.get_mut(&session_key) {
-            s.last_active = Instant::now();
-        }
-    }
+    // Run agent turn with abort support
+    let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx).await;
 
-    // Run agent turn (lock-free — agent is swapped out)
-    let result = run_agent_turn(state, &session_key, &message).await;
-
-    // Clear run_id regardless of success/failure
-    {
+    // Clear run_id + abort_tx, extract usage
+    let usage = {
         let mut sessions = state
             .chat_sessions
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         if let Some(s) = sessions.get_mut(&session_key) {
             s.run_id = None;
+            s.abort_tx = None;
             s.last_active = Instant::now();
         }
-    }
+        // Get usage from agent
+        sessions
+            .get(&session_key)
+            .and_then(|s| s.agent.last_turn_usage().cloned())
+    };
 
     match result {
         Ok(response) => {
@@ -496,9 +525,10 @@ async fn handle_chat_send_rpc(
                 None,
                 None,
             );
-            // Increment DB + memory count: 2 (user + assistant)
             persist_increment_count(state, &session_key, 2);
             sync_memory_count(state, &session_key, 2);
+            // Persist token usage if available
+            persist_usage(state, &session_key, usage.as_ref());
 
             Ok(serde_json::json!({
                 "run_id": run_id,
@@ -506,9 +536,26 @@ async fn handle_chat_send_rpc(
             }))
         }
         Err(e) => {
-            let sanitized = crate::providers::sanitize_api_error(&e.to_string());
+            let msg = e.to_string();
+            if msg == "aborted" {
+                persist_message(
+                    state,
+                    &session_key,
+                    "interrupted",
+                    None,
+                    "Generation aborted by user",
+                    None,
+                    Some(&run_id),
+                );
+                persist_increment_count(state, &session_key, 2);
+                sync_memory_count(state, &session_key, 2);
+                return Ok(serde_json::json!({
+                    "run_id": run_id,
+                    "aborted": true,
+                }));
+            }
+            let sanitized = crate::providers::sanitize_api_error(&msg);
             persist_message(state, &session_key, "error", None, &sanitized, None, None);
-            // Increment DB + memory count: 2 (user + error)
             persist_increment_count(state, &session_key, 2);
             sync_memory_count(state, &session_key, 2);
             Err(anyhow::anyhow!("{sanitized}"))
@@ -516,13 +563,15 @@ async fn handle_chat_send_rpc(
     }
 }
 
-/// Execute agent.turn() without holding the sessions lock.
-async fn run_agent_turn(
+/// Execute agent.turn() with abort support.
+/// Swaps the agent out of sessions lock, runs turn, puts it back.
+async fn run_agent_turn_with_abort(
     state: &AppState,
     session_key: &str,
     message: &str,
+    mut abort_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<String> {
-    // We can't hold Mutex across await, so we take the agent out, run, put back.
+    // Swap agent out so we don't hold lock across await
     let mut agent = {
         let mut sessions = state
             .chat_sessions
@@ -531,18 +580,22 @@ async fn run_agent_turn(
         let session = sessions
             .get_mut(session_key)
             .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-
-        // Take the agent temporarily
         std::mem::replace(
             &mut session.agent,
-            // Placeholder — will be replaced back
             crate::agent::Agent::from_config(&state.config.lock().clone())?,
         )
     };
 
-    let result = agent.turn(message).await;
+    // Race: agent.turn vs abort signal
+    let result = tokio::select! {
+        biased;
+        _ = abort_rx.wait_for(|v| *v) => {
+            Err(anyhow::anyhow!("aborted"))
+        }
+        r = agent.turn(message) => r,
+    };
 
-    // Put the agent back (count is incremented by caller)
+    // Put agent back
     {
         let mut sessions = state
             .chat_sessions
@@ -556,95 +609,16 @@ async fn run_agent_turn(
     result
 }
 
-/// Legacy streaming send — uses the old message protocol.
-async fn handle_chat_send_streaming(
-    content: &str,
-    state: &AppState,
-    session_key: &str,
-    sender: &mut futures_util::stream::SplitSink<WebSocket, Message>,
-) {
-    // Persist user message
-    persist_message(
-        state,
-        session_key,
-        "user",
-        Some("user"),
-        content,
-        None,
-        None,
-    );
-    auto_label_if_needed(state, session_key, content);
-
-    let provider_label = state
-        .config
-        .lock()
-        .default_provider
-        .clone()
-        .unwrap_or_else(|| "unknown".to_string());
-
-    let _ = state.event_tx.send(serde_json::json!({
-        "type": "agent_start",
-        "provider": provider_label,
-        "model": state.model,
-    }));
-
-    let result = run_agent_turn(state, session_key, content).await;
-
-    match result {
-        Ok(response) => {
-            persist_message(
-                state,
-                session_key,
-                "assistant",
-                Some("assistant"),
-                &response,
-                None,
-                None,
-            );
-            persist_increment_count(state, session_key, 2);
-            sync_memory_count(state, session_key, 2);
-
-            let done = serde_json::json!({
-                "type": "done",
-                "full_response": response,
-            });
-            let _ = sender.send(Message::Text(done.to_string().into())).await;
-
-            let _ = state.event_tx.send(serde_json::json!({
-                "type": "agent_end",
-                "provider": provider_label,
-                "model": state.model,
-            }));
-        }
-        Err(e) => {
-            let sanitized = crate::providers::sanitize_api_error(&e.to_string());
-            persist_message(state, session_key, "error", None, &sanitized, None, None);
-            persist_increment_count(state, session_key, 2);
-            sync_memory_count(state, session_key, 2);
-
-            let err = serde_json::json!({
-                "type": "error",
-                "message": sanitized,
-            });
-            let _ = sender.send(Message::Text(err.to_string().into())).await;
-
-            let _ = state.event_tx.send(serde_json::json!({
-                "type": "error",
-                "component": "ws_chat",
-                "message": sanitized,
-            }));
-        }
-    }
-}
-
 // ── RPC: chat.abort ─────────────────────────────────────────────────────────
 
 fn handle_chat_abort(
     params: &serde_json::Value,
     state: &AppState,
     default_session: &str,
+    token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let session_key = params["session"].as_str().unwrap_or(default_session);
+    check_session_ownership(session_key, token_prefix)?;
 
     let run_id = {
         let mut sessions = state
@@ -652,23 +626,15 @@ fn handle_chat_abort(
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         if let Some(s) = sessions.get_mut(session_key) {
+            // Signal the abort channel
+            if let Some(tx) = s.abort_tx.take() {
+                let _ = tx.send(true);
+            }
             s.run_id.take()
         } else {
             None
         }
     };
-
-    if let Some(ref rid) = run_id {
-        persist_message(
-            state,
-            session_key,
-            "interrupted",
-            None,
-            "Generation aborted by user",
-            None,
-            Some(rid),
-        );
-    }
 
     Ok(serde_json::json!({
         "ok": true,
@@ -762,10 +728,12 @@ fn handle_sessions_new(
 fn handle_sessions_rename(
     params: &serde_json::Value,
     state: &AppState,
+    token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let key = params["key"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'key'"))?;
+    check_session_ownership(key, token_prefix)?;
     let label = params["label"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'label'"))?;
@@ -792,10 +760,12 @@ fn handle_sessions_rename(
 fn handle_sessions_delete(
     params: &serde_json::Value,
     state: &AppState,
+    token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let key = params["key"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'key'"))?;
+    check_session_ownership(key, token_prefix)?;
 
     {
         let mut sessions = state
@@ -817,10 +787,12 @@ fn handle_sessions_delete(
 fn handle_sessions_reset(
     params: &serde_json::Value,
     state: &AppState,
+    token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let key = params["key"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'key'"))?;
+    check_session_ownership(key, token_prefix)?;
 
     {
         let mut sessions = state
@@ -884,6 +856,31 @@ fn persist_increment_count(state: &AppState, session_key: &str, count: i64) {
             if let Err(e) = db.increment_message_count(session_key) {
                 tracing::warn!("chat_db: failed to increment count: {e}");
                 break;
+            }
+        }
+    }
+}
+
+/// Persist token usage from a completed turn.
+fn persist_usage(
+    state: &AppState,
+    session_key: &str,
+    usage: Option<&crate::providers::traits::TokenUsage>,
+) {
+    if let Some(u) = usage {
+        let input = u.input_tokens.unwrap_or(0) as i64;
+        let output = u.output_tokens.unwrap_or(0) as i64;
+        if input > 0 || output > 0 {
+            if let Some(db) = state.chat_db.as_ref() {
+                if let Err(e) = db.add_token_usage(session_key, input, output) {
+                    tracing::warn!("chat_db: failed to add token usage: {e}");
+                }
+            }
+            if let Ok(mut sessions) = state.chat_sessions.lock() {
+                if let Some(s) = sessions.get_mut(session_key) {
+                    s.input_tokens += u.input_tokens.unwrap_or(0);
+                    s.output_tokens += u.output_tokens.unwrap_or(0);
+                }
             }
         }
     }
