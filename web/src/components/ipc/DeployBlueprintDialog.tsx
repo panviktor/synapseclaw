@@ -280,7 +280,7 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
                     <option value="none">None — IPC only</option>
                     {CHANNELS.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
-                  {selectedCh?.fields.filter((f) => f.required).map((field) => (
+                  {selectedCh?.fields.map((field) => (
                     <input
                       key={field.key}
                       type={field.type === 'password' ? 'password' : 'text'}
@@ -388,9 +388,11 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
             <div className="p-4 rounded-xl bg-[#050510] border border-[#1a1a3e]/50 text-xs text-[#556080] space-y-2">
               <p className="font-medium text-[#8892a8]">Setup instructions:</p>
               <p>1. Place each agent's config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> on its target machine</p>
-              <p>2. For each agent run: <code className="text-[#0080ff]">zeroclaw pair --code CODE --broker {brokerUrl}</code></p>
-              <p>3. Start each agent: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
-              <p>4. <span className="text-yellow-400">Add the broker config patch</span> to your broker's config.toml and restart it</p>
+              <p>2. For each agent, pair with broker:</p>
+              <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: CODE&apos;</pre>
+              <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in each config.toml under [agents_ipc]</p>
+              <p>4. Start each agent: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
+              <p>5. <span className="text-yellow-400">Add the broker config patch</span> to your broker's config.toml and restart it</p>
             </div>
 
             <button

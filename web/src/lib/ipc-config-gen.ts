@@ -1,5 +1,6 @@
 // TOML config generator for Phase 3.6 Agent Provisioning UI
 // Config is generated client-side — API keys never touch the broker (AD-1)
+// Fields verified against src/config/schema.rs top-level Config struct
 
 import { getProviderById } from './ipc-providers';
 import { getChannelById } from './ipc-channels';
@@ -28,6 +29,9 @@ function tomlList(items: string[]): string {
   return `[${items.map((i) => `"${escapeToml(i.trim())}"`).join(', ')}]`;
 }
 
+/** Fields that should be emitted as bare integers (not quoted strings). */
+const NUMERIC_FIELDS = new Set(['port']);
+
 export function generateAgentConfig(inputs: AgentConfigInputs): string {
   const provider = getProviderById(inputs.providerId);
   const lines: string[] = [];
@@ -36,26 +40,24 @@ export function generateAgentConfig(inputs: AgentConfigInputs): string {
   lines.push(`# Generated for agent: ${inputs.agentId}`);
   lines.push('');
 
-  // ── Provider ──
+  // ── Provider (top-level fields per schema.rs:74-86) ──
   const providerName = inputs.providerId === 'custom' ? `custom:${inputs.baseUrl}` : inputs.providerId;
   lines.push(`default_provider = "${escapeToml(providerName)}"`);
   lines.push(`default_model = "${escapeToml(inputs.model)}"`);
-  lines.push('');
 
-  // API key as env var comment + direct config
+  // api_key is a top-level field (schema.rs:74)
   if (inputs.apiKey) {
     const envVar = provider?.env_var ?? `${inputs.providerId.toUpperCase().replace(/-/g, '_')}_API_KEY`;
-    lines.push(`# Set ${envVar} environment variable, or configure below:`);
+    lines.push(`# Or set env: ${envVar}`);
     lines.push(`api_key = "${escapeToml(inputs.apiKey)}"`);
-    lines.push('');
   }
 
-  // Base URL for local/custom providers
-  if (inputs.baseUrl && (provider?.tier === 'local' || inputs.providerId === 'custom')) {
-    lines.push(`[provider_overrides."${escapeToml(providerName)}"]`);
-    lines.push(`base_url = "${escapeToml(inputs.baseUrl)}"`);
-    lines.push('');
+  // api_url is a top-level field (schema.rs:76) — for local/custom providers
+  if (inputs.baseUrl) {
+    lines.push(`api_url = "${escapeToml(inputs.baseUrl)}"`);
   }
+
+  lines.push('');
 
   // ── Gateway ──
   lines.push('[gateway]');
@@ -86,6 +88,11 @@ export function generateAgentConfig(inputs: AgentConfigInputs): string {
         if (field.type === 'list') {
           const items = value.split(',').map((s) => s.trim()).filter(Boolean);
           lines.push(`${field.key} = ${tomlList(items)}`);
+        } else if (NUMERIC_FIELDS.has(field.key)) {
+          const num = parseInt(value, 10);
+          if (!isNaN(num)) {
+            lines.push(`${field.key} = ${num}`);
+          }
         } else {
           lines.push(`${field.key} = "${escapeToml(value)}"`);
         }
@@ -94,10 +101,12 @@ export function generateAgentConfig(inputs: AgentConfigInputs): string {
     }
   }
 
-  // ── System prompt ──
+  // ── System prompt as workspace file ──
+  // The main agent reads its prompt from workspace files, not from config.
+  // DelegateAgentConfig has system_prompt, but the root Config does not.
   if (inputs.systemPrompt) {
-    lines.push('[agent]');
-    lines.push(`system_prompt = """${inputs.systemPrompt}"""`);
+    lines.push('# System prompt: place the following in ~/.zeroclaw/workspace/instructions.md');
+    lines.push(`# ${inputs.systemPrompt.replace(/\n/g, '\n# ')}`);
     lines.push('');
   }
 

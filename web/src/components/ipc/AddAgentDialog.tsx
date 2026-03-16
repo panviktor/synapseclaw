@@ -123,8 +123,18 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
     switch (step) {
       case 'preset': return selectedPreset !== null;
       case 'identity': return agentId.length > 0 && /^[a-z0-9_-]+$/.test(agentId);
-      case 'provider': return providerId.length > 0 && model.length > 0;
-      case 'channel': return true;
+      case 'provider': {
+        if (!providerId || !model) return false;
+        const p = PROVIDERS.find((pr) => pr.id === providerId);
+        if (p?.credential_type === 'api_key' && !apiKey) return false;
+        return true;
+      }
+      case 'channel': {
+        if (channelId === 'none' || !channelId) return true;
+        const ch = CHANNELS.find((c) => c.id === channelId);
+        if (!ch) return true;
+        return ch.fields.filter((f) => f.required).every((f) => channelValues[f.key]?.trim());
+      }
       default: return false;
     }
   };
@@ -372,8 +382,10 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
             <div className="p-4 rounded-xl bg-[#050510] border border-[#1a1a3e]/50 text-xs text-[#556080] space-y-2">
               <p className="font-medium text-[#8892a8]">Setup instructions:</p>
               <p>1. Place config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> on the target machine</p>
-              <p>2. Run: <code className="text-[#0080ff]">zeroclaw pair --code {pairingCode} --broker {brokerUrl}</code></p>
-              <p>3. Run: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
+              <p>2. Pair with broker:</p>
+              <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: {pairingCode}&apos;</pre>
+              <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in config.toml under [agents_ipc]</p>
+              <p>4. Run: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
             </div>
 
             <button
