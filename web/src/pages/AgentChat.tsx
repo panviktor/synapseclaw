@@ -146,7 +146,9 @@ export default function AgentChat() {
           break;
         }
 
-          case 'tool_call': {
+        case 'tool_call': {
+          // Only show if event belongs to active session
+          if (msg.session_key && msg.session_key !== activeSessionRef.current) break;
           const toolCallMsg: ChatMessage = {
             id: generateUUID(),
             role: 'agent',
@@ -155,13 +157,14 @@ export default function AgentChat() {
             kind: 'tool_call',
           };
           setMessages((prev) => [...prev, toolCallMsg]);
-          if (activeSessionRef.current) {
-            appendCachedMessage(activeSessionRef.current, toCache(toolCallMsg));
+          if (msg.session_key) {
+            appendCachedMessage(msg.session_key, toCache(toolCallMsg));
           }
           break;
         }
 
         case 'tool_result': {
+          if (msg.session_key && msg.session_key !== activeSessionRef.current) break;
           const toolResultMsg: ChatMessage = {
             id: generateUUID(),
             role: 'agent',
@@ -170,8 +173,8 @@ export default function AgentChat() {
             kind: 'tool_result',
           };
           setMessages((prev) => [...prev, toolResultMsg]);
-          if (activeSessionRef.current) {
-            appendCachedMessage(activeSessionRef.current, toCache(toolResultMsg));
+          if (msg.session_key) {
+            appendCachedMessage(msg.session_key, toCache(toolResultMsg));
           }
           break;
         }
@@ -185,18 +188,14 @@ export default function AgentChat() {
           }
           // Run lifecycle events (multi-tab typing sync)
           if (msg.type === 'session.run_started') {
-            // Another tab started a run — show typing if it's our active session
-            const evtKey = (msg as Record<string, unknown>).session_key as string | undefined;
-            if (evtKey && evtKey === activeSessionRef.current) {
+            if (msg.session_key && msg.session_key === activeSessionRef.current) {
               setTyping(true);
             }
           }
           if (msg.type === 'session.run_finished' || msg.type === 'session.run_interrupted') {
-            const evtKey = (msg as Record<string, unknown>).session_key as string | undefined;
-            if (evtKey && evtKey === activeSessionRef.current) {
+            if (msg.session_key && msg.session_key === activeSessionRef.current) {
               setTyping(false);
             }
-            // Refresh sessions list for updated state
             ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
               .then((r) => setSessions(r.sessions))
               .catch(() => {});
@@ -366,9 +365,12 @@ export default function AgentChat() {
     setTyping(true);
     pendingContentRef.current = '';
 
+    // Capture session at send time — user may switch sessions during in-flight run
+    const sendSession = activeSession ?? 'default';
+
     wsRef.current.rpc<{ run_id: string; response?: string; aborted?: boolean }>(
       'chat.send',
-      { session: activeSession ?? 'default', message: trimmed },
+      { session: sendSession, message: trimmed },
       120000, // 2 min timeout for LLM response
     ).then((res) => {
       if (res.response) {
@@ -379,10 +381,11 @@ export default function AgentChat() {
           timestamp: new Date(),
           kind: 'assistant',
         };
-        setMessages((prev) => [...prev, agentMsg]);
-        if (activeSessionRef.current) {
-          appendCachedMessage(activeSessionRef.current, toCache(agentMsg));
+        // Only append to visible messages if still on the same session
+        if (activeSessionRef.current === sendSession) {
+          setMessages((prev) => [...prev, agentMsg]);
         }
+        appendCachedMessage(sendSession, toCache(agentMsg));
       }
       if (res.aborted) {
         const abortMsg: ChatMessage = {
@@ -392,9 +395,13 @@ export default function AgentChat() {
           timestamp: new Date(),
           kind: 'interrupted',
         };
-        setMessages((prev) => [...prev, abortMsg]);
+        if (activeSessionRef.current === sendSession) {
+          setMessages((prev) => [...prev, abortMsg]);
+        }
       }
-      setTyping(false);
+      if (activeSessionRef.current === sendSession) {
+        setTyping(false);
+      }
       // Refresh sessions for updated preview/counts
       wsRef.current?.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
         .then((r) => setSessions(r.sessions))
@@ -407,11 +414,13 @@ export default function AgentChat() {
         timestamp: new Date(),
         kind: 'error',
       };
-      setMessages((prev) => [...prev, errorMsg]);
-      if (activeSessionRef.current) {
-        appendCachedMessage(activeSessionRef.current, toCache(errorMsg));
+      if (activeSessionRef.current === sendSession) {
+        setMessages((prev) => [...prev, errorMsg]);
       }
-      setTyping(false);
+      appendCachedMessage(sendSession, toCache(errorMsg));
+      if (activeSessionRef.current === sendSession) {
+        setTyping(false);
+      }
     });
 
     setInput('');

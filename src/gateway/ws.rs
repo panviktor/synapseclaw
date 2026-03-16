@@ -1189,6 +1189,8 @@ async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
                     tracing::warn!("chat_db: failed to update session summary: {e}");
                 }
             }
+            // Notify other tabs/clients about the updated summary
+            emit_session_event(state, "session.updated", session_key);
             tracing::debug!("session summary updated for {session_key}");
         }
         Err(e) => {
