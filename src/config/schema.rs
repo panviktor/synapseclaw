@@ -84,6 +84,9 @@ pub struct Config {
     /// Default model routed through the selected provider (e.g. `"anthropic/claude-sonnet-4-6"`).
     #[serde(alias = "model")]
     pub default_model: Option<String>,
+    /// Model used for session summarization (cheaper than primary). Falls back to `default_model`.
+    #[serde(default)]
+    pub summary_model: Option<String>,
     /// Optional named provider profiles keyed by id (Codex app-server compatible layout).
     #[serde(default)]
     pub model_providers: HashMap<String, ModelProviderConfig>,
@@ -4449,6 +4452,7 @@ impl Default for Config {
             api_path: None,
             default_provider: Some("openrouter".to_string()),
             default_model: Some("anthropic/claude-sonnet-4.6".to_string()),
+            summary_model: None,
             model_providers: HashMap::new(),
             default_temperature: default_temperature(),
             provider_timeout_secs: default_provider_timeout_secs(),
@@ -6596,6 +6600,7 @@ default_temperature = 0.7
             api_path: None,
             default_provider: Some("openrouter".into()),
             default_model: Some("gpt-4o".into()),
+            summary_model: None,
             model_providers: HashMap::new(),
             default_temperature: 0.5,
             provider_timeout_secs: 120,
@@ -6951,6 +6956,7 @@ tool_dispatcher = "xml"
             api_path: None,
             default_provider: Some("openrouter".into()),
             default_model: Some("test-model".into()),
+            summary_model: None,
             model_providers: HashMap::new(),
             default_temperature: 0.9,
             provider_timeout_secs: 120,

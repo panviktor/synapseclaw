@@ -105,7 +105,18 @@ export interface SSEEvent {
 }
 
 export interface WsMessage {
-  type: 'chunk' | 'error' | 'rpc_response' | 'session.updated' | 'session.deleted' | string;
+  type:
+    | 'chunk'
+    | 'error'
+    | 'rpc_response'
+    | 'session.updated'
+    | 'session.deleted'
+    | 'session.run_started'
+    | 'session.run_finished'
+    | 'session.run_interrupted'
+    | 'tool_call'
+    | 'tool_result'
+    | string;
   content?: string;
   full_response?: string;
   name?: string;

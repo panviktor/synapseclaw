@@ -1476,6 +1476,7 @@ mod tests {
             config: std::sync::Arc::new(parking_lot::Mutex::new(config)),
             provider: std::sync::Arc::new(TestProvider),
             model: "test".into(),
+            summary_model: None,
             temperature: 0.7,
             mem: std::sync::Arc::new(TestMemory),
             auto_save: false,

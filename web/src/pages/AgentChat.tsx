@@ -142,9 +142,57 @@ export default function AgentChat() {
           break;
         }
 
+          case 'tool_call': {
+          const toolCallMsg: ChatMessage = {
+            id: generateUUID(),
+            role: 'agent',
+            content: msg.content ?? '',
+            timestamp: new Date(),
+            kind: 'tool_call',
+          };
+          setMessages((prev) => [...prev, toolCallMsg]);
+          if (activeSessionRef.current) {
+            appendCachedMessage(activeSessionRef.current, toCache(toolCallMsg));
+          }
+          break;
+        }
+
+        case 'tool_result': {
+          const toolResultMsg: ChatMessage = {
+            id: generateUUID(),
+            role: 'agent',
+            content: msg.content ?? '',
+            timestamp: new Date(),
+            kind: 'tool_result',
+          };
+          setMessages((prev) => [...prev, toolResultMsg]);
+          if (activeSessionRef.current) {
+            appendCachedMessage(activeSessionRef.current, toCache(toolResultMsg));
+          }
+          break;
+        }
+
         default:
           // Handle server-push session events (multi-tab freshness)
           if (msg.type === 'session.updated' || msg.type === 'session.deleted') {
+            ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
+              .then((r) => setSessions(r.sessions))
+              .catch(() => {});
+          }
+          // Run lifecycle events (multi-tab typing sync)
+          if (msg.type === 'session.run_started') {
+            // Another tab started a run — show typing if it's our active session
+            const evtKey = (msg as Record<string, unknown>).session_key as string | undefined;
+            if (evtKey && evtKey === activeSessionRef.current) {
+              setTyping(true);
+            }
+          }
+          if (msg.type === 'session.run_finished' || msg.type === 'session.run_interrupted') {
+            const evtKey = (msg as Record<string, unknown>).session_key as string | undefined;
+            if (evtKey && evtKey === activeSessionRef.current) {
+              setTyping(false);
+            }
+            // Refresh sessions list for updated state
             ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
               .then((r) => setSessions(r.sessions))
               .catch(() => {});
@@ -465,16 +513,28 @@ export default function AgentChat() {
                     className={`rounded-2xl px-4 py-3 ${
                       msg.role === 'user'
                         ? 'text-white'
-                        : 'text-[#e8edf5] border border-[#1a1a3e]'
+                        : msg.kind === 'tool_call' || msg.kind === 'tool_result'
+                          ? 'text-[#8890a8] border border-[#1a1a3e]/50'
+                          : 'text-[#e8edf5] border border-[#1a1a3e]'
                     }`}
                     style={{
                       background:
                         msg.role === 'user'
                           ? 'linear-gradient(135deg, #0080ff, #0066cc)'
-                          : 'linear-gradient(135deg, rgba(13,13,32,0.8), rgba(10,10,26,0.6))',
+                          : msg.kind === 'tool_call' || msg.kind === 'tool_result'
+                            ? 'rgba(10,10,26,0.4)'
+                            : 'linear-gradient(135deg, rgba(13,13,32,0.8), rgba(10,10,26,0.6))',
                     }}
                   >
-                    <p className="text-sm whitespace-pre-wrap break-words">{msg.content}</p>
+                    {msg.kind === 'tool_call' && (
+                      <p className="text-[10px] text-[#556080] mb-1 uppercase tracking-wide">Tool Call</p>
+                    )}
+                    {msg.kind === 'tool_result' && (
+                      <p className="text-[10px] text-[#556080] mb-1 uppercase tracking-wide">Tool Result</p>
+                    )}
+                    <p className={`text-sm whitespace-pre-wrap break-words ${
+                      msg.kind === 'tool_call' || msg.kind === 'tool_result' ? 'font-mono text-xs' : ''
+                    }`}>{msg.content}</p>
                     <p
                       className={`text-[10px] mt-1.5 ${
                         msg.role === 'user' ? 'text-white/50' : 'text-[#334060]'
