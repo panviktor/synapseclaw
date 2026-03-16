@@ -538,7 +538,7 @@ agents_root = "~/.zeroclaw/agents" # fixed root, no arbitrary paths
 allow_blueprints = false           # Phase 3.6 fleet blueprints
 ```
 
-**Security rule:** `gateway.ui_provisioning.enabled` can ONLY be changed by editing the local config file + restarting the broker. It MUST be rejected if submitted via `PUT /api/config` — the config PUT handler must strip or reject changes to this field. Rationale: `/api/config` is bearer-auth only (not localhost-gated), so allowing it to flip the provisioning master switch would be a privilege escalation path from any paired client.
+**Security rule:** The entire `[gateway.ui_provisioning]` subtree (`enabled`, `mode`, `agents_root`, `allow_blueprints`) is immutable via `PUT /api/config`. The config PUT handler MUST strip or reject any changes to these fields. They can ONLY be changed by editing the local config file + restarting the broker. Rationale: `/api/config` is bearer-auth only (not localhost-gated), so allowing any paired client to escalate `mode` from `config_only` to `service_install`, change `agents_root`, or flip `enabled` would be a privilege escalation path.
 
 ### Modes
 
@@ -558,9 +558,11 @@ POST /admin/provisioning/arm
 ```
 
 - **Localhost-only** — same gate as `/admin/ipc/*`
-- **Paired admin token required** — bearer auth
+- **Human operator token only (trust_level ≤ 1)** — tokens with IPC `TokenMetadata` (i.e. agent tokens) are rejected even if they originate from localhost. Only tokens without metadata (human operator pairing) or with explicit `trust_level` 0 or 1 are accepted. This prevents a co-located agent process from escalating to provisioning operations.
 - **TTL auto-expire** — after N minutes, provisioning disarmed
 - **Broker restart** — always disarmed (safe default)
+
+**Identity rule:** "paired admin token" means a human operator token, not any paired token. Concretely: `gateway.token_metadata` lookup for the bearer hash must return `None` (human token, no agent identity) OR `trust_level ≤ 1` (L0 admin / L1 coordinator). All other tokens (L2+ agents) are denied even from localhost.
 
 ### Endpoints
 
