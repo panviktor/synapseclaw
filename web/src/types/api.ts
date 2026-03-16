@@ -105,11 +105,39 @@ export interface SSEEvent {
 }
 
 export interface WsMessage {
-  type: 'message' | 'chunk' | 'tool_call' | 'tool_result' | 'done' | 'error';
+  type: 'message' | 'chunk' | 'tool_call' | 'tool_result' | 'done' | 'error' | 'rpc_response';
   content?: string;
   full_response?: string;
   name?: string;
   args?: any;
   output?: string;
   message?: string;
+  // RPC response fields
+  id?: string;
+  result?: any;
+  error?: string;
+}
+
+export interface ChatSessionInfo {
+  key: string;
+  label: string | null;
+  last_active: number;
+  message_count: number;
+  preview: string | null;
+  has_active_run: boolean;
+  input_tokens: number;
+  output_tokens: number;
+  current_goal: string | null;
+}
+
+export interface ChatMessageInfo {
+  id: number;
+  kind: string;
+  role: string | null;
+  content: string;
+  tool_name: string | null;
+  run_id: string | null;
+  timestamp: number;
+  input_tokens: number | null;
+  output_tokens: number | null;
 }
