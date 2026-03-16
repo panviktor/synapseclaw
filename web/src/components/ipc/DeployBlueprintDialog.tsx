@@ -426,12 +426,12 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
             </div>
 
             <button onClick={downloadAll} className="btn-electric w-full py-2.5 text-sm font-medium">
-              Download All Configs (one by one)
+              Download All Files
             </button>
 
             <div className="p-4 rounded-xl bg-[#050510] border border-[#1a1a3e]/50 text-xs text-[#556080] space-y-2">
               <p className="font-medium text-[#8892a8]">Setup instructions:</p>
-              <p>1. Place each agent's config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> and instructions.md in <code className="text-[#0080ff]">~/.zeroclaw/workspace/</code></p>
+              <p>1. Place each agent's config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> and rename <code className="text-[#0080ff]">&lt;agent&gt;-instructions.md</code> to <code className="text-[#0080ff]">~/.zeroclaw/workspace/instructions.md</code></p>
               <p>2. For each agent, pair with broker:</p>
               <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: CODE&apos;</pre>
               <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in each config.toml under [agents_ipc]</p>
