@@ -129,22 +129,24 @@ zeroclaw service install --instance code
 
 ### systemd (Linux)
 
-Templated unit: `zeroclaw@.service`
+Templated user unit: `~/.config/systemd/user/zeroclaw@.service`
 
 ```ini
 [Unit]
 Description=ZeroClaw Agent (%i)
-After=network-online.target
+After=default.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/zeroclaw daemon --instance %i
+ExecStart=%h/.local/bin/zeroclaw daemon --instance %i
 Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 ```
+
+Note: uses `WantedBy=default.target` (user-level), not `multi-user.target` (system-level). Consistent with current `service install` which uses `systemctl --user`.
 
 Usage:
 ```bash
@@ -174,6 +176,10 @@ Per-instance scheduled task: `ZeroClaw Agent (<instance>)`
 ```bash
 zeroclaw service install --instance opus    # → "ZeroClaw Agent (opus)" task
 ```
+
+### OpenRC (Linux, non-systemd)
+
+**Out of scope for Phase 3.8.** Current code supports OpenRC (`service/mod.rs:17`) but multi-instance templating for OpenRC is non-trivial (no native `@` template). Follow-up if needed — systemd covers the primary Linux target.
 
 ---
 
@@ -266,7 +272,8 @@ This means after broker restart, the registry seed comes from DB (gateway_url + 
 4. Broker stores in `agent_gateways` table + in-memory `AgentRegistry`
 5. Broker polls agent `/health` every 30s; also fetches `/api/status` for metadata
 6. If agent unreachable for 3 consecutive polls → status = `offline`
-7. **Agent periodic re-registration:** every 5 minutes, agent re-POSTs registration (covers broker restart case — broker DB has seed, but if DB was lost, agent re-registers)
+7. **Initial registration with fast retry:** agent retries registration with exponential backoff (1s, 2s, 4s, 8s, max 30s) until first success. This covers "agent starts before broker" scenario — no 5-minute wait.
+8. **Periodic re-registration:** after first success, agent re-POSTs registration every 5 minutes as a refresh (covers broker restart with DB loss).
 
 ---
 
@@ -288,7 +295,8 @@ Browser                    Broker                      Agent
   │── WS /ws/chat ──────────>│                           │
   │   ?agent=opus            │                           │
   │                          │── WS /ws/chat ───────────>│
-  │                          │   ?token=<proxy_token>     │
+  │                          │   Sec-WebSocket-Protocol:   │
+  │                          │   bearer.<proxy_token>      │
   │                          │                           │
   │── RPC sessions.list ────>│── RPC sessions.list ─────>│
   │<── rpc_response ─────────│<── rpc_response ──────────│
@@ -302,7 +310,7 @@ Browser                    Broker                      Agent
 Broker is a **transparent WS relay** for chat:
 - Browser opens WS to broker with `?agent=<agent_id>` param
 - Broker looks up agent's `gateway_url` + `proxy_token` in registry
-- Broker opens WS to agent's `/ws/chat?token=<proxy_token>`
+- Broker opens WS to agent's `/ws/chat` with `Sec-WebSocket-Protocol: zeroclaw.v1, bearer.<proxy_token>` (not query param — avoids token leaking in logs/diagnostics)
 - All frames are forwarded bidirectionally (no parsing, no transformation)
 - If agent disconnects, broker sends error frame to browser and closes
 
@@ -331,8 +339,8 @@ This is acceptable for v1 (lab/family use). Future enhancement path: broker inje
 |----------|----------|
 | **Agent goes offline** | Broker health poll marks `offline` in registry. Browser shows "Agent offline" in selector. Sessions persist in agent's DB, resume when agent returns. |
 | **Agent restarts** | Agent re-registers (immediate POST + periodic 5min). Broker updates registry. If browser had it selected, proxy WS reconnects automatically. Sessions resume from agent's chat DB. |
-| **Broker restarts** | Registry seed loaded from `agent_gateways` DB table. Live metadata (status, model) refreshes within 30s poll. Agents re-register within 5min. Browser reconnects via existing WS auto-reconnect. No session data loss (sessions on agents). |
-| **Machine reboot** | systemd/launchd starts all enabled services. Broker starts first (lower port). Agents start, register with broker. Order doesn't matter — agents retry registration until broker is up. |
+| **Broker restarts** | Registry seed loaded from `agent_gateways` DB table. Live metadata (status, model) refreshes within 30s poll. Agents detect failed re-registration and switch to fast retry (backoff). Browser reconnects via existing WS auto-reconnect. No session data loss (sessions on agents). |
+| **Machine reboot** | systemd/launchd starts all enabled services. Start order does not matter — agents use fast retry with backoff until broker accepts registration. No manual intervention needed. |
 | **One agent restart** | Other agents unaffected. Restarted agent re-registers. Browser can switch to working agents during downtime. |
 | **Config change** | Restart specific instance: `systemctl --user restart zeroclaw@opus`. No impact on other instances. |
 | **Browser refresh** | Reconnects to broker WS. Agent selector restores from localStorage. Sessions loaded from agent via proxy. |
@@ -381,7 +389,8 @@ This is acceptable for v1 (lab/family use). Future enhancement path: broker inje
 
 ### Step 4: Agent auto-registration + periodic re-registration
 - Agent daemon: after IPC pairing, POST registration to broker
-- Re-register every 5 minutes (covers broker restart, DB loss)
+- **Initial registration:** fast retry with exponential backoff (1s→2s→4s→...→30s max) until first success. Covers "agent starts before broker" without 5-min wait.
+- **After first success:** periodic re-registration every 5 minutes as refresh (covers broker restart, DB loss)
 - Config: `gateway_url` auto-detected from `gateway.host:gateway.port` if not set
 
 ### Step 5: Broker health polling + AgentRegistry
@@ -397,7 +406,7 @@ This is acceptable for v1 (lab/family use). Future enhancement path: broker inje
 ### Step 7: WS chat proxy on broker
 - New WS endpoint: `/ws/chat/proxy?agent=<agent_id>`
 - Broker looks up `gateway_url` + `proxy_token` from AgentRegistry
-- Opens upstream WS to agent's `/ws/chat?token=<proxy_token>`
+- Opens upstream WS to agent's `/ws/chat` with `Sec-WebSocket-Protocol: bearer.<proxy_token>` (subprotocol auth, not query param)
 - Bidirectional frame relay (transparent, no parsing)
 - Error handling: agent offline → error frame → close
 

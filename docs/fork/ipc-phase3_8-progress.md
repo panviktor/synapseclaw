@@ -11,10 +11,10 @@
 | 1 | Multi-instance service model | todo | — | `--instance <name>`, templated systemd/launchd units, config dir layout |
 | 2 | Proxy token generation + config | todo | — | `proxy_token` in `[agents_ipc]`, auto-generate, encrypt at rest |
 | 3 | Agent gateway registration endpoint | todo | — | `POST /api/ipc/register-gateway`, `agent_gateways` table in IpcDb |
-| 4 | Agent auto-registration + re-registration | todo | — | POST on startup, re-register every 5min |
+| 4 | Agent auto-registration + re-registration | todo | — | Fast retry with backoff on startup, periodic 5min refresh after |
 | 5 | Broker health polling + AgentRegistry | todo | — | New `AgentRegistry` struct, 30s poll, offline detection |
 | 6 | Broker `/api/agents` endpoint | todo | — | List agents with live status for browser selector |
-| 7 | WS chat proxy on broker | todo | — | `/ws/chat/proxy?agent=<id>`, bidirectional relay, proxy_token auth |
+| 7 | WS chat proxy on broker | todo | — | `/ws/chat/proxy?agent=<id>`, bidirectional relay, subprotocol auth |
 | 8 | HTTP API proxy for per-agent calls | todo | — | `GET /api/agents/{id}/status` etc. |
 | 9 | Browser agent selector UI | todo | — | Dropdown in sidebar, localStorage persistence |
 | 10 | Agent status display in sidebar | todo | — | Extend 3.7b panel with selected agent info via proxy |
@@ -34,14 +34,18 @@
 - [ ] One SSH tunnel sufficient
 
 ### Service lifecycle
-- [ ] Multi-instance install works on Linux (systemd)
+- [ ] Multi-instance install works on Linux (systemd user units, `default.target`)
 - [ ] Multi-instance install works on macOS (launchd)
-- [ ] Machine reboot → all services start
-- [ ] Start in any order (agents retry until broker up)
-- [ ] Restart one agent → others unaffected
-- [ ] Restart broker → agents re-register, no session loss
+- [ ] Multi-instance install works on Windows (scheduled tasks)
+- [ ] OpenRC: explicitly out of scope (documented)
+- [ ] Machine reboot → all enabled services start automatically
+- [ ] Start in any order (agents fast-retry with backoff until broker up)
+- [ ] Restart one agent → others and broker unaffected
+- [ ] Restart broker → agents detect failure, switch to fast retry, re-register
+- [ ] No manual intervention needed for any restart scenario
 
 ### Auth
-- [ ] proxy_token generated, encrypted, used for broker→agent
+- [ ] proxy_token generated, encrypted, used for broker→agent via subprotocol
 - [ ] Invalid proxy_token → clean error in browser
 - [ ] Three-layer auth works end-to-end (operator→broker→agent)
+- [ ] proxy_token never appears in URL query strings or logs
