@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { AGENT_PRESETS, type AgentPreset } from '@/lib/ipc-presets';
 import { PROVIDERS, getProvidersByTier } from '@/lib/ipc-providers';
 import { CHANNELS } from '@/lib/ipc-channels';
-import { generateAgentConfig, downloadAsFile, type AgentConfigInputs } from '@/lib/ipc-config-gen';
+import { generateAgentConfig, generateInstructionsMd, downloadAsFile, type AgentConfigInputs } from '@/lib/ipc-config-gen';
 import { createPaircode } from '@/lib/ipc-api';
 import TrustBadge from './TrustBadge';
 
@@ -128,6 +128,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
         if (!providerId || !model) return false;
         const p = PROVIDERS.find((pr) => pr.id === providerId);
         if (p?.credential_type === 'api_key' && !apiKey) return false;
+        if ((providerId === 'custom' || p?.tier === 'local') && !baseUrl) return false;
         return true;
       }
       case 'channel': {
@@ -378,11 +379,19 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
               >
                 Download {agentId}-config.toml
               </button>
+              {systemPrompt && (
+                <button
+                  onClick={() => downloadAsFile('instructions.md', generateInstructionsMd(systemPrompt))}
+                  className="w-full py-2 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors"
+                >
+                  Download instructions.md
+                </button>
+              )}
             </div>
 
             <div className="p-4 rounded-xl bg-[#050510] border border-[#1a1a3e]/50 text-xs text-[#556080] space-y-2">
               <p className="font-medium text-[#8892a8]">Setup instructions:</p>
-              <p>1. Place config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> on the target machine</p>
+              <p>1. Place config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> and instructions.md in <code className="text-[#0080ff]">~/.zeroclaw/workspace/</code></p>
               <p>2. Pair with broker:</p>
               <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: {pairingCode}&apos;</pre>
               <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in config.toml under [agents_ipc]</p>
