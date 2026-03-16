@@ -2698,6 +2698,14 @@ pub async fn handle_ipc_register_gateway(
             )
         })?;
 
+    // Update in-memory AgentRegistry
+    state
+        .agent_registry
+        .upsert(&meta.agent_id, gateway_url, proxy_token);
+    state
+        .agent_registry
+        .set_trust_info(&meta.agent_id, meta.trust_level, &meta.role);
+
     info!(
         agent_id = %meta.agent_id,
         gateway_url = %gateway_url,
