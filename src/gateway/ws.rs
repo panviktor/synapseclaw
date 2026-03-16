@@ -750,6 +750,7 @@ fn handle_sessions_list(state: &AppState, token_prefix: &str) -> anyhow::Result<
                 "input_tokens": s.input_tokens,
                 "output_tokens": s.output_tokens,
                 "current_goal": s.current_goal,
+                "session_summary": s.session_summary,
             })
         })
         .collect();
