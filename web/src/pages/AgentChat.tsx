@@ -114,70 +114,18 @@ export default function AgentChat() {
       setReconnecting(true);
     };
 
+    // Server-push messages (non-RPC). With the RPC-based send, most chat
+    // responses arrive via rpc_response. These handlers cover server-initiated
+    // push events and future streaming support.
     ws.onMessage = (msg: WsMessage) => {
       switch (msg.type) {
         case 'chunk':
-          setTyping(true);
+          // Future: real-time streaming chunks
           pendingContentRef.current += msg.content ?? '';
           break;
 
-        case 'message':
-        case 'done': {
-          const content = msg.full_response ?? msg.content ?? pendingContentRef.current;
-          if (content) {
-            const chatMsg: ChatMessage = {
-              id: generateUUID(),
-              role: 'agent',
-              content,
-              timestamp: new Date(),
-              kind: 'assistant',
-            };
-            setMessages((prev) => [...prev, chatMsg]);
-            // Update cache
-            if (activeSessionRef.current) {
-              appendCachedMessage(activeSessionRef.current, toCache(chatMsg));
-            }
-          }
-          pendingContentRef.current = '';
-          setTyping(false);
-          // Refresh sessions list for updated preview/counts
-          ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
-            .then((res) => setSessions(res.sessions))
-            .catch(() => {});
-          break;
-        }
-
-        case 'tool_call': {
-          const chatMsg: ChatMessage = {
-            id: generateUUID(),
-            role: 'agent',
-            content: `[Tool Call] ${msg.name ?? 'unknown'}(${JSON.stringify(msg.args ?? {})})`,
-            timestamp: new Date(),
-            kind: 'tool_call',
-          };
-          setMessages((prev) => [...prev, chatMsg]);
-          if (activeSessionRef.current) {
-            appendCachedMessage(activeSessionRef.current, toCache(chatMsg));
-          }
-          break;
-        }
-
-        case 'tool_result': {
-          const chatMsg: ChatMessage = {
-            id: generateUUID(),
-            role: 'agent',
-            content: `[Tool Result] ${msg.output ?? ''}`,
-            timestamp: new Date(),
-            kind: 'tool_result',
-          };
-          setMessages((prev) => [...prev, chatMsg]);
-          if (activeSessionRef.current) {
-            appendCachedMessage(activeSessionRef.current, toCache(chatMsg));
-          }
-          break;
-        }
-
         case 'error': {
+          // Server-pushed errors (connection-level, not per-RPC)
           const chatMsg: ChatMessage = {
             id: generateUUID(),
             role: 'agent',
@@ -193,6 +141,9 @@ export default function AgentChat() {
           pendingContentRef.current = '';
           break;
         }
+
+        default:
+          break;
       }
     };
 
@@ -344,13 +295,56 @@ export default function AgentChat() {
       appendCachedMessage(activeSession, toCache(chatMsg));
     }
 
-    try {
-      wsRef.current.sendMessage(trimmed);
-      setTyping(true);
-      pendingContentRef.current = '';
-    } catch {
-      setError('Failed to send message. Please try again.');
-    }
+    setTyping(true);
+    pendingContentRef.current = '';
+
+    wsRef.current.rpc<{ run_id: string; response?: string; aborted?: boolean }>(
+      'chat.send',
+      { session: activeSession ?? 'default', message: trimmed },
+      120000, // 2 min timeout for LLM response
+    ).then((res) => {
+      if (res.response) {
+        const agentMsg: ChatMessage = {
+          id: generateUUID(),
+          role: 'agent',
+          content: res.response,
+          timestamp: new Date(),
+          kind: 'assistant',
+        };
+        setMessages((prev) => [...prev, agentMsg]);
+        if (activeSessionRef.current) {
+          appendCachedMessage(activeSessionRef.current, toCache(agentMsg));
+        }
+      }
+      if (res.aborted) {
+        const abortMsg: ChatMessage = {
+          id: generateUUID(),
+          role: 'agent',
+          content: '[Generation aborted]',
+          timestamp: new Date(),
+          kind: 'interrupted',
+        };
+        setMessages((prev) => [...prev, abortMsg]);
+      }
+      setTyping(false);
+      // Refresh sessions for updated preview/counts
+      wsRef.current?.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
+        .then((r) => setSessions(r.sessions))
+        .catch(() => {});
+    }).catch((err) => {
+      const errorMsg: ChatMessage = {
+        id: generateUUID(),
+        role: 'agent',
+        content: `[Error] ${err.message ?? 'Unknown error'}`,
+        timestamp: new Date(),
+        kind: 'error',
+      };
+      setMessages((prev) => [...prev, errorMsg]);
+      if (activeSessionRef.current) {
+        appendCachedMessage(activeSessionRef.current, toCache(errorMsg));
+      }
+      setTyping(false);
+    });
 
     setInput('');
     if (activeSession) clearSessionDraft(activeSession);

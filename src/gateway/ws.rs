@@ -143,7 +143,7 @@ async fn handle_socket(
     token_prefix: String,
     session_id: Option<String>,
 ) {
-    let (mut sender, mut receiver) = socket.split();
+    let (sender, mut receiver) = socket.split();
 
     // Derive session key
     let sid = session_id.unwrap_or_else(|| "default".to_string());
@@ -151,11 +151,27 @@ async fn handle_socket(
 
     // Ensure session exists in memory (create agent if needed)
     if let Err(e) = ensure_session(&state, &session_key) {
+        let mut sender = sender;
         let err = serde_json::json!({"type": "error", "message": format!("Failed to initialise session: {e}")});
         let _ = sender.send(Message::Text(err.to_string().into())).await;
         return;
     }
 
+    // Outbound channel: allows spawned tasks to send WS frames without blocking the reader.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+    // Writer task: drains out_tx → WS sender
+    let writer = tokio::spawn(async move {
+        let mut sender = sender;
+        while let Some(msg) = out_rx.recv().await {
+            if sender.send(Message::Text(msg.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Reader loop: never blocks on long-running operations.
+    // chat.send is spawned as a separate task so abort can be processed concurrently.
     while let Some(msg) = receiver.next().await {
         let msg = match msg {
             Ok(Message::Text(text)) => text,
@@ -163,12 +179,12 @@ async fn handle_socket(
             _ => continue,
         };
 
-        // Parse incoming message
         let parsed: serde_json::Value = match serde_json::from_str(&msg) {
             Ok(v) => v,
             Err(_) => {
-                let err = serde_json::json!({"type": "error", "message": "Invalid JSON"});
-                let _ = sender.send(Message::Text(err.to_string().into())).await;
+                let _ = out_tx.send(
+                    serde_json::json!({"type": "error", "message": "Invalid JSON"}).to_string(),
+                );
                 continue;
             }
         };
@@ -178,60 +194,87 @@ async fn handle_socket(
         match msg_type {
             "rpc" => {
                 let id = parsed["id"].as_str().unwrap_or("").to_string();
-                let method = parsed["method"].as_str().unwrap_or("");
+                let method = parsed["method"].as_str().unwrap_or("").to_string();
                 let params = parsed["params"].clone();
 
-                let result = handle_rpc(method, &params, &state, &token_prefix, &session_key).await;
-
-                let response = match result {
-                    Ok(val) => serde_json::json!({
-                        "type": "rpc_response",
-                        "id": id,
-                        "result": val,
-                    }),
-                    Err(e) => serde_json::json!({
-                        "type": "rpc_response",
-                        "id": id,
-                        "error": e.to_string(),
-                    }),
-                };
-                let _ = sender
-                    .send(Message::Text(response.to_string().into()))
-                    .await;
+                if method == "chat.send" {
+                    // Spawn long-running send so reader loop stays free for abort
+                    let tx = out_tx.clone();
+                    let st = state.clone();
+                    let sk = session_key.clone();
+                    let tp = token_prefix.clone();
+                    tokio::spawn(async move {
+                        let result = handle_chat_send_rpc(&params, &st, &sk, &tp).await;
+                        let response = match result {
+                            Ok(val) => serde_json::json!({
+                                "type": "rpc_response", "id": id, "result": val,
+                            }),
+                            Err(e) => serde_json::json!({
+                                "type": "rpc_response", "id": id, "error": e.to_string(),
+                            }),
+                        };
+                        let _ = tx.send(response.to_string());
+                    });
+                } else {
+                    // Fast RPCs: handle inline
+                    let result =
+                        handle_rpc(&method, &params, &state, &token_prefix, &session_key).await;
+                    let response = match result {
+                        Ok(val) => serde_json::json!({
+                            "type": "rpc_response", "id": id, "result": val,
+                        }),
+                        Err(e) => serde_json::json!({
+                            "type": "rpc_response", "id": id, "error": e.to_string(),
+                        }),
+                    };
+                    let _ = out_tx.send(response.to_string());
+                }
             }
 
-            // Legacy "message" type — route through the same RPC path
+            // Legacy "message" — spawn through same chat.send path
             "message" => {
                 let content = parsed["content"].as_str().unwrap_or("").to_string();
                 if content.is_empty() {
                     continue;
                 }
-
-                let params = serde_json::json!({"session": session_key, "message": content});
-                match handle_chat_send_rpc(&params, &state, &session_key, &token_prefix).await {
-                    Ok(val) => {
-                        if let Some(response) = val["response"].as_str() {
-                            let done = serde_json::json!({
-                                "type": "done",
-                                "full_response": response,
-                            });
-                            let _ = sender.send(Message::Text(done.to_string().into())).await;
+                let tx = out_tx.clone();
+                let st = state.clone();
+                let sk = session_key.clone();
+                let tp = token_prefix.clone();
+                tokio::spawn(async move {
+                    let params = serde_json::json!({"session": sk, "message": content});
+                    match handle_chat_send_rpc(&params, &st, &sk, &tp).await {
+                        Ok(val) => {
+                            if let Some(resp) = val["response"].as_str() {
+                                let _ = tx.send(
+                                    serde_json::json!({"type": "done", "full_response": resp})
+                                        .to_string(),
+                                );
+                            }
+                            if val["aborted"].as_bool() == Some(true) {
+                                let _ = tx.send(
+                                    serde_json::json!({"type": "done", "full_response": "[Aborted]"})
+                                        .to_string(),
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            let _ = tx.send(
+                                serde_json::json!({"type": "error", "message": e.to_string()})
+                                    .to_string(),
+                            );
                         }
                     }
-                    Err(e) => {
-                        let err = serde_json::json!({
-                            "type": "error",
-                            "message": e.to_string(),
-                        });
-                        let _ = sender.send(Message::Text(err.to_string().into())).await;
-                    }
-                }
+                });
             }
 
             _ => {}
         }
     }
 
+    // Shutdown: drop out_tx so writer task exits
+    drop(out_tx);
+    let _ = writer.await;
     // WS disconnect: agent stays alive in AppState (not dropped)
 }
 
@@ -527,8 +570,9 @@ async fn handle_chat_send_rpc(
             );
             persist_increment_count(state, &session_key, 2);
             sync_memory_count(state, &session_key, 2);
-            // Persist token usage if available
             persist_usage(state, &session_key, usage.as_ref());
+            // Update current_goal from the user message (lightweight resume hint)
+            update_session_goal(state, &session_key, &message);
 
             Ok(serde_json::json!({
                 "run_id": run_id,
@@ -923,6 +967,26 @@ fn auto_label_if_needed(state: &AppState, session_key: &str, first_message: &str
     }
     if let Some(db) = state.chat_db.as_ref() {
         let _ = db.update_session_label(session_key, &label);
+    }
+}
+
+/// Update the session's current_goal from the latest user message.
+/// This is a lightweight resume hint — not hidden reasoning.
+fn update_session_goal(state: &AppState, session_key: &str, user_message: &str) {
+    let goal = truncate_str(user_message, 80);
+    {
+        if let Ok(mut sessions) = state.chat_sessions.lock() {
+            if let Some(s) = sessions.get_mut(session_key) {
+                s.current_goal = Some(goal.clone());
+            }
+        }
+    }
+    if let Some(db) = state.chat_db.as_ref() {
+        let conn = db;
+        // Direct update via upsert — only current_goal field
+        if let Err(e) = conn.update_session_goal(session_key, &goal) {
+            tracing::warn!("chat_db: failed to update goal: {e}");
+        }
     }
 }
 
