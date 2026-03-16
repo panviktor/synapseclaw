@@ -8,6 +8,7 @@ import KeyStatusIcon from '@/components/ipc/KeyStatusIcon';
 import TimeAgo from '@/components/ipc/TimeAgo';
 import AgentLink from '@/components/ipc/AgentLink';
 import ConfirmDialog from '@/components/ipc/ConfirmDialog';
+import AddAgentDialog from '@/components/ipc/AddAgentDialog';
 
 type ActionType = 'revoke' | 'quarantine' | 'disable' | 'downgrade';
 
@@ -23,6 +24,8 @@ export default function Fleet() {
   const [error, setError] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const [showAddAgent, setShowAddAgent] = useState(false);
+  const [showRevoked, setShowRevoked] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -70,6 +73,9 @@ export default function Fleet() {
     }
   };
 
+  const filteredAgents = showRevoked ? agents : agents.filter((a) => a.status !== 'revoked');
+  const brokerUrl = `${window.location.protocol}//${window.location.hostname}:${window.location.port || '42617'}`;
+
   const confirmMessage = pendingAction
     ? `${pendingAction.type} agent "${pendingAction.agent.agent_id}"${
         pendingAction.type === 'downgrade' ? ` to L${pendingAction.level}` : ''
@@ -88,14 +94,23 @@ export default function Fleet() {
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.fleet_title')}</h1>
-        <span className="text-sm text-[#556080]">{agents.length} agents</span>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1.5 text-xs text-[#556080] cursor-pointer">
+            <input type="checkbox" checked={showRevoked} onChange={(e) => setShowRevoked(e.target.checked)} className="accent-[#0080ff]" />
+            Show revoked
+          </label>
+          <span className="text-sm text-[#556080]">{agents.length} agents</span>
+          <button onClick={() => setShowAddAgent(true)} className="btn-electric px-4 py-1.5 text-sm font-medium">
+            + Add Agent
+          </button>
+        </div>
       </div>
 
       {error && (
         <div className="glass-card p-4 border-red-500/30 text-red-400 text-sm">{error}</div>
       )}
 
-      {agents.length === 0 ? (
+      {filteredAgents.length === 0 ? (
         <div className="glass-card p-12 text-center">
           <p className="text-[#556080]">No agents registered. Pair an agent to get started.</p>
         </div>
@@ -115,7 +130,7 @@ export default function Fleet() {
                 </tr>
               </thead>
               <tbody>
-                {agents.map((agent) => (
+                {filteredAgents.map((agent) => (
                   <AgentRow
                     key={agent.agent_id}
                     agent={agent}
@@ -127,6 +142,13 @@ export default function Fleet() {
           </div>
         </div>
       )}
+
+      <AddAgentDialog
+        open={showAddAgent}
+        onClose={() => setShowAddAgent(false)}
+        onCreated={load}
+        brokerUrl={brokerUrl}
+      />
 
       <ConfirmDialog
         open={pendingAction !== null}
