@@ -1,15 +1,14 @@
-//! WebSocket agent chat handler with RPC support for session management.
+//! WebSocket agent chat handler with RPC-based session management.
 //!
 //! Protocol:
 //! ```text
-//! Client -> Server: {"type":"message","content":"Hello"}                       (legacy)
-//! Client -> Server: {"type":"rpc","id":"x","method":"chat.send","params":{}}   (RPC)
-//! Server -> Client: {"type":"rpc_response","id":"x","result":{}}               (RPC response)
-//! Server -> Client: {"type":"chunk","content":"Hi! "}                          (streaming)
-//! Server -> Client: {"type":"tool_call","name":"shell","args":{...}}
-//! Server -> Client: {"type":"tool_result","name":"shell","output":"..."}
-//! Server -> Client: {"type":"done","full_response":"..."}
+//! Client -> Server: {"type":"rpc","id":"x","method":"chat.send","params":{}}
+//! Server -> Client: {"type":"rpc_response","id":"x","result":{}}
+//! Server -> Client: {"type":"error","message":"..."}                          (server-push)
 //! ```
+//!
+//! RPC methods: chat.send, chat.history, chat.abort,
+//!              sessions.list, sessions.new, sessions.rename, sessions.delete, sessions.reset
 
 use super::chat_db::{ChatMessageRow, ChatSessionRow};
 use super::{AppState, ChatSession};
@@ -143,7 +142,7 @@ async fn handle_socket(
     token_prefix: String,
     session_id: Option<String>,
 ) {
-    let (mut sender, mut receiver) = socket.split();
+    let (sender, mut receiver) = socket.split();
 
     // Derive session key
     let sid = session_id.unwrap_or_else(|| "default".to_string());
@@ -151,11 +150,52 @@ async fn handle_socket(
 
     // Ensure session exists in memory (create agent if needed)
     if let Err(e) = ensure_session(&state, &session_key) {
+        let mut sender = sender;
         let err = serde_json::json!({"type": "error", "message": format!("Failed to initialise session: {e}")});
         let _ = sender.send(Message::Text(err.to_string().into())).await;
         return;
     }
 
+    // Outbound channel: allows spawned tasks to send WS frames without blocking the reader.
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+
+    // Subscribe to broadcast for server-push session events (multi-tab freshness)
+    let mut event_rx = state.event_tx.subscribe();
+    let session_prefix = format!("web:{token_prefix}:");
+
+    // Writer task: drains out_tx + broadcast events → WS sender
+    let writer = tokio::spawn(async move {
+        let mut sender = sender;
+        loop {
+            tokio::select! {
+                msg = out_rx.recv() => {
+                    match msg {
+                        Some(m) => {
+                            if sender.send(Message::Text(m.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break, // out_tx dropped
+                    }
+                }
+                evt = event_rx.recv() => {
+                    if let Ok(evt) = evt {
+                        // Forward session.* events that belong to this token's namespace
+                        let evt_type = evt["type"].as_str().unwrap_or("");
+                        if evt_type.starts_with("session.") {
+                            let evt_key = evt["session_key"].as_str().unwrap_or("");
+                            if evt_key.starts_with(&session_prefix) {
+                                let _ = sender.send(Message::Text(evt.to_string().into())).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // Reader loop: never blocks on long-running operations.
+    // chat.send is spawned as a separate task so abort can be processed concurrently.
     while let Some(msg) = receiver.next().await {
         let msg = match msg {
             Ok(Message::Text(text)) => text,
@@ -163,75 +203,62 @@ async fn handle_socket(
             _ => continue,
         };
 
-        // Parse incoming message
         let parsed: serde_json::Value = match serde_json::from_str(&msg) {
             Ok(v) => v,
             Err(_) => {
-                let err = serde_json::json!({"type": "error", "message": "Invalid JSON"});
-                let _ = sender.send(Message::Text(err.to_string().into())).await;
+                let _ = out_tx.send(
+                    serde_json::json!({"type": "error", "message": "Invalid JSON"}).to_string(),
+                );
                 continue;
             }
         };
 
         let msg_type = parsed["type"].as_str().unwrap_or("");
 
-        match msg_type {
-            "rpc" => {
-                let id = parsed["id"].as_str().unwrap_or("").to_string();
-                let method = parsed["method"].as_str().unwrap_or("");
-                let params = parsed["params"].clone();
+        if msg_type != "rpc" {
+            continue;
+        }
 
-                let result = handle_rpc(method, &params, &state, &token_prefix, &session_key).await;
+        let id = parsed["id"].as_str().unwrap_or("").to_string();
+        let method = parsed["method"].as_str().unwrap_or("").to_string();
+        let params = parsed["params"].clone();
 
+        if method == "chat.send" {
+            // Spawn long-running send so reader loop stays free for abort
+            let tx = out_tx.clone();
+            let st = state.clone();
+            let sk = session_key.clone();
+            let tp = token_prefix.clone();
+            tokio::spawn(async move {
+                let result = handle_chat_send_rpc(&params, &st, &sk, &tp).await;
                 let response = match result {
                     Ok(val) => serde_json::json!({
-                        "type": "rpc_response",
-                        "id": id,
-                        "result": val,
+                        "type": "rpc_response", "id": id, "result": val,
                     }),
                     Err(e) => serde_json::json!({
-                        "type": "rpc_response",
-                        "id": id,
-                        "error": e.to_string(),
+                        "type": "rpc_response", "id": id, "error": e.to_string(),
                     }),
                 };
-                let _ = sender
-                    .send(Message::Text(response.to_string().into()))
-                    .await;
-            }
-
-            // Legacy "message" type — route through the same RPC path
-            "message" => {
-                let content = parsed["content"].as_str().unwrap_or("").to_string();
-                if content.is_empty() {
-                    continue;
-                }
-
-                let params = serde_json::json!({"session": session_key, "message": content});
-                match handle_chat_send_rpc(&params, &state, &session_key, &token_prefix).await {
-                    Ok(val) => {
-                        if let Some(response) = val["response"].as_str() {
-                            let done = serde_json::json!({
-                                "type": "done",
-                                "full_response": response,
-                            });
-                            let _ = sender.send(Message::Text(done.to_string().into())).await;
-                        }
-                    }
-                    Err(e) => {
-                        let err = serde_json::json!({
-                            "type": "error",
-                            "message": e.to_string(),
-                        });
-                        let _ = sender.send(Message::Text(err.to_string().into())).await;
-                    }
-                }
-            }
-
-            _ => {}
+                let _ = tx.send(response.to_string());
+            });
+        } else {
+            // Fast RPCs: handle inline
+            let result = handle_rpc(&method, &params, &state, &token_prefix, &session_key).await;
+            let response = match result {
+                Ok(val) => serde_json::json!({
+                    "type": "rpc_response", "id": id, "result": val,
+                }),
+                Err(e) => serde_json::json!({
+                    "type": "rpc_response", "id": id, "error": e.to_string(),
+                }),
+            };
+            let _ = out_tx.send(response.to_string());
         }
     }
 
+    // Shutdown: drop out_tx so writer task exits
+    drop(out_tx);
+    let _ = writer.await;
     // WS disconnect: agent stays alive in AppState (not dropped)
 }
 
@@ -494,10 +521,21 @@ async fn handle_chat_send_rpc(
     );
     auto_label_if_needed(state, &session_key, &message);
 
+    // Record history length before turn (for extracting tool events after)
+    let history_len_before = {
+        let sessions = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        sessions
+            .get(&session_key)
+            .map_or(0, |s| s.agent.history().len())
+    };
+
     // Run agent turn with abort support
     let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx).await;
 
-    // Clear run_id + abort_tx, extract usage
+    // Clear run_id + abort_tx, extract usage + persist tool events
     let usage = {
         let mut sessions = state
             .chat_sessions
@@ -507,8 +545,9 @@ async fn handle_chat_send_rpc(
             s.run_id = None;
             s.abort_tx = None;
             s.last_active = Instant::now();
+            // Persist tool events from this turn
+            persist_tool_events(state, &session_key, s.agent.history(), history_len_before);
         }
-        // Get usage from agent
         sessions
             .get(&session_key)
             .and_then(|s| s.agent.last_turn_usage().cloned())
@@ -527,8 +566,9 @@ async fn handle_chat_send_rpc(
             );
             persist_increment_count(state, &session_key, 2);
             sync_memory_count(state, &session_key, 2);
-            // Persist token usage if available
             persist_usage(state, &session_key, usage.as_ref());
+            update_session_goal(state, &session_key, &message);
+            emit_session_event(state, "session.updated", &session_key);
 
             Ok(serde_json::json!({
                 "run_id": run_id,
@@ -752,6 +792,7 @@ fn handle_sessions_rename(
         db.update_session_label(key, label)?;
     }
 
+    emit_session_event(state, "session.updated", key);
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -779,6 +820,7 @@ fn handle_sessions_delete(
         db.delete_session(key)?;
     }
 
+    emit_session_event(state, "session.deleted", key);
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -813,6 +855,7 @@ fn handle_sessions_reset(
         db.clear_messages(key)?;
     }
 
+    emit_session_event(state, "session.updated", key);
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -924,6 +967,77 @@ fn auto_label_if_needed(state: &AppState, session_key: &str, first_message: &str
     if let Some(db) = state.chat_db.as_ref() {
         let _ = db.update_session_label(session_key, &label);
     }
+}
+
+/// Update the session's current_goal from the latest user message.
+/// This is a lightweight resume hint — not hidden reasoning.
+fn update_session_goal(state: &AppState, session_key: &str, user_message: &str) {
+    let goal = truncate_str(user_message, 80);
+    {
+        if let Ok(mut sessions) = state.chat_sessions.lock() {
+            if let Some(s) = sessions.get_mut(session_key) {
+                s.current_goal = Some(goal.clone());
+            }
+        }
+    }
+    if let Some(db) = state.chat_db.as_ref() {
+        let conn = db;
+        // Direct update via upsert — only current_goal field
+        if let Err(e) = conn.update_session_goal(session_key, &goal) {
+            tracing::warn!("chat_db: failed to update goal: {e}");
+        }
+    }
+}
+
+/// Persist tool_call and tool_result events from the agent's history after a turn.
+fn persist_tool_events(
+    state: &AppState,
+    session_key: &str,
+    history: &[crate::providers::ConversationMessage],
+    start_idx: usize,
+) {
+    use crate::providers::ConversationMessage;
+
+    for msg in history.iter().skip(start_idx) {
+        match msg {
+            ConversationMessage::AssistantToolCalls { tool_calls, .. } => {
+                for tc in tool_calls {
+                    persist_message(
+                        state,
+                        session_key,
+                        "tool_call",
+                        Some("assistant"),
+                        &format!("{}({})", tc.name, tc.arguments),
+                        Some(&tc.name),
+                        None,
+                    );
+                }
+            }
+            ConversationMessage::ToolResults(results) => {
+                for tr in results {
+                    persist_message(
+                        state,
+                        session_key,
+                        "tool_result",
+                        None,
+                        &tr.content,
+                        None,
+                        None,
+                    );
+                }
+            }
+            ConversationMessage::Chat(_) => {} // handled separately by caller
+        }
+    }
+}
+
+/// Emit a session event on the broadcast channel for multi-tab freshness.
+fn emit_session_event(state: &AppState, event_type: &str, session_key: &str) {
+    let _ = state.event_tx.send(serde_json::json!({
+        "type": event_type,
+        "session_key": session_key,
+        "timestamp": now_secs(),
+    }));
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
