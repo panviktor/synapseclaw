@@ -137,9 +137,11 @@ export default function SessionSidebar({
                       {label}
                     </span>
                   </div>
-                  {s.preview && (
+                  {s.current_goal ? (
+                    <p className="text-[10px] text-[#556080] truncate mt-0.5 pl-[18px]">{s.current_goal}</p>
+                  ) : s.preview ? (
                     <p className="text-[10px] text-[#334060] truncate mt-0.5 pl-[18px]">{s.preview}</p>
-                  )}
+                  ) : null}
                   <p className="text-[9px] text-[#223050] mt-0.5 pl-[18px]">
                     {timeAgo(s.last_active)}
                     {(s.input_tokens > 0 || s.output_tokens > 0) && (

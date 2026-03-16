@@ -143,6 +143,12 @@ export default function AgentChat() {
         }
 
         default:
+          // Handle server-push session events (multi-tab freshness)
+          if (msg.type === 'session.updated' || msg.type === 'session.deleted') {
+            ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
+              .then((r) => setSessions(r.sessions))
+              .catch(() => {});
+          }
           break;
       }
     };

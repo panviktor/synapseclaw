@@ -159,12 +159,37 @@ async fn handle_socket(
     // Outbound channel: allows spawned tasks to send WS frames without blocking the reader.
     let (out_tx, mut out_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
-    // Writer task: drains out_tx → WS sender
+    // Subscribe to broadcast for server-push session events (multi-tab freshness)
+    let mut event_rx = state.event_tx.subscribe();
+    let session_prefix = format!("web:{token_prefix}:");
+
+    // Writer task: drains out_tx + broadcast events → WS sender
     let writer = tokio::spawn(async move {
         let mut sender = sender;
-        while let Some(msg) = out_rx.recv().await {
-            if sender.send(Message::Text(msg.into())).await.is_err() {
-                break;
+        loop {
+            tokio::select! {
+                msg = out_rx.recv() => {
+                    match msg {
+                        Some(m) => {
+                            if sender.send(Message::Text(m.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break, // out_tx dropped
+                    }
+                }
+                evt = event_rx.recv() => {
+                    if let Ok(evt) = evt {
+                        // Forward session.* events that belong to this token's namespace
+                        let evt_type = evt["type"].as_str().unwrap_or("");
+                        if evt_type.starts_with("session.") {
+                            let evt_key = evt["session_key"].as_str().unwrap_or("");
+                            if evt_key.starts_with(&session_prefix) {
+                                let _ = sender.send(Message::Text(evt.to_string().into())).await;
+                            }
+                        }
+                    }
+                }
             }
         }
     });
@@ -496,10 +521,21 @@ async fn handle_chat_send_rpc(
     );
     auto_label_if_needed(state, &session_key, &message);
 
+    // Record history length before turn (for extracting tool events after)
+    let history_len_before = {
+        let sessions = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        sessions
+            .get(&session_key)
+            .map_or(0, |s| s.agent.history().len())
+    };
+
     // Run agent turn with abort support
     let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx).await;
 
-    // Clear run_id + abort_tx, extract usage
+    // Clear run_id + abort_tx, extract usage + persist tool events
     let usage = {
         let mut sessions = state
             .chat_sessions
@@ -509,8 +545,9 @@ async fn handle_chat_send_rpc(
             s.run_id = None;
             s.abort_tx = None;
             s.last_active = Instant::now();
+            // Persist tool events from this turn
+            persist_tool_events(state, &session_key, s.agent.history(), history_len_before);
         }
-        // Get usage from agent
         sessions
             .get(&session_key)
             .and_then(|s| s.agent.last_turn_usage().cloned())
@@ -530,8 +567,8 @@ async fn handle_chat_send_rpc(
             persist_increment_count(state, &session_key, 2);
             sync_memory_count(state, &session_key, 2);
             persist_usage(state, &session_key, usage.as_ref());
-            // Update current_goal from the user message (lightweight resume hint)
             update_session_goal(state, &session_key, &message);
+            emit_session_event(state, "session.updated", &session_key);
 
             Ok(serde_json::json!({
                 "run_id": run_id,
@@ -755,6 +792,7 @@ fn handle_sessions_rename(
         db.update_session_label(key, label)?;
     }
 
+    emit_session_event(state, "session.updated", key);
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -782,6 +820,7 @@ fn handle_sessions_delete(
         db.delete_session(key)?;
     }
 
+    emit_session_event(state, "session.deleted", key);
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -816,6 +855,7 @@ fn handle_sessions_reset(
         db.clear_messages(key)?;
     }
 
+    emit_session_event(state, "session.updated", key);
     Ok(serde_json::json!({ "ok": true }))
 }
 
@@ -947,6 +987,57 @@ fn update_session_goal(state: &AppState, session_key: &str, user_message: &str) 
             tracing::warn!("chat_db: failed to update goal: {e}");
         }
     }
+}
+
+/// Persist tool_call and tool_result events from the agent's history after a turn.
+fn persist_tool_events(
+    state: &AppState,
+    session_key: &str,
+    history: &[crate::providers::ConversationMessage],
+    start_idx: usize,
+) {
+    use crate::providers::ConversationMessage;
+
+    for msg in history.iter().skip(start_idx) {
+        match msg {
+            ConversationMessage::AssistantToolCalls { tool_calls, .. } => {
+                for tc in tool_calls {
+                    persist_message(
+                        state,
+                        session_key,
+                        "tool_call",
+                        Some("assistant"),
+                        &format!("{}({})", tc.name, tc.arguments),
+                        Some(&tc.name),
+                        None,
+                    );
+                }
+            }
+            ConversationMessage::ToolResults(results) => {
+                for tr in results {
+                    persist_message(
+                        state,
+                        session_key,
+                        "tool_result",
+                        None,
+                        &tr.content,
+                        None,
+                        None,
+                    );
+                }
+            }
+            ConversationMessage::Chat(_) => {} // handled separately by caller
+        }
+    }
+}
+
+/// Emit a session event on the broadcast channel for multi-tab freshness.
+fn emit_session_event(state: &AppState, event_type: &str, session_key: &str) {
+    let _ = state.event_tx.send(serde_json::json!({
+        "type": event_type,
+        "session_key": session_key,
+        "timestamp": now_secs(),
+    }));
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
