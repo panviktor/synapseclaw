@@ -18,7 +18,7 @@ This directory contains the strategy, plans, and operational docs for the ZeroCl
 | [ipc-phase3-progress.md](ipc-phase3-progress.md) | Phase 3A/3B execution checklist (all steps — DONE) | Opus |
 | [ipc-phase3_5-plan.md](ipc-phase3_5-plan.md) | Phase 3.5: Human Control Plane — IPC operator UI (6 screens, 10 steps) | Everyone |
 | [ipc-phase3_6-plan.md](ipc-phase3_6-plan.md) | Phase 3.6: Agent Provisioning — add agents from UI, 5 presets, config generator, pairing flow | Everyone |
-| [ipc-phase3_7-plan.md](ipc-phase3_7-plan.md) | Phase 3.7: Chat Sessions — server-side history, multi-session, session sidebar, openclaw-style UX | Everyone |
+| [ipc-phase3_7-plan.md](ipc-phase3_7-plan.md) | Phase 3.7: Chat Session Continuity — WS RPC, multi-session, session sidebar. In-memory v1; durable persistence = 3.7b | Everyone |
 
 ## Reading order
 
