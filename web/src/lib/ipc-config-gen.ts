@@ -101,16 +101,12 @@ export function generateAgentConfig(inputs: AgentConfigInputs): string {
     }
   }
 
-  // ── System prompt as workspace file ──
-  // The main agent reads its prompt from workspace files, not from config.
-  // DelegateAgentConfig has system_prompt, but the root Config does not.
-  if (inputs.systemPrompt) {
-    lines.push('# System prompt: place the following in ~/.zeroclaw/workspace/instructions.md');
-    lines.push(`# ${inputs.systemPrompt.replace(/\n/g, '\n# ')}`);
-    lines.push('');
-  }
-
   return lines.join('\n');
+}
+
+/** Generate instructions.md content from system prompt. */
+export function generateInstructionsMd(systemPrompt: string): string {
+  return `# Agent Instructions\n\n${systemPrompt}\n`;
 }
 
 export function downloadAsFile(filename: string, content: string): void {

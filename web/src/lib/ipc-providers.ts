@@ -123,7 +123,7 @@ export const PROVIDERS: ProviderDef[] = [
     tier: 'local',
     credential_type: 'none',
     default_model: 'default',
-    default_base_url: 'http://localhost:8080',
+    default_base_url: 'http://localhost:8080/v1',
     description: 'Local OpenAI-compatible endpoint',
   },
   {
@@ -132,7 +132,7 @@ export const PROVIDERS: ProviderDef[] = [
     tier: 'local',
     credential_type: 'none',
     default_model: 'default',
-    default_base_url: 'http://localhost:8000',
+    default_base_url: 'http://localhost:8000/v1',
     description: 'High-performance local inference',
   },
 ];

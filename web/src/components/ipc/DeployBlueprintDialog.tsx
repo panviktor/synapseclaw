@@ -106,6 +106,34 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
     }
   };
 
+  const canNext = (): boolean => {
+    switch (step) {
+      case 'provider': {
+        if (sameProvider) {
+          const p = PROVIDERS.find((pr) => pr.id === sharedProviderId);
+          if (p?.credential_type === 'api_key' && !sharedApiKey) return false;
+        } else {
+          for (const row of rows) {
+            const p = PROVIDERS.find((pr) => pr.id === row.providerId);
+            if (p?.credential_type === 'api_key' && !row.apiKey) return false;
+          }
+        }
+        return rows.every((r) => r.model.trim().length > 0);
+      }
+      case 'channels': {
+        for (const row of rows) {
+          if (row.channelId === 'none' || !row.channelId) continue;
+          const ch = CHANNELS.find((c) => c.id === row.channelId);
+          if (!ch) continue;
+          const missing = ch.fields.filter((f) => f.required).some((f) => !row.channelValues[f.key]?.trim());
+          if (missing) return false;
+        }
+        return true;
+      }
+      default: return true;
+    }
+  };
+
   const goNext = () => {
     const idx = STEPS.indexOf(step);
     if (step === 'review') {
@@ -383,7 +411,7 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
             </div>
 
             <button onClick={downloadAll} className="btn-electric w-full py-2.5 text-sm font-medium">
-              Download All Configs
+              Download All Configs (one by one)
             </button>
 
             <div className="p-4 rounded-xl bg-[#050510] border border-[#1a1a3e]/50 text-xs text-[#556080] space-y-2">
@@ -413,7 +441,7 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
             </button>
             <button
               onClick={goNext}
-              disabled={creating}
+              disabled={creating || !canNext()}
               className="btn-electric px-6 py-2 text-sm font-medium disabled:opacity-50"
             >
               {creating ? 'Creating...' : step === 'review' ? `Create ${rows.length} Agents` : 'Next →'}
@@ -435,7 +463,6 @@ function ProviderSelect({ value, onChange }: { value: string; onChange: (v: stri
       <optgroup label="Local">
         {getProvidersByTier('local').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
       </optgroup>
-      <option value="custom">Custom</option>
     </select>
   );
 }
