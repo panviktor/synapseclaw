@@ -1,15 +1,14 @@
-//! WebSocket agent chat handler with RPC support for session management.
+//! WebSocket agent chat handler with RPC-based session management.
 //!
 //! Protocol:
 //! ```text
-//! Client -> Server: {"type":"message","content":"Hello"}                       (legacy)
-//! Client -> Server: {"type":"rpc","id":"x","method":"chat.send","params":{}}   (RPC)
-//! Server -> Client: {"type":"rpc_response","id":"x","result":{}}               (RPC response)
-//! Server -> Client: {"type":"chunk","content":"Hi! "}                          (streaming)
-//! Server -> Client: {"type":"tool_call","name":"shell","args":{...}}
-//! Server -> Client: {"type":"tool_result","name":"shell","output":"..."}
-//! Server -> Client: {"type":"done","full_response":"..."}
+//! Client -> Server: {"type":"rpc","id":"x","method":"chat.send","params":{}}
+//! Server -> Client: {"type":"rpc_response","id":"x","result":{}}
+//! Server -> Client: {"type":"error","message":"..."}                          (server-push)
 //! ```
+//!
+//! RPC methods: chat.send, chat.history, chat.abort,
+//!              sessions.list, sessions.new, sessions.rename, sessions.delete, sessions.reset
 
 use super::chat_db::{ChatMessageRow, ChatSessionRow};
 use super::{AppState, ChatSession};
@@ -191,84 +190,44 @@ async fn handle_socket(
 
         let msg_type = parsed["type"].as_str().unwrap_or("");
 
-        match msg_type {
-            "rpc" => {
-                let id = parsed["id"].as_str().unwrap_or("").to_string();
-                let method = parsed["method"].as_str().unwrap_or("").to_string();
-                let params = parsed["params"].clone();
+        if msg_type != "rpc" {
+            continue;
+        }
 
-                if method == "chat.send" {
-                    // Spawn long-running send so reader loop stays free for abort
-                    let tx = out_tx.clone();
-                    let st = state.clone();
-                    let sk = session_key.clone();
-                    let tp = token_prefix.clone();
-                    tokio::spawn(async move {
-                        let result = handle_chat_send_rpc(&params, &st, &sk, &tp).await;
-                        let response = match result {
-                            Ok(val) => serde_json::json!({
-                                "type": "rpc_response", "id": id, "result": val,
-                            }),
-                            Err(e) => serde_json::json!({
-                                "type": "rpc_response", "id": id, "error": e.to_string(),
-                            }),
-                        };
-                        let _ = tx.send(response.to_string());
-                    });
-                } else {
-                    // Fast RPCs: handle inline
-                    let result =
-                        handle_rpc(&method, &params, &state, &token_prefix, &session_key).await;
-                    let response = match result {
-                        Ok(val) => serde_json::json!({
-                            "type": "rpc_response", "id": id, "result": val,
-                        }),
-                        Err(e) => serde_json::json!({
-                            "type": "rpc_response", "id": id, "error": e.to_string(),
-                        }),
-                    };
-                    let _ = out_tx.send(response.to_string());
-                }
-            }
+        let id = parsed["id"].as_str().unwrap_or("").to_string();
+        let method = parsed["method"].as_str().unwrap_or("").to_string();
+        let params = parsed["params"].clone();
 
-            // Legacy "message" — spawn through same chat.send path
-            "message" => {
-                let content = parsed["content"].as_str().unwrap_or("").to_string();
-                if content.is_empty() {
-                    continue;
-                }
-                let tx = out_tx.clone();
-                let st = state.clone();
-                let sk = session_key.clone();
-                let tp = token_prefix.clone();
-                tokio::spawn(async move {
-                    let params = serde_json::json!({"session": sk, "message": content});
-                    match handle_chat_send_rpc(&params, &st, &sk, &tp).await {
-                        Ok(val) => {
-                            if let Some(resp) = val["response"].as_str() {
-                                let _ = tx.send(
-                                    serde_json::json!({"type": "done", "full_response": resp})
-                                        .to_string(),
-                                );
-                            }
-                            if val["aborted"].as_bool() == Some(true) {
-                                let _ = tx.send(
-                                    serde_json::json!({"type": "done", "full_response": "[Aborted]"})
-                                        .to_string(),
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            let _ = tx.send(
-                                serde_json::json!({"type": "error", "message": e.to_string()})
-                                    .to_string(),
-                            );
-                        }
-                    }
-                });
-            }
-
-            _ => {}
+        if method == "chat.send" {
+            // Spawn long-running send so reader loop stays free for abort
+            let tx = out_tx.clone();
+            let st = state.clone();
+            let sk = session_key.clone();
+            let tp = token_prefix.clone();
+            tokio::spawn(async move {
+                let result = handle_chat_send_rpc(&params, &st, &sk, &tp).await;
+                let response = match result {
+                    Ok(val) => serde_json::json!({
+                        "type": "rpc_response", "id": id, "result": val,
+                    }),
+                    Err(e) => serde_json::json!({
+                        "type": "rpc_response", "id": id, "error": e.to_string(),
+                    }),
+                };
+                let _ = tx.send(response.to_string());
+            });
+        } else {
+            // Fast RPCs: handle inline
+            let result = handle_rpc(&method, &params, &state, &token_prefix, &session_key).await;
+            let response = match result {
+                Ok(val) => serde_json::json!({
+                    "type": "rpc_response", "id": id, "result": val,
+                }),
+                Err(e) => serde_json::json!({
+                    "type": "rpc_response", "id": id, "error": e.to_string(),
+                }),
+            };
+            let _ = out_tx.send(response.to_string());
         }
     }
 
