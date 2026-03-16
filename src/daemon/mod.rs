@@ -115,6 +115,18 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
         tracing::info!("Cron disabled; scheduler supervisor not started");
     }
 
+    // Phase 3.8: agent auto-registration with broker
+    if config.agents_ipc.enabled
+        && config.agents_ipc.broker_token.is_some()
+        && config.agents_ipc.gateway_url.is_some()
+        && config.agents_ipc.proxy_token.is_some()
+    {
+        let reg_cfg = config.clone();
+        handles.push(tokio::spawn(async move {
+            broker_registration_loop(reg_cfg).await;
+        }));
+    }
+
     println!("🧠 ZeroClaw daemon started");
     println!("   Gateway:  http://{host}:{port}");
     println!("   Components: gateway, channels, heartbeat, scheduler");
@@ -442,6 +454,131 @@ fn has_supervised_channels(config: &Config) -> bool {
         .channels_except_webhook()
         .iter()
         .any(|(_, ok)| *ok)
+}
+
+// ── Broker registration loop (Phase 3.8) ────────────────────────
+
+/// Two-phase registration: fast retry until first success, then periodic refresh.
+async fn broker_registration_loop(config: Config) {
+    let broker_url = config.agents_ipc.broker_url.clone();
+    let broker_token = match &config.agents_ipc.broker_token {
+        Some(t) => t.clone(),
+        None => return,
+    };
+    let gateway_url = match &config.agents_ipc.gateway_url {
+        Some(u) => u.clone(),
+        None => return,
+    };
+    let proxy_token = match &config.agents_ipc.proxy_token {
+        Some(t) => t.clone(),
+        None => return,
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{broker_url}/api/ipc/register-gateway");
+    let body = serde_json::json!({
+        "gateway_url": gateway_url,
+        "proxy_token": proxy_token,
+    });
+
+    // Phase A: fast retry with exponential backoff until first success
+    let mut delay = Duration::from_secs(1);
+    let max_delay = Duration::from_secs(30);
+    loop {
+        match client
+            .post(&url)
+            .bearer_auth(&broker_token)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::info!("Registered gateway with broker ({gateway_url})");
+                break;
+            }
+            Ok(resp) => {
+                tracing::warn!(
+                    "Gateway registration failed (HTTP {}), retrying in {:?}",
+                    resp.status(),
+                    delay
+                );
+            }
+            Err(e) => {
+                tracing::debug!("Gateway registration failed ({e}), retrying in {:?}", delay);
+            }
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(max_delay);
+    }
+
+    // Phase B: periodic refresh every 5 minutes
+    let refresh_interval = Duration::from_secs(300);
+    loop {
+        tokio::time::sleep(refresh_interval).await;
+        match client
+            .post(&url)
+            .bearer_auth(&broker_token)
+            .json(&body)
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::debug!("Gateway registration refreshed");
+            }
+            Ok(resp) => {
+                tracing::warn!(
+                    "Gateway refresh failed (HTTP {}), switching to fast retry",
+                    resp.status()
+                );
+                // Fall back to Phase A
+                let mut retry_delay = Duration::from_secs(1);
+                loop {
+                    tokio::time::sleep(retry_delay).await;
+                    match client
+                        .post(&url)
+                        .bearer_auth(&broker_token)
+                        .json(&body)
+                        .send()
+                        .await
+                    {
+                        Ok(r) if r.status().is_success() => {
+                            tracing::info!("Gateway re-registered after broker recovery");
+                            break;
+                        }
+                        _ => {
+                            retry_delay = (retry_delay * 2).min(max_delay);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Gateway refresh failed ({e}), switching to fast retry");
+                let mut retry_delay = Duration::from_secs(1);
+                loop {
+                    tokio::time::sleep(retry_delay).await;
+                    match client
+                        .post(&url)
+                        .bearer_auth(&broker_token)
+                        .json(&body)
+                        .send()
+                        .await
+                    {
+                        Ok(r) if r.status().is_success() => {
+                            tracing::info!("Gateway re-registered after broker recovery");
+                            break;
+                        }
+                        _ => {
+                            retry_delay = (retry_delay * 2).min(max_delay);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
