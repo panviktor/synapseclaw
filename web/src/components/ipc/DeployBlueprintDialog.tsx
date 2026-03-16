@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { FLEET_BLUEPRINTS, getPresetById, type FleetBlueprint, type BlueprintAgent } from '@/lib/ipc-presets';
 import { PROVIDERS, getProvidersByTier } from '@/lib/ipc-providers';
 import { CHANNELS } from '@/lib/ipc-channels';
-import { generateAgentConfig, downloadAsFile, type AgentConfigInputs } from '@/lib/ipc-config-gen';
+import { generateAgentConfig, generateInstructionsMd, downloadAsFile, type AgentConfigInputs } from '@/lib/ipc-config-gen';
 import { createPaircode } from '@/lib/ipc-api';
 import TrustBadge from './TrustBadge';
 
@@ -176,6 +176,10 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
   const downloadAll = () => {
     rows.forEach((row) => {
       downloadAsFile(`${row.name}-config.toml`, buildConfig(row));
+      const preset = getPresetById(row.agent.preset_id);
+      if (preset?.system_prompt) {
+        downloadAsFile(`${row.name}-instructions.md`, generateInstructionsMd(preset.system_prompt));
+      }
     });
   };
 
@@ -396,13 +400,24 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
                           {copiedIdx === i ? '✓' : 'copy'}
                         </button>
                       </td>
-                      <td className="px-2 py-2 text-right">
+                      <td className="px-2 py-2 text-right space-x-2">
                         <button
                           onClick={() => downloadAsFile(`${row.name}-config.toml`, buildConfig(row))}
                           className="text-[10px] text-[#0080ff] hover:underline"
                         >
-                          Download
+                          config
                         </button>
+                        {getPresetById(row.agent.preset_id)?.system_prompt && (
+                          <button
+                            onClick={() => {
+                              const p = getPresetById(row.agent.preset_id);
+                              if (p?.system_prompt) downloadAsFile(`${row.name}-instructions.md`, generateInstructionsMd(p.system_prompt));
+                            }}
+                            className="text-[10px] text-[#556080] hover:underline"
+                          >
+                            instructions
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -416,7 +431,7 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
 
             <div className="p-4 rounded-xl bg-[#050510] border border-[#1a1a3e]/50 text-xs text-[#556080] space-y-2">
               <p className="font-medium text-[#8892a8]">Setup instructions:</p>
-              <p>1. Place each agent's config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> on its target machine</p>
+              <p>1. Place each agent's config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> and instructions.md in <code className="text-[#0080ff]">~/.zeroclaw/workspace/</code></p>
               <p>2. For each agent, pair with broker:</p>
               <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: CODE&apos;</pre>
               <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in each config.toml under [agents_ipc]</p>

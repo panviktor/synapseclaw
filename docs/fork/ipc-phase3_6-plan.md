@@ -342,7 +342,7 @@ lateral_text_pairs = [["web-researcher", "analyst"]]
 
 **Step 4 — Review**: summary table + broker config patch snippet (copyable).
 
-**Step 5 — Result**: N pairing codes + "Download All (zip)" + broker patch snippet + per-agent setup instructions.
+**Step 5 — Result**: N pairing codes + "Download All" (per-file, zip deferred to v2) + per-agent instructions.md + broker patch snippet + setup instructions.
 
 ### 3. Fleet page updates
 
