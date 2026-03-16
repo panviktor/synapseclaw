@@ -88,10 +88,10 @@ fn extract_ws_token<'a>(headers: &'a HeaderMap, query_token: Option<&'a str>) ->
     None
 }
 
-/// Derive token hash prefix for session keys: first 8 hex chars of SHA-256.
+/// Derive token hash prefix for session keys: first 16 hex chars of SHA-256.
 fn token_hash_prefix(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
-    hex::encode(&digest[..4])
+    hex::encode(&digest[..8])
 }
 
 fn now_secs() -> i64 {
@@ -363,7 +363,7 @@ fn handle_chat_history(
         .as_str()
         .unwrap_or(default_session)
         .to_string();
-    let limit = params["limit"].as_i64().unwrap_or(50);
+    let limit = params["limit"].as_i64().unwrap_or(50).min(500);
 
     // Ensure session is loaded
     ensure_session(state, &session_key)?;
@@ -447,7 +447,7 @@ async fn handle_chat_send_rpc(
         }
     }
 
-    // Persist user message to DB
+    // Persist user message + auto-label
     persist_message(
         state,
         &session_key,
@@ -457,31 +457,23 @@ async fn handle_chat_send_rpc(
         None,
         None,
     );
-
-    // Auto-label on first message
     auto_label_if_needed(state, &session_key, &message);
 
-    // Run the agent turn
-    let result = {
-        let agent_result = {
-            let mut sessions = state
-                .chat_sessions
-                .lock()
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let session = sessions
-                .get_mut(&session_key)
-                .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-            session.last_active = Instant::now();
-            // We need to drop the lock before awaiting
-            None::<String> // placeholder
-        };
-        let _ = agent_result;
+    // Update last_active in memory (lock scope ends before await)
+    {
+        let mut sessions = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if let Some(s) = sessions.get_mut(&session_key) {
+            s.last_active = Instant::now();
+        }
+    }
 
-        // Take the agent out briefly for the turn
-        run_agent_turn(state, &session_key, &message).await
-    };
+    // Run agent turn (lock-free — agent is swapped out)
+    let result = run_agent_turn(state, &session_key, &message).await;
 
-    // Clear run_id
+    // Clear run_id regardless of success/failure
     {
         let mut sessions = state
             .chat_sessions
@@ -504,11 +496,9 @@ async fn handle_chat_send_rpc(
                 None,
                 None,
             );
-
-            // Update last_active in DB
-            if let Some(db) = state.chat_db.as_ref() {
-                let _ = db.touch_session(&session_key, now_secs());
-            }
+            // Increment DB + memory count: 2 (user + assistant)
+            persist_increment_count(state, &session_key, 2);
+            sync_memory_count(state, &session_key, 2);
 
             Ok(serde_json::json!({
                 "run_id": run_id,
@@ -518,6 +508,9 @@ async fn handle_chat_send_rpc(
         Err(e) => {
             let sanitized = crate::providers::sanitize_api_error(&e.to_string());
             persist_message(state, &session_key, "error", None, &sanitized, None, None);
+            // Increment DB + memory count: 2 (user + error)
+            persist_increment_count(state, &session_key, 2);
+            sync_memory_count(state, &session_key, 2);
             Err(anyhow::anyhow!("{sanitized}"))
         }
     }
@@ -549,7 +542,7 @@ async fn run_agent_turn(
 
     let result = agent.turn(message).await;
 
-    // Put the agent back
+    // Put the agent back (count is incremented by caller)
     {
         let mut sessions = state
             .chat_sessions
@@ -557,7 +550,6 @@ async fn run_agent_turn(
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         if let Some(session) = sessions.get_mut(session_key) {
             session.agent = agent;
-            session.message_count += 2; // user + assistant
         }
     }
 
@@ -609,6 +601,8 @@ async fn handle_chat_send_streaming(
                 None,
                 None,
             );
+            persist_increment_count(state, session_key, 2);
+            sync_memory_count(state, session_key, 2);
 
             let done = serde_json::json!({
                 "type": "done",
@@ -625,6 +619,8 @@ async fn handle_chat_send_streaming(
         Err(e) => {
             let sanitized = crate::providers::sanitize_api_error(&e.to_string());
             persist_message(state, session_key, "error", None, &sanitized, None, None);
+            persist_increment_count(state, session_key, 2);
+            sync_memory_count(state, session_key, 2);
 
             let err = serde_json::json!({
                 "type": "error",
@@ -638,10 +634,6 @@ async fn handle_chat_send_streaming(
                 "message": sanitized,
             }));
         }
-    }
-
-    if let Some(db) = state.chat_db.as_ref() {
-        let _ = db.touch_session(session_key, now_secs());
     }
 }
 
@@ -741,7 +733,7 @@ fn handle_sessions_new(
     token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let label = params["label"].as_str().map(String::from);
-    let session_id = &uuid::Uuid::new_v4().to_string()[..8];
+    let session_id = uuid::Uuid::new_v4().to_string();
     let session_key = format!("web:{token_prefix}:{session_id}");
 
     ensure_session(state, &session_key)?;
@@ -876,9 +868,34 @@ fn persist_message(
             output_tokens: None,
             timestamp: now_secs(),
         };
-        let _ = db.append_message(&msg);
-        let _ = db.increment_message_count(session_key);
-        let _ = db.touch_session(session_key, now_secs());
+        if let Err(e) = db.append_message(&msg) {
+            tracing::warn!("chat_db: failed to append message: {e}");
+        }
+        if let Err(e) = db.touch_session(session_key, now_secs()) {
+            tracing::warn!("chat_db: failed to touch session: {e}");
+        }
+    }
+}
+
+/// Increment DB message count for a session.
+fn persist_increment_count(state: &AppState, session_key: &str, count: i64) {
+    if let Some(db) = state.chat_db.as_ref() {
+        for _ in 0..count {
+            if let Err(e) = db.increment_message_count(session_key) {
+                tracing::warn!("chat_db: failed to increment count: {e}");
+                break;
+            }
+        }
+    }
+}
+
+/// Sync in-memory message count with the given delta.
+fn sync_memory_count(state: &AppState, session_key: &str, delta: u32) {
+    if let Ok(mut sessions) = state.chat_sessions.lock() {
+        if let Some(s) = sessions.get_mut(session_key) {
+            s.message_count += delta;
+            s.last_active = Instant::now();
+        }
     }
 }
 
@@ -890,7 +907,7 @@ fn auto_label_if_needed(state: &AppState, session_key: &str, first_message: &str
         };
         sessions
             .get(session_key)
-            .map_or(false, |s| s.label.is_none() && s.message_count == 0)
+            .map_or(false, |s| s.label.is_none())
     };
 
     if !needs_label {
@@ -1007,7 +1024,7 @@ mod tests {
         let a = token_hash_prefix("test_token");
         let b = token_hash_prefix("test_token");
         assert_eq!(a, b);
-        assert_eq!(a.len(), 8);
+        assert_eq!(a.len(), 16);
     }
 
     #[test]
