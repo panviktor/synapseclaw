@@ -37,6 +37,8 @@ pub struct Agent {
     classification_config: crate::config::QueryClassificationConfig,
     available_hints: Vec<String>,
     route_model_by_hint: HashMap<String, String>,
+    /// Cumulative token usage from the last turn (provider-reported).
+    last_turn_usage: Option<crate::providers::traits::TokenUsage>,
 }
 
 pub struct AgentBuilder {
@@ -223,6 +225,7 @@ impl AgentBuilder {
             classification_config: self.classification_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
+            last_turn_usage: None,
         })
     }
 }
@@ -243,6 +246,11 @@ impl Agent {
     /// Push a pre-built conversation message (used for session replay from DB).
     pub fn push_history(&mut self, msg: ConversationMessage) {
         self.history.push(msg);
+    }
+
+    /// Token usage reported by the provider during the last turn (if any).
+    pub fn last_turn_usage(&self) -> Option<&crate::providers::traits::TokenUsage> {
+        self.last_turn_usage.as_ref()
     }
 
     pub fn from_config(config: &Config) -> Result<Self> {
@@ -470,6 +478,7 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        self.last_turn_usage = None;
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -524,6 +533,20 @@ impl Agent {
                 Ok(resp) => resp,
                 Err(err) => return Err(err),
             };
+
+            // Accumulate token usage from provider response
+            if let Some(ref u) = response.usage {
+                let prev =
+                    self.last_turn_usage
+                        .get_or_insert(crate::providers::traits::TokenUsage {
+                            input_tokens: None,
+                            output_tokens: None,
+                        });
+                prev.input_tokens =
+                    Some(prev.input_tokens.unwrap_or(0) + u.input_tokens.unwrap_or(0));
+                prev.output_tokens =
+                    Some(prev.output_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0));
+            }
 
             let (text, calls) = self.tool_dispatcher.parse_response(&response);
             if calls.is_empty() {

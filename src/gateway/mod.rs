@@ -292,6 +292,8 @@ pub struct ChatSession {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub run_id: Option<String>,
+    /// Abort signal: send `true` to cancel the active run.
+    pub abort_tx: Option<tokio::sync::watch::Sender<bool>>,
 }
 
 /// Shared state for all axum handlers

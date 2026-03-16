@@ -268,7 +268,7 @@ impl ChatDb {
             params![session_key],
         )?;
         conn.execute(
-            "UPDATE chat_sessions SET message_count = 0 WHERE key = ?1",
+            "UPDATE chat_sessions SET message_count = 0, input_tokens = 0, output_tokens = 0 WHERE key = ?1",
             params![session_key],
         )?;
         Ok(())
