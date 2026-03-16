@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AGENT_PRESETS, type AgentPreset } from '@/lib/ipc-presets';
 import { PROVIDERS, getProvidersByTier } from '@/lib/ipc-providers';
 import { CHANNELS } from '@/lib/ipc-channels';
@@ -141,8 +142,8 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
 
   const selectedChannel = CHANNELS.find((c) => c.id === channelId);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center pl-60">
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
       <div className="relative w-full max-w-2xl max-h-[85vh] overflow-auto glass-card p-6 animate-fade-in-scale">
         {/* Header */}
@@ -413,7 +414,8 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
