@@ -220,8 +220,11 @@ Authorization: Bearer <broker_token>
 
 Broker stores `proxy_token` in `AgentRegistry`. When proxying WS:
 ```
-Broker → Agent WS: /ws/chat?token=<proxy_token>
+Broker → Agent WS: /ws/chat
+  Sec-WebSocket-Protocol: zeroclaw.v1, bearer.<proxy_token>
 ```
+
+Token is never sent in query string — avoids leaking in logs/diagnostics. Uses the same subprotocol auth path that `ws.rs` already supports (precedence: header > subprotocol > query).
 
 Agent's gateway validates `proxy_token` via normal pairing check. Agent adds it to its own `paired_tokens` on first registration.
 
@@ -529,11 +532,13 @@ This is a dangerous operation. Not a regular API feature.
 
 ```toml
 [gateway.ui_provisioning]
-enabled = false                    # master switch (requires config edit + restart to enable)
+enabled = false                    # master switch (see security rule below)
 mode = "config_only"               # config_only | service_install
 agents_root = "~/.zeroclaw/agents" # fixed root, no arbitrary paths
 allow_blueprints = false           # Phase 3.6 fleet blueprints
 ```
+
+**Security rule:** `gateway.ui_provisioning.enabled` can ONLY be changed by editing the local config file + restarting the broker. It MUST be rejected if submitted via `PUT /api/config` — the config PUT handler must strip or reject changes to this field. Rationale: `/api/config` is bearer-auth only (not localhost-gated), so allowing it to flip the provisioning master switch would be a privilege escalation path from any paired client.
 
 ### Modes
 
