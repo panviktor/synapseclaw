@@ -193,6 +193,15 @@ impl ChatDb {
         Ok(())
     }
 
+    pub fn update_session_summary(&self, key: &str, summary: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
+        conn.execute(
+            "UPDATE chat_sessions SET session_summary = ?2 WHERE key = ?1",
+            params![key, summary],
+        )?;
+        Ok(())
+    }
+
     pub fn update_session_goal(&self, key: &str, goal: &str) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
         conn.execute(

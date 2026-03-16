@@ -302,6 +302,8 @@ pub struct AppState {
     pub config: Arc<Mutex<Config>>,
     pub provider: Arc<dyn Provider>,
     pub model: String,
+    /// Model for session summarization (falls back to `model` if None).
+    pub summary_model: Option<String>,
     pub temperature: f64,
     pub mem: Arc<dyn Memory>,
     pub auto_save: bool,
@@ -397,6 +399,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .default_model
         .clone()
         .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
+    let summary_model = config.summary_model.clone();
     let temperature = config.default_temperature;
     let mem: Arc<dyn Memory> = Arc::from(memory::create_memory_with_storage_and_routes(
         &config.memory,
@@ -724,6 +727,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         config: config_state,
         provider,
         model,
+        summary_model,
         temperature,
         mem,
         auto_save: config.memory.auto_save,
@@ -1945,6 +1949,7 @@ mod tests {
             config: Arc::new(Mutex::new(Config::default())),
             provider: Arc::new(MockProvider::default()),
             model: "test-model".into(),
+            summary_model: None,
             temperature: 0.0,
             mem: Arc::new(MockMemory),
             auto_save: false,
@@ -2005,6 +2010,7 @@ mod tests {
             config: Arc::new(Mutex::new(Config::default())),
             provider: Arc::new(MockProvider::default()),
             model: "test-model".into(),
+            summary_model: None,
             temperature: 0.0,
             mem: Arc::new(MockMemory),
             auto_save: false,
@@ -2389,6 +2395,7 @@ mod tests {
             config: Arc::new(Mutex::new(Config::default())),
             provider,
             model: "test-model".into(),
+            summary_model: None,
             temperature: 0.0,
             mem: memory,
             auto_save: false,
@@ -2463,6 +2470,7 @@ mod tests {
             config: Arc::new(Mutex::new(Config::default())),
             provider,
             model: "test-model".into(),
+            summary_model: None,
             temperature: 0.0,
             mem: memory,
             auto_save: true,
@@ -2549,6 +2557,7 @@ mod tests {
             config: Arc::new(Mutex::new(Config::default())),
             provider,
             model: "test-model".into(),
+            summary_model: None,
             temperature: 0.0,
             mem: memory,
             auto_save: false,
@@ -2607,6 +2616,7 @@ mod tests {
             config: Arc::new(Mutex::new(Config::default())),
             provider,
             model: "test-model".into(),
+            summary_model: None,
             temperature: 0.0,
             mem: memory,
             auto_save: false,
@@ -2670,6 +2680,7 @@ mod tests {
             config: Arc::new(Mutex::new(Config::default())),
             provider,
             model: "test-model".into(),
+            summary_model: None,
             temperature: 0.0,
             mem: memory,
             auto_save: false,
@@ -2738,6 +2749,7 @@ mod tests {
             config: Arc::new(Mutex::new(Config::default())),
             provider,
             model: "test-model".into(),
+            summary_model: None,
             temperature: 0.0,
             mem: memory,
             auto_save: false,
@@ -2802,6 +2814,7 @@ mod tests {
             config: Arc::new(Mutex::new(Config::default())),
             provider,
             model: "test-model".into(),
+            summary_model: None,
             temperature: 0.0,
             mem: memory,
             auto_save: false,

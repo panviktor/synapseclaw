@@ -230,7 +230,7 @@ async fn handle_socket(
             let sk = session_key.clone();
             let tp = token_prefix.clone();
             tokio::spawn(async move {
-                let result = handle_chat_send_rpc(&params, &st, &sk, &tp).await;
+                let result = handle_chat_send_rpc(&params, &st, &sk, &tp, &tx).await;
                 let response = match result {
                     Ok(val) => serde_json::json!({
                         "type": "rpc_response", "id": id, "result": val,
@@ -243,7 +243,15 @@ async fn handle_socket(
             });
         } else {
             // Fast RPCs: handle inline
-            let result = handle_rpc(&method, &params, &state, &token_prefix, &session_key).await;
+            let result = handle_rpc(
+                &method,
+                &params,
+                &state,
+                &token_prefix,
+                &session_key,
+                &out_tx,
+            )
+            .await;
             let response = match result {
                 Ok(val) => serde_json::json!({
                     "type": "rpc_response", "id": id, "result": val,
@@ -384,10 +392,13 @@ async fn handle_rpc(
     state: &AppState,
     token_prefix: &str,
     default_session: &str,
+    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
 ) -> anyhow::Result<serde_json::Value> {
     match method {
         "chat.history" => handle_chat_history(params, state, default_session, token_prefix),
-        "chat.send" => handle_chat_send_rpc(params, state, default_session, token_prefix).await,
+        "chat.send" => {
+            handle_chat_send_rpc(params, state, default_session, token_prefix, out_tx).await
+        }
         "chat.abort" => handle_chat_abort(params, state, default_session, token_prefix),
         "sessions.list" => handle_sessions_list(state, token_prefix),
         "sessions.new" => handle_sessions_new(params, state, token_prefix),
@@ -482,6 +493,7 @@ async fn handle_chat_send_rpc(
     state: &AppState,
     default_session: &str,
     token_prefix: &str,
+    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
 ) -> anyhow::Result<serde_json::Value> {
     let session_key = params["session"]
         .as_str()
@@ -509,6 +521,9 @@ async fn handle_chat_send_rpc(
         }
     }
 
+    // Emit run_started lifecycle event
+    emit_run_event(state, "session.run_started", &session_key, &run_id);
+
     // Persist user message + auto-label
     persist_message(
         state,
@@ -535,7 +550,7 @@ async fn handle_chat_send_rpc(
     // Run agent turn with abort support
     let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx).await;
 
-    // Clear run_id + abort_tx, extract usage + persist tool events
+    // Clear run_id + abort_tx, extract usage + persist tool events + push live
     let usage = {
         let mut sessions = state
             .chat_sessions
@@ -545,7 +560,8 @@ async fn handle_chat_send_rpc(
             s.run_id = None;
             s.abort_tx = None;
             s.last_active = Instant::now();
-            // Persist tool events from this turn
+            // Push tool events to WS (live) + persist to DB
+            push_tool_events(out_tx, &session_key, s.agent.history(), history_len_before);
             persist_tool_events(state, &session_key, s.agent.history(), history_len_before);
         }
         sessions
@@ -569,6 +585,14 @@ async fn handle_chat_send_rpc(
             persist_usage(state, &session_key, usage.as_ref());
             update_session_goal(state, &session_key, &message);
             emit_session_event(state, "session.updated", &session_key);
+            emit_run_event(state, "session.run_finished", &session_key, &run_id);
+
+            // Fire-and-forget: rolling session summary every N messages
+            let st = state.clone();
+            let sk = session_key.clone();
+            tokio::spawn(async move {
+                summarize_session_if_needed(&st, &sk).await;
+            });
 
             Ok(serde_json::json!({
                 "run_id": run_id,
@@ -589,6 +613,7 @@ async fn handle_chat_send_rpc(
                 );
                 persist_increment_count(state, &session_key, 2);
                 sync_memory_count(state, &session_key, 2);
+                emit_run_event(state, "session.run_interrupted", &session_key, &run_id);
                 return Ok(serde_json::json!({
                     "run_id": run_id,
                     "aborted": true,
@@ -598,6 +623,7 @@ async fn handle_chat_send_rpc(
             persist_message(state, &session_key, "error", None, &sanitized, None, None);
             persist_increment_count(state, &session_key, 2);
             sync_memory_count(state, &session_key, 2);
+            emit_run_event(state, "session.run_finished", &session_key, &run_id);
             Err(anyhow::anyhow!("{sanitized}"))
         }
     }
@@ -1038,6 +1064,136 @@ fn emit_session_event(state: &AppState, event_type: &str, session_key: &str) {
         "session_key": session_key,
         "timestamp": now_secs(),
     }));
+}
+
+/// Emit a session lifecycle event with an associated run_id.
+fn emit_run_event(state: &AppState, event_type: &str, session_key: &str, run_id: &str) {
+    let _ = state.event_tx.send(serde_json::json!({
+        "type": event_type,
+        "session_key": session_key,
+        "run_id": run_id,
+        "timestamp": now_secs(),
+    }));
+}
+
+/// Push tool events from the agent's history delta via WS before the RPC response.
+fn push_tool_events(
+    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+    session_key: &str,
+    history: &[crate::providers::ConversationMessage],
+    start_idx: usize,
+) {
+    use crate::providers::ConversationMessage;
+
+    for msg in history.iter().skip(start_idx) {
+        match msg {
+            ConversationMessage::AssistantToolCalls { tool_calls, .. } => {
+                for tc in tool_calls {
+                    let evt = serde_json::json!({
+                        "type": "tool_call",
+                        "session_key": session_key,
+                        "tool_name": tc.name,
+                        "content": format!("{}({})", tc.name, tc.arguments),
+                        "timestamp": now_secs(),
+                    });
+                    let _ = out_tx.send(evt.to_string());
+                }
+            }
+            ConversationMessage::ToolResults(results) => {
+                for tr in results {
+                    let evt = serde_json::json!({
+                        "type": "tool_result",
+                        "session_key": session_key,
+                        "content": truncate_str(&tr.content, 500),
+                        "timestamp": now_secs(),
+                    });
+                    let _ = out_tx.send(evt.to_string());
+                }
+            }
+            ConversationMessage::Chat(_) => {}
+        }
+    }
+}
+
+/// Generate a rolling session summary every N messages (fire-and-forget).
+async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
+    const SUMMARY_INTERVAL: u32 = 10;
+
+    let (msg_count, prev_summary) = {
+        let sessions = match state.chat_sessions.lock() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        match sessions.get(session_key) {
+            Some(s) => (s.message_count, s.session_summary.clone()),
+            None => return,
+        }
+    };
+
+    // Only summarize every N messages (counting both user + assistant)
+    if msg_count < SUMMARY_INTERVAL || msg_count % SUMMARY_INTERVAL != 0 {
+        return;
+    }
+
+    // Fetch last 10 messages from DB
+    let recent = match state.chat_db.as_ref() {
+        Some(db) => match db.get_messages(session_key, 10) {
+            Ok(msgs) => msgs,
+            Err(_) => return,
+        },
+        None => return,
+    };
+
+    if recent.is_empty() {
+        return;
+    }
+
+    // Build prompt
+    let mut messages_text = String::new();
+    for m in &recent {
+        let role = m.role.as_deref().unwrap_or(&m.kind);
+        use std::fmt::Write;
+        let _ = writeln!(messages_text, "{role}: {}", truncate_str(&m.content, 200));
+    }
+
+    let prompt = format!(
+        "Summarize this conversation in 2-3 sentences. Preserve: key decisions, user goals, open tasks.\n\
+         Previous summary: {}\n\n\
+         Recent messages:\n{}",
+        prev_summary.as_deref().unwrap_or("(none)"),
+        messages_text,
+    );
+
+    let model = state
+        .summary_model
+        .as_deref()
+        .unwrap_or(&state.model)
+        .to_string();
+    match state
+        .provider
+        .chat_with_system(None, &prompt, &model, 0.3)
+        .await
+    {
+        Ok(summary) => {
+            let summary = truncate_str(&summary, 300);
+            // Update in-memory
+            if let Ok(mut sessions) = state.chat_sessions.lock() {
+                if let Some(s) = sessions.get_mut(session_key) {
+                    s.session_summary = Some(summary.clone());
+                }
+            }
+            // Update DB
+            if let Some(db) = state.chat_db.as_ref() {
+                if let Err(e) = db.update_session_summary(session_key, &summary) {
+                    tracing::warn!("chat_db: failed to update session summary: {e}");
+                }
+            }
+            tracing::debug!("session summary updated for {session_key}");
+        }
+        Err(e) => {
+            tracing::warn!("session summary generation failed: {e}");
+        }
+    }
 }
 
 fn truncate_str(s: &str, max: usize) -> String {
