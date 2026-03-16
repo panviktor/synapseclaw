@@ -145,7 +145,7 @@ export default function Quarantine() {
 
       {/* Inspect modal */}
       {inspectMsg && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
+        <div className="fixed inset-0 z-50 flex items-center justify-center pl-60">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setInspectMsg(null)} />
           <div className="relative w-full max-w-2xl max-h-[80vh] overflow-auto glass-card p-6 animate-fade-in-scale">
             <div className="flex justify-between items-center mb-4">
