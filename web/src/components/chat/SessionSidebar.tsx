@@ -223,7 +223,9 @@ export default function SessionSidebar({
                       {label}
                     </span>
                   </div>
-                  {s.current_goal ? (
+                  {s.session_summary ? (
+                    <p className="text-[10px] text-[#556080] truncate mt-0.5 pl-[18px]" title={s.session_summary}>{s.session_summary}</p>
+                  ) : s.current_goal ? (
                     <p className="text-[10px] text-[#556080] truncate mt-0.5 pl-[18px]">{s.current_goal}</p>
                   ) : s.preview ? (
                     <p className="text-[10px] text-[#334060] truncate mt-0.5 pl-[18px]">{s.preview}</p>

@@ -346,9 +346,23 @@ export default function AgentChat() {
   }, [activeSession]);
 
   // ── Send message ──────────────────────────────────────────────────
-  const handleSend = () => {
+  const handleSend = async () => {
     const trimmed = input.trim();
     if (!trimmed || !wsRef.current?.connected) return;
+
+    // If no active session, create one first
+    let sendSession = activeSession;
+    if (!sendSession) {
+      try {
+        const res = await wsRef.current.rpc<{ session_key: string }>('sessions.new');
+        sendSession = res.session_key;
+        setSearchParams({ session: sendSession }, { replace: true });
+        const listRes = await wsRef.current.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list');
+        setSessions(listRes.sessions);
+      } catch {
+        return;
+      }
+    }
 
     const chatMsg: ChatMessage = {
       id: generateUUID(),
@@ -358,15 +372,10 @@ export default function AgentChat() {
       kind: 'user',
     };
     setMessages((prev) => [...prev, chatMsg]);
-    if (activeSession) {
-      appendCachedMessage(activeSession, toCache(chatMsg));
-    }
+    appendCachedMessage(sendSession, toCache(chatMsg));
 
     setTyping(true);
     pendingContentRef.current = '';
-
-    // Capture session at send time — user may switch sessions during in-flight run
-    const sendSession = activeSession ?? 'default';
 
     wsRef.current.rpc<{ run_id: string; response?: string; aborted?: boolean }>(
       'chat.send',

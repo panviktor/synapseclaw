@@ -144,6 +144,7 @@ export interface ChatSessionInfo {
   input_tokens: number;
   output_tokens: number;
   current_goal: string | null;
+  session_summary: string | null;
 }
 
 export interface ChatMessageInfo {
