@@ -1508,6 +1508,10 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: std::sync::Arc::new(crate::gateway::nodes::NodeRegistry::new(16)),
+            chat_sessions: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            chat_db: None,
         }
     }
 

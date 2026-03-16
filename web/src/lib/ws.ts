@@ -33,11 +33,19 @@ function getOrCreateSessionId(): string {
   return id;
 }
 
+/** Pending RPC call awaiting response. */
+interface PendingRpc {
+  resolve: (result: any) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 export class WebSocketClient {
   private ws: WebSocket | null = null;
   private currentDelay: number;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionallyClosed = false;
+  private pendingRpcs = new Map<string, PendingRpc>();
 
   public onMessage: WsMessageHandler | null = null;
   public onOpen: WsOpenHandler | null = null;
@@ -81,6 +89,22 @@ export class WebSocketClient {
     this.ws.onmessage = (ev: MessageEvent) => {
       try {
         const msg = JSON.parse(ev.data) as WsMessage;
+
+        // Handle RPC responses
+        if (msg.type === 'rpc_response' && msg.id) {
+          const pending = this.pendingRpcs.get(msg.id);
+          if (pending) {
+            this.pendingRpcs.delete(msg.id);
+            clearTimeout(pending.timer);
+            if (msg.error) {
+              pending.reject(new Error(msg.error));
+            } else {
+              pending.resolve(msg.result);
+            }
+            return;
+          }
+        }
+
         this.onMessage?.(msg);
       } catch {
         // Ignore non-JSON frames
@@ -88,6 +112,13 @@ export class WebSocketClient {
     };
 
     this.ws.onclose = (ev: CloseEvent) => {
+      // Reject all pending RPCs
+      for (const [, pending] of this.pendingRpcs) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error('WebSocket closed'));
+      }
+      this.pendingRpcs.clear();
+
       this.onClose?.(ev);
       this.scheduleReconnect();
     };
@@ -97,7 +128,7 @@ export class WebSocketClient {
     };
   }
 
-  /** Send a chat message to the agent. */
+  /** Send a chat message to the agent (legacy protocol). */
   sendMessage(content: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('WebSocket is not connected');
@@ -105,10 +136,44 @@ export class WebSocketClient {
     this.ws.send(JSON.stringify({ type: 'message', content }));
   }
 
+  /**
+   * Send an RPC request and return a promise that resolves with the result.
+   * Timeout after 60s by default.
+   */
+  rpc<T = any>(method: string, params: Record<string, any> = {}, timeoutMs = 60000): Promise<T> {
+    return new Promise((resolve, reject) => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        reject(new Error('WebSocket is not connected'));
+        return;
+      }
+
+      const id = generateUUID();
+      const timer = setTimeout(() => {
+        this.pendingRpcs.delete(id);
+        reject(new Error(`RPC timeout: ${method}`));
+      }, timeoutMs);
+
+      this.pendingRpcs.set(id, { resolve, reject, timer });
+
+      this.ws.send(JSON.stringify({
+        type: 'rpc',
+        id,
+        method,
+        params,
+      }));
+    });
+  }
+
   /** Close the connection without auto-reconnecting. */
   disconnect(): void {
     this.intentionallyClosed = true;
     this.clearReconnectTimer();
+    // Reject pending RPCs
+    for (const [, pending] of this.pendingRpcs) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error('Disconnected'));
+    }
+    this.pendingRpcs.clear();
     if (this.ws) {
       this.ws.close();
       this.ws = null;

@@ -240,6 +240,11 @@ impl Agent {
         self.history.clear();
     }
 
+    /// Push a pre-built conversation message (used for session replay from DB).
+    pub fn push_history(&mut self, msg: ConversationMessage) {
+        self.history.push(msg);
+    }
+
     pub fn from_config(config: &Config) -> Result<Self> {
         let observer: Arc<dyn Observer> =
             Arc::from(observability::create_observer(&config.observability));

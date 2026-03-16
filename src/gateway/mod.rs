@@ -8,6 +8,7 @@
 //! - Header sanitization (handled by axum/hyper)
 
 pub mod api;
+pub mod chat_db;
 pub mod ipc;
 pub mod nodes;
 pub mod sse;
@@ -279,6 +280,20 @@ fn normalize_max_keys(configured: usize, fallback: usize) -> usize {
     }
 }
 
+/// An in-memory chat session (agent + metadata).
+pub struct ChatSession {
+    pub agent: crate::agent::Agent,
+    pub created_at: std::time::Instant,
+    pub last_active: std::time::Instant,
+    pub label: Option<String>,
+    pub message_count: u32,
+    pub current_goal: Option<String>,
+    pub session_summary: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub run_id: Option<String>,
+}
+
 /// Shared state for all axum handlers
 #[derive(Clone)]
 pub struct AppState {
@@ -328,6 +343,10 @@ pub struct AppState {
     pub ipc_read_rate_limiter: Option<Arc<SlidingWindowRateLimiter>>,
     /// Registry of dynamically connected nodes
     pub node_registry: Arc<nodes::NodeRegistry>,
+    /// In-memory chat sessions keyed by session key (e.g. `web:<hash>:<id>`)
+    pub chat_sessions: Arc<std::sync::Mutex<HashMap<String, ChatSession>>>,
+    /// Persistent chat database (SQLite)
+    pub chat_db: Option<Arc<chat_db::ChatDb>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -687,6 +706,18 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         None
     };
 
+    // ── Chat DB (SQLite persistence for web chat sessions) ──
+    let chat_db = {
+        let chat_dir = config.workspace_dir.join("chat");
+        match chat_db::ChatDb::open(&chat_dir.join("sessions.db")) {
+            Ok(db) => Some(Arc::new(db)),
+            Err(e) => {
+                tracing::warn!("Failed to open chat database: {e}");
+                None
+            }
+        }
+    };
+
     let state = AppState {
         config: config_state,
         provider,
@@ -759,6 +790,8 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             None
         },
         node_registry,
+        chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        chat_db,
     };
 
     // Config PUT needs larger body limit (1MB)
@@ -1937,6 +1970,8 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            chat_db: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -1995,6 +2030,8 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            chat_db: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2377,6 +2414,8 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            chat_db: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2449,6 +2488,8 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            chat_db: None,
         };
 
         let headers = HeaderMap::new();
@@ -2533,6 +2574,8 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            chat_db: None,
         };
 
         let response = handle_webhook(
@@ -2589,6 +2632,8 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            chat_db: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2650,6 +2695,8 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            chat_db: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2716,6 +2763,8 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            chat_db: None,
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -2778,6 +2827,8 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            chat_db: None,
         };
 
         let mut headers = HeaderMap::new();
