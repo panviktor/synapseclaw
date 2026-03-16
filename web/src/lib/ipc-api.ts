@@ -127,6 +127,17 @@ export function verifyAuditChain(): Promise<{ ok: boolean; verified?: number; er
   return apiFetch('/admin/ipc/audit/verify', { method: 'POST' });
 }
 
+export function createPaircode(agentId: string, trustLevel: number, role: string): Promise<{
+  success: boolean;
+  pairing_code: string;
+  message: string;
+}> {
+  return apiFetch('/admin/paircode/new', {
+    method: 'POST',
+    body: JSON.stringify({ agent_id: agentId, trust_level: trustLevel, role }),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Availability check
 // ---------------------------------------------------------------------------
