@@ -903,7 +903,7 @@ async fn main() -> Result<()> {
 
         // Auto-start channels if user said yes during wizard
         if std::env::var("ZEROCLAW_AUTOSTART_CHANNELS").as_deref() == Ok("1") {
-            channels::start_channels(config).await?;
+            Box::pin(channels::start_channels(config)).await?;
         }
         return Ok(());
     }
@@ -1054,6 +1054,28 @@ async fn main() -> Result<()> {
             host,
             instance: _,
         } => {
+            // Auto-generate proxy_token for broker→agent auth if IPC enabled and not yet set
+            if config.agents_ipc.enabled && config.agents_ipc.proxy_token.is_none() {
+                let token = format!("zc_proxy_{}", uuid::Uuid::new_v4().simple());
+                config.agents_ipc.proxy_token = Some(token.clone());
+                // Also add to paired_tokens so the broker can authenticate with us
+                if !config.gateway.paired_tokens.iter().any(|t| t == &token) {
+                    config.gateway.paired_tokens.push(token);
+                }
+                if let Err(e) = config.save().await {
+                    tracing::warn!("Failed to save auto-generated proxy_token: {e}");
+                } else {
+                    tracing::info!("Generated proxy_token for broker→agent auth (saved to config)");
+                }
+            }
+
+            // Auto-detect gateway_url if not set
+            if config.agents_ipc.enabled && config.agents_ipc.gateway_url.is_none() {
+                let gw_host = &config.gateway.host;
+                let gw_port = config.gateway.port;
+                config.agents_ipc.gateway_url = Some(format!("http://{gw_host}:{gw_port}"));
+            }
+
             let port = port.unwrap_or(config.gateway.port);
             let host = host.unwrap_or_else(|| config.gateway.host.clone());
             if port == 0 {
@@ -1252,7 +1274,7 @@ async fn main() -> Result<()> {
         },
 
         Commands::Channel { channel_command } => match channel_command {
-            ChannelCommands::Start => channels::start_channels(config).await,
+            ChannelCommands::Start => Box::pin(channels::start_channels(config)).await,
             ChannelCommands::Doctor => channels::doctor_channels(config).await,
             other => channels::handle_command(other, &config).await,
         },

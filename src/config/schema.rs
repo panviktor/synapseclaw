@@ -1323,10 +1323,20 @@ pub struct AgentsIpcConfig {
     #[serde(default = "default_broker_url")]
     pub broker_url: String,
 
-    /// Bearer token for authenticating with the broker gateway.
+    /// Bearer token for authenticating with the broker gateway (agent→broker direction).
     /// Obtained by pairing with the broker instance.
     #[serde(default)]
     pub broker_token: Option<String>,
+
+    /// Bearer token the broker uses to access this agent's gateway (broker→agent direction).
+    /// Auto-generated on first daemon start if not set. Used for WS chat proxy.
+    #[serde(default)]
+    pub proxy_token: Option<String>,
+
+    /// This agent's gateway URL for broker proxy connections.
+    /// Auto-detected from `gateway.host:gateway.port` if not set.
+    #[serde(default)]
+    pub gateway_url: Option<String>,
 
     /// Agent staleness threshold in seconds (default: 120).
     /// Agents not seen within this window are marked offline.
@@ -1474,6 +1484,8 @@ impl Default for AgentsIpcConfig {
             enabled: false,
             broker_url: default_broker_url(),
             broker_token: None,
+            proxy_token: None,
+            gateway_url: None,
             staleness_secs: default_staleness_secs(),
             message_ttl_secs: default_message_ttl_secs(),
             trust_level: default_trust_level(),
