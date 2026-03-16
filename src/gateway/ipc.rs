@@ -57,6 +57,15 @@ impl From<rusqlite::Error> for IpcInsertError {
     }
 }
 
+/// A registered agent gateway (Phase 3.8).
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentGatewayRow {
+    pub agent_id: String,
+    pub gateway_url: String,
+    pub proxy_token: String,
+    pub registered_at: i64,
+}
+
 // ── IpcDb (broker-owned SQLite) ─────────────────────────────────
 
 /// Broker-owned SQLite database for IPC messages, agent registry, and shared state.
@@ -157,6 +166,16 @@ impl IpcDb {
             ",
         )?;
 
+        // Phase 3.8: agent gateway registry for broker→agent proxy.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS agent_gateways (
+                agent_id      TEXT PRIMARY KEY,
+                gateway_url   TEXT NOT NULL,
+                proxy_token   TEXT NOT NULL,
+                registered_at INTEGER NOT NULL
+            );",
+        )?;
+
         // Idempotent migration: add `promoted` column if missing (Phase 2).
         let has_promoted: bool = conn
             .prepare("PRAGMA table_info(messages)")?
@@ -192,6 +211,80 @@ impl IpcDb {
                 trust_level = ?2, role = ?3, last_seen = ?4",
             params![agent_id, trust_level, role, now],
         );
+    }
+
+    // ── Agent gateway registry (Phase 3.8) ────────────────────────
+
+    /// Register or update an agent's gateway URL and proxy token.
+    pub fn upsert_agent_gateway(
+        &self,
+        agent_id: &str,
+        gateway_url: &str,
+        proxy_token: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let now = unix_now();
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO agent_gateways (agent_id, gateway_url, proxy_token, registered_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(agent_id) DO UPDATE SET
+                gateway_url = ?2, proxy_token = ?3, registered_at = ?4",
+            params![agent_id, gateway_url, proxy_token, now],
+        )?;
+        Ok(())
+    }
+
+    /// List all registered agent gateways.
+    pub fn list_agent_gateways(&self) -> Result<Vec<AgentGatewayRow>, rusqlite::Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, gateway_url, proxy_token, registered_at FROM agent_gateways",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(AgentGatewayRow {
+                    agent_id: row.get(0)?,
+                    gateway_url: row.get(1)?,
+                    proxy_token: row.get(2)?,
+                    registered_at: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Get a single agent's gateway info.
+    pub fn get_agent_gateway(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<AgentGatewayRow>, rusqlite::Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, gateway_url, proxy_token, registered_at FROM agent_gateways WHERE agent_id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![agent_id], |row| {
+            Ok(AgentGatewayRow {
+                agent_id: row.get(0)?,
+                gateway_url: row.get(1)?,
+                proxy_token: row.get(2)?,
+                registered_at: row.get(3)?,
+            })
+        })?;
+        match rows.next() {
+            Some(Ok(r)) => Ok(Some(r)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
+    }
+
+    /// Remove an agent's gateway registration.
+    pub fn remove_agent_gateway(&self, agent_id: &str) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "DELETE FROM agent_gateways WHERE agent_id = ?1",
+            params![agent_id],
+        )?;
+        Ok(())
     }
 
     /// Check whether an agent is blocked (revoked, disabled, or quarantined).
@@ -2563,6 +2656,58 @@ pub fn revoke_ephemeral_agent(
             &format!("ephemeral_{status}: session={session_id}, tokens_revoked={tokens_revoked}"),
         ));
     }
+}
+
+// ── IPC gateway registration (Phase 3.8) ────────────────────────
+
+/// POST /api/ipc/register-gateway — agent registers its gateway URL + proxy token with broker.
+///
+/// Authenticated via bearer token (agent's broker_token). Broker stores
+/// the gateway_url + proxy_token for chat proxy connections.
+pub async fn handle_ipc_register_gateway(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let meta = require_ipc_auth(&state, &headers)?;
+    let db = require_ipc_db(&state)?;
+
+    let mk_err = |msg: &str| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": msg, "code": "bad_request"})),
+        )
+    };
+
+    let gateway_url = body["gateway_url"]
+        .as_str()
+        .ok_or_else(|| mk_err("missing 'gateway_url'"))?;
+    let proxy_token = body["proxy_token"]
+        .as_str()
+        .ok_or_else(|| mk_err("missing 'proxy_token'"))?;
+
+    if !gateway_url.starts_with("http://") && !gateway_url.starts_with("https://") {
+        return Err(mk_err("gateway_url must start with http:// or https://"));
+    }
+
+    db.upsert_agent_gateway(&meta.agent_id, gateway_url, proxy_token)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string(), "code": "db_error"})),
+            )
+        })?;
+
+    info!(
+        agent_id = %meta.agent_id,
+        gateway_url = %gateway_url,
+        "Agent registered gateway for proxy"
+    );
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "agent_id": meta.agent_id,
+    })))
 }
 
 // ── IPC admin endpoint handlers ─────────────────────────────────
