@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Send, Bot, User, AlertCircle, Copy, Check, Square } from 'lucide-react';
+import { Send, Bot, User, AlertCircle, Copy, Check, Square, MoreVertical, Plus, Eraser } from 'lucide-react';
 import type { WsMessage, ChatSessionInfo, ChatMessageInfo } from '@/types/api';
 import { WebSocketClient } from '@/lib/ws';
 import { generateUUID } from '@/lib/uuid';
@@ -49,6 +49,7 @@ export default function AgentChat() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const pendingContentRef = useRef('');
   const activeSessionRef = useRef(activeSession);
   activeSessionRef.current = activeSession;
@@ -314,31 +315,22 @@ export default function AgentChat() {
     [activeSession, setSearchParams, loadHistory],
   );
 
+  // ── Clear history ────────────────────────────────────────────────
+  const handleClearHistory = useCallback(async () => {
+    if (!wsRef.current?.connected || !activeSession) return;
+    try {
+      await wsRef.current.rpc('sessions.reset', { key: activeSession });
+      setMessages([]);
+      deleteCachedSession(activeSession);
+    } catch {
+      // ignore
+    }
+  }, [activeSession]);
+
   // ── Send message ──────────────────────────────────────────────────
   const handleSend = () => {
     const trimmed = input.trim();
     if (!trimmed || !wsRef.current?.connected) return;
-
-    // Slash commands
-    if (trimmed === '/new') {
-      setInput('');
-      if (activeSession) clearSessionDraft(activeSession);
-      handleNewSession();
-      return;
-    }
-    if (trimmed === '/clear') {
-      setInput('');
-      if (activeSession) {
-        clearSessionDraft(activeSession);
-        wsRef.current.rpc('sessions.reset', { key: activeSession })
-          .then(() => {
-            setMessages([]);
-            deleteCachedSession(activeSession);
-          })
-          .catch(() => {});
-      }
-      return;
-    }
 
     const chatMsg: ChatMessage = {
       id: generateUUID(),
@@ -551,6 +543,38 @@ export default function AgentChat() {
           }}
         >
           <div className="flex items-end gap-3 max-w-4xl mx-auto">
+            {/* Actions dropdown */}
+            <div className="relative flex-shrink-0">
+              <button
+                onClick={() => setActionsOpen(!actionsOpen)}
+                className="p-3 rounded-xl text-[#556080] hover:text-white hover:bg-[#1a1a3e]/50 transition-colors"
+                title="Actions"
+              >
+                <MoreVertical className="h-5 w-5" />
+              </button>
+              {actionsOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setActionsOpen(false)} />
+                  <div className="absolute bottom-full left-0 mb-2 z-20 w-44 rounded-xl border border-[#1a1a3e] overflow-hidden" style={{ background: 'linear-gradient(135deg, rgba(13,13,32,0.95), rgba(10,10,26,0.95))' }}>
+                    <button
+                      onClick={() => { setActionsOpen(false); handleNewSession(); }}
+                      className="flex items-center gap-2 w-full px-3 py-2.5 text-left text-xs text-[#8890a8] hover:text-white hover:bg-[#1a1a3e]/50 transition-colors"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      New Chat
+                    </button>
+                    <button
+                      onClick={() => { setActionsOpen(false); handleClearHistory(); }}
+                      disabled={!activeSession || messages.length === 0}
+                      className="flex items-center gap-2 w-full px-3 py-2.5 text-left text-xs text-[#8890a8] hover:text-white hover:bg-[#1a1a3e]/50 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                    >
+                      <Eraser className="h-3.5 w-3.5" />
+                      Clear History
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
             <div className="flex-1">
               <textarea
                 ref={inputRef}
