@@ -834,6 +834,10 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         )
         .route("/api/ipc/spawn-status", get(ipc::handle_ipc_spawn_status))
         .route("/api/ipc/register-key", post(ipc::handle_ipc_register_key))
+        .route(
+            "/api/ipc/register-gateway",
+            post(ipc::handle_ipc_register_gateway),
+        )
         // ── IPC admin routes (localhost only) ──
         .route("/admin/ipc/agents", get(ipc::handle_admin_ipc_agents))
         .route("/admin/ipc/revoke", post(ipc::handle_admin_ipc_revoke))
