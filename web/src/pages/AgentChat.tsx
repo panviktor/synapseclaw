@@ -4,8 +4,16 @@ import { Send, Bot, User, AlertCircle, Copy, Check, Square } from 'lucide-react'
 import type { WsMessage, ChatSessionInfo, ChatMessageInfo } from '@/types/api';
 import { WebSocketClient } from '@/lib/ws';
 import { generateUUID } from '@/lib/uuid';
-import { useDraft } from '@/hooks/useDraft';
 import SessionSidebar from '@/components/chat/SessionSidebar';
+import {
+  getCachedMessages,
+  setCachedMessages,
+  appendCachedMessage,
+  deleteCachedSession,
+  getSessionDraft,
+  setSessionDraft,
+  clearSessionDraft,
+} from '@/hooks/useChatStore';
 
 interface ChatMessage {
   id: string;
@@ -13,6 +21,14 @@ interface ChatMessage {
   content: string;
   timestamp: Date;
   kind?: string;
+}
+
+function toCache(msg: ChatMessage) {
+  return { id: msg.id, role: msg.role, content: msg.content, timestamp: msg.timestamp.getTime(), kind: msg.kind };
+}
+
+function fromCache(msg: { id: string; role: 'user' | 'agent'; content: string; timestamp: number; kind?: string }): ChatMessage {
+  return { id: msg.id, role: msg.role, content: msg.content, timestamp: new Date(msg.timestamp), kind: msg.kind };
 }
 
 export default function AgentChat() {
@@ -25,6 +41,7 @@ export default function AgentChat() {
   const [typing, setTyping] = useState(false);
   const [connected, setConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -36,19 +53,30 @@ export default function AgentChat() {
   const activeSessionRef = useRef(activeSession);
   activeSessionRef.current = activeSession;
 
-  // Draft keyed by session
-  const draftKey = `agent-chat-${activeSession ?? 'default'}`;
-  const { draft, saveDraft, clearDraft } = useDraft(draftKey);
-
-  // Sync draft → input on session switch
+  // ── Per-session draft (global store, not React context) ────────────
   useEffect(() => {
-    setInput(draft);
-  }, [draftKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (activeSession) {
+      setInput(getSessionDraft(activeSession));
+    } else {
+      setInput('');
+    }
+  }, [activeSession]);
 
   // Save draft on input change
   useEffect(() => {
-    saveDraft(input);
-  }, [input, saveDraft]);
+    if (activeSession) {
+      setSessionDraft(activeSession, input);
+    }
+  }, [input, activeSession]);
+
+  // ── Show cached messages instantly on session switch ────────────────
+  useEffect(() => {
+    if (!activeSession) return;
+    const cached = getCachedMessages(activeSession);
+    if (cached) {
+      setMessages(cached.map(fromCache));
+    }
+  }, [activeSession]);
 
   // ── WebSocket setup ──────────────────────────────────────────────
   useEffect(() => {
@@ -57,11 +85,11 @@ export default function AgentChat() {
     ws.onOpen = () => {
       setConnected(true);
       setError(null);
+      setReconnecting(false);
       // Load sessions list
       ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
         .then((res) => {
           setSessions(res.sessions);
-          // If no active session in URL, use first or create default
           if (!activeSessionRef.current && res.sessions.length > 0) {
             const first = res.sessions[0]!.key;
             setSearchParams({ session: first }, { replace: true });
@@ -77,10 +105,12 @@ export default function AgentChat() {
 
     ws.onClose = () => {
       setConnected(false);
+      setReconnecting(true);
     };
 
     ws.onError = () => {
       setError('Connection error. Attempting to reconnect...');
+      setReconnecting(true);
     };
 
     ws.onMessage = (msg: WsMessage) => {
@@ -94,16 +124,18 @@ export default function AgentChat() {
         case 'done': {
           const content = msg.full_response ?? msg.content ?? pendingContentRef.current;
           if (content) {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: generateUUID(),
-                role: 'agent',
-                content,
-                timestamp: new Date(),
-                kind: 'assistant',
-              },
-            ]);
+            const chatMsg: ChatMessage = {
+              id: generateUUID(),
+              role: 'agent',
+              content,
+              timestamp: new Date(),
+              kind: 'assistant',
+            };
+            setMessages((prev) => [...prev, chatMsg]);
+            // Update cache
+            if (activeSessionRef.current) {
+              appendCachedMessage(activeSessionRef.current, toCache(chatMsg));
+            }
           }
           pendingContentRef.current = '';
           setTyping(false);
@@ -114,46 +146,52 @@ export default function AgentChat() {
           break;
         }
 
-        case 'tool_call':
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: generateUUID(),
-              role: 'agent',
-              content: `[Tool Call] ${msg.name ?? 'unknown'}(${JSON.stringify(msg.args ?? {})})`,
-              timestamp: new Date(),
-              kind: 'tool_call',
-            },
-          ]);
+        case 'tool_call': {
+          const chatMsg: ChatMessage = {
+            id: generateUUID(),
+            role: 'agent',
+            content: `[Tool Call] ${msg.name ?? 'unknown'}(${JSON.stringify(msg.args ?? {})})`,
+            timestamp: new Date(),
+            kind: 'tool_call',
+          };
+          setMessages((prev) => [...prev, chatMsg]);
+          if (activeSessionRef.current) {
+            appendCachedMessage(activeSessionRef.current, toCache(chatMsg));
+          }
           break;
+        }
 
-        case 'tool_result':
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: generateUUID(),
-              role: 'agent',
-              content: `[Tool Result] ${msg.output ?? ''}`,
-              timestamp: new Date(),
-              kind: 'tool_result',
-            },
-          ]);
+        case 'tool_result': {
+          const chatMsg: ChatMessage = {
+            id: generateUUID(),
+            role: 'agent',
+            content: `[Tool Result] ${msg.output ?? ''}`,
+            timestamp: new Date(),
+            kind: 'tool_result',
+          };
+          setMessages((prev) => [...prev, chatMsg]);
+          if (activeSessionRef.current) {
+            appendCachedMessage(activeSessionRef.current, toCache(chatMsg));
+          }
           break;
+        }
 
-        case 'error':
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: generateUUID(),
-              role: 'agent',
-              content: `[Error] ${msg.message ?? 'Unknown error'}`,
-              timestamp: new Date(),
-              kind: 'error',
-            },
-          ]);
+        case 'error': {
+          const chatMsg: ChatMessage = {
+            id: generateUUID(),
+            role: 'agent',
+            content: `[Error] ${msg.message ?? 'Unknown error'}`,
+            timestamp: new Date(),
+            kind: 'error',
+          };
+          setMessages((prev) => [...prev, chatMsg]);
+          if (activeSessionRef.current) {
+            appendCachedMessage(activeSessionRef.current, toCache(chatMsg));
+          }
           setTyping(false);
           pendingContentRef.current = '';
           break;
+        }
       }
     };
 
@@ -167,12 +205,22 @@ export default function AgentChat() {
 
   // ── Load history for a session ────────────────────────────────────
   const loadHistory = useCallback(async (ws: WebSocketClient, sessionKey: string) => {
-    setLoading(true);
+    // Show cached messages instantly while fetching
+    const cached = getCachedMessages(sessionKey);
+    if (cached && cached.length > 0) {
+      setMessages(cached.map(fromCache));
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
     try {
       const res = await ws.rpc<{
         messages: ChatMessageInfo[];
         session_key: string;
         label: string | null;
+        session_summary: string | null;
+        current_goal: string | null;
       }>('chat.history', { session: sessionKey, limit: 50 });
 
       const mapped: ChatMessage[] = res.messages.map((m) => ({
@@ -183,8 +231,16 @@ export default function AgentChat() {
         kind: m.kind,
       }));
       setMessages(mapped);
+      // Update cache with server data (source of truth)
+      setCachedMessages(
+        sessionKey,
+        mapped.map(toCache),
+        { sessionSummary: res.session_summary ?? undefined, currentGoal: res.current_goal ?? undefined },
+      );
     } catch {
-      setMessages([]);
+      if (!cached || cached.length === 0) {
+        setMessages([]);
+      }
     }
     setLoading(false);
   }, []);
@@ -236,9 +292,9 @@ export default function AgentChat() {
       if (!wsRef.current?.connected) return;
       try {
         await wsRef.current.rpc('sessions.delete', { key });
+        deleteCachedSession(key);
         setSessions((prev) => {
           const remaining = prev.filter((s) => s.key !== key);
-          // Switch to another session if we deleted the active one
           if (key === activeSession && remaining.length > 0) {
             const next = remaining[0]!.key;
             setSearchParams({ session: next }, { replace: true });
@@ -263,16 +319,38 @@ export default function AgentChat() {
     const trimmed = input.trim();
     if (!trimmed || !wsRef.current?.connected) return;
 
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: generateUUID(),
-        role: 'user',
-        content: trimmed,
-        timestamp: new Date(),
-        kind: 'user',
-      },
-    ]);
+    // Slash commands
+    if (trimmed === '/new') {
+      setInput('');
+      if (activeSession) clearSessionDraft(activeSession);
+      handleNewSession();
+      return;
+    }
+    if (trimmed === '/clear') {
+      setInput('');
+      if (activeSession) {
+        clearSessionDraft(activeSession);
+        wsRef.current.rpc('sessions.reset', { key: activeSession })
+          .then(() => {
+            setMessages([]);
+            deleteCachedSession(activeSession);
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    const chatMsg: ChatMessage = {
+      id: generateUUID(),
+      role: 'user',
+      content: trimmed,
+      timestamp: new Date(),
+      kind: 'user',
+    };
+    setMessages((prev) => [...prev, chatMsg]);
+    if (activeSession) {
+      appendCachedMessage(activeSession, toCache(chatMsg));
+    }
 
     try {
       wsRef.current.sendMessage(trimmed);
@@ -283,7 +361,7 @@ export default function AgentChat() {
     }
 
     setInput('');
-    clearDraft();
+    if (activeSession) clearSessionDraft(activeSession);
     if (inputRef.current) {
       inputRef.current.style.height = 'auto';
       inputRef.current.focus();
@@ -507,11 +585,11 @@ export default function AgentChat() {
           <div className="flex items-center justify-center mt-2 gap-2">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full glow-dot ${
-                connected ? 'text-[#00e68a] bg-[#00e68a]' : 'text-[#ff4466] bg-[#ff4466]'
+                connected ? 'text-[#00e68a] bg-[#00e68a]' : reconnecting ? 'text-[#ffaa00] bg-[#ffaa00] animate-pulse' : 'text-[#ff4466] bg-[#ff4466]'
               }`}
             />
             <span className="text-[10px] text-[#334060]">
-              {connected ? 'Connected' : 'Disconnected'}
+              {connected ? 'Connected' : reconnecting ? 'Reconnecting...' : 'Disconnected'}
             </span>
           </div>
         </div>
