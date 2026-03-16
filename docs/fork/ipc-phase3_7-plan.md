@@ -1,6 +1,6 @@
-# IPC Phase 3.7: Chat Session Continuity
+# IPC Phase 3.7: Chat Sessions
 
-Phase 3.6: agent provisioning | **Phase 3.7: chat session continuity** | Phase 4: federated execution
+Phase 3.6: agent provisioning | **Phase 3.7: chat sessions** | Phase 4: federated execution
 
 ---
 
@@ -8,11 +8,10 @@ Phase 3.6: agent provisioning | **Phase 3.7: chat session continuity** | Phase 4
 
 Three promises to the operator:
 
-1. **Chat survives navigation** — switch between tabs and come back. Your conversation is still there.
+1. **Chat survives everything** — switch tabs, refresh page, restart daemon. Your conversation is still there.
 2. **Multiple sessions** — start a new chat without losing the old one. Switch between sessions in a sidebar.
 3. **Session management** — list sessions, rename them, delete old ones, see token usage per session.
-
-**Honest scope**: this is **session continuity across navigation and WS reconnects**, not durable persistence. Sessions live in server memory and survive tab switches, page refreshes (while daemon runs), and WS drops. They do **not** survive daemon restarts. Durable disk-backed persistence (via `SessionStore` or SQLite) is deferred to Phase 3.7b.
+4. **Durable persistence** — sessions backed by SQLite, survive daemon restarts.
 
 ---
 
@@ -163,15 +162,39 @@ Default session: `web:<hash>:default`. New sessions: `web:<hash>:<uuid-short>`.
 
 **Key format is intentionally narrow for v1.** openclaw uses `agent:<agentId>:<channel>:<sender>` — a universal routable key that spans web, channels, cron, and subagents. Our `web:<hash>:<id>` is simpler but web-only. If we later unify web chat, channel sessions, and IPC conversations into a common session model, this key format will need migration. This is accepted for v1 — universal session identity is Phase 4 scope.
 
-### AD-6: SessionStore is not used in v1 (intentionally)
+### AD-6: SessionStore for durable persistence
 
-The upstream `session_store.rs` provides disk-backed session persistence via SQLite. Phase 3.7 does **not** use it for three reasons:
+Sessions must survive daemon restarts. The approach:
 
-1. **SessionStore is channel-oriented** — it stores `ChannelMessage` structs with channel/sender metadata. Web chat uses `Agent` with `ConversationMessage` (role/content). Bridging these requires adapter code that adds complexity without immediate value.
-2. **In-memory is sufficient for v1 scope** — the goal is navigation/reconnect continuity, not surviving daemon restarts. AppState HashMap delivers this with zero dependencies.
-3. **Incremental path is clearer** — v1 proves the WS RPC protocol and session sidebar UX. Phase 3.7b adds SessionStore-backed durable persistence as a standalone step, without conflating transport and storage concerns.
+1. **In-memory AppState** for hot sessions (fast WS RPC access, agent instances).
+2. **SQLite persistence** for durable storage — on every message, write to DB. On daemon startup, hydrate AppState from DB.
 
-When 3.7b happens, the migration is: on session create, also write to SessionStore. On agent startup, hydrate AppState from SessionStore. WS RPC layer stays unchanged.
+The upstream `session_store.rs` (`SessionStore`) provides disk-backed session persistence but is channel-oriented (stores `ChannelMessage` with channel/sender metadata). Web chat uses `Agent` with `ConversationMessage` (role/content). Two options:
+
+- **Option A**: Adapt `SessionStore` to also handle `ConversationMessage` — requires extending the schema.
+- **Option B**: Use IPC's existing `agents.db` pattern — create a `chat_sessions` table in a new `workspace/chat/sessions.db`.
+
+**Decision**: Option B. Simpler, no upstream module modification, follows the existing `workspace_dir/<subsystem>/<name>.db` convention. Schema:
+
+```sql
+CREATE TABLE chat_sessions (
+    key         TEXT PRIMARY KEY,
+    label       TEXT,
+    created_at  INTEGER NOT NULL,
+    last_active INTEGER NOT NULL,
+    message_count INTEGER DEFAULT 0
+);
+
+CREATE TABLE chat_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_key TEXT NOT NULL REFERENCES chat_sessions(key),
+    role        TEXT NOT NULL,  -- user, assistant, system
+    content     TEXT NOT NULL,
+    timestamp   INTEGER NOT NULL
+);
+```
+
+On daemon startup: load sessions from DB, create Agent instances, replay history into agents. On message: append to DB + in-memory. On session delete: remove from both.
 
 ### AD-4: Frontend uses session sidebar like openclaw
 
@@ -237,18 +260,23 @@ Session sidebar:
 
 ## Implementation Steps
 
-### Step 0: Backend — chat session store in AppState
+### Step 0: Backend — chat session store + SQLite persistence
 
-**Files**: `src/gateway/mod.rs`, `src/gateway/ws.rs`
+**Files**: `src/gateway/mod.rs`, `src/gateway/ws.rs`, `src/gateway/chat_db.rs` (new)
 
 **What**:
-- `ChatSession` struct: agent, created_at, last_active, label, message_count
+- `ChatDb` struct: SQLite DB at `workspace/chat/sessions.db`, WAL mode
+- Schema: `chat_sessions` + `chat_messages` tables (see AD-6)
+- `ChatSession` struct in memory: agent, created_at, last_active, label, message_count
 - `chat_sessions: Arc<Mutex<HashMap<String, ChatSession>>>` in AppState
+- `chat_db: Option<Arc<ChatDb>>` in AppState
 - Session key derivation: `web:{token_hash_8}:{session_id}`
 - WS handler: look up existing session, create if missing
 - On WS disconnect: agent stays (not dropped)
-- Pruning: on each new connection, remove sessions idle > 2 hours
-- Max 50 sessions (LRU eviction by last_active)
+- On message: write to SQLite + in-memory
+- On daemon startup: hydrate sessions from SQLite, replay history into Agent instances
+- Pruning: sessions idle > 24 hours evicted from memory (DB retained)
+- Max 50 active sessions in memory (LRU eviction by last_active)
 
 **Verify**: `cargo check`
 
@@ -378,7 +406,8 @@ async fn handle_rpc(method: &str, params: Value, state: &WsState) -> Result<Valu
 ```
 src/gateway/
 ├── ws.rs         # EDIT: persist agent in AppState, add RPC dispatcher + all method handlers
-└── mod.rs        # EDIT: add ChatSession to AppState
+├── chat_db.rs    # NEW: SQLite persistence for chat sessions + messages
+└── mod.rs        # EDIT: add ChatSession + ChatDb to AppState
 
 web/src/
 ├── pages/
@@ -413,9 +442,13 @@ web/src/
 10. Delete session → removed from sidebar, switches to next
 11. Page refresh (F5) → sessions and history restored from server
 
+### Daemon restart persistence
+12. Send 3 messages → restart daemon → open chat → all 3 messages loaded from DB
+13. Create 2 sessions → restart → both sessions in sidebar
+
 ### Edge cases
-12. Open two browser tabs → both see same sessions
-13. Send from tab 1, switch to tab 2 → message visible after refresh
+14. Open two browser tabs → both see same sessions
+15. Send from tab 1, switch to tab 2 → message visible after refresh
 
 ---
 
@@ -433,14 +466,14 @@ web/src/
 
 ## v1 vs future
 
-| Feature | v1 (this phase) | Phase 3.7b | Phase 4 |
-|---------|----------------|-----------|---------|
-| Session continuity | In-memory (survives navigation, not restart) | SessionStore disk-backed (survives restart) | — |
-| Session key format | `web:<hash>:<id>` (web-only) | Same | Universal `agent:<id>:<channel>:<sender>` |
-| Multi-device | Sessions per token hash | Same | Shared sessions across devices |
-| Session export | — | Export as markdown/JSON | — |
-| Session search | — | — | Full-text search |
-| Branching | — | — | Fork a session at any point |
+| Feature | This phase | Phase 4 |
+|---------|-----------|---------|
+| Session persistence | SQLite-backed, survives daemon restart | — |
+| Session key format | `web:<hash>:<id>` (web-only) | Universal `agent:<id>:<channel>:<sender>` |
+| Multi-device | Sessions per token hash | Shared sessions across devices |
+| Session export | — | Export as markdown/JSON |
+| Session search | — | Full-text search |
+| Branching | — | Fork a session at any point |
 
 ---
 
@@ -459,7 +492,6 @@ web/src/
 
 ## What's NOT in Phase 3.7
 
-- Persistent sessions across daemon restarts (requires DB migration)
 - File/image upload in web chat
 - Markdown rendering (code blocks, tables) in chat
 - Typing indicators for other users
