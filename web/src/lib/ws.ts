@@ -128,14 +128,6 @@ export class WebSocketClient {
     };
   }
 
-  /** Send a chat message to the agent (legacy protocol). */
-  sendMessage(content: string): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      throw new Error('WebSocket is not connected');
-    }
-    this.ws.send(JSON.stringify({ type: 'message', content }));
-  }
-
   /**
    * Send an RPC request and return a promise that resolves with the result.
    * Timeout after 60s by default.
