@@ -128,3 +128,99 @@ impl AgentRegistry {
         self.agents.write().remove(agent_id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_and_get() {
+        let reg = AgentRegistry::new();
+        reg.upsert("opus", "http://127.0.0.1:42618", "zc_proxy_test");
+        let info = reg.get("opus").unwrap();
+        assert_eq!(info.agent_id, "opus");
+        assert_eq!(info.gateway_url, "http://127.0.0.1:42618");
+        assert_eq!(info.status, AgentStatus::Online);
+        assert_eq!(info.missed_polls, 0);
+    }
+
+    #[test]
+    fn upsert_resets_status_and_missed_polls() {
+        let reg = AgentRegistry::new();
+        reg.upsert("opus", "http://127.0.0.1:42618", "zc_proxy_test");
+        reg.record_poll_failure("opus");
+        reg.record_poll_failure("opus");
+        reg.record_poll_failure("opus");
+        assert_eq!(reg.get("opus").unwrap().status, AgentStatus::Offline);
+
+        // Re-register should reset
+        reg.upsert("opus", "http://127.0.0.1:42618", "zc_proxy_new");
+        let info = reg.get("opus").unwrap();
+        assert_eq!(info.status, AgentStatus::Online);
+        assert_eq!(info.missed_polls, 0);
+        assert_eq!(info.proxy_token, "zc_proxy_new");
+    }
+
+    #[test]
+    fn offline_after_three_failures() {
+        let reg = AgentRegistry::new();
+        reg.upsert("daily", "http://127.0.0.1:42619", "zc_proxy_d");
+        assert_eq!(reg.get("daily").unwrap().status, AgentStatus::Online);
+
+        reg.record_poll_failure("daily");
+        assert_eq!(reg.get("daily").unwrap().status, AgentStatus::Online);
+        reg.record_poll_failure("daily");
+        assert_eq!(reg.get("daily").unwrap().status, AgentStatus::Online);
+        reg.record_poll_failure("daily");
+        assert_eq!(reg.get("daily").unwrap().status, AgentStatus::Offline);
+    }
+
+    #[test]
+    fn update_metadata_resets_missed_polls() {
+        let reg = AgentRegistry::new();
+        reg.upsert("code", "http://127.0.0.1:42620", "zc_proxy_c");
+        reg.record_poll_failure("code");
+        reg.record_poll_failure("code");
+        assert_eq!(reg.get("code").unwrap().missed_polls, 2);
+
+        reg.update_metadata(
+            "code",
+            Some("claude-sonnet".into()),
+            Some(3600),
+            vec!["matrix".into()],
+        );
+        let info = reg.get("code").unwrap();
+        assert_eq!(info.missed_polls, 0);
+        assert_eq!(info.status, AgentStatus::Online);
+        assert_eq!(info.model.as_deref(), Some("claude-sonnet"));
+        assert_eq!(info.channels, vec!["matrix"]);
+    }
+
+    #[test]
+    fn set_trust_info() {
+        let reg = AgentRegistry::new();
+        reg.upsert("opus", "http://127.0.0.1:42618", "t");
+        reg.set_trust_info("opus", 1, "coordinator");
+        let info = reg.get("opus").unwrap();
+        assert_eq!(info.trust_level, Some(1));
+        assert_eq!(info.role.as_deref(), Some("coordinator"));
+    }
+
+    #[test]
+    fn list_and_remove() {
+        let reg = AgentRegistry::new();
+        reg.upsert("a", "http://a", "ta");
+        reg.upsert("b", "http://b", "tb");
+        assert_eq!(reg.list().len(), 2);
+
+        reg.remove("a");
+        assert_eq!(reg.list().len(), 1);
+        assert!(reg.get("a").is_none());
+    }
+
+    #[test]
+    fn get_nonexistent_returns_none() {
+        let reg = AgentRegistry::new();
+        assert!(reg.get("nonexistent").is_none());
+    }
+}
