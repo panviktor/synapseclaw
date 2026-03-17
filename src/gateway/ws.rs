@@ -100,6 +100,163 @@ fn now_secs() -> i64 {
         .as_secs() as i64
 }
 
+/// Query params for the proxy WebSocket.
+#[derive(Deserialize)]
+pub struct WsProxyQuery {
+    pub token: Option<String>,
+    pub agent: Option<String>,
+}
+
+/// GET /ws/chat/proxy — WebSocket proxy to a specific agent's chat (Phase 3.8).
+///
+/// Browser connects here with `?agent=<agent_id>`. Broker looks up the agent
+/// in AgentRegistry, opens upstream WS to agent's gateway, and relays frames
+/// bidirectionally (transparent, no parsing).
+pub async fn handle_ws_chat_proxy(
+    State(state): State<AppState>,
+    Query(params): Query<WsProxyQuery>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> impl IntoResponse {
+    // Auth: browser must be paired with broker
+    let raw_token = extract_ws_token(&headers, params.token.as_deref()).unwrap_or("");
+    if state.pairing.require_pairing() && !state.pairing.is_authenticated(raw_token) {
+        return (axum::http::StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+    }
+
+    let agent_id = match params.agent {
+        Some(ref id) if !id.is_empty() => id.clone(),
+        _ => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                "Missing ?agent= parameter",
+            )
+                .into_response();
+        }
+    };
+
+    // Look up agent in registry
+    let agent_info = match state.agent_registry.get(&agent_id) {
+        Some(info) => info,
+        None => {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                "Agent not found in registry",
+            )
+                .into_response();
+        }
+    };
+
+    if agent_info.status == super::agent_registry::AgentStatus::Offline {
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "Agent is offline",
+        )
+            .into_response();
+    }
+
+    let ws = if headers
+        .get("sec-websocket-protocol")
+        .and_then(|v| v.to_str().ok())
+        .map_or(false, |protos| {
+            protos.split(',').any(|p| p.trim() == WS_PROTOCOL)
+        }) {
+        ws.protocols([WS_PROTOCOL])
+    } else {
+        ws
+    };
+
+    ws.on_upgrade(move |socket| handle_proxy_socket(socket, agent_info))
+        .into_response()
+}
+
+/// Bidirectional WS relay: browser ↔ broker ↔ agent.
+async fn handle_proxy_socket(
+    browser_socket: WebSocket,
+    agent_info: super::agent_registry::AgentInfo,
+) {
+    use tokio_tungstenite::tungstenite;
+
+    // Build upstream URL (ws:// or wss://)
+    let upstream_url = agent_info
+        .gateway_url
+        .replace("http://", "ws://")
+        .replace("https://", "wss://");
+    let upstream_url = format!("{upstream_url}/ws/chat");
+
+    // Connect to agent's WS with subprotocol auth
+    let request = tungstenite::http::Request::builder()
+        .uri(&upstream_url)
+        .header(
+            "Sec-WebSocket-Protocol",
+            format!(
+                "{WS_PROTOCOL}, {BEARER_SUBPROTO_PREFIX}{}",
+                agent_info.proxy_token
+            ),
+        )
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header(
+            "Sec-WebSocket-Key",
+            tungstenite::handshake::client::generate_key(),
+        )
+        .body(())
+        .unwrap();
+
+    let agent_ws = match tokio_tungstenite::connect_async(request).await {
+        Ok((ws, _)) => ws,
+        Err(e) => {
+            tracing::warn!("Failed to connect to agent WS at {upstream_url}: {e}");
+            let (mut sender, _) = browser_socket.split();
+            let err = serde_json::json!({"type": "error", "message": "Failed to connect to agent"});
+            let _ = sender.send(Message::Text(err.to_string().into())).await;
+            return;
+        }
+    };
+
+    let (mut browser_send, mut browser_recv) = browser_socket.split();
+    let (mut agent_send, mut agent_recv) = agent_ws.split();
+
+    // Browser → Agent relay
+    let b2a = tokio::spawn(async move {
+        while let Some(Ok(msg)) = browser_recv.next().await {
+            let tung_msg = match msg {
+                Message::Text(t) => tungstenite::Message::text(t.to_string()),
+                Message::Binary(b) => tungstenite::Message::binary(b.to_vec()),
+                Message::Ping(p) => tungstenite::Message::Ping(p.to_vec().into()),
+                Message::Pong(p) => tungstenite::Message::Pong(p.to_vec().into()),
+                Message::Close(_) => break,
+            };
+            if agent_send.send(tung_msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Agent → Browser relay
+    let a2b = tokio::spawn(async move {
+        while let Some(Ok(msg)) = agent_recv.next().await {
+            let axum_msg = match msg {
+                tungstenite::Message::Text(t) => Message::Text(t.to_string().into()),
+                tungstenite::Message::Binary(b) => Message::Binary(b.to_vec().into()),
+                tungstenite::Message::Ping(p) => Message::Ping(p.to_vec().into()),
+                tungstenite::Message::Pong(p) => Message::Pong(p.to_vec().into()),
+                tungstenite::Message::Close(_) | tungstenite::Message::Frame(_) => break,
+            };
+            if browser_send.send(axum_msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // When either direction closes, abort the other
+    tokio::select! {
+        _ = b2a => {},
+        _ = a2b => {},
+    }
+}
+
 /// GET /ws/chat — WebSocket upgrade for agent chat
 pub async fn handle_ws_chat(
     State(state): State<AppState>,
