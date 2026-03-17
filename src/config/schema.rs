@@ -1334,6 +1334,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 impl Default for GatewayConfig {
     fn default() -> Self {
         Self {
@@ -3460,8 +3464,8 @@ pub struct ChannelsConfig {
     pub ack_reactions: bool,
     /// Whether to send tool-call notification messages (e.g. `🔧 web_search_tool: …`)
     /// to channel users. When `false`, tool calls are still logged server-side but
-    /// not forwarded as individual channel messages. Default: `true`.
-    #[serde(default = "default_true")]
+    /// not forwarded as individual channel messages. Default: `false`.
+    #[serde(default = "default_false")]
     pub show_tool_calls: bool,
     /// Persist channel conversation history to JSONL files so sessions survive
     /// daemon restarts. Files are stored in `{workspace}/sessions/`. Default: `true`.
@@ -3600,7 +3604,7 @@ impl Default for ChannelsConfig {
             clawdtalk: None,
             message_timeout_secs: default_channel_message_timeout_secs(),
             ack_reactions: true,
-            show_tool_calls: true,
+            show_tool_calls: false,
             session_persistence: true,
         }
     }
@@ -3699,6 +3703,10 @@ pub struct SlackConfig {
     /// cancels the in-flight request and starts a fresh response with preserved history.
     #[serde(default)]
     pub interrupt_on_new_message: bool,
+    /// When true, only respond to messages that @-mention the bot in groups.
+    /// Direct messages remain allowed.
+    #[serde(default)]
+    pub mention_only: bool,
 }
 
 impl ChannelConfig for SlackConfig {
@@ -6665,6 +6673,7 @@ default_temperature = 0.7
         assert!(c.cli);
         assert!(c.telegram.is_none());
         assert!(c.discord.is_none());
+        assert!(!c.show_tool_calls);
     }
 
     // ── Serde round-trip ─────────────────────────────────────
@@ -7523,6 +7532,7 @@ allowed_users = ["@ops:matrix.org"]
         let parsed: SlackConfig = serde_json::from_str(json).unwrap();
         assert!(parsed.allowed_users.is_empty());
         assert!(!parsed.interrupt_on_new_message);
+        assert!(!parsed.mention_only);
     }
 
     #[test]
@@ -7531,6 +7541,15 @@ allowed_users = ["@ops:matrix.org"]
         let parsed: SlackConfig = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.allowed_users, vec!["U111"]);
         assert!(!parsed.interrupt_on_new_message);
+        assert!(!parsed.mention_only);
+    }
+
+    #[test]
+    async fn slack_config_deserializes_with_mention_only() {
+        let json = r#"{"bot_token":"xoxb-tok","mention_only":true}"#;
+        let parsed: SlackConfig = serde_json::from_str(json).unwrap();
+        assert!(parsed.mention_only);
+        assert!(!parsed.interrupt_on_new_message);
     }
 
     #[test]
@@ -7538,6 +7557,7 @@ allowed_users = ["@ops:matrix.org"]
         let json = r#"{"bot_token":"xoxb-tok","interrupt_on_new_message":true}"#;
         let parsed: SlackConfig = serde_json::from_str(json).unwrap();
         assert!(parsed.interrupt_on_new_message);
+        assert!(!parsed.mention_only);
     }
 
     #[test]
@@ -7560,6 +7580,7 @@ channel_id = "C123"
         let parsed: SlackConfig = toml::from_str(toml_str).unwrap();
         assert!(parsed.allowed_users.is_empty());
         assert!(!parsed.interrupt_on_new_message);
+        assert!(!parsed.mention_only);
         assert_eq!(parsed.channel_id.as_deref(), Some("C123"));
     }
 
