@@ -1259,6 +1259,7 @@ mod tests {
             delete_after_run: true,
             execution_mode: ExecutionMode::Subprocess,
             env_overlay: std::collections::HashMap::new(),
+            allowed_tools: None,
             created_at: Utc::now(),
             next_run: Utc::now(),
             last_run: None,

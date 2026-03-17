@@ -3003,7 +3003,7 @@ pub async fn run(
     peripheral_overrides: Vec<String>,
     interactive: bool,
     session_state_file: Option<PathBuf>,
-    allowed_tools: Option<Vec<String>>,
+    _allowed_tools: Option<Vec<String>>,
 ) -> Result<String> {
     // ── Wire up agnostic subsystems ──────────────────────────────
     let base_observer = observability::create_observer(&config.observability);
