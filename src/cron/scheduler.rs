@@ -137,7 +137,7 @@ async fn execute_and_persist_job(
     let started_at = Utc::now();
     let (success, output) = Box::pin(execute_job_with_retry(config, security, job)).await;
     let finished_at = Utc::now();
-    let success = persist_job_result(config, job, success, &output, started_at, finished_at).await;
+    let success = Box::pin(persist_job_result(config, job, success, &output, started_at, finished_at)).await;
 
     (job.id.clone(), success, output)
 }
