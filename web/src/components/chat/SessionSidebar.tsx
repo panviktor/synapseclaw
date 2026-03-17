@@ -1,18 +1,22 @@
 import { useState } from 'react';
-import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Sparkles } from 'lucide-react';
+import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Sparkles, Users } from 'lucide-react';
 import type { ChatSessionInfo, StatusResponse } from '@/types/api';
+import type { AgentEntry } from '@/lib/api';
 
 interface SessionSidebarProps {
   sessions: ChatSessionInfo[];
   activeKey: string | null;
   collapsed: boolean;
   status: StatusResponse | null;
+  agents: AgentEntry[];
+  activeAgent: string | null;
   onToggle: () => void;
   onSelect: (key: string) => void;
   onNew: () => void;
   onRename: (key: string, label: string) => void;
   onDelete: (key: string) => void;
   onSummaryModelChange: (model: string | null) => void;
+  onAgentChange: (agentId: string) => void;
 }
 
 function timeAgo(epochSecs: number): string {
@@ -40,12 +44,15 @@ export default function SessionSidebar({
   activeKey,
   collapsed,
   status,
+  agents,
+  activeAgent,
   onToggle,
   onSelect,
   onNew,
   onRename,
   onDelete,
   onSummaryModelChange,
+  onAgentChange,
 }: SessionSidebarProps) {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -106,6 +113,28 @@ export default function SessionSidebar({
           <PanelLeftClose className="h-3.5 w-3.5" />
         </button>
       </div>
+
+      {/* Agent Selector (Phase 3.8) */}
+      {agents.length > 0 && (
+        <div className="px-3 py-2 border-b border-[#1a1a3e]/30">
+          <div className="flex items-center gap-1.5 mb-1">
+            <Users className="h-3 w-3 text-[#556080] flex-shrink-0" />
+            <span className="text-[10px] text-[#556080] uppercase tracking-wide">Agent</span>
+          </div>
+          <select
+            value={activeAgent ?? ''}
+            onChange={(e) => onAgentChange(e.target.value)}
+            className="w-full bg-[#0a0a18] border border-[#1a1a3e]/50 rounded px-2 py-1 text-[11px] text-white outline-none focus:border-[#0080ff40] transition-colors"
+          >
+            <option value="">Local (this instance)</option>
+            {agents.map((a) => (
+              <option key={a.agent_id} value={a.agent_id}>
+                {a.agent_id} {a.role ? `(${a.role})` : ''} {a.status === 'offline' ? ' [offline]' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Agent Info Panel */}
       {status && (

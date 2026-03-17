@@ -1,6 +1,6 @@
 # Phase 3.8 Progress: Broker-Centered Multi-Agent Dashboard
 
-## Status: In Progress (Steps 1-6 done)
+## Status: In Progress (Steps 1-10 done, Step 11 optional)
 
 ---
 
@@ -14,10 +14,10 @@
 | 4 | Agent auto-registration + re-registration | done | #106 | Phase A: fast retry with backoff. Phase B: 5min refresh after first success. |
 | 5 | Broker health polling + AgentRegistry | done | #107 | New `AgentRegistry` struct, 30s poll, offline detection |
 | 6 | Broker `/api/agents` endpoint | done | #108 | List agents with live status for browser selector |
-| 7 | WS chat proxy on broker | todo | — | `/ws/chat/proxy?agent=<id>`, bidirectional relay, subprotocol auth |
-| 8 | HTTP API proxy for per-agent calls | todo | — | `GET /api/agents/{id}/status` etc. |
-| 9 | Browser agent selector UI | todo | — | Dropdown in sidebar, localStorage persistence |
-| 10 | Agent status display in sidebar | todo | — | Extend 3.7b panel with selected agent info via proxy |
+| 7 | WS chat proxy on broker | done | #109 | `/ws/chat/proxy?agent=<id>`, bidirectional relay, subprotocol auth |
+| 8 | HTTP API proxy for per-agent calls | done | #110 | `GET /api/agents/{id}/status` proxy to agent |
+| 9 | Browser agent selector UI | done | #110 | Dropdown in sidebar, localStorage persistence |
+| 10 | Agent status display in sidebar | done | #110 | Info panel shows selected agent's model/uptime via proxy |
 | 11 | UI agent provisioning (optional) | todo | — | Broker-only, mode-gated, arm-required. Bridges 3.6→3.8. |
 
 ---

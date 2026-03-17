@@ -113,6 +113,30 @@ export function getStatus(): Promise<StatusResponse> {
   return apiFetch<StatusResponse>('/api/status');
 }
 
+// ---------------------------------------------------------------------------
+// Agents (Phase 3.8)
+// ---------------------------------------------------------------------------
+
+export interface AgentEntry {
+  agent_id: string;
+  gateway_url: string;
+  trust_level: number | null;
+  role: string | null;
+  model: string | null;
+  status: 'online' | 'offline' | 'error';
+  last_seen: number;
+  uptime_seconds: number | null;
+  channels: string[];
+}
+
+export function getAgents(): Promise<AgentEntry[]> {
+  return apiFetch<{ agents: AgentEntry[] }>('/api/agents').then((d) => d.agents);
+}
+
+export function getAgentStatus(agentId: string): Promise<StatusResponse> {
+  return apiFetch<StatusResponse>(`/api/agents/${encodeURIComponent(agentId)}/status`);
+}
+
 export function getHealth(): Promise<HealthSnapshot> {
   return apiFetch<HealthSnapshot | { health: HealthSnapshot }>('/api/health').then((data) =>
     unwrapField(data, 'health'),
