@@ -521,14 +521,26 @@ pub async fn handle_provisioning_stop(
         }
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+            log_audit(
+                &state,
+                AuditEventType::ProvisioningFailed,
+                &format!("stop failed for {instance}: {stderr}"),
+            );
             Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": format!("Service stop failed: {stderr}")})),
             ))
         }
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to execute: {e}")})),
-        )),
+        Err(e) => {
+            log_audit(
+                &state,
+                AuditEventType::ProvisioningFailed,
+                &format!("stop exec failed for {instance}: {e}"),
+            );
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to execute: {e}")})),
+            ))
+        }
     }
 }

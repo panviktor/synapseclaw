@@ -5295,6 +5295,18 @@ impl Config {
                 decrypt_secret(&store, token, "config.gateway.paired_tokens[]")?;
             }
 
+            // Decrypt IPC tokens (Phase 3.8)
+            decrypt_optional_secret(
+                &store,
+                &mut config.agents_ipc.broker_token,
+                "config.agents_ipc.broker_token",
+            )?;
+            decrypt_optional_secret(
+                &store,
+                &mut config.agents_ipc.proxy_token,
+                "config.agents_ipc.proxy_token",
+            )?;
+
             config.apply_env_overrides();
             config.validate()?;
             tracing::info!(
@@ -6075,6 +6087,11 @@ impl Config {
             &store,
             &mut config_to_save.agents_ipc.broker_token,
             "config.agents_ipc.broker_token",
+        )?;
+        encrypt_optional_secret(
+            &store,
+            &mut config_to_save.agents_ipc.proxy_token,
+            "config.agents_ipc.proxy_token",
         )?;
 
         // Encrypt TTS provider API keys

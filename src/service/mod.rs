@@ -498,7 +498,7 @@ fn install_linux_systemd(config: &Config, instance: Option<&str>) -> Result<()> 
         Some(name) => format!("ZeroClaw Agent ({name})"),
     };
     let unit = format!(
-        "[Unit]\nDescription={description}\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={exe} --config-dir {config_dir} daemon\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
+        "[Unit]\nDescription={description}\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=\"{exe}\" --config-dir \"{config_dir}\" daemon\nRestart=always\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n",
         exe = exe.display(),
         config_dir = config_dir.display(),
     );
