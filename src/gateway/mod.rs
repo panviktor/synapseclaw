@@ -3436,4 +3436,171 @@ mod tests {
         let err = require_localhost(&peer).unwrap_err();
         assert_eq!(err.0, StatusCode::FORBIDDEN);
     }
+
+    // ── Phase 3.8 broker proxy e2e tests ────────────────────────
+
+    #[test]
+    fn broker_proxy_e2e_agent_registry_lifecycle() {
+        // Simulates: register → seed from DB → health poll updates → offline detection
+        let db = ipc::IpcDb::open_in_memory().unwrap();
+
+        // 1. Agent registers via IPC
+        db.update_last_seen("opus", 1, "coordinator");
+        db.upsert_agent_gateway("opus", "http://127.0.0.1:42618", "zc_proxy_opus")
+            .unwrap();
+
+        // 2. Broker seeds registry from DB (simulates restart)
+        let registry = agent_registry::AgentRegistry::new();
+        let gateways = db.list_agent_gateways().unwrap();
+        let ipc_agents = db.list_agents(120);
+        for gw in &gateways {
+            registry.upsert(&gw.agent_id, &gw.gateway_url, &gw.proxy_token);
+            if let Some(ipc_agent) = ipc_agents.iter().find(|a| a.agent_id == gw.agent_id) {
+                if let (Some(tl), Some(role)) = (ipc_agent.trust_level, ipc_agent.role.as_deref()) {
+                    registry.set_trust_info(&gw.agent_id, tl, role);
+                }
+            }
+        }
+
+        // 3. Verify registry state
+        let info = registry.get("opus").unwrap();
+        assert_eq!(info.status, agent_registry::AgentStatus::Online);
+        assert_eq!(info.trust_level, Some(1));
+        assert_eq!(info.role.as_deref(), Some("coordinator"));
+        assert_eq!(info.gateway_url, "http://127.0.0.1:42618");
+        assert_eq!(info.proxy_token, "zc_proxy_opus");
+
+        // 4. Simulate health poll success
+        registry.update_metadata(
+            "opus",
+            Some("claude-opus-4".into()),
+            Some(3600),
+            vec!["matrix".into()],
+        );
+        let info = registry.get("opus").unwrap();
+        assert_eq!(info.model.as_deref(), Some("claude-opus-4"));
+        assert_eq!(info.channels, vec!["matrix"]);
+
+        // 5. Simulate health poll failures → offline
+        registry.record_poll_failure("opus");
+        registry.record_poll_failure("opus");
+        assert_eq!(
+            registry.get("opus").unwrap().status,
+            agent_registry::AgentStatus::Online
+        );
+        registry.record_poll_failure("opus");
+        assert_eq!(
+            registry.get("opus").unwrap().status,
+            agent_registry::AgentStatus::Offline
+        );
+
+        // 6. Agent re-registers → back online
+        registry.upsert("opus", "http://127.0.0.1:42618", "zc_proxy_opus");
+        assert_eq!(
+            registry.get("opus").unwrap().status,
+            agent_registry::AgentStatus::Online
+        );
+        assert_eq!(registry.get("opus").unwrap().missed_polls, 0);
+    }
+
+    #[test]
+    fn broker_proxy_e2e_multi_agent_registry() {
+        let db = ipc::IpcDb::open_in_memory().unwrap();
+
+        // Register multiple agents
+        db.update_last_seen("opus", 0, "admin");
+        db.update_last_seen("daily", 3, "worker");
+        db.update_last_seen("code", 2, "developer");
+
+        db.upsert_agent_gateway("opus", "http://127.0.0.1:42618", "tok_opus")
+            .unwrap();
+        db.upsert_agent_gateway("daily", "http://127.0.0.1:42619", "tok_daily")
+            .unwrap();
+        db.upsert_agent_gateway("code", "http://127.0.0.1:42620", "tok_code")
+            .unwrap();
+
+        // Seed registry
+        let registry = agent_registry::AgentRegistry::new();
+        let gateways = db.list_agent_gateways().unwrap();
+        let ipc_agents = db.list_agents(120);
+        for gw in &gateways {
+            registry.upsert(&gw.agent_id, &gw.gateway_url, &gw.proxy_token);
+            if let Some(a) = ipc_agents.iter().find(|a| a.agent_id == gw.agent_id) {
+                if let (Some(tl), Some(role)) = (a.trust_level, a.role.as_deref()) {
+                    registry.set_trust_info(&gw.agent_id, tl, role);
+                }
+            }
+        }
+
+        // All 3 agents online
+        let agents = registry.list();
+        assert_eq!(agents.len(), 3);
+        assert!(agents
+            .iter()
+            .all(|a| a.status == agent_registry::AgentStatus::Online));
+
+        // Verify trust levels restored
+        assert_eq!(registry.get("opus").unwrap().trust_level, Some(0));
+        assert_eq!(registry.get("daily").unwrap().trust_level, Some(3));
+        assert_eq!(registry.get("code").unwrap().trust_level, Some(2));
+
+        // One agent goes offline
+        for _ in 0..3 {
+            registry.record_poll_failure("daily");
+        }
+        let agents = registry.list();
+        let online_count = agents
+            .iter()
+            .filter(|a| a.status == agent_registry::AgentStatus::Online)
+            .count();
+        assert_eq!(online_count, 2);
+
+        // Remove agent
+        registry.remove("code");
+        assert_eq!(registry.list().len(), 2);
+    }
+
+    #[test]
+    fn broker_proxy_e2e_gateway_db_persistence() {
+        // Verify DB survives "restart" (new IpcDb instance on same data)
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("ipc.db");
+
+        // First "run": register gateway
+        {
+            let db = ipc::IpcDb::open(&db_path).unwrap();
+            db.update_last_seen("opus", 1, "coordinator");
+            db.upsert_agent_gateway("opus", "http://127.0.0.1:42618", "zc_proxy_test")
+                .unwrap();
+        }
+
+        // Second "run": verify data persisted
+        {
+            let db = ipc::IpcDb::open(&db_path).unwrap();
+            let gateways = db.list_agent_gateways().unwrap();
+            assert_eq!(gateways.len(), 1);
+            assert_eq!(gateways[0].agent_id, "opus");
+            assert_eq!(gateways[0].proxy_token, "zc_proxy_test");
+
+            let agents = db.list_agents(120);
+            assert_eq!(agents.len(), 1);
+            assert_eq!(agents[0].trust_level, Some(1));
+            assert_eq!(agents[0].role.as_deref(), Some("coordinator"));
+        }
+    }
+
+    #[test]
+    fn broker_proxy_e2e_proxy_token_not_in_api_response() {
+        // Verify proxy_token excluded from AgentInfo serialization
+        let registry = agent_registry::AgentRegistry::new();
+        registry.upsert("opus", "http://127.0.0.1:42618", "SECRET_TOKEN");
+
+        let info = registry.get("opus").unwrap();
+        let json = serde_json::to_value(&info).unwrap();
+
+        // proxy_token should be skipped via #[serde(skip)]
+        assert!(json.get("proxy_token").is_none());
+        // But agent_id should be present
+        assert_eq!(json["agent_id"].as_str(), Some("opus"));
+    }
 }

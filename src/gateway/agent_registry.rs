@@ -22,6 +22,8 @@ pub enum AgentStatus {
 pub struct AgentInfo {
     pub agent_id: String,
     pub gateway_url: String,
+    /// Excluded from API serialization — sensitive credential.
+    #[serde(skip)]
     pub proxy_token: String,
     pub trust_level: Option<u8>,
     pub role: Option<String>,
