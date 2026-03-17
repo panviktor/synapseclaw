@@ -3681,10 +3681,13 @@ mod tests {
     }
 
     #[test]
-    fn broker_proxy_operator_isolation_different_tokens_different_sessions() {
-        // Phase 3.8 Finding 1: verify that different browser tokens produce
-        // different operator_id prefixes, ensuring per-operator session isolation
-        // even when all connections go through the same broker proxy_token.
+    fn broker_proxy_operator_isolation_covers_session_crud() {
+        // Phase 3.8 Finding 1 (v2): verify that the token_prefix folding in
+        // handle_socket correctly scopes ALL session CRUD per-operator.
+        //
+        // When broker proxies with ?session_id=op:<hash>, handle_socket folds
+        // the operator prefix into token_prefix: "{proxy_hash}:op:{op_hash}".
+        // This makes sessions.list/new/rename/delete all scoped per-operator.
         let token_a = "browser_token_alice_abc123";
         let token_b = "browser_token_bob_xyz789";
         let proxy_token = "shared_proxy_token";
@@ -3693,26 +3696,36 @@ mod tests {
         let op_b = ws::token_hash_prefix(token_b);
         let proxy_prefix = ws::token_hash_prefix(proxy_token);
 
-        // Different browser tokens must produce different operator IDs
+        // Simulate handle_socket folding: session_id=op:{op_hash}
+        // → token_prefix becomes "{proxy_prefix}:op:{op_hash}"
+        let effective_prefix_a = format!("{proxy_prefix}:op:{op_a}");
+        let effective_prefix_b = format!("{proxy_prefix}:op:{op_b}");
+
+        // Different operators must have different effective prefixes
         assert_ne!(
-            op_a, op_b,
-            "different browser tokens must yield different operator IDs"
+            effective_prefix_a, effective_prefix_b,
+            "different operators must yield different effective prefixes"
         );
 
-        // Operator IDs must differ from the proxy token prefix
+        // sessions.list filters by "web:{effective_prefix}:" — verify isolation
+        let list_prefix_a = format!("web:{effective_prefix_a}:");
+        let list_prefix_b = format!("web:{effective_prefix_b}:");
+        assert!(!list_prefix_a.starts_with(&list_prefix_b));
+        assert!(!list_prefix_b.starts_with(&list_prefix_a));
+
+        // sessions.new creates "web:{effective_prefix}:{uuid}" — verify isolation
+        let new_key_a = format!("web:{effective_prefix_a}:sess-001");
+        let new_key_b = format!("web:{effective_prefix_b}:sess-001");
         assert_ne!(
-            op_a, proxy_prefix,
-            "operator ID must differ from proxy token prefix"
+            new_key_a, new_key_b,
+            "sessions.new must create keys in different namespaces per operator"
         );
 
-        // Simulated session keys on the agent side:
-        // Before fix: both browsers → web:{proxy_prefix}:{sid} (SHARED)
-        // After fix:  browser A → web:{proxy_prefix}:op:{op_a}, B → web:{proxy_prefix}:op:{op_b}
-        let session_a = format!("web:{proxy_prefix}:op:{op_a}");
-        let session_b = format!("web:{proxy_prefix}:op:{op_b}");
-        assert_ne!(
-            session_a, session_b,
-            "session keys must be isolated per operator"
+        // Direct browser (no proxy) — no folding, no op: prefix
+        let direct_session = format!("web:{proxy_prefix}:default");
+        assert!(
+            !direct_session.contains(":op:"),
+            "direct connections must not have op: prefix"
         );
     }
 

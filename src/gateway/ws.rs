@@ -313,8 +313,17 @@ async fn handle_socket(
 ) {
     let (sender, mut receiver) = socket.split();
 
-    // Derive session key
+    // Derive session key.
+    // When broker proxies a connection it sets session_id=op:<operator_hash>.
+    // We fold the operator prefix into token_prefix so that ALL session CRUD
+    // (sessions.list, sessions.new, etc.) is scoped per-operator, not just
+    // the default session.  Direct browser connections are unaffected.
     let sid = session_id.unwrap_or_else(|| "default".to_string());
+    let token_prefix = if let Some(op) = sid.strip_prefix("op:") {
+        format!("{token_prefix}:op:{op}")
+    } else {
+        token_prefix
+    };
     let session_key = format!("web:{token_prefix}:{sid}");
 
     // Ensure session exists in memory (create agent if needed)
