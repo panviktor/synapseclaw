@@ -31,6 +31,8 @@ pub mod nextcloud_talk;
 #[cfg(feature = "channel-nostr")]
 pub mod nostr;
 pub mod qq;
+pub mod session_backend;
+pub mod session_sqlite;
 pub mod session_store;
 pub mod signal;
 pub mod slack;
