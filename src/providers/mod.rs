@@ -818,6 +818,26 @@ fn resolve_provider_credential(name: &str, credential_override: Option<&str>) ->
                 if let Some(credential) = resolve_minimax_oauth_refresh_token(name) {
                     return Some(credential);
                 }
+            } else if name == "anthropic" || name == "openai" || name == "groq" {
+                // For well-known providers, prefer provider-specific env vars over the
+                // global api_key override, since the global key may belong to a different
+                // provider (e.g. a custom: gateway). This enables multi-provider setups
+                // where the primary uses a custom gateway and fallbacks use named providers.
+                let env_candidates: &[&str] = match name {
+                    "anthropic" => &["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+                    "openai" => &["OPENAI_API_KEY"],
+                    "groq" => &["GROQ_API_KEY"],
+                    _ => &[],
+                };
+                for env_var in env_candidates {
+                    if let Ok(val) = std::env::var(env_var) {
+                        let trimmed = val.trim().to_string();
+                        if !trimmed.is_empty() {
+                            return Some(trimmed);
+                        }
+                    }
+                }
+                return Some(trimmed_override.to_owned());
             } else {
                 return Some(trimmed_override.to_owned());
             }
@@ -849,7 +869,9 @@ fn resolve_provider_credential(name: &str, credential_override: Option<&str>) ->
         // not a single API key. Credential resolution happens inside BedrockProvider.
         "bedrock" | "aws-bedrock" => return None,
         name if is_qianfan_alias(name) => vec!["QIANFAN_API_KEY"],
-        name if is_doubao_alias(name) => vec!["ARK_API_KEY", "DOUBAO_API_KEY"],
+        name if is_doubao_alias(name) => {
+            vec!["ARK_API_KEY", "VOLCENGINE_API_KEY", "DOUBAO_API_KEY"]
+        }
         name if is_qwen_alias(name) => vec!["DASHSCOPE_API_KEY"],
         name if is_zai_alias(name) => vec!["ZAI_API_KEY"],
         "nvidia" | "nvidia-nim" | "build.nvidia.com" => vec!["NVIDIA_API_KEY"],
@@ -863,6 +885,8 @@ fn resolve_provider_credential(name: &str, credential_override: Option<&str>) ->
         "llamacpp" | "llama.cpp" => vec!["LLAMACPP_API_KEY"],
         "sglang" => vec!["SGLANG_API_KEY"],
         "vllm" => vec!["VLLM_API_KEY"],
+        "aihubmix" => vec!["AIHUBMIX_API_KEY"],
+        "siliconflow" | "silicon-flow" => vec!["SILICONFLOW_API_KEY"],
         "osaurus" => vec!["OSAURUS_API_KEY"],
         "telnyx" => vec!["TELNYX_API_KEY"],
         "azure_openai" | "azure-openai" | "azure" => vec!["AZURE_OPENAI_API_KEY"],
@@ -2629,6 +2653,52 @@ mod tests {
         let _guard = EnvGuard::set("OSAURUS_API_KEY", Some("osaurus-test-key"));
         let resolved = resolve_provider_credential("osaurus", None);
         assert_eq!(resolved, Some("osaurus-test-key".to_string()));
+    }
+
+    #[test]
+    fn resolve_provider_credential_volcengine_env() {
+        let _env_lock = env_lock();
+        let _guard = EnvGuard::set("VOLCENGINE_API_KEY", Some("volc-test-key"));
+        let resolved = resolve_provider_credential("volcengine", None);
+        assert_eq!(resolved, Some("volc-test-key".to_string()));
+    }
+
+    #[test]
+    fn resolve_provider_credential_aihubmix_env() {
+        let _env_lock = env_lock();
+        let _guard = EnvGuard::set("AIHUBMIX_API_KEY", Some("aihubmix-test-key"));
+        let resolved = resolve_provider_credential("aihubmix", None);
+        assert_eq!(resolved, Some("aihubmix-test-key".to_string()));
+    }
+
+    #[test]
+    fn resolve_provider_credential_siliconflow_env() {
+        let _env_lock = env_lock();
+        let _guard = EnvGuard::set("SILICONFLOW_API_KEY", Some("sf-test-key"));
+        let resolved = resolve_provider_credential("siliconflow", None);
+        assert_eq!(resolved, Some("sf-test-key".to_string()));
+    }
+
+    #[test]
+    fn factory_aihubmix() {
+        assert!(create_provider("aihubmix", Some("key")).is_ok());
+    }
+
+    #[test]
+    fn factory_siliconflow() {
+        assert!(create_provider("siliconflow", Some("key")).is_ok());
+        assert!(create_provider("silicon-flow", Some("key")).is_ok());
+    }
+
+    #[test]
+    fn factory_codex_oauth_aliases() {
+        let options = ProviderRuntimeOptions::default();
+        for alias in &["codex", "openai-codex", "openai_codex"] {
+            assert!(
+                create_provider_with_options(alias, None, &options).is_ok(),
+                "codex alias '{alias}' should produce a provider"
+            );
+        }
     }
 
     // ── Extended ecosystem ───────────────────────────────────

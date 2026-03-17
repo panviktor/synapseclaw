@@ -8,7 +8,8 @@ use tokio::time::Duration;
 
 const STATUS_FLUSH_SECONDS: u64 = 5;
 
-/// Wait for shutdown signal (SIGINT or SIGTERM)
+/// Wait for shutdown signal (SIGINT or SIGTERM).
+/// SIGHUP is explicitly ignored so the daemon survives terminal/SSH disconnects.
 async fn wait_for_shutdown_signal() -> Result<()> {
     #[cfg(unix)]
     {
@@ -16,13 +17,21 @@ async fn wait_for_shutdown_signal() -> Result<()> {
 
         let mut sigint = signal(SignalKind::interrupt())?;
         let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sighup = signal(SignalKind::hangup())?;
 
-        tokio::select! {
-            _ = sigint.recv() => {
-                tracing::info!("Received SIGINT, shutting down...");
-            }
-            _ = sigterm.recv() => {
-                tracing::info!("Received SIGTERM, shutting down...");
+        loop {
+            tokio::select! {
+                _ = sigint.recv() => {
+                    tracing::info!("Received SIGINT, shutting down...");
+                    break;
+                }
+                _ = sigterm.recv() => {
+                    tracing::info!("Received SIGTERM, shutting down...");
+                    break;
+                }
+                _ = sighup.recv() => {
+                    tracing::info!("Received SIGHUP, ignoring (daemon stays running)");
+                }
             }
         }
     }
@@ -63,7 +72,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
             move || {
                 let cfg = gateway_cfg.clone();
                 let host = gateway_host.clone();
-                async move { crate::gateway::run_gateway(&host, port, cfg).await }
+                async move { Box::pin(crate::gateway::run_gateway(&host, port, cfg)).await }
             },
         ));
     }
@@ -107,7 +116,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
             max_backoff,
             move || {
                 let cfg = scheduler_cfg.clone();
-                async move { crate::cron::scheduler::run(cfg).await }
+                async move { Box::pin(crate::cron::scheduler::run(cfg)).await }
             },
         ));
     } else {
@@ -123,7 +132,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     {
         let reg_cfg = config.clone();
         handles.push(tokio::spawn(async move {
-            broker_registration_loop(reg_cfg).await;
+            Box::pin(broker_registration_loop(reg_cfg)).await;
         }));
     }
 
@@ -926,5 +935,29 @@ mod tests {
         let config = Config::default();
         let target = auto_detect_heartbeat_channel(&config);
         assert!(target.is_none());
+    }
+
+    /// Verify that SIGHUP does not cause shutdown — the daemon should ignore it
+    /// and only terminate on SIGINT or SIGTERM.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sighup_does_not_shut_down_daemon() {
+        use libc;
+        use tokio::time::{timeout, Duration};
+
+        let handle = tokio::spawn(wait_for_shutdown_signal());
+
+        // Give the signal handler time to register
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Send SIGHUP to ourselves — should be ignored by the handler
+        unsafe { libc::raise(libc::SIGHUP) };
+
+        // The future should NOT complete within a short window
+        let result = timeout(Duration::from_millis(200), handle).await;
+        assert!(
+            result.is_err(),
+            "wait_for_shutdown_signal should not return after SIGHUP"
+        );
     }
 }

@@ -37,7 +37,7 @@ use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use dialoguer::{Input, Password};
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use tracing::{info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -165,10 +165,6 @@ enum Commands {
         /// Reinitialize from scratch (backup and reset all configuration)
         #[arg(long)]
         reinit: bool,
-
-        /// Run the full interactive setup wizard
-        #[arg(long)]
-        interactive: bool,
 
         /// Reconfigure channels only (fast repair flow)
         #[arg(long)]
@@ -778,14 +774,14 @@ async fn main() -> Result<()> {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    // Onboard runs quick setup by default, or the interactive wizard with --interactive.
-    // The onboard wizard uses reqwest::blocking internally, which creates its own
-    // Tokio runtime. To avoid "Cannot drop a runtime in a context where blocking is
-    // not allowed", we run the wizard on a blocking thread via spawn_blocking.
+    // Onboard auto-detects the environment: if stdin/stdout are a TTY and no
+    // provider flags were given, it runs the full interactive wizard; otherwise
+    // it runs the quick (scriptable) setup.  This means `curl … | bash` and
+    // `zeroclaw onboard --api-key …` both take the fast path, while a bare
+    // `zeroclaw onboard` in a terminal launches the wizard.
     if let Commands::Onboard {
         force,
         reinit,
-        interactive,
         channels_only,
         api_key,
         provider,
@@ -795,7 +791,6 @@ async fn main() -> Result<()> {
     {
         let force = *force;
         let reinit = *reinit;
-        let interactive = *interactive;
         let channels_only = *channels_only;
         let api_key = api_key.clone();
         let provider = provider.clone();
@@ -804,14 +799,6 @@ async fn main() -> Result<()> {
 
         if reinit && channels_only {
             bail!("--reinit and --channels-only cannot be used together");
-        }
-        if interactive && channels_only {
-            bail!("--interactive and --channels-only cannot be used together");
-        }
-        if interactive
-            && (api_key.is_some() || provider.is_some() || model.is_some() || memory.is_some())
-        {
-            bail!("--interactive does not accept --api-key, --provider, --model, or --memory");
         }
         if channels_only
             && (api_key.is_some() || provider.is_some() || model.is_some() || memory.is_some())
@@ -863,9 +850,15 @@ async fn main() -> Result<()> {
             }
         }
 
+        // Auto-detect: run the interactive wizard when in a TTY with no
+        // provider flags, quick setup otherwise (scriptable path).
+        let has_provider_flags =
+            api_key.is_some() || provider.is_some() || model.is_some() || memory.is_some();
+        let is_tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+
         let config = if channels_only {
             Box::pin(onboard::run_channels_repair_wizard()).await
-        } else if interactive {
+        } else if is_tty && !has_provider_flags {
             Box::pin(onboard::run_wizard(force)).await
         } else {
             Box::pin(onboard::run_quick_setup(
@@ -912,7 +905,7 @@ async fn main() -> Result<()> {
     }
 
     // All other commands need config loaded first
-    let mut config = Config::load_or_init().await?;
+    let mut config = Box::pin(Config::load_or_init()).await?;
     config.apply_env_overrides();
     observability::runtime_trace::init_from_config(&config.observability, &config.workspace_dir);
     if config.security.otp.enabled {
@@ -993,7 +986,7 @@ async fn main() -> Result<()> {
                     }
 
                     log_gateway_start(&host, port);
-                    gateway::run_gateway(&host, port, config).await
+                    Box::pin(gateway::run_gateway(&host, port, config)).await
                 }
                 Some(zeroclaw::GatewayCommands::GetPaircode { new }) => {
                     let port = config.gateway.port;
@@ -1042,13 +1035,13 @@ async fn main() -> Result<()> {
                 Some(zeroclaw::GatewayCommands::Start { port, host }) => {
                     let (port, host) = resolve_gateway_addr(&config, port, host);
                     log_gateway_start(&host, port);
-                    gateway::run_gateway(&host, port, config).await
+                    Box::pin(gateway::run_gateway(&host, port, config)).await
                 }
                 None => {
                     let port = config.gateway.port;
                     let host = config.gateway.host.clone();
                     log_gateway_start(&host, port);
-                    gateway::run_gateway(&host, port, config).await
+                    Box::pin(gateway::run_gateway(&host, port, config)).await
                 }
             }
         }
@@ -1109,7 +1102,7 @@ async fn main() -> Result<()> {
             } else {
                 info!("🧠 Starting ZeroClaw Daemon on {host}:{port}");
             }
-            daemon::run(config, host, port).await
+            Box::pin(daemon::run(config, host, port)).await
         }
 
         Commands::Status => {
@@ -1233,7 +1226,9 @@ async fn main() -> Result<()> {
             ModelCommands::List { provider } => {
                 onboard::run_models_list(&config, provider.as_deref()).await
             }
-            ModelCommands::Set { model } => onboard::run_models_set(&config, &model).await,
+            ModelCommands::Set { model } => {
+                Box::pin(onboard::run_models_set(&config, &model)).await
+            }
             ModelCommands::Status => onboard::run_models_status(&config).await,
         },
 
@@ -1302,7 +1297,7 @@ async fn main() -> Result<()> {
         Commands::Channel { channel_command } => match channel_command {
             ChannelCommands::Start => Box::pin(channels::start_channels(config)).await,
             ChannelCommands::Doctor => Box::pin(channels::doctor_channels(config)).await,
-            other => channels::handle_command(other, &config).await,
+            other => Box::pin(channels::handle_command(other, &config)).await,
         },
 
         Commands::Integrations {
@@ -2355,12 +2350,17 @@ mod tests {
     }
 
     #[test]
-    fn onboard_cli_accepts_interactive_flag() {
-        let cli = Cli::try_parse_from(["zeroclaw", "onboard", "--interactive"])
-            .expect("onboard --interactive should parse");
+    fn onboard_cli_rejects_removed_interactive_flag() {
+        // --interactive was removed; onboard auto-detects TTY instead.
+        assert!(Cli::try_parse_from(["zeroclaw", "onboard", "--interactive"]).is_err());
+    }
+
+    #[test]
+    fn onboard_cli_bare_parses() {
+        let cli = Cli::try_parse_from(["zeroclaw", "onboard"]).expect("bare onboard should parse");
 
         match cli.command {
-            Commands::Onboard { interactive, .. } => assert!(interactive),
+            Commands::Onboard { .. } => {}
             other => panic!("expected onboard command, got {other:?}"),
         }
     }
