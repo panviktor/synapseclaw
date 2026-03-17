@@ -5152,4 +5152,79 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].public_key.as_deref(), Some("deadbeef1234"));
     }
+
+    // ── Agent gateway registry tests (Phase 3.8) ────────────────
+
+    #[test]
+    fn agent_gateway_upsert_and_list() {
+        let db = test_db();
+        db.upsert_agent_gateway("opus", "http://127.0.0.1:42618", "zc_proxy_opus")
+            .unwrap();
+        db.upsert_agent_gateway("daily", "http://127.0.0.1:42619", "zc_proxy_daily")
+            .unwrap();
+
+        let gateways = db.list_agent_gateways().unwrap();
+        assert_eq!(gateways.len(), 2);
+    }
+
+    #[test]
+    fn agent_gateway_get() {
+        let db = test_db();
+        db.upsert_agent_gateway("opus", "http://127.0.0.1:42618", "zc_proxy_opus")
+            .unwrap();
+
+        let gw = db.get_agent_gateway("opus").unwrap().unwrap();
+        assert_eq!(gw.agent_id, "opus");
+        assert_eq!(gw.gateway_url, "http://127.0.0.1:42618");
+        assert_eq!(gw.proxy_token, "zc_proxy_opus");
+
+        assert!(db.get_agent_gateway("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn agent_gateway_upsert_updates_existing() {
+        let db = test_db();
+        db.upsert_agent_gateway("opus", "http://old:42618", "old_token")
+            .unwrap();
+        db.upsert_agent_gateway("opus", "http://new:42618", "new_token")
+            .unwrap();
+
+        let gw = db.get_agent_gateway("opus").unwrap().unwrap();
+        assert_eq!(gw.gateway_url, "http://new:42618");
+        assert_eq!(gw.proxy_token, "new_token");
+        // Only one entry
+        assert_eq!(db.list_agent_gateways().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn agent_gateway_remove() {
+        let db = test_db();
+        db.upsert_agent_gateway("opus", "http://127.0.0.1:42618", "tok")
+            .unwrap();
+        assert_eq!(db.list_agent_gateways().unwrap().len(), 1);
+
+        db.remove_agent_gateway("opus").unwrap();
+        assert_eq!(db.list_agent_gateways().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn agent_gateway_seed_with_trust_info() {
+        let db = test_db();
+        // Register agent in IPC agents table
+        db.update_last_seen("opus", 1, "coordinator");
+        // Register gateway
+        db.upsert_agent_gateway("opus", "http://127.0.0.1:42618", "zc_proxy_opus")
+            .unwrap();
+
+        // Simulate broker restart: list gateways + list agents
+        let gateways = db.list_agent_gateways().unwrap();
+        let ipc_agents = db.list_agents(120);
+
+        assert_eq!(gateways.len(), 1);
+        let gw = &gateways[0];
+        let ipc_agent = ipc_agents.iter().find(|a| a.agent_id == gw.agent_id);
+        assert!(ipc_agent.is_some());
+        assert_eq!(ipc_agent.unwrap().trust_level, Some(1));
+        assert_eq!(ipc_agent.unwrap().role.as_deref(), Some("coordinator"));
+    }
 }

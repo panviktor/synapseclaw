@@ -812,14 +812,24 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
     if config.agents_ipc.enabled {
         if let Some(ref db) = state.ipc_db {
             if let Ok(gateways) = db.list_agent_gateways() {
+                // Also fetch trust/role from IPC agents table
+                let ipc_agents = db.list_agents(config.agents_ipc.staleness_secs);
                 for gw in &gateways {
                     state
                         .agent_registry
                         .upsert(&gw.agent_id, &gw.gateway_url, &gw.proxy_token);
+                    // Restore trust_level/role from IPC agents table
+                    if let Some(ipc_agent) = ipc_agents.iter().find(|a| a.agent_id == gw.agent_id) {
+                        if let (Some(tl), Some(role)) =
+                            (ipc_agent.trust_level, ipc_agent.role.as_deref())
+                        {
+                            state.agent_registry.set_trust_info(&gw.agent_id, tl, role);
+                        }
+                    }
                 }
                 if !gateways.is_empty() {
                     tracing::info!(
-                        "Seeded AgentRegistry with {} gateways from DB",
+                        "Seeded AgentRegistry with {} gateways from DB (trust/role restored)",
                         gateways.len()
                     );
                 }
