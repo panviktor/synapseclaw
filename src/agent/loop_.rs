@@ -4081,6 +4081,7 @@ mod tests {
             ProviderCapabilities {
                 native_tool_calling: false,
                 vision: true,
+                prompt_caching: false,
             }
         }
 
