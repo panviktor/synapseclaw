@@ -16,6 +16,8 @@ export interface WebSocketClientOptions {
   maxReconnectDelay?: number;
   /** Set to false to disable auto-reconnect. Default true. */
   autoReconnect?: boolean;
+  /** Agent ID for broker proxy. If set, connects to /ws/chat/proxy?agent=<id>. */
+  agent?: string | null;
 }
 
 const DEFAULT_RECONNECT_DELAY = 1000;
@@ -56,6 +58,7 @@ export class WebSocketClient {
   private readonly reconnectDelay: number;
   private readonly maxReconnectDelay: number;
   private readonly autoReconnect: boolean;
+  private readonly agent: string | null;
 
   constructor(options: WebSocketClientOptions = {}) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -64,6 +67,7 @@ export class WebSocketClient {
     this.reconnectDelay = options.reconnectDelay ?? DEFAULT_RECONNECT_DELAY;
     this.maxReconnectDelay = options.maxReconnectDelay ?? MAX_RECONNECT_DELAY;
     this.autoReconnect = options.autoReconnect ?? true;
+    this.agent = options.agent ?? null;
     this.currentDelay = this.reconnectDelay;
   }
 
@@ -77,7 +81,10 @@ export class WebSocketClient {
     const params = new URLSearchParams();
     if (token) params.set('token', token);
     params.set('session_id', sessionId);
-    const url = `${this.baseUrl}/ws/chat?${params.toString()}`;
+    // Phase 3.8: use proxy endpoint when agent is selected
+    const wsPath = this.agent ? `/ws/chat/proxy` : `/ws/chat`;
+    if (this.agent) params.set('agent', this.agent);
+    const url = `${this.baseUrl}${wsPath}?${params.toString()}`;
 
     this.ws = new WebSocket(url, ['zeroclaw.v1']);
 

@@ -1061,21 +1061,35 @@ async fn main() -> Result<()> {
             if config.agents_ipc.enabled && config.agents_ipc.proxy_token.is_none() {
                 let token = format!("zc_proxy_{}", uuid::Uuid::new_v4().simple());
                 config.agents_ipc.proxy_token = Some(token.clone());
-                // Save first, then add to paired_tokens only on success
+                // Add to paired_tokens BEFORE save so it's persisted to disk
+                if !config.gateway.paired_tokens.iter().any(|t| t == &token) {
+                    config.gateway.paired_tokens.push(token);
+                }
                 match config.save().await {
                     Ok(()) => {
-                        // Now add to in-memory paired_tokens (already saved to disk)
-                        if !config.gateway.paired_tokens.iter().any(|t| t == &token) {
-                            config.gateway.paired_tokens.push(token);
-                        }
                         tracing::info!(
                             "Generated proxy_token for broker→agent auth (saved to config)"
                         );
                     }
                     Err(e) => {
-                        // Revert in-memory change — don't keep unsaved token
+                        // Revert both in-memory changes
                         config.agents_ipc.proxy_token = None;
+                        config
+                            .gateway
+                            .paired_tokens
+                            .retain(|t| !t.starts_with("zc_proxy_"));
                         tracing::warn!("Failed to save auto-generated proxy_token: {e}");
+                    }
+                }
+            }
+            // Reconcile on every start: ensure proxy_token is in paired_tokens
+            // (covers cold restart where config was saved but paired_tokens wasn't updated)
+            if let Some(ref pt) = config.agents_ipc.proxy_token {
+                if !config.gateway.paired_tokens.iter().any(|t| t == pt) {
+                    config.gateway.paired_tokens.push(pt.clone());
+                    // Persist the reconciliation
+                    if let Err(e) = config.save().await {
+                        tracing::warn!("Failed to persist proxy_token reconciliation: {e}");
                     }
                 }
             }
