@@ -92,6 +92,25 @@ Check that ACL validation happens BEFORE any DB write.
 - `revoke_by_agent_id` removes from both `paired_tokens` and `token_metadata`
 - Admin endpoints are localhost-only (`require_localhost` guard)
 
+### 9. Audit Dual-Chain Integrity
+
+- Merkle chain: `sequence`, `prev_hash`, `entry_hash` populated on every `log()` call
+- HMAC chain: `hmac` field populated when `sign_events = true` in config
+- Both chains coexist — Merkle is keyless, HMAC requires `audit.key`
+- `recover_chain_state()` recovers Merkle sequence from existing log on restart
+- `read_last_hmac()` recovers HMAC chain position on restart
+- `verify_chain()` validates Merkle integrity, `verify_audit_chain()` validates HMAC integrity
+- IPC events in `AuditEventType`: `IpcSend`, `IpcBlocked`, `IpcRateLimited`, `IpcReceived`, `IpcStateChange`, `IpcAdminAction`, `IpcLeakDetected`, `Provisioning*`
+
+### 10. Broker Proxy Operator Isolation
+
+- `handle_ws_chat_proxy` derives `operator_id` from browser token hash
+- Forwards `?session_id=op:{operator_id}` to remote agent
+- `handle_socket` folds `op:` prefix into `token_prefix`: `"{proxy}:op:{op}"`
+- ALL session CRUD (sessions.list/new/rename/delete) uses folded prefix
+- Direct browser connections (no proxy) are unaffected
+- Test: `broker_proxy_operator_isolation_covers_session_crud`
+
 ## Output format
 
 ```
