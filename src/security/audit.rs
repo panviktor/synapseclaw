@@ -28,6 +28,13 @@ pub enum AuditEventType {
     IpcStateChange,
     IpcAdminAction,
     IpcLeakDetected,
+    ProvisioningArmed,
+    ProvisioningDisarmed,
+    ProvisioningAgentCreated,
+    ProvisioningServiceInstalled,
+    ProvisioningServiceStarted,
+    ProvisioningServiceStopped,
+    ProvisioningFailed,
 }
 
 /// Actor information (who performed the action)

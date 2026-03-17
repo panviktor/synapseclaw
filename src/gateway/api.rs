@@ -270,7 +270,11 @@ pub async fn handle_api_config_put(
     };
 
     let current_config = state.config.lock().clone();
-    let new_config = hydrate_config_for_save(incoming, &current_config);
+    let mut new_config = hydrate_config_for_save(incoming, &current_config);
+
+    // Security: ui_provisioning subtree is immutable via /api/config.
+    // Restore the original values to prevent escalation via bearer-only API.
+    new_config.gateway.ui_provisioning = current_config.gateway.ui_provisioning.clone();
 
     if let Err(e) = new_config.validate() {
         return (

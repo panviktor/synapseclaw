@@ -12,6 +12,7 @@ pub mod api;
 pub mod chat_db;
 pub mod ipc;
 pub mod nodes;
+pub mod provisioning;
 pub mod sse;
 pub mod static_files;
 pub mod ws;
@@ -350,6 +351,8 @@ pub struct AppState {
     pub node_registry: Arc<nodes::NodeRegistry>,
     /// Registry of agent daemons for broker proxy (Phase 3.8)
     pub agent_registry: Arc<agent_registry::AgentRegistry>,
+    /// Runtime provisioning state (Phase 3.8 Step 11)
+    pub provisioning_state: Arc<provisioning::ProvisioningState>,
     /// In-memory chat sessions keyed by session key (e.g. `web:<hash>:<id>`)
     pub chat_sessions: Arc<std::sync::Mutex<HashMap<String, ChatSession>>>,
     /// Persistent chat database (SQLite)
@@ -800,6 +803,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         },
         node_registry,
         agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+        provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db,
     };
@@ -897,6 +901,31 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route(
             "/admin/ipc/dismiss-message",
             post(ipc::handle_admin_ipc_dismiss_message),
+        )
+        // ── Provisioning admin routes (localhost + admin auth) ──
+        .route(
+            "/admin/provisioning/arm",
+            post(provisioning::handle_provisioning_arm),
+        )
+        .route(
+            "/admin/provisioning/status",
+            get(provisioning::handle_provisioning_status),
+        )
+        .route(
+            "/admin/provisioning/create",
+            post(provisioning::handle_provisioning_create),
+        )
+        .route(
+            "/admin/provisioning/install",
+            post(provisioning::handle_provisioning_install),
+        )
+        .route(
+            "/admin/provisioning/start",
+            post(provisioning::handle_provisioning_start),
+        )
+        .route(
+            "/admin/provisioning/stop",
+            post(provisioning::handle_provisioning_stop),
         )
         // ── Web Dashboard API routes ──
         .route("/api/agents", get(api::handle_api_agents))
@@ -2070,6 +2099,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2132,6 +2162,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2518,6 +2549,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2594,6 +2626,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2682,6 +2715,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2742,6 +2776,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2807,6 +2842,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2877,6 +2913,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2943,6 +2980,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
