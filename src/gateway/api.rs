@@ -109,6 +109,37 @@ pub async fn handle_api_status(
     Json(body).into_response()
 }
 
+/// GET /api/agents — list registered agent daemons with live status (Phase 3.8).
+pub async fn handle_api_agents(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agents: Vec<serde_json::Value> = state
+        .agent_registry
+        .list()
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "agent_id": a.agent_id,
+                "gateway_url": a.gateway_url,
+                "trust_level": a.trust_level,
+                "role": a.role,
+                "model": a.model,
+                "status": a.status,
+                "last_seen": a.last_seen,
+                "uptime_seconds": a.uptime_seconds,
+                "channels": a.channels,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({ "agents": agents })).into_response()
+}
+
 /// PUT /api/summary-model — switch the summary model on the fly
 pub async fn handle_api_summary_model_put(
     State(state): State<AppState>,
