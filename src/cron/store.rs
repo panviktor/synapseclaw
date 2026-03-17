@@ -502,6 +502,7 @@ fn map_cron_job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CronJob> {
         },
         last_status: row.get(17)?,
         last_output: row.get(18)?,
+        allowed_tools: None,
     })
 }
 
