@@ -93,11 +93,9 @@ export default function AgentChat() {
       setConnected(true);
       setError(null);
       setReconnecting(false);
-      // Fetch status (agent-specific via proxy, or local)
+      // Fetch status: agent-specific via proxy, or local broker
       if (activeAgent) {
-        getAgentStatus(activeAgent).then(setStatus).catch(() => {
-          getStatus().then(setStatus).catch(() => {});
-        });
+        getAgentStatus(activeAgent).then(setStatus).catch(() => setStatus(null));
       } else {
         getStatus().then(setStatus).catch(() => {});
       }
@@ -356,12 +354,12 @@ export default function AgentChat() {
   // ── Summary model switch ─────────────────────────────────────────
   const handleSummaryModelChange = useCallback(async (model: string | null) => {
     try {
-      const res = await putSummaryModel(model);
+      const res = await putSummaryModel(model, activeAgent);
       setStatus((prev) => prev ? { ...prev, summary_model: res.summary_model } : prev);
     } catch {
       // ignore
     }
-  }, []);
+  }, [activeAgent]);
 
   // ── Clear history ────────────────────────────────────────────────
   const handleClearHistory = useCallback(async () => {

@@ -147,8 +147,11 @@ export function getHealth(): Promise<HealthSnapshot> {
 // Summary Model
 // ---------------------------------------------------------------------------
 
-export function putSummaryModel(model: string | null): Promise<{ ok: boolean; summary_model: string | null }> {
-  return apiFetch('/api/summary-model', {
+export function putSummaryModel(model: string | null, agentId?: string | null): Promise<{ ok: boolean; summary_model: string | null }> {
+  const path = agentId
+    ? `/api/agents/${encodeURIComponent(agentId)}/summary-model`
+    : '/api/summary-model';
+  return apiFetch(path, {
     method: 'PUT',
     body: JSON.stringify({ model }),
   });
