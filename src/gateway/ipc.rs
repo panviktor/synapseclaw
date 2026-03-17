@@ -2690,6 +2690,13 @@ pub async fn handle_ipc_register_gateway(
         return Err(mk_err("gateway_url must start with http:// or https://"));
     }
 
+    // Validate proxy_token: must be non-empty, reasonable length, no control chars
+    if proxy_token.is_empty() || proxy_token.len() > 256 || proxy_token.contains('\0') {
+        return Err(mk_err(
+            "proxy_token must be non-empty, <= 256 chars, no null bytes",
+        ));
+    }
+
     db.upsert_agent_gateway(&meta.agent_id, gateway_url, proxy_token)
         .map_err(|e| {
             (

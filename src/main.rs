@@ -740,7 +740,10 @@ async fn main() -> Result<()> {
             // Validate instance name: ^[a-z0-9][a-z0-9_-]{0,30}$
             if name.is_empty()
                 || name.len() > 31
-                || !name.chars().next().unwrap_or(' ').is_ascii_alphanumeric()
+                || !{
+                    let c = name.chars().next().unwrap_or(' ');
+                    c.is_ascii_lowercase() || c.is_ascii_digit()
+                }
                 || !name
                     .chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
@@ -1058,14 +1061,22 @@ async fn main() -> Result<()> {
             if config.agents_ipc.enabled && config.agents_ipc.proxy_token.is_none() {
                 let token = format!("zc_proxy_{}", uuid::Uuid::new_v4().simple());
                 config.agents_ipc.proxy_token = Some(token.clone());
-                // Also add to paired_tokens so the broker can authenticate with us
-                if !config.gateway.paired_tokens.iter().any(|t| t == &token) {
-                    config.gateway.paired_tokens.push(token);
-                }
-                if let Err(e) = config.save().await {
-                    tracing::warn!("Failed to save auto-generated proxy_token: {e}");
-                } else {
-                    tracing::info!("Generated proxy_token for broker→agent auth (saved to config)");
+                // Save first, then add to paired_tokens only on success
+                match config.save().await {
+                    Ok(()) => {
+                        // Now add to in-memory paired_tokens (already saved to disk)
+                        if !config.gateway.paired_tokens.iter().any(|t| t == &token) {
+                            config.gateway.paired_tokens.push(token);
+                        }
+                        tracing::info!(
+                            "Generated proxy_token for broker→agent auth (saved to config)"
+                        );
+                    }
+                    Err(e) => {
+                        // Revert in-memory change — don't keep unsaved token
+                        config.agents_ipc.proxy_token = None;
+                        tracing::warn!("Failed to save auto-generated proxy_token: {e}");
+                    }
                 }
             }
 

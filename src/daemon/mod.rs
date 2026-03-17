@@ -463,15 +463,24 @@ async fn broker_registration_loop(config: Config) {
     let broker_url = config.agents_ipc.broker_url.clone();
     let broker_token = match &config.agents_ipc.broker_token {
         Some(t) => t.clone(),
-        None => return,
+        None => {
+            tracing::warn!("IPC enabled but broker_token not set — skipping broker registration");
+            return;
+        }
     };
     let gateway_url = match &config.agents_ipc.gateway_url {
         Some(u) => u.clone(),
-        None => return,
+        None => {
+            tracing::warn!("IPC enabled but gateway_url not set — skipping broker registration");
+            return;
+        }
     };
     let proxy_token = match &config.agents_ipc.proxy_token {
         Some(t) => t.clone(),
-        None => return,
+        None => {
+            tracing::warn!("IPC enabled but proxy_token not set — skipping broker registration");
+            return;
+        }
     };
 
     let client = reqwest::Client::builder()
@@ -517,6 +526,37 @@ async fn broker_registration_loop(config: Config) {
 
     // Phase B: periodic refresh every 5 minutes
     let refresh_interval = Duration::from_secs(300);
+
+    // Shared retry logic for Phase A fallback
+    let fast_retry =
+        |client: &reqwest::Client, url: &str, broker_token: &str, body: &serde_json::Value| {
+            let client = client.clone();
+            let url = url.to_string();
+            let token = broker_token.to_string();
+            let body = body.clone();
+            async move {
+                let mut retry_delay = Duration::from_secs(1);
+                loop {
+                    tokio::time::sleep(retry_delay).await;
+                    match client
+                        .post(&url)
+                        .bearer_auth(&token)
+                        .json(&body)
+                        .send()
+                        .await
+                    {
+                        Ok(r) if r.status().is_success() => {
+                            tracing::info!("Gateway re-registered after broker recovery");
+                            break;
+                        }
+                        _ => {
+                            retry_delay = (retry_delay * 2).min(max_delay);
+                        }
+                    }
+                }
+            }
+        };
+
     loop {
         tokio::time::sleep(refresh_interval).await;
         match client
@@ -534,48 +574,11 @@ async fn broker_registration_loop(config: Config) {
                     "Gateway refresh failed (HTTP {}), switching to fast retry",
                     resp.status()
                 );
-                // Fall back to Phase A
-                let mut retry_delay = Duration::from_secs(1);
-                loop {
-                    tokio::time::sleep(retry_delay).await;
-                    match client
-                        .post(&url)
-                        .bearer_auth(&broker_token)
-                        .json(&body)
-                        .send()
-                        .await
-                    {
-                        Ok(r) if r.status().is_success() => {
-                            tracing::info!("Gateway re-registered after broker recovery");
-                            break;
-                        }
-                        _ => {
-                            retry_delay = (retry_delay * 2).min(max_delay);
-                        }
-                    }
-                }
+                fast_retry(&client, &url, &broker_token, &body).await;
             }
             Err(e) => {
                 tracing::warn!("Gateway refresh failed ({e}), switching to fast retry");
-                let mut retry_delay = Duration::from_secs(1);
-                loop {
-                    tokio::time::sleep(retry_delay).await;
-                    match client
-                        .post(&url)
-                        .bearer_auth(&broker_token)
-                        .json(&body)
-                        .send()
-                        .await
-                    {
-                        Ok(r) if r.status().is_success() => {
-                            tracing::info!("Gateway re-registered after broker recovery");
-                            break;
-                        }
-                        _ => {
-                            retry_delay = (retry_delay * 2).min(max_delay);
-                        }
-                    }
-                }
+                fast_retry(&client, &url, &broker_token, &body).await;
             }
         }
     }
