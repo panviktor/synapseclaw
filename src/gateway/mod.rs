@@ -3679,4 +3679,76 @@ mod tests {
         // But agent_id should be present
         assert_eq!(json["agent_id"].as_str(), Some("opus"));
     }
+
+    #[test]
+    fn broker_proxy_operator_isolation_different_tokens_different_sessions() {
+        // Phase 3.8 Finding 1: verify that different browser tokens produce
+        // different operator_id prefixes, ensuring per-operator session isolation
+        // even when all connections go through the same broker proxy_token.
+        let token_a = "browser_token_alice_abc123";
+        let token_b = "browser_token_bob_xyz789";
+        let proxy_token = "shared_proxy_token";
+
+        let op_a = ws::token_hash_prefix(token_a);
+        let op_b = ws::token_hash_prefix(token_b);
+        let proxy_prefix = ws::token_hash_prefix(proxy_token);
+
+        // Different browser tokens must produce different operator IDs
+        assert_ne!(
+            op_a, op_b,
+            "different browser tokens must yield different operator IDs"
+        );
+
+        // Operator IDs must differ from the proxy token prefix
+        assert_ne!(
+            op_a, proxy_prefix,
+            "operator ID must differ from proxy token prefix"
+        );
+
+        // Simulated session keys on the agent side:
+        // Before fix: both browsers → web:{proxy_prefix}:{sid} (SHARED)
+        // After fix:  browser A → web:{proxy_prefix}:op:{op_a}, B → web:{proxy_prefix}:op:{op_b}
+        let session_a = format!("web:{proxy_prefix}:op:{op_a}");
+        let session_b = format!("web:{proxy_prefix}:op:{op_b}");
+        assert_ne!(
+            session_a, session_b,
+            "session keys must be isolated per operator"
+        );
+    }
+
+    #[test]
+    fn broker_proxy_e2e_restart_recovery_agent_registry() {
+        // Phase 3.8 Finding 2: verify that after broker "restart", trust/role
+        // can be re-seeded from IpcDb's update_last_seen records into a fresh
+        // AgentRegistry. This tests the code path used in gateway startup.
+        let db = ipc::IpcDb::open_in_memory().unwrap();
+
+        // 1. Register agents in IPC DB (simulates normal broker operation)
+        db.update_last_seen("opus", 1, "coordinator");
+        db.update_last_seen("worker", 3, "worker");
+        db.upsert_agent_gateway("opus", "http://127.0.0.1:42618", "proxy_opus")
+            .unwrap();
+
+        // 2. Simulate restart: create fresh registry, seed trust/role from DB
+        let registry = agent_registry::AgentRegistry::new();
+        let agents = db.list_agents(3600);
+        for agent in &agents {
+            registry.upsert(&agent.agent_id, "", "");
+            if let (Some(trust), Some(ref role)) = (agent.trust_level, &agent.role) {
+                registry.set_trust_info(&agent.agent_id, trust, role);
+            }
+        }
+
+        // 3. Verify trust/role survived "restart"
+        let opus = registry.get("opus").unwrap();
+        assert_eq!(opus.trust_level, Some(1));
+        assert_eq!(opus.role.as_deref(), Some("coordinator"));
+
+        let worker = registry.get("worker").unwrap();
+        assert_eq!(worker.trust_level, Some(3));
+        assert_eq!(worker.role.as_deref(), Some("worker"));
+
+        // 4. Gateway URL/token empty until agent re-registers
+        assert!(opus.gateway_url.is_empty());
+    }
 }
