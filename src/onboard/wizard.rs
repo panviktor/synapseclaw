@@ -20,7 +20,7 @@ use crate::providers::{
 };
 use anyhow::{bail, Context, Result};
 use console::style;
-use dialoguer::{Confirm, Input, Password, Select};
+use dialoguer::{Confirm, Input, Select};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -95,7 +95,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
     match resolve_interactive_onboarding_mode(&config_path, force)? {
         InteractiveOnboardingMode::FullOnboarding => {}
         InteractiveOnboardingMode::UpdateProviderOnly => {
-            return run_provider_update_wizard(&workspace_dir, &config_path).await;
+            return Box::pin(run_provider_update_wizard(&workspace_dir, &config_path)).await;
         }
     }
 
@@ -137,14 +137,18 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         api_path: None,
         default_provider: Some(provider),
         default_model: Some(model),
-        summary_model: None,
         model_providers: std::collections::HashMap::new(),
         default_temperature: 0.7,
         provider_timeout_secs: 120,
         extra_headers: std::collections::HashMap::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
+        backup: crate::config::BackupConfig::default(),
+        data_retention: crate::config::DataRetentionConfig::default(),
+        cloud_ops: crate::config::CloudOpsConfig::default(),
+        conversational_ai: crate::config::ConversationalAiConfig::default(),
         security: crate::config::SecurityConfig::default(),
+        security_ops: crate::config::SecurityOpsConfig::default(),
         runtime: RuntimeConfig::default(),
         reliability: crate::config::ReliabilityConfig::default(),
         scheduler: crate::config::schema::SchedulerConfig::default(),
@@ -160,12 +164,16 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         tunnel: tunnel_config,
         gateway: crate::config::GatewayConfig::default(),
         composio: composio_config,
+        microsoft365: crate::config::Microsoft365Config::default(),
         secrets: secrets_config,
         browser: BrowserConfig::default(),
+        browser_delegate: crate::tools::browser_delegate::BrowserDelegateConfig::default(),
         http_request: crate::config::HttpRequestConfig::default(),
         multimodal: crate::config::MultimodalConfig::default(),
         web_fetch: crate::config::WebFetchConfig::default(),
         web_search: crate::config::WebSearchConfig::default(),
+        project_intel: crate::config::ProjectIntelConfig::default(),
+        google_workspace: crate::config::GoogleWorkspaceConfig::default(),
         proxy: crate::config::ProxyConfig::default(),
         identity: crate::config::IdentityConfig::default(),
         cost: crate::config::CostConfig::default(),
@@ -178,8 +186,14 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         transcription: crate::config::TranscriptionConfig::default(),
         tts: crate::config::TtsConfig::default(),
         mcp: crate::config::McpConfig::default(),
-        agents_ipc: crate::config::AgentsIpcConfig::default(),
         nodes: crate::config::NodesConfig::default(),
+        workspace: crate::config::WorkspaceConfig::default(),
+        notion: crate::config::NotionConfig::default(),
+        node_transport: crate::config::NodeTransportConfig::default(),
+        knowledge: crate::config::KnowledgeConfig::default(),
+        linkedin: crate::config::LinkedInConfig::default(),
+        agents_ipc: crate::config::AgentsIpcConfig::default(),
+        summary_model: None,
     };
 
     println!(
@@ -239,7 +253,7 @@ pub async fn run_channels_repair_wizard() -> Result<Config> {
     );
     println!();
 
-    let mut config = Config::load_or_init().await?;
+    let mut config = Box::pin(Config::load_or_init()).await?;
 
     print_step(1, 1, "Channels (How You Talk to ZeroClaw)");
     config.channels_config = setup_channels()?;
@@ -394,6 +408,7 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
         response_cache_enabled: false,
         response_cache_ttl_minutes: 60,
         response_cache_max_entries: 5_000,
+        response_cache_hot_entries: 256,
         snapshot_enabled: false,
         snapshot_on_hygiene: false,
         auto_hydrate: true,
@@ -414,14 +429,14 @@ pub async fn run_quick_setup(
         .map(|u| u.home_dir().to_path_buf())
         .context("Could not find home directory")?;
 
-    run_quick_setup_with_home(
+    Box::pin(run_quick_setup_with_home(
         credential_override,
         provider,
         model_override,
         memory_backend,
         force,
         &home,
-    )
+    ))
     .await
 }
 
@@ -497,14 +512,18 @@ async fn run_quick_setup_with_home(
         api_path: None,
         default_provider: Some(provider_name.clone()),
         default_model: Some(model.clone()),
-        summary_model: None,
         model_providers: std::collections::HashMap::new(),
         default_temperature: 0.7,
         provider_timeout_secs: 120,
         extra_headers: std::collections::HashMap::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
+        backup: crate::config::BackupConfig::default(),
+        data_retention: crate::config::DataRetentionConfig::default(),
+        cloud_ops: crate::config::CloudOpsConfig::default(),
+        conversational_ai: crate::config::ConversationalAiConfig::default(),
         security: crate::config::SecurityConfig::default(),
+        security_ops: crate::config::SecurityOpsConfig::default(),
         runtime: RuntimeConfig::default(),
         reliability: crate::config::ReliabilityConfig::default(),
         scheduler: crate::config::schema::SchedulerConfig::default(),
@@ -520,12 +539,16 @@ async fn run_quick_setup_with_home(
         tunnel: crate::config::TunnelConfig::default(),
         gateway: crate::config::GatewayConfig::default(),
         composio: ComposioConfig::default(),
+        microsoft365: crate::config::Microsoft365Config::default(),
         secrets: SecretsConfig::default(),
         browser: BrowserConfig::default(),
+        browser_delegate: crate::tools::browser_delegate::BrowserDelegateConfig::default(),
         http_request: crate::config::HttpRequestConfig::default(),
         multimodal: crate::config::MultimodalConfig::default(),
         web_fetch: crate::config::WebFetchConfig::default(),
         web_search: crate::config::WebSearchConfig::default(),
+        project_intel: crate::config::ProjectIntelConfig::default(),
+        google_workspace: crate::config::GoogleWorkspaceConfig::default(),
         proxy: crate::config::ProxyConfig::default(),
         identity: crate::config::IdentityConfig::default(),
         cost: crate::config::CostConfig::default(),
@@ -538,8 +561,14 @@ async fn run_quick_setup_with_home(
         transcription: crate::config::TranscriptionConfig::default(),
         tts: crate::config::TtsConfig::default(),
         mcp: crate::config::McpConfig::default(),
-        agents_ipc: crate::config::AgentsIpcConfig::default(),
         nodes: crate::config::NodesConfig::default(),
+        workspace: crate::config::WorkspaceConfig::default(),
+        notion: crate::config::NotionConfig::default(),
+        node_transport: crate::config::NodeTransportConfig::default(),
+        knowledge: crate::config::KnowledgeConfig::default(),
+        linkedin: crate::config::LinkedInConfig::default(),
+        agents_ipc: crate::config::AgentsIpcConfig::default(),
+        summary_model: None,
     };
 
     config.save().await?;
@@ -3883,6 +3912,7 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     },
                     allowed_users,
                     interrupt_on_new_message: false,
+                    mention_only: false,
                 });
             }
             ChannelMenuChoice::IMessage => {
@@ -3937,9 +3967,8 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     style("Matrix Setup").white().bold(),
                     style("— self-hosted, federated chat").dim()
                 );
-                print_bullet("You need a Matrix account with either an access token or password.");
-                print_bullet("Access token: Element → Settings → Help & About → Access Token.");
-                print_bullet("Password: simpler setup — bot logs in automatically.");
+                print_bullet("You need a Matrix account and an access token.");
+                print_bullet("Get a token via Element → Settings → Help & About → Access Token.");
                 println!();
 
                 let homeserver: String = Input::new()
@@ -3951,150 +3980,45 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     continue;
                 }
 
-                let hs_trimmed = homeserver.trim().trim_end_matches('/');
-                if !hs_trimmed.starts_with("https://") {
-                    let is_loopback = hs_trimmed.starts_with("http://localhost")
-                        || hs_trimmed.starts_with("http://127.0.0.1")
-                        || hs_trimmed.starts_with("http://[::1]");
-                    if !is_loopback {
-                        println!(
-                            "  {} HTTPS required for non-local homeservers",
-                            style("✗").red()
-                        );
-                        continue;
-                    }
+                let access_token: String =
+                    Input::new().with_prompt("  Access token").interact_text()?;
+
+                if access_token.trim().is_empty() {
+                    println!("  {} Skipped — token required", style("→").dim());
+                    continue;
                 }
-
-                let auth_choices = vec!["Access token", "Password"];
-                let auth_choice = Select::new()
-                    .with_prompt("  Authentication method")
-                    .items(&auth_choices)
-                    .default(0)
-                    .interact()?;
-
-                let (access_token, password, user_id_input): (
-                    Option<String>,
-                    Option<String>,
-                    Option<String>,
-                ) = if auth_choice == 0 {
-                    // Access token auth
-                    let token: String = Password::new().with_prompt("  Access token").interact()?;
-                    if token.trim().is_empty() {
-                        println!("  {} Skipped — token required", style("→").dim());
-                        continue;
-                    }
-                    (Some(token), None, None)
-                } else {
-                    // Password auth
-                    let uid: String = Input::new()
-                        .with_prompt("  User ID (e.g. @bot:matrix.org)")
-                        .interact_text()?;
-                    if uid.trim().is_empty() {
-                        println!("  {} Skipped — user ID required", style("→").dim());
-                        continue;
-                    }
-                    let pwd: String = Password::new().with_prompt("  Password").interact()?;
-                    if pwd.trim().is_empty() {
-                        println!("  {} Skipped — password required", style("→").dim());
-                        continue;
-                    }
-                    (None, Some(pwd), Some(uid))
-                };
 
                 // Test connection (run entirely in separate thread — Response must be used/dropped there)
                 let hs = homeserver.trim_end_matches('/');
                 print!("  {} Testing connection... ", style("⏳").dim());
                 let hs_owned = hs.to_string();
                 let access_token_clone = access_token.clone();
-                let password_clone = password.clone();
-                let user_id_clone = user_id_input.clone();
                 let thread_result = std::thread::spawn(move || {
                     let client = reqwest::blocking::Client::new();
+                    let resp = client
+                        .get(format!("{hs_owned}/_matrix/client/v3/account/whoami"))
+                        .header("Authorization", format!("Bearer {access_token_clone}"))
+                        .send()?;
+                    let ok = resp.status().is_success();
 
-                    if let Some(ref token) = access_token_clone {
-                        // Verify access token via whoami
-                        let resp = client
-                            .get(format!("{hs_owned}/_matrix/client/v3/account/whoami"))
-                            .header("Authorization", format!("Bearer {token}"))
-                            .send()?;
-                        let ok = resp.status().is_success();
-
-                        if !ok {
-                            return Ok::<_, reqwest::Error>((false, None, None));
-                        }
-
-                        let payload: Value = match resp.json() {
-                            Ok(payload) => payload,
-                            Err(_) => Value::Null,
-                        };
-                        let user_id = payload
-                            .get("user_id")
-                            .and_then(|value| value.as_str())
-                            .map(|value| value.to_string());
-                        let device_id = payload
-                            .get("device_id")
-                            .and_then(|value| value.as_str())
-                            .map(|value| value.to_string());
-
-                        Ok::<_, reqwest::Error>((true, user_id, device_id))
-                    } else if let (Some(ref pwd), Some(ref uid)) = (password_clone, user_id_clone) {
-                        // Verify password login attempt
-                        let body = serde_json::json!({
-                            "type": "m.login.password",
-                            "identifier": {
-                                "type": "m.id.user",
-                                "user": uid
-                            },
-                            "password": pwd,
-                            "initial_device_display_name": "ZeroClaw (wizard test)"
-                        });
-                        let resp = client
-                            .post(format!("{hs_owned}/_matrix/client/v3/login"))
-                            .json(&body)
-                            .send()?;
-                        let ok = resp.status().is_success();
-
-                        if !ok {
-                            return Ok::<_, reqwest::Error>((false, None, None));
-                        }
-
-                        let payload: Value = match resp.json() {
-                            Ok(payload) => payload,
-                            Err(_) => Value::Null,
-                        };
-                        let device_id = payload
-                            .get("device_id")
-                            .and_then(|value| value.as_str())
-                            .map(|value| value.to_string());
-
-                        // Log out the test session to avoid orphan devices
-                        if let Some(token) = payload.get("access_token").and_then(|v| v.as_str()) {
-                            match client
-                                .post(format!("{hs_owned}/_matrix/client/v3/logout"))
-                                .header("Authorization", format!("Bearer {token}"))
-                                .send()
-                            {
-                                Ok(resp) if resp.status().is_success() => {}
-                                Ok(resp) => {
-                                    eprintln!(
-                                        "  {} Warning: test-session logout returned HTTP {} — a stale device may remain on the homeserver",
-                                        style("⚠").yellow(),
-                                        resp.status()
-                                    );
-                                }
-                                Err(err) => {
-                                    eprintln!(
-                                        "  {} Warning: test-session logout failed ({err}) — a stale device may remain on the homeserver",
-                                        style("⚠").yellow()
-                                    );
-                                }
-                            }
-                        }
-
-                        Ok::<_, reqwest::Error>((true, Some(uid.clone()), device_id))
-                    } else {
-                        Ok::<_, reqwest::Error>((false, None, None))
+                    if !ok {
+                        return Ok::<_, reqwest::Error>((false, None, None));
                     }
+
+                    let payload: Value = match resp.json() {
+                        Ok(payload) => payload,
+                        Err(_) => Value::Null,
+                    };
+                    let user_id = payload
+                        .get("user_id")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string());
+                    let device_id = payload
+                        .get("device_id")
+                        .and_then(|value| value.as_str())
+                        .map(|value| value.to_string());
+
+                    Ok::<_, reqwest::Error>((true, user_id, device_id))
                 })
                 .join();
 
@@ -4116,7 +4040,7 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     }
                     _ => {
                         println!(
-                            "\r  {} Connection failed — check homeserver URL and credentials",
+                            "\r  {} Connection failed — check homeserver URL and token",
                             style("❌").red().bold()
                         );
                         continue;
@@ -4140,12 +4064,12 @@ fn setup_channels() -> Result<ChannelsConfig> {
 
                 config.matrix = Some(MatrixConfig {
                     homeserver: homeserver.trim_end_matches('/').to_string(),
-                    access_token,
-                    user_id: detected_user_id.or(user_id_input),
+                    access_token: Some(access_token),
+                    user_id: detected_user_id,
                     device_id: detected_device_id,
                     room_id,
                     allowed_users,
-                    password,
+                    password: None,
                     max_media_download_mb: None,
                 });
             }
@@ -4693,6 +4617,10 @@ fn setup_channels() -> Result<ChannelsConfig> {
 
                 config.webhook = Some(WebhookConfig {
                     port: port.parse().unwrap_or(8080),
+                    listen_path: None,
+                    send_url: None,
+                    send_method: None,
+                    auth_header: None,
                     secret: if secret.is_empty() {
                         None
                     } else {
@@ -6000,14 +5928,14 @@ mod tests {
         let _config_env = EnvVarGuard::unset("ZEROCLAW_CONFIG_DIR");
         let tmp = TempDir::new().unwrap();
 
-        let config = run_quick_setup_with_home(
+        let config = Box::pin(run_quick_setup_with_home(
             Some("sk-issue946"),
             Some("openrouter"),
             Some("custom-model-946"),
             Some("sqlite"),
             false,
             tmp.path(),
-        )
+        ))
         .await
         .unwrap();
 
@@ -6027,14 +5955,14 @@ mod tests {
         let _config_env = EnvVarGuard::unset("ZEROCLAW_CONFIG_DIR");
         let tmp = TempDir::new().unwrap();
 
-        let config = run_quick_setup_with_home(
+        let config = Box::pin(run_quick_setup_with_home(
             Some("sk-issue946"),
             Some("anthropic"),
             None,
             Some("sqlite"),
             false,
             tmp.path(),
-        )
+        ))
         .await
         .unwrap();
 
@@ -6057,14 +5985,14 @@ mod tests {
             .await
             .unwrap();
 
-        let err = run_quick_setup_with_home(
+        let err = Box::pin(run_quick_setup_with_home(
             Some("sk-existing"),
             Some("openrouter"),
             Some("custom-model"),
             Some("sqlite"),
             false,
             tmp.path(),
-        )
+        ))
         .await
         .expect_err("quick setup should refuse overwrite without --force");
 
@@ -6090,14 +6018,14 @@ mod tests {
         .await
         .unwrap();
 
-        let config = run_quick_setup_with_home(
+        let config = Box::pin(run_quick_setup_with_home(
             Some("sk-force"),
             Some("openrouter"),
             Some("custom-model-fresh"),
             Some("sqlite"),
             true,
             tmp.path(),
-        )
+        ))
         .await
         .expect("quick setup should overwrite existing config with --force");
 
@@ -6124,14 +6052,14 @@ mod tests {
         );
         let _config_env = EnvVarGuard::unset("ZEROCLAW_CONFIG_DIR");
 
-        let config = run_quick_setup_with_home(
+        let config = Box::pin(run_quick_setup_with_home(
             Some("sk-env"),
             Some("openrouter"),
             Some("model-env"),
             Some("sqlite"),
             false,
             tmp.path(),
-        )
+        ))
         .await
         .expect("quick setup should honor ZEROCLAW_WORKSPACE");
 

@@ -137,7 +137,15 @@ async fn execute_and_persist_job(
     let started_at = Utc::now();
     let (success, output) = Box::pin(execute_job_with_retry(config, security, job)).await;
     let finished_at = Utc::now();
-    let success = persist_job_result(config, job, success, &output, started_at, finished_at).await;
+    let success = Box::pin(persist_job_result(
+        config,
+        job,
+        success,
+        &output,
+        started_at,
+        finished_at,
+    ))
+    .await;
 
     (job.id.clone(), success, output)
 }
@@ -191,6 +199,7 @@ async fn run_agent_job_in_process(config: &Config, job: &CronJob) -> (bool, Stri
                 vec![],
                 false,
                 None,
+                job.allowed_tools.clone(),
             ))
             .await
         }
@@ -660,6 +669,7 @@ mod tests {
             delete_after_run: false,
             execution_mode: ExecutionMode::InProcess,
             env_overlay: std::collections::HashMap::new(),
+            allowed_tools: None,
             created_at: Utc::now(),
             next_run: Utc::now(),
             last_run: None,
@@ -1249,6 +1259,7 @@ mod tests {
             delete_after_run: true,
             execution_mode: ExecutionMode::Subprocess,
             env_overlay: std::collections::HashMap::new(),
+            allowed_tools: None,
             created_at: Utc::now(),
             next_run: Utc::now(),
             last_run: None,

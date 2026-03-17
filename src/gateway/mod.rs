@@ -79,6 +79,22 @@ fn nextcloud_talk_memory_key(msg: &crate::channels::traits::ChannelMessage) -> S
     format!("nextcloud_talk_{}_{}", msg.sender, msg.id)
 }
 
+fn sender_session_id(channel: &str, msg: &crate::channels::traits::ChannelMessage) -> String {
+    match &msg.thread_ts {
+        Some(thread_id) => format!("{channel}_{thread_id}_{}", msg.sender),
+        None => format!("{channel}_{}", msg.sender),
+    }
+}
+
+fn webhook_session_id(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("X-Session-Id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 fn hash_webhook_secret(value: &str) -> String {
     use sha2::{Digest, Sha256};
 
@@ -1135,7 +1151,9 @@ async fn handle_pair(
     match state.pairing.try_pair(code, &rate_key).await {
         Ok(Some(token)) => {
             tracing::info!("🔐 New client paired successfully");
-            if let Err(err) = persist_pairing_tokens(state.config.clone(), &state.pairing).await {
+            if let Err(err) =
+                Box::pin(persist_pairing_tokens(state.config.clone(), &state.pairing)).await
+            {
                 tracing::error!("🔐 Pairing succeeded but token persistence failed: {err:#}");
                 let body = serde_json::json!({
                     "paired": true,
@@ -1223,9 +1241,13 @@ async fn run_gateway_chat_simple(state: &AppState, message: &str) -> anyhow::Res
 }
 
 /// Full-featured chat with tools for channel handlers (WhatsApp, Linq, Nextcloud Talk).
-async fn run_gateway_chat_with_tools(state: &AppState, message: &str) -> anyhow::Result<String> {
+async fn run_gateway_chat_with_tools(
+    state: &AppState,
+    message: &str,
+    session_id: Option<&str>,
+) -> anyhow::Result<String> {
     let config = state.config.lock().clone();
-    crate::agent::process_message(config, message).await
+    Box::pin(crate::agent::process_message(config, message, session_id)).await
 }
 
 /// Webhook request body
@@ -1317,12 +1339,18 @@ async fn handle_webhook(
     }
 
     let message = &webhook_body.message;
+    let session_id = webhook_session_id(&headers);
 
-    if state.auto_save {
+    if state.auto_save && !memory::should_skip_autosave_content(message) {
         let key = webhook_memory_key();
         let _ = state
             .mem
-            .store(&key, message, MemoryCategory::Conversation, None)
+            .store(
+                &key,
+                message,
+                MemoryCategory::Conversation,
+                session_id.as_deref(),
+            )
             .await;
     }
 
@@ -1543,17 +1571,29 @@ async fn handle_whatsapp_message(
             msg.sender,
             truncate_with_ellipsis(&msg.content, 50)
         );
+        let session_id = sender_session_id("whatsapp", msg);
 
         // Auto-save to memory
-        if state.auto_save {
+        if state.auto_save && !memory::should_skip_autosave_content(&msg.content) {
             let key = whatsapp_memory_key(msg);
             let _ = state
                 .mem
-                .store(&key, &msg.content, MemoryCategory::Conversation, None)
+                .store(
+                    &key,
+                    &msg.content,
+                    MemoryCategory::Conversation,
+                    Some(&session_id),
+                )
                 .await;
         }
 
-        match run_gateway_chat_with_tools(&state, &msg.content).await {
+        match Box::pin(run_gateway_chat_with_tools(
+            &state,
+            &msg.content,
+            Some(&session_id),
+        ))
+        .await
+        {
             Ok(response) => {
                 // Send reply via WhatsApp
                 if let Err(e) = wa
@@ -1650,18 +1690,30 @@ async fn handle_linq_webhook(
             msg.sender,
             truncate_with_ellipsis(&msg.content, 50)
         );
+        let session_id = sender_session_id("linq", msg);
 
         // Auto-save to memory
-        if state.auto_save {
+        if state.auto_save && !memory::should_skip_autosave_content(&msg.content) {
             let key = linq_memory_key(msg);
             let _ = state
                 .mem
-                .store(&key, &msg.content, MemoryCategory::Conversation, None)
+                .store(
+                    &key,
+                    &msg.content,
+                    MemoryCategory::Conversation,
+                    Some(&session_id),
+                )
                 .await;
         }
 
         // Call the LLM
-        match run_gateway_chat_with_tools(&state, &msg.content).await {
+        match Box::pin(run_gateway_chat_with_tools(
+            &state,
+            &msg.content,
+            Some(&session_id),
+        ))
+        .await
+        {
             Ok(response) => {
                 // Send reply via Linq
                 if let Err(e) = linq
@@ -1742,18 +1794,30 @@ async fn handle_wati_webhook(State(state): State<AppState>, body: Bytes) -> impl
             msg.sender,
             truncate_with_ellipsis(&msg.content, 50)
         );
+        let session_id = sender_session_id("wati", msg);
 
         // Auto-save to memory
-        if state.auto_save {
+        if state.auto_save && !memory::should_skip_autosave_content(&msg.content) {
             let key = wati_memory_key(msg);
             let _ = state
                 .mem
-                .store(&key, &msg.content, MemoryCategory::Conversation, None)
+                .store(
+                    &key,
+                    &msg.content,
+                    MemoryCategory::Conversation,
+                    Some(&session_id),
+                )
                 .await;
         }
 
         // Call the LLM
-        match run_gateway_chat_with_tools(&state, &msg.content).await {
+        match Box::pin(run_gateway_chat_with_tools(
+            &state,
+            &msg.content,
+            Some(&session_id),
+        ))
+        .await
+        {
             Ok(response) => {
                 // Send reply via WATI
                 if let Err(e) = wati
@@ -1848,16 +1912,28 @@ async fn handle_nextcloud_talk_webhook(
             msg.sender,
             truncate_with_ellipsis(&msg.content, 50)
         );
+        let session_id = sender_session_id("nextcloud_talk", msg);
 
-        if state.auto_save {
+        if state.auto_save && !memory::should_skip_autosave_content(&msg.content) {
             let key = nextcloud_talk_memory_key(msg);
             let _ = state
                 .mem
-                .store(&key, &msg.content, MemoryCategory::Conversation, None)
+                .store(
+                    &key,
+                    &msg.content,
+                    MemoryCategory::Conversation,
+                    Some(&session_id),
+                )
                 .await;
         }
 
-        match run_gateway_chat_with_tools(&state, &msg.content).await {
+        match Box::pin(run_gateway_chat_with_tools(
+            &state,
+            &msg.content,
+            Some(&session_id),
+        ))
+        .await
+        {
             Ok(response) => {
                 if let Err(e) = nextcloud_talk
                     .send(&SendMessage::new(response, &msg.reply_target))
@@ -2341,7 +2417,7 @@ mod tests {
         assert!(guard.is_authenticated(&token));
 
         let shared_config = Arc::new(Mutex::new(config));
-        persist_pairing_tokens(shared_config.clone(), &guard)
+        Box::pin(persist_pairing_tokens(shared_config.clone(), &guard))
             .await
             .unwrap();
 
@@ -3602,5 +3678,77 @@ mod tests {
         assert!(json.get("proxy_token").is_none());
         // But agent_id should be present
         assert_eq!(json["agent_id"].as_str(), Some("opus"));
+    }
+
+    #[test]
+    fn broker_proxy_operator_isolation_different_tokens_different_sessions() {
+        // Phase 3.8 Finding 1: verify that different browser tokens produce
+        // different operator_id prefixes, ensuring per-operator session isolation
+        // even when all connections go through the same broker proxy_token.
+        let token_a = "browser_token_alice_abc123";
+        let token_b = "browser_token_bob_xyz789";
+        let proxy_token = "shared_proxy_token";
+
+        let op_a = ws::token_hash_prefix(token_a);
+        let op_b = ws::token_hash_prefix(token_b);
+        let proxy_prefix = ws::token_hash_prefix(proxy_token);
+
+        // Different browser tokens must produce different operator IDs
+        assert_ne!(
+            op_a, op_b,
+            "different browser tokens must yield different operator IDs"
+        );
+
+        // Operator IDs must differ from the proxy token prefix
+        assert_ne!(
+            op_a, proxy_prefix,
+            "operator ID must differ from proxy token prefix"
+        );
+
+        // Simulated session keys on the agent side:
+        // Before fix: both browsers → web:{proxy_prefix}:{sid} (SHARED)
+        // After fix:  browser A → web:{proxy_prefix}:op:{op_a}, B → web:{proxy_prefix}:op:{op_b}
+        let session_a = format!("web:{proxy_prefix}:op:{op_a}");
+        let session_b = format!("web:{proxy_prefix}:op:{op_b}");
+        assert_ne!(
+            session_a, session_b,
+            "session keys must be isolated per operator"
+        );
+    }
+
+    #[test]
+    fn broker_proxy_e2e_restart_recovery_agent_registry() {
+        // Phase 3.8 Finding 2: verify that after broker "restart", trust/role
+        // can be re-seeded from IpcDb's update_last_seen records into a fresh
+        // AgentRegistry. This tests the code path used in gateway startup.
+        let db = ipc::IpcDb::open_in_memory().unwrap();
+
+        // 1. Register agents in IPC DB (simulates normal broker operation)
+        db.update_last_seen("opus", 1, "coordinator");
+        db.update_last_seen("worker", 3, "worker");
+        db.upsert_agent_gateway("opus", "http://127.0.0.1:42618", "proxy_opus")
+            .unwrap();
+
+        // 2. Simulate restart: create fresh registry, seed trust/role from DB
+        let registry = agent_registry::AgentRegistry::new();
+        let agents = db.list_agents(3600);
+        for agent in &agents {
+            registry.upsert(&agent.agent_id, "", "");
+            if let (Some(trust), Some(ref role)) = (agent.trust_level, &agent.role) {
+                registry.set_trust_info(&agent.agent_id, trust, role);
+            }
+        }
+
+        // 3. Verify trust/role survived "restart"
+        let opus = registry.get("opus").unwrap();
+        assert_eq!(opus.trust_level, Some(1));
+        assert_eq!(opus.role.as_deref(), Some("coordinator"));
+
+        let worker = registry.get("worker").unwrap();
+        assert_eq!(worker.trust_level, Some(3));
+        assert_eq!(worker.role.as_deref(), Some("worker"));
+
+        // 4. Gateway URL/token empty until agent re-registers
+        assert!(opus.gateway_url.is_empty());
     }
 }

@@ -67,17 +67,50 @@ If no conflicts, proceed.
 
 Even without conflicts, review these shared hotspots for semantic changes:
 
+**Config:**
 ```
 src/config/schema.rs
 src/config/mod.rs
-src/gateway/mod.rs
-src/gateway/api.rs
-src/security/pairing.rs
-src/tools/mod.rs
-src/onboard/wizard.rs
 ```
 
-For each modified hotspot, show the diff and flag if fork-specific code (IPC, trust levels, token metadata) might be affected.
+**Gateway:**
+```
+src/gateway/mod.rs
+src/gateway/api.rs
+src/gateway/ws.rs
+```
+
+**Security:**
+```
+src/security/pairing.rs
+src/security/audit.rs
+```
+
+**Agent:**
+```
+src/agent/agent.rs
+src/agent/loop_.rs
+```
+
+**Other:**
+```
+src/tools/mod.rs
+src/onboard/wizard.rs
+src/cron/scheduler.rs
+src/daemon/mod.rs
+src/main.rs
+src/service/mod.rs
+```
+
+**Web:**
+```
+web/src/App.tsx
+web/src/components/layout/Sidebar.tsx
+web/src/lib/ws.ts
+web/src/types/api.ts
+```
+
+For each modified hotspot, show the diff and flag if fork-specific code (IPC, trust levels, token metadata, web UI routing, session store) might be affected.
 
 ## Step 6: Validate
 
@@ -92,6 +125,10 @@ Also run fork-invariant tests specifically:
 cargo test gateway::ipc::tests
 cargo test tools::agents_ipc::tests
 cargo test security::pairing::tests
+cargo test security::identity::tests
+cargo test security::execution::tests
+cargo test gateway::agent_registry::tests
+cargo test gateway::chat_db::tests
 ```
 
 ## Step 7: Push + PR

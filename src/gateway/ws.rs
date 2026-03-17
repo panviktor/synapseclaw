@@ -88,7 +88,7 @@ fn extract_ws_token<'a>(headers: &'a HeaderMap, query_token: Option<&'a str>) ->
 }
 
 /// Derive token hash prefix for session keys: first 16 hex chars of SHA-256.
-fn token_hash_prefix(token: &str) -> String {
+pub(crate) fn token_hash_prefix(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     hex::encode(&digest[..8])
 }
@@ -112,6 +112,12 @@ pub struct WsProxyQuery {
 /// Browser connects here with `?agent=<agent_id>`. Broker looks up the agent
 /// in AgentRegistry, opens upstream WS to agent's gateway, and relays frames
 /// bidirectionally (transparent, no parsing).
+///
+/// **Operator isolation (Phase 3.8 Finding 1):** The broker derives an
+/// `operator_id` from the browser's bearer token hash and forwards it as
+/// `?session_id=op:{operator_id}` to the agent. This ensures each browser
+/// operator gets an isolated session namespace on the remote agent, even
+/// though all proxied connections share the same `proxy_token`.
 pub async fn handle_ws_chat_proxy(
     State(state): State<AppState>,
     Query(params): Query<WsProxyQuery>,
@@ -166,7 +172,10 @@ pub async fn handle_ws_chat_proxy(
         ws
     };
 
-    ws.on_upgrade(move |socket| handle_proxy_socket(socket, agent_info))
+    // Derive operator identity from browser token for per-operator isolation
+    let operator_id = token_hash_prefix(raw_token);
+
+    ws.on_upgrade(move |socket| handle_proxy_socket(socket, agent_info, operator_id))
         .into_response()
 }
 
@@ -174,15 +183,18 @@ pub async fn handle_ws_chat_proxy(
 async fn handle_proxy_socket(
     browser_socket: WebSocket,
     agent_info: super::agent_registry::AgentInfo,
+    operator_id: String,
 ) {
     use tokio_tungstenite::tungstenite;
 
-    // Build upstream URL (ws:// or wss://)
+    // Build upstream URL with operator-scoped session_id for isolation.
+    // Each browser operator gets a unique session prefix on the remote agent,
+    // preventing shared namespace when multiple operators use the same broker.
     let upstream_url = agent_info
         .gateway_url
         .replace("http://", "ws://")
         .replace("https://", "wss://");
-    let upstream_url = format!("{upstream_url}/ws/chat");
+    let upstream_url = format!("{upstream_url}/ws/chat?session_id=op:{operator_id}");
 
     // Connect to agent's WS with subprotocol auth
     let request = tungstenite::http::Request::builder()
