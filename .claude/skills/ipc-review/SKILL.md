@@ -12,8 +12,14 @@ Perform a structured audit of the IPC subsystem. Read the code, check invariants
 
 Read these files (in parallel where possible):
 - `src/gateway/ipc.rs` — broker handlers, IpcDb, ACL validation
+- `src/gateway/agent_registry.rs` — agent registry, health polling
+- `src/gateway/chat_db.rs` — chat session persistence
+- `src/gateway/provisioning.rs` — agent provisioning from UI
 - `src/tools/agents_ipc.rs` — IPC tool implementations
 - `src/security/pairing.rs` — token auth, TokenMetadata
+- `src/security/execution.rs` — execution profiles, fail-closed sandbox
+- `src/security/identity.rs` — Ed25519 agent identity, key registration
+- `src/security/prompt_guard.rs` — PromptGuard payload scanning
 - `src/gateway/mod.rs` — AppState, route registration, PromptGuard init
 - `src/config/schema.rs` — AgentsIpcConfig, IpcPromptGuardConfig
 

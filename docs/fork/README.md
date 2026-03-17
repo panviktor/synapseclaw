@@ -2,32 +2,41 @@
 
 This directory contains the strategy, plans, and operational docs for the ZeroClaw fork.
 
+The fork extends upstream ZeroClaw with a **multi-agent IPC system** (broker, trust model, quarantine, control plane), a **web-based operator dashboard**, **security hardening** (execution profiles, Ed25519 identity, PromptGuard), and supporting infrastructure. See [`delta-registry.md`](delta-registry.md) for the full inventory (44 delta entries across 11 categories).
+
 ## Documents
+
+### Fork Strategy
 
 | Document | Purpose | Who reads it |
 |----------|---------|-------------|
-| [sync-strategy.md](sync-strategy.md) | Long-lived fork maintenance: vendor branch, merge-based sync, delta registry | Everyone |
-| [delta-registry.md](delta-registry.md) | What is fork-only vs candidate-upstream, merge risk per item | Administrator, Opus |
+| [sync-strategy.md](sync-strategy.md) | Long-lived fork maintenance: vendor branch, merge-based sync | Everyone |
+| [delta-registry.md](delta-registry.md) | **All** fork deltas (IPC, security, gateway, web UI, infra) — 44 entries, merge risk, ownership | Everyone |
 | [sync-review-rubric.md](sync-review-rubric.md) | Approve / Request changes / Escalate policy for sync PRs | Administrator |
+
+### IPC Plans & Progress
+
+| Document | Purpose | Who reads it |
+|----------|---------|-------------|
 | [ipc-plan.md](ipc-plan.md) | Full IPC design: trust model, ACL, quarantine, approvals, phases | Everyone |
-| [ipc-progress.md](ipc-progress.md) | Step-by-step execution checklist (11 steps, Phase 1 — DONE) | Opus |
-| [ipc-phase2-plan.md](ipc-phase2-plan.md) | Phase 2: Hardened Security — PromptGuard, structured output, audit, replay, session limits | Everyone |
-| [ipc-phase2-progress.md](ipc-phase2-progress.md) | Phase 2 execution checklist (8 steps) | Opus |
+| [ipc-progress.md](ipc-progress.md) | Phase 1 execution checklist (11 steps — DONE) | Opus |
+| [ipc-phase2-plan.md](ipc-phase2-plan.md) | Phase 2: Hardened Security — PromptGuard, audit, replay, session limits | Everyone |
+| [ipc-phase2-progress.md](ipc-phase2-progress.md) | Phase 2 execution checklist (8 steps — DONE) | Opus |
 | [ipc-quickstart.md](ipc-quickstart.md) | Minimal configs, pairing flow, smoke-test curl commands | Everyone |
-| [ipc-phase3-plan.md](ipc-phase3-plan.md) | Phase 3: Trusted Execution — ephemeral agents, fail-closed sandbox, subprocess isolation, crypto provenance | Everyone |
+| [ipc-phase3-plan.md](ipc-phase3-plan.md) | Phase 3: Trusted Execution — ephemeral agents, subprocess isolation, crypto provenance | Everyone |
 | [ipc-phase3-progress.md](ipc-phase3-progress.md) | Phase 3A/3B execution checklist (all steps — DONE) | Opus |
 | [ipc-phase3_5-plan.md](ipc-phase3_5-plan.md) | Phase 3.5: Human Control Plane — IPC operator UI (6 screens, 10 steps) | Everyone |
-| [ipc-phase3_6-plan.md](ipc-phase3_6-plan.md) | Phase 3.6: Agent Provisioning — add agents from UI, 5 presets, config generator, pairing flow | Everyone |
-| [ipc-phase3_7-plan.md](ipc-phase3_7-plan.md) | Phase 3.7: Chat Sessions — WS RPC, multi-session, SQLite persistence, survives restart | Everyone |
-| [ipc-phase3_7b-plan.md](ipc-phase3_7b-plan.md) | Phase 3.7b: Session Intelligence — rolling summaries, live tool events, run lifecycle events | Everyone |
-| [ipc-phase3_8-plan.md](ipc-phase3_8-plan.md) | Phase 3.8: Broker-Centered Multi-Agent Dashboard — one browser, one broker, many agents, WS proxy, agent selector | Everyone |
-| [ipc-phase3_8-progress.md](ipc-phase3_8-progress.md) | Phase 3.8 execution checklist (8 steps) | Opus |
-| [ipc-phase4_0-plan.md](ipc-phase4_0-plan.md) | Phase 4.0: Modular Core Refactor — fork-owned application core, capability-driven channels, conversation store, memory tiers | Everyone |
-| [ipc-phase4_0-progress.md](ipc-phase4_0-progress.md) | Phase 4.0 execution checklist (modular core refactor) | Opus |
+| [ipc-phase3_6-plan.md](ipc-phase3_6-plan.md) | Phase 3.6: Agent Provisioning — presets, config gen, pairing flow | Everyone |
+| [ipc-phase3_7-plan.md](ipc-phase3_7-plan.md) | Phase 3.7: Chat Sessions — WS RPC, multi-session, SQLite persistence | Everyone |
+| [ipc-phase3_7b-plan.md](ipc-phase3_7b-plan.md) | Phase 3.7b: Session Intelligence — rolling summaries, live tool events | Everyone |
+| [ipc-phase3_8-plan.md](ipc-phase3_8-plan.md) | Phase 3.8: Multi-Agent Dashboard — WS proxy, agent selector, broker-centered | Everyone |
+| [ipc-phase3_8-progress.md](ipc-phase3_8-progress.md) | Phase 3.8 execution checklist (all steps — DONE) | Opus |
+| [ipc-phase4_0-plan.md](ipc-phase4_0-plan.md) | Phase 4.0: Modular Core Refactor — capability-driven channels, conversation store | Everyone |
+| [ipc-phase4_0-progress.md](ipc-phase4_0-progress.md) | Phase 4.0 execution checklist | Opus |
 
 ## Reading order
 
-**New to the fork?** Start with `ipc-plan.md` → `sync-strategy.md` → `delta-registry.md`.
+**New to the fork?** Start with `delta-registry.md` → `sync-strategy.md` → `ipc-plan.md`.
 
 **Starting IPC work?** Read the phase plans in order:
 `ipc-phase2-plan.md` → `ipc-phase3-plan.md` → `ipc-phase3_5-plan.md` → `ipc-phase3_6-plan.md` → `ipc-phase3_7-plan.md` → `ipc-phase3_7b-plan.md` → `ipc-phase3_8-plan.md` → `ipc-phase4_0-plan.md`.
