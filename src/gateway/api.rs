@@ -140,6 +140,49 @@ pub async fn handle_api_agents(
     Json(serde_json::json!({ "agents": agents })).into_response()
 }
 
+/// GET /api/agents/:agent_id/status — proxy status request to a specific agent (Phase 3.8).
+pub async fn handle_api_agent_status_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => {
+            return (StatusCode::NOT_FOUND, "Agent not found").into_response();
+        }
+    };
+
+    // Proxy GET to agent's /api/status
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/status", agent.gateway_url);
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
 /// PUT /api/summary-model — switch the summary model on the fly
 pub async fn handle_api_summary_model_put(
     State(state): State<AppState>,

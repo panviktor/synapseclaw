@@ -4,7 +4,7 @@ import { Send, Bot, User, AlertCircle, Copy, Check, Square, MoreVertical, Plus, 
 import type { WsMessage, ChatSessionInfo, ChatMessageInfo, StatusResponse } from '@/types/api';
 import { WebSocketClient } from '@/lib/ws';
 import { generateUUID } from '@/lib/uuid';
-import { getStatus, putSummaryModel } from '@/lib/api';
+import { getStatus, putSummaryModel, getAgents, type AgentEntry } from '@/lib/api';
 import SessionSidebar from '@/components/chat/SessionSidebar';
 import {
   getCachedMessages,
@@ -46,6 +46,10 @@ export default function AgentChat() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [agents, setAgents] = useState<AgentEntry[]>([]);
+  const [activeAgent, setActiveAgent] = useState<string | null>(
+    () => localStorage.getItem('zeroclaw_active_agent') || null,
+  );
 
   const wsRef = useRef<WebSocketClient | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -89,8 +93,9 @@ export default function AgentChat() {
       setConnected(true);
       setError(null);
       setReconnecting(false);
-      // Fetch agent status (model info, uptime)
+      // Fetch agent status + available agents
       getStatus().then(setStatus).catch(() => {});
+      getAgents().then(setAgents).catch(() => {});
       // Load sessions list
       ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
         .then((res) => {
@@ -323,6 +328,24 @@ export default function AgentChat() {
     [activeSession, setSearchParams, loadHistory],
   );
 
+  // ── Agent switch (Phase 3.8) ─────────────────────────────────────
+  const handleAgentChange = useCallback(
+    (agentId: string) => {
+      const newAgent = agentId || null;
+      setActiveAgent(newAgent);
+      if (newAgent) {
+        localStorage.setItem('zeroclaw_active_agent', newAgent);
+      } else {
+        localStorage.removeItem('zeroclaw_active_agent');
+      }
+      // TODO: When proxy WS is wired in frontend, reconnect WS to /ws/chat/proxy?agent=<id>
+      // For now, just store the selection. Full proxy integration requires WS reconnect logic.
+      setMessages([]);
+      setSearchParams({}, { replace: true });
+    },
+    [setSearchParams],
+  );
+
   // ── Summary model switch ─────────────────────────────────────────
   const handleSummaryModelChange = useCallback(async (model: string | null) => {
     try {
@@ -479,12 +502,15 @@ export default function AgentChat() {
         activeKey={activeSession}
         collapsed={sidebarCollapsed}
         status={status}
+        agents={agents}
+        activeAgent={activeAgent}
         onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
         onSelect={handleSelectSession}
         onNew={handleNewSession}
         onRename={handleRenameSession}
         onDelete={handleDeleteSession}
         onSummaryModelChange={handleSummaryModelChange}
+        onAgentChange={handleAgentChange}
       />
 
       {/* Chat area */}
