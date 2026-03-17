@@ -942,8 +942,8 @@ mod tests {
         drop(logger);
 
         let log_path = tmp.path().join("audit.log");
-        let tampered = std::fs::read_to_string(&log_path)?
-            .replace("command_execution", "policy_violation");
+        let tampered =
+            std::fs::read_to_string(&log_path)?.replace("command_execution", "policy_violation");
         std::fs::write(&log_path, tampered)?;
 
         let key_path = tmp.path().join("audit.key");
