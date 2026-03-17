@@ -4,7 +4,7 @@ import { Send, Bot, User, AlertCircle, Copy, Check, Square, MoreVertical, Plus, 
 import type { WsMessage, ChatSessionInfo, ChatMessageInfo, StatusResponse } from '@/types/api';
 import { WebSocketClient } from '@/lib/ws';
 import { generateUUID } from '@/lib/uuid';
-import { getStatus, putSummaryModel, getAgents, type AgentEntry } from '@/lib/api';
+import { getStatus, getAgentStatus, putSummaryModel, getAgents, type AgentEntry } from '@/lib/api';
 import SessionSidebar from '@/components/chat/SessionSidebar';
 import {
   getCachedMessages,
@@ -85,16 +85,22 @@ export default function AgentChat() {
     }
   }, [activeSession]);
 
-  // ── WebSocket setup ──────────────────────────────────────────────
+  // ── WebSocket setup (reconnects when activeAgent changes) ───────
   useEffect(() => {
-    const ws = new WebSocketClient();
+    const ws = new WebSocketClient({ agent: activeAgent });
 
     ws.onOpen = () => {
       setConnected(true);
       setError(null);
       setReconnecting(false);
-      // Fetch agent status + available agents
-      getStatus().then(setStatus).catch(() => {});
+      // Fetch status (agent-specific via proxy, or local)
+      if (activeAgent) {
+        getAgentStatus(activeAgent).then(setStatus).catch(() => {
+          getStatus().then(setStatus).catch(() => {});
+        });
+      } else {
+        getStatus().then(setStatus).catch(() => {});
+      }
       getAgents().then(setAgents).catch(() => {});
       // Load sessions list
       ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
@@ -215,7 +221,7 @@ export default function AgentChat() {
     return () => {
       ws.disconnect();
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeAgent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Load history for a session ────────────────────────────────────
   const loadHistory = useCallback(async (ws: WebSocketClient, sessionKey: string) => {
@@ -338,9 +344,10 @@ export default function AgentChat() {
       } else {
         localStorage.removeItem('zeroclaw_active_agent');
       }
-      // TODO: When proxy WS is wired in frontend, reconnect WS to /ws/chat/proxy?agent=<id>
-      // For now, just store the selection. Full proxy integration requires WS reconnect logic.
+      // WS will reconnect via useEffect dependency on activeAgent.
+      // Clear current session state — new agent has different sessions.
       setMessages([]);
+      setSessions([]);
       setSearchParams({}, { replace: true });
     },
     [setSearchParams],
