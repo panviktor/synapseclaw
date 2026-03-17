@@ -62,7 +62,9 @@ impl PairingGuard {
     /// Create a new pairing guard.
     ///
     /// If `require_pairing` is true and no tokens exist yet, a fresh
-    /// pairing code is generated and returned via `pairing_code()`.
+    /// pairing code is generated and printed to the terminal. Once
+    /// paired, no code is generated on restart — operators can use
+    /// `generate_new_pairing_code()` or the CLI to create one on demand.
     ///
     /// Existing tokens are accepted in both forms:
     /// - Plaintext (`zc_...`): hashed on load for backward compatibility
@@ -106,7 +108,7 @@ impl PairingGuard {
         }
     }
 
-    /// The one-time pairing code (only set when no tokens exist yet).
+    /// The one-time pairing code (generated only on first startup when no tokens exist).
     pub fn pairing_code(&self) -> Option<String> {
         self.pairing_code.lock().clone()
     }
