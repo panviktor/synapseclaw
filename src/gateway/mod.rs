@@ -7,6 +7,7 @@
 //! - Request timeouts (30s) to prevent slow-loris attacks
 //! - Header sanitization (handled by axum/hyper)
 
+pub mod agent_registry;
 pub mod api;
 pub mod chat_db;
 pub mod ipc;
@@ -347,6 +348,8 @@ pub struct AppState {
     pub ipc_read_rate_limiter: Option<Arc<SlidingWindowRateLimiter>>,
     /// Registry of dynamically connected nodes
     pub node_registry: Arc<nodes::NodeRegistry>,
+    /// Registry of agent daemons for broker proxy (Phase 3.8)
+    pub agent_registry: Arc<agent_registry::AgentRegistry>,
     /// In-memory chat sessions keyed by session key (e.g. `web:<hash>:<id>`)
     pub chat_sessions: Arc<std::sync::Mutex<HashMap<String, ChatSession>>>,
     /// Persistent chat database (SQLite)
@@ -796,9 +799,34 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             None
         },
         node_registry,
+        agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db,
     };
+
+    // Phase 3.8: seed AgentRegistry from DB + start health polling
+    if config.agents_ipc.enabled {
+        if let Some(ref db) = state.ipc_db {
+            if let Ok(gateways) = db.list_agent_gateways() {
+                for gw in &gateways {
+                    state
+                        .agent_registry
+                        .upsert(&gw.agent_id, &gw.gateway_url, &gw.proxy_token);
+                }
+                if !gateways.is_empty() {
+                    tracing::info!(
+                        "Seeded AgentRegistry with {} gateways from DB",
+                        gateways.len()
+                    );
+                }
+            }
+        }
+        // Start background health polling
+        let poll_state = state.clone();
+        tokio::spawn(async move {
+            agent_health_poll_loop(poll_state).await;
+        });
+    }
 
     // Config PUT needs larger body limit (1MB)
     let config_put_router = Router::new()
@@ -932,6 +960,59 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// GET /health — always public (no secrets leaked)
+/// Background loop: poll each registered agent's /api/status every 30s.
+async fn agent_health_poll_loop(state: AppState) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+    let interval = Duration::from_secs(30);
+
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let agents = state.agent_registry.list();
+        for agent in agents {
+            let url = format!("{}/api/status", agent.gateway_url);
+            match client
+                .get(&url)
+                .bearer_auth(&agent.proxy_token)
+                .send()
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => {
+                    if let Ok(body) = resp.json::<serde_json::Value>().await {
+                        let model = body["model"].as_str().map(String::from);
+                        let uptime = body["uptime_seconds"].as_u64();
+                        let channels = body["channels"]
+                            .as_object()
+                            .map(|m| {
+                                m.iter()
+                                    .filter(|(_, v)| v.as_bool() == Some(true))
+                                    .map(|(k, _)| k.clone())
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        state.agent_registry.update_metadata(
+                            &agent.agent_id,
+                            model,
+                            uptime,
+                            channels,
+                        );
+                    }
+                }
+                _ => {
+                    state.agent_registry.record_poll_failure(&agent.agent_id);
+                    tracing::debug!(
+                        agent_id = %agent.agent_id,
+                        "Agent health poll failed"
+                    );
+                }
+            }
+        }
+    }
+}
+
 async fn handle_health(State(state): State<AppState>) -> impl IntoResponse {
     let body = serde_json::json!({
         "status": "ok",
@@ -1982,6 +2063,7 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2043,6 +2125,7 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2428,6 +2511,7 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2503,6 +2587,7 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2590,6 +2675,7 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2649,6 +2735,7 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2713,6 +2800,7 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2782,6 +2870,7 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
@@ -2847,6 +2936,7 @@ mod tests {
             ipc_rate_limiter: None,
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
+            agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
         };
