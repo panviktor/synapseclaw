@@ -899,6 +899,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             post(ipc::handle_admin_ipc_dismiss_message),
         )
         // ── Web Dashboard API routes ──
+        .route("/api/agents", get(api::handle_api_agents))
         .route("/api/status", get(api::handle_api_status))
         .route("/api/summary-model", put(api::handle_api_summary_model_put))
         .route("/api/config", get(api::handle_api_config_get))
