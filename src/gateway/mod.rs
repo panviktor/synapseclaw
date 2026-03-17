@@ -927,6 +927,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/api/events", get(sse::handle_sse_events))
         // ── WebSocket agent chat ──
         .route("/ws/chat", get(ws::handle_ws_chat))
+        .route("/ws/chat/proxy", get(ws::handle_ws_chat_proxy))
         // ── WebSocket node discovery ──
         .route("/ws/nodes", get(nodes::handle_ws_nodes))
         // ── Static assets (web dashboard) ──

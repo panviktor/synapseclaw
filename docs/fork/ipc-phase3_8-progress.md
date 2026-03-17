@@ -1,6 +1,6 @@
 # Phase 3.8 Progress: Broker-Centered Multi-Agent Dashboard
 
-## Status: Not Started
+## Status: In Progress (Steps 1-6 done)
 
 ---
 
@@ -8,12 +8,12 @@
 
 | # | Step | Status | PR | Notes |
 |---|------|--------|----|-------|
-| 1 | Multi-instance service model | todo | — | `--instance <name>`, templated systemd/launchd units, config dir layout |
-| 2 | Proxy token generation + config | todo | — | `proxy_token` in `[agents_ipc]`, auto-generate, encrypt at rest |
-| 3 | Agent gateway registration endpoint | todo | — | `POST /api/ipc/register-gateway`, `agent_gateways` table in IpcDb |
-| 4 | Agent auto-registration + re-registration | todo | — | Phase A: fast retry with backoff. Phase B: 5min refresh after first success. |
-| 5 | Broker health polling + AgentRegistry | todo | — | New `AgentRegistry` struct, 30s poll, offline detection |
-| 6 | Broker `/api/agents` endpoint | todo | — | List agents with live status for browser selector |
+| 1 | Multi-instance service model | done | #103 | `--instance <name>`, templated systemd/launchd units, config dir layout |
+| 2 | Proxy token generation + config | done | #104 | `proxy_token` in `[agents_ipc]`, auto-generate, encrypt at rest |
+| 3 | Agent gateway registration endpoint | done | #105 | `POST /api/ipc/register-gateway`, `agent_gateways` table in IpcDb |
+| 4 | Agent auto-registration + re-registration | done | #106 | Phase A: fast retry with backoff. Phase B: 5min refresh after first success. |
+| 5 | Broker health polling + AgentRegistry | done | #107 | New `AgentRegistry` struct, 30s poll, offline detection |
+| 6 | Broker `/api/agents` endpoint | done | #108 | List agents with live status for browser selector |
 | 7 | WS chat proxy on broker | todo | — | `/ws/chat/proxy?agent=<id>`, bidirectional relay, subprotocol auth |
 | 8 | HTTP API proxy for per-agent calls | todo | — | `GET /api/agents/{id}/status` etc. |
 | 9 | Browser agent selector UI | todo | — | Dropdown in sidebar, localStorage persistence |
