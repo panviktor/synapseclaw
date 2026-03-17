@@ -1512,6 +1512,9 @@ mod tests {
             agent_registry: std::sync::Arc::new(
                 crate::gateway::agent_registry::AgentRegistry::new(),
             ),
+            provisioning_state: std::sync::Arc::new(
+                crate::gateway::provisioning::ProvisioningState::new(),
+            ),
             chat_sessions: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),

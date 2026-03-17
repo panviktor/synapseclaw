@@ -1251,6 +1251,55 @@ pub struct GatewayConfig {
     /// Tokens without an entry are treated as legacy human tokens (no IPC).
     #[serde(default)]
     pub token_metadata: HashMap<String, TokenMetadata>,
+
+    /// UI agent provisioning configuration (Phase 3.8 Step 11).
+    /// Disabled by default. Entire subtree immutable via PUT /api/config.
+    #[serde(default)]
+    pub ui_provisioning: UiProvisioningConfig,
+}
+
+/// UI agent provisioning configuration (broker-only).
+///
+/// Controls whether the broker dashboard can create agent configs and
+/// install services. Disabled by default. The entire subtree is immutable
+/// via `PUT /api/config` — can only be changed by local file edit + restart.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UiProvisioningConfig {
+    /// Master switch. Requires local config edit + restart to enable.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Operation mode: "config_only" or "service_install".
+    /// config_only: create dirs + write config. service_install: also install/start OS service.
+    #[serde(default = "default_provisioning_mode")]
+    pub mode: String,
+
+    /// Root directory for agent instances. Default: ~/.zeroclaw/agents
+    #[serde(default = "default_agents_root")]
+    pub agents_root: String,
+
+    /// Allow Phase 3.6 fleet blueprints (multi-agent creation).
+    #[serde(default)]
+    pub allow_blueprints: bool,
+}
+
+fn default_provisioning_mode() -> String {
+    "config_only".into()
+}
+
+fn default_agents_root() -> String {
+    "~/.zeroclaw/agents".into()
+}
+
+impl Default for UiProvisioningConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: default_provisioning_mode(),
+            agents_root: default_agents_root(),
+            allow_blueprints: false,
+        }
+    }
 }
 
 fn default_gateway_port() -> u16 {
@@ -1300,6 +1349,7 @@ impl Default for GatewayConfig {
             idempotency_ttl_secs: default_idempotency_ttl_secs(),
             idempotency_max_keys: default_gateway_idempotency_max_keys(),
             token_metadata: HashMap::new(),
+            ui_provisioning: UiProvisioningConfig::default(),
         }
     }
 }
@@ -7730,6 +7780,7 @@ channel_id = "C123"
             idempotency_ttl_secs: 600,
             idempotency_max_keys: 4096,
             token_metadata: HashMap::new(),
+            ui_provisioning: UiProvisioningConfig::default(),
         };
         let toml_str = toml::to_string(&g).unwrap();
         let parsed: GatewayConfig = toml::from_str(&toml_str).unwrap();
