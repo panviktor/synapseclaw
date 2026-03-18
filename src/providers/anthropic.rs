@@ -241,7 +241,10 @@ impl AnthropicProvider {
         }
     }
 
-    fn convert_tools<'a>(tools: Option<&'a [ToolSpec]>, prompt_caching: bool) -> Option<Vec<NativeToolSpec<'a>>> {
+    fn convert_tools<'a>(
+        tools: Option<&'a [ToolSpec]>,
+        prompt_caching: bool,
+    ) -> Option<Vec<NativeToolSpec<'a>>> {
         let items = tools?;
         if items.is_empty() {
             return None;
@@ -318,7 +321,10 @@ impl AnthropicProvider {
         })
     }
 
-    fn convert_messages(messages: &[ChatMessage], prompt_caching: bool) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
+    fn convert_messages(
+        messages: &[ChatMessage],
+        prompt_caching: bool,
+    ) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
         let mut system_text = None;
         let mut native_messages = Vec::new();
 
@@ -599,7 +605,8 @@ impl Provider for AnthropicProvider {
         // prompt caching — disable cache_control when using OAuth tokens.
         let effective_caching = self.prompt_caching && !Self::is_setup_token(credential);
 
-        let (system_prompt, mut messages) = Self::convert_messages(request.messages, effective_caching);
+        let (system_prompt, mut messages) =
+            Self::convert_messages(request.messages, effective_caching);
 
         // Auto-cache last message if conversation is long
         if Self::should_cache_conversation(request.messages, effective_caching) {
@@ -1062,7 +1069,10 @@ mod tests {
     #[test]
     fn should_cache_system_boundary() {
         let boundary_prompt = "a".repeat(3072); // Exactly 3072 bytes
-        assert!(!AnthropicProvider::should_cache_system(&boundary_prompt, true));
+        assert!(!AnthropicProvider::should_cache_system(
+            &boundary_prompt,
+            true
+        ));
 
         let over_boundary = "a".repeat(3073);
         assert!(AnthropicProvider::should_cache_system(&over_boundary, true));
@@ -1085,7 +1095,9 @@ mod tests {
             },
         ];
         // Only 2 non-system messages
-        assert!(!AnthropicProvider::should_cache_conversation(&messages, true));
+        assert!(!AnthropicProvider::should_cache_conversation(
+            &messages, true
+        ));
     }
 
     #[test]
@@ -1101,7 +1113,9 @@ mod tests {
                 content: format!("Message {i}"),
             });
         }
-        assert!(AnthropicProvider::should_cache_conversation(&messages, true));
+        assert!(AnthropicProvider::should_cache_conversation(
+            &messages, true
+        ));
     }
 
     #[test]
@@ -1114,14 +1128,18 @@ mod tests {
                 content: format!("Message {i}"),
             });
         }
-        assert!(!AnthropicProvider::should_cache_conversation(&messages, true));
+        assert!(!AnthropicProvider::should_cache_conversation(
+            &messages, true
+        ));
 
         // Add one more to cross boundary
         messages.push(ChatMessage {
             role: "user".to_string(),
             content: "One more".to_string(),
         });
-        assert!(AnthropicProvider::should_cache_conversation(&messages, true));
+        assert!(AnthropicProvider::should_cache_conversation(
+            &messages, true
+        ));
     }
 
     #[test]

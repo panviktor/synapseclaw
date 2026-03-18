@@ -312,6 +312,8 @@ pub struct ChatSession {
     pub run_id: Option<String>,
     /// Abort signal: send `true` to cancel the active run.
     pub abort_tx: Option<tokio::sync::watch::Sender<bool>>,
+    /// Message count at last summary generation — for robust interval triggering.
+    pub last_summary_count: u32,
 }
 
 /// Shared state for all axum handlers
@@ -1605,6 +1607,12 @@ async fn handle_whatsapp_message(
                 {
                     tracing::error!("Failed to send WhatsApp reply: {e}");
                 }
+                // Fire-and-forget: rolling session summary
+                let st = state.clone();
+                let sk = session_id.clone();
+                tokio::spawn(async move {
+                    ws::summarize_session_if_needed(&st, &sk).await;
+                });
             }
             Err(e) => {
                 tracing::error!("LLM error for WhatsApp message: {e:#}");
@@ -1725,6 +1733,12 @@ async fn handle_linq_webhook(
                 {
                     tracing::error!("Failed to send Linq reply: {e}");
                 }
+                // Fire-and-forget: rolling session summary
+                let st = state.clone();
+                let sk = session_id.clone();
+                tokio::spawn(async move {
+                    ws::summarize_session_if_needed(&st, &sk).await;
+                });
             }
             Err(e) => {
                 tracing::error!("LLM error for Linq message: {e:#}");
@@ -1829,6 +1843,12 @@ async fn handle_wati_webhook(State(state): State<AppState>, body: Bytes) -> impl
                 {
                     tracing::error!("Failed to send WATI reply: {e}");
                 }
+                // Fire-and-forget: rolling session summary
+                let st = state.clone();
+                let sk = session_id.clone();
+                tokio::spawn(async move {
+                    ws::summarize_session_if_needed(&st, &sk).await;
+                });
             }
             Err(e) => {
                 tracing::error!("LLM error for WATI message: {e:#}");
@@ -1944,6 +1964,12 @@ async fn handle_nextcloud_talk_webhook(
                 {
                     tracing::error!("Failed to send Nextcloud Talk reply: {e}");
                 }
+                // Fire-and-forget: rolling session summary
+                let st = state.clone();
+                let sk = session_id.clone();
+                tokio::spawn(async move {
+                    ws::summarize_session_if_needed(&st, &sk).await;
+                });
             }
             Err(e) => {
                 tracing::error!("LLM error for Nextcloud Talk message: {e:#}");

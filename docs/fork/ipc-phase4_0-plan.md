@@ -44,9 +44,11 @@ Phase 4.0 fixes the architectural shape before introducing larger platform chang
 2. Replace transport-name branching with a **channel capability model**.
 3. Define one **canonical inbound envelope** and one **canonical outbound intent**.
 4. Define one **conversation/session store contract** for chat-first workloads.
-5. Make **three-tier memory** explicit and swappable behind ports.
-6. Move approval, scheduling, delivery, and IPC routing semantics into application services.
-7. Keep the migration incremental and upstream-sync-friendly.
+5. Define one **unified run substrate** for chat runs, IPC execution, and future external workers.
+6. Make **three-tier memory** explicit and swappable behind ports.
+7. Move approval, scheduling, delivery, and IPC routing semantics into application services.
+8. Define a clean seam for external coding workers (for example Codex or Claude Code) as bounded leaf executors, not as replacement core runtimes.
+9. Keep the migration incremental and upstream-sync-friendly.
 
 ---
 
@@ -80,6 +82,22 @@ The fork-owned application core owns:
 
 Telegram, Signal, Matrix, Slack, Discord, WhatsApp, web chat, IPC broker, and cron/heartbeat triggers are not business logic owners. They translate between external protocols and the canonical application model.
 
+### External coding workers are leaf executors
+
+External coding systems such as Codex, Claude Code, or future specialized implementation engines belong behind a dedicated core port. They are not providers, not memory owners, and not replacement application cores.
+
+Their role is narrow:
+- receive bounded implementation tasks
+- operate inside a repo/worktree or coding sandbox
+- return structured progress, questions, artifacts, and results
+
+The fork-owned core remains the source of truth for:
+- orchestration
+- trust and approvals
+- IPC policy
+- conversation and memory state
+- routing and escalation
+
 ### Scheduling is not a channel capability
 
 A channel may support `send_text`. That is enough for scheduled notifications. Scheduling itself belongs to application policy and scheduler ports, not to the channel.
@@ -106,6 +124,7 @@ src/
       memory.rs
       approval.rs
       run.rs
+      implementation.rs
     application/
       services/
         delivery_service.rs
@@ -122,6 +141,7 @@ src/
         request_approval.rs
         review_quarantine_item.rs
         spawn_child_agent.rs
+        delegate_implementation_task.rs
     ports/
       channel_registry.rs
       conversation_store.rs
@@ -129,6 +149,7 @@ src/
       approval.rs
       scheduler.rs
       runtime.rs
+      coding_worker.rs
       audit.rs
       identity.rs
       ipc_bus.rs
@@ -141,6 +162,7 @@ src/
     memory/
     approval/
     runtime/
+    coding_workers/
 ```
 
 The exact filenames can vary, but the boundary may not:
@@ -277,6 +299,71 @@ Run {
 }
 ```
 
+### Implementation run
+
+A structured execution record for bounded external coding work:
+
+```text
+ImplementationRun {
+  run_id: String,
+  task_id: String,
+  worker_ref: String,
+  conversation_key: Option<String>,
+  state: queued | dispatching | running | blocked | approval_required | completed | failed | cancelled | interrupted,
+  started_at: Timestamp,
+  finished_at: Option<Timestamp>,
+  input_tokens: Option<u64>,
+  output_tokens: Option<u64>,
+  metadata: Map<String, Json>,
+}
+```
+
+### Implementation task
+
+A bounded task that can be executed by a specialized coding worker:
+
+```text
+ImplementationTask {
+  task_id: String,
+  objective: String,
+  repo_ref: String,
+  worktree_ref: Option<String>,
+  constraints: Vec<String>,
+  allowed_paths: Vec<String>,
+  allowed_tools: Vec<String>,
+  tests_to_run: Vec<String>,
+  timeout_secs: u64,
+  expected_output: patch | branch | report,
+}
+```
+
+Design rule: an implementation task is not a free-form chat prompt. It is a structured execution contract between the orchestration core and a specialized coding worker.
+
+### Implementation run event
+
+External worker progress is not modeled as free-form chat turns or ad hoc IPC kinds:
+
+```text
+ImplementationRunEvent {
+  id: i64,
+  run_id: String,
+  event_type: progress | question | artifact | blocked | approval_required | result | failure,
+  content_json: Json,
+  created_at: Timestamp,
+}
+```
+
+### Implementation artifact
+
+```text
+ImplementationArtifact {
+  run_id: String,
+  artifact_kind: patch | changed_files | test_report | log | bundle,
+  uri: String,
+  metadata: Map<String, Json>,
+}
+```
+
 ---
 
 ## Channel capability model
@@ -393,6 +480,7 @@ Examples:
 7. `ReviewQuarantineItem`
 8. `SpawnChildAgent`
 9. `ResumeConversation`
+10. `DelegateImplementationTask`
 
 These are what adapters call.
 
@@ -406,41 +494,52 @@ These are what adapters call.
 2. `ConversationStorePort`
    - create/list/get/update/delete conversations
    - append/list conversation events
-   - persist runs
    - store summary/current_goal/token counts
 
-3. `MemoryTiersPort`
+3. `RunStorePort`
+   - create/get/update execution runs
+   - append/list run events
+   - persist progress, artifacts, usage, and terminal results
+   - unify chat runs, IPC execution runs, and future external coding worker runs
+
+4. `MemoryTiersPort`
    - get/set session memory
    - write long-term memory
    - retrieve long-term context
 
-4. `ApprovalPort`
+5. `ApprovalPort`
    - create approval request
    - fetch decision
 
-5. `SchedulerPort`
+6. `SchedulerPort`
    - schedule notification
    - delay/retry job
 
-6. `RuntimePort`
+7. `RuntimePort`
    - run agent turn
    - abort run
    - spawn child
 
-7. `IpcBusPort`
+8. `IpcBusPort`
    - send/receive IPC intents
    - map IPC envelopes to/from application messages
 
-8. `IdentityPort`
+9. `IdentityPort`
    - pairing metadata
    - token metadata
    - revoke / downgrade / key registration
 
-9. `AuditPort`
+10. `AuditPort`
    - persist domain/audit events
 
-10. `SummaryPort`
+11. `SummaryPort`
     - generate/update summaries and goals using configured model policy
+
+12. `CodingWorkerPort`
+    - submit a bounded implementation task to an external coding worker
+    - stream or poll progress/questions/artifacts
+    - map worker updates into `RunStorePort`
+    - collect final result, failure, or approval request
 
 ---
 
@@ -510,6 +609,53 @@ It is the durable operational store for chat/session/run state.
 
 ---
 
+## Run substrate
+
+Phase 4.0 introduces a **unified run substrate** alongside the conversation store.
+
+Why this matters:
+
+- the current codebase has several partial run/session systems
+- chat runs, spawn runs, cron execution, and future coding-worker runs should not each invent their own lifecycle table
+- external coding workers need more than `task/result`; they need durable progress, artifacts, and terminal status
+
+### Design rule
+
+Conversation storage and run storage are related but distinct:
+
+- `ConversationStorePort` owns conversations and transcript events
+- `RunStorePort` owns execution lifecycle
+
+This keeps the architecture honest:
+
+- not every run is a chat message
+- not every progress update belongs in the transcript
+- approvals, blocking, artifacts, and execution status need a first-class runtime model
+
+### Initial implementation stance
+
+The first `CodingWorkerPort` implementation should ride on:
+
+- existing IPC task/result routing
+- a new `external_runs` / `external_run_events` store behind `RunStorePort`
+- existing agent registration and trust model
+
+It should **not** ride on:
+
+- `Provider`
+- `DelegateTool`
+- `NodeRegistry` transport
+
+### Why not provider / delegate / nodes
+
+- `Provider` is a model backend contract, not a worker runtime contract
+- `DelegateTool` is an isolated one-shot turn, not a persistent implementation worker
+- `nodes` is useful transport plumbing, but not an execution substrate
+
+The external worker seam therefore attaches closest to IPC plus a unified run store.
+
+---
+
 ## Memory architecture
 
 Phase 4.0 makes memory explicit instead of incidental.
@@ -556,6 +702,63 @@ Properties:
 
 Conversation/session state must not depend on a specific long-term memory engine.
 Long-term memory remains pluggable.
+
+---
+## External coding workers
+
+Phase 4.0 does **not** adopt an external coding system as a new application core. It prepares the correct seam so one can be integrated later without distorting the fork architecture.
+
+### Role in the architecture
+
+External coding workers are **leaf executors** for implementation-heavy tasks:
+
+- patching code
+- editing files
+- running repo-local commands/tests
+- answering codebase-specific implementation questions
+
+Examples may include Codex, Claude Code, or future workers with similar execution-oriented runtimes.
+
+### What they are not
+
+They are not:
+
+- the global conversation/session store
+- the owner of long-term memory
+- the trust or approval policy engine
+- the replacement for IPC or orchestration
+- a generic provider plug-in for ordinary chat traffic
+
+### Required contract
+
+The core should be able to hand off a structured `ImplementationTask` and receive a structured result:
+
+```text
+CodingWorkerResult {
+  task_id: String,
+  state: completed | blocked | failed | approval_required,
+  summary: String,
+  changed_files: Vec<String>,
+  test_results: Vec<String>,
+  questions: Vec<String>,
+  artifacts: Vec<String>,
+}
+```
+
+### Design rule
+
+If the fork later integrates an external coding engine, it must happen through `CodingWorkerPort`. It must not be embedded as a second competing application core or disguised as a thin `Provider` implementation.
+
+### Initial transport stance
+
+The first realistic `CodingWorkerPort` implementation is IPC-backed:
+
+- dispatch task via IPC
+- track lifecycle via `RunStorePort`
+- persist progress/artifacts/result in dedicated run records
+- reuse existing trust, registration, and session correlation from IPC where appropriate
+
+This keeps the seam narrow and avoids inventing a second orchestration substrate.
 
 ---
 
@@ -618,6 +821,21 @@ Target:
 
 Why last:
 - after conversation and use-case boundaries exist, memory integration becomes much cleaner and lower-risk
+
+### Slice 7: External coding worker seam
+
+Why after the core boundaries:
+- before this point the fork still lacks a clean place to attach an external coding engine
+- adding Codex/Claude Code too early would duplicate the agent core instead of extending it
+
+Target:
+- `CodingWorkerPort` and `DelegateImplementationTask` exist as explicit seams
+- `RunStorePort` carries progress/artifacts/result lifecycle
+- one narrow implementation-task protocol is fixed
+- initial transport rides on IPC plus unified run storage
+- no external worker becomes a new provider or a new source of truth for orchestration
+
+---
 
 Target:
 - session summary/current goal become session memory
