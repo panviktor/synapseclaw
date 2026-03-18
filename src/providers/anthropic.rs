@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 pub struct AnthropicProvider {
     credential: Option<String>,
     base_url: String,
+    prompt_caching: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -175,6 +176,14 @@ impl AnthropicProvider {
     }
 
     pub fn with_base_url(credential: Option<&str>, base_url: Option<&str>) -> Self {
+        Self::with_options(credential, base_url, true)
+    }
+
+    pub fn with_options(
+        credential: Option<&str>,
+        base_url: Option<&str>,
+        prompt_caching: bool,
+    ) -> Self {
         let base_url = base_url
             .map(|u| u.trim_end_matches('/'))
             .unwrap_or("https://api.anthropic.com")
@@ -185,6 +194,7 @@ impl AnthropicProvider {
                 .filter(|k| !k.is_empty())
                 .map(ToString::to_string),
             base_url,
+            prompt_caching,
         }
     }
 
@@ -207,13 +217,13 @@ impl AnthropicProvider {
     }
 
     /// Cache system prompts larger than ~1024 tokens (3KB of text)
-    fn should_cache_system(text: &str) -> bool {
-        text.len() > 3072
+    fn should_cache_system(text: &str, enabled: bool) -> bool {
+        enabled && text.len() > 3072
     }
 
     /// Cache conversations with more than 4 messages (excluding system)
-    fn should_cache_conversation(messages: &[ChatMessage]) -> bool {
-        messages.iter().filter(|m| m.role != "system").count() > 4
+    fn should_cache_conversation(messages: &[ChatMessage], enabled: bool) -> bool {
+        enabled && messages.iter().filter(|m| m.role != "system").count() > 4
     }
 
     /// Apply cache control to the last message content block
@@ -231,7 +241,7 @@ impl AnthropicProvider {
         }
     }
 
-    fn convert_tools<'a>(tools: Option<&'a [ToolSpec]>) -> Option<Vec<NativeToolSpec<'a>>> {
+    fn convert_tools<'a>(tools: Option<&'a [ToolSpec]>, prompt_caching: bool) -> Option<Vec<NativeToolSpec<'a>>> {
         let items = tools?;
         if items.is_empty() {
             return None;
@@ -247,8 +257,10 @@ impl AnthropicProvider {
             .collect();
 
         // Cache the last tool definition (caches all tools)
-        if let Some(last_tool) = native_tools.last_mut() {
-            last_tool.cache_control = Some(CacheControl::ephemeral());
+        if prompt_caching {
+            if let Some(last_tool) = native_tools.last_mut() {
+                last_tool.cache_control = Some(CacheControl::ephemeral());
+            }
         }
 
         Some(native_tools)
@@ -306,7 +318,7 @@ impl AnthropicProvider {
         })
     }
 
-    fn convert_messages(messages: &[ChatMessage]) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
+    fn convert_messages(messages: &[ChatMessage], prompt_caching: bool) -> (Option<SystemPrompt>, Vec<NativeMessage>) {
         let mut system_text = None;
         let mut native_messages = Vec::new();
 
@@ -449,7 +461,7 @@ impl AnthropicProvider {
 
         // Convert system text to SystemPrompt with cache control if large
         let system_prompt = system_text.map(|text| {
-            if Self::should_cache_system(&text) {
+            if Self::should_cache_system(&text, prompt_caching) {
                 SystemPrompt::Blocks(vec![SystemBlock {
                     block_type: "text".to_string(),
                     text,
@@ -583,10 +595,14 @@ impl Provider for AnthropicProvider {
             )
         })?;
 
-        let (system_prompt, mut messages) = Self::convert_messages(request.messages);
+        // Anthropic subscription auth (OAuth / setup-token) does not support
+        // prompt caching — disable cache_control when using OAuth tokens.
+        let effective_caching = self.prompt_caching && !Self::is_setup_token(credential);
+
+        let (system_prompt, mut messages) = Self::convert_messages(request.messages, effective_caching);
 
         // Auto-cache last message if conversation is long
-        if Self::should_cache_conversation(request.messages) {
+        if Self::should_cache_conversation(request.messages, effective_caching) {
             Self::apply_cache_to_last_message(&mut messages);
         }
 
@@ -596,7 +612,7 @@ impl Provider for AnthropicProvider {
             system: system_prompt,
             messages,
             temperature,
-            tools: Self::convert_tools(request.tools),
+            tools: Self::convert_tools(request.tools, effective_caching),
         };
 
         let req = self
@@ -619,7 +635,7 @@ impl Provider for AnthropicProvider {
         ProviderCapabilities {
             native_tool_calling: true,
             vision: true,
-            prompt_caching: true,
+            prompt_caching: self.prompt_caching,
         }
     }
 
@@ -1034,22 +1050,22 @@ mod tests {
     #[test]
     fn should_cache_system_small_prompt() {
         let small_prompt = "You are a helpful assistant.";
-        assert!(!AnthropicProvider::should_cache_system(small_prompt));
+        assert!(!AnthropicProvider::should_cache_system(small_prompt, true));
     }
 
     #[test]
     fn should_cache_system_large_prompt() {
         let large_prompt = "a".repeat(3073); // Just over 3072 bytes
-        assert!(AnthropicProvider::should_cache_system(&large_prompt));
+        assert!(AnthropicProvider::should_cache_system(&large_prompt, true));
     }
 
     #[test]
     fn should_cache_system_boundary() {
         let boundary_prompt = "a".repeat(3072); // Exactly 3072 bytes
-        assert!(!AnthropicProvider::should_cache_system(&boundary_prompt));
+        assert!(!AnthropicProvider::should_cache_system(&boundary_prompt, true));
 
         let over_boundary = "a".repeat(3073);
-        assert!(AnthropicProvider::should_cache_system(&over_boundary));
+        assert!(AnthropicProvider::should_cache_system(&over_boundary, true));
     }
 
     #[test]
@@ -1069,7 +1085,7 @@ mod tests {
             },
         ];
         // Only 2 non-system messages
-        assert!(!AnthropicProvider::should_cache_conversation(&messages));
+        assert!(!AnthropicProvider::should_cache_conversation(&messages, true));
     }
 
     #[test]
@@ -1085,7 +1101,7 @@ mod tests {
                 content: format!("Message {i}"),
             });
         }
-        assert!(AnthropicProvider::should_cache_conversation(&messages));
+        assert!(AnthropicProvider::should_cache_conversation(&messages, true));
     }
 
     #[test]
@@ -1098,14 +1114,14 @@ mod tests {
                 content: format!("Message {i}"),
             });
         }
-        assert!(!AnthropicProvider::should_cache_conversation(&messages));
+        assert!(!AnthropicProvider::should_cache_conversation(&messages, true));
 
         // Add one more to cross boundary
         messages.push(ChatMessage {
             role: "user".to_string(),
             content: "One more".to_string(),
         });
-        assert!(AnthropicProvider::should_cache_conversation(&messages));
+        assert!(AnthropicProvider::should_cache_conversation(&messages, true));
     }
 
     #[test]
@@ -1195,7 +1211,7 @@ mod tests {
             },
         ];
 
-        let native_tools = AnthropicProvider::convert_tools(Some(&tools)).unwrap();
+        let native_tools = AnthropicProvider::convert_tools(Some(&tools), true).unwrap();
 
         assert_eq!(native_tools.len(), 2);
         assert!(native_tools[0].cache_control.is_none());
@@ -1210,7 +1226,7 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
         }];
 
-        let native_tools = AnthropicProvider::convert_tools(Some(&tools)).unwrap();
+        let native_tools = AnthropicProvider::convert_tools(Some(&tools), true).unwrap();
 
         assert_eq!(native_tools.len(), 1);
         assert!(native_tools[0].cache_control.is_some());
@@ -1223,7 +1239,7 @@ mod tests {
             content: "Short system prompt".to_string(),
         }];
 
-        let (system_prompt, _) = AnthropicProvider::convert_messages(&messages);
+        let (system_prompt, _) = AnthropicProvider::convert_messages(&messages, true);
 
         match system_prompt.unwrap() {
             SystemPrompt::String(s) => {
@@ -1241,7 +1257,7 @@ mod tests {
             content: large_content.clone(),
         }];
 
-        let (system_prompt, _) = AnthropicProvider::convert_messages(&messages);
+        let (system_prompt, _) = AnthropicProvider::convert_messages(&messages, true);
 
         match system_prompt.unwrap() {
             SystemPrompt::Blocks(blocks) => {
@@ -1304,7 +1320,7 @@ mod tests {
             },
         ];
 
-        let (system, native_msgs) = AnthropicProvider::convert_messages(&messages);
+        let (system, native_msgs) = AnthropicProvider::convert_messages(&messages, false);
 
         // System prompt extracted
         assert!(system.is_some());
@@ -1358,6 +1374,7 @@ mod tests {
         let provider = AnthropicProvider {
             credential: Some("test-key".to_string()),
             base_url: format!("http://{addr}"),
+            prompt_caching: false,
         };
 
         // Multi-turn conversation: system → user (Go code) → assistant (code response) → user (follow-up)
@@ -1486,7 +1503,7 @@ mod tests {
                 .to_string(),
         }];
 
-        let (_, native_msgs) = AnthropicProvider::convert_messages(&messages);
+        let (_, native_msgs) = AnthropicProvider::convert_messages(&messages, false);
 
         assert_eq!(native_msgs.len(), 1);
         assert_eq!(native_msgs[0].role, "user");
@@ -1524,7 +1541,7 @@ mod tests {
             content: "[IMAGE:data:image/png;base64,iVBORw0KGgo]".to_string(),
         }];
 
-        let (_, native_msgs) = AnthropicProvider::convert_messages(&messages);
+        let (_, native_msgs) = AnthropicProvider::convert_messages(&messages, false);
 
         assert_eq!(native_msgs.len(), 1);
         assert_eq!(native_msgs[0].content.len(), 2);
@@ -1553,7 +1570,7 @@ mod tests {
             content: "Hello, how are you?".to_string(),
         }];
 
-        let (_, native_msgs) = AnthropicProvider::convert_messages(&messages);
+        let (_, native_msgs) = AnthropicProvider::convert_messages(&messages, false);
 
         assert_eq!(native_msgs.len(), 1);
         assert_eq!(native_msgs[0].content.len(), 1);
@@ -1629,7 +1646,7 @@ mod tests {
             },
         ];
 
-        let (system, native_msgs) = AnthropicProvider::convert_messages(&messages);
+        let (system, native_msgs) = AnthropicProvider::convert_messages(&messages, false);
 
         assert!(system.is_some());
         // Should be: user, assistant, user (merged tool results)
@@ -1685,7 +1702,7 @@ mod tests {
             },
         ];
 
-        let (_system, native_msgs) = AnthropicProvider::convert_messages(&messages);
+        let (_system, native_msgs) = AnthropicProvider::convert_messages(&messages, false);
 
         for window in native_msgs.windows(2) {
             assert_ne!(

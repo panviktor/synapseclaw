@@ -690,6 +690,8 @@ pub struct ProviderRuntimeOptions {
     /// Custom API path suffix for OpenAI-compatible providers
     /// (e.g. "/v2/generate" instead of the default "/chat/completions").
     pub api_path: Option<String>,
+    /// Enable prompt caching (cache_control breakpoints) for Anthropic provider.
+    pub prompt_caching: bool,
 }
 
 impl Default for ProviderRuntimeOptions {
@@ -704,6 +706,7 @@ impl Default for ProviderRuntimeOptions {
             provider_timeout_secs: None,
             extra_headers: std::collections::HashMap::new(),
             api_path: None,
+            prompt_caching: false,
         }
     }
 }
@@ -721,6 +724,7 @@ pub fn provider_runtime_options_from_config(
         provider_timeout_secs: Some(config.provider_timeout_secs),
         extra_headers: config.extra_headers.clone(),
         api_path: config.api_path.clone(),
+        prompt_caching: config.agent.prompt_caching,
     }
 }
 
@@ -1120,7 +1124,7 @@ fn create_provider_with_url_and_options(
         }
         // ── Primary providers (custom implementations) ───────
         "openrouter" => Ok(Box::new(openrouter::OpenRouterProvider::new(key))),
-        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::new(key))),
+        "anthropic" => Ok(Box::new(anthropic::AnthropicProvider::with_options(key, None, options.prompt_caching))),
         "openai" => Ok(Box::new(openai::OpenAiProvider::with_base_url(api_url, key))),
         // Ollama uses api_url for custom base URL (e.g. remote Ollama instance)
         "ollama" => {
@@ -1502,9 +1506,10 @@ fn create_provider_with_url_and_options(
                 "Anthropic-custom provider",
                 "anthropic-custom:https://your-api.com",
             )?;
-            Ok(Box::new(anthropic::AnthropicProvider::with_base_url(
+            Ok(Box::new(anthropic::AnthropicProvider::with_options(
                 key,
                 Some(&base_url),
+                options.prompt_caching,
             )))
         }
 

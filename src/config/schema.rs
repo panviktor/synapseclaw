@@ -85,8 +85,21 @@ pub struct Config {
     #[serde(alias = "model")]
     pub default_model: Option<String>,
     /// Model used for session summarization (cheaper than primary). Falls back to `default_model`.
+    /// Can be a plain model name (uses default provider) or configured via `[summary]` section.
     #[serde(default)]
     pub summary_model: Option<String>,
+    /// Explicit summary model configuration with its own provider.
+    /// When set, overrides `summary_model` string. Allows using a different provider
+    /// (e.g. Anthropic Haiku) for summaries while keeping a different default provider.
+    ///
+    /// ```toml
+    /// [summary]
+    /// provider = "anthropic"
+    /// model = "claude-haiku-4-5-20251001"
+    /// temperature = 0.3
+    /// ```
+    #[serde(default)]
+    pub summary: SummaryConfig,
     /// Optional named provider profiles keyed by id (Codex app-server compatible layout).
     #[serde(default)]
     pub model_providers: HashMap<String, ModelProviderConfig>,
@@ -1098,6 +1111,11 @@ pub struct AgentConfig {
     /// Default: `[]` (no filtering — all tools included).
     #[serde(default)]
     pub tool_filter_groups: Vec<ToolFilterGroup>,
+    /// Enable prompt caching for providers that support it (Anthropic). Default: `false`.
+    /// When true, adds cache_control breakpoints to system prompt, tools, and long conversations.
+    /// Requires a plan that supports prompt caching; disable for OAuth/free-tier tokens.
+    #[serde(default)]
+    pub prompt_caching: bool,
 }
 
 fn default_agent_max_tool_iterations() -> usize {
@@ -1127,6 +1145,7 @@ impl Default for AgentConfig {
             tool_dispatcher: default_agent_tool_dispatcher(),
             tool_call_dedup_exempt: Vec::new(),
             tool_filter_groups: Vec::new(),
+            prompt_caching: false,
         }
     }
 }
@@ -4084,6 +4103,51 @@ impl Default for SchedulerConfig {
 
 // ── Model routing ────────────────────────────────────────────────
 
+/// Explicit summary model configuration (`[summary]` section).
+///
+/// When `provider` is set, the summary path creates its own provider instance
+/// instead of reusing the default. This allows e.g. Anthropic Haiku for summaries
+/// while the default provider is DashScope.
+///
+/// ```toml
+/// [summary]
+/// provider = "anthropic"
+/// model = "claude-haiku-4-5-20251001"
+/// temperature = 0.3
+/// api_key_env = "ANTHROPIC_API_KEY"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SummaryConfig {
+    /// Provider name for summaries. When empty, uses default provider.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Model name for summaries. When empty, falls back to `summary_model` or `default_model`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Temperature for summary generation. Default: 0.3.
+    #[serde(default = "default_summary_temperature")]
+    pub temperature: f64,
+    /// Environment variable name to read API key from (e.g. "ANTHROPIC_API_KEY").
+    /// When set, reads the key from this env var instead of config.api_key.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+}
+
+fn default_summary_temperature() -> f64 {
+    0.3
+}
+
+impl Default for SummaryConfig {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            model: None,
+            temperature: default_summary_temperature(),
+            api_key_env: None,
+        }
+    }
+}
+
 /// Route a task hint to a specific provider + model.
 ///
 /// ```toml
@@ -6191,6 +6255,7 @@ impl Default for Config {
             node_transport: NodeTransportConfig::default(),
             knowledge: KnowledgeConfig::default(),
             linkedin: LinkedInConfig::default(),
+            summary: SummaryConfig::default(),
         }
     }
 }
@@ -8725,6 +8790,7 @@ default_temperature = 0.7
             node_transport: NodeTransportConfig::default(),
             knowledge: KnowledgeConfig::default(),
             linkedin: LinkedInConfig::default(),
+            summary: SummaryConfig::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).unwrap();
@@ -9059,6 +9125,7 @@ tool_dispatcher = "xml"
             node_transport: NodeTransportConfig::default(),
             knowledge: KnowledgeConfig::default(),
             linkedin: LinkedInConfig::default(),
+            summary: SummaryConfig::default(),
         };
 
         config.save().await.unwrap();
