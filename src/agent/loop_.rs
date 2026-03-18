@@ -296,6 +296,19 @@ fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
     let start = if has_system { 1 } else { 0 };
     let to_remove = non_system_count - max_history;
     history.drain(start..start + to_remove);
+
+    // Safety: remove orphan tool_result messages left after trim.
+    // OpenAI-compatible APIs reject tool_result without preceding tool_call.
+    while history.len() > start {
+        let is_orphan_tool = history[start].role == "tool"
+            || (history[start].role == "assistant"
+                && history[start].content.contains("<tool_result>"));
+        if is_orphan_tool {
+            history.remove(start);
+        } else {
+            break;
+        }
+    }
 }
 
 fn build_compaction_transcript(messages: &[ChatMessage]) -> String {

@@ -503,6 +503,7 @@ fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<()> {
         output_tokens: output_tok,
         run_id: None,
         abort_tx: None,
+        last_summary_count: 0,
     };
 
     let mut sessions = state
@@ -1295,22 +1296,44 @@ fn push_tool_events(
 }
 
 /// Generate a rolling session summary every N messages (fire-and-forget).
-async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
+///
+/// Uses `last_summary_count` instead of modulo to avoid skipping summaries
+/// when message count jumps over a multiple (e.g. error drops a message).
+pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
     const SUMMARY_INTERVAL: u32 = 10;
 
-    let (msg_count, prev_summary) = {
-        let sessions = match state.chat_sessions.lock() {
-            Ok(s) => s,
-            Err(_) => return,
-        };
-        match sessions.get(session_key) {
-            Some(s) => (s.message_count, s.session_summary.clone()),
-            None => return,
+    // Try in-memory session first, fall back to chat_db (for channel sessions).
+    let (msg_count, last_summary, prev_summary) = {
+        let from_memory = state.chat_sessions.lock().ok().and_then(|sessions| {
+            sessions.get(session_key).map(|s| {
+                (
+                    s.message_count,
+                    s.last_summary_count,
+                    s.session_summary.clone(),
+                )
+            })
+        });
+        match from_memory {
+            Some(v) => v,
+            None => {
+                // Fall back to chat_db for channel sessions
+                match state
+                    .chat_db
+                    .as_ref()
+                    .and_then(|db| db.get_session(session_key).ok().flatten())
+                {
+                    Some(row) => (
+                        row.message_count.try_into().unwrap_or(0),
+                        0,
+                        row.session_summary,
+                    ),
+                    None => return,
+                }
+            }
         }
     };
 
-    // Only summarize every N messages (counting both user + assistant)
-    if msg_count < SUMMARY_INTERVAL || msg_count % SUMMARY_INTERVAL != 0 {
+    if msg_count < SUMMARY_INTERVAL || msg_count - last_summary < SUMMARY_INTERVAL {
         return;
     }
 
@@ -1376,11 +1399,17 @@ async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
             }
             Err(e) => {
                 tracing::warn!("Summary provider '{provider_name}' failed to init: {e}, falling back to default");
-                state.provider.chat_with_system(None, &prompt, &model, temperature).await
+                state
+                    .provider
+                    .chat_with_system(None, &prompt, &model, temperature)
+                    .await
             }
         }
     } else {
-        state.provider.chat_with_system(None, &prompt, &model, temperature).await
+        state
+            .provider
+            .chat_with_system(None, &prompt, &model, temperature)
+            .await
     };
 
     match summary_result {
@@ -1390,6 +1419,7 @@ async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
             if let Ok(mut sessions) = state.chat_sessions.lock() {
                 if let Some(s) = sessions.get_mut(session_key) {
                     s.session_summary = Some(summary.clone());
+                    s.last_summary_count = s.message_count;
                 }
             }
             // Update DB
