@@ -1343,17 +1343,47 @@ async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
         messages_text,
     );
 
-    // Read summary_model from live config (supports runtime switching)
-    let config_summary_model = state.config.lock().summary_model.clone();
-    let model = config_summary_model
+    // Read summary config from live config (supports runtime switching)
+    let (summary_cfg, config_summary_model, options) = {
+        let config_guard = state.config.lock();
+        let sc = config_guard.summary.clone();
+        let sm = config_guard.summary_model.clone();
+        let opts = crate::providers::provider_runtime_options_from_config(&config_guard);
+        (sc, sm, opts)
+    };
+
+    let model = summary_cfg
+        .model
         .as_deref()
+        .or(config_summary_model.as_deref())
         .unwrap_or(&state.model)
         .to_string();
-    match state
-        .provider
-        .chat_with_system(None, &prompt, &model, 0.3)
-        .await
-    {
+    let temperature = summary_cfg.temperature;
+    let summary_result = if let Some(ref provider_name) = summary_cfg.provider {
+        let api_key = summary_cfg
+            .api_key_env
+            .as_deref()
+            .and_then(|env| std::env::var(env).ok());
+        match crate::providers::create_provider_with_options(
+            provider_name,
+            api_key.as_deref(),
+            &options,
+        ) {
+            Ok(provider) => {
+                provider
+                    .chat_with_system(None, &prompt, &model, temperature)
+                    .await
+            }
+            Err(e) => {
+                tracing::warn!("Summary provider '{provider_name}' failed to init: {e}, falling back to default");
+                state.provider.chat_with_system(None, &prompt, &model, temperature).await
+            }
+        }
+    } else {
+        state.provider.chat_with_system(None, &prompt, &model, temperature).await
+    };
+
+    match summary_result {
         Ok(summary) => {
             let summary = truncate_str(&summary, 300);
             // Update in-memory

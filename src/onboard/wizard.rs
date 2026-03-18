@@ -194,6 +194,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         linkedin: crate::config::LinkedInConfig::default(),
         agents_ipc: crate::config::AgentsIpcConfig::default(),
         summary_model: None,
+        summary: crate::config::schema::SummaryConfig::default(),
     };
 
     println!(
@@ -569,6 +570,7 @@ async fn run_quick_setup_with_home(
         linkedin: crate::config::LinkedInConfig::default(),
         agents_ipc: crate::config::AgentsIpcConfig::default(),
         summary_model: None,
+        summary: crate::config::schema::SummaryConfig::default(),
     };
 
     config.save().await?;
