@@ -6338,6 +6338,20 @@ async fn load_persisted_workspace_dirs(
     } else {
         default_config_dir.join(parsed_dir)
     };
+
+    // Safety: reject stale markers pointing at temp directories when the default
+    // config dir is NOT itself under temp (i.e. real daemon, not a test with temp HOME).
+    // Tests and transient runs can leave behind markers that hijack the daemon's config.
+    if is_temp_directory(&config_dir) && !is_temp_directory(default_config_dir) {
+        tracing::warn!(
+            "Ignoring active workspace marker {} — points at temp directory {}; removing stale marker",
+            state_path.display(),
+            config_dir.display(),
+        );
+        let _ = fs::remove_file(&state_path).await;
+        return Ok(None);
+    }
+
     Ok(Some((config_dir.clone(), config_dir.join("workspace"))))
 }
 
