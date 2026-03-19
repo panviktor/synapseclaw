@@ -24,6 +24,15 @@ Phase 3.5–3.6 gave us fleet visibility and provisioning on the broker. Phase 3
 
 Broker becomes the single operator entrypoint. Browser connects only to broker's gateway. Broker proxies chat/session operations to the selected agent. One SSH tunnel is enough.
 
+### UI model: one frontend, two modes
+
+Phase 3.8 keeps **one web application** and gives it two scopes:
+
+1. **Local agent mode** — browser is connected directly to one agent daemon
+2. **Broker mode** — browser is connected to the broker and can switch between agents
+
+This is intentional. The fork should not grow a separate "broker UI" and "agent UI" codebase. The same shell must support both focused single-agent tuning and fleet-wide control-plane operations.
+
 ### In scope
 
 1. Broker dashboard with agent selector dropdown
@@ -33,6 +42,7 @@ Broker becomes the single operator entrypoint. Browser connects only to broker's
 5. Multi-instance service model (templated systemd/launchd units)
 6. Graceful handling of offline agents
 7. Agent auto-registration with periodic re-registration
+8. One frontend shell with explicit fleet-vs-agent scope
 
 ### Non-goals
 
@@ -43,6 +53,7 @@ Broker becomes the single operator entrypoint. Browser connects only to broker's
 - Giant single process for the whole family
 - Federated execution (that's Phase 4+)
 - Runtime architecture rewrite (that's Phase 4.0)
+- Two separate web applications for broker and agent modes
 
 ---
 
@@ -85,6 +96,89 @@ Broker becomes the single operator entrypoint. Browser connects only to broker's
 - **N agent daemons** — each runs gateway + channels + agent loop
 - Total: N+1 OS processes
 - Operator connects to broker only (1 tunnel, 1 tab)
+
+---
+
+## Frontend Information Architecture
+
+### Design rule
+
+The product has **one frontend shell** with two layers of navigation:
+
+- **global fleet pages** — broker-only control-plane views
+- **agent workbench pages** — pages scoped to one selected agent
+
+This avoids the current failure mode where every new feature risks creating a duplicate dashboard. The rule applies to the **entire agent workbench**, not just chat or cron: broker mode adds a fleet layer on top of the same agent-scoped UI surface.
+
+### Local agent mode
+
+When the browser talks directly to a single agent daemon, the shell exposes a focused workbench for that agent only.
+
+Current local workbench examples in the existing UI are:
+
+- `/` — Dashboard
+- `/agents` — Chat
+- `/tools`
+- `/cron`
+- `/integrations`
+- `/memory`
+- `/config`
+- `/cost`
+- `/logs`
+- `/doctor`
+
+Future chat/session internals may still add subviews such as session lists or status panels, but the important architectural point is broader: **all agent-scoped pages remain part of one reusable workbench**.
+
+### Broker mode
+
+When the browser talks to the broker, the shell exposes:
+
+**Global / fleet pages**
+- `/fleet`
+- `/ipc/activity`
+- `/ipc/approvals`
+- `/ipc/quarantine`
+- `/ipc/cron`
+
+**Selected-agent workbench pages**
+- `/agents/:agent_id/dashboard`
+- `/agents/:agent_id/chat`
+- `/agents/:agent_id/tools`
+- `/agents/:agent_id/cron`
+- `/agents/:agent_id/integrations`
+- `/agents/:agent_id/memory`
+- `/agents/:agent_id/config`
+- `/agents/:agent_id/cost`
+- `/agents/:agent_id/logs`
+- `/agents/:agent_id/doctor`
+
+Broker mode must allow the operator to open these selected-agent workbench pages through the broker for any registered agent. In other words: `Logs`, `Memory`, `Dashboard`, and the other workbench surfaces remain agent-scoped, but they are still accessible from the broker UI via proxy in the context of the selected agent.
+
+### Scope indicator
+
+The shell must always show the current context:
+
+- `Local Agent: opus`
+- `Broker / Fleet`
+- `Broker / Agent: research`
+
+Mutating actions must always display their target agent explicitly.
+
+### Reuse rule
+
+`Dashboard`, `Chat`, `Tools`, `Cron`, `Integrations`, `Memory`, `Config`, `Cost`, `Logs`, and `Doctor` are **agent workbench pages**. They should be reused in both modes with different data sources:
+
+- local mode → direct agent endpoints and direct `/ws/chat`
+- broker mode → broker proxy endpoints and `/ws/chat/proxy?agent=...`
+
+Global fleet pages remain broker-only. The broker should add fleet-wide visibility and orchestration, not fork the single-agent workbench into a second parallel UI.
+
+Important distinction:
+
+- **broker-global pages** answer fleet questions such as "what is happening across the family?"
+- **selected-agent workbench pages** answer agent questions such as "show me this agent's logs / memory / dashboard / config"
+
+So an operator on the broker can and should inspect a specific agent's logs from the broker UI. The design rule is only that those logs stay **agent-scoped**, not that they become local-only.
 
 ---
 
@@ -291,6 +385,8 @@ Browser dashboard sidebar (above session list) gets a dropdown:
 - Shows: agent_id, role, model, status (green/red dot)
 - Default: last selected agent (localStorage)
 - Switching agent: disconnects proxy WS, connects new one, loads that agent's sessions
+
+The selector exists only in **broker mode**. In local agent mode the same workbench pages render without an agent selector.
 
 ### Chat proxy flow
 
@@ -613,5 +709,5 @@ UI provisioning is **Step 11** (optional, after core 3.8 proxy works). It bridge
 6. **DB-persisted registry + periodic re-registration** — covers broker restart without manual repair.
 7. **Templated multi-instance service units** — `zeroclaw@.service` on systemd, per-instance plists on launchd.
 8. **WS proxy, not HTTP long-poll** — preserves streaming, tool events, lifecycle events.
-9. **Agent selector in sidebar** — not a separate page, integrated into chat flow.
+9. **Agent selector in sidebar** — not a separate page, integrated into the shared agent workbench flow.
 10. **UI provisioning is broker-only, mode-gated, arm-required** — disabled by default, three escalation modes, localhost+bearer dual auth, fixed write paths, audit trail, TTL auto-disarm.

@@ -44,6 +44,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tower_http::compression::CompressionLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
@@ -971,6 +972,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             "/admin/ipc/dismiss-message",
             post(ipc::handle_admin_ipc_dismiss_message),
         )
+        .route("/admin/activity", get(ipc::handle_admin_activity))
         // ── Provisioning admin routes (localhost + admin auth) ──
         .route(
             "/admin/provisioning/arm",
@@ -1022,10 +1024,27 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             "/api/agents/{agent_id}/summary-model",
             put(api::handle_api_agent_summary_model_proxy),
         )
+        .route(
+            "/api/agents/{agent_id}/cron",
+            get(api::handle_api_agent_cron_list_proxy),
+        )
+        .route(
+            "/api/agents/{agent_id}/cron",
+            post(api::handle_api_agent_cron_add_proxy),
+        )
+        .route(
+            "/api/agents/{agent_id}/cron/{job_id}",
+            delete(api::handle_api_agent_cron_delete_proxy),
+        )
+        .route(
+            "/api/agents/{agent_id}/cron/{job_id}/runs",
+            get(api::handle_api_agent_cron_runs_proxy),
+        )
         .route("/api/status", get(api::handle_api_status))
         .route("/api/summary-model", put(api::handle_api_summary_model_put))
         .route("/api/config", get(api::handle_api_config_get))
         .route("/api/tools", get(api::handle_api_tools))
+        .route("/api/activity", get(api::handle_api_activity))
         .route("/api/cron", get(api::handle_api_cron_list))
         .route("/api/cron", post(api::handle_api_cron_add))
         .route("/api/cron/{id}", delete(api::handle_api_cron_delete))
@@ -1057,6 +1076,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         // ── Config PUT with larger body limit ──
         .merge(config_put_router)
         .with_state(state)
+        .layer(CompressionLayer::new())
         .layer(RequestBodyLimitLayer::new(MAX_BODY_SIZE))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

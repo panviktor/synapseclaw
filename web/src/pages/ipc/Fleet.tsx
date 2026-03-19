@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { t } from '@/lib/i18n';
 import { fetchTopology, deleteAgent, revokeAgent, quarantineAgent, disableAgent, downgradeAgent } from '@/lib/ipc-api';
@@ -10,6 +10,7 @@ import TimeAgo from '@/components/ipc/TimeAgo';
 import ConfirmDialog from '@/components/ipc/ConfirmDialog';
 import AddAgentDialog from '@/components/ipc/AddAgentDialog';
 import DeployBlueprintDialog from '@/components/ipc/DeployBlueprintDialog';
+import ForceGraph2D from 'react-force-graph-2d';
 
 type ActionType = 'revoke' | 'quarantine' | 'disable' | 'downgrade' | 'delete';
 
@@ -31,61 +32,49 @@ function trustColor(level: number | null): string {
   return TRUST_COLORS[level ?? 3] ?? '#8892a8';
 }
 
-// ── Trust-level Y bands for hierarchical layout ─────────────
-// L0-L1 (coordinators) at top, L2 middle, L3-L4 at bottom
-function trustBand(level: number | null): number {
-  switch (level ?? 3) {
-    case 0: case 1: return 0;
-    case 2: return 1;
-    default: return 2;
-  }
-}
-
-// ── Hierarchical layout: group by trust level, spread horizontally ──
-function hierarchicalLayout(
-  agents: TopologyAgent[],
-  width: number,
-  height: number,
-): { x: number; y: number }[] {
-  const bandPadding = 50;
-  const usableHeight = height - bandPadding * 2;
-  const bands: number[][] = [[], [], []]; // band 0=top, 1=mid, 2=bottom
-
-  agents.forEach((a, i) => bands[trustBand(a.trust_level)]!.push(i));
-
-  // Count non-empty bands for Y spacing
-  const nonEmpty = bands.filter((b) => b.length > 0);
-  const bandCount = nonEmpty.length;
-
-  const positions: { x: number; y: number }[] = new Array(agents.length);
-  let bandIdx = 0;
-
-  for (const band of bands) {
-    if (band.length === 0) continue;
-    const y = bandCount === 1
-      ? height / 2
-      : bandPadding + (bandIdx / (bandCount - 1)) * usableHeight;
-    const step = width / (band.length + 1);
-    band.forEach((agentIndex, slot) => {
-      positions[agentIndex] = { x: step * (slot + 1), y };
-    });
-    bandIdx++;
-  }
-
-  return positions;
-}
-
-// ── Edge styling by type ────────────────────────────────────
-function edgeStyle(type: string): { color: string; dash?: string; width: number } {
+// ── Edge colors by type ─────────────────────────────────────
+function edgeColor(type: string): string {
   switch (type) {
-    case 'lateral': return { color: '#0080ff80', width: 2 };
-    case 'l4_destination': return { color: '#ff664480', dash: '6 3', width: 2 };
-    case 'message': return { color: '#00ff8860', width: 1.5 };
-    default: return { color: '#55608040', width: 1 };
+    case 'lateral': return 'rgba(0, 128, 255, 0.5)';
+    case 'l4_destination': return 'rgba(255, 102, 68, 0.5)';
+    case 'message': return 'rgba(0, 255, 136, 0.35)';
+    default: return 'rgba(85, 96, 128, 0.3)';
   }
 }
 
-// ── SVG Topology Graph ──────────────────────────────────────
+function particleColor(type: string): string {
+  switch (type) {
+    case 'lateral': return '#0080ff';
+    case 'l4_destination': return '#ff6644';
+    case 'message': return '#00ff88';
+    default: return '#556080';
+  }
+}
+
+// ── Graph node/link types ───────────────────────────────────
+interface GraphNode {
+  id: string;
+  role: string;
+  trust_level: number;
+  status: string;
+  color: string;
+  // Position fields set by force simulation and position preservation
+  x: number;
+  y: number;
+  fx?: number;
+  fy?: number;
+}
+
+interface GraphLink {
+  source: string;
+  target: string;
+  type: string;
+  count?: number;
+  color: string;
+  pColor: string;
+}
+
+// ── Force Graph Topology ────────────────────────────────────
 function TopologyGraph({
   agents,
   edges,
@@ -95,157 +84,197 @@ function TopologyGraph({
   edges: TopologyEdge[];
   onSelect: (agentId: string) => void;
 }) {
-  const width = 700;
-  const height = 420;
-  const nodeRadius = 24;
+  const containerRef = useRef<HTMLDivElement>(null);
+  const fgRef = useRef<{ d3Force: (name: string) => unknown } | null>(null);
+  const positionsRef = useRef<Map<string, { x: number; y: number; fx?: number; fy?: number }>>(new Map());
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [dimensions, setDimensions] = useState({ width: 700, height: 380 });
 
-  const positions = useMemo(
-    () => agents.length === 1
-      ? [{ x: width / 2, y: height / 2 }]
-      : hierarchicalLayout(agents, width, height),
-    [agents, width, height],
-  );
+  // Measure container
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver((entries) => {
+      const { width } = entries[0]!.contentRect;
+      setDimensions({ width, height: Math.min(380, Math.max(280, width * 0.5)) });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
-  const agentIdx = useMemo(() => {
-    const map = new Map<string, number>();
-    agents.forEach((a, i) => map.set(a.agent_id, i));
-    return map;
+  // Tune forces
+  useEffect(() => {
+    const fg = fgRef.current;
+    if (!fg) return;
+    const charge = fg.d3Force('charge') as { strength?: (v: number) => void } | undefined;
+    if (charge?.strength) charge.strength(-300);
+    const link = fg.d3Force('link') as { distance?: (v: number) => void } | undefined;
+    if (link?.distance) link.distance(120);
   }, [agents]);
 
-  const [hovered, setHovered] = useState<string | null>(null);
-
-  // Edges connected to hovered node
-  const hoveredEdges = useMemo(() => {
-    if (!hovered) return new Set<number>();
-    const set = new Set<number>();
-    edges.forEach((e, i) => {
-      if (e.from === hovered || e.to === hovered) set.add(i);
+  const graphData = useMemo(() => {
+    const positions = positionsRef.current;
+    const nodes: GraphNode[] = agents.map((a) => {
+      const saved = positions.get(a.agent_id);
+      return {
+        id: a.agent_id,
+        role: a.role ?? 'agent',
+        trust_level: a.trust_level ?? 3,
+        status: a.status,
+        color: trustColor(a.trust_level),
+        x: saved?.x ?? 0,
+        y: saved?.y ?? 0,
+        fx: saved?.fx,
+        fy: saved?.fy,
+      };
     });
-    return set;
-  }, [hovered, edges]);
+
+    const links: GraphLink[] = edges
+      .filter((e) => {
+        const hasSource = agents.some((a) => a.agent_id === e.from);
+        const hasTarget = agents.some((a) => a.agent_id === e.to);
+        return hasSource && hasTarget;
+      })
+      .map((e) => ({
+        source: e.from,
+        target: e.to,
+        type: e.type,
+        count: e.count,
+        color: edgeColor(e.type),
+        pColor: particleColor(e.type),
+      }));
+
+    return { nodes, links };
+  }, [agents, edges]);
 
   if (agents.length === 0) return null;
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-h-[420px]">
-      <defs>
-        <marker id="arrow-msg" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-          <path d="M0,0 L8,3 L0,6" fill="#00ff8860" />
-        </marker>
-        <marker id="arrow-l4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-          <path d="M0,0 L8,3 L0,6" fill="#ff664480" />
-        </marker>
-        <marker id="arrow-lateral" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-          <path d="M0,0 L8,3 L0,6" fill="#0080ff80" />
-        </marker>
-      </defs>
+    <div ref={containerRef} className="relative">
+      <ForceGraph2D
+        ref={fgRef as never}
+        graphData={graphData}
+        width={dimensions.width}
+        height={dimensions.height}
+        backgroundColor="transparent"
+        // Nodes
+        nodeRelSize={8}
+        nodeCanvasObject={(node: GraphNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
+          const r = 8;
+          const isOnline = node.status === 'online';
+          const isHov = hovered === node.id;
+          const x = (node as unknown as { x: number }).x;
+          const y = (node as unknown as { y: number }).y;
 
-      {/* Edges */}
-      {edges.map((edge, i) => {
-        const fi = agentIdx.get(edge.from);
-        const ti = agentIdx.get(edge.to);
-        if (fi === undefined || ti === undefined) return null;
-        const from = positions[fi]!;
-        const to = positions[ti]!;
-        const style = edgeStyle(edge.type);
-        const highlighted = hoveredEdges.has(i);
-        // Shorten line to stop at node edge
-        const dx = to.x - from.x;
-        const dy = to.y - from.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const offset = nodeRadius + 6;
-        const x1 = from.x + (dx / dist) * offset;
-        const y1 = from.y + (dy / dist) * offset;
-        const x2 = to.x - (dx / dist) * offset;
-        const y2 = to.y - (dy / dist) * offset;
-        // Curved edges: slight arc for better readability
-        const mx = (x1 + x2) / 2 + (y2 - y1) * 0.1;
-        const my = (y1 + y2) / 2 - (x2 - x1) * 0.1;
-        const markerEnd = edge.type === 'lateral' ? 'url(#arrow-lateral)'
-          : edge.type === 'l4_destination' ? 'url(#arrow-l4)' : 'url(#arrow-msg)';
-        return (
-          <path
-            key={`edge-${i}`}
-            d={`M ${x1} ${y1} Q ${mx} ${my} ${x2} ${y2}`}
-            stroke={style.color}
-            strokeWidth={highlighted ? style.width + 1 : style.width}
-            strokeDasharray={style.dash}
-            fill="none"
-            markerEnd={markerEnd}
-            opacity={hovered && !highlighted ? 0.15 : 1}
-          />
-        );
-      })}
+          // Glow ring on hover
+          if (isHov) {
+            ctx.beginPath();
+            ctx.arc(x, y, r + 4, 0, 2 * Math.PI);
+            ctx.strokeStyle = node.color;
+            ctx.lineWidth = 1.5 / globalScale;
+            ctx.globalAlpha = 0.5;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+          }
 
-      {/* Nodes */}
-      {agents.map((agent, i) => {
-        const pos = positions[i]!;
-        const isOnline = agent.status === 'online';
-        const isHovered = hovered === agent.agent_id;
-        const fill = trustColor(agent.trust_level);
-        const dimmed = hovered && !isHovered &&
-          !edges.some((e) => (e.from === hovered && e.to === agent.agent_id) || (e.to === hovered && e.from === agent.agent_id));
-        return (
-          <g
-            key={agent.agent_id}
-            className="cursor-pointer"
-            onClick={() => onSelect(agent.agent_id)}
-            onMouseEnter={() => setHovered(agent.agent_id)}
-            onMouseLeave={() => setHovered(null)}
-            opacity={dimmed ? 0.25 : 1}
-          >
-            {/* Glow on hover */}
-            {isHovered && (
-              <circle cx={pos.x} cy={pos.y} r={nodeRadius + 8} fill="none" stroke={fill} strokeWidth={1.5} opacity={0.5} />
-            )}
-            {/* Main circle */}
-            <circle
-              cx={pos.x} cy={pos.y} r={nodeRadius}
-              fill={`${fill}15`}
-              stroke={fill}
-              strokeWidth={isHovered ? 2.5 : 1.5}
-              opacity={isOnline ? 1 : 0.4}
-            />
-            {/* Status dot */}
-            <circle
-              cx={pos.x + nodeRadius - 4} cy={pos.y - nodeRadius + 4} r={4}
-              fill={isOnline ? '#00ff88' : '#556080'}
-            />
-            {/* Label */}
-            <text
-              x={pos.x} y={pos.y + nodeRadius + 16}
-              textAnchor="middle"
-              fill={isHovered ? '#fff' : '#8892a8'}
-              fontSize={11}
-              fontFamily="monospace"
-            >
-              {agent.agent_id.length > 14 ? agent.agent_id.slice(0, 12) + '..' : agent.agent_id}
-            </text>
-            {/* Role inside node */}
-            <text
-              x={pos.x} y={pos.y + 4}
-              textAnchor="middle"
-              fill={fill}
-              fontSize={9}
-              fontFamily="monospace"
-              opacity={0.8}
-            >
-              {(agent.role ?? 'agent').slice(0, 8)}
-            </text>
-          </g>
-        );
-      })}
+          // Main circle
+          ctx.beginPath();
+          ctx.arc(x, y, r, 0, 2 * Math.PI);
+          ctx.fillStyle = node.color + '20';
+          ctx.fill();
+          ctx.strokeStyle = node.color;
+          ctx.lineWidth = (isHov ? 2.5 : 1.5) / globalScale;
+          ctx.globalAlpha = isOnline ? 1 : 0.35;
+          ctx.stroke();
+          ctx.globalAlpha = 1;
 
+          // Status dot
+          ctx.beginPath();
+          ctx.arc(x + r - 2, y - r + 2, 2.5, 0, 2 * Math.PI);
+          ctx.fillStyle = isOnline ? '#00ff88' : '#556080';
+          ctx.fill();
+
+          // Role label inside
+          ctx.font = `${Math.max(3, 7 / globalScale)}px monospace`;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = node.color;
+          ctx.globalAlpha = 0.9;
+          ctx.fillText(node.role.slice(0, 8), x, y);
+          ctx.globalAlpha = 1;
+
+          // Agent ID below
+          ctx.font = `${Math.max(3, 8 / globalScale)}px monospace`;
+          ctx.fillStyle = isHov ? '#ffffff' : '#8892a8';
+          ctx.fillText(
+            node.id.length > 14 ? node.id.slice(0, 12) + '..' : node.id,
+            x,
+            y + r + 8 / globalScale,
+          );
+        }}
+        nodePointerAreaPaint={(node: GraphNode, color: string, ctx: CanvasRenderingContext2D) => {
+          const x = (node as unknown as { x: number }).x;
+          const y = (node as unknown as { y: number }).y;
+          ctx.beginPath();
+          ctx.arc(x, y, 12, 0, 2 * Math.PI);
+          ctx.fillStyle = color;
+          ctx.fill();
+        }}
+        onNodeClick={(node: GraphNode) => onSelect(node.id)}
+        onNodeHover={(node: GraphNode | null) => setHovered(node?.id ?? null)}
+        onNodeDragEnd={(node: GraphNode & { x: number; y: number }) => {
+          // Pin dragged node and save position
+          (node as unknown as { fx: number }).fx = node.x;
+          (node as unknown as { fy: number }).fy = node.y;
+          positionsRef.current.set(node.id, { x: node.x, y: node.y, fx: node.x, fy: node.y });
+        }}
+        onEngineStop={() => {
+          // Capture settled positions for all nodes
+          const fg = fgRef.current as unknown as { graphData: () => { nodes: Array<GraphNode & { x: number; y: number }> } } | null;
+          if (!fg) return;
+          const data = fg.graphData();
+          if (!data?.nodes) return;
+          for (const node of data.nodes) {
+            if (node.x !== undefined && node.y !== undefined && !positionsRef.current.has(node.id)) {
+              positionsRef.current.set(node.id, { x: node.x, y: node.y });
+            }
+          }
+        }}
+        // Links
+        linkColor={(link: GraphLink) => link.color}
+        linkWidth={(link: GraphLink) => {
+          const src = typeof link.source === 'object' ? (link.source as GraphNode).id : link.source;
+          const tgt = typeof link.target === 'object' ? (link.target as GraphNode).id : link.target;
+          const connected = hovered && (src === hovered || tgt === hovered);
+          return connected ? 2.5 : 1.2;
+        }}
+        linkDirectionalArrowLength={6}
+        linkDirectionalArrowRelPos={0.9}
+        linkDirectionalArrowColor={(link: GraphLink) => link.pColor}
+        linkLineDash={(link: GraphLink) => link.type === 'l4_destination' ? [4, 2] : null}
+        // Particles on message edges
+        linkDirectionalParticles={(link: GraphLink) => link.type === 'message' ? 3 : link.type === 'lateral' ? 1 : 0}
+        linkDirectionalParticleSpeed={0.005}
+        linkDirectionalParticleWidth={2.5}
+        linkDirectionalParticleColor={(link: GraphLink) => link.pColor}
+        // Interaction — use fewer ticks on data refresh when positions are preserved
+        cooldownTicks={positionsRef.current.size > 0 ? 0 : 80}
+        enableZoomInteraction={true}
+        enablePanInteraction={true}
+        enableNodeDrag={true}
+      />
       {/* Legend */}
-      <g transform={`translate(12, ${height - 30})`}>
-        <line x1={0} y1={0} x2={20} y2={0} stroke="#0080ff80" strokeWidth={2} />
-        <text x={24} y={4} fill="#556080" fontSize={9}>lateral</text>
-        <line x1={80} y1={0} x2={100} y2={0} stroke="#ff664480" strokeWidth={2} strokeDasharray="6 3" />
-        <text x={104} y={4} fill="#556080" fontSize={9}>l4 dest</text>
-        <line x1={170} y1={0} x2={190} y2={0} stroke="#00ff8860" strokeWidth={1.5} />
-        <text x={194} y={4} fill="#556080" fontSize={9}>messages</text>
-      </g>
-    </svg>
+      <div className="absolute bottom-2 left-3 flex items-center gap-4 text-[9px] text-[#556080] pointer-events-none">
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-4 h-[2px]" style={{ background: 'rgba(0,128,255,0.5)' }} /> lateral
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-4 h-[2px] border-t-2 border-dashed" style={{ borderColor: 'rgba(255,102,68,0.5)' }} /> l4 dest
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-4 h-[2px]" style={{ background: 'rgba(0,255,136,0.35)' }} /> messages
+        </span>
+      </div>
+    </div>
   );
 }
 
@@ -347,7 +376,7 @@ export default function Fleet() {
 
       {/* Communication Graph */}
       {agents.length > 0 && (
-        <div className="glass-card p-4">
+        <div className="glass-card p-2 overflow-hidden" style={{ minHeight: 300 }}>
           <TopologyGraph
             agents={agents}
             edges={edges}

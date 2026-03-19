@@ -50,6 +50,8 @@ With Phase 3.5:
 
 The gateway already serves a React 19 + Vite + Tailwind SPA via `rust-embed`. 10 pages exist. Phase 3.5 adds a new "IPC" sidebar section with 6 pages. Same design system (glass-card, electric theme), same API patterns (`apiFetch`).
 
+**Frontend continuity rule**: Phase 3.5 extends the existing shell; it does not introduce a second dashboard. Later phases may add local-agent mode and broker mode, but they should still reuse the same frontend shell rather than split into separate web apps. This continuity applies to the broader agent workbench as it grows: `Dashboard`, `Chat`, `Tools`, `Cron`, `Integrations`, `Memory`, `Config`, `Cost`, `Logs`, and `Doctor` should remain one reusable shell with different scopes, not fork into separate local-vs-broker page families.
+
 **Access model**: Phase 3.5 IPC admin pages work **only when the browser connects to localhost** (or via SSH tunnel to localhost). This matches the existing `/admin/ipc/*` security model where every handler calls `require_localhost(&peer)` before processing — there is **no bearer token check** on admin endpoints, only peer address validation.
 
 The frontend uses `apiFetch()` which sends the bearer token, but the backend admin handlers ignore it — they enforce localhost origin only. This is intentional: admin operations (revoke, quarantine, etc.) are too sensitive for bearer-only auth. A leaked gateway token should not grant admin access.
