@@ -4,7 +4,7 @@ import { FLEET_BLUEPRINTS, getPresetById, type FleetBlueprint, type BlueprintAge
 import { PROVIDERS, getProvidersByTier } from '@/lib/ipc-providers';
 import { CHANNELS } from '@/lib/ipc-channels';
 import { generateAgentConfig, generateInstructionsMd, downloadAsFile, type AgentConfigInputs } from '@/lib/ipc-config-gen';
-import { createPaircode, deployAgent } from '@/lib/ipc-api';
+import { createPaircode, pairAgent, deployAgent, patchBrokerConfig, getUsedPorts } from '@/lib/ipc-api';
 import TrustBadge from './TrustBadge';
 
 interface Props {
@@ -29,6 +29,7 @@ interface AgentRow {
   gatewayPort: number;
   // result
   pairingCode: string;
+  brokerToken: string;
 }
 
 export default function DeployBlueprintDialog({ open, onClose, onCreated, brokerUrl }: Props) {
@@ -63,8 +64,14 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
 
   const handleClose = () => { reset(); onClose(); };
 
-  const selectBlueprint = (bp: FleetBlueprint) => {
+  const selectBlueprint = async (bp: FleetBlueprint) => {
     setSelectedBlueprint(bp);
+    // Fetch used ports to avoid conflicts
+    let basePort = 42618;
+    try {
+      const portsInfo = await getUsedPorts();
+      basePort = portsInfo.next_available;
+    } catch { /* fallback to 42618 */ }
     const newRows: AgentRow[] = bp.agents.map((a, i) => {
       const preset = getPresetById(a.preset_id);
       return {
@@ -76,8 +83,9 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
         baseUrl: '',
         channelId: a.suggested_channel ?? 'none',
         channelValues: {},
-        gatewayPort: 42618 + i,
+        gatewayPort: basePort + i,
         pairingCode: '',
+        brokerToken: '',
       };
     });
     setRows(newRows);
@@ -97,8 +105,11 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
       for (let i = 0; i < updated.length; i++) {
         const row = updated[i]!;
         const preset = getPresetById(row.agent.preset_id);
+        // Generate pairing code with IPC metadata
         const result = await createPaircode(row.name, preset?.trust_level ?? 3, preset?.role ?? 'agent');
-        updated[i] = { ...row, pairingCode: result.pairing_code };
+        // Immediately redeem the code to get broker_token (code is one-time, next createPaircode overwrites it)
+        const brokerToken = await pairAgent(result.pairing_code);
+        updated[i] = { ...row, pairingCode: result.pairing_code, brokerToken };
       }
       setRows(updated);
       setStep('result');
@@ -175,6 +186,7 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
       brokerUrl,
       gatewayPort: row.gatewayPort,
       systemPrompt: preset?.system_prompt ?? '',
+      brokerToken: row.brokerToken || undefined,
     };
     return generateAgentConfig(inputs);
   };
@@ -442,12 +454,26 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
             <button
               onClick={async () => {
                 setDeploying(true);
+                setError(null);
                 const status: Record<string, { step: string; ok: boolean; error?: string }[]> = {};
-                for (const row of rows) {
-                  const preset = getPresetById(row.agent.preset_id);
-                  const instrMd = preset?.system_prompt ? generateInstructionsMd(preset.system_prompt) : undefined;
-                  const results = await deployAgent(row.name, buildConfig(row), instrMd);
-                  status[row.name] = results;
+                try {
+                  for (const row of rows) {
+                    const preset = getPresetById(row.agent.preset_id);
+                    const instrMd = preset?.system_prompt ? generateInstructionsMd(preset.system_prompt) : undefined;
+                    const results = await deployAgent(row.name, buildConfig(row), instrMd);
+                    status[row.name] = results;
+                  }
+                  // Apply broker config patch (lateral_text_pairs, l4_destinations)
+                  if (selectedBlueprint?.broker_patch_toml) {
+                    try {
+                      await patchBrokerConfig(selectedBlueprint.broker_patch_toml);
+                      status['_broker'] = [{ step: 'patch-broker', ok: true }];
+                    } catch (e) {
+                      status['_broker'] = [{ step: 'patch-broker', ok: false, error: e instanceof Error ? e.message : 'Failed to patch broker config' }];
+                    }
+                  }
+                } catch (e) {
+                  setError(e instanceof Error ? e.message : 'Deploy failed unexpectedly');
                 }
                 setDeployStatus(status);
                 setDeploying(false);

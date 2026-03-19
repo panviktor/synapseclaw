@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { fetchAgentDetail, revokeAgent, quarantineAgent, disableAgent } from '@/lib/ipc-api';
+import { fetchAgentDetail, fetchTopology, revokeAgent, quarantineAgent, disableAgent } from '@/lib/ipc-api';
+import type { TopologyAgent } from '@/lib/ipc-api';
 import type { IpcAgentDetail } from '@/types/ipc';
 import TrustBadge from '@/components/ipc/TrustBadge';
 import StatusBadge from '@/components/ipc/StatusBadge';
@@ -15,21 +16,31 @@ import { redactPayload } from '@/components/ipc/redact';
 export default function AgentDetail() {
   const { agentId } = useParams<{ agentId: string }>();
   const [detail, setDetail] = useState<IpcAgentDetail | null>(null);
+  const [registryAgent, setRegistryAgent] = useState<TopologyAgent | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!agentId) return;
-    try {
-      const data = await fetchAgentDetail(agentId);
-      setDetail(data);
-      setError(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load agent');
-    } finally {
-      setLoading(false);
+    // Fetch both IPC detail and topology data in parallel
+    const [ipcResult, topoResult] = await Promise.allSettled([
+      fetchAgentDetail(agentId),
+      fetchTopology(),
+    ]);
+    if (ipcResult.status === 'fulfilled') {
+      setDetail(ipcResult.value);
     }
+    if (topoResult.status === 'fulfilled') {
+      const found = topoResult.value.agents.find((a) => a.agent_id === agentId);
+      if (found) setRegistryAgent(found);
+    }
+    if (ipcResult.status === 'rejected' && topoResult.status === 'rejected') {
+      setError('Failed to load agent');
+    } else {
+      setError(null);
+    }
+    setLoading(false);
   }, [agentId]);
 
   useEffect(() => { load(); }, [load]);
@@ -56,7 +67,7 @@ export default function AgentDetail() {
     );
   }
 
-  if (error || !detail) {
+  if (error && !detail && !registryAgent) {
     return (
       <div className="space-y-4 animate-fade-in">
         <Link to="/ipc/fleet" className="text-sm text-[#0080ff] hover:underline">&larr; Back to Fleet</Link>
@@ -65,7 +76,27 @@ export default function AgentDetail() {
     );
   }
 
-  const { agent, recent_messages, active_spawns, quarantine_count } = detail;
+  // Build agent info from IPC detail or registry fallback
+  const agent = detail?.agent ?? (registryAgent ? {
+    agent_id: registryAgent.agent_id,
+    role: registryAgent.role,
+    trust_level: registryAgent.trust_level != null ? Number(registryAgent.trust_level) : null,
+    status: registryAgent.status,
+    last_seen: registryAgent.last_seen,
+    public_key: registryAgent.public_key ?? null,
+  } : null);
+  const recent_messages = detail?.recent_messages ?? [];
+  const active_spawns = detail?.active_spawns ?? [];
+  const quarantine_count = detail?.quarantine_count ?? 0;
+
+  if (!agent) {
+    return (
+      <div className="space-y-4 animate-fade-in">
+        <Link to="/ipc/fleet" className="text-sm text-[#0080ff] hover:underline">&larr; Back to Fleet</Link>
+        <div className="glass-card p-6 text-[#556080]">Agent not found</div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -82,6 +113,18 @@ export default function AgentDetail() {
               <KeyStatusIcon publicKey={agent.public_key} />
               {agent.role && <span className="text-sm text-[#8892a8]">role: {agent.role}</span>}
             </div>
+            {registryAgent?.gateway_url && (
+              <p className="text-xs text-[#556080]">gateway: <span className="font-mono text-[#8892a8]">{registryAgent.gateway_url}</span></p>
+            )}
+            {registryAgent?.model && (
+              <p className="text-xs text-[#556080]">model: <span className="text-[#8892a8]">{registryAgent.model}</span></p>
+            )}
+            {registryAgent?.channels && registryAgent.channels.length > 0 && (
+              <p className="text-xs text-[#556080]">channels: <span className="text-[#8892a8]">{registryAgent.channels.join(', ')}</span></p>
+            )}
+            {registryAgent?.uptime_seconds != null && (
+              <p className="text-xs text-[#556080]">uptime: <span className="text-[#8892a8]">{Math.floor(registryAgent.uptime_seconds / 60)}m</span></p>
+            )}
             {agent.public_key && (
               <p className="text-xs text-[#556080] font-mono">
                 key: {agent.public_key.slice(0, 16)}...

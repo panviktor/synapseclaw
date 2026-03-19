@@ -621,3 +621,282 @@ pub async fn handle_provisioning_uninstall(
         "instance": instance,
     })))
 }
+
+/// POST /admin/provisioning/patch-broker — merge TOML snippet into broker's agents_ipc config.
+///
+/// Accepts `{ "patch_toml": "..." }` — expected to contain `[agents_ipc]` keys like
+/// `lateral_text_pairs` and `[agents_ipc.l4_destinations]`.
+/// Merges into the running config and persists to disk.
+pub async fn handle_provisioning_patch_broker(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_localhost(&peer)?;
+    require_admin_auth(&state, &headers)?;
+    require_provisioning_active(&state)?;
+
+    let patch_toml = body["patch_toml"]
+        .as_str()
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing 'patch_toml'"})),
+            )
+        })?
+        .to_string();
+
+    // Parse the patch as a TOML document (supports [table] headers)
+    let patch_table: toml::map::Map<String, toml::Value> =
+        toml::from_str(&patch_toml).map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("Invalid TOML: {e}")})),
+            )
+        })?;
+
+    // Read current config file, merge the agents_ipc section, write back
+    let config_path = {
+        let config = state.config.lock();
+        config.config_path.clone()
+    };
+
+    let raw = std::fs::read_to_string(&config_path).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to read config: {e}")})),
+        )
+    })?;
+
+    let mut doc: toml::Value = raw.parse().map_err(|e: toml::de::Error| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to parse config: {e}")})),
+        )
+    })?;
+
+    // Merge patch into doc — only agents_ipc keys
+    if let Some(patch_ipc) = patch_table.get("agents_ipc") {
+        let doc_table = doc.as_table_mut().ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": "Config root is not a table"})),
+            )
+        })?;
+
+        let doc_ipc = doc_table
+            .entry("agents_ipc")
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+
+        if let (Some(dst), Some(src)) = (doc_ipc.as_table_mut(), patch_ipc.as_table()) {
+            for (key, value) in src {
+                dst.insert(key.clone(), value.clone());
+            }
+        }
+    }
+
+    // Write back
+    let new_content = toml::to_string_pretty(&doc).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to serialize config: {e}")})),
+        )
+    })?;
+
+    std::fs::write(&config_path, &new_content).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to write config: {e}")})),
+        )
+    })?;
+
+    // Reload agents_ipc section in-memory from the patched TOML
+    {
+        let mut config = state.config.lock();
+        if let Ok(raw) = std::fs::read_to_string(&config_path) {
+            if let Ok(val) = raw.parse::<toml::Value>() {
+                if let Some(ipc_val) = val.get("agents_ipc") {
+                    if let Ok(ipc) = ipc_val.clone().try_into::<crate::config::AgentsIpcConfig>() {
+                        // Preserve runtime fields that aren't in the TOML patch
+                        let old = &config.agents_ipc;
+                        let broker_token = old.broker_token.clone();
+                        let proxy_token = old.proxy_token.clone();
+                        let gateway_url = old.gateway_url.clone();
+                        config.agents_ipc = ipc;
+                        if config.agents_ipc.broker_token.is_none() {
+                            config.agents_ipc.broker_token = broker_token;
+                        }
+                        if config.agents_ipc.proxy_token.is_none() {
+                            config.agents_ipc.proxy_token = proxy_token;
+                        }
+                        if config.agents_ipc.gateway_url.is_none() {
+                            config.agents_ipc.gateway_url = gateway_url;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    log_audit(
+        &state,
+        AuditEventType::ProvisioningArmed, // reuse — no dedicated patch event type
+        "Broker config patched with agents_ipc keys",
+    );
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "message": "Broker config patched and reloaded",
+    })))
+}
+
+/// GET /admin/provisioning/used-ports — scan agent configs and return used gateway ports.
+pub async fn handle_provisioning_used_ports(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_localhost(&peer)?;
+    require_admin_auth(&state, &headers)?;
+
+    let agents_root = {
+        let config = state.config.lock();
+        resolve_agents_root(&config.gateway.ui_provisioning.agents_root)
+    };
+
+    let mut ports: Vec<u16> = Vec::new();
+
+    // Also include the broker's own port
+    {
+        let config = state.config.lock();
+        ports.push(config.gateway.port);
+    }
+
+    // Scan agent dirs for [gateway].port in config.toml
+    if let Ok(entries) = std::fs::read_dir(&agents_root) {
+        for entry in entries.flatten() {
+            let config_path = entry.path().join("config.toml");
+            if config_path.exists() {
+                if let Ok(raw) = std::fs::read_to_string(&config_path) {
+                    if let Ok(val) = raw.parse::<toml::Value>() {
+                        if let Some(port) = val
+                            .get("gateway")
+                            .and_then(|g| g.get("port"))
+                            .and_then(|p| p.as_integer())
+                        {
+                            if let Ok(p) = u16::try_from(port) {
+                                ports.push(p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    ports.sort_unstable();
+    ports.dedup();
+
+    Ok(Json(serde_json::json!({
+        "ports": ports,
+        "next_available": ports.iter().max().map(|p| p + 1).unwrap_or(42618),
+    })))
+}
+
+/// GET /admin/provisioning/topology — merged agent list + communication edges.
+///
+/// Combines gateway registry (Phase 3.8 registered agents) with IPC DB agents,
+/// plus communication topology from config (lateral_text_pairs, l4_destinations).
+pub async fn handle_provisioning_topology(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_localhost(&peer)?;
+    require_admin_auth(&state, &headers)?;
+
+    let mut agents_map: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+
+    // Source 1: gateway registry (agents that registered their gateways)
+    for info in state.agent_registry.list() {
+        agents_map.insert(
+            info.agent_id.clone(),
+            serde_json::json!({
+                "agent_id": info.agent_id,
+                "role": info.role,
+                "trust_level": info.trust_level,
+                "status": format!("{:?}", info.status).to_lowercase(),
+                "gateway_url": info.gateway_url,
+                "model": info.model,
+                "last_seen": info.last_seen,
+                "uptime_seconds": info.uptime_seconds,
+                "channels": info.channels,
+                "source": "registry",
+            }),
+        );
+    }
+
+    // Source 2: IPC DB (agents that have done IPC operations)
+    if let Some(ref ipc_db) = state.ipc_db {
+        let staleness = state.config.lock().agents_ipc.staleness_secs;
+        for agent in ipc_db.list_agents(staleness) {
+            agents_map
+                .entry(agent.agent_id.clone())
+                .and_modify(|existing| {
+                    // Merge IPC DB fields into registry entry
+                    if let Some(obj) = existing.as_object_mut() {
+                        if agent.public_key.is_some() {
+                            obj.insert("public_key".into(), serde_json::json!(agent.public_key));
+                        }
+                        // IPC DB status may be more accurate
+                        obj.insert("ipc_status".into(), serde_json::json!(agent.status));
+                    }
+                })
+                .or_insert_with(|| {
+                    serde_json::json!({
+                        "agent_id": agent.agent_id,
+                        "role": agent.role,
+                        "trust_level": agent.trust_level,
+                        "status": agent.status,
+                        "gateway_url": null,
+                        "model": null,
+                        "last_seen": agent.last_seen,
+                        "public_key": agent.public_key,
+                        "source": "ipc_db",
+                    })
+                });
+        }
+    }
+
+    // Build edges from config topology
+    let config = state.config.lock();
+    let mut edges: Vec<serde_json::Value> = Vec::new();
+
+    // lateral_text_pairs — bidirectional L3 peer communication
+    for pair in &config.agents_ipc.lateral_text_pairs {
+        edges.push(serde_json::json!({
+            "from": pair[0],
+            "to": pair[1],
+            "type": "lateral",
+        }));
+    }
+
+    // l4_destinations — directed: L4 agent → destination (via alias)
+    for (alias, target) in &config.agents_ipc.l4_destinations {
+        edges.push(serde_json::json!({
+            "from": alias,
+            "to": target,
+            "type": "l4_destination",
+            "alias": alias,
+        }));
+    }
+
+    let agents: Vec<serde_json::Value> = agents_map.into_values().collect();
+
+    Ok(Json(serde_json::json!({
+        "agents": agents,
+        "edges": edges,
+    })))
+}
