@@ -31,12 +31,58 @@ function trustColor(level: number | null): string {
   return TRUST_COLORS[level ?? 3] ?? '#8892a8';
 }
 
-// ── Circle layout for N nodes ───────────────────────────────
-function circleLayout(count: number, cx: number, cy: number, r: number) {
-  return Array.from({ length: count }, (_, i) => {
-    const angle = (2 * Math.PI * i) / count - Math.PI / 2;
-    return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
-  });
+// ── Trust-level Y bands for hierarchical layout ─────────────
+// L0-L1 (coordinators) at top, L2 middle, L3-L4 at bottom
+function trustBand(level: number | null): number {
+  switch (level ?? 3) {
+    case 0: case 1: return 0;
+    case 2: return 1;
+    default: return 2;
+  }
+}
+
+// ── Hierarchical layout: group by trust level, spread horizontally ──
+function hierarchicalLayout(
+  agents: TopologyAgent[],
+  width: number,
+  height: number,
+): { x: number; y: number }[] {
+  const bandPadding = 50;
+  const usableHeight = height - bandPadding * 2;
+  const bands: number[][] = [[], [], []]; // band 0=top, 1=mid, 2=bottom
+
+  agents.forEach((a, i) => bands[trustBand(a.trust_level)]!.push(i));
+
+  // Count non-empty bands for Y spacing
+  const nonEmpty = bands.filter((b) => b.length > 0);
+  const bandCount = nonEmpty.length;
+
+  const positions: { x: number; y: number }[] = new Array(agents.length);
+  let bandIdx = 0;
+
+  for (const band of bands) {
+    if (band.length === 0) continue;
+    const y = bandCount === 1
+      ? height / 2
+      : bandPadding + (bandIdx / (bandCount - 1)) * usableHeight;
+    const step = width / (band.length + 1);
+    band.forEach((agentIndex, slot) => {
+      positions[agentIndex] = { x: step * (slot + 1), y };
+    });
+    bandIdx++;
+  }
+
+  return positions;
+}
+
+// ── Edge styling by type ────────────────────────────────────
+function edgeStyle(type: string): { color: string; dash?: string; width: number } {
+  switch (type) {
+    case 'lateral': return { color: '#0080ff80', width: 2 };
+    case 'l4_destination': return { color: '#ff664480', dash: '6 3', width: 2 };
+    case 'message': return { color: '#00ff8860', width: 1.5 };
+    default: return { color: '#55608040', width: 1 };
+  }
 }
 
 // ── SVG Topology Graph ──────────────────────────────────────
@@ -50,15 +96,14 @@ function TopologyGraph({
   onSelect: (agentId: string) => void;
 }) {
   const width = 700;
-  const height = 400;
-  const cx = width / 2;
-  const cy = height / 2;
-  const radius = Math.min(cx, cy) - 60;
+  const height = 420;
   const nodeRadius = 24;
 
   const positions = useMemo(
-    () => circleLayout(agents.length, cx, cy, agents.length === 1 ? 0 : radius),
-    [agents.length, cx, cy, radius],
+    () => agents.length === 1
+      ? [{ x: width / 2, y: height / 2 }]
+      : hierarchicalLayout(agents, width, height),
+    [agents, width, height],
   );
 
   const agentIdx = useMemo(() => {
@@ -69,16 +114,29 @@ function TopologyGraph({
 
   const [hovered, setHovered] = useState<string | null>(null);
 
+  // Edges connected to hovered node
+  const hoveredEdges = useMemo(() => {
+    if (!hovered) return new Set<number>();
+    const set = new Set<number>();
+    edges.forEach((e, i) => {
+      if (e.from === hovered || e.to === hovered) set.add(i);
+    });
+    return set;
+  }, [hovered, edges]);
+
   if (agents.length === 0) return null;
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-h-[400px]">
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full max-h-[420px]">
       <defs>
-        <marker id="arrow-lateral" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-          <path d="M0,0 L8,3 L0,6" fill="#0080ff40" />
+        <marker id="arrow-msg" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6" fill="#00ff8860" />
         </marker>
         <marker id="arrow-l4" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
           <path d="M0,0 L8,3 L0,6" fill="#ff664480" />
+        </marker>
+        <marker id="arrow-lateral" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+          <path d="M0,0 L8,3 L0,6" fill="#0080ff80" />
         </marker>
       </defs>
 
@@ -89,25 +147,32 @@ function TopologyGraph({
         if (fi === undefined || ti === undefined) return null;
         const from = positions[fi]!;
         const to = positions[ti]!;
-        const isLateral = edge.type === 'lateral';
-        const color = isLateral ? '#0080ff40' : '#ff664480';
+        const style = edgeStyle(edge.type);
+        const highlighted = hoveredEdges.has(i);
         // Shorten line to stop at node edge
         const dx = to.x - from.x;
         const dy = to.y - from.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const offset = nodeRadius + 4;
+        const offset = nodeRadius + 6;
         const x1 = from.x + (dx / dist) * offset;
         const y1 = from.y + (dy / dist) * offset;
         const x2 = to.x - (dx / dist) * offset;
         const y2 = to.y - (dy / dist) * offset;
+        // Curved edges: slight arc for better readability
+        const mx = (x1 + x2) / 2 + (y2 - y1) * 0.1;
+        const my = (y1 + y2) / 2 - (x2 - x1) * 0.1;
+        const markerEnd = edge.type === 'lateral' ? 'url(#arrow-lateral)'
+          : edge.type === 'l4_destination' ? 'url(#arrow-l4)' : 'url(#arrow-msg)';
         return (
-          <line
+          <path
             key={`edge-${i}`}
-            x1={x1} y1={y1} x2={x2} y2={y2}
-            stroke={color}
-            strokeWidth={2}
-            strokeDasharray={isLateral ? undefined : '6 3'}
-            markerEnd={isLateral ? undefined : 'url(#arrow-l4)'}
+            d={`M ${x1} ${y1} Q ${mx} ${my} ${x2} ${y2}`}
+            stroke={style.color}
+            strokeWidth={highlighted ? style.width + 1 : style.width}
+            strokeDasharray={style.dash}
+            fill="none"
+            markerEnd={markerEnd}
+            opacity={hovered && !highlighted ? 0.15 : 1}
           />
         );
       })}
@@ -118,6 +183,8 @@ function TopologyGraph({
         const isOnline = agent.status === 'online';
         const isHovered = hovered === agent.agent_id;
         const fill = trustColor(agent.trust_level);
+        const dimmed = hovered && !isHovered &&
+          !edges.some((e) => (e.from === hovered && e.to === agent.agent_id) || (e.to === hovered && e.from === agent.agent_id));
         return (
           <g
             key={agent.agent_id}
@@ -125,10 +192,11 @@ function TopologyGraph({
             onClick={() => onSelect(agent.agent_id)}
             onMouseEnter={() => setHovered(agent.agent_id)}
             onMouseLeave={() => setHovered(null)}
+            opacity={dimmed ? 0.25 : 1}
           >
             {/* Glow on hover */}
             {isHovered && (
-              <circle cx={pos.x} cy={pos.y} r={nodeRadius + 6} fill="none" stroke={fill} strokeWidth={1} opacity={0.4} />
+              <circle cx={pos.x} cy={pos.y} r={nodeRadius + 8} fill="none" stroke={fill} strokeWidth={1.5} opacity={0.5} />
             )}
             {/* Main circle */}
             <circle
@@ -169,11 +237,13 @@ function TopologyGraph({
       })}
 
       {/* Legend */}
-      <g transform={`translate(12, ${height - 40})`}>
-        <line x1={0} y1={0} x2={20} y2={0} stroke="#0080ff40" strokeWidth={2} />
+      <g transform={`translate(12, ${height - 30})`}>
+        <line x1={0} y1={0} x2={20} y2={0} stroke="#0080ff80" strokeWidth={2} />
         <text x={24} y={4} fill="#556080" fontSize={9}>lateral</text>
         <line x1={80} y1={0} x2={100} y2={0} stroke="#ff664480" strokeWidth={2} strokeDasharray="6 3" />
-        <text x={104} y={4} fill="#556080" fontSize={9}>l4 destination</text>
+        <text x={104} y={4} fill="#556080" fontSize={9}>l4 dest</text>
+        <line x1={170} y1={0} x2={190} y2={0} stroke="#00ff8860" strokeWidth={1.5} />
+        <text x={194} y={4} fill="#556080" fontSize={9}>messages</text>
       </g>
     </svg>
   );

@@ -870,17 +870,21 @@ pub async fn handle_provisioning_topology(
         }
     }
 
-    // Build edges from config topology
+    // Build edges from config topology + actual message history
     let config = state.config.lock();
     let mut edges: Vec<serde_json::Value> = Vec::new();
+    let mut seen_pairs: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
 
-    // lateral_text_pairs — bidirectional L3 peer communication
+    // lateral_text_pairs — bidirectional L3 peer communication (config-declared)
     for pair in &config.agents_ipc.lateral_text_pairs {
         edges.push(serde_json::json!({
             "from": pair[0],
             "to": pair[1],
             "type": "lateral",
         }));
+        seen_pairs.insert((pair[0].clone(), pair[1].clone()));
+        seen_pairs.insert((pair[1].clone(), pair[0].clone()));
     }
 
     // l4_destinations — directed: L4 agent → destination (via alias)
@@ -891,6 +895,28 @@ pub async fn handle_provisioning_topology(
             "type": "l4_destination",
             "alias": alias,
         }));
+        seen_pairs.insert((alias.clone(), target.clone()));
+    }
+    drop(config);
+
+    // Message-based edges — actual communication observed in IPC history
+    if let Some(ref ipc_db) = state.ipc_db {
+        for (from, to, count) in ipc_db.communication_pairs() {
+            // Skip if already covered by config-declared edges
+            if seen_pairs.contains(&(from.clone(), to.clone())) {
+                continue;
+            }
+            // Only show edges where both agents are known
+            if agents_map.contains_key(&from) && agents_map.contains_key(&to) {
+                edges.push(serde_json::json!({
+                    "from": from,
+                    "to": to,
+                    "type": "message",
+                    "count": count,
+                }));
+                seen_pairs.insert((from, to));
+            }
+        }
     }
 
     let agents: Vec<serde_json::Value> = agents_map.into_values().collect();

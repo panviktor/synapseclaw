@@ -446,6 +446,32 @@ impl IpcDb {
         Ok(())
     }
 
+    /// Get distinct communication pairs from message history (for topology edges).
+    /// Returns `(from_agent, to_agent, message_count)` ordered by frequency.
+    pub fn communication_pairs(&self) -> Vec<(String, String, i64)> {
+        let conn = self.conn.lock();
+        let mut stmt = match conn.prepare(
+            "SELECT from_agent, to_agent, COUNT(*) as cnt
+             FROM messages
+             WHERE blocked = 0
+             GROUP BY from_agent, to_agent
+             ORDER BY cnt DESC
+             LIMIT 100",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+    }
+
     /// Fetch pending/failed unread messages for an agent (for push re-delivery).
     /// Limited to 256 rows to match the push channel capacity.
     pub fn pending_messages_for(
