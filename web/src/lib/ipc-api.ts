@@ -139,6 +139,141 @@ export function createPaircode(agentId: string, trustLevel: number, role: string
 }
 
 // ---------------------------------------------------------------------------
+// Provisioning (Phase 3.8 Step 11)
+// ---------------------------------------------------------------------------
+
+export interface ProvisioningStatus {
+  enabled: boolean;
+  armed: boolean;
+  remaining_secs: number;
+  mode: string;
+}
+
+export function getProvisioningStatus(): Promise<ProvisioningStatus> {
+  return apiFetch<ProvisioningStatus>('/admin/provisioning/status');
+}
+
+export function armProvisioning(minutes: number = 30): Promise<{ ok: boolean; armed: boolean; minutes: number; mode: string }> {
+  return apiFetch('/admin/provisioning/arm', {
+    method: 'POST',
+    body: JSON.stringify({ minutes }),
+  });
+}
+
+export function provisionCreate(instance: string, configToml: string, instructionsMd?: string): Promise<{ ok: boolean; instance: string; config_path: string }> {
+  return apiFetch('/admin/provisioning/create', {
+    method: 'POST',
+    body: JSON.stringify({ instance, config_toml: configToml, instructions_md: instructionsMd }),
+  });
+}
+
+export function provisionInstall(instance: string): Promise<{ ok: boolean; instance: string; stdout?: string }> {
+  return apiFetch('/admin/provisioning/install', {
+    method: 'POST',
+    body: JSON.stringify({ instance }),
+  });
+}
+
+export function provisionStart(instance: string): Promise<{ ok: boolean; instance: string }> {
+  return apiFetch('/admin/provisioning/start', {
+    method: 'POST',
+    body: JSON.stringify({ instance }),
+  });
+}
+
+export function provisionStop(instance: string): Promise<{ ok: boolean; instance: string }> {
+  return apiFetch('/admin/provisioning/stop', {
+    method: 'POST',
+    body: JSON.stringify({ instance }),
+  });
+}
+
+export function provisionUninstall(instance: string): Promise<{ ok: boolean; instance: string }> {
+  return apiFetch('/admin/provisioning/uninstall', {
+    method: 'POST',
+    body: JSON.stringify({ instance }),
+  });
+}
+
+/**
+ * Full delete flow: arm → stop → uninstall service → remove config dir.
+ */
+export async function deleteAgent(instance: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const status = await getProvisioningStatus();
+    if (!status.enabled) return { ok: false, error: 'Provisioning disabled in broker config' };
+    if (!status.armed) await armProvisioning(30);
+    // Best-effort stop (may already be stopped)
+    try { await provisionStop(instance); } catch { /* ignore */ }
+    await provisionUninstall(instance);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Delete failed' };
+  }
+}
+
+/**
+ * Full deploy flow: arm → create config → install service → start.
+ * Returns step-by-step results. Stops on first error.
+ */
+export async function deployAgent(
+  instance: string,
+  configToml: string,
+  instructionsMd?: string,
+): Promise<{ step: string; ok: boolean; error?: string }[]> {
+  const results: { step: string; ok: boolean; error?: string }[] = [];
+
+  // 1. Check status and arm if needed
+  try {
+    const status = await getProvisioningStatus();
+    if (!status.enabled) {
+      results.push({ step: 'check', ok: false, error: 'Provisioning is disabled in broker config (gateway.ui_provisioning.enabled = false)' });
+      return results;
+    }
+    if (!status.armed) {
+      await armProvisioning(30);
+    }
+    results.push({ step: 'arm', ok: true });
+  } catch (e) {
+    results.push({ step: 'arm', ok: false, error: e instanceof Error ? e.message : 'Failed to arm' });
+    return results;
+  }
+
+  // 2. Create config on disk
+  try {
+    await provisionCreate(instance, configToml, instructionsMd);
+    results.push({ step: 'create', ok: true });
+  } catch (e) {
+    results.push({ step: 'create', ok: false, error: e instanceof Error ? e.message : 'Failed to create config' });
+    return results;
+  }
+
+  // 3. Install service (may fail if mode=config_only — that's ok)
+  try {
+    await provisionInstall(instance);
+    results.push({ step: 'install', ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : '';
+    if (msg.includes('config_only')) {
+      results.push({ step: 'install', ok: false, error: 'Mode is config_only — service not installed. Start manually.' });
+      return results;
+    }
+    results.push({ step: 'install', ok: false, error: msg || 'Failed to install service' });
+    return results;
+  }
+
+  // 4. Start service
+  try {
+    await provisionStart(instance);
+    results.push({ step: 'start', ok: true });
+  } catch (e) {
+    results.push({ step: 'start', ok: false, error: e instanceof Error ? e.message : 'Failed to start service' });
+  }
+
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Availability check
 // ---------------------------------------------------------------------------
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { t } from '@/lib/i18n';
-import { fetchFleet, revokeAgent, quarantineAgent, disableAgent, downgradeAgent } from '@/lib/ipc-api';
+import { fetchFleet, revokeAgent, quarantineAgent, disableAgent, downgradeAgent, deleteAgent } from '@/lib/ipc-api';
+import { getStatus } from '@/lib/api';
 import type { IpcAgent } from '@/types/ipc';
 import TrustBadge from '@/components/ipc/TrustBadge';
 import StatusBadge from '@/components/ipc/StatusBadge';
@@ -11,7 +12,7 @@ import ConfirmDialog from '@/components/ipc/ConfirmDialog';
 import AddAgentDialog from '@/components/ipc/AddAgentDialog';
 import DeployBlueprintDialog from '@/components/ipc/DeployBlueprintDialog';
 
-type ActionType = 'revoke' | 'quarantine' | 'disable' | 'downgrade';
+type ActionType = 'revoke' | 'quarantine' | 'disable' | 'downgrade' | 'delete';
 
 interface PendingAction {
   type: ActionType;
@@ -28,6 +29,7 @@ export default function Fleet() {
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [showBlueprint, setShowBlueprint] = useState(false);
   const [showRevoked, setShowRevoked] = useState(false);
+  const [gatewayPort, setGatewayPort] = useState(42617);
 
   const load = useCallback(async () => {
     try {
@@ -42,6 +44,10 @@ export default function Fleet() {
   }, []);
 
   useEffect(() => {
+    getStatus().then((s) => {
+      const port = (s as unknown as Record<string, unknown>).gateway_port;
+      if (typeof port === 'number') setGatewayPort(port);
+    }).catch(() => {});
     load();
     const interval = setInterval(load, 10_000);
     return () => clearInterval(interval);
@@ -65,6 +71,11 @@ export default function Fleet() {
         case 'downgrade':
           if (level !== undefined) await downgradeAgent(agent.agent_id, level);
           break;
+        case 'delete': {
+          const result = await deleteAgent(agent.agent_id);
+          if (!result.ok) throw new Error(result.error ?? 'Delete failed');
+          break;
+        }
       }
       setPendingAction(null);
       await load();
@@ -76,7 +87,9 @@ export default function Fleet() {
   };
 
   const filteredAgents = showRevoked ? agents : agents.filter((a) => a.status !== 'revoked');
-  const brokerUrl = `${window.location.protocol}//${window.location.hostname}:${window.location.port || '42617'}`;
+  // Agents run on the same host as the broker — always use localhost with the real gateway port.
+  // window.location may reflect an SSH tunnel or reverse proxy port, not the actual gateway.
+  const brokerUrl = `http://127.0.0.1:${gatewayPort}`;
 
   const confirmMessage = pendingAction
     ? `${pendingAction.type} agent "${pendingAction.agent.agent_id}"${
@@ -241,12 +254,21 @@ function AgentRow({
                   )}
                 </>
               )}
+              <div className="border-t border-[#1a1a3e]/30 my-1" />
               <MenuButton
                 label="Revoke"
                 className="text-red-400 hover:text-red-300"
                 onClick={() => {
                   setShowMenu(false);
                   onAction({ type: 'revoke', agent });
+                }}
+              />
+              <MenuButton
+                label="Delete"
+                className="text-red-400 hover:text-red-300"
+                onClick={() => {
+                  setShowMenu(false);
+                  onAction({ type: 'delete', agent });
                 }}
               />
             </div>

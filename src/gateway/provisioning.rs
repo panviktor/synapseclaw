@@ -351,10 +351,11 @@ pub async fn handle_provisioning_install(
         )
     })?;
 
-    // Run: zeroclaw service install --instance <name>
+    // Run: zeroclaw service --instance <name> install
+    // Note: --instance must precede the subcommand (clap ordering)
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zeroclaw"));
     let output = std::process::Command::new(&exe)
-        .args(["service", "install", "--instance", &instance])
+        .args(["service", "--instance", &instance, "install"])
         .output();
 
     match output {
@@ -436,7 +437,7 @@ pub async fn handle_provisioning_start(
 
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zeroclaw"));
     let output = std::process::Command::new(&exe)
-        .args(["service", "start", "--instance", &instance])
+        .args(["service", "--instance", &instance, "start"])
         .output();
 
     match output {
@@ -507,7 +508,7 @@ pub async fn handle_provisioning_stop(
 
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zeroclaw"));
     let output = std::process::Command::new(&exe)
-        .args(["service", "stop", "--instance", &instance])
+        .args(["service", "--instance", &instance, "stop"])
         .output();
 
     match output {
@@ -543,4 +544,80 @@ pub async fn handle_provisioning_stop(
             ))
         }
     }
+}
+
+/// POST /admin/provisioning/uninstall — uninstall agent service and remove config dir.
+pub async fn handle_provisioning_uninstall(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_localhost(&peer)?;
+    require_admin_auth(&state, &headers)?;
+    require_provisioning_active(&state)?;
+
+    {
+        let config = state.config.lock();
+        if config.gateway.ui_provisioning.mode != "service_install" {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error": "Mode is 'config_only'"})),
+            ));
+        }
+    }
+
+    let instance = body["instance"]
+        .as_str()
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "missing 'instance'"})),
+            )
+        })?
+        .to_string();
+
+    validate_instance_name(&instance).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": e})),
+        )
+    })?;
+
+    // 1. Uninstall systemd service (best-effort — may not exist)
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zeroclaw"));
+    let _ = std::process::Command::new(&exe)
+        .args(["service", "--instance", &instance, "uninstall"])
+        .output();
+
+    // 2. Remove agent config directory
+    let agents_root = {
+        let config = state.config.lock();
+        resolve_agents_root(&config.gateway.ui_provisioning.agents_root)
+    };
+    let instance_dir = agents_root.join(&instance);
+    if instance_dir.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&instance_dir) {
+            log_audit(
+                &state,
+                AuditEventType::ProvisioningFailed,
+                &format!("Failed to remove dir for {instance}: {e}"),
+            );
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("Failed to remove directory: {e}")})),
+            ));
+        }
+    }
+
+    log_audit(
+        &state,
+        AuditEventType::ProvisioningFailed, // reuse — no dedicated uninstall event type
+        &format!("Uninstalled and removed instance={instance}"),
+    );
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "instance": instance,
+    })))
 }

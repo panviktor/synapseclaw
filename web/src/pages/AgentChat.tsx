@@ -528,6 +528,25 @@ export default function AgentChat() {
           </div>
         )}
 
+        {/* Agent header */}
+        <div className="px-4 py-2 border-b border-[#1a1a3e]/30 flex items-center gap-3 bg-[#050510]/50">
+          {(() => {
+            const agentInfo = activeAgent ? agents.find((a) => a.agent_id === activeAgent) : null;
+            const isOnline = agentInfo ? agentInfo.status === 'online' : connected;
+            const name = activeAgent || 'Local Agent';
+            const roleLabel = agentInfo?.role ? ` (${agentInfo.role})` : '';
+            const modelLabel = status?.model ? ` · ${status.model}` : '';
+            return (
+              <>
+                <span className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${isOnline ? 'bg-emerald-400' : 'bg-gray-500'}`} />
+                <span className="text-sm font-medium text-white truncate">{name}</span>
+                {roleLabel && <span className="text-xs text-[#556080]">{roleLabel}</span>}
+                <span className="text-xs text-[#334060] truncate ml-auto">{modelLabel}</span>
+              </>
+            );
+          })()}
+        </div>
+
         {/* Messages area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {loading ? (

@@ -4,7 +4,7 @@ import { FLEET_BLUEPRINTS, getPresetById, type FleetBlueprint, type BlueprintAge
 import { PROVIDERS, getProvidersByTier } from '@/lib/ipc-providers';
 import { CHANNELS } from '@/lib/ipc-channels';
 import { generateAgentConfig, generateInstructionsMd, downloadAsFile, type AgentConfigInputs } from '@/lib/ipc-config-gen';
-import { createPaircode } from '@/lib/ipc-api';
+import { createPaircode, deployAgent } from '@/lib/ipc-api';
 import TrustBadge from './TrustBadge';
 
 interface Props {
@@ -44,6 +44,8 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
 
   const [creating, setCreating] = useState(false);
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+  const [deploying, setDeploying] = useState(false);
+  const [deployStatus, setDeployStatus] = useState<Record<string, { step: string; ok: boolean; error?: string }[]>>({});
 
   if (!open) return null;
 
@@ -437,19 +439,51 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
               </table>
             </div>
 
-            <button onClick={downloadAll} className="btn-electric w-full py-2.5 text-sm font-medium">
+            <button
+              onClick={async () => {
+                setDeploying(true);
+                const status: Record<string, { step: string; ok: boolean; error?: string }[]> = {};
+                for (const row of rows) {
+                  const preset = getPresetById(row.agent.preset_id);
+                  const instrMd = preset?.system_prompt ? generateInstructionsMd(preset.system_prompt) : undefined;
+                  const results = await deployAgent(row.name, buildConfig(row), instrMd);
+                  status[row.name] = results;
+                }
+                setDeployStatus(status);
+                setDeploying(false);
+              }}
+              disabled={deploying || (Object.keys(deployStatus).length > 0 && Object.values(deployStatus).every((r) => r.every((s) => s.ok)))}
+              className="btn-electric w-full py-2.5 text-sm font-medium disabled:opacity-50"
+            >
+              {deploying ? 'Deploying...' : Object.keys(deployStatus).length > 0 ? (Object.values(deployStatus).every((r) => r.every((s) => s.ok)) ? 'All Deployed' : 'Retry Deploy') : 'Deploy All to broker'}
+            </button>
+
+            {Object.keys(deployStatus).length > 0 && (
+              <div className="p-3 rounded-lg bg-[#050510] border border-[#1a1a3e]/50 text-xs space-y-2">
+                {Object.entries(deployStatus).map(([name, results]) => (
+                  <div key={name}>
+                    <span className="text-[#8892a8] font-mono">{name}:</span>
+                    <span className="ml-2">{results.every((r) => r.ok) ? '\u2705' : results.find((r) => !r.ok)?.error ?? '\u274c'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button onClick={downloadAll} className="w-full py-2 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors">
               Download All Files
             </button>
 
-            <div className="p-4 rounded-xl bg-[#050510] border border-[#1a1a3e]/50 text-xs text-[#556080] space-y-2">
-              <p className="font-medium text-[#8892a8]">Setup instructions:</p>
-              <p>1. Place each agent's config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> and rename <code className="text-[#0080ff]">&lt;agent&gt;-instructions.md</code> to <code className="text-[#0080ff]">~/.zeroclaw/workspace/instructions.md</code></p>
-              <p>2. For each agent, pair with broker:</p>
-              <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: CODE&apos;</pre>
-              <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in each config.toml under [agents_ipc]</p>
-              <p>4. Start each agent: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
-              <p>5. <span className="text-yellow-400">Add the broker config patch</span> to your broker's config.toml and restart it</p>
-            </div>
+            <details className="text-xs text-[#556080]">
+              <summary className="cursor-pointer text-[#8892a8] hover:text-white transition-colors">Manual setup instructions</summary>
+              <div className="mt-2 p-3 rounded-lg bg-[#050510] border border-[#1a1a3e]/50 space-y-2">
+                <p>1. Place each agent's config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code></p>
+                <p>2. For each agent, pair with broker:</p>
+                <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: CODE&apos;</pre>
+                <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in config.toml</p>
+                <p>4. Start each agent: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
+                <p>5. <span className="text-yellow-400">Add the broker config patch</span> to broker's config.toml</p>
+              </div>
+            </details>
 
             <button
               onClick={() => { handleClose(); onCreated(); }}
