@@ -1,4 +1,4 @@
-// IPC admin API client for Phase 3.5 operator UI
+// IPC admin API client for Phase 3.5+ operator UI
 
 import { apiFetch } from './api';
 import type {
@@ -10,6 +10,10 @@ import type {
   MessagesFilter,
   SpawnRunsFilter,
   AuditFilter,
+  ActivityEvent,
+  ActivityFilter,
+  CronJob,
+  CronRun,
 } from '../types/ipc';
 
 // ---------------------------------------------------------------------------
@@ -347,4 +351,57 @@ export async function checkIpcAccess(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Activity feed (Phase 3.9)
+// ---------------------------------------------------------------------------
+
+export async function fetchActivity(filters: ActivityFilter = {}): Promise<{ events: ActivityEvent[]; partial: boolean }> {
+  const params = new URLSearchParams();
+  if (filters.agent_id) params.set('agent_id', filters.agent_id);
+  if (filters.event_type) params.set('event_type', filters.event_type);
+  if (filters.surface) params.set('surface', filters.surface);
+  if (filters.from_ts !== undefined) params.set('from_ts', String(filters.from_ts));
+  if (filters.to_ts !== undefined) params.set('to_ts', String(filters.to_ts));
+  if (filters.limit !== undefined) params.set('limit', String(filters.limit));
+  const qs = params.toString();
+  return apiFetch<{ events: ActivityEvent[]; partial: boolean }>(
+    `/admin/activity${qs ? `?${qs}` : ''}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cron proxy (Phase 3.9)
+// ---------------------------------------------------------------------------
+
+export async function fetchAgentCron(agentId: string): Promise<CronJob[]> {
+  const data = await apiFetch<{ jobs: CronJob[] }>(
+    `/api/agents/${encodeURIComponent(agentId)}/cron`,
+  );
+  return data.jobs;
+}
+
+export async function addAgentCronJob(
+  agentId: string,
+  body: { name?: string; schedule: string; command: string },
+): Promise<{ status: string; job: CronJob }> {
+  return apiFetch(`/api/agents/${encodeURIComponent(agentId)}/cron`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export async function deleteAgentCronJob(agentId: string, jobId: string): Promise<{ status: string }> {
+  return apiFetch(
+    `/api/agents/${encodeURIComponent(agentId)}/cron/${encodeURIComponent(jobId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+export async function fetchAgentCronRuns(agentId: string, jobId: string, limit = 20): Promise<CronRun[]> {
+  const data = await apiFetch<{ runs: CronRun[] }>(
+    `/api/agents/${encodeURIComponent(agentId)}/cron/${encodeURIComponent(jobId)}/runs?limit=${limit}`,
+  );
+  return data.runs;
 }

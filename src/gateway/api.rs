@@ -72,6 +72,13 @@ pub struct CronAddBody {
     pub command: String,
 }
 
+#[derive(Deserialize)]
+pub struct ActivityQuery {
+    pub limit: Option<u32>,
+    pub from_ts: Option<i64>,
+    pub event_type: Option<String>,
+}
+
 // ── Handlers ────────────────────────────────────────────────────
 
 /// GET /api/status — system status overview
@@ -761,6 +768,355 @@ pub async fn handle_api_health(
 
     let snapshot = crate::health::snapshot();
     Json(serde_json::json!({"health": snapshot})).into_response()
+}
+
+// ── Activity feed (Phase 3.9) ────────────────────────────────────
+
+/// Known channel name prefixes for distinguishing channel vs web_chat sessions.
+const CHANNEL_PREFIXES: &[&str] = &[
+    "telegram",
+    "discord",
+    "slack",
+    "matrix",
+    "webhook",
+    "whatsapp",
+    "mattermost",
+    "irc",
+    "lark",
+    "feishu",
+    "dingtalk",
+    "qq",
+    "nextcloud",
+    "wati",
+    "linq",
+    "clawdtalk",
+    "email",
+    "nostr",
+];
+
+/// GET /api/activity — agent-local activity feed (cron, chat, channel events).
+/// IPC/spawn events are NOT included here — the broker has those in its own ipc_db.
+pub async fn handle_api_activity(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ActivityQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    use crate::gateway::ipc::{ActivityEvent, TraceRef};
+
+    let limit = params.limit.unwrap_or(50).clamp(1, 200) as usize;
+    let from_ts = params.from_ts.unwrap_or(0);
+    let mut events: Vec<ActivityEvent> = Vec::new();
+
+    // Derive agent_id from config
+    let config = state.config.lock().clone();
+    let agent_id = config
+        .agents_ipc
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| "local".to_string());
+
+    // 1. Chat/channel sessions from chat_db
+    if let Some(ref db) = state.chat_db {
+        if let Ok(sessions) = db.list_sessions("") {
+            for session in sessions {
+                if session.last_active < from_ts {
+                    continue;
+                }
+
+                // Determine surface from session key prefix
+                let key = &session.key;
+                let mut surface = "web_chat";
+                let mut channel_name: Option<String> = None;
+
+                for prefix in CHANNEL_PREFIXES {
+                    if key.starts_with(prefix) {
+                        surface = "channel";
+                        channel_name = Some(prefix.to_string());
+                        break;
+                    }
+                }
+
+                let label = session.label.as_deref().unwrap_or("session");
+                let summary = if surface == "channel" {
+                    format!(
+                        "{}: {} ({} msgs)",
+                        channel_name.as_deref().unwrap_or("channel"),
+                        label,
+                        session.message_count
+                    )
+                } else {
+                    format!("chat: {} ({} msgs)", label, session.message_count)
+                };
+
+                let event_type = if surface == "channel" {
+                    "channel_message"
+                } else {
+                    "chat_message"
+                };
+
+                events.push(ActivityEvent {
+                    event_type: event_type.to_string(),
+                    agent_id: agent_id.clone(),
+                    timestamp: session.last_active,
+                    summary,
+                    trace_ref: TraceRef {
+                        surface: surface.to_string(),
+                        session_id: None,
+                        message_id: None,
+                        from_agent: None,
+                        to_agent: None,
+                        spawn_run_id: None,
+                        parent_agent_id: None,
+                        child_agent_id: None,
+                        chat_session_key: if surface == "web_chat" {
+                            Some(key.clone())
+                        } else {
+                            None
+                        },
+                        run_id: None,
+                        channel_name,
+                        channel_session_key: if surface == "channel" {
+                            Some(key.clone())
+                        } else {
+                            None
+                        },
+                        job_id: None,
+                        job_name: None,
+                    },
+                });
+            }
+        }
+    }
+
+    // 2. Cron runs
+    if let Ok(jobs) = crate::cron::list_jobs(&config) {
+        for job in &jobs {
+            if let Ok(runs) = crate::cron::list_runs(&config, &job.id, 10) {
+                for run in &runs {
+                    let ts = run.started_at.timestamp();
+                    if ts < from_ts {
+                        continue;
+                    }
+                    let name = job.name.as_deref().unwrap_or(&job.id);
+                    let dur = run.duration_ms.unwrap_or(0);
+                    let summary = format!("cron: {} [{}] ({dur}ms)", name, run.status);
+
+                    events.push(ActivityEvent {
+                        event_type: "cron_run".to_string(),
+                        agent_id: agent_id.clone(),
+                        timestamp: ts,
+                        summary,
+                        trace_ref: TraceRef {
+                            surface: "cron".to_string(),
+                            session_id: None,
+                            message_id: None,
+                            from_agent: None,
+                            to_agent: None,
+                            spawn_run_id: None,
+                            parent_agent_id: None,
+                            child_agent_id: None,
+                            chat_session_key: None,
+                            run_id: None,
+                            channel_name: None,
+                            channel_session_key: None,
+                            job_id: Some(job.id.clone()),
+                            job_name: job.name.clone(),
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    // Filter by event_type if specified
+    if let Some(ref et) = params.event_type {
+        events.retain(|e| e.event_type == *et);
+    }
+
+    // Sort by timestamp desc, truncate
+    events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    events.truncate(limit);
+
+    Json(serde_json::json!({"events": events})).into_response()
+}
+
+// ── Cron proxy (Phase 3.9) ───────────────────────────────────────
+
+/// GET /api/agents/:agent_id/cron — proxy cron list to agent.
+pub async fn handle_api_agent_cron_list_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/cron", agent.gateway_url);
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// POST /api/agents/:agent_id/cron — proxy cron creation to agent.
+pub async fn handle_api_agent_cron_add_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/cron", agent.gateway_url);
+    match client
+        .post(&url)
+        .bearer_auth(&agent.proxy_token)
+        .header("Content-Type", "application/json")
+        .body(body.to_vec())
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// DELETE /api/agents/:agent_id/cron/:job_id — proxy cron deletion to agent.
+pub async fn handle_api_agent_cron_delete_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((agent_id, job_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!(
+        "{}/api/cron/{}",
+        agent.gateway_url,
+        urlencoding::encode(&job_id)
+    );
+    match client
+        .delete(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// GET /api/agents/:agent_id/cron/:job_id/runs — proxy cron runs listing to agent.
+pub async fn handle_api_agent_cron_runs_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((agent_id, job_id)): Path<(String, String)>,
+    Query(params): Query<CronRunsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let limit = params.limit.unwrap_or(20);
+    let url = format!(
+        "{}/api/cron/{}/runs?limit={limit}",
+        agent.gateway_url,
+        urlencoding::encode(&job_id)
+    );
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────

@@ -17,6 +17,8 @@ import {
   Rocket,
   ShieldAlert,
   FileSearch,
+  Radio,
+  Timer,
 } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import { checkIpcAccess, fetchMessages } from '@/lib/ipc-api';
@@ -43,10 +45,12 @@ const navItems: NavItem[] = [
 
 const ipcNavItems: NavItem[] = [
   { to: '/ipc/fleet', icon: Users, labelKey: 'nav.ipc_fleet' },
+  { to: '/ipc/activity', icon: Radio, labelKey: 'nav.ipc_activity' },
   { to: '/ipc/sessions', icon: ScrollText, labelKey: 'nav.ipc_sessions' },
   { to: '/ipc/spawns', icon: Rocket, labelKey: 'nav.ipc_spawns' },
   { to: '/ipc/quarantine', icon: ShieldAlert, labelKey: 'nav.ipc_quarantine' },
   { to: '/ipc/audit', icon: FileSearch, labelKey: 'nav.ipc_audit' },
+  { to: '/ipc/cron', icon: Timer, labelKey: 'nav.ipc_cron' },
 ];
 
 function NavLinkItem({ to, icon: Icon, labelKey, end, idx, badge }: NavItem & { idx: number; badge?: number }) {

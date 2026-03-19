@@ -94,3 +94,59 @@ export interface AuditFilter {
   limit?: number;
   offset?: number;
 }
+
+// ── Activity feed (Phase 3.9) ──────────────────────────────────
+
+export interface TraceRef {
+  surface: 'ipc' | 'spawn' | 'web_chat' | 'channel' | 'cron';
+  session_id?: string;
+  message_id?: number;
+  from_agent?: string;
+  to_agent?: string;
+  spawn_run_id?: string;
+  parent_agent_id?: string;
+  child_agent_id?: string;
+  chat_session_key?: string;
+  run_id?: string;
+  channel_name?: string;
+  channel_session_key?: string;
+  job_id?: string;
+  job_name?: string;
+}
+
+export interface ActivityEvent {
+  event_type: string;
+  agent_id: string;
+  timestamp: number;
+  summary: string;
+  trace_ref: TraceRef;
+}
+
+export interface ActivityFilter {
+  agent_id?: string;
+  event_type?: string;
+  surface?: string;
+  from_ts?: number;
+  to_ts?: number;
+  limit?: number;
+}
+
+export interface CronJob {
+  id: string;
+  name: string | null;
+  command: string;
+  next_run: string;
+  last_run: string | null;
+  last_status: string | null;
+  enabled: boolean;
+}
+
+export interface CronRun {
+  id: number;
+  job_id: string;
+  started_at: string;
+  finished_at: string;
+  status: string;
+  output: string | null;
+  duration_ms: number | null;
+}

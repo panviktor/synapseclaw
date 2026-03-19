@@ -1480,6 +1480,123 @@ impl IpcDb {
 
         Ok(())
     }
+
+    // ── Activity feed queries (Phase 3.9) ───────────────────────
+
+    /// Recent IPC messages as activity events for the broker activity feed.
+    pub fn recent_activity_messages(&self, from_ts: i64, limit: u32) -> Vec<ActivityEvent> {
+        let conn = self.conn.lock();
+        let mut stmt = match conn.prepare(
+            "SELECT id, session_id, from_agent, to_agent, kind, payload, created_at
+             FROM messages
+             WHERE created_at >= ?1 AND blocked = 0
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map(params![from_ts, limit], |row| {
+            let id: i64 = row.get(0)?;
+            let session_id: Option<String> = row.get(1)?;
+            let from_agent: String = row.get(2)?;
+            let to_agent: String = row.get(3)?;
+            let kind: String = row.get(4)?;
+            let payload: String = row.get(5)?;
+            let created_at: i64 = row.get(6)?;
+
+            let preview = if payload.len() > 80 {
+                format!("{}…", &payload[..80])
+            } else {
+                payload
+            };
+            let summary = format!("{from_agent} → {to_agent}: [{kind}] {preview}");
+
+            Ok(ActivityEvent {
+                event_type: "ipc_send".to_string(),
+                agent_id: from_agent.clone(),
+                timestamp: created_at,
+                summary,
+                trace_ref: TraceRef {
+                    surface: "ipc".to_string(),
+                    session_id,
+                    message_id: Some(id),
+                    from_agent: Some(from_agent),
+                    to_agent: Some(to_agent),
+                    spawn_run_id: None,
+                    parent_agent_id: None,
+                    child_agent_id: None,
+                    chat_session_key: None,
+                    run_id: None,
+                    channel_name: None,
+                    channel_session_key: None,
+                    job_id: None,
+                    job_name: None,
+                },
+            })
+        })
+        .ok()
+        .map(|r| r.filter_map(|e| e.ok()).collect())
+        .unwrap_or_default()
+    }
+
+    /// Recent spawn runs as activity events for the broker activity feed.
+    pub fn recent_activity_spawns(&self, from_ts: i64, limit: u32) -> Vec<ActivityEvent> {
+        let conn = self.conn.lock();
+        let mut stmt = match conn.prepare(
+            "SELECT id, parent_id, child_id, status, created_at, completed_at
+             FROM spawn_runs
+             WHERE created_at >= ?1
+             ORDER BY created_at DESC
+             LIMIT ?2",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        stmt.query_map(params![from_ts, limit], |row| {
+            let id: String = row.get(0)?;
+            let parent_id: String = row.get(1)?;
+            let child_id: String = row.get(2)?;
+            let status: String = row.get(3)?;
+            let created_at: i64 = row.get(4)?;
+            let completed_at: Option<i64> = row.get(5)?;
+
+            let event_type = match status.as_str() {
+                "completed" | "timeout" | "revoked" | "interrupted" | "error" => "spawn_complete",
+                _ => "spawn_start",
+            };
+            let ts = completed_at.unwrap_or(created_at);
+            let summary = format!("{parent_id} → {child_id}: [{status}]");
+
+            Ok(ActivityEvent {
+                event_type: event_type.to_string(),
+                agent_id: parent_id.clone(),
+                timestamp: ts,
+                summary,
+                trace_ref: TraceRef {
+                    surface: "spawn".to_string(),
+                    session_id: None,
+                    message_id: None,
+                    from_agent: None,
+                    to_agent: None,
+                    spawn_run_id: Some(id),
+                    parent_agent_id: Some(parent_id),
+                    child_agent_id: Some(child_id),
+                    chat_session_key: None,
+                    run_id: None,
+                    channel_name: None,
+                    channel_session_key: None,
+                    job_id: None,
+                    job_name: None,
+                },
+            })
+        })
+        .ok()
+        .map(|r| r.filter_map(|e| e.ok()).collect())
+        .unwrap_or_default()
+    }
 }
 
 // ── Request/Response types ──────────────────────────────────────
@@ -1718,6 +1835,67 @@ pub struct DismissBody {
 
 fn default_admin_limit() -> u32 {
     50
+}
+
+fn default_activity_limit() -> u32 {
+    100
+}
+
+// ── Activity trace model (Phase 3.9) ────────────────────────────
+
+/// Structured reference linking an activity event to its source dialog.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceRef {
+    /// Surface type: "ipc" | "spawn" | "web_chat" | "channel" | "cron"
+    pub surface: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawn_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_session_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_session_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub job_name: Option<String>,
+}
+
+/// A single activity event with trace metadata for operator drill-down.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityEvent {
+    /// Event type: ipc_send, spawn_start, spawn_complete, chat_message, channel_message, cron_run
+    pub event_type: String,
+    pub agent_id: String,
+    pub timestamp: i64,
+    pub summary: String,
+    pub trace_ref: TraceRef,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminActivityQuery {
+    pub agent_id: Option<String>,
+    pub event_type: Option<String>,
+    pub surface: Option<String>,
+    pub from_ts: Option<i64>,
+    pub to_ts: Option<i64>,
+    #[serde(default = "default_activity_limit")]
+    pub limit: u32,
 }
 
 // ── ACL validation ──────────────────────────────────────────────
@@ -3435,6 +3613,111 @@ pub async fn handle_admin_ipc_dismiss_message(
         "ok": true,
         "message_id": body.message_id,
         "dismissed": true,
+    })))
+}
+
+/// GET /admin/activity — unified activity feed with broker IPC/spawn data
+/// merged with fan-out to online agents for local events (cron, chat, channel).
+pub async fn handle_admin_activity(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Query(q): Query<AdminActivityQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    require_localhost(&peer)?;
+
+    let limit = q.limit.min(500);
+    let now = unix_now();
+    // Default: last 24 hours
+    let from_ts = q.from_ts.unwrap_or(now - 86400);
+    let to_ts = q.to_ts.unwrap_or(now);
+
+    let mut events: Vec<ActivityEvent> = Vec::new();
+    let mut partial = false;
+
+    // 1. IPC message events from broker's own ipc_db
+    if let Some(ref db) = state.ipc_db {
+        let ipc_events = db.recent_activity_messages(from_ts, limit);
+        events.extend(ipc_events);
+    }
+
+    // 2. Spawn run events from broker's own ipc_db
+    if let Some(ref db) = state.ipc_db {
+        let spawn_events = db.recent_activity_spawns(from_ts, limit);
+        events.extend(spawn_events);
+    }
+
+    // 3. Fan-out to online agents for local events (cron, chat, channel)
+    let agents = state.agent_registry.list();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .unwrap_or_default();
+
+    let mut handles = Vec::new();
+    for agent in &agents {
+        if !matches!(
+            agent.status,
+            crate::gateway::agent_registry::AgentStatus::Online
+        ) {
+            continue;
+        }
+        let url = format!(
+            "{}/api/activity?limit=20&from_ts={from_ts}",
+            agent.gateway_url
+        );
+        let token = agent.proxy_token.clone();
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            let resp = client.get(&url).bearer_auth(&token).send().await;
+            match resp {
+                Ok(r) if r.status().is_success() => r.json::<serde_json::Value>().await.ok(),
+                _ => None,
+            }
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        results.push(handle.await.ok().flatten());
+    }
+    for result in results {
+        match result {
+            Some(val) => {
+                if let Some(arr) = val.get("events").and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Ok(evt) = serde_json::from_value::<ActivityEvent>(item.clone()) {
+                            events.push(evt);
+                        }
+                    }
+                }
+            }
+            None => {
+                partial = true;
+            }
+        }
+    }
+
+    // Filter by to_ts
+    events.retain(|e| e.timestamp <= to_ts);
+
+    // Apply optional filters
+    if let Some(ref agent_id) = q.agent_id {
+        events.retain(|e| e.agent_id == *agent_id);
+    }
+    if let Some(ref event_type) = q.event_type {
+        events.retain(|e| e.event_type == *event_type);
+    }
+    if let Some(ref surface) = q.surface {
+        events.retain(|e| e.trace_ref.surface == *surface);
+    }
+
+    // Sort by timestamp desc, truncate
+    events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    events.truncate(limit as usize);
+
+    Ok(Json(serde_json::json!({
+        "events": events,
+        "partial": partial,
     })))
 }
 
