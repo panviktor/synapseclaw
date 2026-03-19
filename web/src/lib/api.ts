@@ -42,7 +42,13 @@ export async function apiFetch<T = unknown>(
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(path, { ...options, headers });
+  let response = await fetch(path, { ...options, headers });
+
+  // Retry once on 401 — the server may still be loading after a restart.
+  if (response.status === 401 && token) {
+    await new Promise((r) => setTimeout(r, 1500));
+    response = await fetch(path, { ...options, headers });
+  }
 
   if (response.status === 401) {
     clearToken();
