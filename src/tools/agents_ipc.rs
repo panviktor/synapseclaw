@@ -1519,6 +1519,9 @@ mod tests {
                 std::collections::HashMap::new(),
             )),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         }
     }
 

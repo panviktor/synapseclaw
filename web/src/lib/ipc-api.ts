@@ -243,8 +243,9 @@ export interface TopologyAgent {
 export interface TopologyEdge {
   from: string;
   to: string;
-  type: 'lateral' | 'l4_destination';
+  type: 'lateral' | 'l4_destination' | 'message';
   alias?: string;
+  count?: number;
 }
 
 export interface Topology {

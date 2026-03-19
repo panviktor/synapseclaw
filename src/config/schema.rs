@@ -1719,6 +1719,16 @@ pub struct AgentsIpcConfig {
     /// ```
     #[serde(default)]
     pub workload_profiles: HashMap<String, crate::security::execution::WorkloadProfile>,
+
+    /// Enable push notifications for new IPC messages (default: true).
+    /// When enabled, the broker pushes lightweight notifications to agent
+    /// gateways so they fetch their inbox immediately. Polling remains as fallback.
+    #[serde(default = "default_push_enabled")]
+    pub push_enabled: bool,
+
+    /// Max push delivery retries with exponential backoff (default: 5).
+    #[serde(default = "default_push_max_retries")]
+    pub push_max_retries: u32,
 }
 
 /// PromptGuard configuration for IPC message payload scanning.
@@ -1846,6 +1856,14 @@ fn default_session_max_exchanges() -> u32 {
     10
 }
 
+fn default_push_enabled() -> bool {
+    true
+}
+
+fn default_push_max_retries() -> u32 {
+    5
+}
+
 fn default_coordinator_agent() -> String {
     "opus".into()
 }
@@ -1871,6 +1889,8 @@ impl Default for AgentsIpcConfig {
             session_max_exchanges: default_session_max_exchanges(),
             coordinator_agent: default_coordinator_agent(),
             workload_profiles: HashMap::new(),
+            push_enabled: default_push_enabled(),
+            push_max_retries: default_push_max_retries(),
         }
     }
 }
