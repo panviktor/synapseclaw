@@ -1,10 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { AGENT_PRESETS, type AgentPreset } from '@/lib/ipc-presets';
 import { PROVIDERS, getProvidersByTier } from '@/lib/ipc-providers';
 import { CHANNELS } from '@/lib/ipc-channels';
 import { generateAgentConfig, generateInstructionsMd, downloadAsFile, type AgentConfigInputs } from '@/lib/ipc-config-gen';
-import { createPaircode, deployAgent } from '@/lib/ipc-api';
+import { createPaircode, pairAgent, deployAgent, getUsedPorts } from '@/lib/ipc-api';
 import TrustBadge from './TrustBadge';
 
 interface Props {
@@ -33,6 +33,13 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
   const [channelId, setChannelId] = useState('none');
   const [channelValues, setChannelValues] = useState<Record<string, string>>({});
   const [gatewayPort, setGatewayPort] = useState(42618);
+
+  // Fetch next available port on dialog open
+  useEffect(() => {
+    if (open) {
+      getUsedPorts().then((info) => setGatewayPort(info.next_available)).catch(() => {});
+    }
+  }, [open]);
   const [systemPrompt, setSystemPrompt] = useState('');
 
   // Result
@@ -90,10 +97,13 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
     try {
       const result = await createPaircode(agentId, trustLevel, role);
       setPairingCode(result.pairing_code);
+      // Immediately redeem the code to get broker_token
+      const brokerToken = await pairAgent(result.pairing_code);
 
       const inputs: AgentConfigInputs = {
         agentId, role, trustLevel, providerId, apiKey, model, baseUrl,
         channelId, channelValues, brokerUrl, gatewayPort, systemPrompt,
+        brokerToken,
       };
       const toml = generateAgentConfig(inputs);
       setConfigToml(toml);

@@ -138,6 +138,22 @@ export function createPaircode(agentId: string, trustLevel: number, role: string
   });
 }
 
+/** Pair with a pairing code to get a broker_token for an IPC agent.
+ *  Unlike the UI `pair()` in api.ts, this does NOT store the token as the UI auth token. */
+export async function pairAgent(code: string): Promise<string> {
+  const response = await fetch('/pair', {
+    method: 'POST',
+    headers: { 'X-Pairing-Code': code },
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Agent pairing failed (${response.status}): ${text || response.statusText}`);
+  }
+  const data = (await response.json()) as { token?: string; paired?: boolean };
+  if (!data.token) throw new Error('Pairing succeeded but no token returned');
+  return data.token;
+}
+
 // ---------------------------------------------------------------------------
 // Provisioning (Phase 3.8 Step 11)
 // ---------------------------------------------------------------------------
@@ -193,6 +209,51 @@ export function provisionUninstall(instance: string): Promise<{ ok: boolean; ins
     method: 'POST',
     body: JSON.stringify({ instance }),
   });
+}
+
+export function patchBrokerConfig(patchToml: string): Promise<{ ok: boolean; message: string }> {
+  return apiFetch('/admin/provisioning/patch-broker', {
+    method: 'POST',
+    body: JSON.stringify({ patch_toml: patchToml }),
+  });
+}
+
+export function getUsedPorts(): Promise<{ ports: number[]; next_available: number }> {
+  return apiFetch('/admin/provisioning/used-ports');
+}
+
+// ---------------------------------------------------------------------------
+// Topology (merged agent list + communication graph)
+// ---------------------------------------------------------------------------
+
+export interface TopologyAgent {
+  agent_id: string;
+  role: string | null;
+  trust_level: number | null;
+  status: string;
+  gateway_url: string | null;
+  model: string | null;
+  last_seen: number | null;
+  uptime_seconds?: number | null;
+  channels?: string[];
+  public_key?: string | null;
+  source?: string;
+}
+
+export interface TopologyEdge {
+  from: string;
+  to: string;
+  type: 'lateral' | 'l4_destination';
+  alias?: string;
+}
+
+export interface Topology {
+  agents: TopologyAgent[];
+  edges: TopologyEdge[];
+}
+
+export function fetchTopology(): Promise<Topology> {
+  return apiFetch<Topology>('/admin/provisioning/topology');
 }
 
 /**

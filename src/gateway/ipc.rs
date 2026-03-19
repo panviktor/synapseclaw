@@ -2705,6 +2705,9 @@ pub async fn handle_ipc_register_gateway(
             )
         })?;
 
+    // Ensure agent is visible in IPC agents list (not just gateway registry)
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
+
     // Update in-memory AgentRegistry
     state
         .agent_registry

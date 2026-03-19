@@ -962,6 +962,18 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             "/admin/provisioning/uninstall",
             post(provisioning::handle_provisioning_uninstall),
         )
+        .route(
+            "/admin/provisioning/patch-broker",
+            post(provisioning::handle_provisioning_patch_broker),
+        )
+        .route(
+            "/admin/provisioning/used-ports",
+            get(provisioning::handle_provisioning_used_ports),
+        )
+        .route(
+            "/admin/provisioning/topology",
+            get(provisioning::handle_provisioning_topology),
+        )
         // ── Web Dashboard API routes ──
         .route("/api/agents", get(api::handle_api_agents))
         .route(

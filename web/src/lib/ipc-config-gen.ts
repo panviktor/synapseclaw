@@ -18,6 +18,7 @@ export interface AgentConfigInputs {
   brokerUrl: string;
   gatewayPort: number;
   systemPrompt: string;
+  brokerToken?: string;
 }
 
 function escapeToml(s: string): string {
@@ -70,6 +71,10 @@ export function generateAgentConfig(inputs: AgentConfigInputs): string {
   lines.push('[agents_ipc]');
   lines.push('enabled = true');
   lines.push(`broker_url = "${escapeToml(inputs.brokerUrl)}"`);
+  lines.push(`gateway_url = "http://127.0.0.1:${inputs.gatewayPort}"`);
+  if (inputs.brokerToken) {
+    lines.push(`broker_token = "${escapeToml(inputs.brokerToken)}"`);
+  }
   lines.push(`trust_level = ${inputs.trustLevel}`);
   lines.push(`role = "${escapeToml(inputs.role)}"`);
   lines.push(`agent_id = "${escapeToml(inputs.agentId)}"`);

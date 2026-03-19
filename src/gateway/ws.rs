@@ -197,8 +197,13 @@ async fn handle_proxy_socket(
     let upstream_url = format!("{upstream_url}/ws/chat?session_id=op:{operator_id}");
 
     // Connect to agent's WS with subprotocol auth
+    let host = tungstenite::http::Uri::try_from(&upstream_url)
+        .ok()
+        .and_then(|u| u.authority().map(|a| a.to_string()))
+        .unwrap_or_else(|| "127.0.0.1".to_string());
     let request = tungstenite::http::Request::builder()
         .uri(&upstream_url)
+        .header("Host", &host)
         .header(
             "Sec-WebSocket-Protocol",
             format!(
