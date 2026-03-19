@@ -39,6 +39,7 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
   const [sameProvider, setSameProvider] = useState(true);
   const [sharedProviderId, setSharedProviderId] = useState('anthropic');
   const [sharedApiKey, setSharedApiKey] = useState('');
+  const [sharedBaseUrl, setSharedBaseUrl] = useState('');
   const [rows, setRows] = useState<AgentRow[]>([]);
 
   const [creating, setCreating] = useState(false);
@@ -112,10 +113,12 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
         if (sameProvider) {
           const p = PROVIDERS.find((pr) => pr.id === sharedProviderId);
           if (p?.credential_type === 'api_key' && !sharedApiKey) return false;
+          if ((sharedProviderId === 'custom' || p?.tier === 'local') && !sharedBaseUrl) return false;
         } else {
           for (const row of rows) {
             const p = PROVIDERS.find((pr) => pr.id === row.providerId);
             if (p?.credential_type === 'api_key' && !row.apiKey) return false;
+            if ((row.providerId === 'custom' || p?.tier === 'local') && !row.baseUrl) return false;
           }
         }
         return rows.every((r) => r.model.trim().length > 0);
@@ -156,6 +159,7 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
     const preset = getPresetById(row.agent.preset_id);
     const pid = sameProvider ? sharedProviderId : row.providerId;
     const key = sameProvider ? sharedApiKey : row.apiKey;
+    const url = sameProvider ? sharedBaseUrl : row.baseUrl;
     const inputs: AgentConfigInputs = {
       agentId: row.name,
       role: preset?.role ?? 'agent',
@@ -163,7 +167,7 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
       providerId: pid,
       apiKey: key,
       model: row.model,
-      baseUrl: row.baseUrl,
+      baseUrl: url,
       channelId: row.channelId,
       channelValues: row.channelValues,
       brokerUrl,
@@ -255,9 +259,14 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
             {sameProvider ? (
               <div className="space-y-3">
                 <ProviderSelect value={sharedProviderId} onChange={setSharedProviderId} />
-                {PROVIDERS.find((p) => p.id === sharedProviderId)?.credential_type === 'api_key' && (
+                {(PROVIDERS.find((p) => p.id === sharedProviderId)?.credential_type === 'api_key' || sharedProviderId === 'custom') && (
                   <Field label="API Key">
                     <input type="password" value={sharedApiKey} onChange={(e) => setSharedApiKey(e.target.value)} placeholder="sk-..." className="input-electric px-3 py-2 text-sm w-full" />
+                  </Field>
+                )}
+                {(sharedProviderId === 'custom' || PROVIDERS.find((p) => p.id === sharedProviderId)?.tier === 'local') && (
+                  <Field label="Base URL">
+                    <input type="text" value={sharedBaseUrl} onChange={(e) => setSharedBaseUrl(e.target.value)} placeholder="http://localhost:11434/v1" className="input-electric px-3 py-2 text-sm w-full" />
                   </Field>
                 )}
                 <p className="text-xs text-[#334060]">Per-agent model overrides:</p>
@@ -282,8 +291,11 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
                       const p = PROVIDERS.find((pr) => pr.id === v);
                       updateRow(i, { providerId: v, model: p?.default_model ?? row.model });
                     }} />
-                    {PROVIDERS.find((p) => p.id === row.providerId)?.credential_type === 'api_key' && (
+                    {(PROVIDERS.find((p) => p.id === row.providerId)?.credential_type === 'api_key' || row.providerId === 'custom') && (
                       <input type="password" value={row.apiKey} onChange={(e) => updateRow(i, { apiKey: e.target.value })} placeholder="API key" className="input-electric px-2 py-1 text-xs w-full" />
+                    )}
+                    {(row.providerId === 'custom' || PROVIDERS.find((p) => p.id === row.providerId)?.tier === 'local') && (
+                      <input type="text" value={row.baseUrl} onChange={(e) => updateRow(i, { baseUrl: e.target.value })} placeholder="http://localhost:11434/v1" className="input-electric px-2 py-1 text-xs w-full" />
                     )}
                     <input type="text" value={row.model} onChange={(e) => updateRow(i, { model: e.target.value })} className="input-electric px-2 py-1 text-xs w-full" placeholder="Model" />
                   </div>
@@ -478,6 +490,7 @@ function ProviderSelect({ value, onChange }: { value: string; onChange: (v: stri
       <optgroup label="Local">
         {getProvidersByTier('local').map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
       </optgroup>
+      <option value="custom">Custom — any OpenAI-compatible API</option>
     </select>
   );
 }
