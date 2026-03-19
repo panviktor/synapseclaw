@@ -375,6 +375,12 @@ pub struct AppState {
     pub chat_sessions: Arc<std::sync::Mutex<HashMap<String, ChatSession>>>,
     /// Persistent chat database (SQLite)
     pub chat_db: Option<Arc<chat_db::ChatDb>>,
+    /// IPC push dispatcher for broker→agent push notifications
+    pub ipc_push_dispatcher: Option<Arc<ipc::PushDispatcher>>,
+    /// Dedup set for received push notifications (agent-side)
+    pub ipc_push_dedup: Option<Arc<ipc::PushDedupSet>>,
+    /// Signal channel for push notifications → inbox processor (agent-side)
+    pub ipc_push_signal: Option<tokio::sync::mpsc::UnboundedSender<()>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -750,7 +756,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         }
     };
 
-    let state = AppState {
+    let mut state = AppState {
         config: config_state,
         provider,
         model,
@@ -827,6 +833,13 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db,
+        ipc_push_dispatcher: None, // initialized below after state is built
+        ipc_push_dedup: if config.agents_ipc.enabled && config.agents_ipc.push_enabled {
+            Some(Arc::new(ipc::PushDedupSet::new(1000)))
+        } else {
+            None
+        },
+        ipc_push_signal: None, // initialized below for agent-side inbox processor
     };
 
     // Phase 3.8: seed AgentRegistry from DB + start health polling
@@ -855,11 +868,35 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
                     );
                 }
             }
+
+            // Spawn push dispatcher (broker-side)
+            if config.agents_ipc.push_enabled {
+                let dispatcher = ipc::PushDispatcher::spawn(
+                    Arc::clone(db),
+                    Arc::clone(&state.agent_registry),
+                    config.agents_ipc.push_max_retries,
+                );
+                state.ipc_push_dispatcher = Some(Arc::new(dispatcher));
+                tracing::info!("IPC push dispatcher started");
+            }
         }
         // Start background health polling
         let poll_state = state.clone();
         tokio::spawn(async move {
             agent_health_poll_loop(poll_state).await;
+        });
+    }
+
+    // Agent-side: spawn inbox processor if this agent has IPC push support
+    if config.agents_ipc.enabled
+        && config.agents_ipc.push_enabled
+        && config.agents_ipc.proxy_token.is_some()
+    {
+        let (push_tx, push_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        state.ipc_push_signal = Some(push_tx);
+        let inbox_config = config.clone();
+        tokio::spawn(async move {
+            Box::pin(agent_inbox_processor(inbox_config, push_rx)).await;
         });
     }
 
@@ -901,6 +938,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             "/api/ipc/register-gateway",
             post(ipc::handle_ipc_register_gateway),
         )
+        .route("/api/ipc/push", post(ipc::handle_ipc_push_notification))
         // ── IPC admin routes (localhost only) ──
         .route("/admin/ipc/agents", get(ipc::handle_admin_ipc_agents))
         .route("/admin/ipc/revoke", post(ipc::handle_admin_ipc_revoke))
@@ -1094,6 +1132,56 @@ async fn agent_health_poll_loop(state: AppState) {
                         "Agent health poll failed"
                     );
                 }
+            }
+        }
+    }
+}
+
+/// Agent-side background processor: on push signal, coalesce + invoke agent run.
+///
+/// Instead of HTTP loopback to `/webhook` (which requires pairing auth and marks
+/// messages as read before processing), this directly invokes `crate::agent::run()`
+/// — same pattern as the heartbeat worker. The agent uses its `agents_inbox` tool
+/// to fetch and process messages, preserving existing ACL/quarantine logic.
+async fn agent_inbox_processor(
+    config: Config,
+    mut push_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+) {
+    loop {
+        // Wait for push signal
+        if push_rx.recv().await.is_none() {
+            break; // channel closed
+        }
+
+        // Coalesce: drain any additional signals that arrived, wait 100ms for batch
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        while push_rx.try_recv().is_ok() {}
+
+        let prompt = "[IPC push received] Check your IPC inbox for new messages \
+                      using the agents_inbox tool. Process all pending messages \
+                      and respond appropriately."
+            .to_string();
+
+        tracing::info!("Push notification received, invoking agent inbox processing");
+
+        match Box::pin(crate::agent::run(
+            config.clone(),
+            Some(prompt),
+            None,
+            None,
+            config.default_temperature,
+            vec![],
+            false,
+            None,
+            None,
+        ))
+        .await
+        {
+            Ok(_) => {
+                tracing::info!("Push-triggered inbox processing completed");
+            }
+            Err(e) => {
+                tracing::warn!("Push-triggered inbox processing failed: {e}");
             }
         }
     }
@@ -2237,6 +2325,9 @@ mod tests {
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2300,6 +2391,9 @@ mod tests {
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2687,6 +2781,9 @@ mod tests {
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2764,6 +2861,9 @@ mod tests {
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         };
 
         let headers = HeaderMap::new();
@@ -2853,6 +2953,9 @@ mod tests {
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         };
 
         let response = handle_webhook(
@@ -2914,6 +3017,9 @@ mod tests {
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -2980,6 +3086,9 @@ mod tests {
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3051,6 +3160,9 @@ mod tests {
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -3118,6 +3230,9 @@ mod tests {
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
+            ipc_push_dispatcher: None,
+            ipc_push_dedup: None,
+            ipc_push_signal: None,
         };
 
         let mut headers = HeaderMap::new();

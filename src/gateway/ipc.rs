@@ -66,6 +66,154 @@ pub struct AgentGatewayRow {
     pub registered_at: i64,
 }
 
+// ── Push delivery ───────────────────────────────────────────────
+
+/// A job queued for push delivery to an agent's gateway.
+#[derive(Debug, Clone)]
+pub struct PushJob {
+    pub message_id: i64,
+    pub to_agent: String,
+    pub from_agent: String,
+    pub kind: String,
+}
+
+/// Background push dispatcher that sends lightweight notifications to agent gateways.
+///
+/// Notifications contain only metadata (message_id, from, kind) — the agent
+/// fetches full messages through `GET /api/ipc/inbox`. This preserves ACL/quarantine
+/// logic on the broker side.
+pub struct PushDispatcher {
+    tx: tokio::sync::mpsc::Sender<PushJob>,
+}
+
+impl PushDispatcher {
+    /// Create dispatcher and spawn the background delivery task.
+    pub fn spawn(
+        db: Arc<IpcDb>,
+        agent_registry: Arc<super::agent_registry::AgentRegistry>,
+        max_retries: u32,
+    ) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel::<PushJob>(256);
+        tokio::spawn(Self::delivery_loop(rx, db, agent_registry, max_retries));
+        Self { tx }
+    }
+
+    /// Non-blocking enqueue. Drops the job with a warning if the queue is full.
+    pub fn try_push(&self, job: PushJob) {
+        if let Err(tokio::sync::mpsc::error::TrySendError::Full(dropped)) = self.tx.try_send(job) {
+            tracing::warn!(
+                agent = %dropped.to_agent,
+                msg_id = dropped.message_id,
+                "Push queue full, notification dropped (message awaits poll)"
+            );
+        }
+    }
+
+    async fn delivery_loop(
+        mut rx: tokio::sync::mpsc::Receiver<PushJob>,
+        db: Arc<IpcDb>,
+        registry: Arc<super::agent_registry::AgentRegistry>,
+        max_retries: u32,
+    ) {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_default();
+
+        while let Some(job) = rx.recv().await {
+            let agent_info = match registry.get(&job.to_agent) {
+                Some(info) => info,
+                None => {
+                    tracing::debug!(
+                        agent = %job.to_agent,
+                        msg_id = job.message_id,
+                        "Push skipped: agent not in registry"
+                    );
+                    continue;
+                }
+            };
+
+            let payload = serde_json::json!({
+                "message_id": job.message_id,
+                "from": job.from_agent,
+                "kind": job.kind,
+                "pushed_at": unix_now(),
+            });
+
+            let mut delivered = false;
+            let mut delay_ms: u64 = 1000;
+            let effective_retries = max_retries.max(1);
+
+            for attempt in 0..effective_retries {
+                let url = format!("{}/api/ipc/push", agent_info.gateway_url);
+                match client
+                    .post(&url)
+                    .bearer_auth(&agent_info.proxy_token)
+                    .json(&payload)
+                    .send()
+                    .await
+                {
+                    Ok(resp) if resp.status().is_success() => {
+                        delivered = true;
+                        break;
+                    }
+                    Ok(resp) => {
+                        tracing::debug!(
+                            agent = %job.to_agent,
+                            msg_id = job.message_id,
+                            status = %resp.status(),
+                            attempt = attempt + 1,
+                            "Push delivery failed (HTTP)"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            agent = %job.to_agent,
+                            msg_id = job.message_id,
+                            error = %e,
+                            attempt = attempt + 1,
+                            "Push delivery failed (network)"
+                        );
+                    }
+                }
+
+                // Exponential backoff with ±25% jitter
+                let jitter = (rand::random::<f64>() * 0.5 - 0.25) * delay_ms as f64;
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let sleep_ms = (delay_ms as f64 + jitter).max(100.0) as u64;
+                tokio::time::sleep(std::time::Duration::from_millis(sleep_ms)).await;
+                delay_ms = delay_ms.saturating_mul(2).min(16_000);
+            }
+
+            let status = if delivered { "pushed" } else { "failed" };
+            let _ = db.update_delivery_status(job.message_id, status);
+
+            if delivered {
+                tracing::info!(
+                    agent = %job.to_agent,
+                    msg_id = job.message_id,
+                    "Push delivered"
+                );
+            } else {
+                tracing::warn!(
+                    agent = %job.to_agent,
+                    msg_id = job.message_id,
+                    "Push failed after {max_retries} retries, message awaits poll"
+                );
+            }
+        }
+    }
+}
+
+/// Minimal push notification payload (no message body).
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingMessage {
+    pub message_id: i64,
+    pub from_agent: String,
+    pub kind: String,
+    pub priority: i32,
+}
+
 // ── IpcDb (broker-owned SQLite) ─────────────────────────────────
 
 /// Broker-owned SQLite database for IPC messages, agent registry, and shared state.
@@ -176,6 +324,17 @@ impl IpcDb {
             );",
         )?;
 
+        // Idempotent migration: add `delivery_status` column if missing (push delivery).
+        let has_delivery_status: bool = conn
+            .prepare("PRAGMA table_info(messages)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .any(|name| name.as_deref() == Ok("delivery_status"));
+        if !has_delivery_status {
+            conn.execute_batch(
+                "ALTER TABLE messages ADD COLUMN delivery_status TEXT DEFAULT 'pending';",
+            )?;
+        }
+
         // Idempotent migration: add `promoted` column if missing (Phase 2).
         let has_promoted: bool = conn
             .prepare("PRAGMA table_info(messages)")?
@@ -283,6 +442,47 @@ impl IpcDb {
         conn.execute(
             "DELETE FROM agent_gateways WHERE agent_id = ?1",
             params![agent_id],
+        )?;
+        Ok(())
+    }
+
+    /// Fetch pending/failed unread messages for an agent (for push re-delivery).
+    /// Limited to 256 rows to match the push channel capacity.
+    pub fn pending_messages_for(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<PendingMessage>, rusqlite::Error> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, from_agent, kind, priority FROM messages
+             WHERE to_agent = ?1 AND read = 0
+               AND (delivery_status IS NULL OR delivery_status IN ('pending', 'failed', 'pushed'))
+             ORDER BY id ASC
+             LIMIT 256",
+        )?;
+        let rows = stmt
+            .query_map(params![agent_id], |row| {
+                Ok(PendingMessage {
+                    message_id: row.get(0)?,
+                    from_agent: row.get(1)?,
+                    kind: row.get(2)?,
+                    priority: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Update delivery status for a message.
+    pub fn update_delivery_status(
+        &self,
+        message_id: i64,
+        status: &str,
+    ) -> Result<(), rusqlite::Error> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "UPDATE messages SET delivery_status = ?1 WHERE id = ?2",
+            params![status, message_id],
         )?;
         Ok(())
     }
@@ -2217,6 +2417,16 @@ pub async fn handle_ipc_send(
         ));
     }
 
+    // ── Push notification to recipient's gateway ──
+    if let Some(ref dispatcher) = state.ipc_push_dispatcher {
+        dispatcher.try_push(PushJob {
+            message_id: msg_id,
+            to_agent: resolved_to.clone(),
+            from_agent: meta.agent_id.clone(),
+            kind: body.kind.clone(),
+        });
+    }
+
     // ── Phase 3A: Result delivery for ephemeral spawn sessions ──
     // When an ephemeral child sends kind=result with a session_id that
     // matches a running spawn_run, complete the run and auto-revoke the child.
@@ -2715,6 +2925,28 @@ pub async fn handle_ipc_register_gateway(
     state
         .agent_registry
         .set_trust_info(&meta.agent_id, meta.trust_level, &meta.role);
+
+    // Re-push any pending/failed unread messages on reconnect
+    if let Some(ref dispatcher) = state.ipc_push_dispatcher {
+        if let Ok(pending) = db.pending_messages_for(&meta.agent_id) {
+            let count = pending.len();
+            for msg in pending {
+                dispatcher.try_push(PushJob {
+                    message_id: msg.message_id,
+                    to_agent: meta.agent_id.clone(),
+                    from_agent: msg.from_agent,
+                    kind: msg.kind,
+                });
+            }
+            if count > 0 {
+                info!(
+                    agent_id = %meta.agent_id,
+                    pending_count = count,
+                    "Re-pushing pending messages on reconnect"
+                );
+            }
+        }
+    }
 
     info!(
         agent_id = %meta.agent_id,
@@ -3331,6 +3563,115 @@ fn emit_blocked_audit(state: &AppState, from: &str, to: &str, detail: &str) {
         }
         let _ = logger.log(&event);
     }
+}
+
+// ── Push dedup set ──────────────────────────────────────────────
+
+/// Bounded dedup set for push notification message IDs.
+/// Evicts oldest entries when capacity is reached.
+pub struct PushDedupSet {
+    inner: Mutex<(
+        std::collections::VecDeque<i64>,
+        std::collections::HashSet<i64>,
+    )>,
+    capacity: usize,
+}
+
+impl PushDedupSet {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new((
+                std::collections::VecDeque::with_capacity(capacity),
+                std::collections::HashSet::with_capacity(capacity),
+            )),
+            capacity,
+        }
+    }
+
+    /// Insert a message_id. Returns `true` if newly inserted, `false` if already present.
+    pub fn insert(&self, id: i64) -> bool {
+        let mut guard = self.inner.lock();
+        let (queue, set) = &mut *guard;
+        if !set.insert(id) {
+            return false;
+        }
+        queue.push_back(id);
+        while queue.len() > self.capacity {
+            if let Some(evicted) = queue.pop_front() {
+                set.remove(&evicted);
+            }
+        }
+        true
+    }
+}
+
+// ── Push notification receiver (agent-side) ─────────────────────
+
+/// POST /api/ipc/push — receive a push notification from the broker.
+///
+/// Validates the bearer token matches this agent's proxy_token.
+/// Returns 202 Accepted immediately, signaling the inbox processor
+/// to fetch messages.
+pub async fn handle_ipc_push_notification(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Validate bearer token = this agent's proxy_token
+    let token = extract_bearer_token(&headers).ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Missing bearer token", "code": "unauthorized"})),
+        )
+    })?;
+
+    let config = state.config.lock();
+    let expected_token = config.agents_ipc.proxy_token.as_deref().unwrap_or("");
+    if expected_token.is_empty()
+        || !crate::security::pairing::constant_time_eq(token, expected_token)
+    {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid token", "code": "unauthorized"})),
+        ));
+    }
+    drop(config);
+
+    let message_id = match body["message_id"].as_i64() {
+        Some(id) if id > 0 => id,
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(
+                    serde_json::json!({"error": "missing or invalid message_id", "code": "bad_request"}),
+                ),
+            ));
+        }
+    };
+    let from = body["from"].as_str().unwrap_or("unknown");
+    let kind = body["kind"].as_str().unwrap_or("text");
+
+    // Dedup via push_dedup set on AppState
+    if let Some(ref dedup) = state.ipc_push_dedup {
+        if !dedup.insert(message_id) {
+            // Already seen — still return 202 (idempotent)
+            return Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"ok": true}))));
+        }
+    }
+
+    // Signal the inbox processor
+    if let Some(ref tx) = state.ipc_push_signal {
+        let _ = tx.send(());
+    }
+
+    info!(
+        message_id = message_id,
+        from = %from,
+        kind = %kind,
+        "Received push notification, signaling inbox fetch"
+    );
+
+    Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"ok": true}))))
 }
 
 // ── Tests ───────────────────────────────────────────────────────
@@ -5229,5 +5570,102 @@ mod tests {
         assert!(ipc_agent.is_some());
         assert_eq!(ipc_agent.unwrap().trust_level, Some(1));
         assert_eq!(ipc_agent.unwrap().role.as_deref(), Some("coordinator"));
+    }
+
+    // ── Push delivery tests ─────────────────────────────────────
+
+    #[test]
+    fn delivery_status_column_exists() {
+        let db = test_db();
+        seed_test_agent(&db, "opus", 1);
+        seed_test_agent(&db, "daily", 2);
+        let msg_id = db
+            .insert_message("opus", "daily", "task", "do stuff", 1, None, 0, None)
+            .unwrap();
+
+        // Default delivery_status is 'pending'
+        db.update_delivery_status(msg_id, "pushed").unwrap();
+        db.update_delivery_status(msg_id, "failed").unwrap();
+    }
+
+    #[test]
+    fn pending_messages_for_returns_unread() {
+        let db = test_db();
+        seed_test_agent(&db, "opus", 1);
+        seed_test_agent(&db, "daily", 2);
+
+        let id1 = db
+            .insert_message("opus", "daily", "task", "task1", 1, None, 0, None)
+            .unwrap();
+        let _id2 = db
+            .insert_message("opus", "daily", "text", "msg2", 1, None, 0, None)
+            .unwrap();
+
+        let pending = db.pending_messages_for("daily").unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].message_id, id1);
+        assert_eq!(pending[0].from_agent, "opus");
+        assert_eq!(pending[0].kind, "task");
+    }
+
+    #[test]
+    fn pending_messages_includes_pushed_for_reconnect() {
+        let db = test_db();
+        seed_test_agent(&db, "opus", 1);
+        seed_test_agent(&db, "daily", 2);
+
+        let id1 = db
+            .insert_message("opus", "daily", "task", "task1", 1, None, 0, None)
+            .unwrap();
+        let _id2 = db
+            .insert_message("opus", "daily", "text", "msg2", 1, None, 0, None)
+            .unwrap();
+
+        // Mark first as pushed — still included because agent may have crashed
+        // between receiving push notification and fetching inbox
+        db.update_delivery_status(id1, "pushed").unwrap();
+
+        let pending = db.pending_messages_for("daily").unwrap();
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[test]
+    fn pending_messages_includes_failed() {
+        let db = test_db();
+        seed_test_agent(&db, "opus", 1);
+        seed_test_agent(&db, "daily", 2);
+
+        let id1 = db
+            .insert_message("opus", "daily", "task", "task1", 1, None, 0, None)
+            .unwrap();
+
+        db.update_delivery_status(id1, "failed").unwrap();
+
+        let pending = db.pending_messages_for("daily").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].message_id, id1);
+    }
+
+    #[test]
+    fn push_dedup_set_basic() {
+        let dedup = PushDedupSet::new(3);
+        assert!(dedup.insert(1));
+        assert!(dedup.insert(2));
+        assert!(!dedup.insert(1)); // duplicate
+        assert!(dedup.insert(3));
+        assert!(dedup.insert(4)); // evicts 1
+        assert!(dedup.insert(1)); // 1 was evicted, so this is new
+    }
+
+    #[test]
+    fn push_dedup_set_capacity() {
+        let dedup = PushDedupSet::new(2);
+        assert!(dedup.insert(10));
+        assert!(dedup.insert(20));
+        assert!(dedup.insert(30)); // evicts 10
+        assert!(dedup.insert(10)); // 10 was evicted → new; evicts 20
+        assert!(dedup.insert(20)); // 20 was evicted → new; evicts 30
+        assert!(!dedup.insert(10)); // 10 still present
+        assert!(!dedup.insert(20)); // 20 still present
     }
 }
