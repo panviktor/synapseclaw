@@ -958,6 +958,10 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             "/admin/provisioning/stop",
             post(provisioning::handle_provisioning_stop),
         )
+        .route(
+            "/admin/provisioning/uninstall",
+            post(provisioning::handle_provisioning_uninstall),
+        )
         // ── Web Dashboard API routes ──
         .route("/api/agents", get(api::handle_api_agents))
         .route(

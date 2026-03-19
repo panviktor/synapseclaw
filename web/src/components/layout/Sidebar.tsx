@@ -30,7 +30,7 @@ interface NavItem {
 
 const navItems: NavItem[] = [
   { to: '/', icon: LayoutDashboard, labelKey: 'nav.dashboard', end: true },
-  { to: '/agent', icon: MessageSquare, labelKey: 'nav.agent' },
+  { to: '/agents', icon: MessageSquare, labelKey: 'nav.agents' },
   { to: '/tools', icon: Wrench, labelKey: 'nav.tools' },
   { to: '/cron', icon: Clock, labelKey: 'nav.cron' },
   { to: '/integrations', icon: Puzzle, labelKey: 'nav.integrations' },

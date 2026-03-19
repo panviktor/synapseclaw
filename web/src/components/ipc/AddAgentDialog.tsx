@@ -4,7 +4,7 @@ import { AGENT_PRESETS, type AgentPreset } from '@/lib/ipc-presets';
 import { PROVIDERS, getProvidersByTier } from '@/lib/ipc-providers';
 import { CHANNELS } from '@/lib/ipc-channels';
 import { generateAgentConfig, generateInstructionsMd, downloadAsFile, type AgentConfigInputs } from '@/lib/ipc-config-gen';
-import { createPaircode } from '@/lib/ipc-api';
+import { createPaircode, deployAgent } from '@/lib/ipc-api';
 import TrustBadge from './TrustBadge';
 
 interface Props {
@@ -40,6 +40,8 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
   const [configToml, setConfigToml] = useState('');
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [deploying, setDeploying] = useState(false);
+  const [deployResults, setDeployResults] = useState<{ step: string; ok: boolean; error?: string }[] | null>(null);
 
   if (!open) return null;
 
@@ -62,6 +64,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
     setPairingCode('');
     setConfigToml('');
     setError(null);
+    setDeployResults(null);
     setCopied(false);
   };
 
@@ -374,8 +377,39 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
 
             <div className="space-y-2">
               <button
+                onClick={async () => {
+                  setDeploying(true);
+                  setDeployResults(null);
+                  try {
+                    const results = await deployAgent(agentId, configToml, systemPrompt ? generateInstructionsMd(systemPrompt) : undefined);
+                    setDeployResults(results);
+                  } catch (e) {
+                    setDeployResults([{ step: 'deploy', ok: false, error: e instanceof Error ? e.message : 'Deploy failed' }]);
+                  } finally {
+                    setDeploying(false);
+                  }
+                }}
+                disabled={deploying || (deployResults !== null && deployResults.every((r) => r.ok))}
+                className="btn-electric w-full py-2.5 text-sm font-medium disabled:opacity-50"
+              >
+                {deploying ? 'Deploying...' : deployResults?.every((r) => r.ok) ? 'Deployed' : 'Deploy to broker'}
+              </button>
+
+              {deployResults && (
+                <div className="p-3 rounded-lg bg-[#050510] border border-[#1a1a3e]/50 text-xs space-y-1">
+                  {deployResults.map((r, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <span>{r.ok ? '\u2705' : '\u274c'}</span>
+                      <span className="text-[#8892a8] capitalize">{r.step}</span>
+                      {r.error && <span className="text-red-400 ml-auto truncate max-w-[240px]" title={r.error}>{r.error}</span>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <button
                 onClick={() => downloadAsFile(`${agentId}-config.toml`, configToml)}
-                className="btn-electric w-full py-2.5 text-sm font-medium"
+                className="w-full py-2 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors"
               >
                 Download {agentId}-config.toml
               </button>
@@ -389,14 +423,16 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
               )}
             </div>
 
-            <div className="p-4 rounded-xl bg-[#050510] border border-[#1a1a3e]/50 text-xs text-[#556080] space-y-2">
-              <p className="font-medium text-[#8892a8]">Setup instructions:</p>
-              <p>1. Place config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> and instructions.md in <code className="text-[#0080ff]">~/.zeroclaw/workspace/</code></p>
-              <p>2. Pair with broker:</p>
-              <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: {pairingCode}&apos;</pre>
-              <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in config.toml under [agents_ipc]</p>
-              <p>4. Run: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
-            </div>
+            <details className="text-xs text-[#556080]">
+              <summary className="cursor-pointer text-[#8892a8] hover:text-white transition-colors">Manual setup instructions</summary>
+              <div className="mt-2 p-3 rounded-lg bg-[#050510] border border-[#1a1a3e]/50 space-y-2">
+                <p>1. Place config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> and instructions.md in <code className="text-[#0080ff]">~/.zeroclaw/workspace/</code></p>
+                <p>2. Pair with broker:</p>
+                <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: {pairingCode}&apos;</pre>
+                <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in config.toml under [agents_ipc]</p>
+                <p>4. Run: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
+              </div>
+            </details>
 
             <button
               onClick={() => { handleClose(); onCreated(); }}

@@ -948,7 +948,7 @@ Phase 4.0 is successful when all are true:
 
 ## Recommended implementation order
 
-1. Add `fork_core` / `fork_adapters` skeleton.
+1. Add `fork_core` / `fork_adapters` skeleton as **separate workspace crates** (enables incremental builds — only changed crate recompiles instead of full `src/`).
 2. Define `ChannelCapabilities`, `InboundEnvelope`, `OutboundIntent`.
 3. Introduce `ConversationStorePort` over the current chat/session SQLite path.
 4. Migrate scheduled notification delivery.
