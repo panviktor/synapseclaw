@@ -141,9 +141,12 @@ impl Tool for GlobSearchTool {
                 continue;
             }
 
-            // Convert to workspace-relative path
+            // Convert to workspace-relative path, or use absolute path for allowed roots
             if let Ok(rel) = resolved.strip_prefix(&workspace_canon) {
                 results.push(rel.to_string_lossy().to_string());
+            } else {
+                // Path is in an allowed root outside workspace — show absolute path
+                results.push(resolved.to_string_lossy().to_string());
             }
 
             if results.len() >= MAX_RESULTS {

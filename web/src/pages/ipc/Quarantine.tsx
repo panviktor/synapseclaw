@@ -70,7 +70,10 @@ export default function Quarantine() {
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center gap-3">
-        <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.quarantine_title')}</h1>
+        <div>
+          <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.quarantine_title')}</h1>
+          <p className="text-xs text-[#556080] mt-1">{t('ipc.quarantine_subtitle')}</p>
+        </div>
         {pendingCount > 0 && (
           <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-500/20 text-orange-400">
             {pendingCount} pending

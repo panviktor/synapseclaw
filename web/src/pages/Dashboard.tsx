@@ -89,6 +89,10 @@ export default function Dashboard() {
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
+      <div>
+        <h1 className="text-2xl font-bold text-gradient-blue">{t('dashboard.title')}</h1>
+        <p className="text-xs text-[#556080] mt-1">{t('dashboard.subtitle')}</p>
+      </div>
       {/* Status Cards Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 stagger-children">
         {[

@@ -133,7 +133,10 @@ export default function Activity() {
   return (
     <div className="p-6 space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-gradient-blue">{t('nav.ipc_activity') || 'Activity Feed'}</h1>
+        <div>
+          <h1 className="text-xl font-bold text-gradient-blue">{t('nav.ipc_activity') || 'Activity Feed'}</h1>
+          <p className="text-xs text-[#556080] mt-1">{t('ipc.activity_subtitle')}</p>
+        </div>
         <div className="flex items-center gap-2">
           {partial && (
             <span className="text-xs text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-lg">

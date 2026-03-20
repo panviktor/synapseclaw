@@ -111,6 +111,11 @@ function TopologyGraph({
     if (link?.distance) link.distance(120);
   }, [agents]);
 
+  const hasNewNodes = useMemo(
+    () => agents.some((a) => !positionsRef.current.has(a.agent_id)),
+    [agents],
+  );
+
   const graphData = useMemo(() => {
     const positions = positionsRef.current;
     const nodes: GraphNode[] = agents.map((a) => {
@@ -121,8 +126,8 @@ function TopologyGraph({
         trust_level: a.trust_level ?? 3,
         status: a.status,
         color: trustColor(a.trust_level),
-        x: saved?.x ?? 0,
-        y: saved?.y ?? 0,
+        x: saved?.x ?? (Math.random() - 0.5) * 300,
+        y: saved?.y ?? (Math.random() - 0.5) * 200,
         fx: saved?.fx,
         fy: saved?.fy,
       };
@@ -257,7 +262,7 @@ function TopologyGraph({
         linkDirectionalParticleWidth={2.5}
         linkDirectionalParticleColor={(link: GraphLink) => link.pColor}
         // Interaction — use fewer ticks on data refresh when positions are preserved
-        cooldownTicks={positionsRef.current.size > 0 ? 0 : 80}
+        cooldownTicks={hasNewNodes ? 80 : 0}
         enableZoomInteraction={true}
         enablePanInteraction={true}
         enableNodeDrag={true}
@@ -359,6 +364,7 @@ export default function Fleet() {
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.fleet_title')}</h1>
+        <p className="text-xs text-[#556080] mt-1">{t('ipc.fleet_subtitle')}</p>
         <div className="flex items-center gap-3">
           <span className="text-sm text-[#556080]">{agents.length} agents</span>
           <button onClick={() => setShowBlueprint(true)} className="px-4 py-1.5 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors">

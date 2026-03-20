@@ -104,10 +104,16 @@ export default function FleetCron() {
     }
   };
 
+  const selectedAgentOnline = agents.find((a) => a.agent_id === addAgent)?.status === 'online';
+
   const handleAdd = async () => {
     setAddError('');
     if (!addAgent || !addSchedule || !addCommand) {
       setAddError('Agent, schedule, and command are required');
+      return;
+    }
+    if (!selectedAgentOnline) {
+      setAddError('Cannot add job: selected agent is offline');
       return;
     }
     try {
@@ -130,7 +136,10 @@ export default function FleetCron() {
   return (
     <div className="p-6 space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold text-gradient-blue">{t('nav.ipc_cron') || 'Fleet Cron'}</h1>
+        <div>
+          <h1 className="text-xl font-bold text-gradient-blue">{t('nav.ipc_cron') || 'Fleet Cron'}</h1>
+          <p className="text-xs text-[#556080] mt-1">{t('ipc.cron_subtitle')}</p>
+        </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowAdd(true)}
@@ -165,8 +174,10 @@ export default function FleetCron() {
               className="input-electric px-3 py-2 text-sm"
             >
               <option value="">Select agent...</option>
-              {agents.filter((a) => a.status === 'online').map((a) => (
-                <option key={a.agent_id} value={a.agent_id}>{a.agent_id}</option>
+              {agents.map((a) => (
+                <option key={a.agent_id} value={a.agent_id}>
+                  {a.agent_id}{a.status !== 'online' ? ` (${a.status})` : ''}
+                </option>
               ))}
             </select>
             <input
