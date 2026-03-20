@@ -74,18 +74,22 @@ interface GraphLink {
   pColor: string;
 }
 
+const TRAFFIC_WINDOW_HOURS = 24;
+const TRAFFIC_MIN_COUNT = 2;
+
 // ── Force Graph Topology ────────────────────────────────────
 function TopologyGraph({
   agents,
   edges,
+  showTraffic,
   onSelect,
 }: {
   agents: TopologyAgent[];
   edges: TopologyEdge[];
+  showTraffic: boolean;
   onSelect: (agentId: string) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const fgRef = useRef<{ d3Force: (name: string) => unknown } | null>(null);
   const positionsRef = useRef<Map<string, { x: number; y: number; fx?: number; fy?: number }>>(new Map());
   const [hovered, setHovered] = useState<string | null>(null);
   const [dimensions, setDimensions] = useState({ width: 700, height: 380 });
@@ -101,35 +105,41 @@ function TopologyGraph({
     return () => ro.disconnect();
   }, []);
 
-  // Tune forces
-  useEffect(() => {
-    const fg = fgRef.current;
-    if (!fg) return;
-    const charge = fg.d3Force('charge') as { strength?: (v: number) => void } | undefined;
-    if (charge?.strength) charge.strength(-300);
-    const link = fg.d3Force('link') as { distance?: (v: number) => void } | undefined;
-    if (link?.distance) link.distance(120);
-  }, [agents]);
-
-  const hasNewNodes = useMemo(
-    () => agents.some((a) => !positionsRef.current.has(a.agent_id)),
-    [agents],
-  );
-
   const graphData = useMemo(() => {
     const positions = positionsRef.current;
+    const groupedByTrust = new Map<number, TopologyAgent[]>();
+    for (const agent of [...agents].sort((a, b) => a.agent_id.localeCompare(b.agent_id))) {
+      const trust = agent.trust_level ?? 3;
+      const group = groupedByTrust.get(trust) ?? [];
+      group.push(agent);
+      groupedByTrust.set(trust, group);
+    }
+
+    const defaultPositions = new Map<string, { x: number; y: number }>();
+    for (const [trust, list] of [...groupedByTrust.entries()].sort((a, b) => a[0] - b[0])) {
+      const x = (trust - 2) * 180;
+      const yStart = -((list.length - 1) * 70) / 2;
+      list.forEach((agent, index) => {
+        defaultPositions.set(agent.agent_id, {
+          x,
+          y: yStart + index * 70,
+        });
+      });
+    }
+
     const nodes: GraphNode[] = agents.map((a) => {
       const saved = positions.get(a.agent_id);
+      const fallback = defaultPositions.get(a.agent_id) ?? { x: 0, y: 0 };
       return {
         id: a.agent_id,
         role: a.role ?? 'agent',
         trust_level: a.trust_level ?? 3,
         status: a.status,
         color: trustColor(a.trust_level),
-        x: saved?.x ?? (Math.random() - 0.5) * 300,
-        y: saved?.y ?? (Math.random() - 0.5) * 200,
-        fx: saved?.fx,
-        fy: saved?.fy,
+        x: saved?.x ?? fallback.x,
+        y: saved?.y ?? fallback.y,
+        fx: saved?.fx ?? fallback.x,
+        fy: saved?.fy ?? fallback.y,
       };
     });
 
@@ -156,7 +166,6 @@ function TopologyGraph({
   return (
     <div ref={containerRef} className="relative">
       <ForceGraph2D
-        ref={fgRef as never}
         graphData={graphData}
         width={dimensions.width}
         height={dimensions.height}
@@ -232,37 +241,23 @@ function TopologyGraph({
           (node as unknown as { fy: number }).fy = node.y;
           positionsRef.current.set(node.id, { x: node.x, y: node.y, fx: node.x, fy: node.y });
         }}
-        onEngineStop={() => {
-          // Capture settled positions for all nodes
-          const fg = fgRef.current as unknown as { graphData: () => { nodes: Array<GraphNode & { x: number; y: number }> } } | null;
-          if (!fg) return;
-          const data = fg.graphData();
-          if (!data?.nodes) return;
-          for (const node of data.nodes) {
-            if (node.x !== undefined && node.y !== undefined && !positionsRef.current.has(node.id)) {
-              positionsRef.current.set(node.id, { x: node.x, y: node.y });
-            }
-          }
-        }}
         // Links
         linkColor={(link: GraphLink) => link.color}
         linkWidth={(link: GraphLink) => {
           const src = typeof link.source === 'object' ? (link.source as GraphNode).id : link.source;
           const tgt = typeof link.target === 'object' ? (link.target as GraphNode).id : link.target;
           const connected = hovered && (src === hovered || tgt === hovered);
-          return connected ? 2.5 : 1.2;
+          if (link.type === 'message') {
+            const weight = link.count ? Math.min(4, 1 + Math.log2(Math.max(link.count, 1))) : 1.4;
+            return connected ? weight + 1 : weight;
+          }
+          return connected ? 2.5 : 1.4;
         }}
         linkDirectionalArrowLength={6}
         linkDirectionalArrowRelPos={0.9}
         linkDirectionalArrowColor={(link: GraphLink) => link.pColor}
         linkLineDash={(link: GraphLink) => link.type === 'l4_destination' ? [4, 2] : null}
-        // Particles on message edges
-        linkDirectionalParticles={(link: GraphLink) => link.type === 'message' ? 3 : link.type === 'lateral' ? 1 : 0}
-        linkDirectionalParticleSpeed={0.005}
-        linkDirectionalParticleWidth={2.5}
-        linkDirectionalParticleColor={(link: GraphLink) => link.pColor}
-        // Interaction — use fewer ticks on data refresh when positions are preserved
-        cooldownTicks={hasNewNodes ? 80 : 0}
+        linkDirectionalParticles={() => 0}
         enableZoomInteraction={true}
         enablePanInteraction={true}
         enableNodeDrag={true}
@@ -275,9 +270,11 @@ function TopologyGraph({
         <span className="flex items-center gap-1">
           <span className="inline-block w-4 h-[2px] border-t-2 border-dashed" style={{ borderColor: 'rgba(255,102,68,0.5)' }} /> l4 dest
         </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block w-4 h-[2px]" style={{ background: 'rgba(0,255,136,0.35)' }} /> messages
-        </span>
+        {showTraffic && (
+          <span className="flex items-center gap-1">
+            <span className="inline-block w-4 h-[2px]" style={{ background: 'rgba(0,255,136,0.35)' }} /> traffic
+          </span>
+        )}
       </div>
     </div>
   );
@@ -295,10 +292,17 @@ export default function Fleet() {
   const [showAddAgent, setShowAddAgent] = useState(false);
   const [showBlueprint, setShowBlueprint] = useState(false);
   const [gatewayPort, setGatewayPort] = useState(42617);
+  const [showTraffic, setShowTraffic] = useState(false);
+  const [showEphemeral, setShowEphemeral] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const topo = await fetchTopology();
+      const topo = await fetchTopology({
+        includeTraffic: showTraffic,
+        includeEphemeral: showEphemeral,
+        trafficHours: TRAFFIC_WINDOW_HOURS,
+        trafficMinCount: TRAFFIC_MIN_COUNT,
+      });
       setAgents(topo.agents);
       setEdges(topo.edges);
       setError(null);
@@ -307,7 +311,7 @@ export default function Fleet() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [showEphemeral, showTraffic]);
 
   useEffect(() => {
     getStatus().then((s) => {
@@ -363,8 +367,10 @@ export default function Fleet() {
   return (
     <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.fleet_title')}</h1>
-        <p className="text-xs text-[#556080] mt-1">{t('ipc.fleet_subtitle')}</p>
+        <div>
+          <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.fleet_title')}</h1>
+          <p className="text-xs text-[#556080] mt-1">{t('ipc.fleet_subtitle')}</p>
+        </div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-[#556080]">{agents.length} agents</span>
           <button onClick={() => setShowBlueprint(true)} className="px-4 py-1.5 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors">
@@ -383,9 +389,44 @@ export default function Fleet() {
       {/* Communication Graph */}
       {agents.length > 0 && (
         <div className="glass-card p-2 overflow-hidden" style={{ minHeight: 300 }}>
+          <div className="flex items-center justify-between gap-4 px-3 py-2 border-b border-[#1a1a3e]/40">
+            <div>
+              <div className="text-sm font-medium text-white">
+                {showTraffic ? 'Observed Traffic' : 'Policy Topology'}
+              </div>
+              <div className="text-xs text-[#556080]">
+                {showTraffic
+                  ? `Recent IPC traffic, last ${TRAFFIC_WINDOW_HOURS}h, count ≥ ${TRAFFIC_MIN_COUNT}`
+                  : 'Declared communication topology only. Historical traffic hidden to keep the graph readable.'}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <button
+                onClick={() => setShowTraffic((v) => !v)}
+                className={`px-3 py-1 rounded-md border transition-colors ${
+                  showTraffic
+                    ? 'border-[#00ff88]/40 bg-[#00ff8815] text-[#00ff88]'
+                    : 'border-[#1a1a3e]/50 text-[#8892a8] hover:bg-[#1a1a3e]/30'
+                }`}
+              >
+                {showTraffic ? 'Hide Traffic' : 'Show Traffic'}
+              </button>
+              <button
+                onClick={() => setShowEphemeral((v) => !v)}
+                className={`px-3 py-1 rounded-md border transition-colors ${
+                  showEphemeral
+                    ? 'border-[#ff6644]/40 bg-[#ff664415] text-[#ff9b7a]'
+                    : 'border-[#1a1a3e]/50 text-[#8892a8] hover:bg-[#1a1a3e]/30'
+                }`}
+              >
+                {showEphemeral ? 'Hide Ephemeral' : 'Show Ephemeral'}
+              </button>
+            </div>
+          </div>
           <TopologyGraph
             agents={agents}
             edges={edges}
+            showTraffic={showTraffic}
             onSelect={(id) => navigate(`/ipc/fleet/${id}`)}
           />
         </div>
