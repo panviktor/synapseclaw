@@ -20,6 +20,7 @@ import IpcQuarantine from './pages/ipc/Quarantine';
 import IpcAudit from './pages/ipc/Audit';
 import IpcActivity from './pages/ipc/Activity';
 import IpcCron from './pages/ipc/Cron';
+import IpcConversation from './pages/ipc/Conversation';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { setLocale, type Locale } from './lib/i18n';
 
@@ -216,6 +217,7 @@ function AppContent() {
           <Route path="/ipc/audit" element={<IpcAudit />} />
           <Route path="/ipc/activity" element={<IpcActivity />} />
           <Route path="/ipc/cron" element={<IpcCron />} />
+          <Route path="/ipc/conversation" element={<IpcConversation />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

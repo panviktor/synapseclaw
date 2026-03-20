@@ -60,6 +60,15 @@ export default function AgentChat() {
   const activeSessionRef = useRef(activeSession);
   activeSessionRef.current = activeSession;
 
+  // ── Agent override from URL (activity trace drill-down) ──────────
+  const agentFromUrl = searchParams.get('agent');
+  useEffect(() => {
+    if (agentFromUrl && agentFromUrl !== activeAgent) {
+      setActiveAgent(agentFromUrl);
+      localStorage.setItem('zeroclaw_active_agent', agentFromUrl);
+    }
+  }, [agentFromUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── Per-session draft (global store, not React context) ────────────
   useEffect(() => {
     if (activeSession) {

@@ -3671,11 +3671,15 @@ pub async fn handle_admin_activity(
         }
         // Forward filters to agent so it returns relevant events, not a random slice
         let per_agent_limit = (limit / 2).max(20); // generous per-agent budget
-        let agent_params = if let Some(ref et) = q.event_type {
-            format!("limit={per_agent_limit}&from_ts={from_ts}&event_type={et}")
-        } else {
-            format!("limit={per_agent_limit}&from_ts={from_ts}")
-        };
+        let mut agent_params = format!("limit={per_agent_limit}&from_ts={from_ts}");
+        if let Some(ref et) = q.event_type {
+            use std::fmt::Write;
+            let _ = write!(agent_params, "&event_type={et}");
+        }
+        if let Some(ref sf) = q.surface {
+            use std::fmt::Write;
+            let _ = write!(agent_params, "&surface={sf}");
+        }
         let url = format!("{}/api/activity?{agent_params}", agent.gateway_url);
         let token = agent.proxy_token.clone();
         let client = client.clone();

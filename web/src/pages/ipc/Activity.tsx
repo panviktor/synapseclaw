@@ -36,26 +36,26 @@ function surfaceColor(surface: string): string {
 
 function traceUrl(event: ActivityEvent): string | null {
   const r = event.trace_ref;
+  const agentId = encodeURIComponent(event.agent_id);
   switch (r.surface) {
     case 'ipc':
       if (r.session_id) return `/ipc/sessions?session_id=${encodeURIComponent(r.session_id)}`;
       if (r.from_agent) return `/ipc/sessions?agent_id=${encodeURIComponent(r.from_agent)}`;
       return '/ipc/sessions';
     case 'spawn':
-      // Drill down to exact spawn run by session_id (= spawn_run_id)
       if (r.spawn_run_id) return `/ipc/spawns?session_id=${encodeURIComponent(r.spawn_run_id)}`;
       if (r.parent_agent_id) return `/ipc/spawns?parent_id=${encodeURIComponent(r.parent_agent_id)}`;
       return '/ipc/spawns';
     case 'web_chat':
-      // Open the actual chat session in the agent chat view
-      if (r.chat_session_key) return `/agents?session=${encodeURIComponent(r.chat_session_key)}`;
-      return '/agents';
+      // Agent-scoped: pass agent= so AgentChat switches to the right agent
+      if (r.chat_session_key) return `/agents?agent=${agentId}&session=${encodeURIComponent(r.chat_session_key)}`;
+      return `/agents?agent=${agentId}`;
     case 'channel':
-      // Open agent chat view with channel session key so operator sees the real conversation
-      if (r.channel_session_key) return `/agents?session=${encodeURIComponent(r.channel_session_key)}`;
-      return `/ipc/fleet/${encodeURIComponent(event.agent_id)}`;
+      // Channel sessions use a different key namespace — route to read-only viewer
+      if (r.channel_session_key) return `/ipc/conversation?agent=${agentId}&key=${encodeURIComponent(r.channel_session_key)}`;
+      return `/ipc/fleet/${agentId}`;
     case 'cron':
-      return `/ipc/cron?agent=${encodeURIComponent(event.agent_id)}`;
+      return `/ipc/cron?agent=${agentId}`;
     default:
       return null;
   }
