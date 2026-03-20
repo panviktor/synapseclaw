@@ -86,16 +86,6 @@
 <!-- BEGIN:WHATS_NEW -->
 <!-- END:WHATS_NEW -->
 
-### 📢 Announcements
-
-Use this board for important notices (breaking changes, security advisories, maintenance windows, and release blockers).
-
-| Date (UTC) | Level       | Notice                                                                                                                                                                                                                                                                                                                                                 | Action                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| ---------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-02-19 | _Critical_  | We are **not affiliated** with `openagen/synapseclaw`, `synapseclaw.org` or `synapseclaw.net`. The `synapseclaw.org` and `synapseclaw.net` domains currently points to the `openagen/synapseclaw` fork, and that domain/repository are impersonating our official website/project.                                                                                       | Do not trust information, binaries, fundraising, or announcements from those sources. Use only [this repository](https://github.com/panviktor/synapseclaw) and our verified social accounts.                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| 2026-02-21 | _Important_ | Our official website is now live: [synapseclaw.dev](https://synapseclaw.dev). Thanks for your patience while we prepared the launch. We are still seeing impersonation attempts, so do **not** join any investment or fundraising activity claiming the SynapseClaw name unless it is published through our official channels.                            | Use [this repository](https://github.com/panviktor/synapseclaw) as the single source of truth. Follow [X (@synapseclaw)](https://x.com/synapseclaw?s=21), [Facebook (Group)](https://www.facebook.com/groups/synapseclaw), and [Reddit (r/synapseclaw)](https://www.reddit.com/r/synapseclaw/) for official updates. |
-| 2026-02-19 | _Important_ | Anthropic updated the Authentication and Credential Use terms on 2026-02-19. Claude Code OAuth tokens (Free, Pro, Max) are intended exclusively for Claude Code and Claude.ai; using OAuth tokens from Claude Free/Pro/Max in any other product, tool, or service (including Agent SDK) is not permitted and may violate the Consumer Terms of Service. | Please temporarily avoid Claude Code OAuth integrations to prevent potential loss. Original clause: [Authentication and Credential Use](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use).                                                                                                                                                                                                                                                                                                                                                                                    |
-
 ### Why teams pick SynapseClaw
 
 - **Lean by default:** single Rust binary, fast startup, low memory footprint.
@@ -496,18 +486,6 @@ We're building in the open because the best ideas come from everywhere. If you'r
 
 <!-- BEGIN:RECENT_CONTRIBUTORS -->
 <!-- END:RECENT_CONTRIBUTORS -->
-
-## ⚠️ Official Repository & Impersonation Warning
-
-**This is the only official SynapseClaw repository:**
-
-> https://github.com/panviktor/synapseclaw
-
-Any other repository, organization, domain, or package claiming to be "SynapseClaw" or implying affiliation with SynapseClaw Labs is **unauthorized and not affiliated with this project**. Known unauthorized forks will be listed in [TRADEMARK.md](docs/maintainers/trademark.md).
-
-If you encounter impersonation or trademark misuse, please [open an issue](https://github.com/panviktor/synapseclaw/issues).
-
----
 
 ## License
 
