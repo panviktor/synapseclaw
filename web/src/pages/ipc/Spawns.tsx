@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { t } from '@/lib/i18n';
 import { fetchSpawnRuns, revokeAgent } from '@/lib/ipc-api';
 import type { IpcSpawnRun, SpawnRunsFilter } from '@/types/ipc';
@@ -13,15 +13,18 @@ const STATUSES = ['', 'running', 'completed', 'timeout', 'revoked', 'interrupted
 const PAGE_SIZE = 50;
 
 export default function Spawns() {
+  const [searchParams] = useSearchParams();
   const [runs, setRuns] = useState<IpcSpawnRun[]>([]);
   const [loading, setLoading] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [hasMore, setHasMore] = useState(false);
-  const [status, setStatus] = useState('');
-  const [parentId, setParentId] = useState('');
+  const [status, setStatus] = useState(searchParams.get('status') ?? '');
+  const [parentId, setParentId] = useState(searchParams.get('parent_id') ?? '');
+  const [sessionId, setSessionId] = useState(searchParams.get('session_id') ?? '');
   const [timeRange, setTimeRange] = useState('');
   const [revokeTarget, setRevokeTarget] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const autoLoadRef = useRef(false);
 
   const doSearch = useCallback(async (offset = 0) => {
     setLoading(true);
@@ -29,6 +32,7 @@ export default function Spawns() {
       const filters: SpawnRunsFilter = { limit: PAGE_SIZE, offset };
       if (status) filters.status = status;
       if (parentId) filters.parent_id = parentId;
+      if (sessionId) filters.session_id = sessionId;
       const fromTs = timeRangeToTs(timeRange);
       if (fromTs) filters.from_ts = fromTs;
       const data = await fetchSpawnRuns(filters);
@@ -41,7 +45,15 @@ export default function Spawns() {
     } finally {
       setLoading(false);
     }
-  }, [status, parentId, timeRange]);
+  }, [status, parentId, sessionId, timeRange]);
+
+  // Auto-load when arriving with URL params (e.g. from activity trace drill-down)
+  useEffect(() => {
+    if (!autoLoadRef.current && (searchParams.get('session_id') || searchParams.get('parent_id'))) {
+      autoLoadRef.current = true;
+      doSearch(0);
+    }
+  }, [doSearch, searchParams]);
 
   const handleRevoke = async () => {
     if (!revokeTarget) return;
@@ -69,6 +81,10 @@ export default function Spawns() {
         <div className="space-y-1">
           <label className="text-xs text-[#556080] uppercase tracking-wider">Parent</label>
           <input type="text" value={parentId} onChange={(e) => setParentId(e.target.value)} placeholder="parent_id" className="input-electric px-3 py-2 text-sm w-40" />
+        </div>
+        <div className="space-y-1">
+          <label className="text-xs text-[#556080] uppercase tracking-wider">Session</label>
+          <input type="text" value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="session_id (spawn run)" className="input-electric px-3 py-2 text-sm w-48" />
         </div>
         <div className="space-y-1">
           <label className="text-xs text-[#556080] uppercase tracking-wider">Time</label>

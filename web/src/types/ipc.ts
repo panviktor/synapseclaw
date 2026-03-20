@@ -79,6 +79,7 @@ export interface MessagesFilter {
 export interface SpawnRunsFilter {
   status?: string;
   parent_id?: string;
+  session_id?: string;
   from_ts?: number;
   to_ts?: number;
   limit?: number;
