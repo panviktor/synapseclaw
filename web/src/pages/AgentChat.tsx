@@ -213,6 +213,9 @@ export default function AgentChat() {
           if (msg.type === 'session.run_finished' || msg.type === 'session.run_interrupted') {
             if (msg.session_key && msg.session_key === activeSessionRef.current) {
               setTyping(false);
+              // Reload history from DB to pick up any response that arrived
+              // after an RPC timeout (the response IS persisted server-side).
+              loadHistory(ws, activeSessionRef.current);
             }
             ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
               .then((r) => setSessions(r.sessions))
@@ -417,7 +420,7 @@ export default function AgentChat() {
     wsRef.current.rpc<{ run_id: string; response?: string; aborted?: boolean }>(
       'chat.send',
       { session: sendSession, message: trimmed },
-      120000, // 2 min timeout for LLM response
+      300000, // 5 min timeout for multi-agent delegation
     ).then((res) => {
       if (res.response) {
         const agentMsg: ChatMessage = {
@@ -453,6 +456,12 @@ export default function AgentChat() {
         .then((r) => setSessions(r.sessions))
         .catch(() => {});
     }).catch((err) => {
+      const isTimeout = typeof err?.message === 'string' && err.message.includes('RPC timeout');
+      if (isTimeout) {
+        // Agent is likely still running — keep typing indicator.
+        // session.run_finished event will trigger history reload (Change 1).
+        return;
+      }
       const errorMsg: ChatMessage = {
         id: generateUUID(),
         role: 'agent',
