@@ -77,6 +77,7 @@ pub struct ActivityQuery {
     pub limit: Option<u32>,
     pub from_ts: Option<i64>,
     pub event_type: Option<String>,
+    pub surface: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1014,9 +1015,12 @@ pub async fn handle_api_activity(
         }
     }
 
-    // Filter by event_type if specified
+    // Filter by event_type and surface if specified
     if let Some(ref et) = params.event_type {
         events.retain(|e| e.event_type == *et);
+    }
+    if let Some(ref sf) = params.surface {
+        events.retain(|e| e.trace_ref.surface == *sf);
     }
 
     // Sort by timestamp desc, truncate
