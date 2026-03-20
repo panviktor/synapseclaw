@@ -1737,6 +1737,28 @@ pub struct AgentsIpcConfig {
     /// Max push delivery retries with exponential backoff (default: 5).
     #[serde(default = "default_push_max_retries")]
     pub push_max_retries: u32,
+
+    /// Max consecutive push-triggered auto-process runs for the same peer
+    /// before suppression (default: 3). Counter resets after `push_peer_cooldown_secs`.
+    #[serde(default = "default_push_max_auto_processes")]
+    pub push_max_auto_processes: u32,
+
+    /// Cooldown in seconds before resetting the per-peer auto-process counter
+    /// (default: 300 = 5 minutes).
+    #[serde(default = "default_push_peer_cooldown_secs")]
+    pub push_peer_cooldown_secs: u64,
+
+    /// Message kinds that trigger automatic inbox processing on push.
+    /// Other kinds are delivered but await polling or manual inbox check.
+    /// Default: `["task", "query", "result"]`
+    #[serde(default = "default_push_auto_process_kinds")]
+    pub push_auto_process_kinds: Vec<String>,
+
+    /// One-way dispatch mode (default: false). When enabled, subordinate agents
+    /// (higher trust level number) cannot trigger auto-processing on superiors.
+    /// Messages are still delivered to inbox but await poll/manual check.
+    #[serde(default)]
+    pub push_one_way: bool,
 }
 
 /// PromptGuard configuration for IPC message payload scanning.
@@ -1872,6 +1894,18 @@ fn default_push_max_retries() -> u32 {
     5
 }
 
+fn default_push_max_auto_processes() -> u32 {
+    3
+}
+
+fn default_push_peer_cooldown_secs() -> u64 {
+    300
+}
+
+fn default_push_auto_process_kinds() -> Vec<String> {
+    vec!["task".into(), "query".into(), "result".into()]
+}
+
 fn default_coordinator_agent() -> String {
     "opus".into()
 }
@@ -1899,6 +1933,10 @@ impl Default for AgentsIpcConfig {
             workload_profiles: HashMap::new(),
             push_enabled: default_push_enabled(),
             push_max_retries: default_push_max_retries(),
+            push_max_auto_processes: default_push_max_auto_processes(),
+            push_peer_cooldown_secs: default_push_peer_cooldown_secs(),
+            push_auto_process_kinds: default_push_auto_process_kinds(),
+            push_one_way: false,
         }
     }
 }

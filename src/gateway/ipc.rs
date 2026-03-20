@@ -77,6 +77,16 @@ pub struct PushJob {
     pub kind: String,
 }
 
+/// Metadata carried through the push signal channel to the inbox processor.
+/// Used for kind-based filtering, one-way check, and per-peer counting.
+#[derive(Debug, Clone)]
+pub struct PushMeta {
+    pub from_agent: String,
+    pub kind: String,
+    /// Resolved from local IPC DB (peek_inbox), NOT from push HTTP body.
+    pub from_trust_level: Option<u8>,
+}
+
 /// Background push dispatcher that sends lightweight notifications to agent gateways.
 ///
 /// Notifications contain only metadata (message_id, from, kind) — the agent
@@ -672,6 +682,112 @@ impl IpcDb {
             }
         }
         messages
+    }
+
+    /// Peek at unread messages without marking them as read.
+    /// Used by push inbox processor for pre-fetch + inject (Phase 3.10).
+    /// Messages remain unread until explicitly acknowledged via `ack_messages`.
+    pub fn peek_inbox(
+        &self,
+        agent_id: &str,
+        from_agent: Option<&str>,
+        kinds: Option<&[&str]>,
+        limit: u32,
+    ) -> Vec<InboxMessage> {
+        let now = unix_now();
+        let conn = self.conn.lock();
+        // Lazy TTL cleanup (same as fetch_inbox)
+        let _ = conn.execute(
+            "DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at < ?1",
+            params![now],
+        );
+
+        // Build dynamic WHERE clause for optional filters
+        let mut conditions = vec![
+            "to_agent = ?1".to_string(),
+            "read = 0".to_string(),
+            "blocked = 0".to_string(),
+            "(from_trust_level < 4 OR promoted = 1)".to_string(),
+        ];
+        let mut param_idx = 2u32;
+        if from_agent.is_some() {
+            conditions.push(format!("from_agent = ?{param_idx}"));
+            param_idx += 1;
+        }
+        if let Some(k) = kinds {
+            if !k.is_empty() {
+                #[allow(clippy::cast_possible_truncation)]
+                let placeholders: Vec<String> = (0..k.len())
+                    .map(|i| format!("?{}", param_idx + (i as u32)))
+                    .collect();
+                conditions.push(format!("kind IN ({})", placeholders.join(",")));
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    param_idx += k.len() as u32;
+                }
+            }
+        }
+        let where_clause = conditions.join(" AND ");
+        let query = format!(
+            "SELECT id, session_id, from_agent, to_agent, kind, payload, priority,
+                    from_trust_level, seq, created_at
+             FROM messages
+             WHERE {where_clause}
+             ORDER BY priority DESC, created_at ASC
+             LIMIT ?{param_idx}"
+        );
+
+        let mut stmt = match conn.prepare(&query) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+
+        // Build params dynamically
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        params_vec.push(Box::new(agent_id.to_string()));
+        if let Some(from) = from_agent {
+            params_vec.push(Box::new(from.to_string()));
+        }
+        if let Some(k) = kinds {
+            for kind in k {
+                params_vec.push(Box::new(kind.to_string()));
+            }
+        }
+        params_vec.push(Box::new(limit));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
+
+        let rows = stmt
+            .query_map(params_refs.as_slice(), |row| {
+                Ok(InboxMessage {
+                    id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    from_agent: row.get(2)?,
+                    to_agent: row.get(3)?,
+                    kind: row.get(4)?,
+                    payload: row.get(5)?,
+                    priority: row.get(6)?,
+                    from_trust_level: row.get(7)?,
+                    seq: row.get(8)?,
+                    created_at: row.get(9)?,
+                    trust_warning: None,
+                    quarantined: None,
+                })
+            })
+            .ok();
+        rows.map(|r| r.filter_map(|m| m.ok()).collect())
+            .unwrap_or_default()
+        // NOTE: No `UPDATE read = 1` — messages stay unread.
+    }
+
+    /// Mark specific messages as read by ID.
+    /// Called after successful agent::run() processing in push inbox processor.
+    pub fn ack_messages(&self, ids: &[i64]) {
+        let conn = self.conn.lock();
+        for id in ids {
+            let _ = conn.execute("UPDATE messages SET read = 1 WHERE id = ?1", params![id]);
+        }
     }
 
     /// List known agents with staleness check.
@@ -3986,16 +4102,64 @@ pub async fn handle_ipc_push_notification(
         }
     }
 
-    // Signal the inbox processor
+    // Kind-based filtering + one-way check (Phase 3.10)
     if let Some(ref tx) = state.ipc_push_signal {
-        let _ = tx.send(());
+        let config = state.config.lock();
+        let auto_kinds = config.agents_ipc.push_auto_process_kinds.clone();
+        let one_way = config.agents_ipc.push_one_way;
+        let my_trust = config.agents_ipc.trust_level;
+        drop(config);
+
+        if auto_kinds.iter().any(|k| k == kind) {
+            // Resolve from_trust_level from local IPC DB (non-consuming peek)
+            let from_trust_level = state.ipc_db.as_ref().and_then(|db| {
+                let msgs = db.peek_inbox(
+                    &state
+                        .config
+                        .lock()
+                        .agents_ipc
+                        .agent_id
+                        .clone()
+                        .unwrap_or_default(),
+                    Some(from),
+                    None,
+                    1,
+                );
+                msgs.first().map(|m| m.from_trust_level)
+            });
+
+            // One-way check: if enabled and sender is subordinate (higher trust level),
+            // skip auto-processing. Fail-closed: unknown trust → skip when one_way=true.
+            let suppressed = one_way && from_trust_level.unwrap_or(u8::MAX) > my_trust;
+            if suppressed {
+                tracing::debug!(
+                    message_id = message_id,
+                    from = %from,
+                    kind = %kind,
+                    "Push one-way: subordinate sender, suppressing auto-processing"
+                );
+            } else {
+                let _ = tx.send(PushMeta {
+                    from_agent: from.to_string(),
+                    kind: kind.to_string(),
+                    from_trust_level,
+                });
+            }
+        } else {
+            tracing::debug!(
+                message_id = message_id,
+                from = %from,
+                kind = %kind,
+                "Push received, kind not auto-processable — awaiting poll"
+            );
+        }
     }
 
     info!(
         message_id = message_id,
         from = %from,
         kind = %kind,
-        "Received push notification, signaling inbox fetch"
+        "Received push notification"
     );
 
     Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"ok": true}))))
