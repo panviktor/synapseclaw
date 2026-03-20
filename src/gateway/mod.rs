@@ -914,9 +914,8 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         let (push_tx, push_rx) = tokio::sync::mpsc::unbounded_channel::<ipc::PushMeta>();
         state.ipc_push_signal = Some(push_tx);
         let inbox_config = config.clone();
-        let inbox_db = state.ipc_db.clone();
         tokio::spawn(async move {
-            Box::pin(agent_inbox_processor(inbox_config, push_rx, inbox_db)).await;
+            Box::pin(agent_inbox_processor(inbox_config, push_rx)).await;
         });
     }
 
@@ -946,6 +945,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route("/api/ipc/agents", get(ipc::handle_ipc_agents))
         .route("/api/ipc/send", post(ipc::handle_ipc_send))
         .route("/api/ipc/inbox", get(ipc::handle_ipc_inbox))
+        .route("/api/ipc/ack", post(ipc::handle_ipc_ack))
         .route("/api/ipc/state", get(ipc::handle_ipc_state_get))
         .route("/api/ipc/state", post(ipc::handle_ipc_state_set))
         .route(
@@ -1196,23 +1196,35 @@ struct PeerState {
 }
 
 /// Agent-side background processor: on push signal, coalesce, check limits,
-/// pre-fetch scoped messages (peek), inject into prompt, and invoke agent run.
+/// pre-fetch scoped messages from broker via HTTP peek, inject into prompt,
+/// invoke agent run, then ack via broker HTTP.
 ///
-/// Phase 3.10: uses peek_inbox (non-consuming) + ack_messages (after success)
-/// for at-least-once delivery. One agent::run() per peer, sequential.
+/// Phase 3.10: broker-authoritative peek/ack for at-least-once delivery.
+/// One agent::run() per peer, sequential. One-way trust check uses
+/// broker-returned `from_trust_level` from peeked messages.
 async fn agent_inbox_processor(
     config: Config,
     mut push_rx: tokio::sync::mpsc::UnboundedReceiver<ipc::PushMeta>,
-    ipc_db: Option<Arc<ipc::IpcDb>>,
 ) {
     let max_auto = config.agents_ipc.push_max_auto_processes;
     let cooldown = Duration::from_secs(config.agents_ipc.push_peer_cooldown_secs);
     let auto_kinds = config.agents_ipc.push_auto_process_kinds.clone();
-    let agent_id = config
-        .agents_ipc
-        .agent_id
-        .clone()
-        .unwrap_or_else(|| config.agents_ipc.role.clone());
+    let one_way = config.agents_ipc.push_one_way;
+    let my_trust = config.agents_ipc.trust_level;
+
+    // Build HTTP client for broker communication
+    let broker_token = match config.agents_ipc.broker_token.as_deref() {
+        Some(t) if !t.is_empty() => t.to_string(),
+        _ => {
+            tracing::error!("Push inbox processor: no broker_token configured, exiting");
+            return;
+        }
+    };
+    let ipc_client = crate::tools::agents_ipc::IpcClient::new(
+        &config.agents_ipc.broker_url,
+        &broker_token,
+        config.agents_ipc.request_timeout_secs,
+    );
 
     let mut peers: std::collections::HashMap<String, PeerState> = std::collections::HashMap::new();
 
@@ -1257,38 +1269,62 @@ async fn agent_inbox_processor(
                 continue;
             }
 
-            // Pre-fetch: peek scoped messages (non-consuming)
-            let db = match ipc_db.as_ref() {
-                Some(db) => db,
-                None => {
-                    tracing::warn!("Push inbox processor: no IPC DB available");
+            // Pre-fetch: broker-authoritative non-consuming peek via HTTP
+            let kind_refs: Vec<&str> = auto_kinds.iter().map(|s| s.as_str()).collect();
+            let messages = match ipc_client
+                .peek_inbox(Some(peer), Some(&kind_refs), 20)
+                .await
+            {
+                Ok(msgs) => msgs,
+                Err(e) => {
+                    tracing::warn!(peer = %peer, "Push: broker peek_inbox failed: {e}");
                     continue;
                 }
             };
 
-            let kind_refs: Vec<&str> = auto_kinds.iter().map(|s| s.as_str()).collect();
-            let messages = db.peek_inbox(&agent_id, Some(peer), Some(&kind_refs), 20);
-
             if messages.is_empty() {
-                tracing::debug!(peer = %peer, "Push: no unread messages from peer after peek");
+                tracing::debug!(peer = %peer, "Push: no unread messages from peer after broker peek");
                 continue;
             }
 
-            let msg_ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+            // Extract message IDs and trust levels from broker response
+            let msg_ids: Vec<i64> = messages.iter().filter_map(|m| m["id"].as_i64()).collect();
+
+            // One-way trust check: use broker-authoritative from_trust_level
+            if one_way {
+                #[allow(clippy::cast_possible_truncation)]
+                let from_trust = messages
+                    .first()
+                    .and_then(|m| m["from_trust_level"].as_u64())
+                    .map(|t| t as u8);
+                // Fail-closed: unknown trust → suppress when one_way=true
+                if from_trust.unwrap_or(u8::MAX) > my_trust {
+                    tracing::debug!(
+                        peer = %peer,
+                        from_trust = ?from_trust,
+                        my_trust = my_trust,
+                        "Push one-way: subordinate sender, suppressing auto-processing"
+                    );
+                    continue;
+                }
+            }
 
             // Format messages for injection into prompt
             let mut formatted = String::new();
             for msg in &messages {
-                let payload_preview = if msg.payload.len() > 4000 {
-                    format!("{}… [truncated]", &msg.payload[..4000])
+                let id = msg["id"].as_i64().unwrap_or(0);
+                let kind = msg["kind"].as_str().unwrap_or("unknown");
+                let from = msg["from_agent"].as_str().unwrap_or("unknown");
+                let payload = msg["payload"].as_str().unwrap_or("");
+                let payload_preview = if payload.len() > 4000 {
+                    format!("{}… [truncated]", &payload[..4000])
                 } else {
-                    msg.payload.clone()
+                    payload.to_string()
                 };
                 use std::fmt::Write;
                 let _ = write!(
                     formatted,
-                    "--- Message #{} (kind: {}, from: {}) ---\n{}\n\n",
-                    msg.id, msg.kind, msg.from_agent, payload_preview
+                    "--- Message #{id} (kind: {kind}, from: {from}) ---\n{payload_preview}\n\n",
                 );
             }
 
@@ -1324,8 +1360,13 @@ async fn agent_inbox_processor(
             .await
             {
                 Ok(_) => {
-                    // Mark as read only after successful processing
-                    db.ack_messages(&msg_ids);
+                    // Ack via broker HTTP — mark as read only after success
+                    if let Err(e) = ipc_client.ack_messages(&msg_ids).await {
+                        tracing::warn!(
+                            peer = %peer,
+                            "Push: broker ack_messages failed: {e}"
+                        );
+                    }
                     state.auto_process_count += 1;
                     state.last_processed = std::time::Instant::now();
                     tracing::info!(
@@ -1336,7 +1377,7 @@ async fn agent_inbox_processor(
                     );
                 }
                 Err(e) => {
-                    // Messages stay unread — picked up by next poll/push/heartbeat
+                    // Messages stay unread on broker — picked up by next poll/push
                     tracing::warn!(
                         peer = %peer,
                         "Push-triggered inbox processing failed: {e}"

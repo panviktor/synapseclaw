@@ -242,6 +242,57 @@ impl IpcClient {
             .send()
             .await
     }
+
+    /// Non-consuming peek at inbox messages via broker HTTP API (Phase 3.10).
+    /// Returns messages without marking them as read.
+    pub async fn peek_inbox(
+        &self,
+        from: Option<&str>,
+        kinds: Option<&[&str]>,
+        limit: u32,
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let mut query_parts = vec![format!("peek=true&limit={limit}")];
+        if let Some(from) = from {
+            query_parts.push(format!("from={from}"));
+        }
+        if let Some(kinds) = kinds {
+            if !kinds.is_empty() {
+                query_parts.push(format!("kinds={}", kinds.join(",")));
+            }
+        }
+        let query_string = query_parts.join("&");
+        let resp = self
+            .get(&format!("/api/ipc/inbox?{query_string}"))
+            .await
+            .map_err(|e| format!("peek_inbox request failed: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("peek_inbox HTTP {status}: {body}"));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("peek_inbox parse error: {e}"))?;
+        Ok(body["messages"].as_array().cloned().unwrap_or_default())
+    }
+
+    /// Explicitly acknowledge (mark as read) specific message IDs on broker (Phase 3.10).
+    pub async fn ack_messages(&self, message_ids: &[i64]) -> Result<(), String> {
+        let resp = self
+            .post(
+                "/api/ipc/ack",
+                &serde_json::json!({ "message_ids": message_ids }),
+            )
+            .await
+            .map_err(|e| format!("ack_messages request failed: {e}"))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(format!("ack_messages HTTP {status}: {body}"));
+        }
+        Ok(())
+    }
 }
 
 // ── AgentsListTool ──────────────────────────────────────────────
