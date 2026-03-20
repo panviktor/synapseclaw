@@ -89,6 +89,8 @@ jobs:
           toolchain: 1.92.0
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-provider: "github"
 
       - uses: actions/setup-node@v4
         with:
