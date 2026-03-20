@@ -42,11 +42,17 @@ function traceUrl(event: ActivityEvent): string | null {
       if (r.from_agent) return `/ipc/sessions?agent_id=${encodeURIComponent(r.from_agent)}`;
       return '/ipc/sessions';
     case 'spawn':
+      // Drill down to exact spawn run by session_id (= spawn_run_id)
+      if (r.spawn_run_id) return `/ipc/spawns?session_id=${encodeURIComponent(r.spawn_run_id)}`;
       if (r.parent_agent_id) return `/ipc/spawns?parent_id=${encodeURIComponent(r.parent_agent_id)}`;
       return '/ipc/spawns';
     case 'web_chat':
+      // Open the actual chat session in the agent chat view
+      if (r.chat_session_key) return `/agents?session=${encodeURIComponent(r.chat_session_key)}`;
       return '/agents';
     case 'channel':
+      // Open agent chat view with channel session key so operator sees the real conversation
+      if (r.channel_session_key) return `/agents?session=${encodeURIComponent(r.channel_session_key)}`;
       return `/ipc/fleet/${encodeURIComponent(event.agent_id)}`;
     case 'cron':
       return `/ipc/cron?agent=${encodeURIComponent(event.agent_id)}`;
@@ -59,8 +65,8 @@ function traceLabel(surface: string): string {
   switch (surface) {
     case 'ipc': return 'Open IPC Session';
     case 'spawn': return 'Open Spawn Run';
-    case 'web_chat': return 'Open Chat';
-    case 'channel': return 'Open Agent';
+    case 'web_chat': return 'Open Chat Session';
+    case 'channel': return 'Open Conversation';
     case 'cron': return 'Open Cron';
     default: return 'Open';
   }

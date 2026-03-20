@@ -54,6 +54,7 @@ export async function fetchSpawnRuns(filters: SpawnRunsFilter = {}): Promise<Ipc
   const params = new URLSearchParams();
   if (filters.status) params.set('status', filters.status);
   if (filters.parent_id) params.set('parent_id', filters.parent_id);
+  if (filters.session_id) params.set('session_id', filters.session_id);
   if (filters.from_ts !== undefined) params.set('from_ts', String(filters.from_ts));
   if (filters.to_ts !== undefined) params.set('to_ts', String(filters.to_ts));
   if (filters.limit !== undefined) params.set('limit', String(filters.limit));

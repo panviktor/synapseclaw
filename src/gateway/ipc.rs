@@ -1250,6 +1250,7 @@ impl IpcDb {
         &self,
         status: Option<&str>,
         parent_id: Option<&str>,
+        session_id: Option<&str>,
         from_ts: Option<i64>,
         to_ts: Option<i64>,
         limit: u32,
@@ -1259,6 +1260,11 @@ impl IpcDb {
         let mut conditions = vec!["1=1".to_string()];
         let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
+        if let Some(sid) = session_id {
+            let idx = param_values.len() + 1;
+            conditions.push(format!("id = ?{idx}"));
+            param_values.push(Box::new(sid.to_string()));
+        }
         if let Some(s) = status {
             let idx = param_values.len() + 1;
             conditions.push(format!("status = ?{idx}"));
@@ -1807,6 +1813,7 @@ pub struct AdminMessagesQuery {
 pub struct AdminSpawnRunsQuery {
     pub status: Option<String>,
     pub parent_id: Option<String>,
+    pub session_id: Option<String>,
     pub from_ts: Option<i64>,
     pub to_ts: Option<i64>,
     #[serde(default = "default_admin_limit")]
@@ -3505,6 +3512,7 @@ pub async fn handle_admin_ipc_spawn_runs(
     let runs = db.list_spawn_runs_admin(
         q.status.as_deref(),
         q.parent_id.as_deref(),
+        q.session_id.as_deref(),
         q.from_ts,
         q.to_ts,
         q.limit,
@@ -3661,10 +3669,14 @@ pub async fn handle_admin_activity(
         ) {
             continue;
         }
-        let url = format!(
-            "{}/api/activity?limit=20&from_ts={from_ts}",
-            agent.gateway_url
-        );
+        // Forward filters to agent so it returns relevant events, not a random slice
+        let per_agent_limit = (limit / 2).max(20); // generous per-agent budget
+        let agent_params = if let Some(ref et) = q.event_type {
+            format!("limit={per_agent_limit}&from_ts={from_ts}&event_type={et}")
+        } else {
+            format!("limit={per_agent_limit}&from_ts={from_ts}")
+        };
+        let url = format!("{}/api/activity?{agent_params}", agent.gateway_url);
         let token = agent.proxy_token.clone();
         let client = client.clone();
         handles.push(tokio::spawn(async move {
@@ -5639,14 +5651,14 @@ mod tests {
         db.create_spawn_run("sess-2", "opus", "eph-2", unix_now() + 3600);
         db.complete_spawn_run("sess-1", "result data");
 
-        let all = db.list_spawn_runs_admin(None, None, None, None, 50, 0);
+        let all = db.list_spawn_runs_admin(None, None, None, None, None, 50, 0);
         assert_eq!(all.len(), 2);
 
-        let running = db.list_spawn_runs_admin(Some("running"), None, None, None, 50, 0);
+        let running = db.list_spawn_runs_admin(Some("running"), None, None, None, None, 50, 0);
         assert_eq!(running.len(), 1);
         assert_eq!(running[0].id, "sess-2");
 
-        let completed = db.list_spawn_runs_admin(Some("completed"), None, None, None, 50, 0);
+        let completed = db.list_spawn_runs_admin(Some("completed"), None, None, None, None, 50, 0);
         assert_eq!(completed.len(), 1);
         assert_eq!(completed[0].id, "sess-1");
     }

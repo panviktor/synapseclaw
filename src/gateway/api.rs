@@ -79,6 +79,16 @@ pub struct ActivityQuery {
     pub event_type: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct ChatSessionsQuery {
+    pub prefix: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct ChatMessagesQuery {
+    pub limit: Option<i64>,
+}
+
 // ── Handlers ────────────────────────────────────────────────────
 
 /// GET /api/status — system status overview
@@ -772,6 +782,59 @@ pub async fn handle_api_health(
 
 // ── Activity feed (Phase 3.9) ────────────────────────────────────
 
+// ── Chat session REST endpoints (Phase 3.9) ──────────────────────
+
+/// GET /api/chat/sessions — list chat sessions (REST alternative to WS RPC).
+pub async fn handle_api_chat_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ChatSessionsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let prefix = params.prefix.as_deref().unwrap_or("");
+    match &state.chat_db {
+        Some(db) => match db.list_sessions(prefix) {
+            Ok(sessions) => Json(serde_json::json!({"sessions": sessions})).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("{e}")})),
+            )
+                .into_response(),
+        },
+        None => Json(serde_json::json!({"sessions": []})).into_response(),
+    }
+}
+
+/// GET /api/chat/sessions/:key/messages — get messages for a chat session.
+pub async fn handle_api_chat_session_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Query(params): Query<ChatMessagesQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = params.limit.unwrap_or(50).clamp(1, 500);
+    match &state.chat_db {
+        Some(db) => match db.get_messages(&key, limit) {
+            Ok(messages) => Json(serde_json::json!({"messages": messages})).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": format!("{e}")})),
+            )
+                .into_response(),
+        },
+        None => Json(serde_json::json!({"messages": []})).into_response(),
+    }
+}
+
+// ── Activity feed (Phase 3.9) ────────────────────────────────────
+
 /// Known channel name prefixes for distinguishing channel vs web_chat sessions.
 const CHANNEL_PREFIXES: &[&str] = &[
     "telegram",
@@ -819,7 +882,7 @@ pub async fn handle_api_activity(
         .clone()
         .unwrap_or_else(|| "local".to_string());
 
-    // 1. Chat/channel sessions from chat_db
+    // 1. Chat/channel messages from chat_db (real message-level events, not session summaries)
     if let Some(ref db) = state.chat_db {
         if let Ok(sessions) = db.list_sessions("") {
             for session in sessions {
@@ -840,54 +903,73 @@ pub async fn handle_api_activity(
                     }
                 }
 
-                let label = session.label.as_deref().unwrap_or("session");
-                let summary = if surface == "channel" {
-                    format!(
-                        "{}: {} ({} msgs)",
-                        channel_name.as_deref().unwrap_or("channel"),
-                        label,
-                        session.message_count
-                    )
-                } else {
-                    format!("chat: {} ({} msgs)", label, session.message_count)
-                };
+                // Fetch recent messages for this session (real turns, not summaries)
+                let msg_limit = 10i64; // per session
+                if let Ok(messages) = db.get_messages(key, msg_limit) {
+                    for msg in &messages {
+                        if msg.timestamp < from_ts {
+                            continue;
+                        }
+                        // Only emit user and assistant turns (skip tool_call/tool_result/system)
+                        if msg.kind != "user" && msg.kind != "assistant" {
+                            continue;
+                        }
 
-                let event_type = if surface == "channel" {
-                    "channel_message"
-                } else {
-                    "chat_message"
-                };
+                        let preview = if msg.content.len() > 100 {
+                            format!("{}…", &msg.content[..100])
+                        } else {
+                            msg.content.clone()
+                        };
+                        let event_type = if surface == "channel" {
+                            "channel_message"
+                        } else {
+                            "chat_message"
+                        };
+                        let label = session.label.as_deref().unwrap_or("session");
+                        let summary = if surface == "channel" {
+                            format!(
+                                "{}/{}: [{}] {}",
+                                channel_name.as_deref().unwrap_or("channel"),
+                                label,
+                                msg.kind,
+                                preview
+                            )
+                        } else {
+                            format!("chat/{}: [{}] {}", label, msg.kind, preview)
+                        };
 
-                events.push(ActivityEvent {
-                    event_type: event_type.to_string(),
-                    agent_id: agent_id.clone(),
-                    timestamp: session.last_active,
-                    summary,
-                    trace_ref: TraceRef {
-                        surface: surface.to_string(),
-                        session_id: None,
-                        message_id: None,
-                        from_agent: None,
-                        to_agent: None,
-                        spawn_run_id: None,
-                        parent_agent_id: None,
-                        child_agent_id: None,
-                        chat_session_key: if surface == "web_chat" {
-                            Some(key.clone())
-                        } else {
-                            None
-                        },
-                        run_id: None,
-                        channel_name,
-                        channel_session_key: if surface == "channel" {
-                            Some(key.clone())
-                        } else {
-                            None
-                        },
-                        job_id: None,
-                        job_name: None,
-                    },
-                });
+                        events.push(ActivityEvent {
+                            event_type: event_type.to_string(),
+                            agent_id: agent_id.clone(),
+                            timestamp: msg.timestamp,
+                            summary,
+                            trace_ref: TraceRef {
+                                surface: surface.to_string(),
+                                session_id: None,
+                                message_id: Some(msg.id),
+                                from_agent: None,
+                                to_agent: None,
+                                spawn_run_id: None,
+                                parent_agent_id: None,
+                                child_agent_id: None,
+                                chat_session_key: if surface == "web_chat" {
+                                    Some(key.clone())
+                                } else {
+                                    None
+                                },
+                                run_id: msg.run_id.clone(),
+                                channel_name: channel_name.clone(),
+                                channel_session_key: if surface == "channel" {
+                                    Some(key.clone())
+                                } else {
+                                    None
+                                },
+                                job_id: None,
+                                job_name: None,
+                            },
+                        });
+                    }
+                }
             }
         }
     }
@@ -1099,6 +1181,94 @@ pub async fn handle_api_agent_cron_runs_proxy(
         "{}/api/cron/{}/runs?limit={limit}",
         agent.gateway_url,
         urlencoding::encode(&job_id)
+    );
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+// ── Chat session proxy (Phase 3.9) ───────────────────────────────
+
+/// GET /api/agents/:agent_id/chat/sessions — proxy chat sessions list to agent.
+pub async fn handle_api_agent_chat_sessions_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/chat/sessions", agent.gateway_url);
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// GET /api/agents/:agent_id/chat/sessions/:key/messages — proxy chat messages to agent.
+pub async fn handle_api_agent_chat_messages_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((agent_id, key)): Path<(String, String)>,
+    Query(params): Query<ChatMessagesQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let limit = params.limit.unwrap_or(50);
+    let url = format!(
+        "{}/api/chat/sessions/{}/messages?limit={limit}",
+        agent.gateway_url,
+        urlencoding::encode(&key)
     );
     match client
         .get(&url)
