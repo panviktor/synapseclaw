@@ -383,7 +383,7 @@ pub struct AppState {
     /// Dedup set for received push notifications (agent-side)
     pub ipc_push_dedup: Option<Arc<ipc::PushDedupSet>>,
     /// Signal channel for push notifications → inbox processor (agent-side)
-    pub ipc_push_signal: Option<tokio::sync::mpsc::UnboundedSender<()>>,
+    pub ipc_push_signal: Option<tokio::sync::mpsc::UnboundedSender<ipc::PushMeta>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -911,11 +911,12 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         && config.agents_ipc.push_enabled
         && config.agents_ipc.proxy_token.is_some()
     {
-        let (push_tx, push_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (push_tx, push_rx) = tokio::sync::mpsc::unbounded_channel::<ipc::PushMeta>();
         state.ipc_push_signal = Some(push_tx);
         let inbox_config = config.clone();
+        let inbox_db = state.ipc_db.clone();
         tokio::spawn(async move {
-            Box::pin(agent_inbox_processor(inbox_config, push_rx)).await;
+            Box::pin(agent_inbox_processor(inbox_config, push_rx, inbox_db)).await;
         });
     }
 
@@ -1188,51 +1189,159 @@ async fn agent_health_poll_loop(state: AppState) {
     }
 }
 
-/// Agent-side background processor: on push signal, coalesce + invoke agent run.
+/// Per-peer state for push auto-process counter (Phase 3.10).
+struct PeerState {
+    auto_process_count: u32,
+    last_processed: std::time::Instant,
+}
+
+/// Agent-side background processor: on push signal, coalesce, check limits,
+/// pre-fetch scoped messages (peek), inject into prompt, and invoke agent run.
 ///
-/// Instead of HTTP loopback to `/webhook` (which requires pairing auth and marks
-/// messages as read before processing), this directly invokes `crate::agent::run()`
-/// — same pattern as the heartbeat worker. The agent uses its `agents_inbox` tool
-/// to fetch and process messages, preserving existing ACL/quarantine logic.
+/// Phase 3.10: uses peek_inbox (non-consuming) + ack_messages (after success)
+/// for at-least-once delivery. One agent::run() per peer, sequential.
 async fn agent_inbox_processor(
     config: Config,
-    mut push_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    mut push_rx: tokio::sync::mpsc::UnboundedReceiver<ipc::PushMeta>,
+    ipc_db: Option<Arc<ipc::IpcDb>>,
 ) {
+    let max_auto = config.agents_ipc.push_max_auto_processes;
+    let cooldown = Duration::from_secs(config.agents_ipc.push_peer_cooldown_secs);
+    let auto_kinds = config.agents_ipc.push_auto_process_kinds.clone();
+    let agent_id = config
+        .agents_ipc
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| config.agents_ipc.role.clone());
+
+    let mut peers: std::collections::HashMap<String, PeerState> = std::collections::HashMap::new();
+
     loop {
         // Wait for push signal
-        if push_rx.recv().await.is_none() {
-            break; // channel closed
+        let meta = match push_rx.recv().await {
+            Some(m) => m,
+            None => break,
+        };
+
+        // Coalesce: wait 100ms, collect unique peers
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut from_peers = vec![meta.from_agent.clone()];
+        while let Ok(extra) = push_rx.try_recv() {
+            if !from_peers.contains(&extra.from_agent) {
+                from_peers.push(extra.from_agent);
+            }
         }
 
-        // Coalesce: drain any additional signals that arrived, wait 100ms for batch
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        while push_rx.try_recv().is_ok() {}
+        let now = std::time::Instant::now();
 
-        let prompt = "[IPC push received] Check your IPC inbox for new messages \
-                      using the agents_inbox tool. Process all pending messages \
-                      and respond appropriately."
-            .to_string();
+        // Process each peer sequentially (one run per peer)
+        for peer in &from_peers {
+            // Check per-peer counter
+            let state = peers.entry(peer.clone()).or_insert(PeerState {
+                auto_process_count: 0,
+                last_processed: now.checked_sub(cooldown).unwrap_or(now),
+            });
 
-        tracing::info!("Push notification received, invoking agent inbox processing");
-
-        match Box::pin(crate::agent::run(
-            config.clone(),
-            Some(prompt),
-            None,
-            None,
-            config.default_temperature,
-            vec![],
-            false,
-            None,
-            None,
-        ))
-        .await
-        {
-            Ok(_) => {
-                tracing::info!("Push-triggered inbox processing completed");
+            // Reset counter if cooldown elapsed
+            if now.duration_since(state.last_processed) >= cooldown {
+                state.auto_process_count = 0;
             }
-            Err(e) => {
-                tracing::warn!("Push-triggered inbox processing failed: {e}");
+
+            if state.auto_process_count >= max_auto {
+                tracing::warn!(
+                    peer = %peer,
+                    count = state.auto_process_count,
+                    max = max_auto,
+                    "Push auto-process limit reached for peer, suppressing"
+                );
+                continue;
+            }
+
+            // Pre-fetch: peek scoped messages (non-consuming)
+            let db = match ipc_db.as_ref() {
+                Some(db) => db,
+                None => {
+                    tracing::warn!("Push inbox processor: no IPC DB available");
+                    continue;
+                }
+            };
+
+            let kind_refs: Vec<&str> = auto_kinds.iter().map(|s| s.as_str()).collect();
+            let messages = db.peek_inbox(&agent_id, Some(peer), Some(&kind_refs), 20);
+
+            if messages.is_empty() {
+                tracing::debug!(peer = %peer, "Push: no unread messages from peer after peek");
+                continue;
+            }
+
+            let msg_ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+
+            // Format messages for injection into prompt
+            let mut formatted = String::new();
+            for msg in &messages {
+                let payload_preview = if msg.payload.len() > 4000 {
+                    format!("{}… [truncated]", &msg.payload[..4000])
+                } else {
+                    msg.payload.clone()
+                };
+                use std::fmt::Write;
+                let _ = write!(
+                    formatted,
+                    "--- Message #{} (kind: {}, from: {}) ---\n{}\n\n",
+                    msg.id, msg.kind, msg.from_agent, payload_preview
+                );
+            }
+
+            let prompt = format!(
+                "[IPC push: {} new message(s) from \"{}\"]\n\n\
+                 {}\
+                 Process the messages above and take action if required.\n\
+                 IMPORTANT: Do NOT send acknowledgments, confirmations, or \
+                 \"understood\" messages. Only reply if the message requires \
+                 concrete action or contains a question that needs answering.",
+                messages.len(),
+                peer,
+                formatted,
+            );
+
+            tracing::info!(
+                peer = %peer,
+                count = messages.len(),
+                "Push notification received, invoking scoped agent inbox processing"
+            );
+
+            match Box::pin(crate::agent::run(
+                config.clone(),
+                Some(prompt),
+                None,
+                None,
+                config.default_temperature,
+                vec![],
+                false,
+                None,
+                None,
+            ))
+            .await
+            {
+                Ok(_) => {
+                    // Mark as read only after successful processing
+                    db.ack_messages(&msg_ids);
+                    state.auto_process_count += 1;
+                    state.last_processed = std::time::Instant::now();
+                    tracing::info!(
+                        peer = %peer,
+                        acked = msg_ids.len(),
+                        auto_process_count = state.auto_process_count,
+                        "Push-triggered inbox processing completed"
+                    );
+                }
+                Err(e) => {
+                    // Messages stay unread — picked up by next poll/push/heartbeat
+                    tracing::warn!(
+                        peer = %peer,
+                        "Push-triggered inbox processing failed: {e}"
+                    );
+                }
             }
         }
     }
