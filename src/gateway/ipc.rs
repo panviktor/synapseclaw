@@ -3669,8 +3669,10 @@ pub async fn handle_admin_activity(
         ) {
             continue;
         }
-        // Forward filters to agent so it returns relevant events, not a random slice
-        let per_agent_limit = (limit / 2).max(20); // generous per-agent budget
+        // Forward the full requested limit to each agent.
+        // Broker performs merge+sort+final truncation after fan-out, so
+        // pre-truncating per-agent slices can silently drop relevant events.
+        let per_agent_limit = limit.min(200);
         let mut agent_params = format!("limit={per_agent_limit}&from_ts={from_ts}");
         if let Some(ref et) = q.event_type {
             use std::fmt::Write;
