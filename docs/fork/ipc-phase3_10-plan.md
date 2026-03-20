@@ -179,7 +179,7 @@ push body: { message_id: 42, from: "copywriter", kind: "text" }
     PushMeta { from_trust_level: Some(3) }
 ```
 
-If the message is not yet in local DB (push arrived before poll), the push receiver calls `GET /api/ipc/inbox` (which also fetches the message) and extracts `from_trust_level` from the response. If that also fails, `from_trust_level` is set to `None`.
+If the message is not yet in local DB (push arrived before poll), the push receiver calls `db.peek_inbox()` (non-consuming, see Step 4) to look up the message without marking it as read. If the message is found, `from_trust_level` is extracted. If not found (race condition — message not yet replicated), `from_trust_level` is set to `None`.
 
 **Fail-closed contract for `push_one_way`**: when `push_one_way=true` and `from_trust_level` is `None` (unknown), auto-processing is **skipped** — the message waits for poll. This is fail-closed: we never auto-process a push from a sender whose trust level we cannot verify when one-way mode is active. When `push_one_way=false`, unknown trust level is irrelevant (one-way check is not performed).
 
@@ -232,19 +232,47 @@ One-way check also happens here: if `push_one_way=true` and `from_trust_level > 
 
 The inbox processor **pre-fetches** scoped messages and injects them into the prompt. The LLM never calls `agents_inbox` in push-triggered runs — it receives messages as context.
 
-Implementation in `agent_inbox_processor()` (`src/gateway/mod.rs`):
+#### Critical constraint: `fetch_inbox()` is consuming
 
-1. After coalescing and peer-counter check, call `GET /api/ipc/inbox?from={peer}&kinds={auto_kinds}` directly (HTTP call to self or direct DB call if same-process broker)
-2. Format fetched messages into structured context
-3. Pass as prompt to `agent::run()`
+The current `fetch_inbox()` (`ipc.rs:609`) marks messages as `read = 1` immediately upon fetch. This means pre-fetch **cannot** use the existing `GET /api/ipc/inbox` endpoint — if the pre-fetch succeeds but `agent::run()` subsequently fails/times out, the messages are lost (already marked read, won't appear in the next poll or auto-process cycle).
+
+**Solution: add a non-consuming peek method to `IpcDb`:**
 
 ```rust
-// Pre-fetch: inbox processor fetches scoped messages itself
-let url = format!("{}/api/ipc/inbox?from={}&kinds={}",
-    self_gateway_url, peer, auto_kinds.join(","));
-let messages = fetch_scoped_inbox(&url, &proxy_token).await;
+/// Peek at unread messages without marking them as read.
+/// Used by push inbox processor for pre-fetch + inject.
+pub fn peek_inbox(
+    &self,
+    agent_id: &str,
+    from_agent: Option<&str>,
+    kinds: Option<&[&str]>,
+    limit: u32,
+) -> Vec<InboxMessage> {
+    // Same query as fetch_inbox() but WITHOUT the `UPDATE read = 1` step.
+    // Messages remain unread until explicitly acknowledged.
+}
 
-// Inject: messages become prompt context, not something the LLM fetches
+/// Mark specific messages as read by ID.
+/// Called after successful agent::run() processing.
+pub fn ack_messages(&self, ids: &[i64]) {
+    for id in ids {
+        let _ = conn.execute(
+            "UPDATE messages SET read = 1 WHERE id = ?1",
+            params![id],
+        );
+    }
+}
+```
+
+The pre-fetch + inject flow becomes:
+
+```rust
+// 1. Peek: non-consuming read of scoped messages
+let messages = db.peek_inbox(agent_id, Some(&peer), Some(&auto_kinds), 20);
+if messages.is_empty() { continue; }
+let msg_ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+
+// 2. Format and inject into prompt
 let prompt = format!(
     "[IPC push: {} new message(s) from \"{peer}\"]\n\n\
      {formatted_messages}\n\n\
@@ -254,13 +282,31 @@ let prompt = format!(
      concrete action or contains a question that needs answering.",
     messages.len(), peer = peer
 );
+
+// 3. Run agent
+match agent::run(config, Some(prompt), ...).await {
+    Ok(_) => {
+        // 4. Only mark as read AFTER successful processing
+        db.ack_messages(&msg_ids);
+        peer_state.auto_process_count += 1;
+    }
+    Err(e) => {
+        // Messages stay unread — will be picked up by next poll/push/heartbeat
+        tracing::warn!("Push-triggered run failed: {e}");
+    }
+}
 ```
 
-This is the **hard structural guarantee**: the LLM cannot bypass scoping because it never has access to the unfiltered inbox. It sees only pre-fetched messages from the triggering peer.
+This is the **hard structural guarantee** with **at-least-once delivery semantics**:
+- LLM cannot bypass scoping (it never calls `agents_inbox`)
+- Messages are not lost on run failure (they remain unread)
+- Duplicate processing is possible but safe (LLM sees messages it already processed → answers are idempotent by convention)
 
-**Broker-side change** (minimal): add optional `from` and `kinds` query params to `GET /api/ipc/inbox` endpoint (`handle_ipc_inbox` in `src/gateway/ipc.rs`). These filter the `fetch_inbox()` SQL query. Params are optional — omitting them returns the full inbox (backward-compatible).
+**Broker-side change**: the `peek_inbox` and `ack_messages` methods are added to `IpcDb` directly. No new HTTP endpoint needed — the inbox processor calls them as a same-process DB operation (both run in the agent's gateway process). The existing `GET /api/ipc/inbox` endpoint remains unchanged (consuming semantics preserved for `agents_inbox` tool / CLI / heartbeat).
 
-**`agents_inbox` tool** (`src/tools/agents_ipc.rs`): optionally gains `from_agent`/`kinds` params as a general improvement for CLI/heartbeat use. But push-triggered runs do not use this tool — they use the pre-fetch path.
+Optionally, `GET /api/ipc/inbox` gains `from` and `kinds` query params for general-purpose scoped fetching (CLI/heartbeat use). But the push path does not use this endpoint.
+
+**`agents_inbox` tool** (`src/tools/agents_ipc.rs`): optionally gains `from_agent`/`kinds` params as a general improvement for CLI/heartbeat use. But push-triggered runs do not use this tool — they use the peek + ack path.
 
 ### Step 5: Per-peer counter and coalescing in inbox processor
 
@@ -307,12 +353,14 @@ Counter semantics: `auto_process_count` counts how many times a push from peer X
 - [ ] Config override: removing `"result"` disables result auto-processing
 
 ### Scoped inbox processing (pre-fetch + inject)
-- [ ] Push from peer X → inbox processor pre-fetches messages from X only
+- [ ] Push from peer X → inbox processor calls `peek_inbox(from=X)` (non-consuming)
 - [ ] Pre-fetched messages injected into prompt — LLM does not call `agents_inbox`
 - [ ] Messages from peer Y not visible in X-triggered run (hard guarantee)
 - [ ] Accumulated `text` messages from other peers not swept into task-triggered run
-- [ ] Manual `agents_inbox` (CLI/heartbeat) still returns full inbox (unaffected)
-- [ ] `GET /api/ipc/inbox?from=X&kinds=task,query,result` returns correct scoped subset
+- [ ] Messages marked read (`ack_messages`) only after successful `agent::run()`
+- [ ] Failed/timed-out run → messages stay unread, picked up by next poll/push/heartbeat
+- [ ] Manual `agents_inbox` (CLI/heartbeat) still uses consuming `fetch_inbox()` (unaffected)
+- [ ] `peek_inbox` does not trigger TTL cleanup race with `fetch_inbox`
 
 ### Per-peer counter
 - [ ] First `task` from new peer → always processes (count starts at 0)
@@ -359,7 +407,8 @@ Counter semantics: `auto_process_count` counts how many times a push from peer X
 | Cooldown too long/short for specific workflows | Configurable `push_peer_cooldown_secs`; 300s default balances loop prevention vs responsiveness |
 | Signal channel type change breaks tests | All test `AppState` initializations use `ipc_push_signal: None` — type-agnostic via inference |
 | `from_trust_level` lookup fails (message not yet in local DB) | Fallback to `None`; when `push_one_way=true`, fail-closed (skip auto-processing). When `push_one_way=false`, irrelevant. |
-| Pre-fetch adds HTTP call latency before `agent::run()` | Same-machine loopback (~1ms). Acceptable — the alternative (LLM calling agents_inbox) is ~100ms+ anyway. |
+| Pre-fetch via `peek_inbox` adds DB call before `agent::run()` | Same-process SQLite call (<1ms). No HTTP overhead — direct DB access. |
+| Duplicate processing on re-delivery (message peeked twice) | Safe — LLM responses to same message are idempotent by convention. `ack_messages` is idempotent (UPDATE WHERE id = ?). |
 | LLM has `agents_inbox` tool available and could call it anyway | Tool remains available for legitimate use (manual queries, multi-peer workflows). But push-triggered prompt gives pre-fetched messages as context, so LLM has no reason to call inbox. If it does, it gets the full inbox — but the counter and kind filter still limit the loop. Defense in depth. |
 | Sequential per-peer runs slow for many concurrent peers | Uncommon scenario. Each run takes 2-30s depending on model. For 3+ concurrent peers, consider parallel runs in a future enhancement. |
 
@@ -367,7 +416,7 @@ Counter semantics: `auto_process_count` counts how many times a push from peer X
 
 ## Decisions
 
-1. **Pre-fetch + inject is the structural guarantee** — kind filtering on wake-up signal alone is insufficient because the LLM could fetch the entire inbox. The inbox processor pre-fetches scoped messages and injects them as prompt context. The LLM never calls `agents_inbox` in push-triggered runs, so it cannot bypass the scope. This is an enforced guarantee, not a prompt-level request.
+1. **Pre-fetch (peek) + inject + ack is the structural guarantee** — kind filtering on wake-up signal alone is insufficient because the LLM could fetch the entire inbox. The inbox processor uses `peek_inbox()` (non-consuming) to pre-fetch scoped messages, injects them as prompt context, and calls `ack_messages()` only after successful `agent::run()`. This provides at-least-once delivery with enforced scoping. The LLM never calls `agents_inbox` in push-triggered runs.
 2. **`result` included in default auto-process kinds** — legitimate orchestration chains (task→result→continue) require auto-processing of results. The per-peer counter and one-way mode prevent result-triggered loops without breaking orchestration.
 3. **Counter is `auto_process_count`, not `auto_reply_count`** — we count push-triggered runs per peer, not outgoing replies. This is an honest metric: we can't reliably track per-peer outgoing messages without parsing tool call results. The counter is a circuit breaker, not a precise reply tracker.
 4. **`from_trust_level` resolved from local IPC DB, not HTTP body; fail-closed** — the push payload is broker-originated but the trust level must be verified. The broker's stored `from_trust_level` (set from authenticated token metadata at insert time) is authoritative. Agent-side receiver looks it up by `message_id`. When `push_one_way=true` and trust cannot be resolved, auto-processing is skipped (fail-closed).
