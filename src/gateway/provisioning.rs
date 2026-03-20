@@ -352,9 +352,9 @@ pub async fn handle_provisioning_install(
         )
     })?;
 
-    // Run: zeroclaw service --instance <name> install
+    // Run: synapseclaw service --instance <name> install
     // Note: --instance must precede the subcommand (clap ordering)
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zeroclaw"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("synapseclaw"));
     let output = std::process::Command::new(&exe)
         .args(["service", "--instance", &instance, "install"])
         .output();
@@ -436,7 +436,7 @@ pub async fn handle_provisioning_start(
         )
     })?;
 
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zeroclaw"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("synapseclaw"));
     let output = std::process::Command::new(&exe)
         .args(["service", "--instance", &instance, "start"])
         .output();
@@ -507,7 +507,7 @@ pub async fn handle_provisioning_stop(
         )
     })?;
 
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zeroclaw"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("synapseclaw"));
     let output = std::process::Command::new(&exe)
         .args(["service", "--instance", &instance, "stop"])
         .output();
@@ -586,7 +586,7 @@ pub async fn handle_provisioning_uninstall(
     })?;
 
     // 1. Uninstall systemd service (best-effort — may not exist)
-    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("zeroclaw"));
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("synapseclaw"));
     let _ = std::process::Command::new(&exe)
         .args(["service", "--instance", &instance, "uninstall"])
         .output();

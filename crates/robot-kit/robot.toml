@@ -1,5 +1,5 @@
-# ZeroClaw Robot Kit Configuration
-# Copy to ~/.zeroclaw/robot.toml
+# SynapseClaw Robot Kit Configuration
+# Copy to ~/.synapseclaw/robot.toml
 
 # =============================================================================
 # DRIVE SYSTEM

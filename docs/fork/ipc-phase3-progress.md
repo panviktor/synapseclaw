@@ -26,7 +26,7 @@ All implementation steps completed and merged, including runtime gap fixes and s
 ### Subprocess execution (Step 0)
 - `ExecutionMode` enum (`InProcess` | `Subprocess`) on `CronJob`
 - `add_agent_job_full()` with `execution_mode` and `env_overlay`
-- `run_agent_job_subprocess()` — launches `zeroclaw agent -m` via `tokio::process::Command`
+- `run_agent_job_subprocess()` — launches `synapseclaw agent -m` via `tokio::process::Command`
 
 ### Ephemeral identity (Step 1)
 - `spawn_runs` table in IPC DB (status tracking, result payload, expiry)
@@ -42,7 +42,7 @@ All implementation steps completed and merged, including runtime gap fixes and s
 - Legacy mode preserved when no broker_token configured
 
 ### Child bootstrap (Step 3)
-- `ZEROCLAW_BROKER_TOKEN` env var → auto-enable IPC in config
+- `SYNAPSECLAW_BROKER_TOKEN` env var → auto-enable IPC in config
 - `EphemeralAgentSection` in system prompt — session context + agents_reply instructions
 
 ### Result delivery (Step 4)
@@ -86,7 +86,7 @@ All findings from two rounds of code review have been addressed:
 - IPC DB `None` in production gateway → init on startup + restart recovery (#47)
 - Subprocess had no sandbox wrapping → `std::process::Command` → `wrap_command()` → tokio (#47)
 - Workload profiles validated but not applied to child → env vars + child-side consumption (#47, #48)
-- Child didn't know parent_id → `ZEROCLAW_REPLY_TO` env var + prompt (#47)
+- Child didn't know parent_id → `SYNAPSECLAW_REPLY_TO` env var + prompt (#47)
 - Timeout didn't revoke child → lazy timeout in spawn-status endpoint (#47)
 - Legacy `wait=true` silently ignored → explicit error (#47)
 - MCP injected after allowlist filter → MCP suppressed under allowlist (#49)
@@ -107,7 +107,7 @@ All findings from two rounds of code review have been addressed:
 
 - **Ed25519 agent identity**: keypair per agent (persistent or ephemeral), broker stores public key
 - **Signed messages**: client auto-signs `{from}|{to}|{seq}|{timestamp}|{sha256(payload)}`; broker verifies against registered pubkey
-- **HMAC audit chain**: chained HMAC-SHA256 on audit events, `zeroclaw audit verify` CLI
+- **HMAC audit chain**: chained HMAC-SHA256 on audit events, `synapseclaw audit verify` CLI
 - **Replay protection**: sender-side monotonic seq (persisted) + 5-min timestamp window
 
 ### Scope clarification

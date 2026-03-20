@@ -1,4 +1,4 @@
-# CLAUDE.md — ZeroClaw
+# CLAUDE.md — SynapseClaw
 
 ## Commands
 
@@ -18,7 +18,7 @@ Docs-only changes: run markdown lint and link-integrity checks. If touching boot
 
 ## Project Snapshot
 
-ZeroClaw is a Rust-first autonomous agent runtime optimized for performance, efficiency, stability, extensibility, sustainability, and security.
+SynapseClaw is a Rust-first autonomous agent runtime optimized for performance, efficiency, stability, extensibility, sustainability, and security.
 
 Core architecture is trait-driven and modular. Extend by implementing traits and registering in factory modules.
 
@@ -74,7 +74,7 @@ Branch/commit/PR rules:
 
 ## Security Invariants
 
-- **Tool allowlist boundary** (`src/agent/loop_.rs`): When `ZEROCLAW_ALLOWED_TOOLS` is set (ephemeral agents), the allowlist filter is a **hard security boundary**. Any new tool injection path must either register tools **before** the filter, or be explicitly suppressed/filtered when the allowlist is active. Current correct order: built-ins → peripherals → **allowlist filter + delegate filter** → MCP (suppressed if allowlist active). Violating this invariant creates a sandbox escape. See PRs #48-#49 for context.
+- **Tool allowlist boundary** (`src/agent/loop_.rs`): When `SYNAPSECLAW_ALLOWED_TOOLS` is set (ephemeral agents), the allowlist filter is a **hard security boundary**. Any new tool injection path must either register tools **before** the filter, or be explicitly suppressed/filtered when the allowlist is active. Current correct order: built-ins → peripherals → **allowlist filter + delegate filter** → MCP (suppressed if allowlist active). Violating this invariant creates a sandbox escape. See PRs #48-#49 for context.
 
 ## Anti-Patterns
 
@@ -86,7 +86,7 @@ Branch/commit/PR rules:
 - Do not bypass failing checks without explicit explanation.
 - Do not hide behavior-changing side effects in refactor commits.
 - Do not include personal identity or sensitive information in test data, examples, docs, or commits.
-- Do not add tool injection paths after the `ZEROCLAW_ALLOWED_TOOLS` filter without explicit allowlist enforcement (see Security Invariants).
+- Do not add tool injection paths after the `SYNAPSECLAW_ALLOWED_TOOLS` filter without explicit allowlist enforcement (see Security Invariants).
 
 ## Linked References
 

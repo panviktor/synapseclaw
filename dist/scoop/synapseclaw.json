@@ -1,0 +1,27 @@
+{
+    "version": "0.4.3",
+    "description": "Zero overhead. Zero compromise. 100% Rust. The fastest, smallest AI assistant.",
+    "homepage": "https://github.com/panviktor/synapseclaw",
+    "license": "MIT|Apache-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/panviktor/synapseclaw/releases/download/v0.4.3/synapseclaw-x86_64-pc-windows-msvc.zip",
+            "hash": "",
+            "bin": "synapseclaw.exe"
+        }
+    },
+    "checkver": {
+        "github": "https://github.com/panviktor/synapseclaw"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/panviktor/synapseclaw/releases/download/v$version/synapseclaw-x86_64-pc-windows-msvc.zip"
+            }
+        },
+        "hash": {
+            "url": "https://github.com/panviktor/synapseclaw/releases/download/v$version/SHA256SUMS",
+            "regex": "([a-f0-9]{64})\\s+synapseclaw-x86_64-pc-windows-msvc\\.zip"
+        }
+    }
+}

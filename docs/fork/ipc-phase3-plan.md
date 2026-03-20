@@ -35,7 +35,7 @@ Phase 3A ships first. Phase 3B is only valuable after 3A works.
 
 Child processes run **on the parent's host** as **separate OS processes**, launched by the parent's local scheduler. The broker's role is limited to **identity provisioning and lifecycle management** — it issues ephemeral tokens, tracks session state, and handles revocation. The broker does not launch processes.
 
-**Breaking change from current scheduler**: the current `cron` scheduler runs agent jobs **in-process** via `crate::agent::run(config.clone(), ...)` (`scheduler.rs:175`). This means the child shares the parent's process, memory, and security context — it is not a "separate actor" in any meaningful sense. Phase 3A requires the scheduler to gain a **subprocess execution path**: `std::process::Command` / `tokio::process::Command` that launches `zeroclaw agent -m "..."` (or a dedicated `zeroclaw ephemeral` subcommand) as a separate OS process with its own PID, environment, and sandbox wrapping. The in-process path remains as legacy for `wait=false` fire-and-forget jobs without broker identity.
+**Breaking change from current scheduler**: the current `cron` scheduler runs agent jobs **in-process** via `crate::agent::run(config.clone(), ...)` (`scheduler.rs:175`). This means the child shares the parent's process, memory, and security context — it is not a "separate actor" in any meaningful sense. Phase 3A requires the scheduler to gain a **subprocess execution path**: `std::process::Command` / `tokio::process::Command` that launches `synapseclaw agent -m "..."` (or a dedicated `synapseclaw ephemeral` subcommand) as a separate OS process with its own PID, environment, and sandbox wrapping. The in-process path remains as legacy for `wait=false` fire-and-forget jobs without broker identity.
 
 **Why**: `agents_spawn` is already a local tool on top of `cron` (`agents_ipc.rs:692`). The distributed model from Phase 1 (`ipc-plan.md:15`) has agents on different hosts connecting to a shared broker. Broker-side compute would force all children onto the broker host, breaking this model. Instead:
 
@@ -189,7 +189,7 @@ Phase 3A and 3B have different trust models:
 ### Phase 3B
 
 4. **"An incident reviewer can verify who sent what and whether logs were tampered with."**
-   - Operator action: `zeroclaw audit verify --since 2026-03-14`
+   - Operator action: `synapseclaw audit verify --since 2026-03-14`
    - System behavior: HMAC chain validated, signature on each message verified against agent's registered public key
    - Security property: any modification or deletion of audit entries is detectable; message authorship is cryptographically attributable to the signing runtime
 
@@ -347,8 +347,8 @@ Provisioning (broker side, via POST /api/ipc/provision-ephemeral):
 Launching (parent side, local):
   7. Parent verifies sandbox available for trust_level (fail-closed)
   8. Parent launches child via cron::add_agent_job() with env vars:
-     - ZEROCLAW_BROKER_URL, ZEROCLAW_BROKER_TOKEN, ZEROCLAW_AGENT_ID
-     - ZEROCLAW_SESSION_ID, ZEROCLAW_REPLY_TO
+     - SYNAPSECLAW_BROKER_URL, SYNAPSECLAW_BROKER_TOKEN, SYNAPSECLAW_AGENT_ID
+     - SYNAPSECLAW_SESSION_ID, SYNAPSECLAW_REPLY_TO
   9. Parent polls spawn_runs by session_id (if wait=true)
 
 Teardown:
@@ -395,7 +395,7 @@ All terminal states: token removed from runtime `paired_tokens`, future requests
 | Promote result | `POST /admin/ipc/promote` (existing) | Done |
 | Revoke / kill | `POST /admin/ipc/revoke` (existing, extended for ephemeral) | 3A |
 | Quarantine / downgrade | `POST /admin/ipc/quarantine`, `/downgrade` (existing) | Done |
-| Show provenance | `zeroclaw audit verify` CLI | 3B |
+| Show provenance | `synapseclaw audit verify` CLI | 3B |
 
 ### For agents (IPC tools)
 
@@ -422,8 +422,8 @@ The agent knows nothing about Unix users, sandbox backends, or signing keys. Tho
 
 - Add `ExecutionMode` enum to `CronJob`: `InProcess` (current default) | `Subprocess`
 - `Subprocess` mode: launch child via `tokio::process::Command`:
-  - Binary: `zeroclaw agent -m "{prompt}"` (or dedicated `zeroclaw ephemeral` subcommand)
-  - Env vars from `env_overlay` (ZEROCLAW_BROKER_TOKEN, ZEROCLAW_AGENT_ID, etc.)
+  - Binary: `synapseclaw agent -m "{prompt}"` (or dedicated `synapseclaw ephemeral` subcommand)
+  - Env vars from `env_overlay` (SYNAPSECLAW_BROKER_TOKEN, SYNAPSECLAW_AGENT_ID, etc.)
   - Sandbox wrapping via `sandbox.wrap_command()` (existing `Sandbox` trait)
   - Working directory: workspace-only for L3+
   - Timeout: kill child process on expiry
@@ -462,7 +462,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
   1. Call `POST /api/ipc/provision-ephemeral` → get token + agent_id + session_id
   2. Resolve execution boundary from child's trust_level
   3. Verify sandbox available (fail-closed: `require_sandbox()`)
-  4. Call `add_agent_job()` with env var overlay (ZEROCLAW_BROKER_TOKEN, etc.)
+  4. Call `add_agent_job()` with env var overlay (SYNAPSECLAW_BROKER_TOKEN, etc.)
 - Wait mode:
   - Poll `GET /api/ipc/spawn-status?session_id=...` with exponential backoff (100ms → 5s cap)
   - Endpoint reads `spawn_runs` table (not inbox)
@@ -475,7 +475,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 **Files**: `src/agent/agent.rs` or `src/main.rs`
 
-- On startup, if `ZEROCLAW_BROKER_TOKEN` env var is set:
+- On startup, if `SYNAPSECLAW_BROKER_TOKEN` env var is set:
   - Override `agents_ipc` config with env values
   - Set `agents_ipc.enabled = true`
   - Agent can immediately use IPC tools (agents_reply, state_set)
@@ -565,8 +565,8 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 **Files**: `src/security/audit.rs`
 
 - Each audit event includes HMAC-SHA256 over `{prev_hmac}|{event_json}`
-- Per-instance HMAC key (generated on first run, stored in `~/.zeroclaw/audit.key`)
-- `zeroclaw audit verify` CLI command: reads audit.log, recomputes chain, reports breaks
+- Per-instance HMAC key (generated on first run, stored in `~/.synapseclaw/audit.key`)
+- `synapseclaw audit verify` CLI command: reads audit.log, recomputes chain, reports breaks
 - Tampered or deleted entries → chain break detected
 
 ### Step 10: Sender-side replay protection

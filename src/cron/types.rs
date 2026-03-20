@@ -13,7 +13,7 @@ pub enum JobType {
 /// How an agent job is executed by the scheduler.
 ///
 /// - `InProcess`: runs via `crate::agent::run()` in the scheduler's process (legacy default).
-/// - `Subprocess`: launches `zeroclaw agent -m "…"` as a separate OS process with its own PID,
+/// - `Subprocess`: launches `synapseclaw agent -m "…"` as a separate OS process with its own PID,
 ///   environment, and (eventually) sandbox wrapping.  Required for Phase 3A ephemeral agents.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]

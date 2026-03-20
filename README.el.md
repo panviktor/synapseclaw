@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="zeroclaw.png" alt="ZeroClaw" width="200" />
+  <img src="synapseclaw.png" alt="SynapseClaw" width="200" />
 </p>
 
-<h1 align="center">ZeroClaw 🦀</h1>
+<h1 align="center">SynapseClaw 🦀</h1>
 
 <p align="center">
   <strong>Μηδενικό overhead. Μηδενικός συμβιβασμός. 100% Rust. 100% Αγνωστικιστικό.</strong><br>
@@ -13,8 +13,8 @@
   <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
   <a href="NOTICE"><img src="https://img.shields.io/badge/contributors-27+-green.svg" alt="Contributors" /></a>
   <a href="https://buymeacoffee.com/argenistherose"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee" alt="Buy Me a Coffee" /></a>
-  <a href="https://x.com/zeroclawlabs?s=21"><img src="https://img.shields.io/badge/X-%40zeroclawlabs-000000?style=flat&logo=x&logoColor=white" alt="X: @zeroclawlabs" /></a>
-  <a href="https://www.facebook.com/groups/zeroclaw"><img src="https://img.shields.io/badge/Facebook-Group-1877F2?style=flat&logo=facebook&logoColor=white" alt="Facebook Group" /></a>
+  <a href="https://x.com/synapseclaw?s=21"><img src="https://img.shields.io/badge/X-%40synapseclaw-000000?style=flat&logo=x&logoColor=white" alt="X: @synapseclaw" /></a>
+  <a href="https://www.facebook.com/groups/synapseclaw"><img src="https://img.shields.io/badge/Facebook-Group-1877F2?style=flat&logo=facebook&logoColor=white" alt="Facebook Group" /></a>
 </p>
 
 <p align="center">
@@ -66,9 +66,9 @@
 
 > **📝 Σημείωση:** Αυτό είναι ένα συνοπτικό README στα ελληνικά. Για πλήρη τεκμηρίωση, ανατρέξτε στο [αγγλικό README](README.md). Οι σύνδεσμοι τεκμηρίωσης παραπέμπουν στην αγγλική τεκμηρίωση.
 
-## Τι είναι το ZeroClaw;
+## Τι είναι το SynapseClaw;
 
-Το ZeroClaw είναι μια ελαφριά, μεταβλητή και επεκτάσιμη υποδομή AI βοηθού χτισμένη σε Rust. Συνδέει διάφορους παρόχους LLM (Anthropic, OpenAI, Google, Ollama, κλπ.) μέσω μιας ενοποιημένης διεπαφής και υποστηρίζει πολλαπλά κανάλια (Telegram, Matrix, CLI, κλπ.).
+Το SynapseClaw είναι μια ελαφριά, μεταβλητή και επεκτάσιμη υποδομή AI βοηθού χτισμένη σε Rust. Συνδέει διάφορους παρόχους LLM (Anthropic, OpenAI, Google, Ollama, κλπ.) μέσω μιας ενοποιημένης διεπαφής και υποστηρίζει πολλαπλά κανάλια (Telegram, Matrix, CLI, κλπ.).
 
 ### Κύρια Χαρακτηριστικά
 
@@ -92,8 +92,8 @@
 
 ```bash
 # Κλωνοποιήστε το repository
-git clone https://github.com/zeroclaw-labs/zeroclaw.git
-cd zeroclaw
+git clone https://github.com/panviktor/synapseclaw.git
+cd synapseclaw
 
 # Κατασκευή
 cargo build --release
@@ -106,17 +106,17 @@ cargo run --release
 
 ```bash
 docker run -d \
-  --name zeroclaw \
+  --name synapseclaw \
   -e ANTHROPIC_API_KEY=your_key \
-  -v zeroclaw-data:/app/data \
-  zeroclaw/zeroclaw:latest
+  -v synapseclaw-data:/app/data \
+  synapseclaw/synapseclaw:latest
 ```
 
 ---
 
 ## Ρύθμιση
 
-Το ZeroClaw χρησιμοποιεί ένα αρχείο ρύθμισης YAML. Από προεπιλογή, αναζητά το `config.yaml`.
+Το SynapseClaw χρησιμοποιεί ένα αρχείο ρύθμισης YAML. Από προεπιλογή, αναζητά το `config.yaml`.
 
 ```yaml
 # Προεπιλεγμένος πάροχος
@@ -175,15 +175,15 @@ channels:
 
 ## Κοινότητα
 
-- [Telegram](https://t.me/zeroclawlabs)
-- [Facebook Group](https://www.facebook.com/groups/zeroclaw)
-- [WeChat Group](https://zeroclawlabs.cn/group.jpg)
+- [Telegram](https://t.me/synapseclaw)
+- [Facebook Group](https://www.facebook.com/groups/synapseclaw)
+- [WeChat Group](https://synapseclaw.cn/group.jpg)
 
 ---
 
 ## Χορηγοί
 
-Αν το ZeroClaw είναι χρήσιμο για εσάς, παρακαλώ σκεφτείτε να μας αγοράσετε έναν καφέ:
+Αν το SynapseClaw είναι χρήσιμο για εσάς, παρακαλώ σκεφτείτε να μας αγοράσετε έναν καφέ:
 
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee)](https://buymeacoffee.com/argenistherose)
 

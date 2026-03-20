@@ -6,7 +6,7 @@ user-invocable: true
 
 # IPC Smoke Test
 
-Run end-to-end smoke tests against a running ZeroClaw broker.
+Run end-to-end smoke tests against a running SynapseClaw broker.
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ Check that the gateway is running:
 curl -sf http://127.0.0.1:42617/health
 ```
 
-If not running, tell the user to start it (`zeroclaw daemon` or `zeroclaw gateway`).
+If not running, tell the user to start it (`synapseclaw daemon` or `synapseclaw gateway`).
 
 Check IPC is enabled:
 ```bash

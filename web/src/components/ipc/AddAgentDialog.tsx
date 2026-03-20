@@ -436,11 +436,11 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
             <details className="text-xs text-[#556080]">
               <summary className="cursor-pointer text-[#8892a8] hover:text-white transition-colors">Manual setup instructions</summary>
               <div className="mt-2 p-3 rounded-lg bg-[#050510] border border-[#1a1a3e]/50 space-y-2">
-                <p>1. Place config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code> and instructions.md in <code className="text-[#0080ff]">~/.zeroclaw/workspace/</code></p>
+                <p>1. Place config.toml in <code className="text-[#0080ff]">~/.synapseclaw/</code> and instructions.md in <code className="text-[#0080ff]">~/.synapseclaw/workspace/</code></p>
                 <p>2. Pair with broker:</p>
                 <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: {pairingCode}&apos;</pre>
                 <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in config.toml under [agents_ipc]</p>
-                <p>4. Run: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
+                <p>4. Run: <code className="text-[#0080ff]">synapseclaw daemon</code></p>
               </div>
             </details>
 

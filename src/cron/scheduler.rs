@@ -224,15 +224,15 @@ const SUBPROCESS_AGENT_TIMEOUT_SECS: u64 = 600;
 async fn run_agent_job_subprocess(config: &Config, job: &CronJob) -> (bool, String) {
     let prompt = job.prompt.clone().unwrap_or_default();
 
-    // Resolve the zeroclaw binary: prefer current executable, then PATH.
+    // Resolve the synapseclaw binary: prefer current executable, then PATH.
     let binary = match std::env::current_exe() {
         Ok(exe) if exe.exists() => exe,
-        _ => match which::which("zeroclaw") {
+        _ => match which::which("synapseclaw") {
             Ok(path) => path,
             Err(_) => {
                 return (
                     false,
-                    "subprocess spawn failed: cannot find zeroclaw binary".to_string(),
+                    "subprocess spawn failed: cannot find synapseclaw binary".to_string(),
                 )
             }
         },
@@ -283,7 +283,7 @@ async fn run_agent_job_subprocess(config: &Config, job: &CronJob) -> (bool, Stri
 
     let timeout_secs = job
         .env_overlay
-        .get("ZEROCLAW_TIMEOUT_SECS")
+        .get("SYNAPSECLAW_TIMEOUT_SECS")
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(SUBPROCESS_AGENT_TIMEOUT_SECS);
 
@@ -514,7 +514,7 @@ pub(crate) async fn deliver_announcement(
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("matrix channel not configured"))?;
                 let room_id = resolve_matrix_delivery_room(&mx.room_id, target);
-                let channel = MatrixChannel::new_with_session_hint_and_zeroclaw_dir(
+                let channel = MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
                     mx.homeserver.clone(),
                     mx.access_token.clone(),
                     room_id,
@@ -1271,13 +1271,13 @@ mod tests {
     #[tokio::test]
     async fn run_agent_job_subprocess_dispatches_to_subprocess_mode() {
         // Verify subprocess mode attempts to launch a process (will fail to find
-        // a usable zeroclaw binary in test context, but the dispatch path is exercised).
+        // a usable synapseclaw binary in test context, but the dispatch path is exercised).
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let security = SecurityPolicy::from_config(&config.autonomy, &config.workspace_dir);
         let mut job = subprocess_agent_job("hello world");
         job.env_overlay
-            .insert("ZEROCLAW_TIMEOUT_SECS".into(), "5".into());
+            .insert("SYNAPSECLAW_TIMEOUT_SECS".into(), "5".into());
 
         let (_, output) = Box::pin(run_agent_job(&config, &security, &job)).await;
 
@@ -1327,8 +1327,8 @@ mod tests {
         let at = Utc::now() + ChronoDuration::minutes(10);
 
         let mut env = std::collections::HashMap::new();
-        env.insert("ZEROCLAW_BROKER_TOKEN".into(), "tok-123".into());
-        env.insert("ZEROCLAW_AGENT_ID".into(), "eph-test".into());
+        env.insert("SYNAPSECLAW_BROKER_TOKEN".into(), "tok-123".into());
+        env.insert("SYNAPSECLAW_AGENT_ID".into(), "eph-test".into());
 
         let job = cron::add_agent_job_full(
             &config,
@@ -1347,12 +1347,12 @@ mod tests {
         assert_eq!(job.execution_mode, ExecutionMode::Subprocess);
         assert_eq!(
             job.env_overlay
-                .get("ZEROCLAW_BROKER_TOKEN")
+                .get("SYNAPSECLAW_BROKER_TOKEN")
                 .map(String::as_str),
             Some("tok-123")
         );
         assert_eq!(
-            job.env_overlay.get("ZEROCLAW_AGENT_ID").map(String::as_str),
+            job.env_overlay.get("SYNAPSECLAW_AGENT_ID").map(String::as_str),
             Some("eph-test")
         );
 
@@ -1363,7 +1363,7 @@ mod tests {
         assert_eq!(
             loaded
                 .env_overlay
-                .get("ZEROCLAW_BROKER_TOKEN")
+                .get("SYNAPSECLAW_BROKER_TOKEN")
                 .map(String::as_str),
             Some("tok-123")
         );

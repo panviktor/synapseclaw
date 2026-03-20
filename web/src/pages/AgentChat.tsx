@@ -48,7 +48,7 @@ export default function AgentChat() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [agents, setAgents] = useState<AgentEntry[]>([]);
   const [activeAgent, setActiveAgent] = useState<string | null>(
-    () => localStorage.getItem('zeroclaw_active_agent') || null,
+    () => localStorage.getItem('synapseclaw_active_agent') || null,
   );
 
   const wsRef = useRef<WebSocketClient | null>(null);
@@ -65,7 +65,7 @@ export default function AgentChat() {
   useEffect(() => {
     if (agentFromUrl && agentFromUrl !== activeAgent) {
       setActiveAgent(agentFromUrl);
-      localStorage.setItem('zeroclaw_active_agent', agentFromUrl);
+      localStorage.setItem('synapseclaw_active_agent', agentFromUrl);
     }
   }, [agentFromUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -347,9 +347,9 @@ export default function AgentChat() {
       const newAgent = agentId || null;
       setActiveAgent(newAgent);
       if (newAgent) {
-        localStorage.setItem('zeroclaw_active_agent', newAgent);
+        localStorage.setItem('synapseclaw_active_agent', newAgent);
       } else {
-        localStorage.removeItem('zeroclaw_active_agent');
+        localStorage.removeItem('synapseclaw_active_agent');
       }
       // WS will reconnect via useEffect dependency on activeAgent.
       // Clear current session state — new agent has different sessions.
@@ -572,7 +572,7 @@ export default function AgentChat() {
               >
                 <Bot className="h-8 w-8 text-[#0080ff]" />
               </div>
-              <p className="text-lg font-semibold text-white mb-1">ZeroClaw Agent</p>
+              <p className="text-lg font-semibold text-white mb-1">SynapseClaw Agent</p>
               <p className="text-sm text-[#556080]">Send a message to start the conversation</p>
             </div>
           ) : (

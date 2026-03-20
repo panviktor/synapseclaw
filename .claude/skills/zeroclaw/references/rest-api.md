@@ -1,6 +1,6 @@
-# ZeroClaw REST API Reference
+# SynapseClaw REST API Reference
 
-Complete endpoint reference for the ZeroClaw gateway HTTP API.
+Complete endpoint reference for the SynapseClaw gateway HTTP API.
 
 ## Table of Contents
 

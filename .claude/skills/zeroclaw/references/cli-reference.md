@@ -1,6 +1,6 @@
-# ZeroClaw CLI Reference
+# SynapseClaw CLI Reference
 
-Complete command reference for the `zeroclaw` binary.
+Complete command reference for the `synapseclaw` binary.
 
 ## Table of Contents
 
@@ -25,11 +25,11 @@ Complete command reference for the `zeroclaw` binary.
 Interactive chat or single-message mode.
 
 ```bash
-zeroclaw agent                                          # Interactive REPL
-zeroclaw agent -m "Summarize today's logs"              # Single message
-zeroclaw agent -p anthropic --model claude-sonnet-4-6   # Override provider/model
-zeroclaw agent -t 0.3                                   # Set temperature
-zeroclaw agent --peripheral nucleo-f401re:/dev/ttyACM0  # Attach hardware
+synapseclaw agent                                          # Interactive REPL
+synapseclaw agent -m "Summarize today's logs"              # Single message
+synapseclaw agent -p anthropic --model claude-sonnet-4-6   # Override provider/model
+synapseclaw agent -t 0.3                                   # Set temperature
+synapseclaw agent --peripheral nucleo-f401re:/dev/ttyACM0  # Attach hardware
 ```
 
 **Key flags:**
@@ -48,12 +48,12 @@ The agent has access to 30+ tools gated by security policy: shell, file_read, fi
 First-time setup or reconfiguration.
 
 ```bash
-zeroclaw onboard                                 # Quick mode (default: openrouter)
-zeroclaw onboard --provider anthropic            # Quick mode with specific provider
-zeroclaw onboard                                 # Guided wizard (default)
-zeroclaw onboard --memory sqlite                 # Set memory backend
-zeroclaw onboard --force                         # Overwrite existing config
-zeroclaw onboard --channels-only                 # Repair channels only
+synapseclaw onboard                                 # Quick mode (default: openrouter)
+synapseclaw onboard --provider anthropic            # Quick mode with specific provider
+synapseclaw onboard                                 # Guided wizard (default)
+synapseclaw onboard --memory sqlite                 # Set memory backend
+synapseclaw onboard --force                         # Overwrite existing config
+synapseclaw onboard --channels-only                 # Repair channels only
 ```
 
 **Key flags:**
@@ -64,17 +64,17 @@ zeroclaw onboard --channels-only                 # Repair channels only
 - `--channels-only` — only repair channel configuration
 - `--reinit` — start fresh (backs up existing config)
 
-Creates `~/.zeroclaw/config.toml` with `0600` permissions.
+Creates `~/.synapseclaw/config.toml` with `0600` permissions.
 
 ---
 
 ## Status & Diagnostics
 
 ```bash
-zeroclaw status                    # System overview
-zeroclaw doctor                    # Run all diagnostic checks
-zeroclaw doctor models             # Probe model connectivity
-zeroclaw doctor traces             # Query execution traces
+synapseclaw status                    # System overview
+synapseclaw doctor                    # Run all diagnostic checks
+synapseclaw doctor models             # Probe model connectivity
+synapseclaw doctor traces             # Query execution traces
 ```
 
 ---
@@ -82,11 +82,11 @@ zeroclaw doctor traces             # Query execution traces
 ## Memory
 
 ```bash
-zeroclaw memory list                              # List all entries
-zeroclaw memory list --category core --limit 10   # Filtered list
-zeroclaw memory get "some-key"                    # Get specific entry
-zeroclaw memory stats                             # Usage statistics
-zeroclaw memory clear --key "prefix" --yes        # Delete entries (requires --yes)
+synapseclaw memory list                              # List all entries
+synapseclaw memory list --category core --limit 10   # Filtered list
+synapseclaw memory get "some-key"                    # Get specific entry
+synapseclaw memory stats                             # Usage statistics
+synapseclaw memory clear --key "prefix" --yes        # Delete entries (requires --yes)
 ```
 
 **Key flags:**
@@ -100,14 +100,14 @@ zeroclaw memory clear --key "prefix" --yes        # Delete entries (requires --y
 ## Cron
 
 ```bash
-zeroclaw cron list                                                      # List all jobs
-zeroclaw cron add '0 9 * * 1-5' 'Good morning' --tz America/New_York   # Recurring (cron expr)
-zeroclaw cron add-at '2026-03-11T10:00:00Z' 'Remind me about meeting'  # One-time at specific time
-zeroclaw cron add-every 3600000 'Check server health'                   # Interval in milliseconds
-zeroclaw cron once 30m 'Follow up on that task'                         # Delay from now
-zeroclaw cron pause <id>                                                # Pause job
-zeroclaw cron resume <id>                                               # Resume job
-zeroclaw cron remove <id>                                               # Delete job
+synapseclaw cron list                                                      # List all jobs
+synapseclaw cron add '0 9 * * 1-5' 'Good morning' --tz America/New_York   # Recurring (cron expr)
+synapseclaw cron add-at '2026-03-11T10:00:00Z' 'Remind me about meeting'  # One-time at specific time
+synapseclaw cron add-every 3600000 'Check server health'                   # Interval in milliseconds
+synapseclaw cron once 30m 'Follow up on that task'                         # Delay from now
+synapseclaw cron pause <id>                                                # Pause job
+synapseclaw cron resume <id>                                               # Resume job
+synapseclaw cron remove <id>                                               # Delete job
 ```
 
 **Subcommands:**
@@ -121,11 +121,11 @@ zeroclaw cron remove <id>                                               # Delete
 ## Providers & Models
 
 ```bash
-zeroclaw providers                                # List all 40+ supported providers
-zeroclaw models list                              # Show cached model catalog
-zeroclaw models refresh --all                     # Refresh catalogs from all providers
-zeroclaw models set anthropic/claude-sonnet-4-6   # Set default model
-zeroclaw models status                            # Current model info
+synapseclaw providers                                # List all 40+ supported providers
+synapseclaw models list                              # Show cached model catalog
+synapseclaw models refresh --all                     # Refresh catalogs from all providers
+synapseclaw models set anthropic/claude-sonnet-4-6   # Set default model
+synapseclaw models status                            # Current model info
 ```
 
 Model routing in config.toml:
@@ -141,11 +141,11 @@ model = "anthropic/claude-sonnet-4-6"
 ## Gateway & Daemon
 
 ```bash
-zeroclaw gateway                                 # Start HTTP gateway (foreground)
-zeroclaw gateway -p 8080 --host 127.0.0.1        # Custom port/host
+synapseclaw gateway                                 # Start HTTP gateway (foreground)
+synapseclaw gateway -p 8080 --host 127.0.0.1        # Custom port/host
 
-zeroclaw daemon                                  # Gateway + channels + scheduler + heartbeat
-zeroclaw daemon -p 8080 --host 0.0.0.0           # Custom bind
+synapseclaw daemon                                  # Gateway + channels + scheduler + heartbeat
+synapseclaw daemon -p 8080 --host 0.0.0.0           # Custom bind
 ```
 
 **Gateway defaults:**
@@ -161,17 +161,17 @@ zeroclaw daemon -p 8080 --host 0.0.0.0           # Custom bind
 OS service lifecycle (systemd on Linux, launchd on macOS).
 
 ```bash
-zeroclaw service install     # Install as system service
-zeroclaw service start       # Start the service
-zeroclaw service status      # Check service status
-zeroclaw service stop        # Stop the service
-zeroclaw service restart     # Restart the service
-zeroclaw service uninstall   # Remove the service
+synapseclaw service install     # Install as system service
+synapseclaw service start       # Start the service
+synapseclaw service status      # Check service status
+synapseclaw service stop        # Stop the service
+synapseclaw service restart     # Restart the service
+synapseclaw service uninstall   # Remove the service
 ```
 
 **Logs:**
-- macOS: `~/.zeroclaw/logs/daemon.stdout.log`
-- Linux: `journalctl -u zeroclaw`
+- macOS: `~/.synapseclaw/logs/daemon.stdout.log`
+- Linux: `journalctl -u synapseclaw`
 
 ---
 
@@ -180,8 +180,8 @@ zeroclaw service uninstall   # Remove the service
 Channels are configured in `config.toml` under `[channels]` and `[channels_config.*]`.
 
 ```bash
-zeroclaw channels list       # List configured channels
-zeroclaw channels doctor     # Check channel health
+synapseclaw channels list       # List configured channels
+synapseclaw channels doctor     # Check channel health
 ```
 
 Supported channels (21 total): Telegram, Discord, Slack, WhatsApp (Meta), WATI, Linq (iMessage/RCS/SMS), Email (IMAP/SMTP), IRC, Matrix, Nostr, Signal, Nextcloud Talk, and more.
@@ -201,12 +201,12 @@ allowed_users = [123456789]
 ## Security & Emergency Stop
 
 ```bash
-zeroclaw estop --level kill-all                              # Stop everything
-zeroclaw estop --level network-kill                          # Block all network access
-zeroclaw estop --level domain-block --domain "*.example.com" # Block specific domains
-zeroclaw estop --level tool-freeze --tool shell              # Freeze specific tool
-zeroclaw estop status                                        # Check estop state
-zeroclaw estop resume --network                              # Resume (may require OTP)
+synapseclaw estop --level kill-all                              # Stop everything
+synapseclaw estop --level network-kill                          # Block all network access
+synapseclaw estop --level domain-block --domain "*.example.com" # Block specific domains
+synapseclaw estop --level tool-freeze --tool shell              # Freeze specific tool
+synapseclaw estop status                                        # Check estop state
+synapseclaw estop resume --network                              # Resume (may require OTP)
 ```
 
 **Estop levels:**
@@ -231,27 +231,27 @@ max_cost_per_day_cents = 500
 ## Hardware Peripherals
 
 ```bash
-zeroclaw hardware discover                              # Find USB devices
-zeroclaw hardware introspect /dev/ttyACM0               # Probe device capabilities
-zeroclaw peripheral list                                # List configured peripherals
-zeroclaw peripheral add nucleo-f401re /dev/ttyACM0      # Add peripheral
-zeroclaw peripheral flash-nucleo                        # Flash STM32 firmware
-zeroclaw peripheral flash --port /dev/cu.usbmodem101    # Flash Arduino firmware
+synapseclaw hardware discover                              # Find USB devices
+synapseclaw hardware introspect /dev/ttyACM0               # Probe device capabilities
+synapseclaw peripheral list                                # List configured peripherals
+synapseclaw peripheral add nucleo-f401re /dev/ttyACM0      # Add peripheral
+synapseclaw peripheral flash-nucleo                        # Flash STM32 firmware
+synapseclaw peripheral flash --port /dev/cu.usbmodem101    # Flash Arduino firmware
 ```
 
 **Supported boards:** STM32 Nucleo-F401RE, Arduino Uno R4, Raspberry Pi GPIO, ESP32.
 
-Attach to agent session: `zeroclaw agent --peripheral nucleo-f401re:/dev/ttyACM0`
+Attach to agent session: `synapseclaw agent --peripheral nucleo-f401re:/dev/ttyACM0`
 
 ---
 
 ## Skills
 
 ```bash
-zeroclaw skills list         # List installed skills
-zeroclaw skills install <path-or-url>  # Install a skill
-zeroclaw skills audit        # Audit installed skills
-zeroclaw skills remove <name>  # Remove a skill
+synapseclaw skills list         # List installed skills
+synapseclaw skills install <path-or-url>  # Install a skill
+synapseclaw skills audit        # Audit installed skills
+synapseclaw skills remove <name>  # Remove a skill
 ```
 
 ---
@@ -259,19 +259,19 @@ zeroclaw skills remove <name>  # Remove a skill
 ## Shell Completions
 
 ```bash
-zeroclaw completions zsh     # Generate Zsh completions
-zeroclaw completions bash    # Generate Bash completions
-zeroclaw completions fish    # Generate Fish completions
+synapseclaw completions zsh     # Generate Zsh completions
+synapseclaw completions bash    # Generate Bash completions
+synapseclaw completions fish    # Generate Fish completions
 ```
 
 ---
 
 ## Config File
 
-Default location: `~/.zeroclaw/config.toml`
+Default location: `~/.synapseclaw/config.toml`
 
 Config resolution order (first match wins):
-1. `ZEROCLAW_CONFIG_DIR` environment variable
-2. `ZEROCLAW_WORKSPACE` environment variable
-3. `~/.zeroclaw/active_workspace.toml` marker file
-4. `~/.zeroclaw/config.toml` (default)
+1. `SYNAPSECLAW_CONFIG_DIR` environment variable
+2. `SYNAPSECLAW_WORKSPACE` environment variable
+3. `~/.synapseclaw/active_workspace.toml` marker file
+4. `~/.synapseclaw/config.toml` (default)

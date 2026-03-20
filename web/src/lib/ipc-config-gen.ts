@@ -37,7 +37,7 @@ export function generateAgentConfig(inputs: AgentConfigInputs): string {
   const provider = getProviderById(inputs.providerId);
   const lines: string[] = [];
 
-  lines.push('# ZeroClaw Agent Configuration');
+  lines.push('# SynapseClaw Agent Configuration');
   lines.push(`# Generated for agent: ${inputs.agentId}`);
   lines.push('');
 

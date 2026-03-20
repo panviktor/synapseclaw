@@ -3,15 +3,15 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
-use zeroclaw::agent::agent::Agent;
-use zeroclaw::agent::dispatcher::{NativeToolDispatcher, XmlToolDispatcher};
-use zeroclaw::agent::memory_loader::MemoryLoader;
-use zeroclaw::config::MemoryConfig;
-use zeroclaw::memory;
-use zeroclaw::memory::Memory;
-use zeroclaw::observability::{NoopObserver, Observer};
-use zeroclaw::providers::{ChatResponse, Provider, ToolCall};
-use zeroclaw::tools::Tool;
+use synapseclaw::agent::agent::Agent;
+use synapseclaw::agent::dispatcher::{NativeToolDispatcher, XmlToolDispatcher};
+use synapseclaw::agent::memory_loader::MemoryLoader;
+use synapseclaw::config::MemoryConfig;
+use synapseclaw::memory;
+use synapseclaw::memory::Memory;
+use synapseclaw::observability::{NoopObserver, Observer};
+use synapseclaw::providers::{ChatResponse, Provider, ToolCall};
+use synapseclaw::tools::Tool;
 
 /// Create an in-memory "none" backend for tests.
 pub fn make_memory() -> Arc<dyn Memory> {

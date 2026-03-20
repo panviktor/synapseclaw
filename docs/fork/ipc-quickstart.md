@@ -8,7 +8,7 @@ Full design: [`ipc-plan.md`](ipc-plan.md) | Progress: [`ipc-progress.md`](ipc-pr
 
 ## 1. Broker Config
 
-The broker is the ZeroClaw instance that runs the gateway with IPC routes.
+The broker is the SynapseClaw instance that runs the gateway with IPC routes.
 Typically this is your primary (Opus / L1) agent.
 
 ```toml
@@ -358,7 +358,7 @@ Parent: poll returns {status: "completed", result: "..."}
 ```
 
 Child processes auto-configure IPC from environment variables set by the parent:
-- `ZEROCLAW_BROKER_TOKEN` — ephemeral bearer token
-- `ZEROCLAW_BROKER_URL` — broker gateway URL
-- `ZEROCLAW_AGENT_ID` — ephemeral agent identity
-- `ZEROCLAW_SESSION_ID` — spawn session for reply correlation
+- `SYNAPSECLAW_BROKER_TOKEN` — ephemeral bearer token
+- `SYNAPSECLAW_BROKER_URL` — broker gateway URL
+- `SYNAPSECLAW_AGENT_ID` — ephemeral agent identity
+- `SYNAPSECLAW_SESSION_ID` — spawn session for reply correlation

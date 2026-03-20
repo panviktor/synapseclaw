@@ -135,7 +135,7 @@ Initialize conditionally:
 
 ```rust
 let audit_logger = if config.security.audit.enabled {
-    match AuditLogger::new(config.security.audit.clone(), zeroclaw_dir.clone()) {
+    match AuditLogger::new(config.security.audit.clone(), synapseclaw_dir.clone()) {
         Ok(logger) => Some(Arc::new(logger)),
         Err(e) => {
             tracing::warn!("Failed to initialize audit logger: {e}");

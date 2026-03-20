@@ -22,7 +22,7 @@ Without Phase 3.5:
 - Operator cannot see which agents are alive without `curl /admin/ipc/agents | jq`
 - Quarantine review requires manual `POST /admin/ipc/promote` per message
 - Spawn lifecycle is invisible unless you poll `spawn_runs` by hand
-- Audit chain verification requires `zeroclaw audit verify` CLI
+- Audit chain verification requires `synapseclaw audit verify` CLI
 - Incident investigation requires reading JSONL files
 
 With Phase 3.5:

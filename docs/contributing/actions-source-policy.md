@@ -50,8 +50,8 @@ Record each policy change with:
 Use these commands to export the current effective policy:
 
 ```bash
-gh api repos/zeroclaw-labs/zeroclaw/actions/permissions
-gh api repos/zeroclaw-labs/zeroclaw/actions/permissions/selected-actions
+gh api repos/panviktor/synapseclaw/actions/permissions
+gh api repos/panviktor/synapseclaw/actions/permissions/selected-actions
 ```
 
 ## Guardrails
