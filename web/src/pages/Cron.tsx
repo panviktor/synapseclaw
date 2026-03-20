@@ -233,6 +233,10 @@ export default function Cron() {
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
+      <div>
+        <h1 className="text-2xl font-bold text-gradient-blue">{t('cron.title')}</h1>
+        <p className="text-xs text-[#556080] mt-1">{t('cron.subtitle')}</p>
+      </div>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">

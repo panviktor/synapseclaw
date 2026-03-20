@@ -137,7 +137,10 @@ export default function Logs() {
       <div className="flex items-center justify-between px-6 py-3 border-b border-[#1a1a3e]/40 animate-fade-in" style={{ background: 'linear-gradient(90deg, rgba(8,8,24,0.9), rgba(5,5,16,0.9))' }}>
         <div className="flex items-center gap-3">
           <Activity className="h-5 w-5 text-[#0080ff]" />
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wider">{t('logs.live_logs')}</h2>
+          <div>
+            <h2 className="text-sm font-semibold text-white uppercase tracking-wider">{t('logs.live_logs')}</h2>
+            <p className="text-[10px] text-[#556080]">{t('logs.subtitle')}</p>
+          </div>
           <div className="flex items-center gap-2 ml-2">
             <span
               className={`inline-block h-1.5 w-1.5 rounded-full glow-dot ${

@@ -76,7 +76,10 @@ export default function Sessions() {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.sessions_title')}</h1>
+      <div>
+        <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.sessions_title')}</h1>
+        <p className="text-xs text-[#556080] mt-1">{t('ipc.sessions_subtitle')}</p>
+      </div>
 
       {/* Filters */}
       <div className="glass-card p-4 flex flex-wrap gap-3 items-end">

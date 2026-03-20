@@ -61,6 +61,10 @@ export default function Tools() {
 
   return (
     <div className="p-6 space-y-6 animate-fade-in">
+      <div>
+        <h1 className="text-2xl font-bold text-gradient-blue">{t('tools.title')}</h1>
+        <p className="text-xs text-[#556080] mt-1">{t('tools.subtitle')}</p>
+      </div>
       {/* Search */}
       <div className="relative max-w-md">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[#334060]" />

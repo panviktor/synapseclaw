@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Sparkles, Users } from 'lucide-react';
 import type { ChatSessionInfo, StatusResponse } from '@/types/api';
 import type { AgentEntry } from '@/lib/api';
+import { t } from '@/lib/i18n';
 
 interface SessionSidebarProps {
   sessions: ChatSessionInfo[];
@@ -185,13 +186,14 @@ export default function SessionSidebar({
             ) : (
               <span
                 className="text-[10px] text-[#556080] truncate cursor-pointer hover:text-[#8890a8] transition-colors"
-                title={`Summary: ${status.summary_model ?? 'same as primary'} (click to change)`}
+                title={`${t('agent.summary_model')}: ${status.summary_model ?? 'same as primary'} (click to change)`}
                 onClick={() => {
                   setSummaryModelInput(status.summary_model ?? '');
                   setEditingSummaryModel(true);
                 }}
               >
-                {status.summary_model ? shortModel(status.summary_model) : 'auto'}
+                <span className="text-[#334060]">{t('agent.summary_model')}:</span>{' '}
+                {status.summary_model ? shortModel(status.summary_model) : t('agent.summary_auto')}
               </span>
             )}
           </div>

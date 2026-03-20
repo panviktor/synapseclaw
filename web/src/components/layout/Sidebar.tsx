@@ -27,38 +27,40 @@ interface NavItem {
   to: string;
   icon: React.ComponentType<{ className?: string }>;
   labelKey: string;
+  descKey?: string;
   end?: boolean;
 }
 
 const navItems: NavItem[] = [
-  { to: '/', icon: LayoutDashboard, labelKey: 'nav.dashboard', end: true },
-  { to: '/agents', icon: MessageSquare, labelKey: 'nav.agents' },
-  { to: '/tools', icon: Wrench, labelKey: 'nav.tools' },
-  { to: '/cron', icon: Clock, labelKey: 'nav.cron' },
-  { to: '/integrations', icon: Puzzle, labelKey: 'nav.integrations' },
-  { to: '/memory', icon: Brain, labelKey: 'nav.memory' },
-  { to: '/config', icon: Settings, labelKey: 'nav.config' },
-  { to: '/cost', icon: DollarSign, labelKey: 'nav.cost' },
-  { to: '/logs', icon: Activity, labelKey: 'nav.logs' },
-  { to: '/doctor', icon: Stethoscope, labelKey: 'nav.doctor' },
+  { to: '/', icon: LayoutDashboard, labelKey: 'nav.dashboard', descKey: 'dashboard.subtitle', end: true },
+  { to: '/agents', icon: MessageSquare, labelKey: 'nav.agents', descKey: 'agent.subtitle' },
+  { to: '/tools', icon: Wrench, labelKey: 'nav.tools', descKey: 'tools.subtitle' },
+  { to: '/cron', icon: Clock, labelKey: 'nav.cron', descKey: 'cron.subtitle' },
+  { to: '/integrations', icon: Puzzle, labelKey: 'nav.integrations', descKey: 'integrations.subtitle' },
+  { to: '/memory', icon: Brain, labelKey: 'nav.memory', descKey: 'memory.subtitle' },
+  { to: '/config', icon: Settings, labelKey: 'nav.config', descKey: 'config.subtitle' },
+  { to: '/cost', icon: DollarSign, labelKey: 'nav.cost', descKey: 'cost.subtitle' },
+  { to: '/logs', icon: Activity, labelKey: 'nav.logs', descKey: 'logs.subtitle' },
+  { to: '/doctor', icon: Stethoscope, labelKey: 'nav.doctor', descKey: 'doctor.subtitle' },
 ];
 
 const ipcNavItems: NavItem[] = [
-  { to: '/ipc/fleet', icon: Users, labelKey: 'nav.ipc_fleet' },
-  { to: '/ipc/activity', icon: Radio, labelKey: 'nav.ipc_activity' },
-  { to: '/ipc/sessions', icon: ScrollText, labelKey: 'nav.ipc_sessions' },
-  { to: '/ipc/spawns', icon: Rocket, labelKey: 'nav.ipc_spawns' },
-  { to: '/ipc/quarantine', icon: ShieldAlert, labelKey: 'nav.ipc_quarantine' },
-  { to: '/ipc/audit', icon: FileSearch, labelKey: 'nav.ipc_audit' },
-  { to: '/ipc/cron', icon: Timer, labelKey: 'nav.ipc_cron' },
+  { to: '/ipc/fleet', icon: Users, labelKey: 'nav.ipc_fleet', descKey: 'ipc.fleet_subtitle' },
+  { to: '/ipc/activity', icon: Radio, labelKey: 'nav.ipc_activity', descKey: 'ipc.activity_subtitle' },
+  { to: '/ipc/sessions', icon: ScrollText, labelKey: 'nav.ipc_sessions', descKey: 'ipc.sessions_subtitle' },
+  { to: '/ipc/spawns', icon: Rocket, labelKey: 'nav.ipc_spawns', descKey: 'ipc.spawns_subtitle' },
+  { to: '/ipc/quarantine', icon: ShieldAlert, labelKey: 'nav.ipc_quarantine', descKey: 'ipc.quarantine_subtitle' },
+  { to: '/ipc/audit', icon: FileSearch, labelKey: 'nav.ipc_audit', descKey: 'ipc.audit_subtitle' },
+  { to: '/ipc/cron', icon: Timer, labelKey: 'nav.ipc_cron', descKey: 'ipc.cron_subtitle' },
 ];
 
-function NavLinkItem({ to, icon: Icon, labelKey, end, idx, badge }: NavItem & { idx: number; badge?: number }) {
+function NavLinkItem({ to, icon: Icon, labelKey, descKey, end, idx, badge }: NavItem & { idx: number; badge?: number }) {
   return (
     <NavLink
       key={to}
       to={to}
       end={end}
+      title={descKey ? t(descKey) : undefined}
       className={({ isActive }) =>
         [
           'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 animate-slide-in-left group',
@@ -117,7 +119,7 @@ export default function Sidebar() {
   }, [ipcAvailable]);
 
   return (
-    <aside className="fixed top-0 left-0 h-screen w-60 flex flex-col" style={{ background: 'linear-gradient(180deg, #080818 0%, #050510 100%)' }}>
+    <aside className="fixed top-0 left-0 h-screen w-60 z-30 flex flex-col" style={{ background: 'linear-gradient(180deg, #080818 0%, #050510 100%)' }}>
       {/* Glow line on right edge */}
       <div className="sidebar-glow-line" />
 
