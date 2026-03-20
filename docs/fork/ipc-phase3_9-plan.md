@@ -1,6 +1,6 @@
 # IPC Phase 3.9: Operator Control Plane
 
-Phase 3.8: multi-agent dashboard | **Phase 3.9: operator control plane** | Phase 4.0: modular core refactor
+Phase 3.8: multi-agent dashboard | **Phase 3.9: operator control plane** | Phase 3.10: push loop prevention
 
 ---
 

@@ -32,7 +32,9 @@ The fork extends upstream ZeroClaw with a **multi-agent IPC system** (broker, tr
 | [ipc-phase3_8-plan.md](ipc-phase3_8-plan.md) | Phase 3.8: Multi-Agent Dashboard — one frontend shell, broker mode + local agent mode, shared agent workbench | Everyone |
 | [ipc-phase3_8-progress.md](ipc-phase3_8-progress.md) | Phase 3.8 execution checklist (all steps — DONE) | Opus |
 | [ipc-phase3_9-plan.md](ipc-phase3_9-plan.md) | Phase 3.9: Operator Control Plane — broker-global activity feed and fleet cron on top of the shared workbench | Everyone |
-| [ipc-phase3_9-progress.md](ipc-phase3_9-progress.md) | Phase 3.9 execution checklist (Step 1 done, rest pending) | Opus |
+| [ipc-phase3_9-progress.md](ipc-phase3_9-progress.md) | Phase 3.9 execution checklist (Steps 1-6 done, Step 3 deferred) | Opus |
+| [ipc-phase3_10-plan.md](ipc-phase3_10-plan.md) | Phase 3.10: Push Loop Prevention — kind-based filtering, per-peer counter, one-way dispatch mode | Everyone |
+| [ipc-phase3_10-progress.md](ipc-phase3_10-progress.md) | Phase 3.10 execution checklist | Opus |
 | [ipc-phase4_0-plan.md](ipc-phase4_0-plan.md) | Phase 4.0: Modular Core Refactor — capability-driven channels, conversation store | Everyone |
 | [ipc-phase4_0-progress.md](ipc-phase4_0-progress.md) | Phase 4.0 execution checklist | Opus |
 
@@ -41,7 +43,7 @@ The fork extends upstream ZeroClaw with a **multi-agent IPC system** (broker, tr
 **New to the fork?** Start with `delta-registry.md` → `sync-strategy.md` → `ipc-plan.md`.
 
 **Starting IPC work?** Read the phase plans in order:
-`ipc-phase2-plan.md` → `ipc-phase3-plan.md` → `ipc-phase3_5-plan.md` → `ipc-phase3_6-plan.md` → `ipc-phase3_7-plan.md` → `ipc-phase3_7b-plan.md` → `ipc-phase3_8-plan.md` → `ipc-phase3_9-plan.md` → `ipc-phase4_0-plan.md`.
+`ipc-phase2-plan.md` → `ipc-phase3-plan.md` → `ipc-phase3_5-plan.md` → `ipc-phase3_6-plan.md` → `ipc-phase3_7-plan.md` → `ipc-phase3_7b-plan.md` → `ipc-phase3_8-plan.md` → `ipc-phase3_9-plan.md` → `ipc-phase3_10-plan.md` → `ipc-phase4_0-plan.md`.
 
 **Setting up IPC locally?** Follow `ipc-quickstart.md` — configs, pairing, smoke tests.
 

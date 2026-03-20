@@ -1,6 +1,6 @@
 # IPC Phase 4.0: Modular Core Refactor
 
-Phase 3.7b: session intelligence | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
+Phase 3.10: push loop prevention | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
 
 ---
 
