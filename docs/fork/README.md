@@ -1,8 +1,8 @@
 # Fork Documentation
 
-This directory contains the strategy, plans, and operational docs for the ZeroClaw fork.
+This directory contains the strategy, plans, and operational docs for the SynapseClaw fork.
 
-The fork extends upstream ZeroClaw with a **multi-agent IPC system** (broker, trust model, quarantine, control plane), a **web-based operator dashboard**, **security hardening** (execution profiles, Ed25519 identity, PromptGuard), and supporting infrastructure. See [`delta-registry.md`](delta-registry.md) for the full inventory (44 delta entries across 11 categories).
+The fork extends upstream SynapseClaw with a **multi-agent IPC system** (broker, trust model, quarantine, control plane), a **web-based operator dashboard**, **security hardening** (execution profiles, Ed25519 identity, PromptGuard), and supporting infrastructure. See [`delta-registry.md`](delta-registry.md) for the full inventory (44 delta entries across 11 categories).
 
 ## Documents
 

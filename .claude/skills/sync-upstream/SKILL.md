@@ -1,12 +1,12 @@
 ---
 name: sync-upstream
-description: "Sync fork with upstream ZeroClaw repository. Fetches upstream/master, updates vendor branch, creates sync PR with conflict analysis and hotspot review. Use when the user says 'sync upstream', 'обнови upstream', 'pull from upstream', or wants to merge latest upstream changes."
+description: "Sync fork with upstream SynapseClaw repository. Fetches upstream/master, updates vendor branch, creates sync PR with conflict analysis and hotspot review. Use when the user says 'sync upstream', 'обнови upstream', 'pull from upstream', or wants to merge latest upstream changes."
 user-invocable: true
 ---
 
 # Upstream Sync
 
-Sync the fork with upstream ZeroClaw. Follow the strategy documented in `docs/fork/sync-strategy.md`.
+Sync the fork with upstream SynapseClaw. Follow the strategy documented in `docs/fork/sync-strategy.md`.
 
 ## Reference files (read before acting)
 
@@ -145,7 +145,7 @@ cargo test broker_proxy
 ## Step 9: Verify fork integrity
 
 Run Explore agent to check 12 critical areas:
-1. Tool allowlist invariant (ZEROCLAW_ALLOWED_TOOLS)
+1. Tool allowlist invariant (SYNAPSECLAW_ALLOWED_TOOLS)
 2. IPC route registration + AppState
 3. Token metadata / pairing / authenticate()
 4. Agent prompt IPC bootstrap (env vars)
@@ -166,7 +166,7 @@ git push -u origin sync/upstream-$SYNC_DATE
 
 Create PR via REST API (NOT `gh pr create`):
 ```bash
-gh api repos/panviktor/zeroclaw/pulls -X POST \
+gh api repos/panviktor/synapseclaw/pulls -X POST \
   -f title="chore(sync): merge upstream/master into fork ($SYNC_DATE)" \
   -f head="sync/upstream-$SYNC_DATE" \
   -f base="main" \

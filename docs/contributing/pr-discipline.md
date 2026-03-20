@@ -1,6 +1,6 @@
 # PR Discipline
 
-Rules for pull request quality, attribution, privacy, and handoff in ZeroClaw.
+Rules for pull request quality, attribution, privacy, and handoff in SynapseClaw.
 
 ## Privacy / Sensitive Data (Required)
 
@@ -10,11 +10,11 @@ Treat privacy and neutrality as merge gates, not best-effort guidelines.
 - Prohibited data includes (non-exhaustive): real names, personal emails, phone numbers, addresses, access tokens, API keys, credentials, IDs, and private URLs.
 - Use neutral project-scoped placeholders (e.g., `user_a`, `test_user`, `project_bot`, `example.com`) instead of real identity data.
 - Test names/messages/fixtures must be impersonal and system-focused; avoid first-person or identity-specific language.
-- If identity-like context is unavoidable, use ZeroClaw-scoped roles/labels only (e.g., `ZeroClawAgent`, `ZeroClawOperator`, `zeroclaw_user`).
+- If identity-like context is unavoidable, use SynapseClaw-scoped roles/labels only (e.g., `SynapseClawAgent`, `SynapseClawOperator`, `synapseclaw_user`).
 - Recommended identity-safe naming palette:
-    - actor labels: `ZeroClawAgent`, `ZeroClawOperator`, `ZeroClawMaintainer`, `zeroclaw_user`
-    - service/runtime labels: `zeroclaw_bot`, `zeroclaw_service`, `zeroclaw_runtime`, `zeroclaw_node`
-    - environment labels: `zeroclaw_project`, `zeroclaw_workspace`, `zeroclaw_channel`
+    - actor labels: `SynapseClawAgent`, `SynapseClawOperator`, `SynapseClawMaintainer`, `synapseclaw_user`
+    - service/runtime labels: `synapseclaw_bot`, `synapseclaw_service`, `synapseclaw_runtime`, `synapseclaw_node`
+    - environment labels: `synapseclaw_project`, `synapseclaw_workspace`, `synapseclaw_channel`
 - If reproducing external incidents, redact and anonymize all payloads before committing.
 - Before push, review `git diff --cached` specifically for accidental sensitive strings and identity leakage.
 

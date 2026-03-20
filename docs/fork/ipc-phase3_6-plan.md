@@ -21,7 +21,7 @@ Phase 3.5 gave the operator **visibility and intervention**. But creating a new 
 1. `curl POST /admin/paircode/new` with JSON body
 2. Manually writing a `config.toml` with provider keys, channel tokens, IPC settings
 3. Copying the config to the target machine
-4. Running `zeroclaw pair` with the code
+4. Running `synapseclaw pair` with the code
 5. Starting the daemon
 
 With Phase 3.6:

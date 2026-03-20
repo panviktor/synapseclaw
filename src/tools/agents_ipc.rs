@@ -9,11 +9,11 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Resolve the ~/.zeroclaw directory for persisting sender_seq.
-fn home_zeroclaw_dir() -> Option<std::path::PathBuf> {
+/// Resolve the ~/.synapseclaw directory for persisting sender_seq.
+fn home_synapseclaw_dir() -> Option<std::path::PathBuf> {
     std::env::var_os("HOME")
         .map(std::path::PathBuf::from)
-        .map(|h| h.join(".zeroclaw"))
+        .map(|h| h.join(".synapseclaw"))
 }
 
 // ── IpcClient ───────────────────────────────────────────────────
@@ -82,7 +82,7 @@ impl IpcClient {
     /// Path to the persisted sender_seq file, per agent_id.
     /// Multiple agents on the same host get independent counters.
     fn sender_seq_path(&self, agent_id: &str) -> Option<std::path::PathBuf> {
-        home_zeroclaw_dir().map(|d| d.join(format!("sender-{agent_id}.seq")))
+        home_synapseclaw_dir().map(|d| d.join(format!("sender-{agent_id}.seq")))
     }
 
     /// Register the agent's Ed25519 public key with the broker.
@@ -1130,14 +1130,14 @@ impl AgentsSpawnTool {
         // 5. Build env overlay for the child subprocess
         let mut env_overlay = std::collections::HashMap::new();
         env_overlay.insert(
-            "ZEROCLAW_BROKER_URL".into(),
+            "SYNAPSECLAW_BROKER_URL".into(),
             self.config.agents_ipc.broker_url.clone(),
         );
-        env_overlay.insert("ZEROCLAW_BROKER_TOKEN".into(), child_token.to_string());
-        env_overlay.insert("ZEROCLAW_AGENT_ID".into(), child_agent_id.to_string());
-        env_overlay.insert("ZEROCLAW_SESSION_ID".into(), session_id.to_string());
-        env_overlay.insert("ZEROCLAW_REPLY_TO".into(), parent_id.to_string());
-        env_overlay.insert("ZEROCLAW_TIMEOUT_SECS".into(), timeout.to_string());
+        env_overlay.insert("SYNAPSECLAW_BROKER_TOKEN".into(), child_token.to_string());
+        env_overlay.insert("SYNAPSECLAW_AGENT_ID".into(), child_agent_id.to_string());
+        env_overlay.insert("SYNAPSECLAW_SESSION_ID".into(), session_id.to_string());
+        env_overlay.insert("SYNAPSECLAW_REPLY_TO".into(), parent_id.to_string());
+        env_overlay.insert("SYNAPSECLAW_TIMEOUT_SECS".into(), timeout.to_string());
 
         // Pass execution boundary autonomy to child
         let autonomy_str = match boundary.autonomy {
@@ -1145,15 +1145,15 @@ impl AgentsSpawnTool {
             crate::security::execution::BoundaryAutonomy::Supervised => "supervised",
             crate::security::execution::BoundaryAutonomy::ReadOnly => "read_only",
         };
-        env_overlay.insert("ZEROCLAW_AUTONOMY".into(), autonomy_str.into());
+        env_overlay.insert("SYNAPSECLAW_AUTONOMY".into(), autonomy_str.into());
 
         // Pass resolved workload config to child via env
         if let Some(ref wl) = resolved_workload {
             if let Some(ref tools) = wl.allowed_tools {
-                env_overlay.insert("ZEROCLAW_ALLOWED_TOOLS".into(), tools.join(","));
+                env_overlay.insert("SYNAPSECLAW_ALLOWED_TOOLS".into(), tools.join(","));
             }
             if let Some(ref tpl) = wl.prompt_template {
-                env_overlay.insert("ZEROCLAW_PROMPT_TEMPLATE".into(), tpl.clone());
+                env_overlay.insert("SYNAPSECLAW_PROMPT_TEMPLATE".into(), tpl.clone());
             }
             // max_output_tokens: not yet consumed by child runtime — omit
             // to avoid false sense of enforcement. Follow-up when provider

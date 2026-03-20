@@ -23,7 +23,7 @@ export interface WebSocketClientOptions {
 const DEFAULT_RECONNECT_DELAY = 1000;
 const MAX_RECONNECT_DELAY = 30000;
 
-const SESSION_STORAGE_KEY = 'zeroclaw_session_id';
+const SESSION_STORAGE_KEY = 'synapseclaw_session_id';
 
 /** Return a stable session ID, persisted in sessionStorage across reconnects. */
 function getOrCreateSessionId(): string {
@@ -86,7 +86,7 @@ export class WebSocketClient {
     if (this.agent) params.set('agent', this.agent);
     const url = `${this.baseUrl}${wsPath}?${params.toString()}`;
 
-    const protocols: string[] = ['zeroclaw.v1'];
+    const protocols: string[] = ['synapseclaw.v1'];
     if (token) protocols.push(`bearer.${token}`);
     this.ws = new WebSocket(url, protocols);
 

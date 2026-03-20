@@ -70,7 +70,7 @@ Related documents:
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
-| AGT-001 | IPC bootstrap prompt injection via env vars | `candidate-upstream` | `low` | `src/agent/prompt.rs` | Appends IPC instructions when `ZEROCLAW_IPC_*` env vars set |
+| AGT-001 | IPC bootstrap prompt injection via env vars | `candidate-upstream` | `low` | `src/agent/prompt.rs` | Appends IPC instructions when `SYNAPSECLAW_IPC_*` env vars set |
 | AGT-002 | `agent::run()` + `process_message()` signature extensions | `fork-only` | `high` | `src/agent/agent.rs`, `src/agent/loop_.rs` | Added IPC-related params; conflicts on every upstream signature change |
 
 ## Cron / Scheduler (CRON-001 .. CRON-002)

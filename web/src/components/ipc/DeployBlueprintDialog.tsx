@@ -502,11 +502,11 @@ export default function DeployBlueprintDialog({ open, onClose, onCreated, broker
             <details className="text-xs text-[#556080]">
               <summary className="cursor-pointer text-[#8892a8] hover:text-white transition-colors">Manual setup instructions</summary>
               <div className="mt-2 p-3 rounded-lg bg-[#050510] border border-[#1a1a3e]/50 space-y-2">
-                <p>1. Place each agent's config.toml in <code className="text-[#0080ff]">~/.zeroclaw/</code></p>
+                <p>1. Place each agent's config.toml in <code className="text-[#0080ff]">~/.synapseclaw/</code></p>
                 <p>2. For each agent, pair with broker:</p>
                 <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: CODE&apos;</pre>
                 <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in config.toml</p>
-                <p>4. Start each agent: <code className="text-[#0080ff]">zeroclaw daemon</code></p>
+                <p>4. Start each agent: <code className="text-[#0080ff]">synapseclaw daemon</code></p>
                 <p>5. <span className="text-yellow-400">Add the broker config patch</span> to broker's config.toml</p>
               </div>
             </details>

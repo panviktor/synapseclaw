@@ -1,4 +1,4 @@
-# Hub Tài liệu ZeroClaw (Tiếng Việt)
+# Hub Tài liệu SynapseClaw (Tiếng Việt)
 
 Đây là trang chủ tiếng Việt của hệ thống tài liệu.
 

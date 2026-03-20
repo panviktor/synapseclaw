@@ -70,7 +70,7 @@ git push -u origin <branch>
 Use GitHub REST API (NOT `gh pr create` — it fails with token scope error on this repo):
 
 ```bash
-gh api repos/panviktor/zeroclaw/pulls -X POST \
+gh api repos/panviktor/synapseclaw/pulls -X POST \
   -f title="<conventional title>" \
   -f head="<branch>" \
   -f base="main" \

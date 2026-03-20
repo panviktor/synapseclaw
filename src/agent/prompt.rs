@@ -76,7 +76,7 @@ pub struct DateTimeSection;
 pub struct ChannelMediaSection;
 
 /// Injects ephemeral agent context when this process was spawned by a parent
-/// agent via `agents_spawn`. Detected by the presence of `ZEROCLAW_SESSION_ID`
+/// agent via `agents_spawn`. Detected by the presence of `SYNAPSECLAW_SESSION_ID`
 /// env var (set by the parent's subprocess launcher).
 impl PromptSection for EphemeralAgentSection {
     fn name(&self) -> &str {
@@ -84,17 +84,17 @@ impl PromptSection for EphemeralAgentSection {
     }
 
     fn build(&self, _ctx: &PromptContext<'_>) -> Result<String> {
-        let session_id = match std::env::var("ZEROCLAW_SESSION_ID") {
+        let session_id = match std::env::var("SYNAPSECLAW_SESSION_ID") {
             Ok(v) if !v.is_empty() => v,
             _ => return Ok(String::new()),
         };
-        let agent_id = std::env::var("ZEROCLAW_AGENT_ID").unwrap_or_default();
-        let reply_to = std::env::var("ZEROCLAW_REPLY_TO").unwrap_or_else(|_| "parent".into());
+        let agent_id = std::env::var("SYNAPSECLAW_AGENT_ID").unwrap_or_default();
+        let reply_to = std::env::var("SYNAPSECLAW_REPLY_TO").unwrap_or_else(|_| "parent".into());
 
         let mut prompt = String::new();
 
         // Workload prompt template (operator-defined preamble for this workload type)
-        if let Ok(template) = std::env::var("ZEROCLAW_PROMPT_TEMPLATE") {
+        if let Ok(template) = std::env::var("SYNAPSECLAW_PROMPT_TEMPLATE") {
             let template = template.trim();
             if !template.is_empty() {
                 prompt.push_str(template);
@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn identity_section_with_aieos_includes_workspace_files() {
         let workspace =
-            std::env::temp_dir().join(format!("zeroclaw_prompt_test_{}", uuid::Uuid::new_v4()));
+            std::env::temp_dir().join(format!("synapseclaw_prompt_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::write(
             workspace.join("AGENTS.md"),

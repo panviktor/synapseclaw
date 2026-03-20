@@ -1,10 +1,10 @@
 ---
 name: IPC Implementation Plan
-description: Broker-mediated inter-agent communication with trust levels — full implementation instructions for ZeroClaw (Phase 1-3)
+description: Broker-mediated inter-agent communication with trust levels — full implementation instructions for SynapseClaw (Phase 1-3)
 type: project
 ---
 
-# ZeroClaw IPC: Broker-Mediated Communication
+# SynapseClaw IPC: Broker-Mediated Communication
 
 ## Why
 
@@ -94,7 +94,7 @@ Agent (bearer token) ──► IPC Broker (gateway) ──► SQLite (broker-own
 
 ---
 
-# Architectural audit: how not to break ZeroClaw
+# Architectural audit: how not to break SynapseClaw
 
 The code audit found six places where the original plan broke the existing architecture. Below are the problems and the solutions already incorporated into Phase 1.
 
@@ -201,7 +201,7 @@ async fn persist_pairing_tokens(config: Arc<Mutex<Config>>, pairing: &PairingGua
 
 ## Problem 6: DB path convention
 
-ZeroClaw convention: `workspace_dir/<subsystem>/<name>.db` (`cron` → `workspace_dir/cron/jobs.db`, `memory` → `workspace_dir/memory/brain.db`).
+SynapseClaw convention: `workspace_dir/<subsystem>/<name>.db` (`cron` → `workspace_dir/cron/jobs.db`, `memory` → `workspace_dir/memory/brain.db`).
 
 The IPC DB belongs to the broker (gateway process), not to any specific agent.
 

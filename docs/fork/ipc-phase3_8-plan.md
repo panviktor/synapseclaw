@@ -184,21 +184,21 @@ So an operator on the broker can and should inspect a specific agent's logs from
 
 ## Multi-Instance Service Model
 
-**Decision:** Current service layer uses fixed names (`zeroclaw.service`, `com.zeroclaw.daemon`). This is a blocker for N+1 processes. We need templated multi-instance units.
+**Decision:** Current service layer uses fixed names (`synapseclaw.service`, `com.synapseclaw.daemon`). This is a blocker for N+1 processes. We need templated multi-instance units.
 
 ### Config directory layout
 
 ```
-~/.zeroclaw/                        # broker (default)
+~/.synapseclaw/                        # broker (default)
   config.toml
   workspace/
-~/.zeroclaw/agents/opus/            # agent: opus
+~/.synapseclaw/agents/opus/            # agent: opus
   config.toml
   workspace/
-~/.zeroclaw/agents/daily/           # agent: daily
+~/.synapseclaw/agents/daily/           # agent: daily
   config.toml
   workspace/
-~/.zeroclaw/agents/code/            # agent: code
+~/.synapseclaw/agents/code/            # agent: code
   config.toml
   workspace/
 ```
@@ -209,30 +209,30 @@ New `--instance <name>` flag on `daemon` and `service` commands:
 
 ```bash
 # Broker (default instance, no flag needed)
-zeroclaw daemon
-zeroclaw service install
+synapseclaw daemon
+synapseclaw service install
 
 # Agent instances
-zeroclaw daemon --instance opus
-zeroclaw service install --instance opus
-zeroclaw service install --instance daily
-zeroclaw service install --instance code
+synapseclaw daemon --instance opus
+synapseclaw service install --instance opus
+synapseclaw service install --instance daily
+synapseclaw service install --instance code
 ```
 
-`--instance <name>` sets config dir to `~/.zeroclaw/agents/<name>/`.
+`--instance <name>` sets config dir to `~/.synapseclaw/agents/<name>/`.
 
 ### systemd (Linux)
 
-Templated user unit: `~/.config/systemd/user/zeroclaw@.service`
+Templated user unit: `~/.config/systemd/user/synapseclaw@.service`
 
 ```ini
 [Unit]
-Description=ZeroClaw Agent (%i)
+Description=SynapseClaw Agent (%i)
 After=default.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/zeroclaw daemon --instance %i
+ExecStart=%h/.local/bin/synapseclaw daemon --instance %i
 Restart=on-failure
 RestartSec=5
 
@@ -245,30 +245,30 @@ Note: uses `WantedBy=default.target` (user-level), not `multi-user.target` (syst
 Usage:
 ```bash
 # Broker (default instance)
-systemctl --user enable --now zeroclaw.service
+systemctl --user enable --now synapseclaw.service
 
 # Agents
-systemctl --user enable --now zeroclaw@opus.service
-systemctl --user enable --now zeroclaw@daily.service
-systemctl --user enable --now zeroclaw@code.service
+systemctl --user enable --now synapseclaw@opus.service
+systemctl --user enable --now synapseclaw@daily.service
+systemctl --user enable --now synapseclaw@code.service
 ```
 
 ### launchd (macOS)
 
-Per-instance plist: `com.zeroclaw.<instance>.plist`
+Per-instance plist: `com.synapseclaw.<instance>.plist`
 
 ```bash
-zeroclaw service install                    # → com.zeroclaw.daemon.plist
-zeroclaw service install --instance opus    # → com.zeroclaw.agent-opus.plist
-zeroclaw service install --instance daily   # → com.zeroclaw.agent-daily.plist
+synapseclaw service install                    # → com.synapseclaw.daemon.plist
+synapseclaw service install --instance opus    # → com.synapseclaw.agent-opus.plist
+synapseclaw service install --instance daily   # → com.synapseclaw.agent-daily.plist
 ```
 
 ### Windows
 
-Per-instance scheduled task: `ZeroClaw Agent (<instance>)`
+Per-instance scheduled task: `SynapseClaw Agent (<instance>)`
 
 ```bash
-zeroclaw service install --instance opus    # → "ZeroClaw Agent (opus)" task
+synapseclaw service install --instance opus    # → "SynapseClaw Agent (opus)" task
 ```
 
 ### OpenRC (Linux, non-systemd)
@@ -315,7 +315,7 @@ Authorization: Bearer <broker_token>
 Broker stores `proxy_token` in `AgentRegistry`. When proxying WS:
 ```
 Broker → Agent WS: /ws/chat
-  Sec-WebSocket-Protocol: zeroclaw.v1, bearer.<proxy_token>
+  Sec-WebSocket-Protocol: synapseclaw.v1, bearer.<proxy_token>
 ```
 
 Token is never sent in query string — avoids leaking in logs/diagnostics. Uses the same subprotocol auth path that `ws.rs` already supports (precedence: header > subprotocol > query).
@@ -411,7 +411,7 @@ Browser                    Broker                      Agent
 Broker is a **transparent WS relay** for chat:
 - Browser opens WS to broker with `?agent=<agent_id>` param
 - Broker looks up agent's `gateway_url` + `proxy_token` in registry
-- Broker opens WS to agent's `/ws/chat` with `Sec-WebSocket-Protocol: zeroclaw.v1, bearer.<proxy_token>` (not query param — avoids token leaking in logs/diagnostics)
+- Broker opens WS to agent's `/ws/chat` with `Sec-WebSocket-Protocol: synapseclaw.v1, bearer.<proxy_token>` (not query param — avoids token leaking in logs/diagnostics)
 - All frames are forwarded bidirectionally (no parsing, no transformation)
 - If agent disconnects, broker sends error frame to browser and closes
 
@@ -443,7 +443,7 @@ This is acceptable for v1 (lab/family use). Future enhancement path: broker inje
 | **Broker restarts** | Registry seed loaded from `agent_gateways` DB table. Live metadata refreshes within 30s poll. Agents detect failed periodic refresh → fall back to Phase A fast retry (backoff from 1s). Browser reconnects via existing WS auto-reconnect. No session data loss (sessions on agents). |
 | **Machine reboot** | systemd/launchd starts all enabled services. Start order does not matter — agents use fast retry with backoff until broker accepts registration. No manual intervention needed. |
 | **One agent restart** | Other agents unaffected. Restarted agent re-registers. Browser can switch to working agents during downtime. |
-| **Config change** | Restart specific instance: `systemctl --user restart zeroclaw@opus`. No impact on other instances. |
+| **Config change** | Restart specific instance: `systemctl --user restart synapseclaw@opus`. No impact on other instances. |
 | **Browser refresh** | Reconnects to broker WS. Agent selector restores from localStorage. Sessions loaded from agent via proxy. |
 
 ---
@@ -471,11 +471,11 @@ This is acceptable for v1 (lab/family use). Future enhancement path: broker inje
 
 ### Step 1: Multi-instance service model
 - Add `--instance <name>` flag to `daemon` and `service` commands
-- Instance resolves config dir: `~/.zeroclaw/agents/<name>/`
-- Default (no flag) = `~/.zeroclaw/` (broker)
-- Templated systemd unit `zeroclaw@.service`
-- Per-instance launchd plist `com.zeroclaw.agent-<name>.plist`
-- Per-instance Windows task `ZeroClaw Agent (<name>)`
+- Instance resolves config dir: `~/.synapseclaw/agents/<name>/`
+- Default (no flag) = `~/.synapseclaw/` (broker)
+- Templated systemd unit `synapseclaw@.service`
+- Per-instance launchd plist `com.synapseclaw.agent-<name>.plist`
+- Per-instance Windows task `SynapseClaw Agent (<name>)`
 
 ### Step 2: Proxy token generation + config
 - Add `proxy_token: Option<String>` to `[agents_ipc]` config
@@ -558,8 +558,8 @@ Each scenario must pass on every supported platform (systemd, launchd, Windows):
 - [ ] One agent config change + restart → no impact on others
 
 Platform-specific:
-- [ ] Linux: `systemctl --user status zeroclaw@opus` shows correct status
-- [ ] macOS: `launchctl list | grep zeroclaw` shows all instances
+- [ ] Linux: `systemctl --user status synapseclaw@opus` shows correct status
+- [ ] macOS: `launchctl list | grep synapseclaw` shows all instances
 - [ ] Windows: Task Scheduler shows all agent tasks
 - [ ] OpenRC: out of scope (documented)
 
@@ -594,15 +594,15 @@ Platform-specific:
 `--instance <name>` on `daemon` and `service` subcommands:
 
 ```bash
-zeroclaw daemon                          # broker (default, ~/.zeroclaw/)
-zeroclaw daemon --instance opus          # agent (~/.zeroclaw/agents/opus/)
-zeroclaw service install --instance opus # install agent as OS service
-zeroclaw service status --instance opus  # check agent service status
+synapseclaw daemon                          # broker (default, ~/.synapseclaw/)
+synapseclaw daemon --instance opus          # agent (~/.synapseclaw/agents/opus/)
+synapseclaw service install --instance opus # install agent as OS service
+synapseclaw service status --instance opus  # check agent service status
 ```
 
 ### No new top-level subcommands
 
-Configuration is the differentiator between broker and agent, not commands. Both run `zeroclaw daemon`.
+Configuration is the differentiator between broker and agent, not commands. Both run `synapseclaw daemon`.
 
 ---
 
@@ -619,7 +619,7 @@ This is a dangerous operation. Not a regular API feature.
 2. **Disabled by default** — must be explicitly enabled in config
 3. **Mode-based escalation** — three levels of capability
 4. **Dual auth** — requires both paired bearer token AND localhost access
-5. **Fixed write paths** — only `~/.zeroclaw/agents/<instance>/`
+5. **Fixed write paths** — only `~/.synapseclaw/agents/<instance>/`
 6. **No arbitrary commands** — only predefined lifecycle actions
 7. **Audited** — all operations logged as audit events
 8. **Temporary arming** — runtime arm with TTL, auto-disables
@@ -630,7 +630,7 @@ This is a dangerous operation. Not a regular API feature.
 [gateway.ui_provisioning]
 enabled = false                    # master switch (see security rule below)
 mode = "config_only"               # config_only | service_install
-agents_root = "~/.zeroclaw/agents" # fixed root, no arbitrary paths
+agents_root = "~/.synapseclaw/agents" # fixed root, no arbitrary paths
 allow_blueprints = false           # Phase 3.6 fleet blueprints
 ```
 
@@ -707,7 +707,7 @@ UI provisioning is **Step 11** (optional, after core 3.8 proxy works). It bridge
 4. **Dedicated proxy_token for broker→agent auth** — not reuse of broker_token (wrong direction). Generated by agent, stored by broker.
 5. **New AgentRegistry, not NodeRegistry** — different trust, lifecycle, semantics.
 6. **DB-persisted registry + periodic re-registration** — covers broker restart without manual repair.
-7. **Templated multi-instance service units** — `zeroclaw@.service` on systemd, per-instance plists on launchd.
+7. **Templated multi-instance service units** — `synapseclaw@.service` on systemd, per-instance plists on launchd.
 8. **WS proxy, not HTTP long-poll** — preserves streaming, tool events, lifecycle events.
 9. **Agent selector in sidebar** — not a separate page, integrated into the shared agent workbench flow.
 10. **UI provisioning is broker-only, mode-gated, arm-required** — disabled by default, three escalation modes, localhost+bearer dual auth, fixed write paths, audit trail, TTL auto-disarm.

@@ -60,7 +60,7 @@ export class ErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('[ZeroClaw] Render error:', error, info.componentStack);
+    console.error('[SynapseClaw] Render error:', error, info.componentStack);
   }
 
   render() {
@@ -122,11 +122,11 @@ function PairingDialog({ onPair }: { onPair: (code: string) => Promise<void> }) 
         <div className="text-center mb-8">
           <img
             src="/_app/logo.png"
-            alt="ZeroClaw"
+            alt="SynapseClaw"
             className="h-20 w-20 rounded-2xl object-cover mx-auto mb-4 animate-float"
             style={{ boxShadow: '0 0 30px rgba(0,128,255,0.3)' }}
           />
-          <h1 className="text-2xl font-bold text-gradient-blue mb-2">ZeroClaw</h1>
+          <h1 className="text-2xl font-bold text-gradient-blue mb-2">SynapseClaw</h1>
           <p className="text-[#556080] text-sm">Enter the pairing code from your terminal</p>
         </div>
         <form onSubmit={handleSubmit}>
@@ -174,8 +174,8 @@ function AppContent() {
     const handler = () => {
       logout();
     };
-    window.addEventListener('zeroclaw-unauthorized', handler);
-    return () => window.removeEventListener('zeroclaw-unauthorized', handler);
+    window.addEventListener('synapseclaw-unauthorized', handler);
+    return () => window.removeEventListener('synapseclaw-unauthorized', handler);
   }, [logout]);
 
   if (loading) {

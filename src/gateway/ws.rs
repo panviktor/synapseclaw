@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// The sub-protocol we support for the chat WebSocket.
-const WS_PROTOCOL: &str = "zeroclaw.v1";
+const WS_PROTOCOL: &str = "synapseclaw.v1";
 
 /// Prefix used in `Sec-WebSocket-Protocol` to carry a bearer token.
 const BEARER_SUBPROTO_PREFIX: &str = "bearer.";
@@ -1469,7 +1469,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "sec-websocket-protocol",
-            "zeroclaw.v1, bearer.zc_sub456".parse().unwrap(),
+            "synapseclaw.v1, bearer.zc_sub456".parse().unwrap(),
         );
         assert_eq!(extract_ws_token(&headers, None), Some("zc_sub456"));
     }
@@ -1528,7 +1528,7 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             "sec-websocket-protocol",
-            "zeroclaw.v1, bearer.zc_tok, other".parse().unwrap(),
+            "synapseclaw.v1, bearer.zc_tok, other".parse().unwrap(),
         );
         assert_eq!(extract_ws_token(&headers, None), Some("zc_tok"));
     }

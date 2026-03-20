@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="zeroclaw.png" alt="ZeroClaw" width="200" />
+  <img src="synapseclaw.png" alt="SynapseClaw" width="200" />
 </p>
 
-<h1 align="center">ZeroClaw 🦀</h1>
+<h1 align="center">SynapseClaw 🦀</h1>
 
 <p align="center">
   <strong>Cero sobrecarga. Cero compromiso. 100% Rust. 100% Agnóstico.</strong><br>
@@ -13,12 +13,12 @@
   <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
   <a href="NOTICE"><img src="https://img.shields.io/badge/contributors-27+-green.svg" alt="Contributors" /></a>
   <a href="https://buymeacoffee.com/argenistherose"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee" alt="Buy Me a Coffee" /></a>
-  <a href="https://x.com/zeroclawlabs?s=21"><img src="https://img.shields.io/badge/X-%40zeroclawlabs-000000?style=flat&logo=x&logoColor=white" alt="X: @zeroclawlabs" /></a>
-  <a href="https://zeroclawlabs.cn/group.jpg"><img src="https://img.shields.io/badge/WeChat-Group-B7D7A8?logo=wechat&logoColor=white" alt="WeChat Group" /></a>
+  <a href="https://x.com/synapseclaw?s=21"><img src="https://img.shields.io/badge/X-%40synapseclaw-000000?style=flat&logo=x&logoColor=white" alt="X: @synapseclaw" /></a>
+  <a href="https://synapseclaw.cn/group.jpg"><img src="https://img.shields.io/badge/WeChat-Group-B7D7A8?logo=wechat&logoColor=white" alt="WeChat Group" /></a>
   <a href="https://www.xiaohongshu.com/user/profile/67cbfc43000000000d008307?xsec_token=AB73VnYnGNx5y36EtnnZfGmAmS-6Wzv8WMuGpfwfkg6Yc%3D&xsec_source=pc_search"><img src="https://img.shields.io/badge/Xiaohongshu-Official-FF2442?style=flat" alt="Xiaohongshu: Official" /></a>
-  <a href="https://t.me/zeroclawlabs"><img src="https://img.shields.io/badge/Telegram-%40zeroclawlabs-26A5E4?style=flat&logo=telegram&logoColor=white" alt="Telegram: @zeroclawlabs" /></a>
-  <a href="https://www.facebook.com/groups/zeroclaw"><img src="https://img.shields.io/badge/Facebook-Group-1877F2?style=flat&logo=facebook&logoColor=white" alt="Facebook Group" /></a>
-  <a href="https://www.reddit.com/r/zeroclawlabs/"><img src="https://img.shields.io/badge/Reddit-r%2Fzeroclawlabs-FF4500?style=flat&logo=reddit&logoColor=white" alt="Reddit: r/zeroclawlabs" /></a>
+  <a href="https://t.me/synapseclaw"><img src="https://img.shields.io/badge/Telegram-%40synapseclaw-26A5E4?style=flat&logo=telegram&logoColor=white" alt="Telegram: @synapseclaw" /></a>
+  <a href="https://www.facebook.com/groups/synapseclaw"><img src="https://img.shields.io/badge/Facebook-Group-1877F2?style=flat&logo=facebook&logoColor=white" alt="Facebook Group" /></a>
+  <a href="https://www.reddit.com/r/synapseclaw/"><img src="https://img.shields.io/badge/Reddit-r%2Fsynapseclaw-FF4500?style=flat&logo=reddit&logoColor=white" alt="Reddit: r/synapseclaw" /></a>
 </p>
 <p align="center">
 Construido por estudiantes y miembros de las comunidades de Harvard, MIT y Sundai.Club.
@@ -81,7 +81,7 @@ Construido por estudiantes y miembros de las comunidades de Harvard, MIT y Sunda
 </p>
 
 <p align="center">
-  ZeroClaw es el <strong>sistema operativo de runtime</strong> para flujos de trabajo de agentes — una infraestructura que abstrae modelos, herramientas, memoria y ejecución para construir agentes una vez y ejecutarlos en cualquier lugar.
+  SynapseClaw es el <strong>sistema operativo de runtime</strong> para flujos de trabajo de agentes — una infraestructura que abstrae modelos, herramientas, memoria y ejecución para construir agentes una vez y ejecutarlos en cualquier lugar.
 </p>
 
 <p align="center"><code>Arquitectura basada en traits · runtime seguro por defecto · proveedor/canal/herramienta intercambiables · todo es conectable</code></p>
@@ -102,8 +102,8 @@ Usa esta tabla para avisos importantes (cambios de compatibilidad, avisos de seg
 
 | Fecha (UTC) | Nivel      | Aviso                                                                                                                                                                                                                                                                                                                                                                                                              | Acción                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ---------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 2026-02-19 | _Crítico_  | **No estamos afiliados** con `openagen/zeroclaw` o `zeroclaw.org`. El dominio `zeroclaw.org` apunta actualmente al fork `openagen/zeroclaw`, y este dominio/repositorio está suplantando nuestro sitio web/proyecto oficial.                                                                                                                                                                                 | No confíes en información, binarios, recaudaciones de fondos o anuncios de estas fuentes. Usa solo [este repositorio](https://github.com/zeroclaw-labs/zeroclaw) y nuestras cuentas sociales verificadas.                                                                                                                                                                                                                                                                                                                                                          |
-| 2026-02-21 | _Importante_ | Nuestro sitio web oficial ahora está en línea: [zeroclawlabs.ai](https://zeroclawlabs.ai). Gracias por tu paciencia durante la espera. Todavía detectamos intentos de suplantación: no participes en ninguna actividad de inversión/financiamiento en nombre de ZeroClaw si no se publica a través de nuestros canales oficiales.                                                                                                                   | Usa [este repositorio](https://github.com/zeroclaw-labs/zeroclaw) como la única fuente de verdad. Sigue [X (@zeroclawlabs)](https://x.com/zeroclawlabs?s=21), [Telegram (@zeroclawlabs)](https://t.me/zeroclawlabs), [Facebook (grupo)](https://www.facebook.com/groups/zeroclaw), [Reddit (r/zeroclawlabs)](https://www.reddit.com/r/zeroclawlabs/), y [Xiaohongshu](https://www.xiaohongshu.com/user/profile/67cbfc43000000000d008307?xsec_token=AB73VnYnGNx5y36EtnnZfGmAmS-6Wzv8WMuGpfwfkg6Yc%3D&xsec_source=pc_search) para actualizaciones oficiales. |
+| 2026-02-19 | _Crítico_  | **No estamos afiliados** con `openagen/synapseclaw` o `synapseclaw.org`. El dominio `synapseclaw.org` apunta actualmente al fork `openagen/synapseclaw`, y este dominio/repositorio está suplantando nuestro sitio web/proyecto oficial.                                                                                                                                                                                 | No confíes en información, binarios, recaudaciones de fondos o anuncios de estas fuentes. Usa solo [este repositorio](https://github.com/panviktor/synapseclaw) y nuestras cuentas sociales verificadas.                                                                                                                                                                                                                                                                                                                                                          |
+| 2026-02-21 | _Importante_ | Nuestro sitio web oficial ahora está en línea: [synapseclaw.dev](https://synapseclaw.dev). Gracias por tu paciencia durante la espera. Todavía detectamos intentos de suplantación: no participes en ninguna actividad de inversión/financiamiento en nombre de SynapseClaw si no se publica a través de nuestros canales oficiales.                                                                                                                   | Usa [este repositorio](https://github.com/panviktor/synapseclaw) como la única fuente de verdad. Sigue [X (@synapseclaw)](https://x.com/synapseclaw?s=21), [Telegram (@synapseclaw)](https://t.me/synapseclaw), [Facebook (grupo)](https://www.facebook.com/groups/synapseclaw), [Reddit (r/synapseclaw)](https://www.reddit.com/r/synapseclaw/), y [Xiaohongshu](https://www.xiaohongshu.com/user/profile/67cbfc43000000000d008307?xsec_token=AB73VnYnGNx5y36EtnnZfGmAmS-6Wzv8WMuGpfwfkg6Yc%3D&xsec_source=pc_search) para actualizaciones oficiales. |
 | 2026-02-19 | _Importante_ | Anthropic actualizó los términos de uso de autenticación y credenciales el 2026-02-19. La autenticación OAuth (Free, Pro, Max) es exclusivamente para Claude Code y Claude.ai; el uso de tokens OAuth de Claude Free/Pro/Max en cualquier otro producto, herramienta o servicio (incluyendo Agent SDK) no está permitido y puede violar los Términos de Uso del Consumidor. | Por favor, evita temporalmente las integraciones OAuth de Claude Code para prevenir cualquier pérdida potencial. Cláusula original: [Authentication and Credential Use](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use).                                                                                                                                                                                                                                                                                                                      |
 
 ### ✨ Características
@@ -113,18 +113,18 @@ Usa esta tabla para avisos importantes (cambios de compatibilidad, avisos de seg
 - ⚡ **Inicios en Frío Rápidos:** El runtime Rust de binario único mantiene el inicio de comandos y demonios casi instantáneo para operaciones diarias.
 - 🌍 **Arquitectura Portátil:** Un flujo de trabajo de binario único en ARM, x86 y RISC-V con proveedor/canal/herramienta intercambiables.
 
-### Por qué los equipos eligen ZeroClaw
+### Por qué los equipos eligen SynapseClaw
 
 - **Ligero por defecto:** binario Rust pequeño, inicio rápido, huella de memoria baja.
 - **Seguro por diseño:** emparejamiento, sandboxing estricto, listas permitidas explícitas, alcance de workspace.
 - **Completamente intercambiable:** los sistemas centrales son traits (proveedores, canales, herramientas, memoria, túneles).
 - **Sin lock-in de proveedor:** soporte de proveedor compatible con OpenAI + endpoints personalizados conectables.
 
-## Instantánea de Benchmark (ZeroClaw vs OpenClaw, Reproducible)
+## Instantánea de Benchmark (SynapseClaw vs OpenClaw, Reproducible)
 
 Benchmark rápido en máquina local (macOS arm64, feb. 2026) normalizado para hardware edge de 0.8 GHz.
 
-|                              | OpenClaw      | NanoBot        | PicoClaw        | ZeroClaw 🦀           |
+|                              | OpenClaw      | NanoBot        | PicoClaw        | SynapseClaw 🦀           |
 | ---------------------------- | ------------- | -------------- | --------------- | --------------------- |
 | **Lenguaje**                  | TypeScript    | Python         | Go              | **Rust**              |
 | **RAM**                      | > 1 GB        | > 100 MB       | < 10 MB         | **< 5 MB**            |
@@ -132,10 +132,10 @@ Benchmark rápido en máquina local (macOS arm64, feb. 2026) normalizado para ha
 | **Tamaño Binario**           | ~28 MB (dist) | N/A (Scripts)  | ~8 MB           | **3.4 MB**            |
 | **Costo**                     | Mac Mini $599 | Linux SBC ~$50 | Placa Linux $10 | **Cualquier hardware $10** |
 
-> Notas: Los resultados de ZeroClaw se miden en builds de producción usando `/usr/bin/time -l`. OpenClaw requiere el runtime Node.js (típicamente ~390 MB de sobrecarga de memoria adicional), mientras que NanoBot requiere el runtime Python. PicoClaw y ZeroClaw son binarios estáticos. Las cifras de RAM anteriores son memoria de runtime; los requisitos de compilación en tiempo de build son mayores.
+> Notas: Los resultados de SynapseClaw se miden en builds de producción usando `/usr/bin/time -l`. OpenClaw requiere el runtime Node.js (típicamente ~390 MB de sobrecarga de memoria adicional), mientras que NanoBot requiere el runtime Python. PicoClaw y SynapseClaw son binarios estáticos. Las cifras de RAM anteriores son memoria de runtime; los requisitos de compilación en tiempo de build son mayores.
 
 <p align="center">
-  <img src="zero-claw.jpeg" alt="Comparación ZeroClaw vs OpenClaw" width="800" />
+  <img src="zero-claw.jpeg" alt="Comparación SynapseClaw vs OpenClaw" width="800" />
 </p>
 
 ### Medición Local Reproducible
@@ -144,17 +144,17 @@ Las afirmaciones de benchmark pueden derivar a medida que el código y las toolc
 
 ```bash
 cargo build --release
-ls -lh target/release/zeroclaw
+ls -lh target/release/synapseclaw
 
-/usr/bin/time -l target/release/zeroclaw --help
-/usr/bin/time -l target/release/zeroclaw status
+/usr/bin/time -l target/release/synapseclaw --help
+/usr/bin/time -l target/release/synapseclaw status
 ```
 
 Ejemplo de muestra (macOS arm64, medido el 18 de febrero de 2026):
 
 - Tamaño de binario release: `8.8M`
-- `zeroclaw --help`: tiempo real aprox `0.02s`, huella de memoria máxima ~`3.9 MB`
-- `zeroclaw status`: tiempo real aprox `0.01s`, huella de memoria máxima ~`4.1 MB`
+- `synapseclaw --help`: tiempo real aprox `0.02s`, huella de memoria máxima ~`3.9 MB`
+- `synapseclaw status`: tiempo real aprox `0.01s`, huella de memoria máxima ~`4.1 MB`
 
 ## Requisitos Previos
 
@@ -228,22 +228,22 @@ Ejemplo de muestra (macOS arm64, medido el 18 de febrero de 2026):
 
 ### Opción 1: Configuración automatizada (recomendada)
 
-El script `bootstrap.sh` instala Rust, clona ZeroClaw, lo compila, y configura tu entorno de desarrollo inicial:
+El script `bootstrap.sh` instala Rust, clona SynapseClaw, lo compila, y configura tu entorno de desarrollo inicial:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zeroclaw-labs/zeroclaw/master/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/panviktor/synapseclaw/master/bootstrap.sh | bash
 ```
 
 Esto:
 
 1. Instalará Rust (si no está presente)
-2. Clonará el repositorio ZeroClaw
-3. Compilará ZeroClaw en modo release
-4. Instalará `zeroclaw` en `~/.cargo/bin/`
-5. Creará la estructura de workspace por defecto en `~/.zeroclaw/workspace/`
-6. Generará un archivo de configuración inicial `~/.zeroclaw/workspace/config.toml`
+2. Clonará el repositorio SynapseClaw
+3. Compilará SynapseClaw en modo release
+4. Instalará `synapseclaw` en `~/.cargo/bin/`
+5. Creará la estructura de workspace por defecto en `~/.synapseclaw/workspace/`
+6. Generará un archivo de configuración inicial `~/.synapseclaw/workspace/config.toml`
 
-Después del bootstrap, recarga tu shell o ejecuta `source ~/.cargo/env` para usar el comando `zeroclaw` globalmente.
+Después del bootstrap, recarga tu shell o ejecuta `source ~/.cargo/env` para usar el comando `synapseclaw` globalmente.
 
 ### Opción 2: Instalación manual
 
@@ -252,8 +252,8 @@ Después del bootstrap, recarga tu shell o ejecuta `source ~/.cargo/env` para us
 
 ```bash
 # 1. Clona el repositorio
-git clone https://github.com/zeroclaw-labs/zeroclaw.git
-cd zeroclaw
+git clone https://github.com/panviktor/synapseclaw.git
+cd synapseclaw
 
 # 2. Compila en release
 cargo build --release --locked
@@ -262,11 +262,11 @@ cargo build --release --locked
 cargo install --path . --locked
 
 # 4. Inicializa el workspace
-zeroclaw init
+synapseclaw init
 
 # 5. Verifica la instalación
-zeroclaw --version
-zeroclaw status
+synapseclaw --version
+synapseclaw status
 ```
 
 </details>
@@ -276,7 +276,7 @@ zeroclaw status
 Una vez instalado (vía bootstrap o manualmente), deberías ver:
 
 ```
-~/.zeroclaw/workspace/
+~/.synapseclaw/workspace/
 ├── config.toml          # Configuración principal
 ├── .pairing             # Secretos de emparejamiento (generado al primer inicio)
 ├── logs/                # Logs de daemon/agent
@@ -286,14 +286,14 @@ Una vez instalado (vía bootstrap o manualmente), deberías ver:
 
 **Siguientes pasos:**
 
-1. Configura tus proveedores de AI en `~/.zeroclaw/workspace/config.toml`
+1. Configura tus proveedores de AI en `~/.synapseclaw/workspace/config.toml`
 2. Revisa la [referencia de configuración](docs/config-reference.md) para opciones avanzadas
-3. Inicia el agente: `zeroclaw agent start`
+3. Inicia el agente: `synapseclaw agent start`
 4. Prueba vía tu canal preferido (ver [referencia de canales](docs/channels-reference.md))
 
 ## Configuración
 
-Edita `~/.zeroclaw/workspace/config.toml` para configurar proveedores, canales y comportamiento del sistema.
+Edita `~/.synapseclaw/workspace/config.toml` para configurar proveedores, canales y comportamiento del sistema.
 
 ### Referencia de Configuración Rápida
 
@@ -332,7 +332,7 @@ kind = "native"    # o "docker" (requiere Docker)
 
 ### Soporte de Runtime (actual)
 
-ZeroClaw soporta dos backends de ejecución de código:
+SynapseClaw soporta dos backends de ejecución de código:
 
 - **`native`** (por defecto) — ejecución de proceso directo, camino más rápido, ideal para entornos de confianza
 - **`docker`** — aislamiento completo de contenedor, políticas de seguridad reforzadas, requiere Docker
@@ -343,32 +343,32 @@ Usa `runtime.kind = "docker"` si necesitas sandboxing estricto o aislamiento de 
 
 ```bash
 # Gestión de workspace
-zeroclaw init                # Inicializa un nuevo workspace
-zeroclaw status              # Muestra estado de daemon/agent
-zeroclaw config validate     # Verifica sintaxis y valores de config.toml
+synapseclaw init                # Inicializa un nuevo workspace
+synapseclaw status              # Muestra estado de daemon/agent
+synapseclaw config validate     # Verifica sintaxis y valores de config.toml
 
 # Gestión de daemon
-zeroclaw daemon start        # Inicia el daemon en segundo plano
-zeroclaw daemon stop         # Detiene el daemon en ejecución
-zeroclaw daemon restart      # Reinicia el daemon (recarga de config)
-zeroclaw daemon logs         # Muestra logs del daemon
+synapseclaw daemon start        # Inicia el daemon en segundo plano
+synapseclaw daemon stop         # Detiene el daemon en ejecución
+synapseclaw daemon restart      # Reinicia el daemon (recarga de config)
+synapseclaw daemon logs         # Muestra logs del daemon
 
 # Gestión de agent
-zeroclaw agent start         # Inicia el agent (requiere daemon ejecutándose)
-zeroclaw agent stop          # Detiene el agent
-zeroclaw agent restart       # Reinicia el agent (recarga de config)
+synapseclaw agent start         # Inicia el agent (requiere daemon ejecutándose)
+synapseclaw agent stop          # Detiene el agent
+synapseclaw agent restart       # Reinicia el agent (recarga de config)
 
 # Operaciones de emparejamiento
-zeroclaw pairing init        # Genera un nuevo secreto de emparejamiento
-zeroclaw pairing rotate      # Rota el secreto de emparejamiento existente
+synapseclaw pairing init        # Genera un nuevo secreto de emparejamiento
+synapseclaw pairing rotate      # Rota el secreto de emparejamiento existente
 
 # Tunneling (para exposición pública)
-zeroclaw tunnel start        # Inicia un tunnel hacia el daemon local
-zeroclaw tunnel stop         # Detiene el tunnel activo
+synapseclaw tunnel start        # Inicia un tunnel hacia el daemon local
+synapseclaw tunnel stop         # Detiene el tunnel activo
 
 # Diagnóstico
-zeroclaw doctor              # Ejecuta verificaciones de salud del sistema
-zeroclaw version             # Muestra versión e información de build
+synapseclaw doctor              # Ejecuta verificaciones de salud del sistema
+synapseclaw version             # Muestra versión e información de build
 ```
 
 Ver [Referencia de Comandos](docs/commands-reference.md) para opciones y ejemplos completos.
@@ -406,9 +406,9 @@ Para despliegue y operaciones de runtime:
 - Guía de Despliegue de Red: [docs/network-deployment.md](docs/network-deployment.md)
 - Playbook de Agent Proxy: [docs/proxy-agent-playbook.md](docs/proxy-agent-playbook.md)
 
-## Apoyar a ZeroClaw
+## Apoyar a SynapseClaw
 
-Si ZeroClaw ayuda a tu trabajo y deseas apoyar el desarrollo continuo, puedes donar aquí:
+Si SynapseClaw ayuda a tu trabajo y deseas apoyar el desarrollo continuo, puedes donar aquí:
 
 <a href="https://buymeacoffee.com/argenistherose"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow.svg?style=for-the-badge&logo=buy-me-a-coffee" alt="Cómprame un Café" /></a>
 
@@ -439,19 +439,19 @@ Thank you to everyone who opened issues, reviewed PRs, translated docs, and help
 
 ## ⚠️ Repositorio Oficial y Advertencia de Suplantación
 
-**Este es el único repositorio oficial de ZeroClaw:**
+**Este es el único repositorio oficial de SynapseClaw:**
 
-> <https://github.com/zeroclaw-labs/zeroclaw>
+> <https://github.com/panviktor/synapseclaw>
 
-Cualquier otro repositorio, organización, dominio o paquete que afirme ser "ZeroClaw" o que implique afiliación con ZeroClaw Labs es **no autorizado y no está afiliado con este proyecto**. Los forks no autorizados conocidos serán listados en [TRADEMARK.md](TRADEMARK.md).
+Cualquier otro repositorio, organización, dominio o paquete que afirme ser "SynapseClaw" o que implique afiliación con SynapseClaw Labs es **no autorizado y no está afiliado con este proyecto**. Los forks no autorizados conocidos serán listados en [TRADEMARK.md](TRADEMARK.md).
 
-Si encuentras suplantación o uso indebido de marca, por favor [abre un issue](https://github.com/zeroclaw-labs/zeroclaw/issues).
+Si encuentras suplantación o uso indebido de marca, por favor [abre un issue](https://github.com/panviktor/synapseclaw/issues).
 
 ---
 
 ## Licencia
 
-ZeroClaw tiene doble licencia para máxima apertura y protección de contribuyentes:
+SynapseClaw tiene doble licencia para máxima apertura y protección de contribuyentes:
 
 | Licencia                      | Casos de Uso                                            |
 | ---------------------------- | ------------------------------------------------------------ |
@@ -462,7 +462,7 @@ Puedes elegir cualquiera de las dos licencias. **Los contribuyentes otorgan auto
 
 ### Marca
 
-El nombre **ZeroClaw** y el logo son marcas registradas de ZeroClaw Labs. Esta licencia no otorga permiso para usarlos para implicar aprobación o afiliación. Ver [TRADEMARK.md](TRADEMARK.md) para usos permitidos y prohibidos.
+El nombre **SynapseClaw** y el logo son marcas registradas de SynapseClaw Labs. Esta licencia no otorga permiso para usarlos para implicar aprobación o afiliación. Ver [TRADEMARK.md](TRADEMARK.md) para usos permitidos y prohibidos.
 
 ### Protecciones del Contribuyente
 
@@ -482,20 +482,20 @@ Ver [CONTRIBUTING.md](CONTRIBUTING.md) y [CLA.md](CLA.md). Implementa un trait, 
 - Nuevo `Tool` → `src/tools/`
 - Nueva `Memory` → `src/memory/`
 - Nuevo `Tunnel` → `src/tunnel/`
-- Nueva `Skill` → `~/.zeroclaw/workspace/skills/<n>/`
+- Nueva `Skill` → `~/.synapseclaw/workspace/skills/<n>/`
 
 ---
 
-**ZeroClaw** — Cero sobrecarga. Cero compromiso. Despliega en cualquier lugar. Intercambia cualquier cosa. 🦀
+**SynapseClaw** — Cero sobrecarga. Cero compromiso. Despliega en cualquier lugar. Intercambia cualquier cosa. 🦀
 
 ## Historial de Estrellas
 
 <p align="center">
-  <a href="https://www.star-history.com/#zeroclaw-labs/zeroclaw&type=date&legend=top-left">
+  <a href="https://www.star-history.com/#panviktor/synapseclaw&type=date&legend=top-left">
     <picture>
-     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=zeroclaw-labs/zeroclaw&type=date&theme=dark&legend=top-left" />
-     <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=zeroclaw-labs/zeroclaw&type=date&legend=top-left" />
-     <img alt="Gráfico de Historial de Estrellas" src="https://api.star-history.com/svg?repos=zeroclaw-labs/zeroclaw&type=date&legend=top-left" />
+     <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=panviktor/synapseclaw&type=date&theme=dark&legend=top-left" />
+     <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=panviktor/synapseclaw&type=date&legend=top-left" />
+     <img alt="Gráfico de Historial de Estrellas" src="https://api.star-history.com/svg?repos=panviktor/synapseclaw&type=date&legend=top-left" />
     </picture>
   </a>
 </p>

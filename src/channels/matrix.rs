@@ -58,7 +58,7 @@ pub struct MatrixChannel {
     allowed_users: Vec<String>,
     session_owner_hint: Option<String>,
     session_device_id_hint: Option<String>,
-    zeroclaw_dir: Option<PathBuf>,
+    synapseclaw_dir: Option<PathBuf>,
     resolved_room_id_cache: Arc<RwLock<Option<String>>>,
     sdk_client: Arc<OnceCell<MatrixSdkClient>>,
     http_client: Client,
@@ -391,7 +391,7 @@ impl MatrixChannel {
         owner_hint: Option<String>,
         device_id_hint: Option<String>,
     ) -> Self {
-        Self::new_with_session_hint_and_zeroclaw_dir(
+        Self::new_with_session_hint_and_synapseclaw_dir(
             homeserver,
             access_token,
             room_id,
@@ -403,14 +403,14 @@ impl MatrixChannel {
     }
 
     /// Create a new Matrix channel with session hints and an optional workspace directory for media storage.
-    pub fn new_with_session_hint_and_zeroclaw_dir(
+    pub fn new_with_session_hint_and_synapseclaw_dir(
         homeserver: String,
         access_token: Option<String>,
         room_id: String,
         allowed_users: Vec<String>,
         owner_hint: Option<String>,
         device_id_hint: Option<String>,
-        zeroclaw_dir: Option<PathBuf>,
+        synapseclaw_dir: Option<PathBuf>,
     ) -> Self {
         let homeserver = homeserver.trim_end_matches('/').to_string();
         let access_token = access_token
@@ -430,7 +430,7 @@ impl MatrixChannel {
             allowed_users,
             session_owner_hint: Self::normalize_optional_field(owner_hint),
             session_device_id_hint: Self::normalize_optional_field(device_id_hint),
-            zeroclaw_dir,
+            synapseclaw_dir,
             resolved_room_id_cache: Arc::new(RwLock::new(None)),
             sdk_client: Arc::new(OnceCell::new()),
             http_client: Client::new(),
@@ -512,7 +512,7 @@ impl MatrixChannel {
     }
 
     fn matrix_store_dir(&self) -> Option<PathBuf> {
-        self.zeroclaw_dir
+        self.synapseclaw_dir
             .as_ref()
             .map(|dir| dir.join("state").join("matrix"))
     }
@@ -555,7 +555,7 @@ impl MatrixChannel {
     }
 
     fn media_save_dir(&self) -> Option<PathBuf> {
-        self.zeroclaw_dir
+        self.synapseclaw_dir
             .as_ref()
             .map(|dir| dir.join("workspace").join("matrix_files"))
     }
@@ -803,7 +803,7 @@ impl MatrixChannel {
                     let response = client
                         .matrix_auth()
                         .login_username(user_id_str, pw)
-                        .initial_device_display_name("ZeroClaw")
+                        .initial_device_display_name("SynapseClaw")
                         .send()
                         .await?;
 
@@ -1280,7 +1280,7 @@ impl Channel for MatrixChannel {
             // Security: restrict uploads to the workspace/media directory to
             // prevent [IMAGE:path] markers in bot responses from exfiltrating
             // arbitrary host files via Matrix media uploads.
-            if let Some(ref zdir) = self.zeroclaw_dir {
+            if let Some(ref zdir) = self.synapseclaw_dir {
                 let allowed_dir = zdir.join("workspace");
                 match path.canonicalize() {
                     Ok(canonical) => {
@@ -1303,7 +1303,7 @@ impl Channel for MatrixChannel {
                 }
             } else {
                 tracing::warn!(
-                    "Matrix: no zeroclaw_dir configured — cannot validate attachment path '{}', refusing upload",
+                    "Matrix: no synapseclaw_dir configured — cannot validate attachment path '{}', refusing upload",
                     target
                 );
                 continue;
@@ -1530,7 +1530,7 @@ impl Channel for MatrixChannel {
                     MessageType::Notice(content) => content.body.clone(),
                     MessageType::Image(content) => {
                         let Some(ref save_dir) = media_save_dir else {
-                            tracing::warn!("Matrix image received but no zeroclaw_dir configured for media storage");
+                            tracing::warn!("Matrix image received but no synapseclaw_dir configured for media storage");
                             return;
                         };
                         let filename = content.filename().to_string();
@@ -1553,7 +1553,7 @@ impl Channel for MatrixChannel {
                     }
                     MessageType::File(content) => {
                         let Some(ref save_dir) = media_save_dir else {
-                            tracing::warn!("Matrix file received but no zeroclaw_dir configured for media storage");
+                            tracing::warn!("Matrix file received but no synapseclaw_dir configured for media storage");
                             return;
                         };
                         let filename = content.filename().to_string();
@@ -1606,7 +1606,7 @@ impl Channel for MatrixChannel {
                                         Err(error) => {
                                             tracing::debug!("Matrix audio transcription failed, falling back to file save: {error}");
                                             let Some(ref save_dir) = media_save_dir else {
-                                                tracing::warn!("Matrix audio received but no zeroclaw_dir configured for media storage");
+                                                tracing::warn!("Matrix audio received but no synapseclaw_dir configured for media storage");
                                                 return;
                                             };
                                             match download_and_save_matrix_media(&sdk_client, &source, &filename, save_dir, size_hint, max_media_bytes).await {
@@ -1629,7 +1629,7 @@ impl Channel for MatrixChannel {
                         } else {
                             // No transcription — save as document.
                             let Some(ref save_dir) = media_save_dir else {
-                                tracing::warn!("Matrix audio received but no zeroclaw_dir configured for media storage");
+                                tracing::warn!("Matrix audio received but no synapseclaw_dir configured for media storage");
                                 return;
                             };
                             match download_and_save_matrix_media(&sdk_client, &source, &filename, save_dir, size_hint, max_media_bytes).await {
@@ -2075,15 +2075,15 @@ mod tests {
         )
     }
 
-    fn make_channel_with_zeroclaw_dir() -> MatrixChannel {
-        MatrixChannel::new_with_session_hint_and_zeroclaw_dir(
+    fn make_channel_with_synapseclaw_dir() -> MatrixChannel {
+        MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
             "https://matrix.org".to_string(),
             Some("syt_test_token".to_string()),
             "!room:matrix.org".to_string(),
             vec!["@user:matrix.org".to_string()],
             None,
             None,
-            Some(PathBuf::from("/tmp/zeroclaw")),
+            Some(PathBuf::from("/tmp/synapseclaw")),
         )
     }
 
@@ -2171,25 +2171,25 @@ mod tests {
     }
 
     #[test]
-    fn matrix_store_dir_is_derived_from_zeroclaw_dir() {
-        let ch = MatrixChannel::new_with_session_hint_and_zeroclaw_dir(
+    fn matrix_store_dir_is_derived_from_synapseclaw_dir() {
+        let ch = MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
             "https://matrix.org".to_string(),
             Some("tok".to_string()),
             "!r:m".to_string(),
             vec![],
             None,
             None,
-            Some(PathBuf::from("/tmp/zeroclaw")),
+            Some(PathBuf::from("/tmp/synapseclaw")),
         );
 
         assert_eq!(
             ch.matrix_store_dir(),
-            Some(PathBuf::from("/tmp/zeroclaw/state/matrix"))
+            Some(PathBuf::from("/tmp/synapseclaw/state/matrix"))
         );
     }
 
     #[test]
-    fn matrix_store_dir_absent_without_zeroclaw_dir() {
+    fn matrix_store_dir_absent_without_synapseclaw_dir() {
         let ch = MatrixChannel::new_with_session_hint(
             "https://matrix.org".to_string(),
             Some("tok".to_string()),
@@ -2597,16 +2597,16 @@ mod tests {
     }
 
     #[test]
-    fn media_save_dir_derived_from_zeroclaw_dir() {
-        let ch = make_channel_with_zeroclaw_dir();
+    fn media_save_dir_derived_from_synapseclaw_dir() {
+        let ch = make_channel_with_synapseclaw_dir();
         assert_eq!(
             ch.media_save_dir(),
-            Some(PathBuf::from("/tmp/zeroclaw/workspace/matrix_files"))
+            Some(PathBuf::from("/tmp/synapseclaw/workspace/matrix_files"))
         );
     }
 
     #[test]
-    fn media_save_dir_absent_without_zeroclaw_dir() {
+    fn media_save_dir_absent_without_synapseclaw_dir() {
         let ch = make_channel();
         assert!(ch.media_save_dir().is_none());
     }

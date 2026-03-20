@@ -28,7 +28,7 @@ jobs:
 
       - name: Add upstream remote
         run: |
-          git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/zeroclaw-labs/zeroclaw.git
+          git remote get-url upstream >/dev/null 2>&1 || git remote add upstream https://github.com/panviktor/synapseclaw.git
 
       - name: Run sync script
         id: sync

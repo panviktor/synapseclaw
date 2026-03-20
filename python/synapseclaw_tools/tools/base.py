@@ -17,7 +17,7 @@ def tool(
     Decorator to create a LangChain tool from a function.
 
     This is a convenience wrapper around langchain_core.tools.tool that
-    provides a simpler interface for ZeroClaw users.
+    provides a simpler interface for SynapseClaw users.
 
     Args:
         func: The function to wrap (when used without parentheses)
@@ -29,7 +29,7 @@ def tool(
 
     Example:
         ```python
-        from zeroclaw_tools import tool
+        from synapseclaw_tools import tool
 
         @tool
         def my_tool(query: str) -> str:

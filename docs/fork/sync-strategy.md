@@ -1,4 +1,4 @@
-# Fork Sync Strategy: ZeroClaw IPC Fork
+# Fork Sync Strategy: SynapseClaw IPC Fork
 
 ## Purpose
 
