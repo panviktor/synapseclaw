@@ -7,15 +7,16 @@ use super::{require_localhost, AppState};
 use crate::gateway::api::extract_bearer_token;
 use crate::security::audit::{AuditEvent, AuditEventType};
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::{ConnectInfo, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
 use parking_lot::Mutex;
+use serde::Deserialize;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Runtime provisioning state (in-memory, not persisted).
 pub struct ProvisioningState {
@@ -808,13 +809,38 @@ pub async fn handle_provisioning_used_ports(
 ///
 /// Combines gateway registry (Phase 3.8 registered agents) with IPC DB agents,
 /// plus communication topology from config (lateral_text_pairs, l4_destinations).
+#[derive(Debug, Deserialize)]
+pub struct TopologyQuery {
+    pub include_traffic: Option<bool>,
+    pub include_ephemeral: Option<bool>,
+    pub traffic_hours: Option<u64>,
+    pub traffic_min_count: Option<u32>,
+}
+
+fn is_ephemeral_agent_id(agent_id: &str) -> bool {
+    agent_id.starts_with("eph-")
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 pub async fn handle_provisioning_topology(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(query): Query<TopologyQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
+
+    let include_traffic = query.include_traffic.unwrap_or(false);
+    let include_ephemeral = query.include_ephemeral.unwrap_or(false);
+    let traffic_hours = query.traffic_hours.unwrap_or(24).clamp(1, 24 * 30);
+    let traffic_min_count = query.traffic_min_count.unwrap_or(2).clamp(1, 100);
 
     let mut agents_map: std::collections::HashMap<String, serde_json::Value> =
         std::collections::HashMap::new();
@@ -870,6 +896,10 @@ pub async fn handle_provisioning_topology(
         }
     }
 
+    if !include_ephemeral {
+        agents_map.retain(|agent_id, _| !is_ephemeral_agent_id(agent_id));
+    }
+
     // Build edges from config topology + actual message history
     let config = state.config.lock();
     let mut edges: Vec<serde_json::Value> = Vec::new();
@@ -899,22 +929,38 @@ pub async fn handle_provisioning_topology(
     }
     drop(config);
 
-    // Message-based edges — actual communication observed in IPC history
-    if let Some(ref ipc_db) = state.ipc_db {
-        for (from, to, count) in ipc_db.communication_pairs() {
-            // Skip if already covered by config-declared edges
-            if seen_pairs.contains(&(from.clone(), to.clone())) {
-                continue;
-            }
-            // Only show edges where both agents are known
-            if agents_map.contains_key(&from) && agents_map.contains_key(&to) {
-                edges.push(serde_json::json!({
-                    "from": from,
-                    "to": to,
-                    "type": "message",
-                    "count": count,
-                }));
-                seen_pairs.insert((from, to));
+    // Message-based edges — actual recent communication observed in IPC history.
+    // Hidden by default on the main fleet graph because policy topology and
+    // historical traffic are different concepts and become unreadable when
+    // flattened into one graph.
+    if include_traffic {
+        let now = unix_now();
+        let since_ts = now - (traffic_hours as i64 * 3600);
+        if let Some(ref ipc_db) = state.ipc_db {
+            for (from, to, count) in ipc_db.communication_pairs_filtered(
+                Some(since_ts),
+                i64::from(traffic_min_count),
+                100,
+            ) {
+                if !include_ephemeral
+                    && (is_ephemeral_agent_id(&from) || is_ephemeral_agent_id(&to))
+                {
+                    continue;
+                }
+                // Skip if already covered by config-declared edges
+                if seen_pairs.contains(&(from.clone(), to.clone())) {
+                    continue;
+                }
+                // Only show edges where both agents are known
+                if agents_map.contains_key(&from) && agents_map.contains_key(&to) {
+                    edges.push(serde_json::json!({
+                        "from": from,
+                        "to": to,
+                        "type": "message",
+                        "count": count,
+                    }));
+                    seen_pairs.insert((from, to));
+                }
             }
         }
     }

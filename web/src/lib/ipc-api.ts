@@ -258,8 +258,21 @@ export interface Topology {
   edges: TopologyEdge[];
 }
 
-export function fetchTopology(): Promise<Topology> {
-  return apiFetch<Topology>('/admin/provisioning/topology');
+export interface TopologyFilter {
+  includeTraffic?: boolean;
+  includeEphemeral?: boolean;
+  trafficHours?: number;
+  trafficMinCount?: number;
+}
+
+export function fetchTopology(filters: TopologyFilter = {}): Promise<Topology> {
+  const params = new URLSearchParams();
+  if (filters.includeTraffic !== undefined) params.set('include_traffic', String(filters.includeTraffic));
+  if (filters.includeEphemeral !== undefined) params.set('include_ephemeral', String(filters.includeEphemeral));
+  if (filters.trafficHours !== undefined) params.set('traffic_hours', String(filters.trafficHours));
+  if (filters.trafficMinCount !== undefined) params.set('traffic_min_count', String(filters.trafficMinCount));
+  const qs = params.toString();
+  return apiFetch<Topology>(`/admin/provisioning/topology${qs ? `?${qs}` : ''}`);
 }
 
 /**

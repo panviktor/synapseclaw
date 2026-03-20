@@ -459,19 +459,47 @@ impl IpcDb {
     /// Get distinct communication pairs from message history (for topology edges).
     /// Returns `(from_agent, to_agent, message_count)` ordered by frequency.
     pub fn communication_pairs(&self) -> Vec<(String, String, i64)> {
+        self.communication_pairs_filtered(None, 1, 100)
+    }
+
+    /// Get distinct communication pairs from message history with optional
+    /// recency/count filtering for topology views.
+    pub fn communication_pairs_filtered(
+        &self,
+        since_ts: Option<i64>,
+        min_count: i64,
+        limit: u32,
+    ) -> Vec<(String, String, i64)> {
         let conn = self.conn.lock();
-        let mut stmt = match conn.prepare(
-            "SELECT from_agent, to_agent, COUNT(*) as cnt
-             FROM messages
-             WHERE blocked = 0
-             GROUP BY from_agent, to_agent
-             ORDER BY cnt DESC
-             LIMIT 100",
-        ) {
+        let limit = i64::from(limit.max(1));
+        let min_count = min_count.max(1);
+        let (query, params): (&str, Vec<rusqlite::types::Value>) = match since_ts {
+            Some(since_ts) => (
+                "SELECT from_agent, to_agent, COUNT(*) as cnt
+                 FROM messages
+                 WHERE blocked = 0 AND created_at >= ?1
+                 GROUP BY from_agent, to_agent
+                 HAVING COUNT(*) >= ?2
+                 ORDER BY cnt DESC
+                 LIMIT ?3",
+                vec![since_ts.into(), min_count.into(), limit.into()],
+            ),
+            None => (
+                "SELECT from_agent, to_agent, COUNT(*) as cnt
+                 FROM messages
+                 WHERE blocked = 0
+                 GROUP BY from_agent, to_agent
+                 HAVING COUNT(*) >= ?1
+                 ORDER BY cnt DESC
+                 LIMIT ?2",
+                vec![min_count.into(), limit.into()],
+            ),
+        };
+        let mut stmt = match conn.prepare(query) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        stmt.query_map([], |row| {
+        stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
