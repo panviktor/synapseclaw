@@ -376,6 +376,8 @@ pub struct AppState {
     pub chat_sessions: Arc<std::sync::Mutex<HashMap<String, ChatSession>>>,
     /// Persistent chat database (SQLite)
     pub chat_db: Option<Arc<chat_db::ChatDb>>,
+    /// Parsed admin CIDR allowlist for non-localhost admin access
+    pub admin_cidrs: Arc<Vec<AdminCidr>>,
     /// IPC push dispatcher for broker→agent push notifications
     pub ipc_push_dispatcher: Option<Arc<ipc::PushDispatcher>>,
     /// Dedup set for received push notifications (agent-side)
@@ -757,6 +759,21 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         }
     };
 
+    // Parse admin CIDR allowlist — fail at boot on invalid entries
+    let admin_cidrs: Vec<AdminCidr> = config
+        .gateway
+        .admin_cidrs
+        .iter()
+        .map(|s| AdminCidr::parse(s).with_context(|| format!("invalid admin_cidrs entry: {s}")))
+        .collect::<Result<_>>()?;
+    if !admin_cidrs.is_empty() {
+        tracing::info!(
+            count = admin_cidrs.len(),
+            cidrs = ?config.gateway.admin_cidrs,
+            "Admin CIDR allowlist configured"
+        );
+    }
+
     let mut state = AppState {
         config: config_state,
         provider,
@@ -832,6 +849,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         node_registry,
         agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+        admin_cidrs: Arc::new(admin_cidrs),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
         chat_db,
         ipc_push_dispatcher: None, // initialized below after state is built
@@ -2134,20 +2152,64 @@ struct AdminResponse {
     message: String,
 }
 
-/// Reject requests that do not originate from a loopback address.
+// ── Admin CIDR allowlist ─────────────────────────────────────────
+
+/// Parsed IPv4 CIDR for admin endpoint access control.
+#[derive(Debug, Clone)]
+pub struct AdminCidr {
+    network: u32,
+    mask: u32,
+}
+
+impl AdminCidr {
+    /// Parse a CIDR string like "100.64.0.0/10".
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let (addr_str, prefix_str) = s
+            .split_once('/')
+            .ok_or_else(|| anyhow::anyhow!("expected CIDR format A.B.C.D/N, got: {s}"))?;
+        let addr: std::net::Ipv4Addr = addr_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid IPv4 address in CIDR {s}: {e}"))?;
+        let prefix: u32 = prefix_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid prefix length in CIDR {s}: {e}"))?;
+        if prefix > 32 {
+            anyhow::bail!("prefix length must be 0..=32, got {prefix} in CIDR {s}");
+        }
+        let mask = if prefix == 0 {
+            0
+        } else {
+            !0u32 << (32 - prefix)
+        };
+        let network = u32::from(addr) & mask;
+        Ok(Self { network, mask })
+    }
+
+    /// Check whether an IPv4 address falls within this CIDR range.
+    pub fn contains(&self, ip: std::net::Ipv4Addr) -> bool {
+        u32::from(ip) & self.mask == self.network
+    }
+}
+
+/// Reject requests not from loopback or a configured admin CIDR.
 pub(crate) fn require_localhost(
     peer: &SocketAddr,
+    admin_cidrs: &[AdminCidr],
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if peer.ip().is_loopback() {
-        Ok(())
-    } else {
-        Err((
-            StatusCode::FORBIDDEN,
-            Json(serde_json::json!({
-                "error": "Admin endpoints are restricted to localhost"
-            })),
-        ))
+        return Ok(());
     }
+    if let IpAddr::V4(v4) = peer.ip() {
+        if admin_cidrs.iter().any(|cidr| cidr.contains(v4)) {
+            return Ok(());
+        }
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        Json(serde_json::json!({
+            "error": "Admin endpoints are restricted to localhost and configured admin_cidrs"
+        })),
+    ))
 }
 
 /// POST /admin/shutdown — graceful shutdown from CLI (localhost only)
@@ -2155,7 +2217,7 @@ async fn handle_admin_shutdown(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     tracing::info!("🔌 Admin shutdown request received — initiating graceful shutdown");
 
     let body = AdminResponse {
@@ -2173,7 +2235,7 @@ async fn handle_admin_paircode(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let code = state.pairing.pairing_code();
 
     let body = if let Some(c) = code {
@@ -2228,7 +2290,7 @@ async fn handle_admin_paircode_new(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     body: Option<Json<PaircodeNewBody>>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     match state.pairing.generate_new_pairing_code() {
         Some(code) => {
             // If metadata was provided, bind it to the pairing code
@@ -2356,6 +2418,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+            admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
             ipc_push_dispatcher: None,
@@ -2422,6 +2485,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+            admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
             ipc_push_dispatcher: None,
@@ -2812,6 +2876,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+            admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
             ipc_push_dispatcher: None,
@@ -2892,6 +2957,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+            admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
             ipc_push_dispatcher: None,
@@ -2984,6 +3050,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+            admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
             ipc_push_dispatcher: None,
@@ -3048,6 +3115,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+            admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
             ipc_push_dispatcher: None,
@@ -3117,6 +3185,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+            admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
             ipc_push_dispatcher: None,
@@ -3191,6 +3260,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+            admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
             ipc_push_dispatcher: None,
@@ -3261,6 +3331,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
+            admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
             chat_db: None,
             ipc_push_dispatcher: None,
@@ -3680,19 +3751,19 @@ mod tests {
     #[test]
     fn require_localhost_accepts_ipv4_loopback() {
         let peer = SocketAddr::from(([127, 0, 0, 1], 12345));
-        assert!(require_localhost(&peer).is_ok());
+        assert!(require_localhost(&peer, &[]).is_ok());
     }
 
     #[test]
     fn require_localhost_accepts_ipv6_loopback() {
         let peer = SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 12345));
-        assert!(require_localhost(&peer).is_ok());
+        assert!(require_localhost(&peer, &[]).is_ok());
     }
 
     #[test]
     fn require_localhost_rejects_non_loopback_ipv4() {
         let peer = SocketAddr::from(([192, 168, 1, 100], 12345));
-        let err = require_localhost(&peer).unwrap_err();
+        let err = require_localhost(&peer, &[]).unwrap_err();
         assert_eq!(err.0, StatusCode::FORBIDDEN);
     }
 
@@ -3702,7 +3773,37 @@ mod tests {
             std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1),
             12345,
         ));
-        let err = require_localhost(&peer).unwrap_err();
+        let err = require_localhost(&peer, &[]).unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn admin_cidr_parse_and_contains() {
+        let cidr = AdminCidr::parse("100.64.0.0/10").unwrap();
+        assert!(cidr.contains(std::net::Ipv4Addr::new(100, 83, 1, 114)));
+        assert!(cidr.contains(std::net::Ipv4Addr::new(100, 127, 255, 255)));
+        assert!(!cidr.contains(std::net::Ipv4Addr::new(100, 128, 0, 0)));
+        assert!(!cidr.contains(std::net::Ipv4Addr::new(192, 168, 1, 1)));
+    }
+
+    #[test]
+    fn admin_cidr_parse_rejects_invalid() {
+        assert!(AdminCidr::parse("not-a-cidr").is_err());
+        assert!(AdminCidr::parse("100.64.0.0/33").is_err());
+        assert!(AdminCidr::parse("100.64.0.0").is_err());
+    }
+
+    #[test]
+    fn require_localhost_accepts_admin_cidr() {
+        let cidrs = vec![AdminCidr::parse("100.64.0.0/10").unwrap()];
+        let peer = SocketAddr::from(([100, 83, 1, 114], 12345));
+        assert!(require_localhost(&peer, &cidrs).is_ok());
+    }
+
+    #[test]
+    fn require_localhost_rejects_without_admin_cidr() {
+        let peer = SocketAddr::from(([100, 83, 1, 114], 12345));
+        let err = require_localhost(&peer, &[]).unwrap_err();
         assert_eq!(err.0, StatusCode::FORBIDDEN);
     }
 

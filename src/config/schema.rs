@@ -1513,6 +1513,13 @@ pub struct GatewayConfig {
     /// Disabled by default. Entire subtree immutable via PUT /api/config.
     #[serde(default)]
     pub ui_provisioning: UiProvisioningConfig,
+
+    /// Additional CIDR ranges allowed to access admin endpoints (besides localhost).
+    /// Example: `["100.64.0.0/10"]` for Tailscale peers.
+    /// Parsed and validated at startup — invalid CIDRs prevent boot.
+    /// Not changeable via `PUT /api/config`.
+    #[serde(default)]
+    pub admin_cidrs: Vec<String>,
 }
 
 /// UI agent provisioning configuration (broker-only).
@@ -1611,6 +1618,7 @@ impl Default for GatewayConfig {
             idempotency_max_keys: default_gateway_idempotency_max_keys(),
             token_metadata: HashMap::new(),
             ui_provisioning: UiProvisioningConfig::default(),
+            admin_cidrs: Vec::new(),
         }
     }
 }
@@ -9904,10 +9912,12 @@ channel_id = "C123"
             idempotency_max_keys: 4096,
             token_metadata: HashMap::new(),
             ui_provisioning: UiProvisioningConfig::default(),
+            admin_cidrs: vec!["100.64.0.0/10".into()],
         };
         let toml_str = toml::to_string(&g).unwrap();
         let parsed: GatewayConfig = toml::from_str(&toml_str).unwrap();
         assert!(parsed.require_pairing);
+        assert_eq!(parsed.admin_cidrs, vec!["100.64.0.0/10"]);
         assert!(!parsed.allow_public_bind);
         assert_eq!(parsed.paired_tokens, vec!["zc_test_token"]);
         assert_eq!(parsed.pair_rate_limit_per_minute, 12);
