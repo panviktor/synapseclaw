@@ -78,13 +78,12 @@ pub struct PushJob {
 }
 
 /// Metadata carried through the push signal channel to the inbox processor.
-/// Used for kind-based filtering, one-way check, and per-peer counting.
+/// Used for kind-based filtering and per-peer counting.
 #[derive(Debug, Clone)]
 pub struct PushMeta {
     pub from_agent: String,
     pub kind: String,
-    /// Resolved from local IPC DB (peek_inbox), NOT from push HTTP body.
-    pub from_trust_level: Option<u8>,
+    pub message_id: i64,
 }
 
 /// Background push dispatcher that sends lightweight notifications to agent gateways.
@@ -1799,6 +1798,16 @@ pub struct InboxQuery {
     pub quarantine: bool,
     #[serde(default = "default_inbox_limit")]
     pub limit: u32,
+    /// When true, return messages without marking them as read (non-consuming peek).
+    /// Used by push inbox processor for pre-fetch + inject (Phase 3.10).
+    #[serde(default)]
+    pub peek: bool,
+    /// Filter messages by sender agent ID.
+    #[serde(default)]
+    pub from: Option<String>,
+    /// Filter messages by kind (comma-separated, e.g. "task,query,result").
+    #[serde(default)]
+    pub kinds: Option<String>,
 }
 
 fn default_inbox_limit() -> u32 {
@@ -2841,7 +2850,28 @@ pub async fn handle_ipc_inbox(
         }
     }
 
-    let mut messages = db.fetch_inbox(&meta.agent_id, query.quarantine, query.limit);
+    let mut messages = if query.peek {
+        // Phase 3.10: non-consuming peek with optional scoped filters
+        let kind_strings: Vec<String> = query
+            .kinds
+            .as_deref()
+            .map(|k| k.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_default();
+        let kind_refs: Vec<&str> = kind_strings.iter().map(|s| s.as_str()).collect();
+        let kinds_arg = if kind_refs.is_empty() {
+            None
+        } else {
+            Some(kind_refs.as_slice())
+        };
+        db.peek_inbox(
+            &meta.agent_id,
+            query.from.as_deref(),
+            kinds_arg,
+            query.limit,
+        )
+    } else {
+        db.fetch_inbox(&meta.agent_id, query.quarantine, query.limit)
+    };
 
     // Populate trust warnings for LLM consumption
     for m in &mut messages {
@@ -2868,6 +2898,63 @@ pub async fn handle_ipc_inbox(
     }
 
     Ok(Json(serde_json::json!({ "messages": messages })))
+}
+
+/// POST /api/ipc/ack — explicitly acknowledge (mark as read) specific messages.
+///
+/// Phase 3.10: used by push inbox processor after successful agent::run().
+/// Only the recipient agent can ack their own messages.
+pub async fn handle_ipc_ack(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let db = require_ipc_db(&state)?;
+    let meta = require_ipc_auth(&state, &headers)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
+    require_agent_active(db, &meta.agent_id)?;
+
+    let ids: Vec<i64> = body["message_ids"]
+        .as_array()
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .unwrap_or_default();
+
+    if ids.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "message_ids must be a non-empty array of integers",
+                "code": "bad_request"
+            })),
+        ));
+    }
+
+    // Only ack messages addressed to this agent (safety: can't ack other agents' mail)
+    let conn = db.conn.lock();
+    let mut acked = 0i64;
+    for id in &ids {
+        let changed = conn
+            .execute(
+                "UPDATE messages SET read = 1 WHERE id = ?1 AND to_agent = ?2 AND read = 0",
+                params![id, meta.agent_id],
+            )
+            .unwrap_or(0);
+        acked += changed as i64;
+    }
+    drop(conn);
+
+    if acked > 0 {
+        if let Some(ref logger) = state.audit_logger {
+            let _ = logger.log(&AuditEvent::ipc(
+                AuditEventType::IpcReceived,
+                &meta.agent_id,
+                None,
+                &format!("ack: {acked}/{} messages", ids.len()),
+            ));
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true, "acked": acked })))
 }
 
 /// GET /api/ipc/state — read a shared state key.
@@ -4130,49 +4217,20 @@ pub async fn handle_ipc_push_notification(
         }
     }
 
-    // Kind-based filtering + one-way check (Phase 3.10)
+    // Kind-based filtering (Phase 3.10)
+    // One-way trust check is deferred to inbox processor where broker-authoritative
+    // trust level is available from the peeked messages.
     if let Some(ref tx) = state.ipc_push_signal {
         let config = state.config.lock();
         let auto_kinds = config.agents_ipc.push_auto_process_kinds.clone();
-        let one_way = config.agents_ipc.push_one_way;
-        let my_trust = config.agents_ipc.trust_level;
         drop(config);
 
         if auto_kinds.iter().any(|k| k == kind) {
-            // Resolve from_trust_level from local IPC DB (non-consuming peek)
-            let from_trust_level = state.ipc_db.as_ref().and_then(|db| {
-                let msgs = db.peek_inbox(
-                    &state
-                        .config
-                        .lock()
-                        .agents_ipc
-                        .agent_id
-                        .clone()
-                        .unwrap_or_default(),
-                    Some(from),
-                    None,
-                    1,
-                );
-                msgs.first().map(|m| m.from_trust_level)
+            let _ = tx.send(PushMeta {
+                from_agent: from.to_string(),
+                kind: kind.to_string(),
+                message_id,
             });
-
-            // One-way check: if enabled and sender is subordinate (higher trust level),
-            // skip auto-processing. Fail-closed: unknown trust → skip when one_way=true.
-            let suppressed = one_way && from_trust_level.unwrap_or(u8::MAX) > my_trust;
-            if suppressed {
-                tracing::debug!(
-                    message_id = message_id,
-                    from = %from,
-                    kind = %kind,
-                    "Push one-way: subordinate sender, suppressing auto-processing"
-                );
-            } else {
-                let _ = tx.send(PushMeta {
-                    from_agent: from.to_string(),
-                    kind: kind.to_string(),
-                    from_trust_level,
-                });
-            }
         } else {
             tracing::debug!(
                 message_id = message_id,
@@ -6163,6 +6221,112 @@ mod tests {
         let pending = db.pending_messages_for("daily").unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].message_id, id1);
+    }
+
+    // ── Phase 3.10: broker-authoritative peek/ack tests ──────────
+
+    // ── Phase 3.10: broker-authoritative peek/ack tests ──────────
+
+    #[test]
+    fn peek_inbox_returns_messages_without_marking_read() {
+        let db = test_db();
+        db.insert_message("opus", "worker", "task", "do something", 1, None, 0, None)
+            .unwrap();
+
+        // peek should return the message
+        let peeked = db.peek_inbox("worker", None, None, 50);
+        assert_eq!(peeked.len(), 1);
+        assert_eq!(peeked[0].kind, "task");
+
+        // peek again — still there (not consumed)
+        let peeked2 = db.peek_inbox("worker", None, None, 50);
+        assert_eq!(peeked2.len(), 1);
+    }
+
+    #[test]
+    fn peek_inbox_from_filter() {
+        let db = test_db();
+        db.insert_message("a", "c", "task", "from a", 1, None, 0, None)
+            .unwrap();
+        db.insert_message("b", "c", "task", "from b", 1, None, 0, None)
+            .unwrap();
+
+        let from_a = db.peek_inbox("c", Some("a"), None, 50);
+        assert_eq!(from_a.len(), 1);
+        assert_eq!(from_a[0].from_agent, "a");
+
+        let from_b = db.peek_inbox("c", Some("b"), None, 50);
+        assert_eq!(from_b.len(), 1);
+        assert_eq!(from_b[0].from_agent, "b");
+    }
+
+    #[test]
+    fn peek_inbox_kinds_filter() {
+        let db = test_db();
+        db.insert_message("opus", "worker", "task", "task msg", 1, None, 0, None)
+            .unwrap();
+        db.insert_message("opus", "worker", "text", "text msg", 1, None, 0, None)
+            .unwrap();
+
+        let tasks = db.peek_inbox("worker", None, Some(&["task"]), 50);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].kind, "task");
+
+        let both = db.peek_inbox("worker", None, Some(&["task", "text"]), 50);
+        assert_eq!(both.len(), 2);
+    }
+
+    #[test]
+    fn ack_marks_peeked_messages_as_read() {
+        let db = test_db();
+        let id = db
+            .insert_message("opus", "worker", "task", "ack test", 1, None, 0, None)
+            .unwrap();
+
+        // peek: message present
+        let peeked = db.peek_inbox("worker", None, None, 50);
+        assert_eq!(peeked.len(), 1);
+
+        // ack
+        db.ack_messages(&[id]);
+
+        // peek again: gone (read=1)
+        let after = db.peek_inbox("worker", None, None, 50);
+        assert!(after.is_empty());
+
+        // fetch_inbox: also gone
+        let fetched = db.fetch_inbox("worker", false, 50);
+        assert!(fetched.is_empty());
+    }
+
+    #[test]
+    fn ack_only_affects_specified_ids() {
+        let db = test_db();
+        let id1 = db
+            .insert_message("opus", "worker", "task", "msg 1", 1, None, 0, None)
+            .unwrap();
+        let _id2 = db
+            .insert_message("opus", "worker", "task", "msg 2", 1, None, 0, None)
+            .unwrap();
+
+        // Ack only the first message
+        db.ack_messages(&[id1]);
+
+        let remaining = db.peek_inbox("worker", None, None, 50);
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].payload, "msg 2");
+    }
+
+    #[test]
+    fn push_meta_carries_message_id() {
+        let meta = PushMeta {
+            from_agent: "opus".to_string(),
+            kind: "task".to_string(),
+            message_id: 42,
+        };
+        assert_eq!(meta.message_id, 42);
+        assert_eq!(meta.from_agent, "opus");
+        assert_eq!(meta.kind, "task");
     }
 
     #[test]

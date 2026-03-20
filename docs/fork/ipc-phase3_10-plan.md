@@ -156,34 +156,64 @@ Current push signal carries no metadata:
 UnboundedSender<()>  →  agent_inbox_processor receives ()
 ```
 
-New signal carries peer identity and message kind:
+New signal carries peer identity, message kind, and message id:
 
 ```
-UnboundedSender<PushMeta>  →  agent_inbox_processor receives { from_agent, kind, from_trust_level }
+UnboundedSender<PushMeta>  →  agent_inbox_processor receives { from_agent, kind, message_id }
 ```
 
-This enables kind filtering, one-way check, and per-peer counting without additional lookups.
+This enables kind filtering, broker-authoritative pre-fetch, and per-peer counting without falling back to the wrong local database.
 
 ### Trust level source
 
-`from_trust_level` in `PushMeta` **must not** come from the HTTP push body (untrusted, broker-controlled payload). The agent-side push receiver resolves it by looking up the sender in its local IPC DB via `message_id`:
+`from_trust_level` for one-way mode **must not** come from the HTTP push body (untrusted, broker-controlled payload).
+
+The authoritative message row lives on the **broker**, not in the agent-local SQLite file. Therefore `from_trust_level` must be resolved from the **broker-side peek response** during pre-fetch, not from agent-local `ipc_db`.
+
+The push receiver should only enqueue:
+
+```rust
+PushMeta {
+    from_agent: "copywriter".into(),
+    kind: "task".into(),
+    message_id: 42,
+}
+```
+
+Then the inbox processor performs a non-consuming **broker-authoritative** peek:
 
 ```
-push body: { message_id: 42, from: "copywriter", kind: "text" }
+push body: { message_id: 42, from: "copywriter", kind: "task" }
                                     │
                     ┌───────────────┘
                     ▼
-    local IPC DB: SELECT from_trust_level FROM messages WHERE id = 42
+ broker GET /api/ipc/inbox?peek=true&from=copywriter&kinds=task,query,result
                     │
                     ▼
-    PushMeta { from_trust_level: Some(3) }
+  peek response includes from_trust_level from broker-stored message row
 ```
-
-If the message is not yet in local DB (push arrived before poll), the push receiver calls `db.peek_inbox()` (non-consuming, see Step 4) to look up the message without marking it as read. If the message is found, `from_trust_level` is extracted. If not found (race condition — message not yet replicated), `from_trust_level` is set to `None`.
 
 **Fail-closed contract for `push_one_way`**: when `push_one_way=true` and `from_trust_level` is `None` (unknown), auto-processing is **skipped** — the message waits for poll. This is fail-closed: we never auto-process a push from a sender whose trust level we cannot verify when one-way mode is active. When `push_one_way=false`, unknown trust level is irrelevant (one-way check is not performed).
 
 The broker's `from_trust_level` field on stored messages is authoritative because it's set at insert time from authenticated token metadata.
+
+### Deprecation and removal rule
+
+The current local-DB pre-fetch path is a **deprecated implementation path** and must be removed, not kept as a second production mode:
+
+- no agent-side `ipc_db.peek_inbox()` for push-triggered processing
+- no trust lookup from agent-local SQLite for push-triggered processing
+- no dual-path “local if available, broker otherwise” behavior
+
+There must be one production model only:
+
+1. broker stores unread messages
+2. push wakes the agent
+3. agent performs broker `peek=true`
+4. agent runs locally with injected scoped context
+5. agent acknowledges through broker after successful processing
+
+Keeping both local and broker pre-fetch paths alive would make delivery semantics harder to reason about and guarantees harder to verify.
 
 ---
 
@@ -198,14 +228,13 @@ Add `PushMeta` struct to `src/gateway/ipc.rs` (after `PushJob`):
 pub struct PushMeta {
     pub from_agent: String,
     pub kind: String,
-    /// Resolved from local IPC DB, NOT from push HTTP body.
-    pub from_trust_level: Option<u8>,
+    pub message_id: i64,
 }
 ```
 
 Change `AppState.ipc_push_signal` from `UnboundedSender<()>` to `UnboundedSender<PushMeta>` in `src/gateway/mod.rs`. Update channel creation at spawn site.
 
-In `handle_ipc_push_notification`: resolve `from_trust_level` by looking up `message_id` in local IPC DB. If not found (message not yet polled), set `None`.
+In `handle_ipc_push_notification`: do **not** resolve trust from local IPC DB. Only enqueue `PushMeta { from_agent, kind, message_id }`.
 
 ### Step 2: Config fields
 
@@ -226,7 +255,14 @@ Modify `handle_ipc_push_notification()` in `src/gateway/ipc.rs`:
 - Only send `PushMeta` signal if kind is in the auto-process list
 - For non-matching kinds: log at DEBUG, return 202, message stays in inbox
 
-One-way check also happens here: if `push_one_way=true` and `from_trust_level > this agent's trust level` (sender is subordinate), skip signaling.
+One-way check no longer happens here. The push receiver is reduced to:
+
+- validate token
+- dedup `message_id`
+- kind filter
+- enqueue `PushMeta`
+
+One-way suppression is applied only after broker-authoritative peek returns `from_trust_level`.
 
 ### Step 4: Pre-fetch + inject (enforced scoped processing)
 
@@ -236,41 +272,26 @@ The inbox processor **pre-fetches** scoped messages and injects them into the pr
 
 The current `fetch_inbox()` (`ipc.rs:609`) marks messages as `read = 1` immediately upon fetch. This means pre-fetch **cannot** use the existing `GET /api/ipc/inbox` endpoint — if the pre-fetch succeeds but `agent::run()` subsequently fails/times out, the messages are lost (already marked read, won't appear in the next poll or auto-process cycle).
 
-**Solution: add a non-consuming peek method to `IpcDb`:**
+**Solution: add broker-side non-consuming peek and explicit ack:**
 
 ```rust
-/// Peek at unread messages without marking them as read.
-/// Used by push inbox processor for pre-fetch + inject.
-pub fn peek_inbox(
-    &self,
-    agent_id: &str,
-    from_agent: Option<&str>,
-    kinds: Option<&[&str]>,
-    limit: u32,
-) -> Vec<InboxMessage> {
-    // Same query as fetch_inbox() but WITHOUT the `UPDATE read = 1` step.
-    // Messages remain unread until explicitly acknowledged.
-}
-
-/// Mark specific messages as read by ID.
-/// Called after successful agent::run() processing.
-pub fn ack_messages(&self, ids: &[i64]) {
-    for id in ids {
-        let _ = conn.execute(
-            "UPDATE messages SET read = 1 WHERE id = ?1",
-            params![id],
-        );
-    }
-}
+GET  /api/ipc/inbox?peek=true&from=<peer>&kinds=task,query,result&limit=20
+POST /api/ipc/ack
+{ "message_ids": [1, 2, 3] }
 ```
 
 The pre-fetch + inject flow becomes:
 
 ```rust
-// 1. Peek: non-consuming read of scoped messages
-let messages = db.peek_inbox(agent_id, Some(&peer), Some(&auto_kinds), 20);
+// 1. Peek from broker: non-consuming read of scoped messages
+let messages = ipc_client.peek_inbox(Some(&peer), Some(&auto_kinds), 20).await?;
 if messages.is_empty() { continue; }
 let msg_ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
+
+// 1b. One-way check now uses authoritative broker trust metadata
+let from_trust_level = messages.first().map(|m| m.from_trust_level);
+let suppressed = push_one_way && from_trust_level.unwrap_or(u8::MAX) > my_trust;
+if suppressed { continue; }
 
 // 2. Format and inject into prompt
 let prompt = format!(
@@ -287,7 +308,7 @@ let prompt = format!(
 match agent::run(config, Some(prompt), ...).await {
     Ok(_) => {
         // 4. Only mark as read AFTER successful processing
-        db.ack_messages(&msg_ids);
+        ipc_client.ack_messages(&msg_ids).await?;
         peer_state.auto_process_count += 1;
     }
     Err(e) => {
@@ -302,11 +323,11 @@ This is the **hard structural guarantee** with **at-least-once delivery semantic
 - Messages are not lost on run failure (they remain unread)
 - Duplicate processing is possible but safe (LLM sees messages it already processed → answers are idempotent by convention)
 
-**Broker-side change**: the `peek_inbox` and `ack_messages` methods are added to `IpcDb` directly. No new HTTP endpoint needed — the inbox processor calls them as a same-process DB operation (both run in the agent's gateway process). The existing `GET /api/ipc/inbox` endpoint remains unchanged (consuming semantics preserved for `agents_inbox` tool / CLI / heartbeat).
+**Broker-side change**: add a non-consuming `peek=true` mode to the existing inbox endpoint and a separate `POST /api/ipc/ack` endpoint. The existing `GET /api/ipc/inbox` endpoint keeps its consuming semantics for `agents_inbox` tool / CLI / heartbeat use.
 
 Optionally, `GET /api/ipc/inbox` gains `from` and `kinds` query params for general-purpose scoped fetching (CLI/heartbeat use). But the push path does not use this endpoint.
 
-**`agents_inbox` tool** (`src/tools/agents_ipc.rs`): optionally gains `from_agent`/`kinds` params as a general improvement for CLI/heartbeat use. But push-triggered runs do not use this tool — they use the peek + ack path.
+**Deprecated path to remove**: any direct call from the agent-side inbox processor into local `ipc_db.peek_inbox()` / `ack_messages()` for push-triggered processing. Production push handling must use the broker endpoints only.
 
 ### Step 5: Per-peer counter and coalescing in inbox processor
 
