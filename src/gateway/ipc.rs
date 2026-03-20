@@ -3178,7 +3178,7 @@ pub async fn handle_admin_ipc_agents(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     let staleness = state.config.lock().agents_ipc.staleness_secs;
     let agents = db.list_agents(staleness);
@@ -3191,7 +3191,7 @@ pub async fn handle_admin_ipc_revoke(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(body): Json<AdminAgentBody>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     db.block_pending_messages(&body.agent_id, "agent_revoked");
     let found = db.set_agent_status(&body.agent_id, "revoked");
@@ -3225,7 +3225,7 @@ pub async fn handle_admin_ipc_disable(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(body): Json<AdminAgentBody>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     db.block_pending_messages(&body.agent_id, "agent_disabled");
     let found = db.set_agent_status(&body.agent_id, "disabled");
@@ -3249,7 +3249,7 @@ pub async fn handle_admin_ipc_quarantine(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(body): Json<AdminAgentBody>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     let found = db.set_agent_status(&body.agent_id, "quarantined");
     // Force trust level to 4
@@ -3284,7 +3284,7 @@ pub async fn handle_admin_ipc_downgrade(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(body): Json<AdminDowngradeBody>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     match db.set_agent_trust_level(&body.agent_id, body.new_level) {
         Some(old_level) => {
@@ -3324,7 +3324,7 @@ pub async fn handle_admin_ipc_promote(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(body): Json<PromoteBody>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
 
     let msg = db.get_message(body.message_id).ok_or_else(|| {
@@ -3463,7 +3463,7 @@ pub async fn handle_admin_ipc_agent_detail(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     axum::extract::Path(agent_id): axum::extract::Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     let staleness = state.config.lock().agents_ipc.staleness_secs;
     match db.agent_detail(&agent_id, staleness) {
@@ -3484,7 +3484,7 @@ pub async fn handle_admin_ipc_messages(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Query(q): Query<AdminMessagesQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     let messages = db.list_messages_admin(
         q.agent_id.as_deref(),
@@ -3507,7 +3507,7 @@ pub async fn handle_admin_ipc_spawn_runs(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Query(q): Query<AdminSpawnRunsQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     let runs = db.list_spawn_runs_admin(
         q.status.as_deref(),
@@ -3528,7 +3528,7 @@ pub async fn handle_admin_ipc_audit(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Query(q): Query<AdminAuditQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
 
     let config = state.config.lock();
     let log_path = config.workspace_dir.join(&config.security.audit.log_path);
@@ -3564,7 +3564,7 @@ pub async fn handle_admin_ipc_audit_verify(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
 
     let config = state.config.lock();
     let log_path = config.workspace_dir.join(&config.security.audit.log_path);
@@ -3593,7 +3593,7 @@ pub async fn handle_admin_ipc_dismiss_message(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Json(body): Json<DismissBody>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
 
     if let Err(e) = db.dismiss_message(body.message_id) {
@@ -3631,7 +3631,7 @@ pub async fn handle_admin_activity(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Query(q): Query<AdminActivityQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
 
     let limit = q.limit.min(500);
     let now = unix_now();

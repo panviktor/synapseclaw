@@ -159,7 +159,7 @@ pub async fn handle_provisioning_arm(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
 
     let config = state.config.lock();
@@ -195,7 +195,7 @@ pub async fn handle_provisioning_status(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
 
     let config = state.config.lock();
@@ -218,7 +218,7 @@ pub async fn handle_provisioning_create(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
     require_provisioning_active(&state)?;
 
@@ -317,7 +317,7 @@ pub async fn handle_provisioning_install(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
     require_provisioning_active(&state)?;
 
@@ -404,7 +404,7 @@ pub async fn handle_provisioning_start(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
     require_provisioning_active(&state)?;
 
@@ -475,7 +475,7 @@ pub async fn handle_provisioning_stop(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
     require_provisioning_active(&state)?;
 
@@ -553,7 +553,7 @@ pub async fn handle_provisioning_uninstall(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
     require_provisioning_active(&state)?;
 
@@ -633,7 +633,7 @@ pub async fn handle_provisioning_patch_broker(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
     require_provisioning_active(&state)?;
 
@@ -757,7 +757,7 @@ pub async fn handle_provisioning_used_ports(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
 
     let agents_root = {
@@ -813,7 +813,7 @@ pub async fn handle_provisioning_topology(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    require_localhost(&peer)?;
+    require_localhost(&peer, &state.admin_cidrs)?;
     require_admin_auth(&state, &headers)?;
 
     let mut agents_map: std::collections::HashMap<String, serde_json::Value> =

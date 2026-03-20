@@ -1515,6 +1515,7 @@ mod tests {
             provisioning_state: std::sync::Arc::new(
                 crate::gateway::provisioning::ProvisioningState::new(),
             ),
+            admin_cidrs: std::sync::Arc::new(vec![]),
             chat_sessions: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
