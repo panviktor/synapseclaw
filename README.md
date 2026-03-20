@@ -5,8 +5,8 @@
 <h1 align="center">SynapseClaw 🦀</h1>
 
 <p align="center">
-  <strong>Zero overhead. Zero compromise. 100% Rust. 100% Agnostic.</strong><br>
-  ⚡️ <strong>Runs on $10 hardware with <5MB RAM: That's 99% less memory than OpenClaw and 98% cheaper than a Mac mini!</strong>
+  <strong>Single-binary Rust runtime for single-agent and brokered multi-agent workflows.</strong><br>
+  Models, tools, memory, channels, and execution behind one deployable runtime.
 </p>
 
 <p align="center">
@@ -17,10 +17,6 @@
   <a href="https://www.facebook.com/groups/synapseclaw"><img src="https://img.shields.io/badge/Facebook-Group-1877F2?style=flat&logo=facebook&logoColor=white" alt="Facebook Group" /></a>
   <a href="https://www.reddit.com/r/synapseclaw/"><img src="https://img.shields.io/badge/Reddit-r%2Fsynapseclaw-FF4500?style=flat&logo=reddit&logoColor=white" alt="Reddit: r/synapseclaw" /></a>
 </p>
-<p align="center">
-Built by students and members of the Harvard, MIT, and Sundai.Club communities.
-</p>
-
 <p align="center">
   🌐 <strong>Languages:</strong>
   <a href="README.md">🇺🇸 English</a> ·
@@ -74,12 +70,15 @@ Built by students and members of the Harvard, MIT, and Sundai.Club communities.
 </p>
 
 <p align="center">
-  <strong>Fast, small, and fully autonomous AI assistant infrastructure</strong><br />
-  Deploy anywhere. Swap anything.
+  <strong>Run one agent or a broker-managed agent family from the same runtime.</strong>
 </p>
 
 <p align="center">
   SynapseClaw is the <strong>runtime operating system</strong> for agentic workflows — infrastructure that abstracts models, tools, memory, and execution so agents can be built once and run anywhere.
+</p>
+
+<p align="center">
+  It starts as a lean single-agent runtime and grows into a broker-managed multi-agent control plane without changing the core deployment model.
 </p>
 
 <p align="center"><code>Trait-driven architecture · secure-by-default runtime · provider/channel/tool swappable · pluggable everything</code></p>
@@ -97,19 +96,40 @@ Use this board for important notices (breaking changes, security advisories, mai
 | 2026-02-21 | _Important_ | Our official website is now live: [synapseclaw.dev](https://synapseclaw.dev). Thanks for your patience while we prepared the launch. We are still seeing impersonation attempts, so do **not** join any investment or fundraising activity claiming the SynapseClaw name unless it is published through our official channels.                            | Use [this repository](https://github.com/panviktor/synapseclaw) as the single source of truth. Follow [X (@synapseclaw)](https://x.com/synapseclaw?s=21), [Facebook (Group)](https://www.facebook.com/groups/synapseclaw), and [Reddit (r/synapseclaw)](https://www.reddit.com/r/synapseclaw/) for official updates. |
 | 2026-02-19 | _Important_ | Anthropic updated the Authentication and Credential Use terms on 2026-02-19. Claude Code OAuth tokens (Free, Pro, Max) are intended exclusively for Claude Code and Claude.ai; using OAuth tokens from Claude Free/Pro/Max in any other product, tool, or service (including Agent SDK) is not permitted and may violate the Consumer Terms of Service. | Please temporarily avoid Claude Code OAuth integrations to prevent potential loss. Original clause: [Authentication and Credential Use](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use).                                                                                                                                                                                                                                                                                                                                                                                    |
 
-### ✨ Features
-
-- 🏎️ **Lean Runtime by Default:** Common CLI and status workflows run in a few-megabyte memory envelope on release builds.
-- 💰 **Cost-Efficient Deployment:** Designed for low-cost boards and small cloud instances without heavyweight runtime dependencies.
-- ⚡ **Fast Cold Starts:** Single-binary Rust runtime keeps command and daemon startup near-instant for daily operations.
-- 🌍 **Portable Architecture:** One binary-first workflow across ARM, x86, and RISC-V with swappable providers/channels/tools.
-
 ### Why teams pick SynapseClaw
 
-- **Lean by default:** small Rust binary, fast startup, low memory footprint.
+- **Lean by default:** single Rust binary, fast startup, low memory footprint.
 - **Secure by design:** pairing, strict sandboxing, explicit allowlists, workspace scoping.
-- **Fully swappable:** core systems are traits (providers, channels, tools, memory, tunnels).
+- **Composable:** providers, channels, tools, memory, and tunnels remain swappable.
+- **Usable as both local runtime and control plane:** single-agent workbench and broker-managed multi-agent operation share one runtime model.
 - **No lock-in:** OpenAI-compatible provider support + pluggable custom endpoints.
+
+## What makes SynapseClaw different
+
+SynapseClaw is not only a local chat wrapper around an LLM. The project is deliberately moving toward a small-footprint runtime that can operate in two modes without splitting into two products:
+
+- **Focused single-agent mode:** one daemon, one agent, one workbench for tuning prompts, tools, memory, logs, channels, and runtime behavior.
+- **Brokered multi-agent mode:** one broker dashboard, many agent daemons, secure IPC, selected-agent workbench pages through the broker, and one operator entrypoint instead of a pile of ports and SSH tunnels.
+
+The main differences today are practical:
+
+- **Brokered agent families:** agents can register with a broker, talk over an IPC bus, and be operated from one control plane instead of being treated as isolated chatbots.
+- **Trust-aware IPC:** inter-agent messaging is not a best-effort chat hack; it has trust levels, directional ACLs, quarantine handling, revocation, signing, and delivery controls.
+- **Operator-first UI:** the same frontend shell serves both a local agent workbench and a broker mode with fleet pages, selected-agent pages, activity tracing, provisioning, and topology views.
+- **Durable sessions:** web chat is not throwaway browser state anymore; sessions, runs, summaries, and goals are becoming first-class runtime objects.
+- **Pragmatic infrastructure:** low RAM, single-binary Rust runtime, swappable providers/channels/tools, and deployability on cheap hardware remain non-negotiable.
+
+## Where SynapseClaw is going
+
+The current direction is not “add more random integrations.” It is to make the system easier to operate, easier to reason about, and more modular:
+
+- **Make multi-agent operations usable:** one broker, one dashboard, selected-agent drill-down, better traceability between IPC, spawn runs, chats, channels, and cron.
+- **Clean up fleet topology:** separate declared policy topology from observed traffic, hide ephemeral clutter by default, and add blueprint-level views for larger fleets.
+- **Move to an obvious modular core:** capability-driven channels, fixed transport boundaries, one conversation store contract, and one run substrate instead of logic scattered across gateway, tools, channels, cron, and agent loop.
+- **Make memory explicit:** treat working memory, session memory, and long-term memory as separate ports instead of accidental side effects of whichever subsystem happens to store state.
+- **Keep external coding engines as bounded workers:** if we later integrate tools like Codex or Claude Code, they should arrive as specialized execution workers behind a clean port, not as a second application core.
+
+For the fork-specific architecture plans, execution checklists, and roadmap details, start at [`docs/fork/README.md`](docs/fork/README.md).
 
 ## Benchmark Snapshot (SynapseClaw vs OpenClaw, Reproducible)
 
@@ -442,6 +462,7 @@ Start from the docs hub for a task-oriented map:
 Core collaboration references:
 
 - Documentation hub: [docs/README.md](docs/README.md)
+- Fork roadmap and architecture plans: [docs/fork/README.md](docs/fork/README.md)
 - Documentation template: [docs/contributing/doc-template.md](docs/contributing/doc-template.md)
 - Documentation change checklist: [docs/README.md#4-documentation-change-checklist](docs/README.md#4-documentation-change-checklist)
 - Channel configuration reference: [docs/reference/api/channels-reference.md](docs/reference/api/channels-reference.md)
