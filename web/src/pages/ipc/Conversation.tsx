@@ -37,7 +37,7 @@ export default function Conversation() {
 
   if (!agentId || !sessionKey) {
     return (
-      <div className="p-6 text-[#556080]">
+      <div className="p-6 text-[var(--text-secondary)]">
         Missing agent or session key. Navigate here from the Activity feed.
       </div>
     );
@@ -46,15 +46,15 @@ export default function Conversation() {
   return (
     <div className="p-6 space-y-4 animate-fade-in">
       <div className="flex items-center gap-3">
-        <h1 className="text-xl font-bold text-gradient-blue">Conversation</h1>
+        <h1 className="text-xl font-bold text-gradient">Conversation</h1>
         <AgentLink agentId={agentId} />
-        <span className="text-xs text-[#556080] font-mono bg-[#0a0a20] px-2 py-1 rounded-lg">
+        <span className="text-xs text-[var(--text-secondary)] font-mono bg-[var(--bg-primary)] px-2 py-1 rounded-lg">
           {sessionKey}
         </span>
       </div>
 
       {loading && (
-        <div className="text-center py-12 text-[#556080]">Loading messages...</div>
+        <div className="text-center py-12 text-[var(--text-secondary)]">Loading messages...</div>
       )}
 
       {error && (
@@ -64,22 +64,22 @@ export default function Conversation() {
       )}
 
       {!loading && !error && messages.length === 0 && (
-        <div className="text-center py-12 text-[#556080]">No messages found</div>
+        <div className="text-center py-12 text-[var(--text-secondary)]">No messages found</div>
       )}
 
       {messages.length > 0 && (
         <div className="glass-card overflow-hidden">
-          <div className="divide-y divide-[#1a1a3a]/50 max-h-[70vh] overflow-y-auto">
+          <div className="divide-y divide-[var(--bg-secondary)] max-h-[70vh] overflow-y-auto">
             {messages.map((msg) => (
               <div
                 key={msg.id}
-                className={`px-4 py-3 ${msg.role === 'user' ? 'bg-[#0080ff05]' : ''}`}
+                className={`px-4 py-3 ${msg.role === 'user' ? 'bg-[var(--glow-secondary)]' : ''}`}
               >
                 <div className="flex items-center gap-2 mb-1">
                   <span className={`text-xs font-semibold ${
                     msg.role === 'user' ? 'text-blue-400' :
                     msg.role === 'assistant' ? 'text-green-400' :
-                    'text-[#556080]'
+                    'text-[var(--text-secondary)]'
                   }`}>
                     {msg.role ?? msg.kind}
                   </span>
@@ -88,11 +88,11 @@ export default function Conversation() {
                       {msg.tool_name}
                     </span>
                   )}
-                  <span className="text-[10px] text-[#556080] ml-auto">
+                  <span className="text-[10px] text-[var(--text-secondary)] ml-auto">
                     <TimeAbsolute timestamp={msg.timestamp} />
                   </span>
                 </div>
-                <div className="text-sm text-[#c0c8e0] whitespace-pre-wrap break-words">
+                <div className="text-sm text-[var(--text-muted)] whitespace-pre-wrap break-words">
                   {msg.content}
                 </div>
               </div>
@@ -101,7 +101,7 @@ export default function Conversation() {
         </div>
       )}
 
-      <div className="text-xs text-[#556080] text-center">
+      <div className="text-xs text-[var(--text-secondary)] text-center">
         {messages.length > 0 && `${messages.length} message${messages.length !== 1 ? 's' : ''}`}
         {' — read-only view'}
       </div>

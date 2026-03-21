@@ -62,15 +62,15 @@ export default function AgentDetail() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20 animate-fade-in">
-        <div className="h-8 w-8 border-2 border-[#0080ff30] border-t-[#0080ff] rounded-full animate-spin" />
+        <div className="h-8 w-8 border-2 border-[var(--glow-primary)] border-t-[var(--accent-primary)] rounded-full animate-spin" />
       </div>
     );
   }
 
   if (error && !detail && !registryAgent) {
     return (
-      <div className="space-y-4 animate-fade-in">
-        <Link to="/ipc/fleet" className="text-sm text-[#0080ff] hover:underline">&larr; Back to Fleet</Link>
+      <div className="p-6 space-y-4 animate-fade-in">
+        <Link to="/ipc/fleet" className="text-sm text-[var(--accent-primary)] hover:underline">&larr; Back to Fleet</Link>
         <div className="glass-card p-6 text-red-400">{error ?? 'Agent not found'}</div>
       </div>
     );
@@ -91,47 +91,47 @@ export default function AgentDetail() {
 
   if (!agent) {
     return (
-      <div className="space-y-4 animate-fade-in">
-        <Link to="/ipc/fleet" className="text-sm text-[#0080ff] hover:underline">&larr; Back to Fleet</Link>
-        <div className="glass-card p-6 text-[#556080]">Agent not found</div>
+      <div className="p-6 space-y-4 animate-fade-in">
+        <Link to="/ipc/fleet" className="text-sm text-[var(--accent-primary)] hover:underline">&larr; Back to Fleet</Link>
+        <div className="glass-card p-6 text-[var(--text-secondary)]">Agent not found</div>
       </div>
     );
   }
 
   return (
     <div className="space-y-6 animate-fade-in">
-      <Link to="/ipc/fleet" className="text-sm text-[#0080ff] hover:underline">&larr; Back to Fleet</Link>
+      <Link to="/ipc/fleet" className="text-sm text-[var(--accent-primary)] hover:underline">&larr; Back to Fleet</Link>
 
       {/* Identity card */}
       <div className="glass-card p-6">
         <div className="flex items-start justify-between flex-wrap gap-4">
           <div className="space-y-2">
-            <h1 className="text-2xl font-bold text-white font-mono">{agent.agent_id}</h1>
+            <h1 className="text-2xl font-bold text-[var(--text-primary)] font-mono">{agent.agent_id}</h1>
             <div className="flex items-center gap-3 flex-wrap">
               <StatusBadge status={agent.status} />
               <TrustBadge level={agent.trust_level} />
               <KeyStatusIcon publicKey={agent.public_key} />
-              {agent.role && <span className="text-sm text-[#8892a8]">role: {agent.role}</span>}
+              {agent.role && <span className="text-sm text-[var(--text-muted)]">role: {agent.role}</span>}
             </div>
             {registryAgent?.gateway_url && (
-              <p className="text-xs text-[#556080]">gateway: <span className="font-mono text-[#8892a8]">{registryAgent.gateway_url}</span></p>
+              <p className="text-xs text-[var(--text-secondary)]">gateway: <span className="font-mono text-[var(--text-muted)]">{registryAgent.gateway_url}</span></p>
             )}
             {registryAgent?.model && (
-              <p className="text-xs text-[#556080]">model: <span className="text-[#8892a8]">{registryAgent.model}</span></p>
+              <p className="text-xs text-[var(--text-secondary)]">model: <span className="text-[var(--text-muted)]">{registryAgent.model}</span></p>
             )}
             {registryAgent?.channels && registryAgent.channels.length > 0 && (
-              <p className="text-xs text-[#556080]">channels: <span className="text-[#8892a8]">{registryAgent.channels.join(', ')}</span></p>
+              <p className="text-xs text-[var(--text-secondary)]">channels: <span className="text-[var(--text-muted)]">{registryAgent.channels.join(', ')}</span></p>
             )}
             {registryAgent?.uptime_seconds != null && (
-              <p className="text-xs text-[#556080]">uptime: <span className="text-[#8892a8]">{Math.floor(registryAgent.uptime_seconds / 60)}m</span></p>
+              <p className="text-xs text-[var(--text-secondary)]">uptime: <span className="text-[var(--text-muted)]">{Math.floor(registryAgent.uptime_seconds / 60)}m</span></p>
             )}
             {agent.public_key && (
-              <p className="text-xs text-[#556080] font-mono">
+              <p className="text-xs text-[var(--text-secondary)] font-mono">
                 key: {agent.public_key.slice(0, 16)}...
               </p>
             )}
             {agent.last_seen && (
-              <p className="text-xs text-[#556080]">
+              <p className="text-xs text-[var(--text-secondary)]">
                 last seen: <TimeAgo timestamp={agent.last_seen} />
               </p>
             )}
@@ -152,12 +152,12 @@ export default function AgentDetail() {
       {/* Recent Messages */}
       <CollapsibleSection title="Recent Messages" count={recent_messages.length}>
         {recent_messages.length === 0 ? (
-          <p className="text-[#556080] text-sm p-4">No messages.</p>
+          <p className="text-[var(--text-secondary)] text-sm p-4">No messages.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-[#1a1a3e]/50 text-[#556080] text-xs uppercase tracking-wider">
+                <tr className="border-b border-[var(--bg-secondary)] text-[var(--text-secondary)] text-xs uppercase tracking-wider">
                   <th className="text-left px-4 py-2">Time</th>
                   <th className="text-left px-4 py-2">Direction</th>
                   <th className="text-left px-4 py-2">Peer</th>
@@ -170,9 +170,9 @@ export default function AgentDetail() {
                 {recent_messages.map((msg) => {
                   const isSender = msg.from_agent === agentId;
                   return (
-                    <tr key={msg.id} className="border-b border-[#1a1a3e]/30 hover:bg-[#0080ff05]">
+                    <tr key={msg.id} className="border-b border-[var(--bg-hover)] hover:bg-[var(--glow-secondary)]">
                       <td className="px-4 py-2"><TimeAbsolute timestamp={msg.created_at} /></td>
-                      <td className="px-4 py-2 text-[#556080]">{isSender ? '→' : '←'}</td>
+                      <td className="px-4 py-2 text-[var(--text-secondary)]">{isSender ? '→' : '←'}</td>
                       <td className="px-4 py-2">
                         <AgentLink
                           agentId={isSender ? msg.to_agent : msg.from_agent}
@@ -181,7 +181,7 @@ export default function AgentDetail() {
                       </td>
                       <td className="px-4 py-2"><KindBadge kind={msg.kind} /></td>
                       <td className="px-4 py-2"><LaneDot lane={msg.lane} /></td>
-                      <td className="px-4 py-2 text-[#8892a8] max-w-xs truncate">{redactPayload(msg.payload, msg.kind)}</td>
+                      <td className="px-4 py-2 text-[var(--text-muted)] max-w-xs truncate">{redactPayload(msg.payload, msg.kind)}</td>
                     </tr>
                   );
                 })}
@@ -194,12 +194,12 @@ export default function AgentDetail() {
       {/* Active Spawn Runs */}
       <CollapsibleSection title="Active Spawn Runs" count={active_spawns.length}>
         {active_spawns.length === 0 ? (
-          <p className="text-[#556080] text-sm p-4">No active spawns.</p>
+          <p className="text-[var(--text-secondary)] text-sm p-4">No active spawns.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-[#1a1a3e]/50 text-[#556080] text-xs uppercase tracking-wider">
+                <tr className="border-b border-[var(--bg-secondary)] text-[var(--text-secondary)] text-xs uppercase tracking-wider">
                   <th className="text-left px-4 py-2">Session</th>
                   <th className="text-left px-4 py-2">Role</th>
                   <th className="text-left px-4 py-2">Peer</th>
@@ -212,13 +212,13 @@ export default function AgentDetail() {
                 {active_spawns.map((spawn) => {
                   const isParent = spawn.parent_id === agentId;
                   return (
-                    <tr key={spawn.id} className="border-b border-[#1a1a3e]/30">
+                    <tr key={spawn.id} className="border-b border-[var(--bg-hover)]">
                       <td className="px-4 py-2 font-mono text-xs">
-                        <Link to={`/ipc/sessions?session_id=${spawn.id}`} className="text-[#0080ff] hover:underline">
+                        <Link to={`/ipc/sessions?session_id=${spawn.id}`} className="text-[var(--accent-primary)] hover:underline">
                           {spawn.id.slice(0, 12)}...
                         </Link>
                       </td>
-                      <td className="px-4 py-2 text-[#8892a8]">{isParent ? 'parent' : 'child'}</td>
+                      <td className="px-4 py-2 text-[var(--text-muted)]">{isParent ? 'parent' : 'child'}</td>
                       <td className="px-4 py-2">
                         <AgentLink agentId={isParent ? spawn.child_id : spawn.parent_id} showTrust={false} />
                       </td>
@@ -250,7 +250,7 @@ function ActionBtn({ label, onClick, className = '' }: { label: string; onClick:
   return (
     <button
       onClick={onClick}
-      className={`px-3 py-1.5 text-xs font-medium rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors ${className || 'text-[#8892a8] hover:text-white'}`}
+      className={`px-3 py-1.5 text-xs font-medium rounded-lg border border-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] transition-colors ${className || 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}
     >
       {label}
     </button>
@@ -264,10 +264,10 @@ function CollapsibleSection({ title, count, children }: { title: string; count: 
     <div className="glass-card overflow-hidden">
       <button
         onClick={() => setOpen(!open)}
-        className="w-full flex items-center justify-between px-6 py-3 text-sm font-medium text-white hover:bg-[#0080ff05] transition-colors"
+        className="w-full flex items-center justify-between px-6 py-3 text-sm font-medium text-[var(--text-primary)] hover:bg-[var(--glow-secondary)] transition-colors"
       >
         <span>{title} ({count})</span>
-        <span className="text-[#556080]">{open ? '▾' : '▸'}</span>
+        <span className="text-[var(--text-secondary)]">{open ? '▾' : '▸'}</span>
       </button>
       {open && children}
     </div>

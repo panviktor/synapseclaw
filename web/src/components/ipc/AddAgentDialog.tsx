@@ -157,20 +157,20 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
   const selectedChannel = CHANNELS.find((c) => c.id === channelId);
 
   return createPortal(
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center">
+    <div className="fixed inset-0 pl-60 z-[9999] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
       <div className="relative w-full max-w-2xl max-h-[85vh] overflow-auto glass-card p-6 animate-fade-in-scale">
         {/* Header */}
         <div className="flex justify-between items-center mb-6">
           <div>
-            <h2 className="text-xl font-bold text-white">Add Agent</h2>
+            <h2 className="text-xl font-bold text-[var(--text-primary)]">Add Agent</h2>
             <div className="flex gap-1 mt-2">
               {STEPS.map((s, i) => (
-                <div key={s} className={`h-1 flex-1 rounded-full ${i <= stepIdx ? 'bg-[#0080ff]' : 'bg-[#1a1a3e]'}`} />
+                <div key={s} className={`h-1 flex-1 rounded-full ${i <= stepIdx ? 'bg-[var(--accent-primary)]' : 'bg-[var(--bg-secondary)]'}`} />
               ))}
             </div>
           </div>
-          <button onClick={handleClose} className="text-[#556080] hover:text-white text-xl">&times;</button>
+          <button onClick={handleClose} className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xl">&times;</button>
         </div>
 
         {error && (
@@ -180,7 +180,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
         {/* Step: Preset */}
         {step === 'preset' && (
           <div className="space-y-3">
-            <p className="text-sm text-[#556080]">Choose an agent template</p>
+            <p className="text-sm text-[var(--text-secondary)]">Choose an agent template</p>
             <div className="grid grid-cols-1 gap-2">
               {AGENT_PRESETS.map((preset) => (
                 <button
@@ -188,18 +188,18 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                   onClick={() => selectPreset(preset)}
                   className={`text-left p-4 rounded-xl border transition-all ${
                     selectedPreset?.id === preset.id
-                      ? 'border-[#0080ff] bg-[#0080ff10]'
-                      : 'border-[#1a1a3e]/50 hover:border-[#0080ff40] hover:bg-[#0080ff05]'
+                      ? 'border-[var(--accent-primary)] bg-[var(--glow-secondary)]'
+                      : 'border-[var(--bg-secondary)] hover:border-[var(--glow-primary)] hover:bg-[var(--glow-secondary)]'
                   }`}
                 >
                   <div className="flex items-center gap-3">
                     <span className="text-2xl">{preset.icon}</span>
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="font-medium text-white">{preset.name}</span>
+                        <span className="font-medium text-[var(--text-primary)]">{preset.name}</span>
                         <TrustBadge level={preset.trust_level} />
                       </div>
-                      <p className="text-xs text-[#556080] mt-0.5">{preset.description}</p>
+                      <p className="text-xs text-[var(--text-secondary)] mt-0.5">{preset.description}</p>
                     </div>
                   </div>
                 </button>
@@ -211,14 +211,14 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
         {/* Step: Identity */}
         {step === 'identity' && (
           <div className="space-y-4">
-            <p className="text-sm text-[#556080]">Agent identity in the IPC fleet</p>
+            <p className="text-sm text-[var(--text-secondary)]">Agent identity in the IPC fleet</p>
             <Field label="Agent ID" required>
               <input
                 type="text"
                 value={agentId}
                 onChange={(e) => setAgentId(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ''))}
                 placeholder="e.g. research, kids-pi"
-                className="input-electric px-3 py-2 text-sm w-full"
+                className="input-warm px-3 py-2 text-sm w-full"
               />
               {agentId && !/^[a-z0-9_-]+$/.test(agentId) && (
                 <p className="text-xs text-red-400 mt-1">Lowercase letters, numbers, dashes, underscores only</p>
@@ -229,7 +229,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                 type="text"
                 value={role}
                 onChange={(e) => setRole(e.target.value)}
-                className="input-electric px-3 py-2 text-sm w-full"
+                className="input-warm px-3 py-2 text-sm w-full"
               />
             </Field>
             <Field label="Trust Level">
@@ -237,7 +237,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                 <select
                   value={trustLevel}
                   onChange={(e) => setTrustLevel(Number(e.target.value))}
-                  className="input-electric px-3 py-2 text-sm"
+                  className="input-warm px-3 py-2 text-sm"
                 >
                   <option value={0}>L0 — Admin</option>
                   <option value={1}>L1 — Coordinator</option>
@@ -257,7 +257,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
         {/* Step: Provider */}
         {step === 'provider' && (
           <div className="space-y-4">
-            <p className="text-sm text-[#556080]">AI model provider — API key stays local, never sent to broker</p>
+            <p className="text-sm text-[var(--text-secondary)]">AI model provider — API key stays local, never sent to broker</p>
             <Field label="Provider">
               <select
                 value={providerId}
@@ -269,7 +269,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                     setBaseUrl(p.default_base_url ?? '');
                   }
                 }}
-                className="input-electric px-3 py-2 text-sm w-full"
+                className="input-warm px-3 py-2 text-sm w-full"
               >
                 <option value="">Select provider...</option>
                 <optgroup label="Recommended">
@@ -292,9 +292,9 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   placeholder="sk-..."
-                  className="input-electric px-3 py-2 text-sm w-full"
+                  className="input-warm px-3 py-2 text-sm w-full"
                 />
-                <p className="text-xs text-[#334060] mt-1">Stored in config.toml only — never sent to broker</p>
+                <p className="text-xs text-[var(--text-secondary)] mt-1">Stored in config.toml only — never sent to broker</p>
               </Field>
             )}
             <Field label="Model">
@@ -302,7 +302,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                 type="text"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
-                className="input-electric px-3 py-2 text-sm w-full"
+                className="input-warm px-3 py-2 text-sm w-full"
               />
             </Field>
             {(providerId === 'custom' || PROVIDERS.find((p) => p.id === providerId)?.tier === 'local') && (
@@ -312,7 +312,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
                   placeholder="http://localhost:11434"
-                  className="input-electric px-3 py-2 text-sm w-full"
+                  className="input-warm px-3 py-2 text-sm w-full"
                 />
               </Field>
             )}
@@ -322,12 +322,12 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
         {/* Step: Channel */}
         {step === 'channel' && (
           <div className="space-y-4">
-            <p className="text-sm text-[#556080]">Optional: messaging channel for this agent</p>
+            <p className="text-sm text-[var(--text-secondary)]">Optional: messaging channel for this agent</p>
             <Field label="Channel">
               <select
                 value={channelId}
                 onChange={(e) => { setChannelId(e.target.value); setChannelValues({}); }}
-                className="input-electric px-3 py-2 text-sm w-full"
+                className="input-warm px-3 py-2 text-sm w-full"
               >
                 <option value="none">None — IPC only</option>
                 <optgroup label="Messaging">
@@ -355,9 +355,9 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                   value={channelValues[field.key] ?? ''}
                   onChange={(e) => setChannelValues({ ...channelValues, [field.key]: e.target.value })}
                   placeholder={field.placeholder}
-                  className="input-electric px-3 py-2 text-sm w-full"
+                  className="input-warm px-3 py-2 text-sm w-full"
                 />
-                {field.help && <p className="text-xs text-[#334060] mt-1">{field.help}</p>}
+                {field.help && <p className="text-xs text-[var(--text-secondary)] mt-1">{field.help}</p>}
               </Field>
             ))}
             <Field label="Gateway Port">
@@ -365,7 +365,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                 type="number"
                 value={gatewayPort}
                 onChange={(e) => setGatewayPort(Number(e.target.value))}
-                className="input-electric px-3 py-2 text-sm w-32"
+                className="input-warm px-3 py-2 text-sm w-32"
               />
             </Field>
           </div>
@@ -374,12 +374,12 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
         {/* Step: Result */}
         {step === 'result' && (
           <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-[#0080ff10] border border-[#0080ff30] text-center">
-              <p className="text-xs text-[#556080] uppercase tracking-wider mb-2">Pairing Code</p>
-              <p className="text-4xl font-mono font-bold text-[#0080ff] tracking-widest">{pairingCode}</p>
+            <div className="p-4 rounded-xl bg-[var(--glow-secondary)] border border-[var(--glow-primary)] text-center">
+              <p className="text-xs text-[var(--text-secondary)] uppercase tracking-wider mb-2">Pairing Code</p>
+              <p className="text-4xl font-mono font-bold text-[var(--accent-primary)] tracking-widest">{pairingCode}</p>
               <button
                 onClick={() => { navigator.clipboard.writeText(pairingCode); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
-                className="mt-2 text-xs text-[#556080] hover:text-white transition-colors"
+                className="mt-2 text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
               >
                 {copied ? 'Copied!' : 'Copy to clipboard'}
               </button>
@@ -400,17 +400,17 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
                   }
                 }}
                 disabled={deploying || (deployResults !== null && deployResults.every((r) => r.ok))}
-                className="btn-electric w-full py-2.5 text-sm font-medium disabled:opacity-50"
+                className="btn-primary w-full py-2.5 text-sm font-medium disabled:opacity-50"
               >
                 {deploying ? 'Deploying...' : deployResults?.every((r) => r.ok) ? 'Deployed' : 'Deploy to broker'}
               </button>
 
               {deployResults && (
-                <div className="p-3 rounded-lg bg-[#050510] border border-[#1a1a3e]/50 text-xs space-y-1">
+                <div className="p-3 rounded-lg bg-[var(--bg-primary)] border border-[var(--bg-secondary)] text-xs space-y-1">
                   {deployResults.map((r, i) => (
                     <div key={i} className="flex items-center gap-2">
                       <span>{r.ok ? '\u2705' : '\u274c'}</span>
-                      <span className="text-[#8892a8] capitalize">{r.step}</span>
+                      <span className="text-[var(--text-muted)] capitalize">{r.step}</span>
                       {r.error && <span className="text-red-400 ml-auto truncate max-w-[240px]" title={r.error}>{r.error}</span>}
                     </div>
                   ))}
@@ -419,34 +419,34 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
 
               <button
                 onClick={() => downloadAsFile(`${agentId}-config.toml`, configToml)}
-                className="w-full py-2 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors"
+                className="w-full py-2 text-sm font-medium text-[var(--text-muted)] rounded-lg border border-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] transition-colors"
               >
                 Download {agentId}-config.toml
               </button>
               {systemPrompt && (
                 <button
                   onClick={() => downloadAsFile('instructions.md', generateInstructionsMd(systemPrompt))}
-                  className="w-full py-2 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors"
+                  className="w-full py-2 text-sm font-medium text-[var(--text-muted)] rounded-lg border border-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] transition-colors"
                 >
                   Download instructions.md
                 </button>
               )}
             </div>
 
-            <details className="text-xs text-[#556080]">
-              <summary className="cursor-pointer text-[#8892a8] hover:text-white transition-colors">Manual setup instructions</summary>
-              <div className="mt-2 p-3 rounded-lg bg-[#050510] border border-[#1a1a3e]/50 space-y-2">
-                <p>1. Place config.toml in <code className="text-[#0080ff]">~/.synapseclaw/</code> and instructions.md in <code className="text-[#0080ff]">~/.synapseclaw/workspace/</code></p>
+            <details className="text-xs text-[var(--text-secondary)]">
+              <summary className="cursor-pointer text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors">Manual setup instructions</summary>
+              <div className="mt-2 p-3 rounded-lg bg-[var(--bg-primary)] border border-[var(--bg-secondary)] space-y-2">
+                <p>1. Place config.toml in <code className="text-[var(--accent-primary)]">~/.synapseclaw/</code> and instructions.md in <code className="text-[var(--accent-primary)]">~/.synapseclaw/workspace/</code></p>
                 <p>2. Pair with broker:</p>
-                <pre className="text-[#0080ff] bg-[#0a0a18] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: {pairingCode}&apos;</pre>
-                <p>3. Save the returned token as <code className="text-[#0080ff]">broker_token</code> in config.toml under [agents_ipc]</p>
-                <p>4. Run: <code className="text-[#0080ff]">synapseclaw daemon</code></p>
+                <pre className="text-[var(--accent-primary)] bg-[var(--bg-primary)] rounded p-2 overflow-x-auto">curl -X POST {brokerUrl}/pair -H &apos;X-Pairing-Code: {pairingCode}&apos;</pre>
+                <p>3. Save the returned token as <code className="text-[var(--accent-primary)]">broker_token</code> in config.toml under [agents_ipc]</p>
+                <p>4. Run: <code className="text-[var(--accent-primary)]">synapseclaw daemon</code></p>
               </div>
             </details>
 
             <button
               onClick={() => { handleClose(); onCreated(); }}
-              className="w-full py-2.5 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors"
+              className="w-full py-2.5 text-sm font-medium text-[var(--text-muted)] rounded-lg border border-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] transition-colors"
             >
               Done
             </button>
@@ -455,14 +455,14 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
 
         {/* Navigation */}
         {step !== 'result' && step !== 'preset' && (
-          <div className="flex justify-between mt-6 pt-4 border-t border-[#1a1a3e]/30">
-            <button onClick={goBack} className="text-sm text-[#556080] hover:text-white transition-colors">
+          <div className="flex justify-between mt-6 pt-4 border-t border-[var(--bg-hover)]">
+            <button onClick={goBack} className="text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors">
               &larr; Back
             </button>
             <button
               onClick={goNext}
               disabled={!canNext() || creating}
-              className="btn-electric px-6 py-2 text-sm font-medium disabled:opacity-50"
+              className="btn-primary px-6 py-2 text-sm font-medium disabled:opacity-50"
             >
               {creating ? 'Creating...' : step === 'channel' ? 'Create Agent' : 'Next →'}
             </button>
@@ -477,7 +477,7 @@ export default function AddAgentDialog({ open, onClose, onCreated, brokerUrl }: 
 function Field({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
-      <label className="text-xs text-[#556080] uppercase tracking-wider">
+      <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">
         {label}{required && <span className="text-red-400 ml-1">*</span>}
       </label>
       {children}

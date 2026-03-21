@@ -24,7 +24,7 @@ export default function TimeAgo({ timestamp, staleThreshold }: TimeAgoProps) {
 
   return (
     <span
-      className={`text-xs ${isStale ? 'text-red-400' : 'text-[#8892a8]'}`}
+      className={`text-xs ${isStale ? 'text-red-400' : 'text-[var(--text-muted)]'}`}
       title={formatAbsolute(timestamp)}
     >
       {formatTimeAgo(timestamp)}
@@ -34,7 +34,7 @@ export default function TimeAgo({ timestamp, staleThreshold }: TimeAgoProps) {
 
 export function TimeAbsolute({ timestamp }: { timestamp: number }) {
   return (
-    <span className="text-xs text-[#8892a8]" title={formatTimeAgo(timestamp)}>
+    <span className="text-xs text-[var(--text-muted)]" title={formatTimeAgo(timestamp)}>
       {formatAbsolute(timestamp)}
     </span>
   );
@@ -54,7 +54,7 @@ export function TimeUntil({ timestamp }: { timestamp: number }) {
   else label = `in ${Math.floor(diff / 3600)}h`;
 
   return (
-    <span className="text-xs text-[#8892a8]" title={formatAbsolute(timestamp)}>
+    <span className="text-xs text-[var(--text-muted)]" title={formatAbsolute(timestamp)}>
       {label}
     </span>
   );

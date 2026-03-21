@@ -63,28 +63,28 @@ function NavLinkItem({ to, icon: Icon, labelKey, descKey, end, idx, badge }: Nav
       title={descKey ? t(descKey) : undefined}
       className={({ isActive }) =>
         [
-          'flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 animate-slide-in-left group',
+          'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 animate-slide-in-left group',
           isActive
-            ? 'text-white shadow-[0_0_15px_rgba(0,128,255,0.2)]'
-            : 'text-[#556080] hover:text-white hover:bg-[#0080ff08]',
+            ? 'text-theme-primary'
+            : 'text-theme-muted hover:text-theme-primary hover:bg-theme-hover',
         ].join(' ')
       }
       style={({ isActive }) => ({
         animationDelay: `${idx * 40}ms`,
-        ...(isActive ? { background: 'linear-gradient(135deg, rgba(0,128,255,0.15), rgba(0,128,255,0.05))' } : {}),
+        ...(isActive ? { background: 'var(--bg-secondary)', borderLeft: '3px solid var(--accent-primary)' } : {}),
       })}
     >
       {({ isActive }) => (
         <>
-          <Icon className={`h-5 w-5 flex-shrink-0 transition-colors duration-300 ${isActive ? 'text-[#0080ff]' : 'group-hover:text-[#0080ff80]'}`} />
+          <Icon className={`h-5 w-5 flex-shrink-0 transition-colors duration-200 ${isActive ? 'text-theme-accent' : 'group-hover:text-theme-accent'}`} />
           <span>{t(labelKey)}</span>
           {badge !== undefined && badge > 0 && (
-            <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-orange-500/20 text-orange-400 min-w-[20px] text-center">
+            <span className="ml-auto px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-theme-accent/10 text-theme-accent min-w-[20px] text-center">
               {badge}
             </span>
           )}
           {isActive && !badge && (
-            <div className="ml-auto h-1.5 w-1.5 rounded-full bg-[#0080ff] glow-dot" />
+            <div className="ml-auto h-1.5 w-1.5 rounded-full bg-theme-accent" />
           )}
         </>
       )}
@@ -119,18 +119,18 @@ export default function Sidebar() {
   }, [ipcAvailable]);
 
   return (
-    <aside className="fixed top-0 left-0 h-screen w-60 z-30 flex flex-col" style={{ background: 'linear-gradient(180deg, #080818 0%, #050510 100%)' }}>
-      {/* Glow line on right edge */}
-      <div className="sidebar-glow-line" />
+    <aside className="fixed top-0 left-0 h-screen w-60 z-30 flex flex-col bg-theme-sidebar border-r border-theme-default">
+      {/* Accent line on right edge */}
+      <div className="sidebar-accent-line" />
 
       {/* Logo / Title */}
-      <div className="flex items-center gap-3 px-4 py-4 border-b border-[#1a1a3e]/50">
+      <div className="flex items-center gap-3 px-4 py-4 border-b border-theme-default">
         <img
           src="/_app/logo.png"
           alt="SynapseClaw"
-          className="h-10 w-10 rounded-xl object-cover animate-pulse-glow"
+          className="h-10 w-10 rounded-xl object-cover"
         />
-        <span className="text-lg font-bold text-gradient-blue tracking-wide">
+        <span className="text-lg font-bold text-gradient tracking-wide">
           SynapseClaw
         </span>
       </div>
@@ -145,7 +145,7 @@ export default function Sidebar() {
         {ipcAvailable && (
           <>
             <div className="pt-4 pb-1 px-3">
-              <div className="flex items-center gap-2 text-[10px] text-[#334060] tracking-wider uppercase font-semibold">
+              <div className="flex items-center gap-2 text-[10px] text-theme-placeholder tracking-wider uppercase font-semibold">
                 <Network className="h-3 w-3" />
                 <span>{t('nav.ipc_section')}</span>
               </div>
@@ -163,8 +163,8 @@ export default function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="px-5 py-4 border-t border-[#1a1a3e]/50">
-        <p className="text-[10px] text-[#334060] tracking-wider uppercase">SynapseClaw Runtime</p>
+      <div className="px-5 py-4 border-t border-theme-default">
+        <p className="text-[10px] text-theme-placeholder tracking-wider uppercase">SynapseClaw Runtime</p>
       </div>
     </aside>
   );

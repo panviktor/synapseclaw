@@ -62,17 +62,17 @@ export default function Quarantine() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20 animate-fade-in">
-        <div className="h-8 w-8 border-2 border-[#0080ff30] border-t-[#0080ff] rounded-full animate-spin" />
+        <div className="h-8 w-8 border-2 border-[var(--glow-primary)] border-t-[var(--accent-primary)] rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="p-6 space-y-6 animate-fade-in">
       <div className="flex items-center gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.quarantine_title')}</h1>
-          <p className="text-xs text-[#556080] mt-1">{t('ipc.quarantine_subtitle')}</p>
+          <h1 className="text-2xl font-bold text-gradient">{t('ipc.quarantine_title')}</h1>
+          <p className="text-xs text-[var(--text-secondary)] mt-1">{t('ipc.quarantine_subtitle')}</p>
         </div>
         {pendingCount > 0 && (
           <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-orange-500/20 text-orange-400">
@@ -90,7 +90,7 @@ export default function Quarantine() {
       )}
 
       {messages.length === 0 ? (
-        <div className="glass-card p-12 text-center text-[#556080]">Quarantine queue is empty.</div>
+        <div className="glass-card p-12 text-center text-[var(--text-secondary)]">Quarantine queue is empty.</div>
       ) : (
         <div className="space-y-3">
           {messages.map((msg) => {
@@ -99,9 +99,9 @@ export default function Quarantine() {
               <div key={msg.id} className={`glass-card p-4 space-y-3 ${!isPending ? 'opacity-60' : ''}`}>
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center gap-3">
-                    <span className="text-xs text-[#556080]">#{msg.id}</span>
+                    <span className="text-xs text-[var(--text-secondary)]">#{msg.id}</span>
                     <AgentLink agentId={msg.from_agent} trustLevel={msg.from_trust_level} />
-                    <span className="text-[#556080]">→</span>
+                    <span className="text-[var(--text-secondary)]">→</span>
                     <AgentLink agentId={msg.to_agent} showTrust={false} />
                     <KindBadge kind={msg.kind} />
                     {msg.promoted && (
@@ -112,7 +112,7 @@ export default function Quarantine() {
                 </div>
 
                 {/* Redacted payload preview */}
-                <p className="text-sm text-[#8892a8] line-clamp-2">
+                <p className="text-sm text-[var(--text-muted)] line-clamp-2">
                   {redactPayload(msg.payload, msg.kind)}
                 </p>
 
@@ -120,7 +120,7 @@ export default function Quarantine() {
                 <div className="flex gap-2">
                   <button
                     onClick={() => setInspectMsg(msg)}
-                    className="px-3 py-1.5 text-xs font-medium text-[#0080ff] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#0080ff10] transition-colors"
+                    className="px-3 py-1.5 text-xs font-medium text-[var(--accent-primary)] rounded-lg border border-[var(--bg-secondary)] hover:bg-[var(--glow-secondary)] transition-colors"
                   >
                     Inspect
                   </button>
@@ -128,13 +128,13 @@ export default function Quarantine() {
                     <>
                       <button
                         onClick={() => setPendingAction({ type: 'promote', msg })}
-                        className="px-3 py-1.5 text-xs font-medium text-emerald-400 rounded-lg border border-[#1a1a3e]/50 hover:bg-emerald-500/10 transition-colors"
+                        className="px-3 py-1.5 text-xs font-medium text-emerald-400 rounded-lg border border-[var(--bg-secondary)] hover:bg-emerald-500/10 transition-colors"
                       >
                         Promote
                       </button>
                       <button
                         onClick={() => setPendingAction({ type: 'dismiss', msg })}
-                        className="px-3 py-1.5 text-xs font-medium text-[#556080] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors"
+                        className="px-3 py-1.5 text-xs font-medium text-[var(--text-secondary)] rounded-lg border border-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] transition-colors"
                       >
                         Dismiss
                       </button>
@@ -149,12 +149,12 @@ export default function Quarantine() {
 
       {/* Inspect modal */}
       {inspectMsg && createPortal(
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center">
+        <div className="fixed inset-0 pl-60 z-[9999] flex items-center justify-center">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setInspectMsg(null)} />
           <div className="relative w-full max-w-2xl max-h-[80vh] overflow-auto glass-card p-6 animate-fade-in-scale">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold text-white">Message #{inspectMsg.id}</h3>
-              <button onClick={() => setInspectMsg(null)} className="text-[#556080] hover:text-white">&times;</button>
+              <h3 className="text-lg font-semibold text-[var(--text-primary)]">Message #{inspectMsg.id}</h3>
+              <button onClick={() => setInspectMsg(null)} className="text-[var(--text-secondary)] hover:text-[var(--text-primary)]">&times;</button>
             </div>
             <MessageDetail message={inspectMsg} />
           </div>

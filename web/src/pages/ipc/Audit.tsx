@@ -65,42 +65,42 @@ export default function Audit() {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="p-6 space-y-6 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.audit_title')}</h1>
-        <p className="text-xs text-[#556080] mt-1">{t('ipc.audit_subtitle')}</p>
+        <h1 className="text-2xl font-bold text-gradient">{t('ipc.audit_title')}</h1>
+        <p className="text-xs text-[var(--text-secondary)] mt-1">{t('ipc.audit_subtitle')}</p>
       </div>
 
       {/* Filters */}
       <div className="glass-card p-4 flex flex-wrap gap-3 items-end">
         <div className="space-y-1">
-          <label className="text-xs text-[#556080] uppercase tracking-wider">Agent</label>
-          <input type="text" value={agentId} onChange={(e) => setAgentId(e.target.value)} placeholder="agent_id" className="input-electric px-3 py-2 text-sm w-36" />
+          <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">Agent</label>
+          <input type="text" value={agentId} onChange={(e) => setAgentId(e.target.value)} placeholder="agent_id" className="input-warm px-3 py-2 text-sm w-36" />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-[#556080] uppercase tracking-wider">Type</label>
-          <select value={eventType} onChange={(e) => setEventType(e.target.value)} className="input-electric px-3 py-2 text-sm">
+          <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">Type</label>
+          <select value={eventType} onChange={(e) => setEventType(e.target.value)} className="input-warm px-3 py-2 text-sm">
             {EVENT_TYPES.map((et) => <option key={et} value={et}>{et || 'all'}</option>)}
           </select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-[#556080] uppercase tracking-wider">Search</label>
-          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="keyword" className="input-electric px-3 py-2 text-sm w-40" />
+          <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">Search</label>
+          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="keyword" className="input-warm px-3 py-2 text-sm w-40" />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-[#556080] uppercase tracking-wider">Time</label>
-          <select value={timeRange} onChange={(e) => setTimeRange(e.target.value)} className="input-electric px-3 py-2 text-sm">
+          <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">Time</label>
+          <select value={timeRange} onChange={(e) => setTimeRange(e.target.value)} className="input-warm px-3 py-2 text-sm">
             {TIME_RANGES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
           </select>
         </div>
-        <button onClick={() => doSearch(0)} disabled={loading} className="btn-electric px-4 py-2 text-sm font-medium">
+        <button onClick={() => doSearch(0)} disabled={loading} className="btn-primary px-4 py-2 text-sm font-medium">
           {loading ? 'Loading...' : 'Search'}
         </button>
-        <button onClick={handleVerify} disabled={verifying} className="px-4 py-2 text-sm font-medium text-emerald-400 rounded-lg border border-[#1a1a3e]/50 hover:bg-emerald-500/10 transition-colors">
+        <button onClick={handleVerify} disabled={verifying} className="px-4 py-2 text-sm font-medium text-emerald-400 rounded-lg border border-[var(--bg-secondary)] hover:bg-emerald-500/10 transition-colors">
           {verifying ? 'Verifying...' : 'Verify Chain'}
         </button>
         {loaded && events.length > 0 && (
-          <button onClick={handleExport} className="px-4 py-2 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors">
+          <button onClick={handleExport} className="px-4 py-2 text-sm font-medium text-[var(--text-muted)] rounded-lg border border-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] transition-colors">
             Export JSON
           </button>
         )}
@@ -117,15 +117,15 @@ export default function Audit() {
 
       {/* Results */}
       {!loaded ? (
-        <div className="glass-card p-12 text-center text-[#556080]">Apply filters and click Search.</div>
+        <div className="glass-card p-12 text-center text-[var(--text-secondary)]">Apply filters and click Search.</div>
       ) : events.length === 0 ? (
-        <div className="glass-card p-12 text-center text-[#556080]">No audit events found.</div>
+        <div className="glass-card p-12 text-center text-[var(--text-secondary)]">No audit events found.</div>
       ) : (
         <div className="glass-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-[#1a1a3e]/50 text-[#556080] text-xs uppercase tracking-wider">
+                <tr className="border-b border-[var(--bg-secondary)] text-[var(--text-secondary)] text-xs uppercase tracking-wider">
                   <th className="text-left px-4 py-3">Time</th>
                   <th className="text-left px-4 py-3">Type</th>
                   <th className="text-left px-4 py-3">Actor</th>
@@ -146,8 +146,8 @@ export default function Audit() {
             </table>
           </div>
           {hasMore && (
-            <div className="px-4 py-3 border-t border-[#1a1a3e]/30 text-center">
-              <button onClick={() => doSearch(events.length)} disabled={loading} className="text-sm text-[#0080ff] hover:underline">
+            <div className="px-4 py-3 border-t border-[var(--bg-hover)] text-center">
+              <button onClick={() => doSearch(events.length)} disabled={loading} className="text-sm text-[var(--accent-primary)] hover:underline">
                 {loading ? 'Loading...' : 'Load more'}
               </button>
             </div>
@@ -178,23 +178,23 @@ function AuditRow({ event, expanded, onToggle }: { event: IpcAuditEvent; expande
 
   return (
     <>
-      <tr onClick={onToggle} className="border-b border-[#1a1a3e]/30 hover:bg-[#0080ff05] cursor-pointer transition-colors">
-        <td className="px-4 py-2">{ts > 0 ? <TimeAbsolute timestamp={ts} /> : <span className="text-[#556080]">-</span>}</td>
+      <tr onClick={onToggle} className="border-b border-[var(--bg-hover)] hover:bg-[var(--glow-secondary)] cursor-pointer transition-colors">
+        <td className="px-4 py-2">{ts > 0 ? <TimeAbsolute timestamp={ts} /> : <span className="text-[var(--text-secondary)]">-</span>}</td>
         <td className="px-4 py-2"><EventTypeBadge type={event.event_type} /></td>
-        <td className="px-4 py-2 font-mono text-xs text-[#8892a8]">{actor}</td>
-        <td className="px-4 py-2 text-[#8892a8] max-w-md truncate">{detail}</td>
+        <td className="px-4 py-2 font-mono text-xs text-[var(--text-muted)]">{actor}</td>
+        <td className="px-4 py-2 text-[var(--text-muted)] max-w-md truncate">{detail}</td>
         <td className="px-4 py-2 text-center">
           {event.hmac ? (
             <span className="text-emerald-400 text-xs font-mono" title={event.hmac}>OK</span>
           ) : (
-            <span className="text-[#334060] text-xs">-</span>
+            <span className="text-[var(--text-secondary)] text-xs">-</span>
           )}
         </td>
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={5} className="p-4 bg-[#050510]">
-            <pre className="text-xs text-[#8892a8] whitespace-pre-wrap break-all max-h-64 overflow-auto">
+          <td colSpan={5} className="p-4 bg-[var(--bg-primary)]">
+            <pre className="text-xs text-[var(--text-muted)] whitespace-pre-wrap break-all max-h-64 overflow-auto">
               {JSON.stringify(event, null, 2)}
             </pre>
           </td>

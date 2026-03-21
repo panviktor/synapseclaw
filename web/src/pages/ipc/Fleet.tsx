@@ -35,7 +35,7 @@ function trustColor(level: number | null): string {
 // ── Edge colors by type ─────────────────────────────────────
 function edgeColor(type: string): string {
   switch (type) {
-    case 'lateral': return 'rgba(0, 128, 255, 0.5)';
+    case 'lateral': return 'var(--glow-primary)';
     case 'l4_destination': return 'rgba(255, 102, 68, 0.5)';
     case 'message': return 'rgba(0, 255, 136, 0.35)';
     default: return 'rgba(85, 96, 128, 0.3)';
@@ -263,7 +263,7 @@ function TopologyGraph({
         enableNodeDrag={true}
       />
       {/* Legend */}
-      <div className="absolute bottom-2 left-3 flex items-center gap-4 text-[9px] text-[#556080] pointer-events-none">
+      <div className="absolute bottom-2 left-3 flex items-center gap-4 text-[9px] text-[var(--text-secondary)] pointer-events-none">
         <span className="flex items-center gap-1">
           <span className="inline-block w-4 h-[2px]" style={{ background: 'rgba(0,128,255,0.5)' }} /> lateral
         </span>
@@ -359,24 +359,24 @@ export default function Fleet() {
   if (loading) {
     return (
       <div className="flex items-center justify-center py-20 animate-fade-in">
-        <div className="h-8 w-8 border-2 border-[#0080ff30] border-t-[#0080ff] rounded-full animate-spin" />
+        <div className="h-8 w-8 border-2 border-[var(--glow-primary)] border-t-[var(--accent-primary)] rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="p-6 space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.fleet_title')}</h1>
-          <p className="text-xs text-[#556080] mt-1">{t('ipc.fleet_subtitle')}</p>
+          <h1 className="text-2xl font-bold text-gradient">{t('ipc.fleet_title')}</h1>
+          <p className="text-xs text-[var(--text-secondary)] mt-1">{t('ipc.fleet_subtitle')}</p>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-[#556080]">{agents.length} agents</span>
-          <button onClick={() => setShowBlueprint(true)} className="px-4 py-1.5 text-sm font-medium text-[#8892a8] rounded-lg border border-[#1a1a3e]/50 hover:bg-[#1a1a3e]/30 transition-colors">
+          <span className="text-sm text-[var(--text-secondary)]">{agents.length} agents</span>
+          <button onClick={() => setShowBlueprint(true)} className="px-4 py-1.5 text-sm font-medium text-[var(--text-muted)] rounded-lg border border-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] transition-colors">
             Blueprint
           </button>
-          <button onClick={() => setShowAddAgent(true)} className="btn-electric px-4 py-1.5 text-sm font-medium">
+          <button onClick={() => setShowAddAgent(true)} className="btn-primary px-4 py-1.5 text-sm font-medium">
             + Add Agent
           </button>
         </div>
@@ -389,12 +389,12 @@ export default function Fleet() {
       {/* Communication Graph */}
       {agents.length > 0 && (
         <div className="glass-card p-2 overflow-hidden" style={{ minHeight: 300 }}>
-          <div className="flex items-center justify-between gap-4 px-3 py-2 border-b border-[#1a1a3e]/40">
+          <div className="flex items-center justify-between gap-4 px-3 py-2 border-b border-[var(--bg-hover)]">
             <div>
-              <div className="text-sm font-medium text-white">
+              <div className="text-sm font-medium text-[var(--text-primary)]">
                 {showTraffic ? 'Observed Traffic' : 'Policy Topology'}
               </div>
-              <div className="text-xs text-[#556080]">
+              <div className="text-xs text-[var(--text-secondary)]">
                 {showTraffic
                   ? `Recent IPC traffic, last ${TRAFFIC_WINDOW_HOURS}h, count ≥ ${TRAFFIC_MIN_COUNT}`
                   : 'Declared communication topology only. Historical traffic hidden to keep the graph readable.'}
@@ -406,7 +406,7 @@ export default function Fleet() {
                 className={`px-3 py-1 rounded-md border transition-colors ${
                   showTraffic
                     ? 'border-[#00ff88]/40 bg-[#00ff8815] text-[#00ff88]'
-                    : 'border-[#1a1a3e]/50 text-[#8892a8] hover:bg-[#1a1a3e]/30'
+                    : 'border-[var(--bg-secondary)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
                 }`}
               >
                 {showTraffic ? 'Hide Traffic' : 'Show Traffic'}
@@ -416,7 +416,7 @@ export default function Fleet() {
                 className={`px-3 py-1 rounded-md border transition-colors ${
                   showEphemeral
                     ? 'border-[#ff6644]/40 bg-[#ff664415] text-[#ff9b7a]'
-                    : 'border-[#1a1a3e]/50 text-[#8892a8] hover:bg-[#1a1a3e]/30'
+                    : 'border-[var(--bg-secondary)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
                 }`}
               >
                 {showEphemeral ? 'Hide Ephemeral' : 'Show Ephemeral'}
@@ -435,14 +435,14 @@ export default function Fleet() {
       {/* Agent Table */}
       {agents.length === 0 ? (
         <div className="glass-card p-12 text-center">
-          <p className="text-[#556080]">No agents registered. Deploy a blueprint or add an agent to get started.</p>
+          <p className="text-[var(--text-secondary)]">No agents registered. Deploy a blueprint or add an agent to get started.</p>
         </div>
       ) : (
         <div className="glass-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-[#1a1a3e]/50 text-[#556080] text-xs uppercase tracking-wider">
+                <tr className="border-b border-[var(--bg-secondary)] text-[var(--text-secondary)] text-xs uppercase tracking-wider">
                   <th className="text-left px-4 py-3">Agent</th>
                   <th className="text-left px-4 py-3">Role</th>
                   <th className="text-left px-4 py-3">Trust</th>
@@ -497,19 +497,19 @@ function AgentRow({
   const isActive = agent.status === 'online';
 
   return (
-    <tr className="border-b border-[#1a1a3e]/30 hover:bg-[#0080ff05] transition-colors cursor-pointer" onClick={onClick}>
-      <td className="px-4 py-3 font-mono text-[#0080ff]">{agent.agent_id}</td>
-      <td className="px-4 py-3 text-[#8892a8]">{agent.role ?? '-'}</td>
+    <tr className="border-b border-[var(--bg-hover)] hover:bg-[var(--glow-secondary)] transition-colors cursor-pointer" onClick={onClick}>
+      <td className="px-4 py-3 font-mono text-[var(--accent-primary)]">{agent.agent_id}</td>
+      <td className="px-4 py-3 text-[var(--text-muted)]">{agent.role ?? '-'}</td>
       <td className="px-4 py-3"><TrustBadge level={agent.trust_level} /></td>
       <td className="px-4 py-3"><StatusBadge status={agent.status} /></td>
-      <td className="px-4 py-3 text-[#556080] text-xs">{agent.model ?? '-'}</td>
+      <td className="px-4 py-3 text-[var(--text-secondary)] text-xs">{agent.model ?? '-'}</td>
       <td className="px-4 py-3">
         {agent.last_seen ? <TimeAgo timestamp={agent.last_seen} staleThreshold={300} /> : '-'}
       </td>
       <td className="px-4 py-3 text-right relative" onClick={(e) => e.stopPropagation()}>
         <button
           onClick={() => setShowMenu(!showMenu)}
-          className="text-xs text-[#556080] hover:text-white px-2 py-1 rounded hover:bg-[#1a1a3e]/50 transition-colors"
+          className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] px-2 py-1 rounded hover:bg-[var(--bg-secondary)] transition-colors"
         >
           Actions
         </button>
@@ -526,7 +526,7 @@ function AgentRow({
                   )}
                 </>
               )}
-              <div className="border-t border-[#1a1a3e]/30 my-1" />
+              <div className="border-t border-[var(--bg-hover)] my-1" />
               <MenuButton label="Revoke" className="text-red-400 hover:text-red-300" onClick={() => { setShowMenu(false); onAction({ type: 'revoke', agent }); }} />
               <MenuButton label="Delete" className="text-red-400 hover:text-red-300" onClick={() => { setShowMenu(false); onAction({ type: 'delete', agent }); }} />
             </div>
@@ -541,7 +541,7 @@ function MenuButton({ label, onClick, className = '' }: { label: string; onClick
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[#1a1a3e]/50 transition-colors ${className || 'text-[#8892a8] hover:text-white'}`}
+      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--bg-secondary)] transition-colors ${className || 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}
     >
       {label}
     </button>
