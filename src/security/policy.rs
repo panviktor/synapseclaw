@@ -1244,10 +1244,24 @@ impl SecurityPolicy {
     pub fn resolve_tool_path(&self, path: &str) -> PathBuf {
         let expanded = expand_user_path(path);
         if expanded.is_absolute() {
-            expanded
-        } else {
-            self.workspace_dir.join(expanded)
+            return expanded;
         }
+        // Try workspace first
+        let workspace_path = self.workspace_dir.join(&expanded);
+        if workspace_path.exists() {
+            return workspace_path;
+        }
+        // Fall back to allowed_roots — if the relative path exists under
+        // any allowed root, use that. This lets agents use natural paths
+        // like "docs/fork/news.md" without requiring absolute paths.
+        for root in &self.allowed_roots {
+            let candidate = root.join(&expanded);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+        // Default to workspace (will fail at canonicalize with clear error)
+        workspace_path
     }
 
     /// Check whether the given raw path (before canonicalization) falls under
