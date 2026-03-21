@@ -615,6 +615,12 @@ pub fn all_integrations() -> Vec<IntegrationEntry> {
         },
         // ── Tools & Automation ──────────────────────────────────
         IntegrationEntry {
+            name: "Telegram Post",
+            description: "Publish to Telegram channels & chats",
+            category: IntegrationCategory::ToolsAutomation,
+            status_fn: |_| IntegrationStatus::Active,
+        },
+        IntegrationEntry {
             name: "Tavily",
             description: "AI-powered web search, extract & research",
             category: IntegrationCategory::ToolsAutomation,

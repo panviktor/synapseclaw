@@ -77,6 +77,7 @@ pub mod tool_search;
 pub mod traits;
 pub mod web_fetch;
 pub mod tavily_extract;
+pub mod telegram_post;
 pub mod web_search_tool;
 pub mod workspace_tool;
 
@@ -330,6 +331,10 @@ pub fn all_tools_with_runtime(
             workspace_dir.to_path_buf(),
         )),
         Arc::new(PushoverTool::new(
+            security.clone(),
+            workspace_dir.to_path_buf(),
+        )),
+        Arc::new(telegram_post::TelegramPostTool::new(
             security.clone(),
             workspace_dir.to_path_buf(),
         )),
