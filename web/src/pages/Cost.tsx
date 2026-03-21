@@ -38,7 +38,7 @@ export default function Cost() {
   if (loading || !cost) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="h-8 w-8 border-2 border-[#0080ff30] border-t-[#0080ff] rounded-full animate-spin" />
+        <div className="h-8 w-8 border-2 border-[var(--glow-primary)] border-t-[var(--accent-primary)] rounded-full animate-spin" />
       </div>
     );
   }
@@ -48,13 +48,13 @@ export default function Cost() {
   return (
     <div className="p-6 space-y-6 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold text-gradient-blue">{t('cost.title')}</h1>
-        <p className="text-xs text-[#556080] mt-1">{t('cost.subtitle')}</p>
+        <h1 className="text-2xl font-bold text-gradient">{t('cost.title')}</h1>
+        <p className="text-xs text-[var(--text-secondary)] mt-1">{t('cost.subtitle')}</p>
       </div>
       {/* Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 stagger-children">
         {[
-          { icon: DollarSign, color: '#0080ff', bg: '#0080ff15', label: t('cost.session_cost'), value: formatUSD(cost.session_cost_usd) },
+          { icon: DollarSign, color: 'var(--accent-primary)', bg: 'var(--glow-primary)', label: t('cost.session_cost'), value: formatUSD(cost.session_cost_usd) },
           { icon: TrendingUp, color: '#00e68a', bg: '#00e68a15', label: t('cost.daily_cost'), value: formatUSD(cost.daily_cost_usd) },
           { icon: Layers, color: '#a855f7', bg: '#a855f715', label: t('cost.monthly_cost'), value: formatUSD(cost.monthly_cost_usd) },
           { icon: Hash, color: '#ff8800', bg: '#ff880015', label: t('cost.total_requests'), value: cost.request_count.toLocaleString() },
@@ -64,16 +64,16 @@ export default function Cost() {
               <div className="p-2 rounded-xl" style={{ background: bg }}>
                 <Icon className="h-5 w-5" style={{ color }} />
               </div>
-              <span className="text-xs text-[#556080] uppercase tracking-wider font-medium">{label}</span>
+              <span className="text-xs text-[var(--text-secondary)] uppercase tracking-wider font-medium">{label}</span>
             </div>
-            <p className="text-2xl font-bold text-white font-mono">{value}</p>
+            <p className="text-2xl font-bold text-[var(--text-primary)] font-mono">{value}</p>
           </div>
         ))}
       </div>
 
       {/* Token Statistics */}
       <div className="glass-card p-5 animate-slide-in-up" style={{ animationDelay: '200ms' }}>
-        <h3 className="text-sm font-semibold text-white mb-4 uppercase tracking-wider">
+        <h3 className="text-sm font-semibold text-[var(--text-primary)] mb-4 uppercase tracking-wider">
           {t('cost.token_statistics')}
         </h3>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -82,9 +82,9 @@ export default function Cost() {
             { label: t('cost.avg_tokens_per_request'), value: cost.request_count > 0 ? Math.round(cost.total_tokens / cost.request_count).toLocaleString() : '0' },
             { label: t('cost.cost_per_1k_tokens'), value: cost.total_tokens > 0 ? formatUSD((cost.monthly_cost_usd / cost.total_tokens) * 1000) : '$0.0000' },
           ].map(({ label, value }) => (
-            <div key={label} className="rounded-xl p-4" style={{ background: 'rgba(0,128,255,0.04)', border: '1px solid rgba(0,128,255,0.08)' }}>
-              <p className="text-xs text-[#556080] uppercase tracking-wider">{label}</p>
-              <p className="text-xl font-bold text-white mt-1 font-mono">{value}</p>
+            <div key={label} className="rounded-xl p-4" style={{ background: 'var(--glow-secondary)', border: '1px solid var(--glow-primary)' }}>
+              <p className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">{label}</p>
+              <p className="text-xl font-bold text-[var(--text-primary)] mt-1 font-mono">{value}</p>
             </div>
           ))}
         </div>
@@ -92,18 +92,18 @@ export default function Cost() {
 
       {/* Model Breakdown Table */}
       <div className="glass-card overflow-hidden animate-slide-in-up" style={{ animationDelay: '300ms' }}>
-        <div className="px-5 py-4 border-b border-[#1a1a3e]">
-          <h3 className="text-sm font-semibold text-white uppercase tracking-wider">
+        <div className="px-5 py-4 border-b border-[var(--bg-secondary)]">
+          <h3 className="text-sm font-semibold text-[var(--text-primary)] uppercase tracking-wider">
             {t('cost.model_breakdown')}
           </h3>
         </div>
         {models.length === 0 ? (
-          <div className="p-8 text-center text-[#334060]">
+          <div className="p-8 text-center text-[var(--text-secondary)]">
             {t('cost.no_model_data')}
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="table-electric">
+            <table className="table-warm">
               <thead>
                 <tr>
                   <th className="text-left">{t('cost.model')}</th>
@@ -123,27 +123,27 @@ export default function Cost() {
                         : 0;
                     return (
                       <tr key={m.model}>
-                        <td className="px-5 py-3 text-white font-medium text-sm">
+                        <td className="px-5 py-3 text-[var(--text-primary)] font-medium text-sm">
                           {m.model}
                         </td>
-                        <td className="px-5 py-3 text-[#8892a8] text-right font-mono text-sm">
+                        <td className="px-5 py-3 text-[var(--text-muted)] text-right font-mono text-sm">
                           {formatUSD(m.cost_usd)}
                         </td>
-                        <td className="px-5 py-3 text-[#8892a8] text-right text-sm">
+                        <td className="px-5 py-3 text-[var(--text-muted)] text-right text-sm">
                           {m.total_tokens.toLocaleString()}
                         </td>
-                        <td className="px-5 py-3 text-[#8892a8] text-right text-sm">
+                        <td className="px-5 py-3 text-[var(--text-muted)] text-right text-sm">
                           {m.request_count.toLocaleString()}
                         </td>
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-2">
-                            <div className="w-20 h-1.5 bg-[#0a0a18] rounded-full overflow-hidden">
+                            <div className="w-20 h-1.5 bg-[var(--bg-primary)] rounded-full overflow-hidden">
                               <div
                                 className="h-full rounded-full progress-bar-animated transition-all duration-700"
-                                style={{ width: `${Math.max(share, 2)}%`, background: '#0080ff' }}
+                                style={{ width: `${Math.max(share, 2)}%`, background: 'var(--accent-primary)' }}
                               />
                             </div>
-                            <span className="text-xs text-[#556080] w-10 text-right font-mono">
+                            <span className="text-xs text-[var(--text-secondary)] w-10 text-right font-mono">
                               {share.toFixed(1)}%
                             </span>
                           </div>

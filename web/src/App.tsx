@@ -22,6 +22,7 @@ import IpcActivity from './pages/ipc/Activity';
 import IpcCron from './pages/ipc/Cron';
 import IpcConversation from './pages/ipc/Conversation';
 import { AuthProvider, useAuth } from './hooks/useAuth';
+import { ThemeProvider } from './hooks/useTheme';
 import { setLocale, type Locale } from './lib/i18n';
 
 // Locale context
@@ -67,19 +68,19 @@ export class ErrorBoundary extends Component<
     if (this.state.error) {
       return (
         <div className="p-6">
-          <div className="bg-gray-900 border border-red-700 rounded-xl p-6 w-full max-w-lg">
-            <h2 className="text-lg font-semibold text-red-400 mb-2">
+          <div className="bg-theme-card border border-theme-default rounded-xl p-6 w-full max-w-lg shadow-sm">
+            <h2 className="text-lg font-semibold text-status-error mb-2">
               Something went wrong
             </h2>
-            <p className="text-gray-400 text-sm mb-4">
+            <p className="text-theme-muted text-sm mb-4">
               A render error occurred. Check the browser console for details.
             </p>
-            <pre className="text-xs text-red-300 bg-gray-800 rounded p-3 overflow-x-auto whitespace-pre-wrap break-all">
+            <pre className="text-xs text-status-error bg-theme-secondary rounded p-3 overflow-x-auto whitespace-pre-wrap break-all">
               {this.state.error.message}
             </pre>
             <button
               onClick={() => this.setState({ error: null })}
-              className="mt-6 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors"
+              className="mt-6 px-4 py-2 bg-theme-accent hover:bg-theme-accent-hover text-white text-sm font-medium rounded-lg transition-colors"
             >
               Try again
             </button>
@@ -111,23 +112,20 @@ function PairingDialog({ onPair }: { onPair: (code: string) => Promise<void> }) 
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ background: 'radial-gradient(ellipse at center, #0a0a20 0%, #050510 70%)' }}>
-      {/* Ambient glow */}
-      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] rounded-full opacity-20 pointer-events-none" style={{ background: 'radial-gradient(circle, #0080ff 0%, transparent 70%)' }} />
-
+    <div className="min-h-screen flex items-center justify-center bg-theme-primary">
       <div className="relative glass-card p-8 w-full max-w-md animate-fade-in-scale">
-        {/* Top glow accent */}
-        <div className="absolute -top-px left-1/4 right-1/4 h-px" style={{ background: 'linear-gradient(90deg, transparent, #0080ff, transparent)' }} />
+        {/* Top accent line */}
+        <div className="absolute -top-px left-1/4 right-1/4 h-px bg-gradient-to-r from-transparent via-theme-accent to-transparent" />
 
         <div className="text-center mb-8">
           <img
             src="/_app/logo.png"
             alt="SynapseClaw"
-            className="h-20 w-20 rounded-2xl object-cover mx-auto mb-4 animate-float"
-            style={{ boxShadow: '0 0 30px rgba(0,128,255,0.3)' }}
+            className="h-20 w-20 rounded-2xl object-cover mx-auto mb-4"
+            style={{ boxShadow: '0 4px 20px var(--glow-primary)' }}
           />
-          <h1 className="text-2xl font-bold text-gradient-blue mb-2">SynapseClaw</h1>
-          <p className="text-[#556080] text-sm">Enter the pairing code from your terminal</p>
+          <h1 className="text-2xl font-bold text-gradient mb-2">SynapseClaw</h1>
+          <p className="text-theme-muted text-sm">Enter the pairing code from your terminal</p>
         </div>
         <form onSubmit={handleSubmit}>
           <input
@@ -135,17 +133,17 @@ function PairingDialog({ onPair }: { onPair: (code: string) => Promise<void> }) 
             value={code}
             onChange={(e) => setCode(e.target.value)}
             placeholder="6-digit code"
-            className="input-electric w-full px-4 py-4 text-center text-2xl tracking-[0.3em] font-medium mb-4"
+            className="input-warm w-full px-4 py-4 text-center text-2xl tracking-[0.3em] font-medium mb-4"
             maxLength={6}
             autoFocus
           />
           {error && (
-            <p className="text-[#ff4466] text-sm mb-4 text-center animate-fade-in" aria-live="polite">{error}</p>
+            <p className="text-status-error text-sm mb-4 text-center animate-fade-in" aria-live="polite">{error}</p>
           )}
           <button
             type="submit"
             disabled={loading || code.length < 6}
-            className="btn-electric w-full py-3.5 text-sm font-semibold tracking-wide"
+            className="btn-primary w-full py-3.5 text-sm font-semibold tracking-wide"
           >
             {loading ? (
               <span className="flex items-center justify-center gap-2">
@@ -180,10 +178,10 @@ function AppContent() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center" style={{ background: 'radial-gradient(ellipse at center, #0a0a20 0%, #050510 70%)' }}>
+      <div className="min-h-screen flex items-center justify-center bg-theme-primary">
         <div className="flex flex-col items-center gap-4 animate-fade-in">
-          <div className="h-10 w-10 border-2 border-[#0080ff30] border-t-[#0080ff] rounded-full animate-spin" />
-          <p className="text-[#556080] text-sm">Connecting...</p>
+          <div className="h-10 w-10 border-2 border-theme-accent/20 border-t-theme-accent rounded-full animate-spin" />
+          <p className="text-theme-muted text-sm">Connecting...</p>
         </div>
       </div>
     );
@@ -227,8 +225,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

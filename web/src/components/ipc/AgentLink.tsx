@@ -11,7 +11,7 @@ export default function AgentLink({ agentId, trustLevel, showTrust = true }: Age
   return (
     <Link
       to={`/ipc/fleet/${encodeURIComponent(agentId)}`}
-      className="inline-flex items-center gap-1.5 hover:text-[#0080ff] transition-colors"
+      className="inline-flex items-center gap-1.5 hover:text-[var(--accent-primary)] transition-colors"
     >
       <span className="font-mono text-sm">{agentId}</span>
       {showTrust && trustLevel !== undefined && (

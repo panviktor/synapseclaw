@@ -49,7 +49,7 @@ export default function Config() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="h-8 w-8 border-2 border-[#0080ff30] border-t-[#0080ff] rounded-full animate-spin" />
+        <div className="h-8 w-8 border-2 border-[var(--glow-primary)] border-t-[var(--accent-primary)] rounded-full animate-spin" />
       </div>
     );
   }
@@ -57,19 +57,19 @@ export default function Config() {
   return (
     <div className="p-6 space-y-6 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold text-gradient-blue">{t('config.title')}</h1>
-        <p className="text-xs text-[#556080] mt-1">{t('config.subtitle')}</p>
+        <h1 className="text-2xl font-bold text-gradient">{t('config.title')}</h1>
+        <p className="text-xs text-[var(--text-secondary)] mt-1">{t('config.subtitle')}</p>
       </div>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Settings className="h-5 w-5 text-[#0080ff]" />
-          <h2 className="text-sm font-semibold text-white uppercase tracking-wider">{t('config.configuration_title')}</h2>
+          <Settings className="h-5 w-5 text-[var(--accent-primary)]" />
+          <h2 className="text-sm font-semibold text-[var(--text-primary)] uppercase tracking-wider">{t('config.configuration_title')}</h2>
         </div>
         <button
           onClick={handleSave}
           disabled={saving}
-          className="btn-electric flex items-center gap-2 text-sm px-4 py-2"
+          className="btn-primary flex items-center gap-2 text-sm px-4 py-2"
         >
           <Save className="h-4 w-4" />
           {saving ? t('config.saving') : t('config.save')}
@@ -107,11 +107,11 @@ export default function Config() {
 
       {/* Config Editor */}
       <div className="glass-card overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#1a1a3e]" style={{ background: 'rgba(0,128,255,0.03)' }}>
-          <span className="text-[10px] text-[#334060] font-semibold uppercase tracking-wider">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-[var(--bg-secondary)]" style={{ background: 'var(--glow-secondary)' }}>
+          <span className="text-[10px] text-[var(--text-secondary)] font-semibold uppercase tracking-wider">
             {t('config.toml_label')}
           </span>
-          <span className="text-[10px] text-[#334060]">
+          <span className="text-[10px] text-[var(--text-secondary)]">
             {config.split('\n').length} {t('config.lines')}
           </span>
         </div>
@@ -119,7 +119,7 @@ export default function Config() {
           value={config}
           onChange={(e) => setConfig(e.target.value)}
           spellCheck={false}
-          className="w-full min-h-[500px] text-[#8892a8] font-mono text-sm p-4 resize-y focus:outline-none focus:ring-2 focus:ring-[#0080ff40] focus:ring-inset"
+          className="w-full min-h-[500px] text-[var(--text-muted)] font-mono text-sm p-4 resize-y focus:outline-none focus:ring-2 focus:ring-[var(--glow-primary)] focus:ring-inset"
           style={{ background: 'rgba(5,5,16,0.8)', tabSize: 4 }}
         />
       </div>

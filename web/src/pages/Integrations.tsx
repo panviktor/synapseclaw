@@ -17,14 +17,14 @@ function statusBadge(status: Integration['status']) {
       return {
         icon: Zap,
         label: t('integrations.status_available'),
-        classes: 'text-[#0080ff] border-[#0080ff30]',
-        bg: 'rgba(0,128,255,0.06)',
+        classes: 'text-[var(--accent-primary)] border-[var(--glow-primary)]',
+        bg: 'var(--glow-primary)',
       };
     case 'ComingSoon':
       return {
         icon: Clock,
         label: t('integrations.status_coming_soon'),
-        classes: 'text-[#556080] border-[#1a1a3e]',
+        classes: 'text-[var(--text-secondary)] border-[var(--bg-secondary)]',
         bg: 'rgba(26,26,62,0.3)',
       };
   }
@@ -74,7 +74,7 @@ export default function Integrations() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="h-8 w-8 border-2 border-[#0080ff30] border-t-[#0080ff] rounded-full animate-spin" />
+        <div className="h-8 w-8 border-2 border-[var(--glow-primary)] border-t-[var(--accent-primary)] rounded-full animate-spin" />
       </div>
     );
   }
@@ -82,13 +82,13 @@ export default function Integrations() {
   return (
     <div className="p-6 space-y-6 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold text-gradient-blue">{t('integrations.title')}</h1>
-        <p className="text-xs text-[#556080] mt-1">{t('integrations.subtitle')}</p>
+        <h1 className="text-2xl font-bold text-gradient">{t('integrations.title')}</h1>
+        <p className="text-xs text-[var(--text-secondary)] mt-1">{t('integrations.subtitle')}</p>
       </div>
       {/* Header */}
       <div className="flex items-center gap-2">
-        <Puzzle className="h-5 w-5 text-[#0080ff]" />
-        <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
+        <Puzzle className="h-5 w-5 text-[var(--accent-primary)]" />
+        <h2 className="text-sm font-semibold text-[var(--text-primary)] uppercase tracking-wider">
           {t('integrations.title')} ({integrations.length})
         </h2>
       </div>
@@ -100,10 +100,10 @@ export default function Integrations() {
             key={cat}
             onClick={() => setActiveCategory(cat)}
             className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all duration-300 capitalize ${activeCategory === cat
-                ? 'text-white shadow-[0_0_15px_rgba(0,128,255,0.2)]'
-                : 'text-[#556080] border border-[#1a1a3e] hover:text-white hover:border-[#0080ff40]'
+                ? 'text-white shadow-sm'
+                : 'text-[var(--text-secondary)] border border-[var(--bg-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--glow-primary)]'
               }`}
-            style={activeCategory === cat ? { background: 'linear-gradient(135deg, #0080ff, #0066cc)' } : {}}
+            style={activeCategory === cat ? { background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-primary-hover))' } : {}}
           >
             {cat}
           </button>
@@ -113,15 +113,15 @@ export default function Integrations() {
       {/* Grouped Integration Cards */}
       {Object.keys(grouped).length === 0 ? (
         <div className="glass-card p-8 text-center">
-          <Puzzle className="h-10 w-10 text-[#1a1a3e] mx-auto mb-3" />
-          <p className="text-[#556080]">{t('integrations.empty')}</p>
+          <Puzzle className="h-10 w-10 text-[var(--bg-secondary)] mx-auto mb-3" />
+          <p className="text-[var(--text-secondary)]">{t('integrations.empty')}</p>
         </div>
       ) : (
         Object.entries(grouped)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([category, items]) => (
             <div key={category}>
-              <h3 className="text-[10px] font-semibold text-[#334060] uppercase tracking-wider mb-3 capitalize">
+              <h3 className="text-[10px] font-semibold text-[var(--text-secondary)] uppercase tracking-wider mb-3 capitalize">
                 {category}
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 stagger-children">
@@ -135,10 +135,10 @@ export default function Integrations() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
-                          <h4 className="text-sm font-semibold text-white truncate">
+                          <h4 className="text-sm font-semibold text-[var(--text-primary)] truncate">
                             {integration.name}
                           </h4>
-                          <p className="text-sm text-[#556080] mt-1 line-clamp-2">
+                          <p className="text-sm text-[var(--text-secondary)] mt-1 line-clamp-2">
                             {integration.description}
                           </p>
                         </div>

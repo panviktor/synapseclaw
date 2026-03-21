@@ -134,8 +134,8 @@ export default function Activity() {
     <div className="p-6 space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-gradient-blue">{t('nav.ipc_activity') || 'Activity Feed'}</h1>
-          <p className="text-xs text-[#556080] mt-1">{t('ipc.activity_subtitle')}</p>
+          <h1 className="text-xl font-bold text-gradient">{t('nav.ipc_activity') || 'Activity Feed'}</h1>
+          <p className="text-xs text-[var(--text-secondary)] mt-1">{t('ipc.activity_subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           {partial && (
@@ -146,7 +146,7 @@ export default function Activity() {
           <button
             onClick={doSearch}
             disabled={loading}
-            className="px-3 py-1.5 text-sm bg-[#0080ff15] hover:bg-[#0080ff25] text-[#0080ff] rounded-lg transition-colors"
+            className="px-3 py-1.5 text-sm bg-[var(--glow-primary)] hover:bg-[var(--glow-primary)] text-[var(--accent-primary)] rounded-lg transition-colors"
           >
             {loading ? 'Loading...' : 'Refresh'}
           </button>
@@ -158,7 +158,7 @@ export default function Activity() {
         <select
           value={agentId}
           onChange={(e) => updateParam('agent_id', e.target.value)}
-          className="input-electric px-3 py-2 text-sm min-w-[160px]"
+          className="input-warm px-3 py-2 text-sm min-w-[160px]"
         >
           <option value="">All agents</option>
           {agents.map((a) => (
@@ -169,7 +169,7 @@ export default function Activity() {
         <select
           value={eventType}
           onChange={(e) => updateParam('event_type', e.target.value)}
-          className="input-electric px-3 py-2 text-sm"
+          className="input-warm px-3 py-2 text-sm"
         >
           {EVENT_TYPES.map((et) => (
             <option key={et} value={et}>{et || 'All types'}</option>
@@ -179,7 +179,7 @@ export default function Activity() {
         <select
           value={surface}
           onChange={(e) => updateParam('surface', e.target.value)}
-          className="input-electric px-3 py-2 text-sm"
+          className="input-warm px-3 py-2 text-sm"
         >
           {SURFACES.map((s) => (
             <option key={s} value={s}>{s ? surfaceLabel(s) : 'All surfaces'}</option>
@@ -189,7 +189,7 @@ export default function Activity() {
         <select
           value={timeRange}
           onChange={(e) => setTimeRange(e.target.value)}
-          className="input-electric px-3 py-2 text-sm"
+          className="input-warm px-3 py-2 text-sm"
         >
           {TIME_RANGES.map((r) => (
             <option key={r.value} value={r.value}>{r.label}</option>
@@ -199,18 +199,18 @@ export default function Activity() {
 
       {/* Event list */}
       {!loaded && loading && (
-        <div className="text-center py-12 text-[#556080]">Loading activity...</div>
+        <div className="text-center py-12 text-[var(--text-secondary)]">Loading activity...</div>
       )}
 
       {loaded && events.length === 0 && (
-        <div className="text-center py-12 text-[#556080]">No activity events found</div>
+        <div className="text-center py-12 text-[var(--text-secondary)]">No activity events found</div>
       )}
 
       {loaded && events.length > 0 && (
         <div className="glass-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-[#556080] border-b border-[#1a1a3a]">
+              <tr className="text-left text-[var(--text-secondary)] border-b border-[var(--bg-secondary)]">
                 <th className="px-4 py-3 w-[160px]">Time</th>
                 <th className="px-4 py-3 w-[120px]">Agent</th>
                 <th className="px-4 py-3 w-[100px]">Surface</th>
@@ -226,10 +226,10 @@ export default function Activity() {
                 return (
                   <tr
                     key={`${event.event_type}-${event.agent_id}-${event.timestamp}-${idx}`}
-                    className="border-b border-[#1a1a3a]/50 hover:bg-[#0080ff08] transition-colors cursor-pointer"
+                    className="border-b border-[var(--bg-secondary)] hover:bg-[var(--glow-secondary)] transition-colors cursor-pointer"
                     onClick={() => setExpandedIdx(isExpanded ? null : idx)}
                   >
-                    <td className="px-4 py-2.5 text-[#8899bb] whitespace-nowrap">
+                    <td className="px-4 py-2.5 text-[var(--text-muted)] whitespace-nowrap">
                       <TimeAbsolute timestamp={event.timestamp} />
                     </td>
                     <td className="px-4 py-2.5">
@@ -240,10 +240,10 @@ export default function Activity() {
                         {surfaceLabel(event.trace_ref.surface)}
                       </span>
                     </td>
-                    <td className="px-4 py-2.5 text-[#8899bb] font-mono text-xs">
+                    <td className="px-4 py-2.5 text-[var(--text-muted)] font-mono text-xs">
                       {event.event_type}
                     </td>
-                    <td className="px-4 py-2.5 text-[#c0c8e0] max-w-[400px] truncate" title={event.summary}>
+                    <td className="px-4 py-2.5 text-[var(--text-muted)] max-w-[400px] truncate" title={event.summary}>
                       {event.summary}
                     </td>
                     <td className="px-4 py-2.5">
@@ -253,7 +253,7 @@ export default function Activity() {
                             e.stopPropagation();
                             navigate(url);
                           }}
-                          className="px-2 py-1 text-xs bg-[#0080ff15] hover:bg-[#0080ff30] text-[#0080ff] rounded-lg transition-colors whitespace-nowrap"
+                          className="px-2 py-1 text-xs bg-[var(--glow-primary)] hover:bg-[var(--glow-primary)] text-[var(--accent-primary)] rounded-lg transition-colors whitespace-nowrap"
                           title={traceLabel(event.trace_ref.surface)}
                         >
                           Open Trace
@@ -268,7 +268,7 @@ export default function Activity() {
         </div>
       )}
 
-      <div className="text-xs text-[#556080] text-center">
+      <div className="text-xs text-[var(--text-secondary)] text-center">
         {events.length > 0 && `${events.length} event${events.length !== 1 ? 's' : ''}`}
         {partial && ' (partial results)'}
       </div>

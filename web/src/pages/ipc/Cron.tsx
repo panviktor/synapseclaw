@@ -137,20 +137,20 @@ export default function FleetCron() {
     <div className="p-6 space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-bold text-gradient-blue">{t('nav.ipc_cron') || 'Fleet Cron'}</h1>
-          <p className="text-xs text-[#556080] mt-1">{t('ipc.cron_subtitle')}</p>
+          <h1 className="text-xl font-bold text-gradient">{t('nav.ipc_cron') || 'Fleet Cron'}</h1>
+          <p className="text-xs text-[var(--text-secondary)] mt-1">{t('ipc.cron_subtitle')}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
             onClick={() => setShowAdd(true)}
-            className="px-3 py-1.5 text-sm bg-[#0080ff15] hover:bg-[#0080ff25] text-[#0080ff] rounded-lg transition-colors"
+            className="px-3 py-1.5 text-sm bg-[var(--glow-primary)] hover:bg-[var(--glow-primary)] text-[var(--accent-primary)] rounded-lg transition-colors"
           >
             + Add Job
           </button>
           <button
             onClick={loadAll}
             disabled={loading}
-            className="px-3 py-1.5 text-sm bg-[#0080ff15] hover:bg-[#0080ff25] text-[#0080ff] rounded-lg transition-colors"
+            className="px-3 py-1.5 text-sm bg-[var(--glow-primary)] hover:bg-[var(--glow-primary)] text-[var(--accent-primary)] rounded-lg transition-colors"
           >
             {loading ? 'Loading...' : 'Refresh'}
           </button>
@@ -166,12 +166,12 @@ export default function FleetCron() {
       {/* Add job dialog */}
       {showAdd && (
         <div className="glass-card p-4 space-y-3">
-          <h3 className="text-sm font-semibold text-white">Add Cron Job</h3>
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">Add Cron Job</h3>
           <div className="grid grid-cols-2 gap-3">
             <select
               value={addAgent}
               onChange={(e) => setAddAgent(e.target.value)}
-              className="input-electric px-3 py-2 text-sm"
+              className="input-warm px-3 py-2 text-sm"
             >
               <option value="">Select agent...</option>
               {agents.map((a) => (
@@ -184,32 +184,32 @@ export default function FleetCron() {
               placeholder="Name (optional)"
               value={addName}
               onChange={(e) => setAddName(e.target.value)}
-              className="input-electric px-3 py-2 text-sm"
+              className="input-warm px-3 py-2 text-sm"
             />
             <input
               placeholder="Schedule (e.g. */5 * * * *)"
               value={addSchedule}
               onChange={(e) => setAddSchedule(e.target.value)}
-              className="input-electric px-3 py-2 text-sm"
+              className="input-warm px-3 py-2 text-sm"
             />
             <input
               placeholder="Command"
               value={addCommand}
               onChange={(e) => setAddCommand(e.target.value)}
-              className="input-electric px-3 py-2 text-sm"
+              className="input-warm px-3 py-2 text-sm"
             />
           </div>
           {addError && <p className="text-red-400 text-xs">{addError}</p>}
           <div className="flex gap-2 justify-end">
             <button
               onClick={() => setShowAdd(false)}
-              className="px-3 py-1.5 text-sm text-[#556080] hover:text-white transition-colors"
+              className="px-3 py-1.5 text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
             >
               Cancel
             </button>
             <button
               onClick={handleAdd}
-              className="px-3 py-1.5 text-sm bg-[#0080ff] hover:bg-[#0070e0] text-white rounded-lg transition-colors"
+              className="px-3 py-1.5 text-sm bg-[var(--accent-primary)] hover:bg-[var(--accent-primary)] text-white rounded-lg transition-colors"
             >
               Create
             </button>
@@ -219,18 +219,18 @@ export default function FleetCron() {
 
       {/* Jobs table */}
       {!loaded && loading && (
-        <div className="text-center py-12 text-[#556080]">Loading cron jobs...</div>
+        <div className="text-center py-12 text-[var(--text-secondary)]">Loading cron jobs...</div>
       )}
 
       {loaded && jobs.length === 0 && (
-        <div className="text-center py-12 text-[#556080]">No cron jobs found</div>
+        <div className="text-center py-12 text-[var(--text-secondary)]">No cron jobs found</div>
       )}
 
       {loaded && jobs.length > 0 && (
         <div className="glass-card overflow-hidden">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-left text-[#556080] border-b border-[#1a1a3a]">
+              <tr className="text-left text-[var(--text-secondary)] border-b border-[var(--bg-secondary)]">
                 <th className="px-4 py-3 w-[120px]">Agent</th>
                 <th className="px-4 py-3 w-[140px]">Name</th>
                 <th className="px-4 py-3">Command</th>
@@ -248,22 +248,22 @@ export default function FleetCron() {
                   <>
                     <tr
                       key={jobKey}
-                      className="border-b border-[#1a1a3a]/50 hover:bg-[#0080ff08] transition-colors cursor-pointer"
+                      className="border-b border-[var(--bg-secondary)] hover:bg-[var(--glow-secondary)] transition-colors cursor-pointer"
                       onClick={() => handleExpandRuns(job.agent_id, job.id)}
                     >
                       <td className="px-4 py-2.5">
                         <AgentLink agentId={job.agent_id} />
                       </td>
-                      <td className="px-4 py-2.5 text-white font-medium">
+                      <td className="px-4 py-2.5 text-[var(--text-primary)] font-medium">
                         {job.name || job.id}
                       </td>
-                      <td className="px-4 py-2.5 text-[#8899bb] font-mono text-xs max-w-[300px] truncate" title={job.command}>
+                      <td className="px-4 py-2.5 text-[var(--text-muted)] font-mono text-xs max-w-[300px] truncate" title={job.command}>
                         {job.command}
                       </td>
-                      <td className="px-4 py-2.5 text-[#8899bb] text-xs">
+                      <td className="px-4 py-2.5 text-[var(--text-muted)] text-xs">
                         {job.next_run ? new Date(job.next_run).toLocaleString() : '—'}
                       </td>
-                      <td className="px-4 py-2.5 text-[#8899bb] text-xs">
+                      <td className="px-4 py-2.5 text-[var(--text-muted)] text-xs">
                         {job.last_run ? new Date(job.last_run).toLocaleString() : '—'}
                       </td>
                       <td className="px-4 py-2.5">
@@ -286,16 +286,16 @@ export default function FleetCron() {
                       </td>
                     </tr>
                     {isExpanded && (
-                      <tr key={`${jobKey}-runs`} className="bg-[#0a0a20]">
+                      <tr key={`${jobKey}-runs`} className="bg-[var(--bg-primary)]">
                         <td colSpan={7} className="px-6 py-3">
                           {runsLoading ? (
-                            <div className="text-[#556080] text-xs">Loading runs...</div>
+                            <div className="text-[var(--text-secondary)] text-xs">Loading runs...</div>
                           ) : runs.length === 0 ? (
-                            <div className="text-[#556080] text-xs">No recent runs</div>
+                            <div className="text-[var(--text-secondary)] text-xs">No recent runs</div>
                           ) : (
                             <table className="w-full text-xs">
                               <thead>
-                                <tr className="text-[#556080]">
+                                <tr className="text-[var(--text-secondary)]">
                                   <th className="text-left py-1 pr-4">Started</th>
                                   <th className="text-left py-1 pr-4">Finished</th>
                                   <th className="text-left py-1 pr-4">Status</th>
@@ -305,7 +305,7 @@ export default function FleetCron() {
                               </thead>
                               <tbody>
                                 {runs.map((run) => (
-                                  <tr key={run.id} className="text-[#8899bb]">
+                                  <tr key={run.id} className="text-[var(--text-muted)]">
                                     <td className="py-1 pr-4">{new Date(run.started_at).toLocaleString()}</td>
                                     <td className="py-1 pr-4">{new Date(run.finished_at).toLocaleString()}</td>
                                     <td className="py-1 pr-4">
@@ -333,7 +333,7 @@ export default function FleetCron() {
         </div>
       )}
 
-      <div className="text-xs text-[#556080] text-center">
+      <div className="text-xs text-[var(--text-secondary)] text-center">
         {jobs.length > 0 && `${jobs.length} job${jobs.length !== 1 ? 's' : ''} across fleet`}
       </div>
 

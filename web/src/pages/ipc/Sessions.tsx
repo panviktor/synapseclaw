@@ -75,10 +75,10 @@ export default function Sessions() {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="p-6 space-y-6 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.sessions_title')}</h1>
-        <p className="text-xs text-[#556080] mt-1">{t('ipc.sessions_subtitle')}</p>
+        <h1 className="text-2xl font-bold text-gradient">{t('ipc.sessions_title')}</h1>
+        <p className="text-xs text-[var(--text-secondary)] mt-1">{t('ipc.sessions_subtitle')}</p>
       </div>
 
       {/* Filters */}
@@ -91,7 +91,7 @@ export default function Sessions() {
         <button
           onClick={() => doSearch(0)}
           disabled={loading}
-          className="btn-electric px-4 py-2 text-sm font-medium"
+          className="btn-primary px-4 py-2 text-sm font-medium"
         >
           {loading ? 'Loading...' : 'Search'}
         </button>
@@ -99,15 +99,15 @@ export default function Sessions() {
 
       {/* Results */}
       {!loaded ? (
-        <div className="glass-card p-12 text-center text-[#556080]">Apply filters and click Search.</div>
+        <div className="glass-card p-12 text-center text-[var(--text-secondary)]">Apply filters and click Search.</div>
       ) : messages.length === 0 ? (
-        <div className="glass-card p-12 text-center text-[#556080]">No messages found.</div>
+        <div className="glass-card p-12 text-center text-[var(--text-secondary)]">No messages found.</div>
       ) : (
         <div className="glass-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-[#1a1a3e]/50 text-[#556080] text-xs uppercase tracking-wider">
+                <tr className="border-b border-[var(--bg-secondary)] text-[var(--text-secondary)] text-xs uppercase tracking-wider">
                   <th className="text-left px-4 py-3">Time</th>
                   <th className="text-left px-4 py-3">From → To</th>
                   <th className="text-left px-4 py-3">Kind</th>
@@ -129,11 +129,11 @@ export default function Sessions() {
             </table>
           </div>
           {hasMore && (
-            <div className="px-4 py-3 border-t border-[#1a1a3e]/30 text-center">
+            <div className="px-4 py-3 border-t border-[var(--bg-hover)] text-center">
               <button
                 onClick={() => doSearch(messages.length)}
                 disabled={loading}
-                className="text-sm text-[#0080ff] hover:underline"
+                className="text-sm text-[var(--accent-primary)] hover:underline"
               >
                 {loading ? 'Loading...' : 'Load more'}
               </button>
@@ -150,24 +150,24 @@ function MsgRow({ msg, expanded, onToggle }: { msg: IpcMessage; expanded: boolea
     <>
       <tr
         onClick={onToggle}
-        className="border-b border-[#1a1a3e]/30 hover:bg-[#0080ff05] cursor-pointer transition-colors"
+        className="border-b border-[var(--bg-hover)] hover:bg-[var(--glow-secondary)] cursor-pointer transition-colors"
       >
         <td className="px-4 py-2"><TimeAbsolute timestamp={msg.created_at} /></td>
         <td className="px-4 py-2">
           <span className="inline-flex items-center gap-1.5">
             <AgentLink agentId={msg.from_agent} trustLevel={msg.from_trust_level} />
-            <span className="text-[#556080]">→</span>
+            <span className="text-[var(--text-secondary)]">→</span>
             <AgentLink agentId={msg.to_agent} showTrust={false} />
           </span>
         </td>
         <td className="px-4 py-2"><KindBadge kind={msg.kind} /></td>
         <td className="px-4 py-2 text-center"><LaneDot lane={msg.lane} /></td>
-        <td className="px-4 py-2 font-mono text-xs text-[#556080]">{msg.seq}</td>
-        <td className="px-4 py-2 text-[#8892a8] max-w-xs truncate">{redactPayload(msg.payload, msg.kind)}</td>
+        <td className="px-4 py-2 font-mono text-xs text-[var(--text-secondary)]">{msg.seq}</td>
+        <td className="px-4 py-2 text-[var(--text-muted)] max-w-xs truncate">{redactPayload(msg.payload, msg.kind)}</td>
       </tr>
       {expanded && (
         <tr>
-          <td colSpan={6} className="p-4 bg-[#050510]">
+          <td colSpan={6} className="p-4 bg-[var(--bg-primary)]">
             <MessageDetail message={msg} />
           </td>
         </tr>
@@ -181,13 +181,13 @@ function FilterInput({ label, value, onChange, placeholder }: {
 }) {
   return (
     <div className="space-y-1">
-      <label className="text-xs text-[#556080] uppercase tracking-wider">{label}</label>
+      <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">{label}</label>
       <input
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="input-electric px-3 py-2 text-sm w-40"
+        className="input-warm px-3 py-2 text-sm w-40"
       />
     </div>
   );
@@ -198,11 +198,11 @@ function FilterSelect({ label, value, options, onChange, labels }: {
 }) {
   return (
     <div className="space-y-1">
-      <label className="text-xs text-[#556080] uppercase tracking-wider">{label}</label>
+      <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">{label}</label>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="input-electric px-3 py-2 text-sm"
+        className="input-warm px-3 py-2 text-sm"
       >
         {options.map((o, i) => (
           <option key={o} value={o}>{labels ? labels[i] : (o || 'all')}</option>

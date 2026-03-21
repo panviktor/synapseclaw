@@ -540,14 +540,14 @@ export default function AgentChat() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Connection status bar */}
         {error && (
-          <div className="px-4 py-2 bg-[#ff446615] border-b border-[#ff446630] flex items-center gap-2 text-sm text-[#ff6680] animate-fade-in">
+          <div className="px-4 py-2 bg-[var(--status-error)]/10 border-b border-[#C73E3E]/20 flex items-center gap-2 text-sm text-[#C73E3E] animate-fade-in">
             <AlertCircle className="h-4 w-4 flex-shrink-0" />
             {error}
           </div>
         )}
 
         {/* Agent header */}
-        <div className="px-4 py-2 border-b border-[#1a1a3e]/30 flex items-center gap-3 bg-[#050510]/50">
+        <div className="px-4 py-2 border-b border-[var(--border-default)] flex items-center gap-3 bg-[var(--bg-card)]">
           {(() => {
             const agentInfo = activeAgent ? agents.find((a) => a.agent_id === activeAgent) : null;
             const isOnline = agentInfo ? agentInfo.status === 'online' : connected;
@@ -556,10 +556,10 @@ export default function AgentChat() {
             const modelLabel = status?.model ? ` · ${status.model}` : '';
             return (
               <>
-                <span className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${isOnline ? 'bg-emerald-400' : 'bg-gray-500'}`} />
-                <span className="text-sm font-medium text-white truncate">{name}</span>
-                {roleLabel && <span className="text-xs text-[#556080]">{roleLabel}</span>}
-                <span className="text-xs text-[#334060] truncate ml-auto">{modelLabel}</span>
+                <span className={`h-2.5 w-2.5 rounded-full flex-shrink-0 ${isOnline ? 'bg-[var(--status-success)]' : 'bg-[var(--text-placeholder)]'}`} />
+                <span className="text-sm font-medium text-[var(--text-primary)] truncate">{name}</span>
+                {roleLabel && <span className="text-xs text-[var(--text-muted)]">{roleLabel}</span>}
+                <span className="text-xs text-[var(--text-placeholder)] truncate ml-auto">{modelLabel}</span>
               </>
             );
           })()}
@@ -569,20 +569,20 @@ export default function AgentChat() {
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {loading ? (
             <div className="flex items-center justify-center h-full">
-              <div className="h-8 w-8 border-2 border-[#0080ff30] border-t-[#0080ff] rounded-full animate-spin" />
+              <div className="h-8 w-8 border-2 border-[var(--accent-primary)]/20 border-t-[#D95A1E] rounded-full animate-spin" />
             </div>
           ) : messages.length === 0 ? (
-            <div className="flex flex-col items-center justify-center h-full text-[#334060] animate-fade-in">
+            <div className="flex flex-col items-center justify-center h-full text-[var(--text-muted)] animate-fade-in">
               <div
-                className="h-16 w-16 rounded-2xl flex items-center justify-center mb-4 animate-float"
+                className="h-16 w-16 rounded-2xl flex items-center justify-center mb-4"
                 style={{
-                  background: 'linear-gradient(135deg, #0080ff15, #0080ff08)',
+                  background: 'var(--glow-secondary)',
                 }}
               >
-                <Bot className="h-8 w-8 text-[#0080ff]" />
+                <Bot className="h-8 w-8 text-[var(--accent-primary)]" />
               </div>
-              <p className="text-lg font-semibold text-white mb-1">SynapseClaw Agent</p>
-              <p className="text-sm text-[#556080]">Send a message to start the conversation</p>
+              <p className="text-lg font-semibold text-[var(--text-primary)] mb-1">SynapseClaw Agent</p>
+              <p className="text-sm text-[var(--text-muted)]">Send a message to start the conversation</p>
             </div>
           ) : (
             messages.map((msg, idx) => (
@@ -600,14 +600,14 @@ export default function AgentChat() {
                   style={{
                     background:
                       msg.role === 'user'
-                        ? 'linear-gradient(135deg, #0080ff, #0060cc)'
-                        : 'linear-gradient(135deg, #1a1a3e, #12122a)',
+                        ? 'var(--accent-primary)'
+                        : 'var(--bg-secondary)',
                   }}
                 >
                   {msg.role === 'user' ? (
                     <User className="h-4 w-4 text-white" />
                   ) : (
-                    <Bot className="h-4 w-4 text-[#0080ff]" />
+                    <Bot className="h-4 w-4 text-[var(--accent-primary)]" />
                   )}
                 </div>
                 <div className="relative max-w-[75%]">
@@ -616,30 +616,30 @@ export default function AgentChat() {
                       msg.role === 'user'
                         ? 'text-white'
                         : msg.kind === 'tool_call' || msg.kind === 'tool_result'
-                          ? 'text-[#8890a8] border border-[#1a1a3e]/50'
-                          : 'text-[#e8edf5] border border-[#1a1a3e]'
+                          ? 'text-[var(--text-secondary)] border border-[var(--border-default)]'
+                          : 'text-[var(--text-primary)] border border-[var(--border-default)]'
                     }`}
                     style={{
                       background:
                         msg.role === 'user'
-                          ? 'linear-gradient(135deg, #0080ff, #0066cc)'
+                          ? 'var(--accent-primary)'
                           : msg.kind === 'tool_call' || msg.kind === 'tool_result'
-                            ? 'rgba(10,10,26,0.4)'
-                            : 'linear-gradient(135deg, rgba(13,13,32,0.8), rgba(10,10,26,0.6))',
+                            ? 'var(--bg-primary)'
+                            : 'var(--bg-card)',
                     }}
                   >
                     {msg.kind === 'tool_call' && (
-                      <p className="text-[10px] text-[#556080] mb-1 uppercase tracking-wide">Tool Call</p>
+                      <p className="text-[10px] text-[var(--text-muted)] mb-1 uppercase tracking-wide">Tool Call</p>
                     )}
                     {msg.kind === 'tool_result' && (
-                      <p className="text-[10px] text-[#556080] mb-1 uppercase tracking-wide">Tool Result</p>
+                      <p className="text-[10px] text-[var(--text-muted)] mb-1 uppercase tracking-wide">Tool Result</p>
                     )}
                     <p className={`text-sm whitespace-pre-wrap break-words ${
                       msg.kind === 'tool_call' || msg.kind === 'tool_result' ? 'font-mono text-xs' : ''
                     }`}>{msg.content}</p>
                     <p
                       className={`text-[10px] mt-1.5 ${
-                        msg.role === 'user' ? 'text-white/50' : 'text-[#334060]'
+                        msg.role === 'user' ? 'text-white/70' : 'text-[var(--text-placeholder)]'
                       }`}
                     >
                       {msg.timestamp.toLocaleTimeString()}
@@ -648,10 +648,10 @@ export default function AgentChat() {
                   <button
                     onClick={() => handleCopy(msg.id, msg.content)}
                     aria-label="Copy message"
-                    className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-all duration-300 p-1.5 rounded-lg bg-[#0a0a18] border border-[#1a1a3e] text-[#556080] hover:text-white hover:border-[#0080ff40]"
+                    className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-all duration-300 p-1.5 rounded-lg bg-[var(--bg-card)] border border-[var(--border-default)] text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent-primary)]/30"
                   >
                     {copiedId === msg.id ? (
-                      <Check className="h-3 w-3 text-[#00e68a]" />
+                      <Check className="h-3 w-3 text-[#2D8A4E]" />
                     ) : (
                       <Copy className="h-3 w-3" />
                     )}
@@ -665,28 +665,27 @@ export default function AgentChat() {
             <div className="flex items-start gap-3 animate-fade-in">
               <div
                 className="flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center"
-                style={{ background: 'linear-gradient(135deg, #1a1a3e, #12122a)' }}
+                style={{ background: 'var(--bg-secondary)' }}
               >
-                <Bot className="h-4 w-4 text-[#0080ff]" />
+                <Bot className="h-4 w-4 text-[var(--accent-primary)]" />
               </div>
               <div
-                className="rounded-2xl px-4 py-3 border border-[#1a1a3e]"
+                className="rounded-2xl px-4 py-3 border border-[var(--border-default)]"
                 style={{
-                  background:
-                    'linear-gradient(135deg, rgba(13,13,32,0.8), rgba(10,10,26,0.6))',
+                  background: 'var(--bg-card)',
                 }}
               >
                 <div className="flex items-center gap-1.5">
                   <span
-                    className="w-1.5 h-1.5 bg-[#0080ff] rounded-full animate-bounce"
+                    className="w-1.5 h-1.5 bg-[#D95A1E] rounded-full animate-bounce"
                     style={{ animationDelay: '0ms' }}
                   />
                   <span
-                    className="w-1.5 h-1.5 bg-[#0080ff] rounded-full animate-bounce"
+                    className="w-1.5 h-1.5 bg-[#D95A1E] rounded-full animate-bounce"
                     style={{ animationDelay: '150ms' }}
                   />
                   <span
-                    className="w-1.5 h-1.5 bg-[#0080ff] rounded-full animate-bounce"
+                    className="w-1.5 h-1.5 bg-[#D95A1E] rounded-full animate-bounce"
                     style={{ animationDelay: '300ms' }}
                   />
                 </div>
@@ -699,17 +698,14 @@ export default function AgentChat() {
 
         {/* Input area */}
         <div
-          className="border-t border-[#1a1a3e]/40 p-4"
-          style={{
-            background: 'linear-gradient(180deg, rgba(8,8,24,0.9), rgba(5,5,16,0.95))',
-          }}
+          className="border-t border-[var(--border-default)] p-4 bg-[var(--bg-card)]"
         >
           <div className="flex items-end gap-3 max-w-4xl mx-auto">
             {/* Actions dropdown */}
             <div className="relative flex-shrink-0">
               <button
                 onClick={() => setActionsOpen(!actionsOpen)}
-                className="p-3 rounded-xl text-[#556080] hover:text-white hover:bg-[#1a1a3e]/50 transition-colors"
+                className="p-3 rounded-xl text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
                 title="Actions"
               >
                 <MoreVertical className="h-5 w-5" />
@@ -717,10 +713,10 @@ export default function AgentChat() {
               {actionsOpen && (
                 <>
                   <div className="fixed inset-0 z-10" onClick={() => setActionsOpen(false)} />
-                  <div className="absolute bottom-full left-0 mb-2 z-20 w-44 rounded-xl border border-[#1a1a3e] overflow-hidden" style={{ background: 'linear-gradient(135deg, rgba(13,13,32,0.95), rgba(10,10,26,0.95))' }}>
+                  <div className="absolute bottom-full left-0 mb-2 z-20 w-44 rounded-xl border border-[var(--border-default)] overflow-hidden bg-[var(--bg-card)] shadow-lg">
                     <button
                       onClick={() => { setActionsOpen(false); handleNewSession(); }}
-                      className="flex items-center gap-2 w-full px-3 py-2.5 text-left text-xs text-[#8890a8] hover:text-white hover:bg-[#1a1a3e]/50 transition-colors"
+                      className="flex items-center gap-2 w-full px-3 py-2.5 text-left text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors"
                     >
                       <Plus className="h-3.5 w-3.5" />
                       New Chat
@@ -728,7 +724,7 @@ export default function AgentChat() {
                     <button
                       onClick={() => { setActionsOpen(false); handleClearHistory(); }}
                       disabled={!activeSession || messages.length === 0}
-                      className="flex items-center gap-2 w-full px-3 py-2.5 text-left text-xs text-[#8890a8] hover:text-white hover:bg-[#1a1a3e]/50 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                      className="flex items-center gap-2 w-full px-3 py-2.5 text-left text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] transition-colors disabled:opacity-30 disabled:pointer-events-none"
                     >
                       <Eraser className="h-3.5 w-3.5" />
                       Clear History
@@ -746,14 +742,14 @@ export default function AgentChat() {
                 onKeyDown={handleKeyDown}
                 placeholder={connected ? 'Type a message...' : 'Connecting...'}
                 disabled={!connected}
-                className="input-electric w-full px-4 py-3 text-sm resize-none overflow-y-auto disabled:opacity-40"
+                className="input-warm w-full px-4 py-3 text-sm resize-none overflow-y-auto disabled:opacity-40"
                 style={{ minHeight: '44px', maxHeight: '200px' }}
               />
             </div>
             {typing ? (
               <button
                 onClick={handleAbort}
-                className="flex-shrink-0 p-3 rounded-xl bg-[#ff4466] hover:bg-[#ff2244] text-white transition-colors"
+                className="flex-shrink-0 p-3 rounded-xl bg-[var(--status-error)] hover:bg-[var(--accent-primary-hover)] text-white transition-colors"
                 title="Stop generation"
               >
                 <Square className="h-5 w-5" />
@@ -762,7 +758,7 @@ export default function AgentChat() {
               <button
                 onClick={handleSend}
                 disabled={!connected || !input.trim()}
-                className="btn-electric flex-shrink-0 p-3 rounded-xl"
+                className="btn-primary flex-shrink-0 p-3 rounded-xl"
               >
                 <Send className="h-5 w-5" />
               </button>
@@ -770,11 +766,11 @@ export default function AgentChat() {
           </div>
           <div className="flex items-center justify-center mt-2 gap-2">
             <span
-              className={`inline-block h-1.5 w-1.5 rounded-full glow-dot ${
-                connected ? 'text-[#00e68a] bg-[#00e68a]' : reconnecting ? 'text-[#ffaa00] bg-[#ffaa00] animate-pulse' : 'text-[#ff4466] bg-[#ff4466]'
+              className={`inline-block h-1.5 w-1.5 rounded-full ${
+                connected ? 'bg-[var(--status-success)]' : reconnecting ? 'bg-[#C9872C] animate-pulse' : 'bg-[var(--status-error)]'
               }`}
             />
-            <span className="text-[10px] text-[#334060]">
+            <span className="text-[10px] text-[var(--text-placeholder)]">
               {connected ? 'Connected' : reconnecting ? 'Reconnecting...' : 'Disconnected'}
             </span>
           </div>

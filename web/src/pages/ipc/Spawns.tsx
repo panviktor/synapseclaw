@@ -67,50 +67,50 @@ export default function Spawns() {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="p-6 space-y-6 animate-fade-in">
       <div>
-        <h1 className="text-2xl font-bold text-gradient-blue">{t('ipc.spawns_title')}</h1>
-        <p className="text-xs text-[#556080] mt-1">{t('ipc.spawns_subtitle')}</p>
+        <h1 className="text-2xl font-bold text-gradient">{t('ipc.spawns_title')}</h1>
+        <p className="text-xs text-[var(--text-secondary)] mt-1">{t('ipc.spawns_subtitle')}</p>
       </div>
 
       {/* Filters */}
       <div className="glass-card p-4 flex flex-wrap gap-3 items-end">
         <div className="space-y-1">
-          <label className="text-xs text-[#556080] uppercase tracking-wider">Status</label>
-          <select value={status} onChange={(e) => setStatus(e.target.value)} className="input-electric px-3 py-2 text-sm">
+          <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">Status</label>
+          <select value={status} onChange={(e) => setStatus(e.target.value)} className="input-warm px-3 py-2 text-sm">
             {STATUSES.map((s) => <option key={s} value={s}>{s || 'all'}</option>)}
           </select>
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-[#556080] uppercase tracking-wider">Parent</label>
-          <input type="text" value={parentId} onChange={(e) => setParentId(e.target.value)} placeholder="parent_id" className="input-electric px-3 py-2 text-sm w-40" />
+          <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">Parent</label>
+          <input type="text" value={parentId} onChange={(e) => setParentId(e.target.value)} placeholder="parent_id" className="input-warm px-3 py-2 text-sm w-40" />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-[#556080] uppercase tracking-wider">Session</label>
-          <input type="text" value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="session_id (spawn run)" className="input-electric px-3 py-2 text-sm w-48" />
+          <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">Session</label>
+          <input type="text" value={sessionId} onChange={(e) => setSessionId(e.target.value)} placeholder="session_id (spawn run)" className="input-warm px-3 py-2 text-sm w-48" />
         </div>
         <div className="space-y-1">
-          <label className="text-xs text-[#556080] uppercase tracking-wider">Time</label>
-          <select value={timeRange} onChange={(e) => setTimeRange(e.target.value)} className="input-electric px-3 py-2 text-sm">
+          <label className="text-xs text-[var(--text-secondary)] uppercase tracking-wider">Time</label>
+          <select value={timeRange} onChange={(e) => setTimeRange(e.target.value)} className="input-warm px-3 py-2 text-sm">
             {TIME_RANGES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
           </select>
         </div>
-        <button onClick={() => doSearch(0)} disabled={loading} className="btn-electric px-4 py-2 text-sm font-medium">
+        <button onClick={() => doSearch(0)} disabled={loading} className="btn-primary px-4 py-2 text-sm font-medium">
           {loading ? 'Loading...' : 'Search'}
         </button>
       </div>
 
       {/* Results */}
       {!loaded ? (
-        <div className="glass-card p-12 text-center text-[#556080]">Apply filters and click Search.</div>
+        <div className="glass-card p-12 text-center text-[var(--text-secondary)]">Apply filters and click Search.</div>
       ) : runs.length === 0 ? (
-        <div className="glass-card p-12 text-center text-[#556080]">No spawn runs found.</div>
+        <div className="glass-card p-12 text-center text-[var(--text-secondary)]">No spawn runs found.</div>
       ) : (
         <div className="glass-card overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-[#1a1a3e]/50 text-[#556080] text-xs uppercase tracking-wider">
+                <tr className="border-b border-[var(--bg-secondary)] text-[var(--text-secondary)] text-xs uppercase tracking-wider">
                   <th className="text-left px-4 py-3">Session</th>
                   <th className="text-left px-4 py-3">Parent</th>
                   <th className="text-left px-4 py-3">Child</th>
@@ -135,8 +135,8 @@ export default function Spawns() {
             </table>
           </div>
           {hasMore && (
-            <div className="px-4 py-3 border-t border-[#1a1a3e]/30 text-center">
-              <button onClick={() => doSearch(runs.length)} disabled={loading} className="text-sm text-[#0080ff] hover:underline">
+            <div className="px-4 py-3 border-t border-[var(--bg-hover)] text-center">
+              <button onClick={() => doSearch(runs.length)} disabled={loading} className="text-sm text-[var(--accent-primary)] hover:underline">
                 {loading ? 'Loading...' : 'Load more'}
               </button>
             </div>
@@ -161,9 +161,9 @@ function SpawnRow({ run, expanded, onToggle, onRevoke }: {
 }) {
   return (
     <>
-      <tr className="border-b border-[#1a1a3e]/30 hover:bg-[#0080ff05] transition-colors">
+      <tr className="border-b border-[var(--bg-hover)] hover:bg-[var(--glow-secondary)] transition-colors">
         <td className="px-4 py-2 font-mono text-xs">
-          <Link to={`/ipc/sessions?session_id=${run.id}`} className="text-[#0080ff] hover:underline">
+          <Link to={`/ipc/sessions?session_id=${run.id}`} className="text-[var(--accent-primary)] hover:underline">
             {run.id.slice(0, 16)}...
           </Link>
         </td>
@@ -172,13 +172,13 @@ function SpawnRow({ run, expanded, onToggle, onRevoke }: {
         <td className="px-4 py-2"><StatusBadge status={run.status} /></td>
         <td className="px-4 py-2"><TimeAbsolute timestamp={run.created_at} /></td>
         <td className="px-4 py-2"><TimeUntil timestamp={run.expires_at} /></td>
-        <td className="px-4 py-2">{run.completed_at ? <TimeAbsolute timestamp={run.completed_at} /> : <span className="text-[#556080]">-</span>}</td>
+        <td className="px-4 py-2">{run.completed_at ? <TimeAbsolute timestamp={run.completed_at} /> : <span className="text-[var(--text-secondary)]">-</span>}</td>
         <td className="px-4 py-2 text-right space-x-2">
           {run.status === 'running' && (
             <button onClick={onRevoke} className="text-xs text-red-400 hover:text-red-300">Revoke</button>
           )}
           {run.result && (
-            <button onClick={onToggle} className="text-xs text-[#0080ff] hover:underline">
+            <button onClick={onToggle} className="text-xs text-[var(--accent-primary)] hover:underline">
               {expanded ? 'Hide' : 'Result'}
             </button>
           )}
@@ -186,8 +186,8 @@ function SpawnRow({ run, expanded, onToggle, onRevoke }: {
       </tr>
       {expanded && run.result && (
         <tr>
-          <td colSpan={8} className="p-4 bg-[#050510]">
-            <pre className="text-sm text-[#8892a8] whitespace-pre-wrap break-all max-h-48 overflow-auto">{run.result}</pre>
+          <td colSpan={8} className="p-4 bg-[var(--bg-primary)]">
+            <pre className="text-sm text-[var(--text-muted)] whitespace-pre-wrap break-all max-h-48 overflow-auto">{run.result}</pre>
           </td>
         </tr>
       )}

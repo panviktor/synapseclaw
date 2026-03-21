@@ -27,12 +27,12 @@ function eventTypeBadgeColor(type: string): { classes: string; bg: string } {
       return { classes: 'text-[#a855f7] border-[#a855f730]', bg: 'rgba(168,85,247,0.06)' };
     case 'message':
     case 'chat':
-      return { classes: 'text-[#0080ff] border-[#0080ff30]', bg: 'rgba(0,128,255,0.06)' };
+      return { classes: 'text-[var(--accent-primary)] border-[var(--glow-primary)]', bg: 'var(--glow-primary)' };
     case 'health':
     case 'status':
       return { classes: 'text-[#00e68a] border-[#00e68a30]', bg: 'rgba(0,230,138,0.06)' };
     default:
-      return { classes: 'text-[#556080] border-[#1a1a3e]', bg: 'rgba(26,26,62,0.3)' };
+      return { classes: 'text-[var(--text-secondary)] border-[var(--bg-secondary)]', bg: 'rgba(26,26,62,0.3)' };
   }
 }
 
@@ -134,12 +134,12 @@ export default function Logs() {
   return (
     <div className="flex flex-col h-[calc(100vh-3.5rem)]">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-6 py-3 border-b border-[#1a1a3e]/40 animate-fade-in" style={{ background: 'linear-gradient(90deg, rgba(8,8,24,0.9), rgba(5,5,16,0.9))' }}>
+      <div className="flex items-center justify-between px-6 py-3 border-b border-[var(--bg-hover)] animate-fade-in" style={{ background: 'linear-gradient(90deg, rgba(8,8,24,0.9), rgba(5,5,16,0.9))' }}>
         <div className="flex items-center gap-3">
-          <Activity className="h-5 w-5 text-[#0080ff]" />
+          <Activity className="h-5 w-5 text-[var(--accent-primary)]" />
           <div>
-            <h2 className="text-sm font-semibold text-white uppercase tracking-wider">{t('logs.live_logs')}</h2>
-            <p className="text-[10px] text-[#556080]">{t('logs.subtitle')}</p>
+            <h2 className="text-sm font-semibold text-[var(--text-primary)] uppercase tracking-wider">{t('logs.live_logs')}</h2>
+            <p className="text-[10px] text-[var(--text-secondary)]">{t('logs.subtitle')}</p>
           </div>
           <div className="flex items-center gap-2 ml-2">
             <span
@@ -147,11 +147,11 @@ export default function Logs() {
                 connected ? 'text-[#00e68a] bg-[#00e68a]' : 'text-[#ff4466] bg-[#ff4466]'
               }`}
             />
-            <span className="text-[10px] text-[#334060]">
+            <span className="text-[10px] text-[var(--text-secondary)]">
               {connected ? t('logs.connected') : t('logs.disconnected')}
             </span>
           </div>
-          <span className="text-[10px] text-[#334060] ml-2 font-mono">
+          <span className="text-[10px] text-[var(--text-secondary)] ml-2 font-mono">
             {filteredEntries.length} {t('logs.events')}
           </span>
         </div>
@@ -162,8 +162,8 @@ export default function Logs() {
             onClick={() => setPaused(!paused)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all duration-300 ${
               paused
-                ? 'text-white shadow-[0_0_15px_rgba(0,230,138,0.2)]'
-                : 'text-white shadow-[0_0_15px_rgba(255,170,0,0.2)]'
+                ? 'text-white shadow-[0_0_15px_var(--glow-primary)]'
+                : 'text-white shadow-[0_0_15px_var(--glow-primary)]'
             }`}
             style={{
               background: paused
@@ -186,7 +186,7 @@ export default function Logs() {
           {!autoScroll && (
             <button
               onClick={jumpToBottom}
-              className="btn-electric flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold"
+              className="btn-primary flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold"
             >
               <ArrowDown className="h-3.5 w-3.5" />
               {t('logs.jump_to_bottom')}
@@ -197,9 +197,9 @@ export default function Logs() {
 
       {/* Event type filters */}
       {allTypes.length > 0 && (
-        <div className="flex items-center gap-2 px-6 py-2 border-b border-[#1a1a3e]/30 overflow-x-auto" style={{ background: 'rgba(5,5,16,0.6)' }}>
-          <Filter className="h-3.5 w-3.5 text-[#334060] flex-shrink-0" />
-          <span className="text-[10px] text-[#334060] flex-shrink-0 uppercase tracking-wider">{t('logs.filter_label')}:</span>
+        <div className="flex items-center gap-2 px-6 py-2 border-b border-[var(--bg-hover)] overflow-x-auto" style={{ background: 'rgba(5,5,16,0.6)' }}>
+          <Filter className="h-3.5 w-3.5 text-[var(--text-secondary)] flex-shrink-0" />
+          <span className="text-[10px] text-[var(--text-secondary)] flex-shrink-0 uppercase tracking-wider">{t('logs.filter_label')}:</span>
           {allTypes.map((type) => (
             <label
               key={type}
@@ -209,15 +209,15 @@ export default function Logs() {
                 type="checkbox"
                 checked={typeFilters.has(type)}
                 onChange={() => toggleTypeFilter(type)}
-                className="rounded bg-[#0a0a18] border-[#1a1a3e] text-[#0080ff] focus:ring-[#0080ff] focus:ring-offset-0 h-3 w-3"
+                className="rounded bg-[var(--bg-primary)] border-[var(--bg-secondary)] text-[var(--accent-primary)] focus:ring-[var(--accent-primary)] focus:ring-offset-0 h-3 w-3"
               />
-              <span className="text-[10px] text-[#556080] capitalize">{type}</span>
+              <span className="text-[10px] text-[var(--text-secondary)] capitalize">{type}</span>
             </label>
           ))}
           {typeFilters.size > 0 && (
             <button
               onClick={() => setTypeFilters(new Set())}
-              className="text-[10px] text-[#0080ff] hover:text-[#00d4ff] flex-shrink-0 ml-1 transition-colors"
+              className="text-[10px] text-[var(--accent-primary)] hover:text-[#00d4ff] flex-shrink-0 ml-1 transition-colors"
             >
               {t('logs.clear')}
             </button>
@@ -232,8 +232,8 @@ export default function Logs() {
         className="flex-1 overflow-y-auto p-4 space-y-1.5"
       >
         {filteredEntries.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-[#334060] animate-fade-in">
-            <Activity className="h-10 w-10 text-[#1a1a3e] mb-3" />
+          <div className="flex flex-col items-center justify-center h-full text-[var(--text-secondary)] animate-fade-in">
+            <Activity className="h-10 w-10 text-[var(--bg-secondary)] mb-3" />
             <p className="text-sm">
               {paused
                 ? t('logs.paused_hint')
@@ -259,10 +259,10 @@ export default function Logs() {
             return (
               <div
                 key={entry.id}
-                className="glass-card rounded-lg p-3 hover:border-[#0080ff20] transition-all duration-200"
+                className="glass-card rounded-lg p-3 hover:border-[var(--glow-primary)] transition-all duration-200"
               >
                 <div className="flex items-start gap-3">
-                  <span className="text-[10px] text-[#334060] font-mono whitespace-nowrap mt-0.5">
+                  <span className="text-[10px] text-[var(--text-secondary)] font-mono whitespace-nowrap mt-0.5">
                     {formatTimestamp(event.timestamp)}
                   </span>
                   <span
@@ -271,7 +271,7 @@ export default function Logs() {
                   >
                     {event.type}
                   </span>
-                  <p className="text-sm text-[#8892a8] break-all min-w-0">
+                  <p className="text-sm text-[var(--text-muted)] break-all min-w-0">
                     {typeof detail === 'string' ? detail : JSON.stringify(detail)}
                   </p>
                 </div>
