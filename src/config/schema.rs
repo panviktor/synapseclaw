@@ -2307,6 +2307,9 @@ pub struct WebSearchConfig {
     /// Brave Search API key (required if provider is "brave")
     #[serde(default)]
     pub brave_api_key: Option<String>,
+    /// Tavily API key (required if provider is "tavily")
+    #[serde(default)]
+    pub tavily_api_key: Option<String>,
     /// Maximum results per search (1-10)
     #[serde(default = "default_web_search_max_results")]
     pub max_results: usize,
@@ -2333,6 +2336,7 @@ impl Default for WebSearchConfig {
             enabled: false,
             provider: default_web_search_provider(),
             brave_api_key: None,
+            tavily_api_key: None,
             max_results: default_web_search_max_results(),
             timeout_secs: default_web_search_timeout_secs(),
         }
@@ -6831,6 +6835,12 @@ impl Config {
 
             decrypt_optional_secret(
                 &store,
+                &mut config.web_search.tavily_api_key,
+                "config.web_search.tavily_api_key",
+            )?;
+
+            decrypt_optional_secret(
+                &store,
                 &mut config.storage.provider.config.db_url,
                 "config.storage.provider.config.db_url",
             )?;
@@ -7842,6 +7852,16 @@ impl Config {
             }
         }
 
+        // Tavily API key: SYNAPSECLAW_TAVILY_API_KEY or TAVILY_API_KEY
+        if let Ok(api_key) =
+            std::env::var("SYNAPSECLAW_TAVILY_API_KEY").or_else(|_| std::env::var("TAVILY_API_KEY"))
+        {
+            let api_key = api_key.trim();
+            if !api_key.is_empty() {
+                self.web_search.tavily_api_key = Some(api_key.to_string());
+            }
+        }
+
         // Web search max results: SYNAPSECLAW_WEB_SEARCH_MAX_RESULTS or WEB_SEARCH_MAX_RESULTS
         if let Ok(max_results) = std::env::var("SYNAPSECLAW_WEB_SEARCH_MAX_RESULTS")
             .or_else(|_| std::env::var("WEB_SEARCH_MAX_RESULTS"))
@@ -8082,6 +8102,12 @@ impl Config {
             &store,
             &mut config_to_save.web_search.brave_api_key,
             "config.web_search.brave_api_key",
+        )?;
+
+        encrypt_optional_secret(
+            &store,
+            &mut config_to_save.web_search.tavily_api_key,
+            "config.web_search.tavily_api_key",
         )?;
 
         encrypt_optional_secret(

@@ -615,6 +615,18 @@ pub fn all_integrations() -> Vec<IntegrationEntry> {
         },
         // ── Tools & Automation ──────────────────────────────────
         IntegrationEntry {
+            name: "Tavily",
+            description: "AI-powered web search, extract & research",
+            category: IntegrationCategory::ToolsAutomation,
+            status_fn: |c| {
+                if c.web_search.enabled && c.web_search.provider == "tavily" {
+                    IntegrationStatus::Active
+                } else {
+                    IntegrationStatus::Available
+                }
+            },
+        },
+        IntegrationEntry {
             name: "Browser",
             description: "Chrome/Chromium control",
             category: IntegrationCategory::ToolsAutomation,

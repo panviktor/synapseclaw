@@ -6,16 +6,18 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Web search tool for searching the internet.
-/// Supports multiple providers: DuckDuckGo (free), Brave (requires API key).
+/// Supports multiple providers: DuckDuckGo (free), Brave (requires API key),
+/// Tavily (requires API key).
 ///
-/// The Brave API key is resolved lazily at execution time: if the boot-time key
+/// API keys are resolved lazily at execution time: if the boot-time key
 /// is missing or still encrypted, the tool re-reads `config.toml`, decrypts the
-/// `[web_search] brave_api_key` field, and uses the result. This ensures that
-/// keys set or rotated after boot, and encrypted keys, are correctly picked up.
+/// key field, and uses the result. This ensures that keys set or rotated after
+/// boot, and encrypted keys, are correctly picked up.
 pub struct WebSearchTool {
     provider: String,
     /// Boot-time key snapshot (may be `None` if not yet configured at startup).
     boot_brave_api_key: Option<String>,
+    boot_tavily_api_key: Option<String>,
     max_results: usize,
     timeout_secs: u64,
     /// Path to `config.toml` for lazy re-read of keys at execution time.
@@ -34,6 +36,7 @@ impl WebSearchTool {
         Self {
             provider: provider.trim().to_lowercase(),
             boot_brave_api_key: brave_api_key,
+            boot_tavily_api_key: None,
             max_results: max_results.clamp(1, 10),
             timeout_secs: timeout_secs.max(1),
             config_path: PathBuf::new(),
@@ -42,13 +45,10 @@ impl WebSearchTool {
     }
 
     /// Create a `WebSearchTool` with config-reload and decryption support.
-    ///
-    /// `config_path` is the path to `config.toml` so the tool can re-read the
-    /// Brave API key at execution time. `secrets_encrypt` controls whether the
-    /// key is decrypted via `SecretStore`.
     pub fn new_with_config(
         provider: String,
         brave_api_key: Option<String>,
+        tavily_api_key: Option<String>,
         max_results: usize,
         timeout_secs: u64,
         config_path: PathBuf,
@@ -57,6 +57,7 @@ impl WebSearchTool {
         Self {
             provider: provider.trim().to_lowercase(),
             boot_brave_api_key: brave_api_key,
+            boot_tavily_api_key: tavily_api_key,
             max_results: max_results.clamp(1, 10),
             timeout_secs: timeout_secs.max(1),
             config_path,
@@ -185,6 +186,137 @@ impl WebSearchTool {
         Ok(lines.join("\n"))
     }
 
+    fn resolve_tavily_api_key(&self) -> anyhow::Result<String> {
+        // Check env var first
+        if let Ok(key) = std::env::var("TAVILY_API_KEY") {
+            if !key.is_empty() {
+                return Ok(key);
+            }
+        }
+        if let Some(ref key) = self.boot_tavily_api_key {
+            if !key.is_empty() && !crate::security::SecretStore::is_encrypted(key) {
+                return Ok(key.clone());
+            }
+        }
+        self.reload_tavily_api_key()
+    }
+
+    fn reload_tavily_api_key(&self) -> anyhow::Result<String> {
+        let contents = std::fs::read_to_string(&self.config_path).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to read config file {} for Tavily API key: {e}",
+                self.config_path.display()
+            )
+        })?;
+        let config: crate::config::Config = toml::from_str(&contents).map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to parse config file {} for Tavily API key: {e}",
+                self.config_path.display()
+            )
+        })?;
+        let raw_key = config
+            .web_search
+            .tavily_api_key
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Tavily API key not configured"))?;
+        if crate::security::SecretStore::is_encrypted(&raw_key) {
+            let synapseclaw_dir = self.config_path.parent().unwrap_or_else(|| Path::new("."));
+            let store = crate::security::SecretStore::new(synapseclaw_dir, self.secrets_encrypt);
+            let plaintext = store.decrypt(&raw_key)?;
+            if plaintext.is_empty() {
+                anyhow::bail!("Tavily API key not configured (decrypted value is empty)");
+            }
+            Ok(plaintext)
+        } else {
+            Ok(raw_key)
+        }
+    }
+
+    async fn search_tavily(&self, query: &str) -> anyhow::Result<String> {
+        let api_key = self.resolve_tavily_api_key()?;
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(self.timeout_secs))
+            .build()?;
+
+        let body = json!({
+            "query": query,
+            "max_results": self.max_results,
+            "search_depth": "advanced",
+            "topic": "general",
+            "include_answer": "basic",
+            "include_raw_content": false,
+            "include_images": false
+        });
+
+        let response = client
+            .post("https://api.tavily.com/search")
+            .header("Authorization", format!("Bearer {}", api_key))
+            .json(&body)
+            .send()
+            .await?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let text = response.text().await.unwrap_or_default();
+            match status.as_u16() {
+                401 => anyhow::bail!("Tavily: invalid API key"),
+                429 => anyhow::bail!("Tavily: rate limit exceeded, retry later"),
+                432 => anyhow::bail!("Tavily: plan usage limit exceeded"),
+                _ => anyhow::bail!("Tavily search failed ({}): {}", status, text),
+            }
+        }
+
+        let json: serde_json::Value = response.json().await?;
+        self.parse_tavily_results(&json, query)
+    }
+
+    fn parse_tavily_results(
+        &self,
+        json: &serde_json::Value,
+        query: &str,
+    ) -> anyhow::Result<String> {
+        let mut lines = vec![format!("Search results for: {} (via Tavily)", query)];
+
+        if let Some(answer) = json.get("answer").and_then(|a| a.as_str()) {
+            if !answer.is_empty() {
+                lines.push(String::new());
+                lines.push(format!("AI Summary: {}", answer));
+                lines.push(String::new());
+            }
+        }
+
+        if let Some(results) = json.get("results").and_then(|r| r.as_array()) {
+            for (i, result) in results.iter().take(self.max_results).enumerate() {
+                let title = result
+                    .get("title")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("No title");
+                let url = result.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                let content = result
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or("");
+                let score = result
+                    .get("score")
+                    .and_then(|s| s.as_f64())
+                    .unwrap_or(0.0);
+
+                lines.push(format!("{}. {} (relevance: {:.2})", i + 1, title, score));
+                lines.push(format!("   {}", url));
+                if !content.is_empty() {
+                    lines.push(format!("   {}", content));
+                }
+            }
+        }
+
+        if lines.len() <= 1 {
+            return Ok(format!("No results found for: {}", query));
+        }
+
+        Ok(lines.join("\n"))
+    }
+
     async fn search_brave(&self, query: &str) -> anyhow::Result<String> {
         let api_key = self.resolve_brave_api_key()?;
 
@@ -303,8 +435,9 @@ impl Tool for WebSearchTool {
         let result = match self.provider.as_str() {
             "duckduckgo" | "ddg" => self.search_duckduckgo(query).await?,
             "brave" => self.search_brave(query).await?,
+            "tavily" => self.search_tavily(query).await?,
             _ => anyhow::bail!(
-                "Unknown search provider: '{}'. Set tools.web_search.provider to 'duckduckgo' or 'brave' in config.toml",
+                "Unknown search provider: '{}'. Set tools.web_search.provider to 'duckduckgo', 'brave', or 'tavily' in config.toml",
                 self.provider
             ),
         };
@@ -437,7 +570,7 @@ mod tests {
 
         // No boot key -- forces reload from config
         let tool =
-            WebSearchTool::new_with_config("brave".to_string(), None, 5, 15, config_path, false);
+            WebSearchTool::new_with_config("brave".to_string(), None, None, 5, 15, config_path, false);
         let key = tool.resolve_brave_api_key().unwrap();
         assert_eq!(key, "fresh-key-from-disk");
     }
@@ -459,6 +592,7 @@ mod tests {
         let tool = WebSearchTool::new_with_config(
             "brave".to_string(),
             Some(encrypted),
+            None,
             5,
             15,
             config_path,
@@ -478,6 +612,7 @@ mod tests {
 
         let tool = WebSearchTool::new_with_config(
             "brave".to_string(),
+            None,
             None,
             5,
             15,
