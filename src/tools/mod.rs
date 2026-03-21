@@ -76,6 +76,7 @@ pub mod swarm;
 pub mod tool_search;
 pub mod traits;
 pub mod web_fetch;
+pub mod tavily_extract;
 pub mod web_search_tool;
 pub mod workspace_tool;
 
@@ -400,11 +401,22 @@ pub fn all_tools_with_runtime(
         tool_arcs.push(Arc::new(WebSearchTool::new_with_config(
             root_config.web_search.provider.clone(),
             root_config.web_search.brave_api_key.clone(),
+            root_config.web_search.tavily_api_key.clone(),
             root_config.web_search.max_results,
             root_config.web_search.timeout_secs,
             root_config.config_path.clone(),
             root_config.secrets.encrypt,
         )));
+
+        // Tavily Extract tool — available when Tavily is the search provider
+        if root_config.web_search.provider == "tavily" {
+            tool_arcs.push(Arc::new(tavily_extract::TavilyExtractTool::new_with_config(
+                root_config.web_search.tavily_api_key.clone(),
+                root_config.web_search.timeout_secs,
+                root_config.config_path.clone(),
+                root_config.secrets.encrypt,
+            )));
+        }
     }
 
     // Notion API tool (conditionally registered)
