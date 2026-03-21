@@ -4,6 +4,10 @@ This directory contains the strategy, plans, and operational docs for the Synaps
 
 The fork extends upstream SynapseClaw with a **multi-agent IPC system** (broker, trust model, quarantine, control plane), a **web-based operator dashboard**, **security hardening** (execution profiles, Ed25519 identity, PromptGuard), and supporting infrastructure. See [`delta-registry.md`](delta-registry.md) for the full inventory (44 delta entries across 11 categories).
 
+## News & Changelog
+
+See [`news.md`](news.md) for the latest updates and release notes.
+
 ## Documents
 
 ### Fork Strategy

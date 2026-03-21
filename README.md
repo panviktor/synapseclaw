@@ -120,6 +120,7 @@ The current direction is not “add more random integrations.” It is to make t
 - **Keep external coding engines as bounded workers:** if we later integrate tools like Codex or Claude Code, they should arrive as specialized execution workers behind a clean port, not as a second application core.
 
 For the fork-specific architecture plans, execution checklists, and roadmap details, start at [`docs/fork/README.md`](docs/fork/README.md).
+For the latest updates and release notes, see [`docs/fork/news.md`](docs/fork/news.md).
 
 ## Benchmark Snapshot (SynapseClaw vs OpenClaw, Reproducible)
 
