@@ -1,5 +1,21 @@
 # SynapseClaw News & Changelog
 
+## 2026-03-22
+
+### Channel Session Intelligence (Phase 3.12)
+- Rolling progressive summary for channel conversations (every 20 messages, uses cheap summary model)
+- Summary injected into context on overflow — semantic preservation instead of blind truncation
+- Thread context seeding — new threads receive parent conversation summary + root message (zero extra LLM cost)
+- Reaction thread routing fix — emoji reactions in Matrix threads now respond in the correct thread
+- New `fetch_message` Channel trait method (implemented for Matrix)
+- Channel session REST API: `GET/DELETE /api/channel/sessions`, `GET /api/channel/sessions/{key}/messages`
+- Channel sessions visible in web UI sidebar (read-only view, grouped by channel, delete with warning)
+- `ChannelSummary` struct + `load_summary`/`save_summary`/`delete` on `SessionBackend` trait
+- Concurrent summary generation prevented via in-flight dedup guard
+- Atomic summary writes (tmp+rename) for crash safety
+- Mutually exclusive session highlighting in sidebar (web XOR channel)
+- Keyboard accessibility for channel session items
+
 ## 2026-03-21
 
 ### Tavily AI Search Integration

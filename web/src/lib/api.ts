@@ -9,6 +9,8 @@ import type {
   CostSummary,
   CliTool,
   HealthSnapshot,
+  ChannelSessionInfo,
+  ChannelMessageInfo,
 } from '../types/api';
 import { clearToken, getToken, setToken } from './auth';
 
@@ -302,4 +304,26 @@ export function getCliTools(): Promise<CliTool[]> {
   return apiFetch<CliTool[] | { cli_tools: CliTool[] }>('/api/cli-tools').then((data) =>
     unwrapField(data, 'cli_tools'),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Channel Sessions (Phase 3.12)
+// ---------------------------------------------------------------------------
+
+export function getChannelSessions(): Promise<ChannelSessionInfo[]> {
+  return apiFetch<{ sessions: ChannelSessionInfo[] }>('/api/channel/sessions').then(
+    (data) => data.sessions,
+  );
+}
+
+export function getChannelSessionMessages(key: string): Promise<ChannelMessageInfo[]> {
+  return apiFetch<{ messages: ChannelMessageInfo[] }>(
+    `/api/channel/sessions/${encodeURIComponent(key)}/messages`,
+  ).then((data) => data.messages);
+}
+
+export function deleteChannelSession(key: string): Promise<void> {
+  return apiFetch(`/api/channel/sessions/${encodeURIComponent(key)}`, {
+    method: 'DELETE',
+  }).then(() => undefined);
 }

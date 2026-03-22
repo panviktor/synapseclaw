@@ -1,6 +1,6 @@
 # IPC Phase 3.11: Multi-Blueprint Fleet Topology
 
-Phase 3.10: push loop prevention | **Phase 3.11: multi-blueprint topology** | Phase 4.0: modular core refactor
+Phase 3.10: push loop prevention | **Phase 3.11: multi-blueprint topology** | Phase 3.12: channel session intelligence
 
 ---
 

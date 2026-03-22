@@ -2,7 +2,7 @@
 
 **Status**: not started
 
-Phase 3.7b: session intelligence | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
+Phase 3.12: channel session intelligence | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
 
 ---
 

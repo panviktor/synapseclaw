@@ -91,6 +91,7 @@ pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::{build_tool_instructions, run_tool_call_loop, scrub_credentials};
 use crate::approval::ApprovalManager;
+use crate::channels::session_backend::SessionBackend;
 use crate::config::Config;
 use crate::identity;
 use crate::memory::{self, Memory};
@@ -206,6 +207,9 @@ const CHANNEL_HISTORY_COMPACT_CONTENT_CHARS: usize = 600;
 const PROACTIVE_CONTEXT_BUDGET_CHARS: usize = 400_000;
 /// Guardrail for hook-modified outbound channel content.
 const CHANNEL_HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
+/// Generate a rolling summary every N messages in channel conversations.
+/// Higher than web's 10 because channel messages are typically less frequent.
+const CHANNEL_SUMMARY_INTERVAL: usize = 20;
 
 type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
 type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
@@ -330,6 +334,8 @@ struct ChannelRuntimeContext {
     ack_reactions: bool,
     show_tool_calls: bool,
     session_store: Option<Arc<session_store::SessionStore>>,
+    summary_config: Arc<crate::config::schema::SummaryConfig>,
+    summary_model: Option<String>,
     /// Non-interactive approval manager for channel-driven runs.
     /// Enforces `auto_approve` / `always_ask` / supervised policy from
     /// `[autonomy]` config; auto-denies tools that would need interactive
@@ -987,6 +993,154 @@ fn compact_sender_history(ctx: &ChannelRuntimeContext, sender_key: &str) -> bool
 
     *turns = compacted;
     true
+}
+
+/// Generate a rolling summary of a channel conversation every
+/// [`CHANNEL_SUMMARY_INTERVAL`] messages. Uses the configured summary model
+/// (cheap/fast) so it doesn't burn primary-model tokens.
+async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, history_key: &str) {
+    /// In-flight summary keys to prevent concurrent generation for the same session.
+    static INFLIGHT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+    let store = match ctx.session_store.as_ref() {
+        Some(s) => s,
+        None => return,
+    };
+
+    let msg_count = ctx
+        .conversation_histories
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(history_key)
+        .map_or(0, |turns| turns.len());
+
+    let last_summary_count = store
+        .load_summary(history_key)
+        .map_or(0, |s| s.message_count_at_summary);
+
+    if msg_count < CHANNEL_SUMMARY_INTERVAL
+        || msg_count.saturating_sub(last_summary_count) < CHANNEL_SUMMARY_INTERVAL
+    {
+        return;
+    }
+
+    // Prevent concurrent summary generation for the same session.
+    {
+        let mut inflight = INFLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        if !inflight.insert(history_key.to_string()) {
+            return; // Another task is already summarizing this session.
+        }
+    }
+    // RAII guard to remove the inflight key when this function exits.
+    struct InflightGuard(String);
+    impl Drop for InflightGuard {
+        fn drop(&mut self) {
+            if let Ok(mut inflight) = INFLIGHT.lock() {
+                inflight.remove(&self.0);
+            }
+        }
+    }
+    let _guard = InflightGuard(history_key.to_string());
+
+    // Collect last 10 messages for the summary prompt.
+    let (recent_text, prev_summary) = {
+        let histories = ctx
+            .conversation_histories
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let turns = match histories.get(history_key) {
+            Some(t) => t,
+            None => return,
+        };
+        let start = turns.len().saturating_sub(10);
+        let mut text = String::new();
+        for t in &turns[start..] {
+            use std::fmt::Write;
+            let content_preview = if t.content.chars().count() > 200 {
+                format!("{}…", t.content.chars().take(200).collect::<String>())
+            } else {
+                t.content.clone()
+            };
+            let _ = writeln!(text, "{}: {content_preview}", t.role);
+        }
+        let prev = store.load_summary(history_key).map(|s| s.summary);
+        (text, prev)
+    };
+
+    if recent_text.is_empty() {
+        return;
+    }
+
+    let prompt = format!(
+        "Summarize this conversation in 2-3 sentences. Preserve: key decisions, user goals, open tasks.\n\
+         Previous summary: {}\n\n\
+         Recent messages:\n{}",
+        prev_summary.as_deref().unwrap_or("(none)"),
+        recent_text,
+    );
+
+    let model = ctx
+        .summary_config
+        .model
+        .as_deref()
+        .or(ctx.summary_model.as_deref())
+        .unwrap_or(&ctx.model)
+        .to_string();
+    let temperature = ctx.summary_config.temperature;
+
+    let summary_result = if let Some(ref provider_name) = ctx.summary_config.provider {
+        let api_key = ctx
+            .summary_config
+            .api_key_env
+            .as_deref()
+            .and_then(|env| std::env::var(env).ok());
+        match providers::create_provider_with_options(
+            provider_name,
+            api_key.as_deref(),
+            &ctx.provider_runtime_options,
+        ) {
+            Ok(provider) => {
+                provider
+                    .chat_with_system(None, &prompt, &model, temperature)
+                    .await
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Channel summary provider '{provider_name}' init failed: {e}, using default"
+                );
+                ctx.provider
+                    .chat_with_system(None, &prompt, &model, temperature)
+                    .await
+            }
+        }
+    } else {
+        ctx.provider
+            .chat_with_system(None, &prompt, &model, temperature)
+            .await
+    };
+
+    match summary_result {
+        Ok(summary) => {
+            let summary = if summary.chars().count() > 300 {
+                format!("{}…", summary.chars().take(300).collect::<String>())
+            } else {
+                summary
+            };
+            let channel_summary = session_backend::ChannelSummary {
+                summary: summary.clone(),
+                message_count_at_summary: msg_count,
+                updated_at: chrono::Utc::now(),
+            };
+            if let Err(e) = store.save_summary(history_key, &channel_summary) {
+                tracing::warn!("Failed to persist channel summary: {e}");
+            }
+            tracing::debug!("Channel summary updated for {history_key}: {summary}");
+        }
+        Err(e) => {
+            tracing::warn!("Channel summary generation failed for {history_key}: {e}");
+        }
+    }
 }
 
 /// Proactively trim conversation turns so that the total estimated character
@@ -2048,19 +2202,63 @@ async fn process_channel_message(
         );
     }
 
-    // Only enrich with memory context when there is no prior conversation
-    // history. Follow-up turns already include context from previous messages.
+    // Only enrich with memory/thread context when there is no prior
+    // conversation history. Follow-up turns already have context.
     if !had_prior_history {
-        let memory_context = build_memory_context(
-            ctx.memory.as_ref(),
-            &msg.content,
-            ctx.min_relevance_score,
-            Some(&history_key),
-        )
-        .await;
-        if let Some(last_turn) = prior_turns.last_mut() {
-            if last_turn.role == "user" && !memory_context.is_empty() {
-                last_turn.content = format!("{memory_context}{}", msg.content);
+        if msg.thread_ts.is_some() {
+            // Thread context seeding: inject parent conversation summary +
+            // root message so the bot understands the conversation context
+            // without burning extra LLM tokens (summary is pre-generated).
+            let mut seed_parts: Vec<String> = Vec::new();
+
+            // 1. Parent conversation summary (non-threaded key).
+            let parent_key = format!("{}_{}", msg.channel, msg.sender);
+            if let Some(ref store) = ctx.session_store {
+                if let Some(parent_summary) = store.load_summary(&parent_key) {
+                    seed_parts.push(format!(
+                        "[Conversation summary: {}]",
+                        parent_summary.summary
+                    ));
+                }
+            }
+
+            // 2. Fetch thread root message text.
+            if let Some(ref thread_id) = msg.thread_ts {
+                if let Some(channel) = target_channel.as_ref() {
+                    match channel.fetch_message(thread_id).await {
+                        Ok(Some(root_text)) => {
+                            let truncated = truncate_with_ellipsis(&root_text, 500);
+                            seed_parts.push(format!("[Thread started on: \"{truncated}\"]"));
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            tracing::debug!("Could not fetch thread root message: {e}");
+                        }
+                    }
+                }
+            }
+
+            if !seed_parts.is_empty() {
+                let seed_context = seed_parts.join("\n");
+                if let Some(last_turn) = prior_turns.last_mut() {
+                    if last_turn.role == "user" {
+                        last_turn.content = format!("{seed_context}\n{}", last_turn.content);
+                    }
+                }
+            }
+        } else {
+            // Non-threaded first message: enrich with memory context.
+            let memory_context = build_memory_context(
+                ctx.memory.as_ref(),
+                &msg.content,
+                ctx.min_relevance_score,
+                Some(&history_key),
+            )
+            .await;
+            if let Some(last_turn) = prior_turns.last_mut() {
+                if last_turn.role == "user" && !memory_context.is_empty() {
+                    last_turn.content = format!("{memory_context}{}", msg.content);
+                }
             }
         }
     }
@@ -2407,6 +2605,15 @@ async fn process_channel_message(
                 });
             }
 
+            // Fire-and-forget: rolling channel session summary.
+            {
+                let ctx_summary = ctx.clone();
+                let key_summary = history_key.clone();
+                tokio::spawn(async move {
+                    summarize_channel_session_if_needed(&ctx_summary, &key_summary).await;
+                });
+            }
+
             println!(
                 "  🤖 Reply ({}ms): {}",
                 started_at.elapsed().as_millis(),
@@ -2467,6 +2674,27 @@ async fn process_channel_message(
                 }
             } else if is_context_window_overflow_error(&e) {
                 let compacted = compact_sender_history(ctx.as_ref(), &history_key);
+                // Inject stored summary into compacted history so the model
+                // retains semantic context from before the overflow.
+                if compacted {
+                    if let Some(ref store) = ctx.session_store {
+                        if let Some(summary) = store.load_summary(&history_key) {
+                            let mut histories = ctx
+                                .conversation_histories
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner());
+                            if let Some(turns) = histories.get_mut(&*history_key) {
+                                turns.insert(
+                                    0,
+                                    ChatMessage::user(format!(
+                                        "[Previous conversation summary: {}]",
+                                        summary.summary
+                                    )),
+                                );
+                            }
+                        }
+                    }
+                }
                 let error_text = if compacted {
                     "⚠️ Context window exceeded for this conversation. I compacted recent history and kept the latest context. Please resend your last message."
                 } else {
@@ -4173,6 +4401,8 @@ pub async fn start_channels(config: Config) -> Result<()> {
         } else {
             None
         },
+        summary_config: Arc::new(config.summary.clone()),
+        summary_model: config.summary_model.clone(),
         approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
         activated_tools: ch_activated_handle,
     });
@@ -4223,7 +4453,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         // Create minimal workspace files
         std::fs::write(tmp.path().join("SOUL.md"), "# Soul\nBe helpful.").unwrap();
-        std::fs::write(tmp.path().join("IDENTITY.md"), "# Identity\nName: SynapseClaw").unwrap();
+        std::fs::write(
+            tmp.path().join("IDENTITY.md"),
+            "# Identity\nName: SynapseClaw",
+        )
+        .unwrap();
         std::fs::write(tmp.path().join("USER.md"), "# User\nName: Test User").unwrap();
         std::fs::write(
             tmp.path().join("AGENTS.md"),
@@ -4464,6 +4698,8 @@ mod tests {
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -4573,6 +4809,8 @@ mod tests {
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -4638,6 +4876,8 @@ mod tests {
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -4722,6 +4962,8 @@ mod tests {
             ack_reactions: true,
             show_tool_calls: true,
             session_store: Some(Arc::clone(&store)),
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -5256,6 +5498,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -5329,6 +5573,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -5416,6 +5662,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -5488,6 +5736,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -5570,6 +5820,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -5672,6 +5924,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -5756,6 +6010,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -5855,6 +6111,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -5939,6 +6197,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -6013,6 +6273,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -6198,6 +6460,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -6291,6 +6555,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -6393,6 +6659,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6504,6 +6772,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -6591,6 +6861,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -6663,6 +6935,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -7293,6 +7567,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -7391,6 +7667,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -7489,6 +7767,8 @@ BTC is currently around $65,000 based on latest tool output."#
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -8051,6 +8331,8 @@ This is an example JSON object for profile settings."#;
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -8130,6 +8412,8 @@ This is an example JSON object for profile settings."#;
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -8283,6 +8567,8 @@ This is an example JSON object for profile settings."#;
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -8386,6 +8672,8 @@ This is an example JSON object for profile settings."#;
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -8481,6 +8769,8 @@ This is an example JSON object for profile settings."#;
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),
@@ -8596,6 +8886,8 @@ This is an example JSON object for profile settings."#;
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
+            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &crate::config::AutonomyConfig::default(),
             )),

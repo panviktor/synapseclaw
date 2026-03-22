@@ -1,6 +1,6 @@
 # IPC Phase 4.0: Modular Core Refactor
 
-Phase 3.10: push loop prevention | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
+Phase 3.12: channel session intelligence | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
 
 ---
 
@@ -61,6 +61,17 @@ Phase 4.0 fixes the architectural shape before introducing larger platform chang
 5. No new memory engine as a mandatory dependency.
 6. No attempt to unify every existing storage format in one PR.
 7. No visual policy editor in this phase.
+
+---
+
+## Inputs from Phase 3.12
+
+Phase 3.12 (Channel Session Intelligence) delivers rolling summaries, thread context seeding, and channel session API/UI as pre-refactor product features. Phase 4.0 should migrate these behind port abstractions rather than reimplementing:
+
+- **Rolling summary** → input for `ConversationStorePort` (step 3)
+- **Channel session API** → channel adapter for unified session model (steps 3, 9)
+- **Thread seeding** → demonstrates the capability model this phase formalizes (steps 2, 7)
+- **`SessionBackend` trait extensions** (summary, delete) → precursors to `ConversationStorePort`
 
 ---
 
