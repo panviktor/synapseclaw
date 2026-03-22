@@ -36,9 +36,10 @@ impl TelegramPostTool {
         } else {
             raw
         };
-        unquoted
-            .split_once(" #")
-            .map_or_else(|| unquoted.trim().to_string(), |(v, _)| v.trim().to_string())
+        unquoted.split_once(" #").map_or_else(
+            || unquoted.trim().to_string(),
+            |(v, _)| v.trim().to_string(),
+        )
     }
 
     async fn get_bot_token(&self) -> anyhow::Result<String> {
@@ -104,7 +105,7 @@ impl Tool for TelegramPostTool {
                 "parse_mode": {
                     "type": "string",
                     "enum": ["HTML", "Markdown", "MarkdownV2"],
-                    "description": "Text formatting mode (default: HTML)"
+                    "description": "Text formatting mode (default: Markdown)"
                 },
                 "disable_web_page_preview": {
                     "type": "boolean",
@@ -149,7 +150,7 @@ impl Tool for TelegramPostTool {
         let parse_mode = args
             .get("parse_mode")
             .and_then(|v| v.as_str())
-            .unwrap_or("HTML");
+            .unwrap_or("Markdown");
 
         let disable_preview = args
             .get("disable_web_page_preview")
@@ -292,10 +293,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_blocks_rate_limit() {
-        let tool = TelegramPostTool::new(
-            test_security(AutonomyLevel::Full, 0),
-            PathBuf::from("/tmp"),
-        );
+        let tool =
+            TelegramPostTool::new(test_security(AutonomyLevel::Full, 0), PathBuf::from("/tmp"));
         let result = tool
             .execute(json!({"chat_id": "@test", "text": "hello"}))
             .await
