@@ -4144,6 +4144,29 @@ pub async fn start_channels(config: Config) -> Result<()> {
         }
     }
 
+    // ── SYNAPSECLAW_ALLOWED_TOOLS enforcement for channel/daemon mode ──
+    // Same security boundary as agent/loop_.rs — filter tools when the env
+    // var is set so coordinators (e.g. marketing-lead) can be restricted to
+    // IPC-only tools. Without this, the allowlist only applied to
+    // ephemeral/interactive agent runs, not to daemon channel processing.
+    if let Ok(allowlist_str) = std::env::var("SYNAPSECLAW_ALLOWED_TOOLS") {
+        if !allowlist_str.trim().is_empty() {
+            let allowed: std::collections::HashSet<String> = allowlist_str
+                .split(',')
+                .map(|t| t.trim().to_string())
+                .collect();
+            let before = built_tools.len();
+            built_tools.retain(|t| allowed.contains(t.name()));
+            let after = built_tools.len();
+            if before != after {
+                tracing::info!(
+                    "SYNAPSECLAW_ALLOWED_TOOLS filtered channel tools: {before} → {after} (kept: {})",
+                    allowed.iter().cloned().collect::<Vec<_>>().join(", ")
+                );
+            }
+        }
+    }
+
     let tools_registry = Arc::new(built_tools);
 
     let skills = crate::skills::load_skills_with_config(&workspace, &config);
@@ -4208,6 +4231,16 @@ pub async fn start_channels(config: Config) -> Result<()> {
     let excluded = &config.autonomy.non_cli_excluded_tools;
     if !excluded.is_empty() {
         tool_descs.retain(|(name, _)| !excluded.iter().any(|ex| ex == name));
+    }
+
+    // Also filter prompt tool descriptions by SYNAPSECLAW_ALLOWED_TOOLS
+    // so the model doesn't see tools it can't call.
+    if let Ok(allowlist_str) = std::env::var("SYNAPSECLAW_ALLOWED_TOOLS") {
+        if !allowlist_str.trim().is_empty() {
+            let allowed: std::collections::HashSet<&str> =
+                allowlist_str.split(',').map(|t| t.trim()).collect();
+            tool_descs.retain(|(name, _)| allowed.contains(name));
+        }
     }
 
     let bootstrap_max_chars = if config.agent.compact_context {
