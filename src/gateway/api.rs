@@ -838,6 +838,11 @@ pub async fn handle_api_chat_session_messages(
 // ── Channel sessions (Phase 3.12) ───────────────────────────────
 
 /// GET /api/channel/sessions — list channel conversation sessions with metadata.
+///
+/// Returns all channel sessions visible to the authenticated operator.
+/// This is a single-operator endpoint — the gateway token already scopes
+/// access to this agent instance. Multi-tenant filtering would require
+/// Phase 4.0's capability model.
 pub async fn handle_api_channel_sessions(
     State(state): State<AppState>,
     headers: HeaderMap,

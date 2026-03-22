@@ -220,7 +220,7 @@ export default function SessionSidebar({
           <p className="text-[10px] text-[var(--text-placeholder)] text-center mt-4 px-2">No sessions yet</p>
         )}
         {sessions.map((s) => {
-          const isActive = s.key === activeKey;
+          const isActive = s.key === activeKey && !activeChannelKey;
           const label = s.label || `Session`;
 
           return (
@@ -311,7 +311,10 @@ export default function SessionSidebar({
               return (
                 <div
                   key={cs.key}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => onChannelSessionSelect?.(cs.key)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChannelSessionSelect?.(cs.key); } }}
                   className={`group relative px-3 py-2 mx-1 rounded-lg cursor-pointer transition-colors ${
                     isActive
                       ? 'bg-[#D95A1E]/10 border border-[var(--accent-primary)]/20'

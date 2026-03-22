@@ -167,7 +167,7 @@ impl SessionBackend for SessionStore {
 
     fn save_summary(&self, session_key: &str, summary: &ChannelSummary) -> std::io::Result<()> {
         let path = self.summary_path(session_key);
-        let tmp_path = path.with_extension("summary.json.tmp");
+        let tmp_path = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(summary)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         std::fs::write(&tmp_path, json)?;
@@ -362,9 +362,7 @@ mod tests {
         store.save_summary("atomic_test", &summary).unwrap();
 
         // No .tmp file should remain
-        let tmp_path = store
-            .summary_path("atomic_test")
-            .with_extension("summary.json.tmp");
+        let tmp_path = store.summary_path("atomic_test").with_extension("json.tmp");
         assert!(!tmp_path.exists());
         // Summary file should exist
         assert!(store.summary_path("atomic_test").exists());

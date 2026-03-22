@@ -999,6 +999,10 @@ fn compact_sender_history(ctx: &ChannelRuntimeContext, sender_key: &str) -> bool
 /// [`CHANNEL_SUMMARY_INTERVAL`] messages. Uses the configured summary model
 /// (cheap/fast) so it doesn't burn primary-model tokens.
 async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, history_key: &str) {
+    /// In-flight summary keys to prevent concurrent generation for the same session.
+    static INFLIGHT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
     let store = match ctx.session_store.as_ref() {
         Some(s) => s,
         None => return,
@@ -1020,6 +1024,24 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
     {
         return;
     }
+
+    // Prevent concurrent summary generation for the same session.
+    {
+        let mut inflight = INFLIGHT.lock().unwrap_or_else(|e| e.into_inner());
+        if !inflight.insert(history_key.to_string()) {
+            return; // Another task is already summarizing this session.
+        }
+    }
+    // RAII guard to remove the inflight key when this function exits.
+    struct InflightGuard(String);
+    impl Drop for InflightGuard {
+        fn drop(&mut self) {
+            if let Ok(mut inflight) = INFLIGHT.lock() {
+                inflight.remove(&self.0);
+            }
+        }
+    }
+    let _guard = InflightGuard(history_key.to_string());
 
     // Collect last 10 messages for the summary prompt.
     let (recent_text, prev_summary) = {

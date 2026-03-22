@@ -282,7 +282,7 @@ export default function AgentChat() {
   // ── Auto-scroll ───────────────────────────────────────────────────
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, typing]);
+  }, [messages, typing, channelMessages]);
 
   // ── Session actions ───────────────────────────────────────────────
   const handleSelectSession = useCallback(
@@ -543,9 +543,15 @@ export default function AgentChat() {
         channelSessions={channelSessions}
         activeChannelKey={activeChannelKey}
         onChannelSessionSelect={(key) => {
+          if (key === activeChannelKey) return;
           setActiveChannelKey(key);
+          setChannelMessages([]);
           setSearchParams({}, { replace: true });
-          getChannelSessionMessages(key).then(setChannelMessages).catch(() => setChannelMessages([]));
+          setLoading(true);
+          getChannelSessionMessages(key)
+            .then(setChannelMessages)
+            .catch(() => setChannelMessages([]))
+            .finally(() => setLoading(false));
         }}
         onChannelSessionDelete={(key) => {
           deleteChannelSession(key).then(() => {
