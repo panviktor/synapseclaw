@@ -384,6 +384,8 @@ pub struct AppState {
     pub ipc_push_dedup: Option<Arc<ipc::PushDedupSet>>,
     /// Signal channel for push notifications → inbox processor (agent-side)
     pub ipc_push_signal: Option<tokio::sync::mpsc::UnboundedSender<ipc::PushMeta>>,
+    /// Channel session backend for JSONL/SQLite channel conversation persistence
+    pub channel_session_backend: Option<Arc<dyn crate::channels::session_backend::SessionBackend>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -859,6 +861,17 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             None
         },
         ipc_push_signal: None, // initialized below for agent-side inbox processor
+        channel_session_backend: if config.channels_config.session_persistence {
+            match crate::channels::session_store::SessionStore::new(&config.workspace_dir) {
+                Ok(store) => Some(Arc::new(store)),
+                Err(e) => {
+                    tracing::warn!("Channel session backend disabled: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        },
     };
 
     // Phase 3.8: seed AgentRegistry from DB + start health polling
@@ -1076,6 +1089,18 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         .route(
             "/api/chat/sessions/{key}/messages",
             get(api::handle_api_chat_session_messages),
+        )
+        .route(
+            "/api/channel/sessions",
+            get(api::handle_api_channel_sessions),
+        )
+        .route(
+            "/api/channel/sessions/{key}/messages",
+            get(api::handle_api_channel_session_messages),
+        )
+        .route(
+            "/api/channel/sessions/{key}",
+            delete(api::handle_api_channel_session_delete),
         )
         .route("/api/cron", get(api::handle_api_cron_list))
         .route("/api/cron", post(api::handle_api_cron_add))
@@ -2574,6 +2599,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2641,6 +2667,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -3032,6 +3059,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3113,6 +3141,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         };
 
         let headers = HeaderMap::new();
@@ -3206,6 +3235,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         };
 
         let response = handle_webhook(
@@ -3271,6 +3301,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3341,6 +3372,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3416,6 +3448,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -3487,6 +3520,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         };
 
         let mut headers = HeaderMap::new();

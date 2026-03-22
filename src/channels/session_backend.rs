@@ -6,6 +6,7 @@
 
 use crate::providers::traits::ChatMessage;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Metadata about a persisted session.
 #[derive(Debug, Clone)]
@@ -18,6 +19,17 @@ pub struct SessionMetadata {
     pub last_activity: DateTime<Utc>,
     /// Total number of messages in the session.
     pub message_count: usize,
+}
+
+/// Rolling summary of a channel conversation session.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelSummary {
+    /// Semantic summary text (2-3 sentences, max 300 chars).
+    pub summary: String,
+    /// Message count at the time this summary was generated.
+    pub message_count_at_summary: usize,
+    /// When this summary was last updated.
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Query parameters for listing sessions.
@@ -76,6 +88,21 @@ pub trait SessionBackend: Send + Sync {
     fn search(&self, _query: &SessionQuery) -> Vec<SessionMetadata> {
         Vec::new()
     }
+
+    /// Load the rolling summary for a session. Returns `None` if no summary exists.
+    fn load_summary(&self, _session_key: &str) -> Option<ChannelSummary> {
+        None
+    }
+
+    /// Persist a rolling summary for a session.
+    fn save_summary(&self, _session_key: &str, _summary: &ChannelSummary) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    /// Delete a session and its summary. Returns `true` if the session existed.
+    fn delete(&self, _session_key: &str) -> std::io::Result<bool> {
+        Ok(false)
+    }
 }
 
 #[cfg(test)]
@@ -99,5 +126,21 @@ mod tests {
         let q = SessionQuery::default();
         assert!(q.keyword.is_none());
         assert!(q.limit.is_none());
+    }
+
+    #[test]
+    fn channel_summary_serde_roundtrip() {
+        let summary = ChannelSummary {
+            summary: "User discussed project timeline and assigned tasks.".into(),
+            message_count_at_summary: 20,
+            updated_at: Utc::now(),
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        let deserialized: ChannelSummary = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.summary, summary.summary);
+        assert_eq!(
+            deserialized.message_count_at_summary,
+            summary.message_count_at_summary
+        );
     }
 }

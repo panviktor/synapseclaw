@@ -158,3 +158,18 @@ export interface ChatMessageInfo {
   input_tokens: number | null;
   output_tokens: number | null;
 }
+
+export interface ChannelSessionInfo {
+  key: string;
+  channel: string;
+  sender: string;
+  created_at: number;
+  last_activity: number;
+  message_count: number;
+  summary: string | null;
+}
+
+export interface ChannelMessageInfo {
+  role: string;
+  content: string;
+}

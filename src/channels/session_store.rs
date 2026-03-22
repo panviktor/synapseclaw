@@ -5,7 +5,7 @@
 //! one-per-line as JSON, never modifying old lines. On daemon restart, sessions
 //! are loaded from disk to restore conversation context.
 
-use crate::channels::session_backend::SessionBackend;
+use crate::channels::session_backend::{ChannelSummary, SessionBackend};
 use crate::providers::traits::ChatMessage;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -23,9 +23,9 @@ impl SessionStore {
         Ok(Self { sessions_dir })
     }
 
-    /// Compute the file path for a session key, sanitizing for filesystem safety.
-    fn session_path(&self, session_key: &str) -> PathBuf {
-        let safe_key: String = session_key
+    /// Sanitize a session key for filesystem safety.
+    fn safe_key(session_key: &str) -> String {
+        session_key
             .chars()
             .map(|c| {
                 if c.is_alphanumeric() || c == '_' || c == '-' {
@@ -34,8 +34,19 @@ impl SessionStore {
                     '_'
                 }
             })
-            .collect();
-        self.sessions_dir.join(format!("{safe_key}.jsonl"))
+            .collect()
+    }
+
+    /// Compute the JSONL file path for a session key.
+    fn session_path(&self, session_key: &str) -> PathBuf {
+        self.sessions_dir
+            .join(format!("{}.jsonl", Self::safe_key(session_key)))
+    }
+
+    /// Compute the summary JSON file path for a session key.
+    fn summary_path(&self, session_key: &str) -> PathBuf {
+        self.sessions_dir
+            .join(format!("{}.summary.json", Self::safe_key(session_key)))
     }
 
     /// Load all messages for a session from its JSONL file.
@@ -146,6 +157,35 @@ impl SessionBackend for SessionStore {
 
     fn compact(&self, session_key: &str) -> std::io::Result<()> {
         self.compact(session_key)
+    }
+
+    fn load_summary(&self, session_key: &str) -> Option<ChannelSummary> {
+        let path = self.summary_path(session_key);
+        let data = std::fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&data).ok()
+    }
+
+    fn save_summary(&self, session_key: &str, summary: &ChannelSummary) -> std::io::Result<()> {
+        let path = self.summary_path(session_key);
+        let tmp_path = path.with_extension("summary.json.tmp");
+        let json = serde_json::to_string_pretty(summary)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        std::fs::write(&tmp_path, json)?;
+        std::fs::rename(&tmp_path, &path)?;
+        Ok(())
+    }
+
+    fn delete(&self, session_key: &str) -> std::io::Result<bool> {
+        let session = self.session_path(session_key);
+        let summary = self.summary_path(session_key);
+        let existed = session.exists();
+        if session.exists() {
+            std::fs::remove_file(&session)?;
+        }
+        if summary.exists() {
+            std::fs::remove_file(&summary)?;
+        }
+        Ok(existed)
     }
 }
 
@@ -287,6 +327,75 @@ mod tests {
             .unwrap();
         let msgs = backend.load("trait_test");
         assert_eq!(msgs.len(), 1);
+    }
+
+    #[test]
+    fn summary_save_and_load_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path()).unwrap();
+        let backend: &dyn SessionBackend = &store;
+
+        assert!(backend.load_summary("test_key").is_none());
+
+        let summary = ChannelSummary {
+            summary: "User asked about Rust. Bot explained ownership.".into(),
+            message_count_at_summary: 20,
+            updated_at: chrono::Utc::now(),
+        };
+        backend.save_summary("test_key", &summary).unwrap();
+
+        let loaded = backend.load_summary("test_key").unwrap();
+        assert_eq!(loaded.summary, summary.summary);
+        assert_eq!(loaded.message_count_at_summary, 20);
+    }
+
+    #[test]
+    fn summary_atomic_write_uses_rename() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path()).unwrap();
+
+        let summary = ChannelSummary {
+            summary: "test".into(),
+            message_count_at_summary: 5,
+            updated_at: chrono::Utc::now(),
+        };
+        store.save_summary("atomic_test", &summary).unwrap();
+
+        // No .tmp file should remain
+        let tmp_path = store
+            .summary_path("atomic_test")
+            .with_extension("summary.json.tmp");
+        assert!(!tmp_path.exists());
+        // Summary file should exist
+        assert!(store.summary_path("atomic_test").exists());
+    }
+
+    #[test]
+    fn delete_removes_session_and_summary() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path()).unwrap();
+        let backend: &dyn SessionBackend = &store;
+
+        backend
+            .append("del_test", &ChatMessage::user("hello"))
+            .unwrap();
+        let summary = ChannelSummary {
+            summary: "test".into(),
+            message_count_at_summary: 1,
+            updated_at: chrono::Utc::now(),
+        };
+        backend.save_summary("del_test", &summary).unwrap();
+
+        assert!(backend.delete("del_test").unwrap());
+        assert!(backend.load("del_test").is_empty());
+        assert!(backend.load_summary("del_test").is_none());
+    }
+
+    #[test]
+    fn delete_nonexistent_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path()).unwrap();
+        assert!(!store.delete("nonexistent").unwrap());
     }
 
     #[test]

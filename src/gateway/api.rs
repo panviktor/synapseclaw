@@ -835,6 +835,108 @@ pub async fn handle_api_chat_session_messages(
     }
 }
 
+// ── Channel sessions (Phase 3.12) ───────────────────────────────
+
+/// GET /api/channel/sessions — list channel conversation sessions with metadata.
+pub async fn handle_api_channel_sessions(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let backend = match &state.channel_session_backend {
+        Some(b) => b,
+        None => return Json(serde_json::json!({"sessions": []})).into_response(),
+    };
+
+    let metadata = backend.list_sessions_with_metadata();
+    let sessions: Vec<serde_json::Value> = metadata
+        .into_iter()
+        .map(|m| {
+            let (channel, sender) = m.key.split_once('_').unwrap_or(("unknown", m.key.as_str()));
+            let summary = backend.load_summary(&m.key);
+            serde_json::json!({
+                "key": m.key,
+                "channel": channel,
+                "sender": sender,
+                "created_at": m.created_at.timestamp(),
+                "last_activity": m.last_activity.timestamp(),
+                "message_count": m.message_count,
+                "summary": summary.map(|s| s.summary),
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({"sessions": sessions})).into_response()
+}
+
+/// GET /api/channel/sessions/:key/messages — get messages for a channel session.
+pub async fn handle_api_channel_session_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let backend = match &state.channel_session_backend {
+        Some(b) => b,
+        None => return Json(serde_json::json!({"messages": []})).into_response(),
+    };
+
+    let messages = backend.load(&key);
+    let msgs: Vec<serde_json::Value> = messages
+        .iter()
+        .map(|m| {
+            serde_json::json!({
+                "role": m.role,
+                "content": m.content,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({"messages": msgs})).into_response()
+}
+
+/// DELETE /api/channel/sessions/:key — delete a channel session and its summary.
+pub async fn handle_api_channel_session_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let backend = match &state.channel_session_backend {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Channel sessions not available"})),
+            )
+                .into_response()
+        }
+    };
+
+    match backend.delete(&key) {
+        Ok(true) => Json(serde_json::json!({"deleted": true})).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Session not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
 // ── Activity feed (Phase 3.9) ────────────────────────────────────
 
 /// Known channel name prefixes for distinguishing channel vs web_chat sessions.

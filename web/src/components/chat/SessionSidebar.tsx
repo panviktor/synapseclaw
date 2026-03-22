@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Sparkles, Users } from 'lucide-react';
-import type { ChatSessionInfo, StatusResponse } from '@/types/api';
+import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Sparkles, Users, Radio } from 'lucide-react';
+import type { ChatSessionInfo, StatusResponse, ChannelSessionInfo } from '@/types/api';
 import type { AgentEntry } from '@/lib/api';
 import { t } from '@/lib/i18n';
 
@@ -11,6 +11,8 @@ interface SessionSidebarProps {
   status: StatusResponse | null;
   agents: AgentEntry[];
   activeAgent: string | null;
+  channelSessions?: ChannelSessionInfo[];
+  activeChannelKey?: string | null;
   onToggle: () => void;
   onSelect: (key: string) => void;
   onNew: () => void;
@@ -18,6 +20,8 @@ interface SessionSidebarProps {
   onDelete: (key: string) => void;
   onSummaryModelChange: (model: string | null) => void;
   onAgentChange: (agentId: string) => void;
+  onChannelSessionSelect?: (key: string) => void;
+  onChannelSessionDelete?: (key: string) => void;
 }
 
 function timeAgo(epochSecs: number): string {
@@ -47,6 +51,8 @@ export default function SessionSidebar({
   status,
   agents,
   activeAgent,
+  channelSessions = [],
+  activeChannelKey = null,
   onToggle,
   onSelect,
   onNew,
@@ -54,6 +60,8 @@ export default function SessionSidebar({
   onDelete,
   onSummaryModelChange,
   onAgentChange,
+  onChannelSessionSelect,
+  onChannelSessionDelete,
 }: SessionSidebarProps) {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
@@ -290,6 +298,64 @@ export default function SessionSidebar({
             </div>
           );
         })}
+
+        {/* Channel Sessions (Phase 3.12) */}
+        {channelSessions.length > 0 && (
+          <>
+            <div className="flex items-center gap-1.5 px-3 pt-3 pb-1">
+              <Radio className="h-3 w-3 text-[var(--text-muted)]" />
+              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide">Channels</span>
+            </div>
+            {channelSessions.map((cs) => {
+              const isActive = cs.key === activeChannelKey;
+              return (
+                <div
+                  key={cs.key}
+                  onClick={() => onChannelSessionSelect?.(cs.key)}
+                  className={`group relative px-3 py-2 mx-1 rounded-lg cursor-pointer transition-colors ${
+                    isActive
+                      ? 'bg-[#D95A1E]/10 border border-[var(--accent-primary)]/20'
+                      : 'hover:bg-[#E5E3E0]/50 border border-transparent'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--bg-card)] text-[var(--text-muted)] font-mono flex-shrink-0">
+                      {cs.channel}
+                    </span>
+                    <span className={`text-[11px] font-medium truncate ${isActive ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+                      {cs.sender}
+                    </span>
+                  </div>
+                  {cs.summary && (
+                    <p className="text-[10px] text-[var(--text-muted)] truncate mt-0.5 pl-[18px]" title={cs.summary}>
+                      {cs.summary}
+                    </p>
+                  )}
+                  <p className="text-[9px] text-[var(--text-placeholder)] mt-0.5 pl-[18px]">
+                    {timeAgo(cs.last_activity)} · {cs.message_count} msgs
+                  </p>
+
+                  {onChannelSessionDelete && (
+                    <div className="absolute right-1 top-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (confirm('Delete this channel session? This will clear the conversation context for this user.')) {
+                            onChannelSessionDelete(cs.key);
+                          }
+                        }}
+                        className="p-1 rounded text-[var(--text-muted)] hover:text-[#C73E3E] hover:bg-[#E5E3E0]"
+                        title="Delete channel session"
+                      >
+                        <Trash2 className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </>
+        )}
       </div>
     </div>
   );

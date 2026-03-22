@@ -1775,30 +1775,41 @@ impl Channel for MatrixChannel {
                 let target_event_id = &event.content.relates_to.event_id;
 
                 // Fetch the original message to provide context.
-                let (original_author, original_text) = match room.event(target_event_id, None).await
-                {
-                    Ok(timeline_event) => {
-                        let raw = timeline_event.raw();
-                        match raw.deserialize() {
-                            Ok(any_event) => {
-                                let author = any_event.sender().to_string();
-                                // Extract body from the raw JSON content.
-                                let text = serde_json::to_value(raw)
-                                    .ok()
-                                    .and_then(|v| {
-                                        v.get("content")?
-                                            .get("body")?
-                                            .as_str()
-                                            .map(|s| s.to_string())
-                                    })
-                                    .unwrap_or_default();
-                                (author, text)
+                let (original_author, original_text, thread_ts) =
+                    match room.event(target_event_id, None).await {
+                        Ok(timeline_event) => {
+                            let raw = timeline_event.raw();
+                            match raw.deserialize() {
+                                Ok(any_event) => {
+                                    let author = any_event.sender().to_string();
+                                    let json_value = serde_json::to_value(raw).ok();
+                                    // Extract body from the raw JSON content.
+                                    let text = json_value
+                                        .as_ref()
+                                        .and_then(|v| {
+                                            v.get("content")?
+                                                .get("body")?
+                                                .as_str()
+                                                .map(|s| s.to_string())
+                                        })
+                                        .unwrap_or_default();
+                                    // Extract thread root from m.relates_to so the
+                                    // reaction response lands in the same thread.
+                                    let thread = json_value.as_ref().and_then(|v| {
+                                        let rel = v.get("content")?.get("m.relates_to")?;
+                                        if rel.get("rel_type")?.as_str()? == "m.thread" {
+                                            rel.get("event_id")?.as_str().map(|s| s.to_string())
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                    (author, text, thread)
+                                }
+                                Err(_) => (String::new(), String::new(), None),
                             }
-                            Err(_) => (String::new(), String::new()),
                         }
-                    }
-                    Err(_) => (String::new(), String::new()),
-                };
+                        Err(_) => (String::new(), String::new(), None),
+                    };
 
                 let is_own_message = original_author == my_user_id.as_str();
                 let author_label = if is_own_message {
@@ -1823,7 +1834,7 @@ impl Channel for MatrixChannel {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_secs(),
-                    thread_ts: None,
+                    thread_ts,
                 };
 
                 let _ = tx.send(msg).await;
@@ -2059,6 +2070,35 @@ impl Channel for MatrixChannel {
         }
 
         Ok(())
+    }
+
+    async fn fetch_message(&self, message_id: &str) -> anyhow::Result<Option<String>> {
+        let client = self.matrix_client().await?;
+        let target_room_id = self.target_room_id().await?;
+        let target_room: OwnedRoomId = target_room_id.parse()?;
+        let room = client
+            .get_room(&target_room)
+            .ok_or_else(|| anyhow::anyhow!("Matrix room not found"))?;
+        let event_id: OwnedEventId = message_id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("Invalid event ID: {message_id}"))?;
+
+        match room.event(&event_id, None).await {
+            Ok(timeline_event) => {
+                let raw = timeline_event.raw();
+                let text = serde_json::to_value(raw)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("content")?
+                            .get("body")?
+                            .as_str()
+                            .map(|s| s.to_string())
+                    })
+                    .filter(|s| !s.is_empty());
+                Ok(text)
+            }
+            Err(_) => Ok(None),
+        }
     }
 }
 

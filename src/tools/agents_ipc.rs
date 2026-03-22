@@ -1574,6 +1574,7 @@ mod tests {
             ipc_push_dispatcher: None,
             ipc_push_dedup: None,
             ipc_push_signal: None,
+            channel_session_backend: None,
         }
     }
 

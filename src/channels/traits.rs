@@ -152,6 +152,12 @@ pub trait Channel: Send + Sync {
     async fn unpin_message(&self, _channel_id: &str, _message_id: &str) -> anyhow::Result<()> {
         Ok(())
     }
+
+    /// Fetch the text content of a message by its platform-specific ID.
+    /// Used for thread context seeding (fetching the root message of a thread).
+    async fn fetch_message(&self, _message_id: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

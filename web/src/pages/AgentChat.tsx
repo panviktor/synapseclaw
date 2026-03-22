@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Send, Bot, User, AlertCircle, Copy, Check, Square, MoreVertical, Plus, Eraser } from 'lucide-react';
-import type { WsMessage, ChatSessionInfo, ChatMessageInfo, StatusResponse } from '@/types/api';
+import type { WsMessage, ChatSessionInfo, ChatMessageInfo, StatusResponse, ChannelSessionInfo, ChannelMessageInfo } from '@/types/api';
 import { WebSocketClient } from '@/lib/ws';
 import { generateUUID } from '@/lib/uuid';
-import { getStatus, getAgentStatus, putSummaryModel, getAgents, type AgentEntry } from '@/lib/api';
+import { getStatus, getAgentStatus, putSummaryModel, getAgents, getChannelSessions, getChannelSessionMessages, deleteChannelSession, type AgentEntry } from '@/lib/api';
 import SessionSidebar from '@/components/chat/SessionSidebar';
 import {
   getCachedMessages,
@@ -50,6 +50,9 @@ export default function AgentChat() {
   const [activeAgent, setActiveAgent] = useState<string | null>(
     () => localStorage.getItem('synapseclaw_active_agent') || null,
   );
+  const [channelSessions, setChannelSessions] = useState<ChannelSessionInfo[]>([]);
+  const [activeChannelKey, setActiveChannelKey] = useState<string | null>(null);
+  const [channelMessages, setChannelMessages] = useState<ChannelMessageInfo[]>([]);
 
   const wsRef = useRef<WebSocketClient | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -109,6 +112,7 @@ export default function AgentChat() {
         getStatus().then(setStatus).catch(() => {});
       }
       getAgents().then(setAgents).catch(() => {});
+      getChannelSessions().then(setChannelSessions).catch(() => {});
       // Load sessions list
       ws.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list')
         .then((res) => {
@@ -284,6 +288,8 @@ export default function AgentChat() {
   const handleSelectSession = useCallback(
     (key: string) => {
       if (key === activeSession) return;
+      setActiveChannelKey(null);
+      setChannelMessages([]);
       setSearchParams({ session: key }, { replace: true });
       if (wsRef.current?.connected) {
         loadHistory(wsRef.current, key);
@@ -534,6 +540,22 @@ export default function AgentChat() {
         onDelete={handleDeleteSession}
         onSummaryModelChange={handleSummaryModelChange}
         onAgentChange={handleAgentChange}
+        channelSessions={channelSessions}
+        activeChannelKey={activeChannelKey}
+        onChannelSessionSelect={(key) => {
+          setActiveChannelKey(key);
+          setSearchParams({}, { replace: true });
+          getChannelSessionMessages(key).then(setChannelMessages).catch(() => setChannelMessages([]));
+        }}
+        onChannelSessionDelete={(key) => {
+          deleteChannelSession(key).then(() => {
+            setChannelSessions((prev) => prev.filter((s) => s.key !== key));
+            if (activeChannelKey === key) {
+              setActiveChannelKey(null);
+              setChannelMessages([]);
+            }
+          }).catch(() => {});
+        }}
       />
 
       {/* Chat area */}
@@ -567,7 +589,50 @@ export default function AgentChat() {
 
         {/* Messages area */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {loading ? (
+          {activeChannelKey ? (
+            /* Read-only channel session view */
+            <>
+              <div className="px-3 py-2 mb-3 rounded-lg bg-[var(--accent-primary)]/5 border border-[var(--accent-primary)]/20 text-xs text-[var(--text-muted)]">
+                Read-only: Channel conversation from <strong>{channelSessions.find((s) => s.key === activeChannelKey)?.channel ?? 'channel'}</strong>
+                <button
+                  onClick={() => { setActiveChannelKey(null); setChannelMessages([]); }}
+                  className="ml-2 text-[var(--accent-primary)] hover:underline"
+                >
+                  Back to chat
+                </button>
+              </div>
+              {channelMessages.length === 0 ? (
+                <p className="text-sm text-[var(--text-muted)] text-center mt-8">No messages in this session</p>
+              ) : (
+                channelMessages.map((msg, idx) => (
+                  <div
+                    key={idx}
+                    className={`flex items-start gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
+                  >
+                    <div
+                      className="flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center"
+                      style={{ background: msg.role === 'user' ? 'var(--glow-primary)' : 'var(--glow-secondary)' }}
+                    >
+                      {msg.role === 'user' ? (
+                        <User className="h-4 w-4 text-[var(--accent-primary)]" />
+                      ) : (
+                        <Bot className="h-4 w-4 text-[var(--accent-secondary)]" />
+                      )}
+                    </div>
+                    <div
+                      className={`max-w-[80%] rounded-2xl px-4 py-2.5 text-sm ${
+                        msg.role === 'user'
+                          ? 'bg-[var(--accent-primary)] text-white rounded-tr-md'
+                          : 'bg-[var(--bg-card)] text-[var(--text-primary)] border border-[var(--border-default)] rounded-tl-md'
+                      }`}
+                    >
+                      <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </>
+          ) : loading ? (
             <div className="flex items-center justify-center h-full">
               <div className="h-8 w-8 border-2 border-[var(--accent-primary)]/20 border-t-[#D95A1E] rounded-full animate-spin" />
             </div>
@@ -696,8 +761,8 @@ export default function AgentChat() {
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Input area */}
-        <div
+        {/* Input area — hidden when viewing channel session */}
+        {activeChannelKey ? null : <div
           className="border-t border-[var(--border-default)] p-4 bg-[var(--bg-card)]"
         >
           <div className="flex items-end gap-3 max-w-4xl mx-auto">
@@ -774,7 +839,7 @@ export default function AgentChat() {
               {connected ? 'Connected' : reconnecting ? 'Reconnecting...' : 'Disconnected'}
             </span>
           </div>
-        </div>
+        </div>}
       </div>
     </div>
   );
