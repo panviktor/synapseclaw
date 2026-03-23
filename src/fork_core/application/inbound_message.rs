@@ -15,10 +15,7 @@ use crate::fork_core::domain::channel::InboundEnvelope;
 /// logic, this function will shrink and eventually disappear.
 pub fn to_channel_message(envelope: &InboundEnvelope) -> crate::channels::traits::ChannelMessage {
     crate::channels::traits::ChannelMessage {
-        id: format!(
-            "{}:{}-{}",
-            envelope.source_adapter, envelope.actor_id, envelope.received_at
-        ),
+        id: uuid::Uuid::new_v4().to_string(),
         sender: envelope.actor_id.clone(),
         reply_target: envelope.reply_ref.clone(),
         content: envelope.content.clone(),

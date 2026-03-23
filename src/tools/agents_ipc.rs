@@ -1595,6 +1595,7 @@ mod tests {
             ipc_push_signal: None,
             channel_session_backend: None,
             channel_registry: None,
+            conversation_store: None,
         }
     }
 

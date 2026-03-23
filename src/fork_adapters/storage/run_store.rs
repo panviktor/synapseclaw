@@ -25,13 +25,14 @@ impl RunStorePort for ChatDbRunStore {
         let conn = self.db.conn().map_err(|e| anyhow::anyhow!("{e}"))?;
         conn.execute(
             "INSERT OR IGNORE INTO runs (run_id, conversation_key, origin, state, started_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 run.run_id,
                 run.conversation_key,
                 run.origin.to_string(),
                 run.state.to_string(),
                 run.started_at as i64,
+                chrono::Utc::now().timestamp(),
             ],
         )?;
         Ok(())

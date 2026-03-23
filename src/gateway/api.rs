@@ -1075,6 +1075,163 @@ pub async fn handle_api_channel_deliver(
     }
 }
 
+// ── Phase 4.0: Conversation REST API ─────────────────────────────
+
+#[derive(Deserialize)]
+pub struct ConversationListParams {
+    pub prefix: Option<String>,
+}
+
+/// GET /api/conversations — list conversation sessions.
+pub async fn handle_api_conversations_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<ConversationListParams>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let store = match &state.conversation_store {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Conversation store not available"})),
+            )
+                .into_response();
+        }
+    };
+
+    let sessions = store.list_sessions(params.prefix.as_deref()).await;
+    let result: Vec<serde_json::Value> = sessions
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "key": s.key,
+                "kind": s.kind.to_string(),
+                "label": s.label,
+                "summary": s.summary,
+                "current_goal": s.current_goal,
+                "created_at": s.created_at,
+                "last_active": s.last_active,
+                "message_count": s.message_count,
+                "input_tokens": s.input_tokens,
+                "output_tokens": s.output_tokens,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({"sessions": result})).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct ConversationEventsParams {
+    pub limit: Option<usize>,
+}
+
+/// GET /api/conversations/:key — get a session with recent events.
+pub async fn handle_api_conversations_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Query(params): Query<ConversationEventsParams>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let store = match &state.conversation_store {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Conversation store not available"})),
+            )
+                .into_response();
+        }
+    };
+
+    let session = match store.get_session(&key).await {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Session not found"})),
+            )
+                .into_response();
+        }
+    };
+
+    let limit = params.limit.unwrap_or(50);
+    let events = store.get_events(&key, limit).await;
+    let event_json: Vec<serde_json::Value> = events
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "event_type": e.event_type.to_string(),
+                "actor": e.actor,
+                "content": e.content,
+                "tool_name": e.tool_name,
+                "run_id": e.run_id,
+                "input_tokens": e.input_tokens,
+                "output_tokens": e.output_tokens,
+                "timestamp": e.timestamp,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "key": session.key,
+        "kind": session.kind.to_string(),
+        "label": session.label,
+        "summary": session.summary,
+        "current_goal": session.current_goal,
+        "created_at": session.created_at,
+        "last_active": session.last_active,
+        "message_count": session.message_count,
+        "input_tokens": session.input_tokens,
+        "output_tokens": session.output_tokens,
+        "events": event_json,
+    }))
+    .into_response()
+}
+
+/// DELETE /api/conversations/:key — delete a conversation session.
+pub async fn handle_api_conversations_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let store = match &state.conversation_store {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Conversation store not available"})),
+            )
+                .into_response();
+        }
+    };
+
+    match store.delete_session(&key).await {
+        Ok(true) => Json(serde_json::json!({"deleted": true, "key": key})).into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Session not found"})),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
 // ── Activity feed (Phase 3.9) ────────────────────────────────────
 
 /// Known channel name prefixes for distinguishing channel vs web_chat sessions.
