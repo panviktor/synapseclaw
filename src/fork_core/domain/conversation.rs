@@ -95,9 +95,9 @@ pub struct ConversationEvent {
     /// Run ID linking events to a single agent execution.
     pub run_id: Option<String>,
     /// Input tokens consumed (for LLM events).
-    pub input_tokens: Option<u32>,
+    pub input_tokens: Option<u64>,
     /// Output tokens produced (for LLM events).
-    pub output_tokens: Option<u32>,
+    pub output_tokens: Option<u64>,
     /// Event timestamp (unix seconds).
     pub timestamp: u64,
 }

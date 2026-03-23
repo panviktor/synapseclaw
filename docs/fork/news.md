@@ -2,6 +2,16 @@
 
 ## 2026-03-23
 
+### Phase 4.0 Step 8: Audit fixes + ConversationStorePort wiring + REST API
+- **Audit fix**: `ConversationEvent` token fields widened from `u32` to `u64` (was silently truncating large token counts)
+- **Audit fix**: `create_run` SQL now uses separate `created_at` timestamp (was reusing `started_at`)
+- **Audit fix**: `delete_session` now correctly returns `false` when session didn't exist
+- **Audit fix**: SQLite `PRAGMA foreign_keys = ON` added — `ON DELETE CASCADE` now enforced
+- **Audit fix**: `InboundEnvelope` message IDs now use UUID v4 (was second-precision timestamp, could collide)
+- `ConversationStorePort` extended with `update_label`, `update_goal`, `increment_message_count`, `add_token_usage`
+- `ConversationStorePort` wired into gateway AppState (created from existing ChatDb)
+- REST API: `GET /api/conversations`, `GET /api/conversations/:key`, `DELETE /api/conversations/:key`
+
 ### Phase 4.0 Step 4 + cleanup: RunStorePort + send_channel_message removal
 - `Run`, `RunEvent`, `RunState`, `RunOrigin`, `RunEventType` domain types
 - `RunStorePort` trait — unified CRUD for execution runs and events

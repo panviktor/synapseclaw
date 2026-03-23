@@ -82,10 +82,10 @@ fn event_from_row(row: &ChatMessageRow) -> ConversationEvent {
         content: row.content.clone(),
         tool_name: row.tool_name.clone(),
         run_id: row.run_id.clone(),
-        #[allow(clippy::cast_possible_truncation)]
-        input_tokens: row.input_tokens.map(|t| t as u32),
-        #[allow(clippy::cast_possible_truncation)]
-        output_tokens: row.output_tokens.map(|t| t as u32),
+        #[allow(clippy::cast_sign_loss)]
+        input_tokens: row.input_tokens.map(|t| t as u64),
+        #[allow(clippy::cast_sign_loss)]
+        output_tokens: row.output_tokens.map(|t| t as u64),
         timestamp: row.timestamp as u64,
     }
 }
@@ -99,8 +99,10 @@ fn event_to_row(session_key: &str, event: &ConversationEvent) -> ChatMessageRow 
         content: event.content.clone(),
         tool_name: event.tool_name.clone(),
         run_id: event.run_id.clone(),
-        input_tokens: event.input_tokens.map(i64::from),
-        output_tokens: event.output_tokens.map(i64::from),
+        #[allow(clippy::cast_possible_wrap)]
+        input_tokens: event.input_tokens.map(|t| t as i64),
+        #[allow(clippy::cast_possible_wrap)]
+        output_tokens: event.output_tokens.map(|t| t as i64),
         #[allow(clippy::cast_possible_wrap)]
         timestamp: event.timestamp as i64,
     }
@@ -134,9 +136,9 @@ impl ConversationStorePort for ChatDbConversationStore {
     }
 
     async fn delete_session(&self, key: &str) -> anyhow::Result<bool> {
-        // ChatDb::delete_session doesn't return whether it existed
+        let existed = self.db.get_session(key)?.is_some();
         self.db.delete_session(key)?;
-        Ok(true)
+        Ok(existed)
     }
 
     async fn touch_session(&self, key: &str) -> anyhow::Result<()> {
@@ -166,6 +168,22 @@ impl ConversationStorePort for ChatDbConversationStore {
 
     async fn clear_events(&self, session_key: &str) -> anyhow::Result<()> {
         self.db.clear_messages(session_key)
+    }
+
+    async fn update_label(&self, key: &str, label: &str) -> anyhow::Result<()> {
+        self.db.update_session_label(key, label)
+    }
+
+    async fn update_goal(&self, key: &str, goal: &str) -> anyhow::Result<()> {
+        self.db.update_session_goal(key, goal)
+    }
+
+    async fn increment_message_count(&self, key: &str) -> anyhow::Result<()> {
+        self.db.increment_message_count(key)
+    }
+
+    async fn add_token_usage(&self, key: &str, input: i64, output: i64) -> anyhow::Result<()> {
+        self.db.add_token_usage(key, input, output)
     }
 
     async fn get_summary(&self, key: &str) -> Option<String> {
@@ -331,6 +349,70 @@ mod tests {
         store.delete_session("web:del:1").await.unwrap();
         assert!(store.get_session("web:del:1").await.is_none());
         assert!(store.get_events("web:del:1", 10).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_label_and_goal() {
+        let (_tmp, store) = make_store();
+        store
+            .upsert_session(&ConversationSession {
+                key: "web:lbl:1".into(),
+                kind: ConversationKind::Web,
+                label: None,
+                summary: None,
+                current_goal: None,
+                created_at: 1000,
+                last_active: 2000,
+                message_count: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+            })
+            .await
+            .unwrap();
+
+        store.update_label("web:lbl:1", "My Chat").await.unwrap();
+        store.update_goal("web:lbl:1", "Fix the bug").await.unwrap();
+
+        let loaded = store.get_session("web:lbl:1").await.unwrap();
+        assert_eq!(loaded.label, Some("My Chat".into()));
+        assert_eq!(loaded.current_goal, Some("Fix the bug".into()));
+    }
+
+    #[tokio::test]
+    async fn increment_count_and_add_tokens() {
+        let (_tmp, store) = make_store();
+        store
+            .upsert_session(&ConversationSession {
+                key: "web:tok:1".into(),
+                kind: ConversationKind::Web,
+                label: None,
+                summary: None,
+                current_goal: None,
+                created_at: 1000,
+                last_active: 2000,
+                message_count: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+            })
+            .await
+            .unwrap();
+
+        store.increment_message_count("web:tok:1").await.unwrap();
+        store.increment_message_count("web:tok:1").await.unwrap();
+        store.add_token_usage("web:tok:1", 100, 50).await.unwrap();
+        store.add_token_usage("web:tok:1", 200, 75).await.unwrap();
+
+        let loaded = store.get_session("web:tok:1").await.unwrap();
+        assert_eq!(loaded.message_count, 2);
+        assert_eq!(loaded.input_tokens, 300);
+        assert_eq!(loaded.output_tokens, 125);
+    }
+
+    #[tokio::test]
+    async fn delete_nonexistent_returns_false() {
+        let (_tmp, store) = make_store();
+        let result = store.delete_session("web:nope:1").await.unwrap();
+        assert!(!result);
     }
 
     #[tokio::test]

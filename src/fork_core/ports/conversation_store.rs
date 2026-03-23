@@ -44,6 +44,20 @@ pub trait ConversationStorePort: Send + Sync {
     /// Delete all events for a session (reset transcript).
     async fn clear_events(&self, session_key: &str) -> anyhow::Result<()>;
 
+    // ── Incremental updates ─────────────────────────────────────
+
+    /// Update the user-visible label for a session.
+    async fn update_label(&self, key: &str, label: &str) -> anyhow::Result<()>;
+
+    /// Update the current high-level goal.
+    async fn update_goal(&self, key: &str, goal: &str) -> anyhow::Result<()>;
+
+    /// Increment the session's message counter by 1.
+    async fn increment_message_count(&self, key: &str) -> anyhow::Result<()>;
+
+    /// Add token usage to a session's cumulative counters.
+    async fn add_token_usage(&self, key: &str, input: i64, output: i64) -> anyhow::Result<()>;
+
     // ── Summary ─────────────────────────────────────────────────
 
     /// Get the rolling summary for a session.

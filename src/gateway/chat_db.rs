@@ -54,7 +54,9 @@ impl ChatDb {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
+        )?;
         let db = Self {
             conn: Mutex::new(conn),
         };
