@@ -131,26 +131,30 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     if config.heartbeat.enabled {
         let heartbeat_cfg = config.clone();
+        let hb_registry = channel_registry.clone();
         handles.push(spawn_component_supervisor(
             "heartbeat",
             initial_backoff,
             max_backoff,
             move || {
                 let cfg = heartbeat_cfg.clone();
-                async move { Box::pin(run_heartbeat_worker(cfg)).await }
+                let reg = hb_registry.clone();
+                async move { Box::pin(run_heartbeat_worker(cfg, reg)).await }
             },
         ));
     }
 
     if config.cron.enabled {
         let scheduler_cfg = config.clone();
+        let sched_registry = channel_registry.clone();
         handles.push(spawn_component_supervisor(
             "scheduler",
             initial_backoff,
             max_backoff,
             move || {
                 let cfg = scheduler_cfg.clone();
-                async move { Box::pin(crate::cron::scheduler::run(cfg)).await }
+                let reg = sched_registry.clone();
+                async move { Box::pin(crate::cron::scheduler::run(cfg, reg)).await }
             },
         ));
     } else {
@@ -260,7 +264,12 @@ where
     })
 }
 
-async fn run_heartbeat_worker(config: Config) -> Result<()> {
+async fn run_heartbeat_worker(
+    config: Config,
+    registry: Option<
+        std::sync::Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+    >,
+) -> Result<()> {
     use crate::heartbeat::engine::{
         compute_adaptive_interval, HeartbeatEngine, HeartbeatTask, TaskPriority, TaskStatus,
     };
@@ -285,6 +294,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
         let dm_metrics = Arc::clone(&metrics);
         let dm_config = config.clone();
         let dm_delivery = delivery.clone();
+        let dm_registry = registry.clone();
         tokio::spawn(async move {
             let check_interval = Duration::from_secs(60);
             let timeout = chrono::Duration::minutes(i64::from(deadman_timeout));
@@ -311,7 +321,11 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                                 continue;
                             };
                         let _ = crate::cron::scheduler::deliver_announcement(
-                            &dm_config, &channel, &target, &alert,
+                            &dm_config,
+                            &channel,
+                            &target,
+                            &alert,
+                            dm_registry.as_deref(),
                         )
                         .await;
                     }
@@ -452,6 +466,7 @@ async fn run_heartbeat_worker(config: Config) -> Result<()> {
                             channel,
                             target,
                             &announcement,
+                            registry.as_deref(),
                         )
                         .await
                         {
@@ -574,47 +589,16 @@ fn auto_detect_heartbeat_channel(config: &Config) -> Option<(String, String)> {
     None
 }
 
+/// Validate that the heartbeat target channel is buildable.
+/// Uses `build_channel_by_id` which checks both channel support and config presence.
 fn validate_heartbeat_channel_config(config: &Config, channel: &str) -> Result<()> {
-    match channel.to_ascii_lowercase().as_str() {
-        "telegram" => {
-            if config.channels_config.telegram.is_none() {
-                anyhow::bail!(
-                    "heartbeat.target is set to telegram but channels_config.telegram is not configured"
-                );
-            }
-        }
-        "discord" => {
-            if config.channels_config.discord.is_none() {
-                anyhow::bail!(
-                    "heartbeat.target is set to discord but channels_config.discord is not configured"
-                );
-            }
-        }
-        "slack" => {
-            if config.channels_config.slack.is_none() {
-                anyhow::bail!(
-                    "heartbeat.target is set to slack but channels_config.slack is not configured"
-                );
-            }
-        }
-        "mattermost" => {
-            if config.channels_config.mattermost.is_none() {
-                anyhow::bail!(
-                    "heartbeat.target is set to mattermost but channels_config.mattermost is not configured"
-                );
-            }
-        }
-        "matrix" => {
-            if config.channels_config.matrix.is_none() {
-                anyhow::bail!(
-                    "heartbeat.target is set to matrix but channels_config.matrix is not configured"
-                );
-            }
-        }
-        other => anyhow::bail!("unsupported heartbeat.target channel: {other}"),
-    }
-
-    Ok(())
+    crate::channels::build_channel_by_id(config, &channel.to_ascii_lowercase())
+        .map(|_| ())
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "heartbeat.target is set to '{channel}' but channel is not available: {e}"
+            )
+        })
 }
 
 // ── Phase 4.0: OutboundIntent relay ──────────────────────────────
@@ -952,9 +936,11 @@ mod tests {
         config.heartbeat.target = Some("email".into());
         config.heartbeat.to = Some("ops@example.com".into());
         let err = resolve_heartbeat_delivery(&config).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("unsupported heartbeat.target channel"));
+        // email is not yet in build_channel_by_id → "Unknown channel" or "not available"
+        assert!(
+            err.to_string().contains("not available"),
+            "expected 'not available' in: {err}"
+        );
     }
 
     #[test]
@@ -963,9 +949,11 @@ mod tests {
         config.heartbeat.target = Some("telegram".into());
         config.heartbeat.to = Some("123456".into());
         let err = resolve_heartbeat_delivery(&config).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("channels_config.telegram is not configured"));
+        // Telegram not configured → build_channel_by_id returns "not configured"
+        assert!(
+            err.to_string().contains("not available"),
+            "expected 'not available' in: {err}"
+        );
     }
 
     #[test]

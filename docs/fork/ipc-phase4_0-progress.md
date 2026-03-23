@@ -28,8 +28,8 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | 2 | **DONE** | Define canonical `OutboundIntent`, `ChannelCapabilities`, `ChannelRegistryPort` trait + `CachedChannelRegistry` adapter |
 | 3 | TODO | Add `ConversationStorePort` over the current chat/session SQLite implementation |
 | 4 | **GROUNDWORK** | Add `RunStorePort` and define unified run records/events for chat, IPC, and external workers |
-| 5 | TODO | Migrate scheduled notification delivery to capability-driven `SendScheduledNotification` |
-| 6 | TODO | Migrate heartbeat target validation/auto-detect away from hardcoded channel-name whitelists |
+| 5 | **DONE** | Migrate scheduled notification delivery to capability-driven `ChannelRegistryPort.deliver()` |
+| 6 | **DONE** | Migrate heartbeat delivery + validation away from hardcoded channel-name matches |
 | 7 | TODO | Route one inbound human channel through `HandleInboundMessage` use case |
 | 8 | TODO | Extract approval/quarantine orchestration into fork-owned application services |
 | 9 | TODO | Bridge selected IPC flows into the same conversation/run model |

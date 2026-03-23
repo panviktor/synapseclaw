@@ -2,6 +2,15 @@
 
 ## 2026-03-23
 
+### Phase 4.0 Steps 5-6: Scheduled + Heartbeat via ChannelRegistryPort
+- `deliver_announcement()` replaced 6-arm channel-name match with `ChannelRegistryPort.deliver()` — single OutboundIntent path for all channels
+- Heartbeat delivery + deadman alerts now use ChannelRegistryPort with long-lived cached adapters
+- `validate_heartbeat_channel_config()` simplified from 6-arm match to single `build_channel_by_id` call
+- Signal + Mattermost added to `build_channel_by_id()` and `CachedChannelRegistry::capabilities()`
+- Removed: ~110 lines of channel-name branching from scheduler, ~40 lines from heartbeat validation
+- Removed: channel adapter imports (TelegramChannel, DiscordChannel, etc.) from scheduler module
+- Fallback: standalone scheduler (CLI) falls back to `build_channel_by_id` when no registry available
+
 ### Phase 4.0: ChannelRegistryPort in Gateway + Channel Triage
 - `ChannelRegistryPort` exposed in gateway `AppState` — web UI and REST API can now resolve channels and deliver messages
 - `GET /api/channels/capabilities` — list capabilities for all known channels

@@ -3497,11 +3497,45 @@ pub fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn 
                 .with_transcription(config.transcription.clone()),
             ))
         }
+        "mattermost" => {
+            let mm = config
+                .channels_config
+                .mattermost
+                .as_ref()
+                .context("Mattermost channel is not configured")?;
+            Ok(Arc::new(MattermostChannel::new(
+                mm.url.clone(),
+                mm.bot_token.clone(),
+                mm.channel_id.clone(),
+                mm.allowed_users.clone(),
+                mm.thread_replies.unwrap_or(true),
+                mm.mention_only.unwrap_or(false),
+            )))
+        }
+        "signal" => {
+            let sg = config
+                .channels_config
+                .signal
+                .as_ref()
+                .context("Signal channel is not configured")?;
+            Ok(Arc::new(SignalChannel::new(
+                sg.http_url.clone(),
+                sg.account.clone(),
+                sg.group_id.clone(),
+                sg.allowed_from.clone(),
+                sg.ignore_attachments,
+                sg.ignore_stories,
+            )))
+        }
         other => {
             #[cfg(feature = "channel-matrix")]
-            anyhow::bail!("Unknown channel '{other}'. Supported: telegram, discord, slack, matrix");
+            anyhow::bail!(
+                "Unknown channel '{other}'. Supported: telegram, discord, slack, matrix, mattermost, signal"
+            );
             #[cfg(not(feature = "channel-matrix"))]
-            anyhow::bail!("Unknown channel '{other}'. Supported: telegram, discord, slack");
+            anyhow::bail!(
+                "Unknown channel '{other}'. Supported: telegram, discord, slack, mattermost, signal"
+            );
         }
     }
 }

@@ -1,9 +1,4 @@
-#[cfg(feature = "channel-matrix")]
-use crate::channels::MatrixChannel;
-use crate::channels::{
-    Channel, DiscordChannel, MattermostChannel, SendMessage, SignalChannel, SlackChannel,
-    TelegramChannel,
-};
+use crate::channels::SendMessage;
 use crate::config::Config;
 use crate::cron::{
     due_jobs, next_run_for_schedule, record_last_run, record_run, remove_job, reschedule_after_run,
@@ -23,7 +18,10 @@ const MIN_POLL_SECONDS: u64 = 5;
 const SHELL_JOB_TIMEOUT_SECS: u64 = 120;
 const SCHEDULER_COMPONENT: &str = "scheduler";
 
-pub async fn run(config: Config) -> Result<()> {
+pub async fn run(
+    config: Config,
+    registry: Option<Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>>,
+) -> Result<()> {
     let poll_secs = config.reliability.scheduler_poll_secs.max(MIN_POLL_SECONDS);
     let mut interval = time::interval(Duration::from_secs(poll_secs));
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
@@ -36,7 +34,6 @@ pub async fn run(config: Config) -> Result<()> {
 
     loop {
         interval.tick().await;
-        // Keep scheduler liveness fresh even when there are no due jobs.
         crate::health::mark_component_ok(SCHEDULER_COMPONENT);
 
         let jobs = match due_jobs(&config, Utc::now()) {
@@ -48,7 +45,14 @@ pub async fn run(config: Config) -> Result<()> {
             }
         };
 
-        process_due_jobs(&config, &security, jobs, SCHEDULER_COMPONENT).await;
+        process_due_jobs(
+            &config,
+            &security,
+            jobs,
+            SCHEDULER_COMPONENT,
+            registry.clone(),
+        )
+        .await;
     }
 }
 
@@ -97,6 +101,7 @@ async fn process_due_jobs(
     security: &Arc<SecurityPolicy>,
     jobs: Vec<CronJob>,
     component: &str,
+    registry: Option<Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>>,
 ) {
     // Refresh scheduler health on every successful poll cycle, including idle cycles.
     crate::health::mark_component_ok(component);
@@ -106,12 +111,14 @@ async fn process_due_jobs(
         let config = config.clone();
         let security = Arc::clone(security);
         let component = component.to_owned();
+        let reg = registry.clone();
         async move {
             Box::pin(execute_and_persist_job(
                 &config,
                 security.as_ref(),
                 &job,
                 &component,
+                reg.as_deref(),
             ))
             .await
         }
@@ -130,6 +137,7 @@ async fn execute_and_persist_job(
     security: &SecurityPolicy,
     job: &CronJob,
     component: &str,
+    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
 ) -> (String, bool, String) {
     crate::health::mark_component_ok(component);
     warn_if_high_frequency_agent_job(job);
@@ -144,6 +152,7 @@ async fn execute_and_persist_job(
         &output,
         started_at,
         finished_at,
+        registry,
     ))
     .await;
 
@@ -315,10 +324,11 @@ async fn persist_job_result(
     output: &str,
     started_at: DateTime<Utc>,
     finished_at: DateTime<Utc>,
+    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
 ) -> bool {
     let duration_ms = (finished_at - started_at).num_milliseconds();
 
-    if let Err(e) = deliver_if_configured(config, job, output).await {
+    if let Err(e) = deliver_if_configured(config, job, output, registry).await {
         if job.delivery.best_effort {
             tracing::warn!("Cron delivery failed (best_effort): {e}");
         } else {
@@ -396,16 +406,12 @@ fn warn_if_high_frequency_agent_job(job: &CronJob) {
     }
 }
 
-fn resolve_matrix_delivery_room(configured_room_id: &str, target: &str) -> String {
-    let target = target.trim();
-    if target.is_empty() {
-        configured_room_id.trim().to_string()
-    } else {
-        target.to_string()
-    }
-}
-
-async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str) -> Result<()> {
+async fn deliver_if_configured(
+    config: &Config,
+    job: &CronJob,
+    output: &str,
+    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+) -> Result<()> {
     let delivery: &DeliveryConfig = &job.delivery;
     if !delivery.mode.eq_ignore_ascii_case("announce") {
         return Ok(());
@@ -420,120 +426,32 @@ async fn deliver_if_configured(config: &Config, job: &CronJob, output: &str) -> 
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("delivery.to is required for announce mode"))?;
 
-    deliver_announcement(config, channel, target, output).await
+    deliver_announcement(config, channel, target, output, registry).await
 }
 
+/// Deliver an announcement to a channel via `ChannelRegistryPort`.
+///
+/// When `registry` is available (daemon mode), uses the cached adapter from
+/// `CachedChannelRegistry`. Falls back to `build_channel_by_id` for standalone
+/// scheduler invocations (e.g. `execute_job_now` from CLI).
 pub(crate) async fn deliver_announcement(
     config: &Config,
     channel: &str,
     target: &str,
     output: &str,
+    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
 ) -> Result<()> {
-    match channel.to_ascii_lowercase().as_str() {
-        "telegram" => {
-            let tg = config
-                .channels_config
-                .telegram
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("telegram channel not configured"))?;
-            let channel = TelegramChannel::new(
-                tg.bot_token.clone(),
-                tg.allowed_users.clone(),
-                tg.mention_only,
-            );
-            channel.send(&SendMessage::new(output, target)).await?;
-        }
-        "discord" => {
-            let dc = config
-                .channels_config
-                .discord
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("discord channel not configured"))?;
-            let channel = DiscordChannel::new(
-                dc.bot_token.clone(),
-                dc.guild_id.clone(),
-                dc.allowed_users.clone(),
-                dc.listen_to_bots,
-                dc.mention_only,
-            );
-            channel.send(&SendMessage::new(output, target)).await?;
-        }
-        "slack" => {
-            let sl = config
-                .channels_config
-                .slack
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("slack channel not configured"))?;
-            let channel = SlackChannel::new(
-                sl.bot_token.clone(),
-                sl.app_token.clone(),
-                sl.channel_id.clone(),
-                Vec::new(),
-                sl.allowed_users.clone(),
-            )
-            .with_workspace_dir(config.workspace_dir.clone());
-            channel.send(&SendMessage::new(output, target)).await?;
-        }
-        "mattermost" => {
-            let mm = config
-                .channels_config
-                .mattermost
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("mattermost channel not configured"))?;
-            let channel = MattermostChannel::new(
-                mm.url.clone(),
-                mm.bot_token.clone(),
-                mm.channel_id.clone(),
-                mm.allowed_users.clone(),
-                mm.thread_replies.unwrap_or(true),
-                mm.mention_only.unwrap_or(false),
-            );
-            channel.send(&SendMessage::new(output, target)).await?;
-        }
-        "signal" => {
-            let sg = config
-                .channels_config
-                .signal
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("signal channel not configured"))?;
-            let channel = SignalChannel::new(
-                sg.http_url.clone(),
-                sg.account.clone(),
-                sg.group_id.clone(),
-                sg.allowed_from.clone(),
-                sg.ignore_attachments,
-                sg.ignore_stories,
-            );
-            channel.send(&SendMessage::new(output, target)).await?;
-        }
-        "matrix" => {
-            #[cfg(feature = "channel-matrix")]
-            {
-                let mx = config
-                    .channels_config
-                    .matrix
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("matrix channel not configured"))?;
-                let room_id = resolve_matrix_delivery_room(&mx.room_id, target);
-                let channel = MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
-                    mx.homeserver.clone(),
-                    mx.access_token.clone(),
-                    room_id,
-                    mx.allowed_users.clone(),
-                    mx.user_id.clone(),
-                    mx.device_id.clone(),
-                    config.config_path.parent().map(|path| path.to_path_buf()),
-                );
-                channel.send(&SendMessage::new(output, target)).await?;
-            }
-            #[cfg(not(feature = "channel-matrix"))]
-            {
-                anyhow::bail!("matrix delivery channel requires `channel-matrix` feature");
-            }
-        }
-        other => anyhow::bail!("unsupported delivery channel: {other}"),
+    if let Some(reg) = registry {
+        let intent = crate::fork_core::domain::channel::OutboundIntent::notify(
+            channel,
+            target,
+            output.to_string(),
+        );
+        return reg.deliver(&intent).await;
     }
-
+    // Fallback: no registry (standalone CLI mode) — one-shot via build_channel_by_id
+    let ch = crate::channels::build_channel_by_id(config, channel)?;
+    ch.send(&SendMessage::new(output, target)).await?;
     Ok(())
 }
 
@@ -933,7 +851,7 @@ mod tests {
         let component = unique_component("scheduler-idle");
 
         crate::health::mark_component_error(&component, "pre-existing error");
-        process_due_jobs(&config, &security, Vec::new(), &component).await;
+        process_due_jobs(&config, &security, Vec::new(), &component, None).await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -954,7 +872,7 @@ mod tests {
         let component = unique_component("scheduler-fail");
 
         crate::health::mark_component_ok(&component);
-        process_due_jobs(&config, &security, vec![job], &component).await;
+        process_due_jobs(&config, &security, vec![job], &component, None).await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -969,7 +887,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
         assert!(success);
 
         let runs = cron::list_runs(&config, &job.id, 10).unwrap();
@@ -997,7 +915,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
         assert!(success);
         let lookup = cron::get_job(&config, &job.id);
         assert!(lookup.is_err());
@@ -1022,7 +940,8 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, false, "boom", started, finished).await;
+        let success =
+            persist_job_result(&config, &job, false, "boom", started, finished, None).await;
         assert!(!success);
         let updated = cron::get_job(&config, &job.id).unwrap();
         assert!(!updated.enabled);
@@ -1039,7 +958,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
         assert!(success);
         let lookup = cron::get_job(&config, &job.id);
         assert!(lookup.is_err());
@@ -1055,7 +974,8 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, false, "boom", started, finished).await;
+        let success =
+            persist_job_result(&config, &job, false, "boom", started, finished, None).await;
         assert!(!success);
         let updated = cron::get_job(&config, &job.id).unwrap();
         assert!(!updated.enabled);
@@ -1088,7 +1008,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
         assert!(!success);
 
         let updated = cron::get_job(&config, &job.id).unwrap();
@@ -1126,7 +1046,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
         assert!(success);
 
         let updated = cron::get_job(&config, &job.id).unwrap();
@@ -1158,7 +1078,7 @@ mod tests {
 
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
-        let success = persist_job_result(&config, &job, true, "ok", started, finished).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
         assert!(success);
 
         let updated = cron::get_job(&config, &job.id).unwrap();
@@ -1172,7 +1092,10 @@ mod tests {
         let config = test_config(&tmp).await;
         let mut job = test_job("echo ok");
 
-        assert!(deliver_if_configured(&config, &job, "x").await.is_ok());
+        // No delivery configured — should be no-op
+        assert!(deliver_if_configured(&config, &job, "x", None)
+            .await
+            .is_ok());
 
         job.delivery = DeliveryConfig {
             mode: "announce".into(),
@@ -1180,23 +1103,12 @@ mod tests {
             to: Some("target".into()),
             best_effort: true,
         };
-        let err = deliver_if_configured(&config, &job, "x").await.unwrap_err();
-        assert!(err.to_string().contains("unsupported delivery channel"));
-    }
-
-    #[test]
-    fn resolve_matrix_delivery_room_prefers_target_when_present() {
-        assert_eq!(
-            resolve_matrix_delivery_room("!default:matrix.org", "  !ops:matrix.org  "),
-            "!ops:matrix.org"
-        );
-    }
-
-    #[test]
-    fn resolve_matrix_delivery_room_falls_back_to_configured_room() {
-        assert_eq!(
-            resolve_matrix_delivery_room("  !default:matrix.org  ", "   "),
-            "!default:matrix.org"
+        let err = deliver_if_configured(&config, &job, "x", None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Unknown channel"),
+            "expected 'Unknown channel' in error, got: {err}"
         );
     }
 
@@ -1213,10 +1125,13 @@ mod tests {
             best_effort: false,
         };
 
-        let err = deliver_if_configured(&config, &job, "hello")
+        let err = deliver_if_configured(&config, &job, "hello", None)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("matrix channel not configured"));
+        assert!(
+            err.to_string().contains("Matrix channel is not configured"),
+            "expected 'Matrix channel is not configured' in error, got: {err}"
+        );
     }
 
     #[cfg(not(feature = "channel-matrix"))]
@@ -1232,12 +1147,14 @@ mod tests {
             best_effort: false,
         };
 
-        let err = deliver_if_configured(&config, &job, "hello")
+        let err = deliver_if_configured(&config, &job, "hello", None)
             .await
             .unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("matrix delivery channel requires `channel-matrix` feature"));
+        // Without channel-matrix feature, "matrix" falls through to Unknown channel
+        assert!(
+            err.to_string().contains("Unknown channel"),
+            "expected 'Unknown channel' in error, got: {err}"
+        );
     }
 
     // ── Subprocess execution mode tests ──────────────────────────
