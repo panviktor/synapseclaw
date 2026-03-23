@@ -680,6 +680,33 @@ async fn handle_chat_history(
     let events = if let Some(store) = state.conversation_store.as_ref() {
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         store.get_events(&session_key, limit as usize).await
+    } else if let Some(db) = state.chat_db.as_ref() {
+        // Fallback: convert ChatMessageRow → ConversationEvent
+        db.get_messages(&session_key, limit)
+            .unwrap_or_default()
+            .iter()
+            .map(|m| ConversationEvent {
+                event_type: match m.kind.as_str() {
+                    "user" => EventType::User,
+                    "assistant" => EventType::Assistant,
+                    "tool_call" => EventType::ToolCall,
+                    "tool_result" => EventType::ToolResult,
+                    "error" => EventType::Error,
+                    "interrupted" => EventType::Interrupted,
+                    _ => EventType::System,
+                },
+                actor: m.role.clone().unwrap_or_else(|| m.kind.clone()),
+                content: m.content.clone(),
+                tool_name: m.tool_name.clone(),
+                run_id: m.run_id.clone(),
+                #[allow(clippy::cast_sign_loss)]
+                input_tokens: m.input_tokens.map(|t| t as u64),
+                #[allow(clippy::cast_sign_loss)]
+                output_tokens: m.output_tokens.map(|t| t as u64),
+                #[allow(clippy::cast_sign_loss)]
+                timestamp: m.timestamp as u64,
+            })
+            .collect()
     } else {
         Vec::new()
     };
@@ -703,8 +730,10 @@ async fn handle_chat_history(
 
     let msg_json: Vec<serde_json::Value> = events
         .iter()
-        .map(|e| {
+        .enumerate()
+        .map(|(i, e)| {
             serde_json::json!({
+                "id": i + 1,
                 "kind": e.event_type.to_string(),
                 "role": e.actor,
                 "content": e.content,
