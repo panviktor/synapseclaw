@@ -2170,6 +2170,7 @@ pub(crate) async fn agent_turn(
         excluded_tools,
         dedup_exempt_tools,
         activated_tools,
+        None,
     )
     .await
 }
@@ -2181,6 +2182,7 @@ async fn execute_one_tool(
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
+    run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
 ) -> Result<ToolExecutionOutcome> {
     let args_summary = truncate_with_ellipsis(&call_arguments.to_string(), 300);
     observer.record_event(&ObserverEvent::ToolCallStart {
@@ -2211,6 +2213,13 @@ async fn execute_one_tool(
         });
     };
 
+    // Snapshot IPC tool args before execute() consumes them (for per-session tracking).
+    let ipc_args = if run_ctx.is_some() && matches!(call_name, "agents_reply" | "agents_send") {
+        Some(call_arguments.clone())
+    } else {
+        None
+    };
+
     let tool_future = tool.execute(call_arguments);
     let tool_result = if let Some(token) = cancellation_token {
         tokio::select! {
@@ -2229,6 +2238,9 @@ async fn execute_one_tool(
                 duration,
                 success: r.success,
             });
+            if let Some(ctx) = run_ctx {
+                ctx.record_tool_call(call_name, r.success, ipc_args.as_ref());
+            }
             if r.success {
                 Ok(ToolExecutionOutcome {
                     output: scrub_credentials(&r.output),
@@ -2253,6 +2265,9 @@ async fn execute_one_tool(
                 duration,
                 success: false,
             });
+            if let Some(ctx) = run_ctx {
+                ctx.record_tool_call(call_name, false, ipc_args.as_ref());
+            }
             let reason = format!("Error executing {call_name}: {e}");
             Ok(ToolExecutionOutcome {
                 output: reason.clone(),
@@ -2296,6 +2311,7 @@ async fn execute_tools_parallel(
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
+    run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let futures: Vec<_> = tool_calls
         .iter()
@@ -2307,6 +2323,7 @@ async fn execute_tools_parallel(
                 activated_tools,
                 observer,
                 cancellation_token,
+                run_ctx,
             )
         })
         .collect();
@@ -2321,6 +2338,7 @@ async fn execute_tools_sequential(
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
+    run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let mut outcomes = Vec::with_capacity(tool_calls.len());
 
@@ -2333,6 +2351,7 @@ async fn execute_tools_sequential(
                 activated_tools,
                 observer,
                 cancellation_token,
+                run_ctx,
             )
             .await?,
         );
@@ -2375,6 +2394,7 @@ pub(crate) async fn run_tool_call_loop(
     excluded_tools: &[String],
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
+    run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
 ) -> Result<String> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
@@ -2889,6 +2909,7 @@ pub(crate) async fn run_tool_call_loop(
                 activated_tools,
                 observer,
                 cancellation_token.as_ref(),
+                run_ctx,
             )
             .await?
         } else {
@@ -2898,6 +2919,7 @@ pub(crate) async fn run_tool_call_loop(
                 activated_tools,
                 observer,
                 cancellation_token.as_ref(),
+                run_ctx,
             )
             .await?
         };
@@ -3062,6 +3084,7 @@ pub async fn run(
     interactive: bool,
     session_state_file: Option<PathBuf>,
     _allowed_tools: Option<Vec<String>>,
+    run_ctx: Option<std::sync::Arc<super::run_context::RunContext>>,
 ) -> Result<String> {
     // ── Wire up agnostic subsystems ──────────────────────────────
     let base_observer = observability::create_observer(&config.observability);
@@ -3536,6 +3559,7 @@ pub async fn run(
             &excluded_tools,
             &config.agent.tool_call_dedup_exempt,
             activated_handle.as_ref(),
+            run_ctx.as_ref(),
         )
         .await?;
         final_output = response.clone();
@@ -3698,6 +3722,7 @@ pub async fn run(
                 &excluded_tools,
                 &config.agent.tool_call_dedup_exempt,
                 activated_handle.as_ref(),
+                run_ctx.as_ref(),
             )
             .await
             {
@@ -4104,8 +4129,16 @@ mod tests {
             .expect("should produce a sample whose byte index 300 is not a char boundary");
 
         let observer = NoopObserver;
-        let result =
-            execute_one_tool("unknown_tool", call_arguments, &[], None, &observer, None).await;
+        let result = execute_one_tool(
+            "unknown_tool",
+            call_arguments,
+            &[],
+            None,
+            &observer,
+            None,
+            None,
+        )
+        .await;
         assert!(result.is_ok(), "execute_one_tool should not panic or error");
 
         let outcome = result.unwrap();
@@ -4133,6 +4166,7 @@ mod tests {
             &[],
             Some(&activated),
             &observer,
+            None,
             None,
         )
         .await
@@ -4473,6 +4507,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         )
         .await
         .expect_err("provider without vision support should fail");
@@ -4521,6 +4556,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         )
         .await
         .expect_err("oversized payload must fail");
@@ -4562,6 +4598,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
         )
         .await
@@ -4691,6 +4728,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         )
         .await
         .expect("parallel execution should complete");
@@ -4762,6 +4800,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         )
         .await
         .expect("loop should finish after deduplicating repeated calls");
@@ -4829,6 +4868,7 @@ mod tests {
             &[],
             &[],
             None,
+            None,
         )
         .await
         .expect("non-interactive shell should succeed for low-risk command");
@@ -4886,6 +4926,7 @@ mod tests {
             None,
             &[],
             &exempt,
+            None,
             None,
         )
         .await
@@ -4965,6 +5006,7 @@ mod tests {
             &[],
             &exempt,
             None,
+            None,
         )
         .await
         .expect("loop should complete");
@@ -5019,6 +5061,7 @@ mod tests {
             None,
             &[],
             &[],
+            None,
             None,
         )
         .await
@@ -6978,6 +7021,7 @@ Let me check the result."#;
             None,
             &[],
             &[],
+            None,
             None,
         )
         .await
