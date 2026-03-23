@@ -2,6 +2,13 @@
 
 ## 2026-03-23
 
+### Phase 4.0 Step 4 + cleanup: RunStorePort + send_channel_message removal
+- `Run`, `RunEvent`, `RunState`, `RunOrigin`, `RunEventType` domain types
+- `RunStorePort` trait — unified CRUD for execution runs and events
+- `ChatDbRunStore` adapter with `runs` + `run_events` SQLite tables (migration added to ChatDb)
+- `ChatDb::conn()` public accessor for adapter reuse
+- Cleanup: `send_channel_message()` deleted, inlined at CLI `channel send` handler
+
 ### Phase 4.0 Step 3: ConversationStorePort + conversation domain types
 - `ConversationSession`, `ConversationEvent`, `EventType`, `ConversationKind` domain types
 - `ConversationStorePort` trait — unified CRUD for sessions, transcript events, summaries

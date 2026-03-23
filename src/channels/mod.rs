@@ -3434,7 +3434,15 @@ pub(crate) async fn handle_command(command: crate::ChannelCommands, config: &Con
             message,
             channel_id,
             recipient,
-        } => send_channel_message(config, &channel_id, &recipient, &message).await,
+        } => {
+            let channel = build_channel_by_id(config, &channel_id)?;
+            channel
+                .send(&SendMessage::new(&message, &recipient))
+                .await
+                .with_context(|| format!("Failed to send message via {channel_id}"))?;
+            println!("Message sent via {channel_id}.");
+            Ok(())
+        }
     }
 }
 
@@ -3552,23 +3560,6 @@ pub fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn 
             );
         }
     }
-}
-
-/// Send a one-off message to a configured channel.
-async fn send_channel_message(
-    config: &Config,
-    channel_id: &str,
-    recipient: &str,
-    message: &str,
-) -> Result<()> {
-    let channel = build_channel_by_id(config, channel_id)?;
-    let msg = SendMessage::new(message, recipient);
-    channel
-        .send(&msg)
-        .await
-        .with_context(|| format!("Failed to send message via {channel_id}"))?;
-    println!("Message sent via {channel_id}.");
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
