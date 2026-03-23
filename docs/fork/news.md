@@ -2,6 +2,12 @@
 
 ## 2026-03-23
 
+### Phase 4.0 Step 3: ConversationStorePort + conversation domain types
+- `ConversationSession`, `ConversationEvent`, `EventType`, `ConversationKind` domain types
+- `ConversationStorePort` trait — unified CRUD for sessions, transcript events, summaries
+- `ChatDbConversationStore` adapter wrapping existing `ChatDb` SQLite backend
+- Fix: `InboundEnvelope::conversation_ref` for threaded messages now includes channel prefix (was missing, caused history key mismatch)
+
 ### Phase 4.0 Step 7: InboundEnvelope + HandleInboundMessage
 - `InboundEnvelope` domain type — canonical input for all inbound messages (channel, web, IPC, cron)
 - `SourceKind` enum (Channel, Web, Ipc, Cron, System)

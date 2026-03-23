@@ -166,7 +166,7 @@ impl InboundEnvelope {
             source_adapter: msg.channel.clone(),
             actor_id: msg.sender.clone(),
             conversation_ref: if let Some(ref thread) = msg.thread_ts {
-                format!("{}_{}", thread, msg.sender)
+                format!("{}_{}_{}", msg.channel, thread, msg.sender)
             } else {
                 format!("{}_{}", msg.channel, msg.sender)
             },
@@ -250,7 +250,7 @@ mod tests {
             thread_ts: Some("1711234000.000100".into()),
         };
         let env = InboundEnvelope::from_channel_message(&msg);
-        assert_eq!(env.conversation_ref, "1711234000.000100_user123");
+        assert_eq!(env.conversation_ref, "slack_1711234000.000100_user123");
         assert_eq!(env.thread_ref, Some("1711234000.000100".into()));
     }
 }
