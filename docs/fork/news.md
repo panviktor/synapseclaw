@@ -2,6 +2,29 @@
 
 ## 2026-03-23
 
+### Phase 4.0: ChannelRegistryPort in Gateway + Channel Triage
+- `ChannelRegistryPort` exposed in gateway `AppState` — web UI and REST API can now resolve channels and deliver messages
+- `GET /api/channels/capabilities` — list capabilities for all known channels
+- `POST /api/channels/deliver` — deliver a message to any channel via OutboundIntent (admin-only)
+- Feature gate fix: `capabilities("matrix")` now correctly returns empty when compiled without `channel-matrix`
+- Feature gate fix: `build_channel_by_id` error message is feature-aware
+- `scrub_credentials()` on auto-reply IPC payload (security fix)
+- Channel triage document (`docs/fork/channel-triage.md`): 10 Tier 1 channels to port, 17 Tier 2 deferred as tech debt
+
+### Phase 4.0: OutboundIntent + ChannelRegistryPort (Steps 1-2)
+- New `fork_core` module — fork-owned application core with ports-and-adapters architecture
+- New `fork_adapters` module — infrastructure implementations of fork_core ports
+- `OutboundIntent` domain type with `IntentKind`, `ChannelCapability`, `DegradationPolicy`, `RenderableContent`
+- `ChannelRegistryPort` trait (`fork_core/ports/`) — resolve, capabilities, deliver
+- `CachedChannelRegistry` adapter (`fork_adapters/channels/`) — long-lived cached channel adapters via `parking_lot::RwLock`; Matrix SDK client survives across deliveries
+- `OutboundIntentBus` (mpsc sender/receiver) connects gateway to channels
+- Push inbox processor emits `OutboundIntent` after agent::run() — IPC delegation results relay to user's channel
+- Relay only fires for task/query delegation (`pending_replies` guard), not FYI text
+- `scrub_credentials()` applied to both push relay text AND auto-reply IPC payload (security fix)
+- Config: `push_relay_channel` + `push_relay_recipient` on `[agents_ipc]` to enable relay
+- Matrix added to `build_channel_by_id` (was only telegram/discord/slack)
+- `build_channel_by_id` made public for cross-module reuse
+
 ### IPC Auto-Reply Safety Net
 - New `RunContext` struct (`src/agent/run_context.rs`) — shared run metadata that tracks tool executions during `agent::run()`; stepping stone toward Phase 4.0 `Run` object
 - Auto-reply safety net in gateway inbox processor: when agent processes a `task`/`query` with `session_id` but never calls `agents_reply`, system automatically sends `kind=result` back to the originator — pipelines no longer hang on silent agents

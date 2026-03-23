@@ -3425,7 +3425,7 @@ pub(crate) async fn handle_command(command: crate::ChannelCommands, config: &Con
 }
 
 /// Build a single channel instance by config section name (e.g. "telegram").
-fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn Channel>> {
+pub fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn Channel>> {
     match channel_id {
         "telegram" => {
             let tg = config
@@ -3475,7 +3475,34 @@ fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn Chan
                 .with_workspace_dir(config.workspace_dir.clone()),
             ))
         }
-        other => anyhow::bail!("Unknown channel '{other}'. Supported: telegram, discord, slack"),
+        #[cfg(feature = "channel-matrix")]
+        "matrix" => {
+            let mx = config
+                .channels_config
+                .matrix
+                .as_ref()
+                .context("Matrix channel is not configured")?;
+            Ok(Arc::new(
+                MatrixChannel::new_with_session_hint_and_synapseclaw_dir(
+                    mx.homeserver.clone(),
+                    mx.access_token.clone(),
+                    mx.room_id.clone(),
+                    mx.allowed_users.clone(),
+                    mx.user_id.clone(),
+                    mx.device_id.clone(),
+                    config.config_path.parent().map(|path| path.to_path_buf()),
+                )
+                .with_password(mx.password.clone())
+                .with_max_media_download_mb(mx.max_media_download_mb)
+                .with_transcription(config.transcription.clone()),
+            ))
+        }
+        other => {
+            #[cfg(feature = "channel-matrix")]
+            anyhow::bail!("Unknown channel '{other}'. Supported: telegram, discord, slack, matrix");
+            #[cfg(not(feature = "channel-matrix"))]
+            anyhow::bail!("Unknown channel '{other}'. Supported: telegram, discord, slack");
+        }
     }
 }
 
