@@ -1352,12 +1352,16 @@ async fn agent_inbox_processor(
                 })
                 .collect();
 
-            // Format messages for injection into prompt
+            // Format messages for injection into prompt.
+            // Include session_id so the agent can call agents_reply with the
+            // correct session — without it the agent literally cannot reply
+            // and the auto-reply safety net becomes the only path.
             let mut formatted = String::new();
             for msg in &messages {
                 let id = msg["id"].as_i64().unwrap_or(0);
                 let kind = msg["kind"].as_str().unwrap_or("unknown");
                 let from = msg["from_agent"].as_str().unwrap_or("unknown");
+                let session_id = msg["session_id"].as_str().unwrap_or("");
                 let payload = msg["payload"].as_str().unwrap_or("");
                 let payload_preview = if payload.len() > 4000 {
                     let end = truncate_at_char_boundary(payload, 4000);
@@ -1366,16 +1370,25 @@ async fn agent_inbox_processor(
                     payload.to_string()
                 };
                 use std::fmt::Write;
-                let _ = write!(
-                    formatted,
-                    "--- Message #{id} (kind: {kind}, from: {from}) ---\n{payload_preview}\n\n",
-                );
+                if session_id.is_empty() {
+                    let _ = write!(
+                        formatted,
+                        "--- Message #{id} (kind: {kind}, from: {from}) ---\n{payload_preview}\n\n",
+                    );
+                } else {
+                    let _ = write!(
+                        formatted,
+                        "--- Message #{id} (kind: {kind}, from: {from}, session_id: {session_id}) ---\n{payload_preview}\n\n",
+                    );
+                }
             }
 
             let prompt = format!(
                 "[IPC push: {} new message(s) from \"{}\"]\n\n\
                  {}\
                  Process the messages above and take action if required.\n\
+                 If a message has a session_id and requires a response, use \
+                 agents_reply with that session_id to send results back.\n\
                  IMPORTANT: Do NOT send acknowledgments, confirmations, or \
                  \"understood\" messages. Only reply if the message requires \
                  concrete action or contains a question that needs answering.",
