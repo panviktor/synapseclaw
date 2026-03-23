@@ -1,6 +1,6 @@
 # IPC Phase 4.0 Progress
 
-**Status**: not started
+**Status**: groundwork in progress
 
 Phase 3.12: channel session intelligence | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
 
@@ -27,7 +27,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | 1 | TODO | Create `fork_core` / `fork_adapters` module skeleton and document ownership boundaries |
 | 2 | TODO | Define canonical `InboundEnvelope`, `OutboundIntent`, and `ChannelCapabilities` types |
 | 3 | TODO | Add `ConversationStorePort` over the current chat/session SQLite implementation |
-| 4 | TODO | Add `RunStorePort` and define unified run records/events for chat, IPC, and external workers |
+| 4 | **GROUNDWORK** | Add `RunStorePort` and define unified run records/events for chat, IPC, and external workers |
 | 5 | TODO | Migrate scheduled notification delivery to capability-driven `SendScheduledNotification` |
 | 6 | TODO | Migrate heartbeat target validation/auto-detect away from hardcoded channel-name whitelists |
 | 7 | TODO | Route one inbound human channel through `HandleInboundMessage` use case |
@@ -54,6 +54,25 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 ---
 
 ## Review checkpoints
+
+### Pre-checkpoint: RunContext (PR #157)
+
+`RunContext` (`src/agent/run_context.rs`) is the first concrete artifact toward
+Phase 4.0's unified `Run` object.  It was introduced to solve the IPC auto-reply
+safety net problem, but its design is intentionally Phase 4.0-aligned:
+
+| RunContext (today) | Run (Phase 4.0) |
+|--------------------|-----------------|
+| `tool_events: Vec<ToolEvent>` | `ConversationEvent { event_type: tool_call }` |
+| `was_ipc_reply_sent_for_session(sid)` | `RunStorePort::has_result(run_id)` |
+| Passed via `Option<Arc<RunContext>>` to `agent::run()` | `RunStorePort` injected into core |
+| Tracks tool name + success + IPC args | Tracks full event lifecycle |
+| Created by gateway inbox processor | Created by any run origin (web, channel, IPC, spawn) |
+
+**Migration path**: when Step 4 lands, `RunContext` gets absorbed into `Run` +
+`RunStorePort`.  The `execute_one_tool` recording point stays — it just writes
+to a port instead of an in-memory vec.  The gateway auto-reply becomes a
+`RunStorePort` observer on run completion.
 
 ### Checkpoint A — foundation
 
