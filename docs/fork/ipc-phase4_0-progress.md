@@ -30,7 +30,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | 4 | **GROUNDWORK** | Add `RunStorePort` and define unified run records/events for chat, IPC, and external workers |
 | 5 | **DONE** | Migrate scheduled notification delivery to capability-driven `ChannelRegistryPort.deliver()` |
 | 6 | **DONE** | Migrate heartbeat delivery + validation away from hardcoded channel-name matches |
-| 7 | TODO | Route one inbound human channel through `HandleInboundMessage` use case |
+| 7 | **DONE** | Route inbound messages through `InboundEnvelope` at dispatch boundary + `HandleInboundMessage` application module |
 | 8 | TODO | Extract approval/quarantine orchestration into fork-owned application services |
 | 9 | TODO | Bridge selected IPC flows into the same conversation/run model |
 | 10 | TODO | Add `MemoryTiersPort` adapters for working/session/long-term memory |

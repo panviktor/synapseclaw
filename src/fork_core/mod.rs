@@ -6,6 +6,7 @@
 //!
 //! Design rule: `fork_core` owns *what* happens; adapters own *how*.
 
+pub mod application;
 pub mod bus;
 pub mod domain;
 pub mod ports;

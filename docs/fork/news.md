@@ -2,6 +2,14 @@
 
 ## 2026-03-23
 
+### Phase 4.0 Step 7: InboundEnvelope + HandleInboundMessage
+- `InboundEnvelope` domain type — canonical input for all inbound messages (channel, web, IPC, cron)
+- `SourceKind` enum (Channel, Web, Ipc, Cron, System)
+- `InboundEnvelope::from_channel_message()` — adapter→core boundary conversion
+- `HandleInboundMessage` application module with `to_channel_message()` bridge
+- All channel messages now pass through `InboundEnvelope` at dispatch boundary before `process_channel_message`
+- Strangler-fig pattern: delegates to existing code, ready for gradual replacement
+
 ### Phase 4.0 Steps 5-6: Scheduled + Heartbeat via ChannelRegistryPort
 - `deliver_announcement()` replaced 6-arm channel-name match with `ChannelRegistryPort.deliver()` — single OutboundIntent path for all channels
 - Heartbeat delivery + deadman alerts now use ChannelRegistryPort with long-lived cached adapters

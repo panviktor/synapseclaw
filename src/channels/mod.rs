@@ -2905,7 +2905,21 @@ async fn run_message_dispatch_loop(
                 }
             }
 
-            process_channel_message(worker_ctx, msg, cancellation_token).await;
+            // Phase 4.0 Step 7: canonical InboundEnvelope at the dispatch boundary.
+            // All messages pass through this conversion point.  Currently delegates
+            // to process_channel_message; as fork_core absorbs more logic, the
+            // envelope will be routed to HandleInboundMessage use case instead.
+            let envelope =
+                crate::fork_core::domain::channel::InboundEnvelope::from_channel_message(&msg);
+            tracing::debug!(
+                source = %envelope.source_adapter,
+                actor = %envelope.actor_id,
+                conversation = %envelope.conversation_ref,
+                "InboundEnvelope created"
+            );
+            let channel_msg =
+                crate::fork_core::application::inbound_message::to_channel_message(&envelope);
+            process_channel_message(worker_ctx, channel_msg, cancellation_token).await;
 
             if interrupt_enabled {
                 let mut active = in_flight.lock().await;
