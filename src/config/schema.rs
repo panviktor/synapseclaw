@@ -1759,6 +1759,17 @@ pub struct AgentsIpcConfig {
     /// Messages are still delivered to inbox but await poll/manual check.
     #[serde(default)]
     pub push_one_way: bool,
+
+    /// Channel name to relay push-triggered agent output to (e.g. "telegram", "matrix").
+    /// When set together with `push_relay_recipient`, the push inbox processor
+    /// emits an `OutboundIntent` so IPC results reach the user's channel.
+    /// Phase 4.0 first vertical slice.
+    #[serde(default)]
+    pub push_relay_channel: Option<String>,
+
+    /// Platform-specific recipient for push relay (e.g. Telegram chat ID, Matrix room ID).
+    #[serde(default)]
+    pub push_relay_recipient: Option<String>,
 }
 
 /// PromptGuard configuration for IPC message payload scanning.
@@ -1937,6 +1948,8 @@ impl Default for AgentsIpcConfig {
             push_peer_cooldown_secs: default_push_peer_cooldown_secs(),
             push_auto_process_kinds: default_push_auto_process_kinds(),
             push_one_way: false,
+            push_relay_channel: None,
+            push_relay_recipient: None,
         }
     }
 }
@@ -6711,7 +6724,9 @@ pub fn parse_extra_headers_env(raw: &str) -> Vec<(String, String)> {
             let key = key.trim();
             let value = value.trim();
             if key.is_empty() {
-                tracing::warn!("Ignoring extra header with empty name in SYNAPSECLAW_EXTRA_HEADERS");
+                tracing::warn!(
+                    "Ignoring extra header with empty name in SYNAPSECLAW_EXTRA_HEADERS"
+                );
                 continue;
             }
             result.push((key.to_string(), value.to_string()));
@@ -7640,7 +7655,8 @@ impl Config {
     /// Apply environment variable overrides to config
     pub fn apply_env_overrides(&mut self) {
         // API Key: SYNAPSECLAW_API_KEY or API_KEY (generic)
-        if let Ok(key) = std::env::var("SYNAPSECLAW_API_KEY").or_else(|_| std::env::var("API_KEY")) {
+        if let Ok(key) = std::env::var("SYNAPSECLAW_API_KEY").or_else(|_| std::env::var("API_KEY"))
+        {
             if !key.is_empty() {
                 self.api_key = Some(key);
             }
@@ -7769,7 +7785,8 @@ impl Config {
         }
 
         // Gateway host: SYNAPSECLAW_GATEWAY_HOST or HOST
-        if let Ok(host) = std::env::var("SYNAPSECLAW_GATEWAY_HOST").or_else(|_| std::env::var("HOST"))
+        if let Ok(host) =
+            std::env::var("SYNAPSECLAW_GATEWAY_HOST").or_else(|_| std::env::var("HOST"))
         {
             if !host.is_empty() {
                 self.gateway.host = host;
@@ -8968,7 +8985,10 @@ provider_timeout_secs = 300
             headers[0],
             ("User-Agent".to_string(), "MyApp/1.0".to_string())
         );
-        assert_eq!(headers[1], ("X-Title".to_string(), "synapseclaw".to_string()));
+        assert_eq!(
+            headers[1],
+            ("X-Title".to_string(), "synapseclaw".to_string())
+        );
     }
 
     #[test]
@@ -8991,7 +9011,10 @@ provider_timeout_secs = 300
     async fn parse_extra_headers_env_whitespace_trimming() {
         let headers = parse_extra_headers_env("  X-Title : synapseclaw , User-Agent : cli/1.0 ");
         assert_eq!(headers.len(), 2);
-        assert_eq!(headers[0], ("X-Title".to_string(), "synapseclaw".to_string()));
+        assert_eq!(
+            headers[0],
+            ("X-Title".to_string(), "synapseclaw".to_string())
+        );
         assert_eq!(
             headers[1],
             ("User-Agent".to_string(), "cli/1.0".to_string())
@@ -9024,7 +9047,10 @@ provider_timeout_secs = 300
     async fn parse_extra_headers_env_trailing_comma() {
         let headers = parse_extra_headers_env("X-Title:synapseclaw,");
         assert_eq!(headers.len(), 1);
-        assert_eq!(headers[0], ("X-Title".to_string(), "synapseclaw".to_string()));
+        assert_eq!(
+            headers[0],
+            ("X-Title".to_string(), "synapseclaw".to_string())
+        );
     }
 
     #[test]

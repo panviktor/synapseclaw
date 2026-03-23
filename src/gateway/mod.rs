@@ -386,11 +386,22 @@ pub struct AppState {
     pub ipc_push_signal: Option<tokio::sync::mpsc::UnboundedSender<ipc::PushMeta>>,
     /// Channel session backend for JSONL/SQLite channel conversation persistence
     pub channel_session_backend: Option<Arc<dyn crate::channels::session_backend::SessionBackend>>,
+    /// Phase 4.0: Channel adapter registry with long-lived cached instances
+    pub channel_registry:
+        Option<Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
 #[allow(clippy::too_many_lines)]
-pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
+pub async fn run_gateway(
+    host: &str,
+    port: u16,
+    config: Config,
+    outbound_tx: Option<crate::fork_core::bus::OutboundIntentSender>,
+    channel_registry: Option<
+        Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+    >,
+) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
     {
@@ -872,6 +883,7 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         } else {
             None
         },
+        channel_registry,
     };
 
     // Phase 3.8: seed AgentRegistry from DB + start health polling
@@ -927,8 +939,14 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
         let (push_tx, push_rx) = tokio::sync::mpsc::unbounded_channel::<ipc::PushMeta>();
         state.ipc_push_signal = Some(push_tx);
         let inbox_config = config.clone();
+        let inbox_outbound_tx = outbound_tx.clone();
         tokio::spawn(async move {
-            Box::pin(agent_inbox_processor(inbox_config, push_rx)).await;
+            Box::pin(agent_inbox_processor(
+                inbox_config,
+                push_rx,
+                inbox_outbound_tx,
+            ))
+            .await;
         });
     }
 
@@ -1102,6 +1120,15 @@ pub async fn run_gateway(host: &str, port: u16, config: Config) -> Result<()> {
             "/api/channel/sessions/{key}",
             delete(api::handle_api_channel_session_delete),
         )
+        // ── Phase 4.0: Channel capabilities + deliver ──
+        .route(
+            "/api/channels/capabilities",
+            get(api::handle_api_channel_capabilities),
+        )
+        .route(
+            "/api/channels/deliver",
+            post(api::handle_api_channel_deliver),
+        )
         .route("/api/cron", get(api::handle_api_cron_list))
         .route("/api/cron", post(api::handle_api_cron_add))
         .route("/api/cron/{id}", delete(api::handle_api_cron_delete))
@@ -1230,6 +1257,7 @@ struct PeerState {
 async fn agent_inbox_processor(
     config: Config,
     mut push_rx: tokio::sync::mpsc::UnboundedReceiver<ipc::PushMeta>,
+    outbound_tx: Option<crate::fork_core::bus::OutboundIntentSender>,
 ) {
     let max_auto = config.agents_ipc.push_max_auto_processes;
     let cooldown = Duration::from_secs(config.agents_ipc.push_peer_cooldown_secs);
@@ -1450,7 +1478,10 @@ async fn agent_inbox_processor(
                             "[auto-reply] Agent completed processing but produced no output."
                                 .to_string()
                         } else {
-                            let truncated = truncate_at_char_boundary(&last_text, 4000);
+                            // Scrub credentials — auto-reply payload is sent to peer
+                            // agents over IPC where it could leak secrets from tool output.
+                            let scrubbed = crate::agent::loop_::scrub_credentials(last_text.trim());
+                            let truncated = truncate_at_char_boundary(&scrubbed, 4000);
                             format!(
                                 "[auto-reply] Agent completed processing but did not \
                                  send explicit reply. Last output:\n{truncated}"
@@ -1488,6 +1519,54 @@ async fn agent_inbox_processor(
                                     to = %to_agent,
                                     "Auto-reply safety net: failed to send: {e}"
                                 );
+                            }
+                        }
+                    }
+
+                    // ── Phase 4.0: Push relay via OutboundIntent ────────
+                    // If push_relay_channel + push_relay_recipient are configured,
+                    // relay the agent's output to the user's channel so IPC results
+                    // are visible in Matrix/Telegram/etc.
+                    //
+                    // Guard: only relay when there were pending task/query replies —
+                    // this is the delegation use case.  FYI `text` messages should
+                    // not spam the user's channel.
+                    if !pending_replies.is_empty() {
+                        if let (Some(relay_ch), Some(relay_rcpt)) = (
+                            config.agents_ipc.push_relay_channel.as_deref(),
+                            config.agents_ipc.push_relay_recipient.as_deref(),
+                        ) {
+                            if let Some(tx) = &outbound_tx {
+                                // Scrub credentials before relaying to a human-facing
+                                // channel — last_text is raw LLM output that may
+                                // contain secrets from tool execution.
+                                let scrubbed =
+                                    crate::agent::loop_::scrub_credentials(last_text.trim());
+                                let relay_text = scrubbed.as_str();
+                                if !relay_text.is_empty() {
+                                    let content = if relay_text.len() > 4000 {
+                                        let end = truncate_at_char_boundary(relay_text, 4000);
+                                        format!("{end}… [truncated]")
+                                    } else {
+                                        relay_text.to_string()
+                                    };
+                                    let intent =
+                                        crate::fork_core::domain::channel::OutboundIntent::notify(
+                                            relay_ch, relay_rcpt, content,
+                                        );
+                                    if tx.send(intent) {
+                                        tracing::info!(
+                                            peer = %peer,
+                                            channel = relay_ch,
+                                            "Push relay: emitted OutboundIntent for channel delivery"
+                                        );
+                                    } else {
+                                        tracing::warn!(
+                                            peer = %peer,
+                                            "Push relay: OutboundIntent bus closed, relay dropped"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -2713,6 +2792,7 @@ mod tests {
             ipc_push_dedup: None,
             ipc_push_signal: None,
             channel_session_backend: None,
+            channel_registry: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2781,6 +2861,7 @@ mod tests {
             ipc_push_dedup: None,
             ipc_push_signal: None,
             channel_session_backend: None,
+            channel_registry: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -3173,6 +3254,7 @@ mod tests {
             ipc_push_dedup: None,
             ipc_push_signal: None,
             channel_session_backend: None,
+            channel_registry: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3255,6 +3337,7 @@ mod tests {
             ipc_push_dedup: None,
             ipc_push_signal: None,
             channel_session_backend: None,
+            channel_registry: None,
         };
 
         let headers = HeaderMap::new();
@@ -3349,6 +3432,7 @@ mod tests {
             ipc_push_dedup: None,
             ipc_push_signal: None,
             channel_session_backend: None,
+            channel_registry: None,
         };
 
         let response = handle_webhook(
@@ -3415,6 +3499,7 @@ mod tests {
             ipc_push_dedup: None,
             ipc_push_signal: None,
             channel_session_backend: None,
+            channel_registry: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3486,6 +3571,7 @@ mod tests {
             ipc_push_dedup: None,
             ipc_push_signal: None,
             channel_session_backend: None,
+            channel_registry: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3562,6 +3648,7 @@ mod tests {
             ipc_push_dedup: None,
             ipc_push_signal: None,
             channel_session_backend: None,
+            channel_registry: None,
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -3634,6 +3721,7 @@ mod tests {
             ipc_push_dedup: None,
             ipc_push_signal: None,
             channel_session_backend: None,
+            channel_registry: None,
         };
 
         let mut headers = HeaderMap::new();

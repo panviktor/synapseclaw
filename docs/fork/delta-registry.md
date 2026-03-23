@@ -112,6 +112,12 @@ Related documents:
 |----|--------|--------|------------|------------|-------|
 | CH-001 | Matrix channel fixes (media, E2EE, dedup) | `temporary-backport` | `medium` | `src/channels/matrix.rs` | May be resolved by upstream; review on every sync |
 
+## Fork Core (CORE-001)
+
+| ID | Change | Status | Merge risk | Main files | Notes |
+|----|--------|--------|------------|------------|-------|
+| CORE-001 | Fork-owned application core: OutboundIntent, ChannelRegistryPort, CachedChannelRegistry, bus, push relay | `fork-only` | `low` | `src/fork_core/*`, `src/fork_adapters/*`, `src/daemon/mod.rs` | Phase 4.0 Steps 1-2; new files, fork-owned |
+
 ## Other (MISC-001 .. MISC-003)
 
 | ID | Change | Status | Merge risk | Main files | Notes |
@@ -181,6 +187,8 @@ These are new files created by the fork. Accept fork version on conflict:
 - `web/src/types/ipc.ts`
 - `web/src/hooks/useChatStore.ts`
 - `web/src/components/chat/SessionSidebar.tsx`
+- `src/fork_core/*`
+- `src/fork_adapters/*`
 - `docs/fork/*`
 - `.claude/skills/*`
 - `scripts/sync-upstream.sh`, `scripts/report-sync-conflicts.sh`, `scripts/render-sync-pr-body.sh`
@@ -227,9 +235,10 @@ Update this registry when:
 | Web UI | 6 | 0 | 0 | 6 |
 | Web Infra | 3 | 0 | 0 | 3 |
 | Channels | 0 | 0 | 1 | 1 |
+| Fork Core | 1 | 0 | 0 | 1 |
 | Other | 3 | 0 | 0 | 3 |
 | Infra/CI | 2 | 0 | 0 | 2 |
-| **Total** | **31** | **12** | **1** | **44** |
+| **Total** | **32** | **12** | **1** | **45** |
 
 ## Current Conclusion
 

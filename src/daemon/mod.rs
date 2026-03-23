@@ -62,9 +62,39 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     let mut handles: Vec<JoinHandle<()>> = vec![spawn_state_writer(config.clone())];
 
+    // ── Phase 4.0: ChannelRegistryPort + OutboundIntent bus ────────
+    // CachedChannelRegistry is shared between the relay task (consumer)
+    // and the gateway (REST API: capabilities + deliver endpoints).
+    let channel_registry: Option<
+        std::sync::Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+    > = if config.agents_ipc.enabled {
+        Some(std::sync::Arc::new(
+            crate::fork_adapters::channels::registry::CachedChannelRegistry::new(config.clone()),
+        ))
+    } else {
+        None
+    };
+
+    // OutboundIntent bus: gateway emits intents, relay delivers via registry.
+    let outbound_tx = if channel_registry.is_some()
+        && config.agents_ipc.push_relay_channel.is_some()
+        && config.agents_ipc.push_relay_recipient.is_some()
+    {
+        let (tx, rx) = crate::fork_core::bus::outbound_intent_bus();
+        let relay_registry = channel_registry.clone().unwrap();
+        handles.push(tokio::spawn(async move {
+            Box::pin(outbound_intent_relay(relay_registry, rx)).await;
+        }));
+        Some(tx)
+    } else {
+        None
+    };
+
     {
         let gateway_cfg = config.clone();
         let gateway_host = host.clone();
+        let gw_outbound_tx = outbound_tx.clone();
+        let gw_registry = channel_registry.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -72,7 +102,11 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
             move || {
                 let cfg = gateway_cfg.clone();
                 let host = gateway_host.clone();
-                async move { Box::pin(crate::gateway::run_gateway(&host, port, cfg)).await }
+                let otx = gw_outbound_tx.clone();
+                let reg = gw_registry.clone();
+                async move {
+                    Box::pin(crate::gateway::run_gateway(&host, port, cfg, otx, reg)).await
+                }
             },
         ));
     }
@@ -581,6 +615,42 @@ fn validate_heartbeat_channel_config(config: &Config, channel: &str) -> Result<(
     }
 
     Ok(())
+}
+
+// ── Phase 4.0: OutboundIntent relay ──────────────────────────────
+//
+// Consumes outbound intents emitted by the gateway push inbox processor
+// and delivers them via CachedChannelRegistry (ChannelRegistryPort).
+// Long-lived adapters: stateful channels (Matrix) keep their authenticated
+// SDK client alive across deliveries.
+async fn outbound_intent_relay(
+    registry: std::sync::Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+    mut rx: crate::fork_core::bus::OutboundIntentReceiver,
+) {
+    tracing::info!("OutboundIntent relay started (CachedChannelRegistry)");
+    while let Some(intent) = rx.recv().await {
+        let channel = intent.target_channel.clone();
+        let recipient = intent.target_recipient.clone();
+        let kind = intent.intent_kind.to_string();
+        match registry.deliver(&intent).await {
+            Ok(()) => {
+                tracing::info!(
+                    channel = %channel,
+                    recipient = %recipient,
+                    kind = %kind,
+                    "OutboundIntent delivered"
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    channel = %channel,
+                    recipient = %recipient,
+                    "OutboundIntent delivery failed: {e}"
+                );
+            }
+        }
+    }
+    tracing::info!("OutboundIntent relay stopped (bus closed)");
 }
 
 fn has_supervised_channels(config: &Config) -> bool {

@@ -24,8 +24,8 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 
 | Step | Status | Description |
 |------|--------|-------------|
-| 1 | TODO | Create `fork_core` / `fork_adapters` module skeleton and document ownership boundaries |
-| 2 | TODO | Define canonical `InboundEnvelope`, `OutboundIntent`, and `ChannelCapabilities` types |
+| 1 | **DONE** | Create `fork_core` / `fork_adapters` module skeleton and document ownership boundaries |
+| 2 | **DONE** | Define canonical `OutboundIntent`, `ChannelCapabilities`, `ChannelRegistryPort` trait + `CachedChannelRegistry` adapter |
 | 3 | TODO | Add `ConversationStorePort` over the current chat/session SQLite implementation |
 | 4 | **GROUNDWORK** | Add `RunStorePort` and define unified run records/events for chat, IPC, and external workers |
 | 5 | TODO | Migrate scheduled notification delivery to capability-driven `SendScheduledNotification` |
@@ -73,6 +73,59 @@ safety net problem, but its design is intentionally Phase 4.0-aligned:
 `RunStorePort`.  The `execute_one_tool` recording point stays — it just writes
 to a port instead of an in-memory vec.  The gateway auto-reply becomes a
 `RunStorePort` observer on run completion.
+
+### Pre-checkpoint: OutboundIntent + ChannelRegistryPort (Steps 1-2)
+
+First vertical slice of Phase 4.0 — hexagonal port/adapter pair.
+Solves the concrete problem: push-triggered IPC results (e.g. copywriter →
+marketing-lead) never reached the user's channel.
+
+**What shipped:**
+
+| Artifact | Location |
+|----------|----------|
+| `fork_core` module skeleton | `src/fork_core/{mod,domain/mod,domain/channel,bus,ports/mod,ports/channel_registry}.rs` |
+| `fork_adapters` module skeleton | `src/fork_adapters/{mod,channels/mod,channels/registry}.rs` |
+| `OutboundIntent`, `IntentKind`, `ChannelCapability`, `DegradationPolicy` | `src/fork_core/domain/channel.rs` |
+| `ChannelRegistryPort` trait | `src/fork_core/ports/channel_registry.rs` |
+| `CachedChannelRegistry` (long-lived adapters) | `src/fork_adapters/channels/registry.rs` |
+| `OutboundIntentBus` (mpsc sender/receiver) | `src/fork_core/bus.rs` |
+| Push relay with `scrub_credentials` + `pending_replies` guard | `src/gateway/mod.rs` |
+| Auto-reply IPC payload scrubbed | `src/gateway/mod.rs` |
+| `outbound_intent_relay` via ChannelRegistryPort | `src/daemon/mod.rs` |
+| Config: `push_relay_channel`, `push_relay_recipient` | `src/config/schema.rs` |
+| Matrix added to `build_channel_by_id` | `src/channels/mod.rs` |
+
+**Data flow:**
+
+```
+agent_inbox_processor (gateway)
+  → IPC result arrives, agent::run() completes
+  → scrub_credentials(last_text)
+  → OutboundIntent::notify(relay_ch, relay_rcpt, scrubbed_text)
+  → OutboundIntentSender.send()
+  → outbound_intent_relay (daemon task)
+  → CachedChannelRegistry::deliver()
+    → resolve() (cached Arc<dyn Channel>)
+    → capability check + degradation policy
+    → channel.send()
+  → user sees result in Matrix/Telegram
+```
+
+**Security:** Both auto-reply IPC payload and push relay text pass through
+`scrub_credentials()`. Relay only fires when `pending_replies` is non-empty
+(task/query delegation, not FYI text).
+
+**Config to enable (per agent):**
+
+```toml
+[agents_ipc]
+push_relay_channel = "matrix"        # or "telegram"
+push_relay_recipient = "!room:server" # or chat_id
+```
+
+**What's NOT done yet:** `InboundEnvelope`, `ChannelCapabilities` as trait on
+channel adapters, `fork_adapters` module.  These come in later steps.
 
 ### Checkpoint A — foundation
 

@@ -83,6 +83,8 @@ mod cost;
 mod cron;
 mod daemon;
 mod doctor;
+mod fork_adapters;
+mod fork_core;
 mod gateway;
 mod hardware;
 mod health;
@@ -969,7 +971,7 @@ async fn main() -> Result<()> {
                     }
 
                     log_gateway_start(&host, port);
-                    Box::pin(gateway::run_gateway(&host, port, config)).await
+                    Box::pin(gateway::run_gateway(&host, port, config, None, None)).await
                 }
                 Some(synapseclaw::GatewayCommands::GetPaircode { new }) => {
                     let port = config.gateway.port;
@@ -1018,13 +1020,13 @@ async fn main() -> Result<()> {
                 Some(synapseclaw::GatewayCommands::Start { port, host }) => {
                     let (port, host) = resolve_gateway_addr(&config, port, host);
                     log_gateway_start(&host, port);
-                    Box::pin(gateway::run_gateway(&host, port, config)).await
+                    Box::pin(gateway::run_gateway(&host, port, config, None, None)).await
                 }
                 None => {
                     let port = config.gateway.port;
                     let host = config.gateway.host.clone();
                     log_gateway_start(&host, port);
-                    Box::pin(gateway::run_gateway(&host, port, config)).await
+                    Box::pin(gateway::run_gateway(&host, port, config, None, None)).await
                 }
             }
         }

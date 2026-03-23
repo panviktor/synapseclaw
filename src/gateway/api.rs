@@ -942,6 +942,139 @@ pub async fn handle_api_channel_session_delete(
     }
 }
 
+// ── Phase 4.0: Channel capabilities + deliver ───────────────────
+
+/// GET /api/channels/capabilities — list capabilities for all known channels.
+pub async fn handle_api_channel_capabilities(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let registry = match &state.channel_registry {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Channel registry not available"})),
+            )
+                .into_response();
+        }
+    };
+
+    let channels = [
+        "telegram",
+        "discord",
+        "slack",
+        "matrix",
+        "signal",
+        "email",
+        "mattermost",
+        "webhook",
+    ];
+    let mut result = serde_json::Map::new();
+    for name in &channels {
+        let caps = registry.capabilities(name);
+        if !caps.is_empty() {
+            let cap_names: Vec<&str> = caps
+                .iter()
+                .map(|c| match c {
+                    crate::fork_core::domain::channel::ChannelCapability::SendText => "SendText",
+                    crate::fork_core::domain::channel::ChannelCapability::ReceiveText => {
+                        "ReceiveText"
+                    }
+                    crate::fork_core::domain::channel::ChannelCapability::Threads => "Threads",
+                    crate::fork_core::domain::channel::ChannelCapability::Reactions => "Reactions",
+                    crate::fork_core::domain::channel::ChannelCapability::Typing => "Typing",
+                    crate::fork_core::domain::channel::ChannelCapability::Attachments => {
+                        "Attachments"
+                    }
+                    crate::fork_core::domain::channel::ChannelCapability::RichFormatting => {
+                        "RichFormatting"
+                    }
+                    crate::fork_core::domain::channel::ChannelCapability::EditMessage => {
+                        "EditMessage"
+                    }
+                })
+                .collect();
+            result.insert((*name).to_string(), serde_json::json!(cap_names));
+        }
+    }
+    Json(serde_json::Value::Object(result)).into_response()
+}
+
+/// POST /api/channels/deliver — deliver a message to a channel via OutboundIntent.
+pub async fn handle_api_channel_deliver(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let registry = match &state.channel_registry {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Channel registry not available"})),
+            )
+                .into_response();
+        }
+    };
+
+    let channel = match body["channel"].as_str() {
+        Some(c) if !c.is_empty() => c,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Missing 'channel' field"})),
+            )
+                .into_response();
+        }
+    };
+    let recipient = match body["recipient"].as_str() {
+        Some(r) if !r.is_empty() => r,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Missing 'recipient' field"})),
+            )
+                .into_response();
+        }
+    };
+    let content = match body["content"].as_str() {
+        Some(c) if !c.is_empty() => c,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Missing 'content' field"})),
+            )
+                .into_response();
+        }
+    };
+    let thread_ref = body["thread_ref"].as_str().map(String::from);
+
+    let mut intent = crate::fork_core::domain::channel::OutboundIntent::notify(
+        channel,
+        recipient,
+        content.to_string(),
+    );
+    intent.thread_ref = thread_ref;
+
+    match registry.deliver(&intent).await {
+        Ok(()) => Json(serde_json::json!({"delivered": true, "channel": channel})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
 // ── Activity feed (Phase 3.9) ────────────────────────────────────
 
 /// Known channel name prefixes for distinguishing channel vs web_chat sessions.

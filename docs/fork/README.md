@@ -45,6 +45,7 @@ See [`news.md`](news.md) for the latest updates and release notes.
 | [ipc-phase3_12-progress.md](ipc-phase3_12-progress.md) | Phase 3.12 execution checklist | Opus |
 | [ipc-phase4_0-plan.md](ipc-phase4_0-plan.md) | Phase 4.0: Modular Core Refactor — capability-driven channels, conversation store | Everyone |
 | [ipc-phase4_0-progress.md](ipc-phase4_0-progress.md) | Phase 4.0 execution checklist | Opus |
+| [channel-triage.md](channel-triage.md) | Channel port priority: 10 Tier 1 (port) + 17 Tier 2 (defer) | Everyone |
 
 ## Reading order
 
