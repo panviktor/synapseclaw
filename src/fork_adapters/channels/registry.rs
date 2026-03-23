@@ -85,6 +85,18 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::Reactions,
                 ChannelCapability::RichFormatting,
             ],
+            "mattermost" => vec![
+                ChannelCapability::SendText,
+                ChannelCapability::ReceiveText,
+                ChannelCapability::Threads,
+                ChannelCapability::Reactions,
+                ChannelCapability::RichFormatting,
+            ],
+            "signal" => vec![
+                ChannelCapability::SendText,
+                ChannelCapability::ReceiveText,
+                ChannelCapability::Reactions,
+            ],
             _ => vec![],
         }
     }
