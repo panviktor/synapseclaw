@@ -1334,6 +1334,24 @@ async fn agent_inbox_processor(
                 }
             }
 
+            // Collect pending task/query messages that expect a reply (have session_id).
+            // Used by auto-reply safety net after agent::run() completes.
+            let pending_replies: Vec<(String, String)> = messages
+                .iter()
+                .filter_map(|m| {
+                    let kind = m["kind"].as_str().unwrap_or("");
+                    if kind == "task" || kind == "query" {
+                        if let Some(sid) = m["session_id"].as_str() {
+                            let from = m["from_agent"].as_str().unwrap_or("").to_string();
+                            if !from.is_empty() && !sid.is_empty() {
+                                return Some((from, sid.to_string()));
+                            }
+                        }
+                    }
+                    None
+                })
+                .collect();
+
             // Format messages for injection into prompt
             let mut formatted = String::new();
             for msg in &messages {
@@ -1342,7 +1360,8 @@ async fn agent_inbox_processor(
                 let from = msg["from_agent"].as_str().unwrap_or("unknown");
                 let payload = msg["payload"].as_str().unwrap_or("");
                 let payload_preview = if payload.len() > 4000 {
-                    format!("{}… [truncated]", &payload[..4000])
+                    let end = truncate_at_char_boundary(payload, 4000);
+                    format!("{end}… [truncated]")
                 } else {
                     payload.to_string()
                 };
@@ -1371,6 +1390,10 @@ async fn agent_inbox_processor(
                 "Push notification received, invoking scoped agent inbox processing"
             );
 
+            // Create RunContext to track tool calls during this push-triggered run.
+            // Used by auto-reply safety net to detect if agents_reply was called.
+            let run_ctx = std::sync::Arc::new(crate::agent::run_context::RunContext::new());
+
             match Box::pin(crate::agent::run(
                 config.clone(),
                 Some(prompt),
@@ -1381,10 +1404,11 @@ async fn agent_inbox_processor(
                 false,
                 None,
                 None,
+                Some(run_ctx.clone()),
             ))
             .await
             {
-                Ok(_) => {
+                Ok(last_text) => {
                     // Ack via broker HTTP — mark as read only after success
                     if let Err(e) = ipc_client.ack_messages(&msg_ids).await {
                         tracing::warn!(
@@ -1392,6 +1416,69 @@ async fn agent_inbox_processor(
                             "Push: broker ack_messages failed: {e}"
                         );
                     }
+
+                    // ── Auto-reply safety net ────────────────────────────
+                    // For each pending task/query with session_id, check if the
+                    // agent sent a reply for that SPECIFIC session (via agents_reply
+                    // OR agents_send kind=result).  Only fire auto-reply for
+                    // sessions that got no explicit response.
+                    //
+                    // NOTE: auto-reply is sent unsigned (gateway ipc_client has no
+                    // Ed25519 identity).  The broker accepts unsigned messages when
+                    // no public key is registered for the sender.  If the broker
+                    // later enforces mandatory signatures, this path needs the
+                    // agent's identity loaded.
+                    for (to_agent, session_id) in &pending_replies {
+                        if run_ctx.was_ipc_reply_sent_for_session(session_id) {
+                            continue;
+                        }
+
+                        let auto_payload = if last_text.trim().is_empty() {
+                            "[auto-reply] Agent completed processing but produced no output."
+                                .to_string()
+                        } else {
+                            let truncated = truncate_at_char_boundary(&last_text, 4000);
+                            format!(
+                                "[auto-reply] Agent completed processing but did not \
+                                 send explicit reply. Last output:\n{truncated}"
+                            )
+                        };
+
+                        let body = serde_json::json!({
+                            "to": to_agent,
+                            "kind": "result",
+                            "payload": auto_payload,
+                            "session_id": session_id,
+                            "priority": 0,
+                        });
+
+                        match ipc_client.send_message(&body).await {
+                            Ok(resp) if resp.status().is_success() => {
+                                tracing::info!(
+                                    peer = %peer,
+                                    to = %to_agent,
+                                    session_id = %session_id,
+                                    "Auto-reply safety net: sent unsigned result to originator"
+                                );
+                            }
+                            Ok(resp) => {
+                                tracing::warn!(
+                                    peer = %peer,
+                                    to = %to_agent,
+                                    status = %resp.status(),
+                                    "Auto-reply safety net: broker rejected auto-reply"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    peer = %peer,
+                                    to = %to_agent,
+                                    "Auto-reply safety net: failed to send: {e}"
+                                );
+                            }
+                        }
+                    }
+
                     state.auto_process_count += 1;
                     state.last_processed = std::time::Instant::now();
                     tracing::info!(
@@ -1425,6 +1512,19 @@ async fn handle_health(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Prometheus content type for text exposition format.
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+
+/// Truncate a UTF-8 string to at most `max_bytes`, ending on a char boundary.
+/// Returns the truncated slice (never panics on multi-byte characters).
+fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
 
 fn prometheus_disabled_hint() -> String {
     String::from("# Prometheus backend not enabled. Set [observability] backend = \"prometheus\" in config.\n")

@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
+use uuid;
 
 /// Resolve the ~/.synapseclaw directory for persisting sender_seq.
 fn home_synapseclaw_dir() -> Option<std::path::PathBuf> {
@@ -243,6 +244,15 @@ impl IpcClient {
             .await
     }
 
+    /// Send an IPC message via broker HTTP API.
+    /// Used by the auto-reply safety net in the gateway inbox processor.
+    pub async fn send_message(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<reqwest::Response, reqwest::Error> {
+        self.post("/api/ipc/send", body).await
+    }
+
     /// Non-consuming peek at inbox messages via broker HTTP API (Phase 3.10).
     /// Returns messages without marking them as read.
     pub async fn peek_inbox(
@@ -423,13 +433,22 @@ impl Tool for AgentsSendTool {
         let session_id = args["session_id"].as_str();
         let priority = args["priority"].as_i64().unwrap_or(0);
 
+        // Auto-generate session_id for task/query messages so recipients can reply
+        let effective_session_id: Option<String> = match session_id {
+            Some(sid) => Some(sid.to_string()),
+            None if kind == "task" || kind == "query" => {
+                Some(format!("auto-{}", uuid::Uuid::new_v4().as_hyphenated()))
+            }
+            None => None,
+        };
+
         let mut body = json!({
             "to": to,
             "kind": kind,
             "payload": payload,
             "priority": priority,
         });
-        if let Some(sid) = session_id {
+        if let Some(sid) = &effective_session_id {
             body["session_id"] = json!(sid);
         }
 

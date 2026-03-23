@@ -1,6 +1,26 @@
 # SynapseClaw News & Changelog
 
+## 2026-03-23
+
+### IPC Auto-Reply Safety Net
+- New `RunContext` struct (`src/agent/run_context.rs`) — shared run metadata that tracks tool executions during `agent::run()`; stepping stone toward Phase 4.0 `Run` object
+- Auto-reply safety net in gateway inbox processor: when agent processes a `task`/`query` with `session_id` but never calls `agents_reply`, system automatically sends `kind=result` back to the originator — pipelines no longer hang on silent agents
+- Per-session reply tracking: RunContext stores IPC tool args, checks replies per `session_id` — batch of 3 tasks correctly auto-replies only for sessions without explicit response
+- Both reply paths tracked: `agents_reply` AND `agents_send(kind=result)` count as explicit replies
+- Safe UTF-8 truncation for payload previews and auto-reply content (prevents panic on multi-byte chars)
+- `IpcClient::send_message()` public method for gateway auto-reply delivery
+- RunContext threaded through `execute_one_tool` → `run_tool_call_loop` → `agent::run()` via new `run_ctx: Option<Arc<RunContext>>` parameter
+- Defensive measures: tool event cap (256), poisoned mutex recovery, unsigned auto-reply noted in logs
+
 ## 2026-03-22
+
+### Agent Fleet: Tool Enforcement & IPC Fix
+- `SYNAPSECLAW_ALLOWED_TOOLS` added to all 5 agent systemd services (was only marketing-lead)
+- Per-agent tool restrictions: copywriter (file+memory), news-reader/trend-aggregator (web+memory), publisher (telegram+memory)
+- Detailed per-agent SOUL.md with role-specific workflows, tool lists, IPC protocol, output formats
+- Auto-generate `session_id` for `kind=task/query` in `agents_send` — fixes reply correlation bug where agents couldn't call `agents_reply` when sender omitted session_id
+- Enabled `web_fetch` for news-reader and trend-aggregator (needed to read full articles)
+- Dev news source paths (`docs/fork/news.md`) added to researcher/writer agent prompts
 
 ### Channel Session Intelligence (Phase 3.12)
 - Rolling progressive summary for channel conversations (every 20 messages, uses cheap summary model)

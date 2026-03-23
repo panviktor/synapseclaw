@@ -200,6 +200,7 @@ async fn run_agent_job_in_process(config: &Config, job: &CronJob) -> (bool, Stri
                 false,
                 None,
                 job.allowed_tools.clone(),
+                None,
             ))
             .await
         }
@@ -1352,7 +1353,9 @@ mod tests {
             Some("tok-123")
         );
         assert_eq!(
-            job.env_overlay.get("SYNAPSECLAW_AGENT_ID").map(String::as_str),
+            job.env_overlay
+                .get("SYNAPSECLAW_AGENT_ID")
+                .map(String::as_str),
             Some("eph-test")
         );
 
