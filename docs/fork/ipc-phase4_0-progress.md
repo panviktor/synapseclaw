@@ -26,7 +26,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 |------|--------|-------------|
 | 1 | **DONE** | Create `fork_core` / `fork_adapters` module skeleton and document ownership boundaries |
 | 2 | **DONE** | Define canonical `OutboundIntent`, `ChannelCapabilities`, `ChannelRegistryPort` trait + `CachedChannelRegistry` adapter |
-| 3 | TODO | Add `ConversationStorePort` over the current chat/session SQLite implementation |
+| 3 | **DONE** | `ConversationStorePort` trait + `ChatDbConversationStore` adapter over existing `ChatDb` SQLite |
 | 4 | **GROUNDWORK** | Add `RunStorePort` and define unified run records/events for chat, IPC, and external workers |
 | 5 | **DONE** | Migrate scheduled notification delivery to capability-driven `ChannelRegistryPort.deliver()` |
 | 6 | **DONE** | Migrate heartbeat delivery + validation away from hardcoded channel-name matches |
