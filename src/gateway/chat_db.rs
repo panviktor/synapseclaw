@@ -43,6 +43,11 @@ pub struct ChatMessageRow {
 }
 
 impl ChatDb {
+    /// Acquire a lock on the database connection.
+    pub fn conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
+        self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
     /// Open (or create) the chat database at `path`.
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
@@ -84,7 +89,31 @@ impl ChatDb {
                 timestamp     INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session
-                ON chat_messages(session_key, timestamp);",
+                ON chat_messages(session_key, timestamp);
+
+            -- Phase 4.0: unified run execution tracking
+            CREATE TABLE IF NOT EXISTS runs (
+                run_id           TEXT PRIMARY KEY,
+                conversation_key TEXT,
+                origin           TEXT NOT NULL,
+                state            TEXT NOT NULL DEFAULT 'running',
+                started_at       INTEGER NOT NULL,
+                finished_at      INTEGER,
+                created_at       INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_runs_conversation
+                ON runs(conversation_key);
+
+            CREATE TABLE IF NOT EXISTS run_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id     TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
+                event_type TEXT NOT NULL,
+                content    TEXT NOT NULL,
+                tool_name  TEXT,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_run_events_run
+                ON run_events(run_id, created_at);",
         )?;
         Ok(())
     }
