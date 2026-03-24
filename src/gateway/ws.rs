@@ -10,8 +10,11 @@
 //! RPC methods: chat.send, chat.history, chat.abort,
 //!              sessions.list, sessions.new, sessions.rename, sessions.delete, sessions.reset
 
-use super::chat_db::{ChatMessageRow, ChatSessionRow};
+use super::chat_db::ChatMessageRow;
 use super::{AppState, ChatSession};
+use crate::fork_core::domain::conversation::{
+    ConversationEvent, ConversationKind, ConversationSession, EventType,
+};
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -332,7 +335,7 @@ async fn handle_socket(
     let session_key = format!("web:{token_prefix}:{sid}");
 
     // Ensure session exists in memory (create agent if needed)
-    if let Err(e) = ensure_session(&state, &session_key) {
+    if let Err(e) = ensure_session(&state, &session_key).await {
         let mut sender = sender;
         let err = serde_json::json!({"type": "error", "message": format!("Failed to initialise session: {e}")});
         let _ = sender.send(Message::Text(err.to_string().into())).await;
@@ -454,7 +457,7 @@ async fn handle_socket(
 }
 
 /// Ensure a session exists in memory. If not, create from DB or fresh.
-fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<()> {
+async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<()> {
     {
         let sessions = state
             .chat_sessions
@@ -465,11 +468,32 @@ fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<()> {
         }
     }
 
-    // Try loading from DB
-    let db_session = state
-        .chat_db
-        .as_ref()
-        .and_then(|db| db.get_session(session_key).ok().flatten());
+    // Try loading from DB via ConversationStorePort
+    let db_session = if let Some(store) = state.conversation_store.as_ref() {
+        store.get_session(session_key).await
+    } else {
+        state
+            .chat_db
+            .as_ref()
+            .and_then(|db| db.get_session(session_key).ok().flatten())
+            .map(|r| ConversationSession {
+                key: r.key,
+                kind: ConversationKind::Web,
+                label: r.label,
+                summary: r.session_summary,
+                current_goal: r.current_goal,
+                #[allow(clippy::cast_sign_loss)]
+                created_at: r.created_at as u64,
+                #[allow(clippy::cast_sign_loss)]
+                last_active: r.last_active as u64,
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                message_count: r.message_count as u32,
+                #[allow(clippy::cast_sign_loss)]
+                input_tokens: r.input_tokens as u64,
+                #[allow(clippy::cast_sign_loss)]
+                output_tokens: r.output_tokens as u64,
+            })
+    };
 
     let config = state.config.lock().clone();
     let mut agent = crate::agent::Agent::from_config(&config)?;
@@ -478,19 +502,22 @@ fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<()> {
     let now_secs_val = now_secs();
 
     let (label, msg_count, input_tok, output_tok, current_goal, session_summary) =
-        if let Some(ref db_row) = db_session {
+        if let Some(ref session) = db_session {
             // Replay messages into agent
-            if let Some(db) = state.chat_db.as_ref() {
+            if let Some(store) = state.conversation_store.as_ref() {
+                let events = store.get_events(session_key, 200).await;
+                replay_events_into_agent(&mut agent, &events)?;
+            } else if let Some(db) = state.chat_db.as_ref() {
                 let messages = db.get_messages(session_key, 200)?;
                 replay_messages_into_agent(&mut agent, &messages)?;
             }
             (
-                db_row.label.clone(),
-                u32::try_from(db_row.message_count).unwrap_or(0),
-                u64::try_from(db_row.input_tokens).unwrap_or(0),
-                u64::try_from(db_row.output_tokens).unwrap_or(0),
-                db_row.current_goal.clone(),
-                db_row.session_summary.clone(),
+                session.label.clone(),
+                session.message_count,
+                session.input_tokens,
+                session.output_tokens,
+                session.current_goal.clone(),
+                session.summary.clone(),
             )
         } else {
             (None, 0, 0, 0, None, None)
@@ -511,38 +538,45 @@ fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<()> {
         last_summary_count: 0,
     };
 
-    let mut sessions = state
-        .chat_sessions
-        .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let need_persist = {
+        let mut sessions = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    // LRU eviction if at capacity
-    if sessions.len() >= MAX_MEMORY_SESSIONS && !sessions.contains_key(session_key) {
-        let oldest = sessions
-            .iter()
-            .min_by_key(|(_, s)| s.last_active)
-            .map(|(k, _)| k.clone());
-        if let Some(key) = oldest {
-            sessions.remove(&key);
+        // LRU eviction if at capacity
+        if sessions.len() >= MAX_MEMORY_SESSIONS && !sessions.contains_key(session_key) {
+            let oldest = sessions
+                .iter()
+                .min_by_key(|(_, s)| s.last_active)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest {
+                sessions.remove(&key);
+            }
         }
-    }
 
-    sessions.insert(session_key.to_string(), session);
+        sessions.insert(session_key.to_string(), session);
+        db_session.is_none()
+    }; // MutexGuard dropped here
 
-    // Persist new session to DB if it doesn't exist yet
-    if db_session.is_none() {
-        if let Some(db) = state.chat_db.as_ref() {
-            let _ = db.upsert_session(&ChatSessionRow {
-                key: session_key.to_string(),
-                label: None,
-                current_goal: None,
-                session_summary: None,
-                created_at: now_secs_val,
-                last_active: now_secs_val,
-                message_count: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-            });
+    // Persist new session to DB if it doesn't exist yet (after lock release)
+    if need_persist {
+        if let Some(store) = state.conversation_store.as_ref() {
+            #[allow(clippy::cast_sign_loss)]
+            let _ = store
+                .upsert_session(&ConversationSession {
+                    key: session_key.to_string(),
+                    kind: ConversationKind::Web,
+                    label: None,
+                    summary: None,
+                    current_goal: None,
+                    created_at: now_secs_val as u64,
+                    last_active: now_secs_val as u64,
+                    message_count: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                })
+                .await;
         }
     }
 
@@ -568,6 +602,29 @@ fn replay_messages_into_agent(
     Ok(())
 }
 
+/// Replay ConversationEvents into an Agent (Phase 4.0 path).
+fn replay_events_into_agent(
+    agent: &mut crate::agent::Agent,
+    events: &[ConversationEvent],
+) -> anyhow::Result<()> {
+    use crate::providers::{ChatMessage, ConversationMessage};
+
+    for event in events {
+        let conv_msg = match event.event_type {
+            EventType::User => ConversationMessage::Chat(ChatMessage::user(event.content.clone())),
+            EventType::Assistant => {
+                ConversationMessage::Chat(ChatMessage::assistant(event.content.clone()))
+            }
+            EventType::System => {
+                ConversationMessage::Chat(ChatMessage::system(event.content.clone()))
+            }
+            _ => continue, // ToolCall, ToolResult, Error, Interrupted — UI-only
+        };
+        agent.push_history(conv_msg);
+    }
+    Ok(())
+}
+
 // ── RPC dispatcher ──────────────────────────────────────────────────────────
 
 async fn handle_rpc(
@@ -579,16 +636,16 @@ async fn handle_rpc(
     out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
 ) -> anyhow::Result<serde_json::Value> {
     match method {
-        "chat.history" => handle_chat_history(params, state, default_session, token_prefix),
+        "chat.history" => handle_chat_history(params, state, default_session, token_prefix).await,
         "chat.send" => {
             handle_chat_send_rpc(params, state, default_session, token_prefix, out_tx).await
         }
         "chat.abort" => handle_chat_abort(params, state, default_session, token_prefix),
-        "sessions.list" => handle_sessions_list(state, token_prefix),
-        "sessions.new" => handle_sessions_new(params, state, token_prefix),
-        "sessions.rename" => handle_sessions_rename(params, state, token_prefix),
-        "sessions.delete" => handle_sessions_delete(params, state, token_prefix),
-        "sessions.reset" => handle_sessions_reset(params, state, token_prefix),
+        "sessions.list" => handle_sessions_list(state, token_prefix).await,
+        "sessions.new" => handle_sessions_new(params, state, token_prefix).await,
+        "sessions.rename" => handle_sessions_rename(params, state, token_prefix).await,
+        "sessions.delete" => handle_sessions_delete(params, state, token_prefix).await,
+        "sessions.reset" => handle_sessions_reset(params, state, token_prefix).await,
         _ => Err(anyhow::anyhow!("Unknown RPC method: {method}")),
     }
 }
@@ -604,7 +661,7 @@ fn check_session_ownership(session_key: &str, token_prefix: &str) -> anyhow::Res
 
 // ── RPC: chat.history ───────────────────────────────────────────────────────
 
-fn handle_chat_history(
+async fn handle_chat_history(
     params: &serde_json::Value,
     state: &AppState,
     default_session: &str,
@@ -618,14 +675,41 @@ fn handle_chat_history(
     let limit = params["limit"].as_i64().unwrap_or(50).min(500);
 
     // Ensure session is loaded
-    ensure_session(state, &session_key)?;
+    ensure_session(state, &session_key).await?;
 
-    let messages = state
-        .chat_db
-        .as_ref()
-        .map(|db| db.get_messages(&session_key, limit))
-        .transpose()?
-        .unwrap_or_default();
+    let events = if let Some(store) = state.conversation_store.as_ref() {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        store.get_events(&session_key, limit as usize).await
+    } else if let Some(db) = state.chat_db.as_ref() {
+        // Fallback: convert ChatMessageRow → ConversationEvent
+        db.get_messages(&session_key, limit)
+            .unwrap_or_default()
+            .iter()
+            .map(|m| ConversationEvent {
+                event_type: match m.kind.as_str() {
+                    "user" => EventType::User,
+                    "assistant" => EventType::Assistant,
+                    "tool_call" => EventType::ToolCall,
+                    "tool_result" => EventType::ToolResult,
+                    "error" => EventType::Error,
+                    "interrupted" => EventType::Interrupted,
+                    _ => EventType::System,
+                },
+                actor: m.role.clone().unwrap_or_else(|| m.kind.clone()),
+                content: m.content.clone(),
+                tool_name: m.tool_name.clone(),
+                run_id: m.run_id.clone(),
+                #[allow(clippy::cast_sign_loss)]
+                input_tokens: m.input_tokens.map(|t| t as u64),
+                #[allow(clippy::cast_sign_loss)]
+                output_tokens: m.output_tokens.map(|t| t as u64),
+                #[allow(clippy::cast_sign_loss)]
+                timestamp: m.timestamp as u64,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let (label, session_summary, current_goal) = {
         let sessions = state
@@ -644,19 +728,20 @@ fn handle_chat_history(
             .unwrap_or((None, None, None))
     };
 
-    let msg_json: Vec<serde_json::Value> = messages
+    let msg_json: Vec<serde_json::Value> = events
         .iter()
-        .map(|m| {
+        .enumerate()
+        .map(|(i, e)| {
             serde_json::json!({
-                "id": m.id,
-                "kind": m.kind,
-                "role": m.role,
-                "content": m.content,
-                "tool_name": m.tool_name,
-                "run_id": m.run_id,
-                "timestamp": m.timestamp,
-                "input_tokens": m.input_tokens,
-                "output_tokens": m.output_tokens,
+                "id": i + 1,
+                "event_type": e.event_type.to_string(),
+                "role": e.actor,
+                "content": e.content,
+                "tool_name": e.tool_name,
+                "run_id": e.run_id,
+                "timestamp": e.timestamp,
+                "input_tokens": e.input_tokens,
+                "output_tokens": e.output_tokens,
             })
         })
         .collect();
@@ -717,8 +802,9 @@ async fn handle_chat_send_rpc(
         &message,
         None,
         None,
-    );
-    auto_label_if_needed(state, &session_key, &message);
+    )
+    .await;
+    auto_label_if_needed(state, &session_key, &message).await;
 
     // Record history length before turn (for extracting tool events after)
     let history_len_before = {
@@ -734,24 +820,30 @@ async fn handle_chat_send_rpc(
     // Run agent turn with abort support
     let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx).await;
 
-    // Clear run_id + abort_tx, extract usage + persist tool events + push live
-    let usage = {
+    // Clear run_id + abort_tx, extract usage + collect tool history for async persist
+    let (usage, tool_history) = {
         let mut sessions = state
             .chat_sessions
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let Some(s) = sessions.get_mut(&session_key) {
+        let history_snapshot = if let Some(s) = sessions.get_mut(&session_key) {
             s.run_id = None;
             s.abort_tx = None;
             s.last_active = Instant::now();
-            // Push tool events to WS (live) + persist to DB
+            // Push tool events to WS (live)
             push_tool_events(out_tx, &session_key, s.agent.history(), history_len_before);
-            persist_tool_events(state, &session_key, s.agent.history(), history_len_before);
-        }
-        sessions
+            // Snapshot history for async persist (after lock release)
+            s.agent.history()[history_len_before..].to_vec()
+        } else {
+            Vec::new()
+        };
+        let u = sessions
             .get(&session_key)
-            .and_then(|s| s.agent.last_turn_usage().cloned())
+            .and_then(|s| s.agent.last_turn_usage().cloned());
+        (u, history_snapshot)
     };
+    // Persist tool events outside the lock (async-safe)
+    persist_tool_events(state, &session_key, &tool_history).await;
 
     match result {
         Ok(response) => {
@@ -763,11 +855,12 @@ async fn handle_chat_send_rpc(
                 &response,
                 None,
                 None,
-            );
-            persist_increment_count(state, &session_key, 2);
+            )
+            .await;
+            persist_increment_count(state, &session_key, 2).await;
             sync_memory_count(state, &session_key, 2);
-            persist_usage(state, &session_key, usage.as_ref());
-            update_session_goal(state, &session_key, &message);
+            persist_usage(state, &session_key, usage.as_ref()).await;
+            update_session_goal(state, &session_key, &message).await;
             emit_session_event(state, "session.updated", &session_key);
             emit_run_event(state, "session.run_finished", &session_key, &run_id);
 
@@ -794,8 +887,9 @@ async fn handle_chat_send_rpc(
                     "Generation aborted by user",
                     None,
                     Some(&run_id),
-                );
-                persist_increment_count(state, &session_key, 2);
+                )
+                .await;
+                persist_increment_count(state, &session_key, 2).await;
                 sync_memory_count(state, &session_key, 2);
                 emit_run_event(state, "session.run_interrupted", &session_key, &run_id);
                 return Ok(serde_json::json!({
@@ -804,8 +898,8 @@ async fn handle_chat_send_rpc(
                 }));
             }
             let sanitized = crate::providers::sanitize_api_error(&msg);
-            persist_message(state, &session_key, "error", None, &sanitized, None, None);
-            persist_increment_count(state, &session_key, 2);
+            persist_message(state, &session_key, "error", None, &sanitized, None, None).await;
+            persist_increment_count(state, &session_key, 2).await;
             sync_memory_count(state, &session_key, 2);
             emit_run_event(state, "session.run_finished", &session_key, &run_id);
             Err(anyhow::anyhow!("{sanitized}"))
@@ -894,57 +988,90 @@ fn handle_chat_abort(
 
 // ── RPC: sessions.list ──────────────────────────────────────────────────────
 
-fn handle_sessions_list(state: &AppState, token_prefix: &str) -> anyhow::Result<serde_json::Value> {
+async fn handle_sessions_list(
+    state: &AppState,
+    token_prefix: &str,
+) -> anyhow::Result<serde_json::Value> {
     let prefix = format!("web:{token_prefix}:");
 
-    let db_sessions = state
-        .chat_db
-        .as_ref()
-        .map(|db| db.list_sessions(&prefix))
-        .transpose()?
-        .unwrap_or_default();
-
-    // Enrich with in-memory state (active run, etc.)
-    let sessions_lock = state
-        .chat_sessions
-        .lock()
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    let sessions: Vec<serde_json::Value> = db_sessions
-        .iter()
-        .map(|s| {
-            let has_active_run = sessions_lock
-                .get(&s.key)
-                .map_or(false, |ms| ms.run_id.is_some());
-
-            // Get preview from last message
-            let preview = state.chat_db.as_ref().and_then(|db| {
-                db.get_messages(&s.key, 1)
-                    .ok()
-                    .and_then(|msgs| msgs.last().map(|m| truncate_str(&m.content, 60)))
-            });
-
-            serde_json::json!({
-                "key": s.key,
-                "label": s.label,
-                "last_active": s.last_active,
-                "message_count": s.message_count,
-                "preview": preview,
-                "has_active_run": has_active_run,
-                "input_tokens": s.input_tokens,
-                "output_tokens": s.output_tokens,
-                "current_goal": s.current_goal,
-                "session_summary": s.session_summary,
+    let store_sessions = if let Some(store) = state.conversation_store.as_ref() {
+        store.list_sessions(Some(&prefix)).await
+    } else if let Some(db) = state.chat_db.as_ref() {
+        // Fallback: convert ChatSessionRow → ConversationSession
+        db.list_sessions(&prefix)
+            .unwrap_or_default()
+            .iter()
+            .map(|r| ConversationSession {
+                key: r.key.clone(),
+                kind: ConversationKind::Web,
+                label: r.label.clone(),
+                summary: r.session_summary.clone(),
+                current_goal: r.current_goal.clone(),
+                #[allow(clippy::cast_sign_loss)]
+                created_at: r.created_at as u64,
+                #[allow(clippy::cast_sign_loss)]
+                last_active: r.last_active as u64,
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                message_count: r.message_count as u32,
+                #[allow(clippy::cast_sign_loss)]
+                input_tokens: r.input_tokens as u64,
+                #[allow(clippy::cast_sign_loss)]
+                output_tokens: r.output_tokens as u64,
             })
-        })
-        .collect();
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // Snapshot in-memory run state (release lock before async work)
+    let active_runs: std::collections::HashSet<String> = {
+        let sessions_lock = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        sessions_lock
+            .iter()
+            .filter(|(_, ms)| ms.run_id.is_some())
+            .map(|(k, _)| k.clone())
+            .collect()
+    };
+
+    let mut sessions: Vec<serde_json::Value> = Vec::with_capacity(store_sessions.len());
+    for s in &store_sessions {
+        let has_active_run = active_runs.contains(&s.key);
+
+        // Get preview from last message
+        let preview = if let Some(store) = state.conversation_store.as_ref() {
+            let evts = store.get_events(&s.key, 1).await;
+            evts.last().map(|e| truncate_str(&e.content, 60))
+        } else if let Some(db) = state.chat_db.as_ref() {
+            db.get_messages(&s.key, 1)
+                .ok()
+                .and_then(|msgs| msgs.last().map(|m| truncate_str(&m.content, 60)))
+        } else {
+            None
+        };
+
+        sessions.push(serde_json::json!({
+            "key": s.key,
+            "label": s.label,
+            "last_active": s.last_active,
+            "message_count": s.message_count,
+            "preview": preview,
+            "has_active_run": has_active_run,
+            "input_tokens": s.input_tokens,
+            "output_tokens": s.output_tokens,
+            "current_goal": s.current_goal,
+            "session_summary": s.summary,
+        }));
+    }
 
     Ok(serde_json::json!({ "sessions": sessions }))
 }
 
 // ── RPC: sessions.new ───────────────────────────────────────────────────────
 
-fn handle_sessions_new(
+async fn handle_sessions_new(
     params: &serde_json::Value,
     state: &AppState,
     token_prefix: &str,
@@ -953,18 +1080,20 @@ fn handle_sessions_new(
     let session_id = uuid::Uuid::new_v4().to_string();
     let session_key = format!("web:{token_prefix}:{session_id}");
 
-    ensure_session(state, &session_key)?;
+    ensure_session(state, &session_key).await?;
 
     if let Some(ref lbl) = label {
-        let mut sessions = state
-            .chat_sessions
-            .lock()
-            .map_err(|e| anyhow::anyhow!("{e}"))?;
-        if let Some(s) = sessions.get_mut(&session_key) {
-            s.label = Some(lbl.clone());
+        {
+            let mut sessions = state
+                .chat_sessions
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            if let Some(s) = sessions.get_mut(&session_key) {
+                s.label = Some(lbl.clone());
+            }
         }
-        if let Some(db) = state.chat_db.as_ref() {
-            let _ = db.update_session_label(&session_key, lbl);
+        if let Some(store) = state.conversation_store.as_ref() {
+            let _ = store.update_label(&session_key, lbl).await;
         }
     }
 
@@ -976,7 +1105,7 @@ fn handle_sessions_new(
 
 // ── RPC: sessions.rename ────────────────────────────────────────────────────
 
-fn handle_sessions_rename(
+async fn handle_sessions_rename(
     params: &serde_json::Value,
     state: &AppState,
     token_prefix: &str,
@@ -999,8 +1128,8 @@ fn handle_sessions_rename(
         }
     }
 
-    if let Some(db) = state.chat_db.as_ref() {
-        db.update_session_label(key, label)?;
+    if let Some(store) = state.conversation_store.as_ref() {
+        store.update_label(key, label).await?;
     }
 
     emit_session_event(state, "session.updated", key);
@@ -1009,7 +1138,7 @@ fn handle_sessions_rename(
 
 // ── RPC: sessions.delete ────────────────────────────────────────────────────
 
-fn handle_sessions_delete(
+async fn handle_sessions_delete(
     params: &serde_json::Value,
     state: &AppState,
     token_prefix: &str,
@@ -1027,8 +1156,8 @@ fn handle_sessions_delete(
         sessions.remove(key);
     }
 
-    if let Some(db) = state.chat_db.as_ref() {
-        db.delete_session(key)?;
+    if let Some(store) = state.conversation_store.as_ref() {
+        store.delete_session(key).await?;
     }
 
     emit_session_event(state, "session.deleted", key);
@@ -1037,7 +1166,7 @@ fn handle_sessions_delete(
 
 // ── RPC: sessions.reset ─────────────────────────────────────────────────────
 
-fn handle_sessions_reset(
+async fn handle_sessions_reset(
     params: &serde_json::Value,
     state: &AppState,
     token_prefix: &str,
@@ -1062,8 +1191,8 @@ fn handle_sessions_reset(
         }
     }
 
-    if let Some(db) = state.chat_db.as_ref() {
-        db.clear_messages(key)?;
+    if let Some(store) = state.conversation_store.as_ref() {
+        store.clear_events(key).await?;
     }
 
     emit_session_event(state, "session.updated", key);
@@ -1072,7 +1201,7 @@ fn handle_sessions_reset(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn persist_message(
+async fn persist_message(
     state: &AppState,
     session_key: &str,
     kind: &str,
@@ -1081,34 +1210,42 @@ fn persist_message(
     tool_name: Option<&str>,
     run_id: Option<&str>,
 ) {
-    if let Some(db) = state.chat_db.as_ref() {
-        let msg = ChatMessageRow {
-            id: 0,
-            session_key: session_key.to_string(),
-            kind: kind.to_string(),
-            role: role.map(String::from),
+    if let Some(store) = state.conversation_store.as_ref() {
+        let event_type = match kind {
+            "user" => EventType::User,
+            "assistant" => EventType::Assistant,
+            "tool_call" => EventType::ToolCall,
+            "tool_result" => EventType::ToolResult,
+            "error" => EventType::Error,
+            "interrupted" => EventType::Interrupted,
+            _ => EventType::System,
+        };
+        let event = ConversationEvent {
+            event_type,
+            actor: role.unwrap_or(kind).to_string(),
             content: content.to_string(),
             tool_name: tool_name.map(String::from),
             run_id: run_id.map(String::from),
             input_tokens: None,
             output_tokens: None,
-            timestamp: now_secs(),
+            #[allow(clippy::cast_sign_loss)]
+            timestamp: now_secs() as u64,
         };
-        if let Err(e) = db.append_message(&msg) {
-            tracing::warn!("chat_db: failed to append message: {e}");
+        if let Err(e) = store.append_event(session_key, &event).await {
+            tracing::warn!("conversation_store: failed to append event: {e}");
         }
-        if let Err(e) = db.touch_session(session_key, now_secs()) {
-            tracing::warn!("chat_db: failed to touch session: {e}");
+        if let Err(e) = store.touch_session(session_key).await {
+            tracing::warn!("conversation_store: failed to touch session: {e}");
         }
     }
 }
 
 /// Increment DB message count for a session.
-fn persist_increment_count(state: &AppState, session_key: &str, count: i64) {
-    if let Some(db) = state.chat_db.as_ref() {
+async fn persist_increment_count(state: &AppState, session_key: &str, count: i64) {
+    if let Some(store) = state.conversation_store.as_ref() {
         for _ in 0..count {
-            if let Err(e) = db.increment_message_count(session_key) {
-                tracing::warn!("chat_db: failed to increment count: {e}");
+            if let Err(e) = store.increment_message_count(session_key).await {
+                tracing::warn!("conversation_store: failed to increment count: {e}");
                 break;
             }
         }
@@ -1116,7 +1253,7 @@ fn persist_increment_count(state: &AppState, session_key: &str, count: i64) {
 }
 
 /// Persist token usage from a completed turn.
-fn persist_usage(
+async fn persist_usage(
     state: &AppState,
     session_key: &str,
     usage: Option<&crate::providers::traits::TokenUsage>,
@@ -1125,9 +1262,9 @@ fn persist_usage(
         let input = u.input_tokens.unwrap_or(0) as i64;
         let output = u.output_tokens.unwrap_or(0) as i64;
         if input > 0 || output > 0 {
-            if let Some(db) = state.chat_db.as_ref() {
-                if let Err(e) = db.add_token_usage(session_key, input, output) {
-                    tracing::warn!("chat_db: failed to add token usage: {e}");
+            if let Some(store) = state.conversation_store.as_ref() {
+                if let Err(e) = store.add_token_usage(session_key, input, output).await {
+                    tracing::warn!("conversation_store: failed to add token usage: {e}");
                 }
             }
             if let Ok(mut sessions) = state.chat_sessions.lock() {
@@ -1150,7 +1287,7 @@ fn sync_memory_count(state: &AppState, session_key: &str, delta: u32) {
     }
 }
 
-fn auto_label_if_needed(state: &AppState, session_key: &str, first_message: &str) {
+async fn auto_label_if_needed(state: &AppState, session_key: &str, first_message: &str) {
     let needs_label = {
         let sessions = match state.chat_sessions.lock() {
             Ok(s) => s,
@@ -1175,14 +1312,14 @@ fn auto_label_if_needed(state: &AppState, session_key: &str, first_message: &str
             s.label = Some(label.clone());
         }
     }
-    if let Some(db) = state.chat_db.as_ref() {
-        let _ = db.update_session_label(session_key, &label);
+    if let Some(store) = state.conversation_store.as_ref() {
+        let _ = store.update_label(session_key, &label).await;
     }
 }
 
 /// Update the session's current_goal from the latest user message.
 /// This is a lightweight resume hint — not hidden reasoning.
-fn update_session_goal(state: &AppState, session_key: &str, user_message: &str) {
+async fn update_session_goal(state: &AppState, session_key: &str, user_message: &str) {
     let goal = truncate_str(user_message, 80);
     {
         if let Ok(mut sessions) = state.chat_sessions.lock() {
@@ -1191,25 +1328,22 @@ fn update_session_goal(state: &AppState, session_key: &str, user_message: &str) 
             }
         }
     }
-    if let Some(db) = state.chat_db.as_ref() {
-        let conn = db;
-        // Direct update via upsert — only current_goal field
-        if let Err(e) = conn.update_session_goal(session_key, &goal) {
-            tracing::warn!("chat_db: failed to update goal: {e}");
+    if let Some(store) = state.conversation_store.as_ref() {
+        if let Err(e) = store.update_goal(session_key, &goal).await {
+            tracing::warn!("conversation_store: failed to update goal: {e}");
         }
     }
 }
 
 /// Persist tool_call and tool_result events from the agent's history after a turn.
-fn persist_tool_events(
+async fn persist_tool_events(
     state: &AppState,
     session_key: &str,
     history: &[crate::providers::ConversationMessage],
-    start_idx: usize,
 ) {
     use crate::providers::ConversationMessage;
 
-    for msg in history.iter().skip(start_idx) {
+    for msg in history {
         match msg {
             ConversationMessage::AssistantToolCalls { tool_calls, .. } => {
                 for tc in tool_calls {
@@ -1221,7 +1355,8 @@ fn persist_tool_events(
                         &format!("{}({})", tc.name, tc.arguments),
                         Some(&tc.name),
                         None,
-                    );
+                    )
+                    .await;
                 }
             }
             ConversationMessage::ToolResults(results) => {
@@ -1234,7 +1369,8 @@ fn persist_tool_events(
                         &tr.content,
                         None,
                         None,
-                    );
+                    )
+                    .await;
                 }
             }
             ConversationMessage::Chat(_) => {} // handled separately by caller
@@ -1321,18 +1457,14 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
         match from_memory {
             Some(v) => v,
             None => {
-                // Fall back to chat_db for channel sessions
-                match state
-                    .chat_db
-                    .as_ref()
-                    .and_then(|db| db.get_session(session_key).ok().flatten())
-                {
-                    Some(row) => (
-                        row.message_count.try_into().unwrap_or(0),
-                        0,
-                        row.session_summary,
-                    ),
-                    None => return,
+                // Fall back to conversation_store for channel sessions
+                if let Some(store) = state.conversation_store.as_ref() {
+                    match store.get_session(session_key).await {
+                        Some(s) => (s.message_count, 0, s.summary),
+                        None => return,
+                    }
+                } else {
+                    return;
                 }
             }
         }
@@ -1342,13 +1474,31 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
         return;
     }
 
-    // Fetch last 10 messages from DB
-    let recent = match state.chat_db.as_ref() {
-        Some(db) => match db.get_messages(session_key, 10) {
-            Ok(msgs) => msgs,
-            Err(_) => return,
-        },
-        None => return,
+    // Fetch last 10 messages from conversation store
+    let recent = if let Some(store) = state.conversation_store.as_ref() {
+        store.get_events(session_key, 10).await
+    } else if let Some(db) = state.chat_db.as_ref() {
+        db.get_messages(session_key, 10)
+            .unwrap_or_default()
+            .iter()
+            .map(|m| ConversationEvent {
+                event_type: match m.kind.as_str() {
+                    "user" => EventType::User,
+                    "assistant" => EventType::Assistant,
+                    _ => EventType::System,
+                },
+                actor: m.role.clone().unwrap_or_else(|| m.kind.clone()),
+                content: m.content.clone(),
+                tool_name: None,
+                run_id: None,
+                input_tokens: None,
+                output_tokens: None,
+                #[allow(clippy::cast_sign_loss)]
+                timestamp: m.timestamp as u64,
+            })
+            .collect()
+    } else {
+        return;
     };
 
     if recent.is_empty() {
@@ -1357,10 +1507,10 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
 
     // Build prompt
     let mut messages_text = String::new();
-    for m in &recent {
-        let role = m.role.as_deref().unwrap_or(&m.kind);
+    for e in &recent {
+        let role = &e.actor;
         use std::fmt::Write;
-        let _ = writeln!(messages_text, "{role}: {}", truncate_str(&m.content, 200));
+        let _ = writeln!(messages_text, "{role}: {}", truncate_str(&e.content, 200));
     }
 
     let prompt = format!(
@@ -1427,10 +1577,10 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
                     s.last_summary_count = s.message_count;
                 }
             }
-            // Update DB
-            if let Some(db) = state.chat_db.as_ref() {
-                if let Err(e) = db.update_session_summary(session_key, &summary) {
-                    tracing::warn!("chat_db: failed to update session summary: {e}");
+            // Update DB via conversation store
+            if let Some(store) = state.conversation_store.as_ref() {
+                if let Err(e) = store.set_summary(session_key, &summary).await {
+                    tracing::warn!("conversation_store: failed to update session summary: {e}");
                 }
             }
             // Notify other tabs/clients about the updated summary

@@ -2,6 +2,15 @@
 
 ## 2026-03-23
 
+### Phase 4.0 Step 9: Migrate ws.rs from ChatDb to ConversationStorePort
+- All 10 direct ChatDb calls in ws.rs replaced with ConversationStorePort methods
+- `ensure_session`, `handle_chat_history`, `handle_sessions_*` made async for port compatibility
+- `persist_message` now constructs ConversationEvent instead of ChatMessageRow
+- New `replay_events_into_agent()` for Phase 4.0 path (ConversationEvent-based replay)
+- MutexGuard-across-await issues resolved (history snapshot + lock release pattern)
+- ChatDb remains only as fallback when conversation_store is None
+- Web UI chat fully works through hexagonal architecture
+
 ### Phase 4.0 Step 8: Audit fixes + ConversationStorePort wiring + REST API
 - **Audit fix**: `ConversationEvent` token fields widened from `u32` to `u64` (was silently truncating large token counts)
 - **Audit fix**: `create_run` SQL now uses separate `created_at` timestamp (was reusing `started_at`)
