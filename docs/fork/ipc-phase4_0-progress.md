@@ -1,6 +1,6 @@
 # IPC Phase 4.0 Progress
 
-**Status**: Steps 1-12 complete, Steps 13-14 remaining
+**Status**: infrastructure scaffolded, application services not yet started
 
 Phase 3.12: channel session intelligence | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
 
@@ -22,37 +22,83 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 
 ## Checklist
 
-| Step | Status | Description |
-|------|--------|-------------|
-| 1 | **DONE** | Create `fork_core` / `fork_adapters` module skeleton and document ownership boundaries |
-| 2 | **DONE** | Define canonical `OutboundIntent`, `ChannelCapabilities`, `ChannelRegistryPort` trait + `CachedChannelRegistry` adapter |
-| 3 | **DONE** | `ConversationStorePort` trait + `ChatDbConversationStore` adapter over existing `ChatDb` SQLite |
-| 4 | **DONE** | `RunStorePort` trait + `ChatDbRunStore` adapter with `runs` + `run_events` tables in ChatDb |
-| 5 | **DONE** | Migrate scheduled notification delivery to capability-driven `ChannelRegistryPort.deliver()` |
-| 6 | **DONE** | Migrate heartbeat delivery + validation away from hardcoded channel-name matches |
-| 7 | **DONE** | Route inbound messages through `InboundEnvelope` at dispatch boundary + `HandleInboundMessage` application module |
-| 8 | **DONE** | Audit fixes + wire ConversationStorePort into gateway AppState + REST `/api/conversations` (PR #165) |
-| 9 | **DONE** | Migrate ws.rs from ChatDb to ConversationStorePort — all 10 direct calls replaced (PR #166) |
-| 10 | **DONE** | Wire RunStorePort into gateway AppState + REST `/api/runs` — web chat runs durably persisted (PR #167) |
-| 11 | **DONE** | IPC run tracking via RunStorePort — push-triggered runs create/update Run records (PR #168) |
-| 12 | **DONE** | Remove transport-name branching — 5 channel-name checks replaced with capability queries (PR #169) |
-| 13 | TODO | Add verification tests for capability routing, conversation storage, run storage, and adapter boundaries |
-| 14 | TODO | Update docs, delta registry, and sync notes after first migrated slices land |
-| — | DEFERRED | Extract approval/quarantine orchestration into fork-owned application services (original Step 8) |
-| — | DEFERRED | Add `MemoryTiersPort` adapters for working/session/long-term memory (original Step 10) |
-| — | DEFERRED | Define `CodingWorkerPort` seam for external coding executors (original Step 11) |
+### Infrastructure (ports, domain types, adapters, wiring)
+
+| Item | Status | PRs |
+|------|--------|-----|
+| `fork_core` / `fork_adapters` skeleton | **DONE** | #160 |
+| `OutboundIntent`, `ChannelCapability`, `ChannelRegistryPort` | **DONE** | #160 |
+| `CachedChannelRegistry` adapter (long-lived cached channels) | **DONE** | #160 |
+| `OutboundIntentBus` (mpsc sender/receiver) | **DONE** | #160 |
+| `InboundEnvelope` domain type + `to_channel_message()` bridge | **DONE** | #162 |
+| `ConversationStorePort` trait + `ChatDbConversationStore` adapter | **DONE** | #163 |
+| `RunStorePort` trait + `ChatDbRunStore` adapter + `runs`/`run_events` tables | **DONE** | #164 |
+| `ConversationStorePort` wired into gateway AppState + REST `/api/conversations` | **DONE** | #165 |
+| ws.rs migrated from ChatDb to ConversationStorePort (10 calls replaced) | **DONE** | #166 |
+| `RunStorePort` wired into gateway AppState + REST `/api/runs` | **DONE** | #167 |
+| IPC run tracking via RunStorePort (push-triggered runs) | **DONE** | #168 |
+| Transport-name branching removed from application logic (capability-driven) | **DONE** | #169 |
+| CLI standalone mode gets real `CachedChannelRegistry` (no fallbacks) | **DONE** | #169 |
+| Cron `deliver_announcement()` uses `ChannelRegistryPort.deliver()` | **DONE** | #161 |
+| Heartbeat delivery uses `ChannelRegistryPort` | **DONE** | #161 |
+| `delivery_hints()` on `ChannelRegistryPort` (adapter-owned formatting) | **DONE** | #169 |
+| `event_type` field in WS/REST (legacy `kind` removed from web UI) | **DONE** | #166 |
+
+### Application services and use cases (plan slices 1-7)
+
+| Slice | Status | Description |
+|-------|--------|-------------|
+| 1 | TODO | `delivery_service` + `SendScheduledNotification` — move heartbeat/cron delivery policy into fork_core |
+| 2 | TODO | `inbound_message_service` + `HandleInboundMessage` — real orchestration, not bridge |
+| 3 | TODO | `conversation_service` + `StartConversationRun` — session lifecycle, summary policy |
+| 4 | TODO | `approval_service` + `RequestApproval` + `ReviewQuarantineItem` — needs `domain/approval.rs` + `ports/approval.rs` |
+| 5 | TODO | `ipc_service` + `DispatchIpcMessage` — needs `domain/ipc.rs` + `ports/ipc_bus.rs` |
+| 6 | TODO | `memory_service` + `MemoryTiersPort` — needs `domain/memory.rs` + `ports/memory_tiers.rs` |
+| 7 | TODO | `CodingWorkerPort` + `DelegateImplementationTask` — needs `domain/implementation.rs` |
+
+### Missing domain types
+
+| Type | Status |
+|------|--------|
+| `domain/ipc.rs` | TODO |
+| `domain/approval.rs` | TODO |
+| `domain/memory.rs` | TODO |
+| `domain/implementation.rs` | TODO |
+
+### Missing ports
+
+| Port | Status |
+|------|--------|
+| `ports/memory_tiers.rs` | TODO |
+| `ports/approval.rs` | TODO |
+| `ports/scheduler.rs` | TODO |
+| `ports/runtime.rs` | TODO |
+| `ports/ipc_bus.rs` | TODO |
+| `ports/audit.rs` | TODO |
+| `ports/identity.rs` | TODO |
+| `ports/summary.rs` | TODO |
+| `ports/coding_worker.rs` | TODO |
+
+### Cleanup and verification
+
+| Item | Status |
+|------|--------|
+| Verification tests for capability routing, stores, adapter boundaries | TODO |
+| Final docs + delta registry update | TODO |
 
 ---
 
 ## Critical acceptance criteria
 
-1. At least one migrated use case no longer depends on transport names.
-2. Heartbeat/scheduled notifications work for any channel that satisfies required capabilities and policy.
-3. Web chat uses `ConversationStorePort`, not hardcoded embedded storage logic.
-4. Chat, IPC execution, and future external workers share a unified `RunStorePort` contract instead of separate ad hoc run tables.
-5. Session memory and long-term memory are explicit and separated.
-6. New fork logic lands in fork-owned modules instead of upstream hotspots by default.
-7. External coding engines can only attach through a narrow port and do not become new application cores.
+| # | Criterion | Status | Notes |
+|---|-----------|--------|-------|
+| 1 | At least one migrated use case no longer depends on transport names | **PARTIAL** | Cron/heartbeat delivery uses ChannelRegistryPort. But no application *service* exists — logic still in cron/daemon, just routed through port |
+| 2 | Heartbeat/scheduled notifications work for any channel that satisfies required capabilities and policy | **PARTIAL** | Delivery goes through capability check. But heartbeat auto-detect still has hardcoded priority order in daemon/mod.rs |
+| 3 | Web chat uses `ConversationStorePort`, not hardcoded embedded storage logic | **DONE** | ws.rs fully migrated to ConversationStorePort (PR #166) |
+| 4 | Chat, IPC execution share unified `RunStorePort` | **DONE** | Web chat + IPC push runs tracked via RunStorePort (PRs #167, #168) |
+| 5 | Session memory and long-term memory are explicit and separated | **NOT STARTED** | MemoryTiersPort not defined |
+| 6 | New fork logic lands in fork-owned modules instead of upstream hotspots | **PARTIAL** | Ports/domain/adapters in fork_core. But 0 application services — business logic still in old modules |
+| 7 | External coding engines can only attach through a narrow port | **NOT STARTED** | CodingWorkerPort not defined |
 
 ---
 
