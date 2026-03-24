@@ -8,3 +8,4 @@ pub mod approval_service;
 pub mod conversation_service;
 pub mod delivery_service;
 pub mod inbound_message_service;
+pub mod ipc_service;

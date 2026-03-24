@@ -2,6 +2,16 @@
 
 ## 2026-03-24
 
+### Phase 4.0 Slice 5: IPC Service — domain types, ACL validation, bus port
+- `domain/ipc.rs` — IpcMessage, ValidatedSend, AclError, message kind constants
+- `validate_send()` — pure ACL validation (7 rules: kind, L4, direction, session, lateral)
+- `validate_state_write()` / `validate_state_read()` — namespace auth (public/shared/secret)
+- `ports/ipc_bus.rs` — IpcBusPort (send, fetch inbox, ack, session check, trust level)
+- `ipc_service.rs` — orchestrates: resolve trust → session check → ACL validate → send via port
+- gateway/ipc.rs `validate_send()` now delegates to fork_core domain function
+- 28 domain tests (ACL rules + state validation) + 6 service tests
+- 133 total fork_core tests
+
 ### Phase 4.0 Slice 4: ApprovalService + RequestApproval + ReviewQuarantineItem
 - `domain/approval.rs` — ApprovalRequest, ApprovalResponse, ApprovalStatus, QuarantineItem, ApprovalDecision
 - `ports/approval.rs` — ApprovalPort (needs_approval, request, record, session allowlist) + QuarantinePort (quarantine/promote/dismiss/list)

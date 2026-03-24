@@ -2080,6 +2080,7 @@ const PROMOTED_KIND: &str = "promoted_quarantine";
 /// 4. L4↔L4 direct messaging is denied (must go through a higher-trust agent).
 /// 5. L3 lateral `text` requires an explicit allowlist entry.
 #[allow(clippy::implicit_hasher)]
+/// Phase 4.0 Slice 5: delegates ACL validation to fork_core domain.
 pub fn validate_send(
     from_level: u8,
     to_level: u8,
@@ -2091,98 +2092,41 @@ pub fn validate_send(
     l4_destinations: &std::collections::HashMap<String, String>,
     db: &IpcDb,
 ) -> Result<(), IpcError> {
-    // Rule 0: kind whitelist
-    if !VALID_KINDS.contains(&kind) {
-        return Err(IpcError {
-            status: StatusCode::BAD_REQUEST,
-            error: format!("Invalid message kind: {kind}"),
-            code: "invalid_kind".into(),
-            retryable: false,
-        });
-    }
+    // Convert types for fork_core domain function
+    let lateral: Vec<(String, String)> = lateral_text_pairs
+        .iter()
+        .map(|p| (p[0].clone(), p[1].clone()))
+        .collect();
+    let l4_dests: Vec<String> = l4_destinations.values().cloned().collect();
+    let session_has_request = if kind == "result" {
+        session_id
+            .map(|sid| db.session_has_request_for(sid, from_agent))
+            .unwrap_or(false)
+    } else {
+        false
+    };
 
-    // Rule 1: L4 can only send text
-    if from_level >= 4 && kind != "text" {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Restricted agents can only send text".into(),
-            code: "l4_text_only".into(),
-            retryable: false,
-        });
-    }
-
-    // L4 destination whitelist (to_agent is already resolved from alias)
-    if from_level >= 4 && !l4_destinations.values().any(|v| v == to_agent) {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Destination not in L4 allowlist".into(),
-            code: "l4_destination_denied".into(),
-            retryable: false,
-        });
-    }
-
-    // Rule 2: task cannot be sent upward
-    if kind == "task" && to_level < from_level {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Cannot assign tasks to higher-trust agents".into(),
-            code: "task_upward_denied".into(),
-            retryable: false,
-        });
-    }
-
-    // Rule 2b: task cannot be sent to same level
-    if kind == "task" && to_level == from_level {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Cannot assign tasks to same-trust agents".into(),
-            code: "task_lateral_denied".into(),
-            retryable: false,
-        });
-    }
-
-    // Rule 3: result requires correlated task or query
-    if kind == "result" {
-        match session_id {
-            Some(sid) if db.session_has_request_for(sid, from_agent) => {}
-            _ => {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "Result requires a correlated task or query in the same session".into(),
-                    code: "result_no_task".into(),
-                    retryable: false,
-                });
-            }
-        }
-    }
-
-    // Rule 4: L4↔L4 denied
-    if from_level >= 4 && to_level >= 4 {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "L4 agents cannot message each other directly".into(),
-            code: "l4_lateral_denied".into(),
-            retryable: false,
-        });
-    }
-
-    // Rule 5: L3 lateral text requires allowlist
-    if from_level == 3 && to_level == 3 && kind == "text" {
-        let pair_allowed = lateral_text_pairs.iter().any(|pair| {
-            (pair[0] == from_agent && pair[1] == to_agent)
-                || (pair[0] == to_agent && pair[1] == from_agent)
-        });
-        if !pair_allowed {
-            return Err(IpcError {
-                status: StatusCode::FORBIDDEN,
-                error: "L3 lateral text requires allowlist entry".into(),
-                code: "l3_lateral_denied".into(),
-                retryable: false,
-            });
-        }
-    }
-
-    Ok(())
+    crate::fork_core::domain::ipc::validate_send(
+        from_agent,
+        to_agent,
+        kind,
+        i32::from(from_level),
+        i32::from(to_level),
+        session_id,
+        session_has_request,
+        &lateral,
+        &l4_dests,
+    )
+    .map_err(|acl_err| IpcError {
+        status: if acl_err.code == "invalid_kind" {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::FORBIDDEN
+        },
+        error: acl_err.message,
+        code: acl_err.code,
+        retryable: acl_err.retryable,
+    })
 }
 
 /// Validate whether a state write is permitted.

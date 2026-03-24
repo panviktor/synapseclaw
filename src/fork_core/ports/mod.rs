@@ -11,6 +11,7 @@ pub mod channel_registry;
 pub mod conversation_history;
 pub mod conversation_store;
 pub mod hooks;
+pub mod ipc_bus;
 pub mod route_selection;
 pub mod run_store;
 pub mod session_summary;
