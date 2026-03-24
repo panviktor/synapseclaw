@@ -19,16 +19,8 @@ use std::sync::Arc;
 
 // ── Tool approval policy ─────────────────────────────────────────
 
-/// Autonomy level — determines when approval is needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AutonomyLevel {
-    /// All tools auto-approved.
-    Full,
-    /// Approval needed for risky tools.
-    Supervised,
-    /// No tool execution allowed.
-    ReadOnly,
-}
+/// Re-export from security — single source of truth for autonomy levels.
+pub use crate::security::AutonomyLevel;
 
 /// Check if a tool needs approval based on autonomy config.
 ///
@@ -112,6 +104,15 @@ pub async fn quarantine_agent(
     agent_id: &str,
 ) -> Result<u64> {
     port.quarantine_agent(agent_id).await
+}
+
+// ── Decision recording policy ─────────────────────────────────────
+
+/// Determine if a decision should add the tool to the session allowlist.
+///
+/// Business rule: "Always" response → add to allowlist for this session.
+pub fn should_add_to_allowlist(response: &ApprovalResponse) -> bool {
+    *response == ApprovalResponse::Always
 }
 
 // ── Approval request creation ────────────────────────────────────

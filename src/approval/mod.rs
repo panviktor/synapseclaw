@@ -111,22 +111,14 @@ impl ApprovalManager {
     ///
     /// Phase 4.0: delegates to fork_core approval_service for the business rule.
     pub fn needs_approval(&self, tool_name: &str) -> bool {
-        use crate::fork_core::application::services::approval_service;
-
-        let autonomy = match self.autonomy_level {
-            AutonomyLevel::Full => approval_service::AutonomyLevel::Full,
-            AutonomyLevel::Supervised => approval_service::AutonomyLevel::Supervised,
-            AutonomyLevel::ReadOnly => approval_service::AutonomyLevel::ReadOnly,
-        };
-
         let auto_approve: Vec<String> = self.auto_approve.iter().cloned().collect();
         let always_ask: Vec<String> = self.always_ask.iter().cloned().collect();
         let session_allowlist: Vec<String> =
             self.session_allowlist.lock().iter().cloned().collect();
 
-        approval_service::check_needs_approval(
+        crate::fork_core::application::services::approval_service::check_needs_approval(
             tool_name,
-            autonomy,
+            self.autonomy_level,
             &auto_approve,
             &always_ask,
             &session_allowlist,
@@ -135,6 +127,8 @@ impl ApprovalManager {
     }
 
     /// Record an approval decision and update session state.
+    ///
+    /// Phase 4.0: "Always" → allowlist decision is from approval_service.
     pub fn record_decision(
         &self,
         tool_name: &str,
@@ -142,13 +136,22 @@ impl ApprovalManager {
         decision: ApprovalResponse,
         channel: &str,
     ) {
-        // If "Always", add to session allowlist.
-        if decision == ApprovalResponse::Always {
-            let mut allowlist = self.session_allowlist.lock();
-            allowlist.insert(tool_name.to_string());
+        use crate::fork_core::application::services::approval_service;
+        use crate::fork_core::domain::approval::ApprovalResponse as DomainResponse;
+
+        // Map to domain type for policy check
+        let domain_resp = match decision {
+            ApprovalResponse::Yes => DomainResponse::Yes,
+            ApprovalResponse::No => DomainResponse::No,
+            ApprovalResponse::Always => DomainResponse::Always,
+        };
+
+        // Business rule: "Always" → add to session allowlist
+        if approval_service::should_add_to_allowlist(&domain_resp) {
+            self.session_allowlist.lock().insert(tool_name.to_string());
         }
 
-        // Append to audit log.
+        // Audit log (adapter responsibility — format for this manager's log)
         let summary = summarize_args(args);
         let entry = ApprovalLogEntry {
             timestamp: Utc::now().to_rfc3339(),
@@ -157,8 +160,7 @@ impl ApprovalManager {
             decision,
             channel: channel.to_string(),
         };
-        let mut log = self.audit_log.lock();
-        log.push(entry);
+        self.audit_log.lock().push(entry);
     }
 
     /// Get a snapshot of the audit log.
