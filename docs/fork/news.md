@@ -2,6 +2,12 @@
 
 ## 2026-03-23
 
+### Phase 4.0 Step 11: IPC run tracking via RunStorePort
+- Push-triggered IPC runs now create Run(RunOrigin::Ipc, Running) before agent execution
+- Run state updated to Completed/Failed on finish
+- conversation_key = `ipc:{peer_agent}` for IPC runs
+- run_store passed to agent_inbox_processor via function parameter
+
 ### Phase 4.0 Step 10: Wire RunStorePort into gateway + REST API
 - `RunStorePort` added to AppState, initialized from ChatDb at boot
 - Web chat runs now durably persisted: create_run(Running) → update_state(Completed/Interrupted/Failed)
