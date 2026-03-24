@@ -1232,6 +1232,114 @@ pub async fn handle_api_conversations_delete(
     }
 }
 
+// ── Phase 4.0: Runs REST API ─────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RunsListParams {
+    pub conversation_key: Option<String>,
+    pub limit: Option<usize>,
+}
+
+/// GET /api/runs — list runs, optionally filtered by conversation_key.
+pub async fn handle_api_runs_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<RunsListParams>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let store = match &state.run_store {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Run store not available"})),
+            )
+                .into_response();
+        }
+    };
+
+    let limit = params.limit.unwrap_or(50);
+    let conv_key = params.conversation_key.as_deref().unwrap_or("");
+
+    let runs = store.list_runs(conv_key, limit).await;
+    let result: Vec<serde_json::Value> = runs
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "run_id": r.run_id,
+                "conversation_key": r.conversation_key,
+                "origin": r.origin.to_string(),
+                "state": r.state.to_string(),
+                "started_at": r.started_at,
+                "finished_at": r.finished_at,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({"runs": result})).into_response()
+}
+
+/// GET /api/runs/:run_id — get a run with its events.
+pub async fn handle_api_runs_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run_id): Path<String>,
+    Query(params): Query<ConversationEventsParams>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let store = match &state.run_store {
+        Some(s) => s,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "Run store not available"})),
+            )
+                .into_response();
+        }
+    };
+
+    let run = match store.get_run(&run_id).await {
+        Some(r) => r,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "Run not found"})),
+            )
+                .into_response();
+        }
+    };
+
+    let limit = params.limit.unwrap_or(100);
+    let events = store.get_events(&run_id, limit).await;
+    let event_json: Vec<serde_json::Value> = events
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "event_type": e.event_type.to_string(),
+                "content": e.content,
+                "tool_name": e.tool_name,
+                "created_at": e.created_at,
+            })
+        })
+        .collect();
+
+    Json(serde_json::json!({
+        "run_id": run.run_id,
+        "conversation_key": run.conversation_key,
+        "origin": run.origin.to_string(),
+        "state": run.state.to_string(),
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "events": event_json,
+    }))
+    .into_response()
+}
+
 // ── Activity feed (Phase 3.9) ────────────────────────────────────
 
 /// Known channel name prefixes for distinguishing channel vs web_chat sessions.

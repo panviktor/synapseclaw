@@ -1596,6 +1596,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         }
     }
 

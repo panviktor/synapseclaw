@@ -15,6 +15,7 @@ use super::{AppState, ChatSession};
 use crate::fork_core::domain::conversation::{
     ConversationEvent, ConversationKind, ConversationSession, EventType,
 };
+use crate::fork_core::domain::run::{Run, RunOrigin, RunState};
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -776,6 +777,22 @@ async fn handle_chat_send_rpc(
 
     let run_id = uuid::Uuid::new_v4().to_string();
 
+    // Persist run record via RunStorePort
+    if let Some(store) = state.run_store.as_ref() {
+        let run = Run {
+            run_id: run_id.clone(),
+            conversation_key: Some(session_key.clone()),
+            origin: RunOrigin::Web,
+            state: RunState::Running,
+            #[allow(clippy::cast_sign_loss)]
+            started_at: now_secs() as u64,
+            finished_at: None,
+        };
+        if let Err(e) = store.create_run(&run).await {
+            tracing::warn!("run_store: failed to create run: {e}");
+        }
+    }
+
     // Create abort channel and store run_id
     let (abort_tx, abort_rx) = tokio::sync::watch::channel(false);
     {
@@ -861,6 +878,13 @@ async fn handle_chat_send_rpc(
             sync_memory_count(state, &session_key, 2);
             persist_usage(state, &session_key, usage.as_ref()).await;
             update_session_goal(state, &session_key, &message).await;
+            // Mark run completed
+            if let Some(store) = state.run_store.as_ref() {
+                #[allow(clippy::cast_sign_loss)]
+                let _ = store
+                    .update_state(&run_id, RunState::Completed, Some(now_secs() as u64))
+                    .await;
+            }
             emit_session_event(state, "session.updated", &session_key);
             emit_run_event(state, "session.run_finished", &session_key, &run_id);
 
@@ -891,6 +915,13 @@ async fn handle_chat_send_rpc(
                 .await;
                 persist_increment_count(state, &session_key, 2).await;
                 sync_memory_count(state, &session_key, 2);
+                // Mark run interrupted
+                if let Some(store) = state.run_store.as_ref() {
+                    #[allow(clippy::cast_sign_loss)]
+                    let _ = store
+                        .update_state(&run_id, RunState::Interrupted, Some(now_secs() as u64))
+                        .await;
+                }
                 emit_run_event(state, "session.run_interrupted", &session_key, &run_id);
                 return Ok(serde_json::json!({
                     "run_id": run_id,
@@ -901,6 +932,13 @@ async fn handle_chat_send_rpc(
             persist_message(state, &session_key, "error", None, &sanitized, None, None).await;
             persist_increment_count(state, &session_key, 2).await;
             sync_memory_count(state, &session_key, 2);
+            // Mark run failed
+            if let Some(store) = state.run_store.as_ref() {
+                #[allow(clippy::cast_sign_loss)]
+                let _ = store
+                    .update_state(&run_id, RunState::Failed, Some(now_secs() as u64))
+                    .await;
+            }
             emit_run_event(state, "session.run_finished", &session_key, &run_id);
             Err(anyhow::anyhow!("{sanitized}"))
         }
