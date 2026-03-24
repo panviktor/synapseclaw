@@ -196,9 +196,16 @@ impl Tool for TelegramPostTool {
             .unwrap_or(false);
 
         if api_ok {
+            let message_id = serde_json::from_str::<serde_json::Value>(&response_body)
+                .ok()
+                .and_then(|json| json.get("result").and_then(|r| r.get("message_id")).and_then(|v| v.as_i64()));
+            let output = match message_id {
+                Some(id) => format!("Message sent to {} (message_id: {})", chat_id, id),
+                None => format!("Message sent to {}", chat_id),
+            };
             Ok(ToolResult {
                 success: true,
-                output: format!("Message sent to {}", chat_id),
+                output,
                 error: None,
             })
         } else {
