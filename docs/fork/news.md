@@ -1,5 +1,18 @@
 # SynapseClaw News & Changelog
 
+## 2026-03-24 (2)
+
+### Project independence: upstream detachment, i18n cleanup, README rewrite
+- **Removed 29 non-EN/RU README translations** + 29 docs hub translations
+- **Deleted Vietnamese docs tree** (`docs/vi/`, ~40 files) and **Chinese docs tree** (`docs/i18n/zh-CN/`, ~60 files)
+- **README.md completely rewritten** — removed upstream donation links, social media badges, Special Thanks, benchmark table, Star History, contributor badges; updated project description to reflect Phase 4.0 architecture
+- **README.ru.md rewritten** — mirrors new EN README in Russian
+- **NOTICE updated** — minimal ZeroClaw attribution (MIT/Apache requirement)
+- **Upstream sync infrastructure removed** — deleted `upstream-sync.yml` workflow, sync scripts, sync PR/issue templates
+- **CONTRIBUTING.md cleaned** — removed Branch Migration Notice (upstream artifact)
+- **docs/fork/README.md updated** — project is now independent, not a fork extension; removed sync automation references
+- **docs/fork/sync-strategy.md archived** — kept for historical reference with archive header
+
 ## 2026-03-24
 
 ### Phase 4.0 workspace crate + all 10 use cases + full restructuring

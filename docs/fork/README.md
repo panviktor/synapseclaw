@@ -2,7 +2,7 @@
 
 This directory contains the strategy, plans, and operational docs for the SynapseClaw fork.
 
-The fork extends upstream SynapseClaw with a **multi-agent IPC system** (broker, trust model, quarantine, control plane), a **web-based operator dashboard**, **security hardening** (execution profiles, Ed25519 identity, PromptGuard), and supporting infrastructure. See [`delta-registry.md`](delta-registry.md) for the full inventory (44 delta entries across 11 categories).
+SynapseClaw is an independent project (originally forked from ZeroClaw) with its own **multi-agent IPC system** (broker, trust model, quarantine, control plane), **web-based operator dashboard**, **security hardening** (execution profiles, Ed25519 identity, PromptGuard), and **hexagonal core** (fork_core workspace crate). See [`delta-registry.md`](delta-registry.md) for the full delta inventory.
 
 ## News & Changelog
 
@@ -10,13 +10,13 @@ See [`news.md`](news.md) for the latest updates and release notes.
 
 ## Documents
 
-### Fork Strategy
+### Project History & Delta Registry
 
 | Document | Purpose | Who reads it |
 |----------|---------|-------------|
-| [sync-strategy.md](sync-strategy.md) | Long-lived fork maintenance: vendor branch, merge-based sync | Everyone |
-| [delta-registry.md](delta-registry.md) | **All** fork deltas (IPC, security, gateway, web UI, infra) — 44 entries, merge risk, ownership | Everyone |
-| [sync-review-rubric.md](sync-review-rubric.md) | Approve / Request changes / Escalate policy for sync PRs | Administrator |
+| [delta-registry.md](delta-registry.md) | All project deltas (IPC, security, gateway, web UI, core, infra) | Everyone |
+| [sync-strategy.md](sync-strategy.md) | ARCHIVED — historical upstream sync strategy (discontinued) | Reference only |
+| [sync-review-rubric.md](sync-review-rubric.md) | ARCHIVED — historical sync PR review policy | Reference only |
 
 ### IPC Plans & Progress
 
@@ -60,18 +60,10 @@ See [`news.md`](news.md) for the latest updates and release notes.
 
 ## Branch model
 
-| Branch | Role | Tracks |
-|--------|------|--------|
-| `main` | Fork's default branch | `origin/main` |
-| `vendor/upstream-master` | Read-only upstream mirror | `upstream/master` |
-| `sync/upstream-YYYYMMDD` | Temporary sync PR branch | — |
-| `feat/*` | Feature work, branched from `main` | — |
-
-## Automation
-
-- **Weekly sync workflow**: `.github/workflows/upstream-sync.yml`
-- **Sync scripts**: `scripts/sync-upstream.sh`, `scripts/report-sync-conflicts.sh`, `scripts/render-sync-pr-body.sh`
-- **Templates**: `.github/pull_request_template/sync-pr.md`, `.github/ISSUE_TEMPLATE/upstream-sync-conflict.md`
+| Branch | Role |
+|--------|------|
+| `main` | Default branch |
+| `feat/*` | Feature work, branched from `main` |
 
 ## Related
 
