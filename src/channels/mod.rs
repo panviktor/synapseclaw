@@ -2853,6 +2853,8 @@ async fn handle_message_via_orchestrator(
             dedup_exempt_tools: Arc::clone(&ctx.tool_call_dedup_exempt),
             hooks: ctx.hooks.clone(),
             activated_tools: ctx.activated_tools.clone(),
+            message_timeout_secs: ctx.message_timeout_secs,
+            max_tool_iterations: ctx.max_tool_iterations,
         });
 
     let registry: Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort> =
@@ -2887,7 +2889,18 @@ async fn handle_message_via_orchestrator(
         auto_save_memory: ctx.auto_save_memory,
         model_routes,
         thread_root_max_chars: 500,
+        query_classification: ctx.query_classification.clone(),
+        message_timeout_secs: ctx.message_timeout_secs,
+        min_relevance_score: ctx.min_relevance_score,
+        ack_reactions: ctx.ack_reactions,
     };
+
+    let memory_port: Option<Arc<dyn crate::fork_core::ports::memory::MemoryPort>> =
+        Some(Arc::new(memory_adapter::MemoryAdapter::new(
+            Arc::clone(&ctx.memory),
+            Arc::clone(&ctx.provider),
+            ctx.model.to_string(),
+        )));
 
     let ports = uc::InboundMessagePorts {
         history: history_port,
@@ -2897,33 +2910,21 @@ async fn handle_message_via_orchestrator(
         agent_runtime,
         channel_registry: registry,
         session_summary,
+        memory: memory_port,
     };
 
     // ── Call orchestrator ─────────────────────────────────────────
+    // The orchestrator sends responses/errors directly via ChannelOutputPort.
+    // The adapter only handles Command formatting and post-processing.
     match uc::handle(envelope, caps, &config, &ports).await {
-        Ok(uc::HandleResult::Response {
-            response_text,
-            ..
-        }) => {
-            if let Some(ch) = &target_channel {
-                let send_msg = SendMessage::new(&response_text, &original_msg.reply_target)
-                    .in_thread(original_msg.thread_ts.clone());
-                if let Err(e) = ch.send(&send_msg).await {
-                    tracing::warn!("Failed to send response: {e}");
-                }
-            }
+        Ok(uc::HandleResult::Response { .. }) => {
+            // Response already sent by orchestrator via ChannelOutputPort
         }
         Ok(uc::HandleResult::Command {
             effect,
             conversation_key,
         }) => {
-            // Format command response and send
-            let response = format_command_effect(
-                &effect,
-                ctx,
-                &conversation_key,
-            )
-            .await;
+            let response = format_command_effect(&effect, ctx, &conversation_key).await;
             if let Some(ch) = &target_channel {
                 let send_msg = SendMessage::new(&response, &original_msg.reply_target)
                     .in_thread(original_msg.thread_ts.clone());
@@ -2937,13 +2938,8 @@ async fn handle_message_via_orchestrator(
         }
         Ok(uc::HandleResult::CommandNoChannel) => {}
         Err(e) => {
-            tracing::warn!("Message handling failed: {e}");
-            if let Some(ch) = &target_channel {
-                let error_text = format!("⚠️ {e}");
-                let send_msg = SendMessage::new(&error_text, &original_msg.reply_target)
-                    .in_thread(original_msg.thread_ts.clone());
-                let _ = ch.send(&send_msg).await;
-            }
+            // Unexpected orchestrator error (should be rare — most errors handled internally)
+            tracing::warn!("Message handling failed unexpectedly: {e}");
         }
     }
 

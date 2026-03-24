@@ -5,6 +5,7 @@
 
 pub mod agent_runtime;
 pub mod channel_output;
+pub mod memory;
 pub mod channel_registry;
 pub mod conversation_history;
 pub mod conversation_store;

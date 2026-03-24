@@ -54,4 +54,39 @@ impl ChannelOutputPort for ChannelOutputAdapter {
     fn supports_streaming(&self) -> bool {
         self.channel.supports_draft_updates()
     }
+
+    async fn send_draft(
+        &self,
+        recipient: &str,
+        text: &str,
+        thread_ref: Option<&str>,
+    ) -> Result<Option<String>> {
+        let mut msg = SendMessage::new(text, recipient);
+        if let Some(tr) = thread_ref {
+            msg = msg.in_thread(Some(tr.to_string()));
+        }
+        self.channel.send_draft(&msg).await
+    }
+
+    async fn update_draft(
+        &self,
+        recipient: &str,
+        draft_id: &str,
+        text: &str,
+    ) -> Result<()> {
+        self.channel.update_draft(recipient, draft_id, text).await
+    }
+
+    async fn finalize_draft(
+        &self,
+        recipient: &str,
+        draft_id: &str,
+        text: &str,
+    ) -> Result<()> {
+        self.channel.finalize_draft(recipient, draft_id, text).await
+    }
+
+    async fn cancel_draft(&self, recipient: &str, draft_id: &str) -> Result<()> {
+        self.channel.cancel_draft(recipient, draft_id).await
+    }
 }

@@ -17,6 +17,8 @@ pub struct AgentTurnResult {
     pub history: Vec<ChatMessage>,
     /// Whether tools were executed during this turn.
     pub tools_used: bool,
+    /// Extracted tool context summary (for history display).
+    pub tool_summary: String,
 }
 
 /// Port for executing agent turns (LLM + tool loop).
@@ -30,6 +32,8 @@ pub trait AgentRuntimePort: Send + Sync {
     /// - `model`: which model to use
     /// - `temperature`: sampling temperature
     /// - `max_iterations`: tool loop iteration cap
+    /// - `timeout_secs`: hard timeout for the entire turn (0 = no timeout)
+    /// - `on_delta`: optional channel for streaming deltas
     ///
     /// Returns the final response and updated history.
     async fn execute_turn(
@@ -39,5 +43,12 @@ pub trait AgentRuntimePort: Send + Sync {
         model: &str,
         temperature: f64,
         max_iterations: usize,
+        timeout_secs: u64,
+        on_delta: Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Result<AgentTurnResult>;
+
+    /// Check if a provider supports vision/multimodal.
+    fn supports_vision(&self) -> bool {
+        false
+    }
 }
