@@ -2,6 +2,12 @@
 
 ## 2026-03-23
 
+### Phase 4.0 Step 10: Wire RunStorePort into gateway + REST API
+- `RunStorePort` added to AppState, initialized from ChatDb at boot
+- Web chat runs now durably persisted: create_run(Running) → update_state(Completed/Interrupted/Failed)
+- REST API: `GET /api/runs` (list, optional ?conversation_key filter), `GET /api/runs/:run_id` (detail + events)
+- All 3 terminal states tracked: Completed, Interrupted (user abort), Failed (error)
+
 ### Phase 4.0 Step 9: Migrate ws.rs from ChatDb to ConversationStorePort
 - All 10 direct ChatDb calls in ws.rs replaced with ConversationStorePort methods
 - `ensure_session`, `handle_chat_history`, `handle_sessions_*` made async for port compatibility

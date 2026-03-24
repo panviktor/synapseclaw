@@ -105,6 +105,36 @@ impl RunStorePort for ChatDbRunStore {
         .unwrap_or_default()
     }
 
+    async fn list_all_runs(&self, limit: usize) -> Vec<Run> {
+        let conn = match self.db.conn() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT run_id, conversation_key, origin, state, started_at, finished_at
+             FROM runs ORDER BY started_at DESC LIMIT ?1",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        #[allow(clippy::cast_possible_wrap)]
+        stmt.query_map(rusqlite::params![limit as i64], |row| {
+            Ok(Run {
+                run_id: row.get(0)?,
+                conversation_key: row.get(1)?,
+                origin: run_origin_from_str(&row.get::<_, String>(2)?),
+                state: RunState::from_str_lossy(&row.get::<_, String>(3)?),
+                #[allow(clippy::cast_sign_loss)]
+                started_at: row.get::<_, i64>(4)? as u64,
+                #[allow(clippy::cast_sign_loss)]
+                finished_at: row.get::<_, Option<i64>>(5)?.map(|t| t as u64),
+            })
+        })
+        .ok()
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+    }
+
     async fn append_event(&self, event: &RunEvent) -> anyhow::Result<()> {
         let conn = self.db.conn().map_err(|e| anyhow::anyhow!("{e}"))?;
         #[allow(clippy::cast_possible_wrap)]
@@ -288,5 +318,31 @@ mod tests {
     async fn get_nonexistent_run() {
         let (_tmp, store) = make_store();
         assert!(store.get_run("nope").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_all_runs_across_conversations() {
+        let (_tmp, store) = make_store();
+        // Create runs in different conversations
+        for (i, conv) in ["conv-a", "conv-b"].iter().enumerate() {
+            store
+                .create_run(&Run {
+                    run_id: format!("all-{i}"),
+                    conversation_key: Some((*conv).to_string()),
+                    origin: RunOrigin::Web,
+                    state: RunState::Completed,
+                    started_at: 1000 + i as u64,
+                    finished_at: Some(2000 + i as u64),
+                })
+                .await
+                .unwrap();
+        }
+        // list_runs filters by conversation
+        assert_eq!(store.list_runs("conv-a", 10).await.len(), 1);
+        // list_all_runs returns all
+        let all = store.list_all_runs(10).await;
+        assert_eq!(all.len(), 2);
+        // Newest first
+        assert_eq!(all[0].run_id, "all-1");
     }
 }

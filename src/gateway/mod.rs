@@ -392,6 +392,8 @@ pub struct AppState {
     /// Phase 4.0: Unified conversation/session store
     pub conversation_store:
         Option<Arc<dyn crate::fork_core::ports::conversation_store::ConversationStorePort>>,
+    /// Phase 4.0: Unified run execution store
+    pub run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -786,6 +788,14 @@ pub async fn run_gateway(
         ) as Arc<dyn crate::fork_core::ports::conversation_store::ConversationStorePort>
     });
 
+    // ── Phase 4.0: RunStorePort (wraps ChatDb) ──
+    let run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>> =
+        chat_db.as_ref().map(|db| {
+            Arc::new(
+                crate::fork_adapters::storage::run_store::ChatDbRunStore::new(Arc::clone(db)),
+            ) as Arc<dyn crate::fork_core::ports::run_store::RunStorePort>
+        });
+
     // Parse admin CIDR allowlist — fail at boot on invalid entries
     let admin_cidrs: Vec<AdminCidr> = config
         .gateway
@@ -899,6 +909,7 @@ pub async fn run_gateway(
         },
         channel_registry,
         conversation_store,
+        run_store,
     };
 
     // Phase 3.8: seed AgentRegistry from DB + start health polling
@@ -1144,6 +1155,9 @@ pub async fn run_gateway(
             "/api/conversations/{key}",
             get(api::handle_api_conversations_get).delete(api::handle_api_conversations_delete),
         )
+        // ── Phase 4.0: Runs REST API ──
+        .route("/api/runs", get(api::handle_api_runs_list))
+        .route("/api/runs/{run_id}", get(api::handle_api_runs_get))
         // ── Phase 4.0: Channel capabilities + deliver ──
         .route(
             "/api/channels/capabilities",
@@ -2818,6 +2832,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2888,6 +2903,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -3282,6 +3298,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3366,6 +3383,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         };
 
         let headers = HeaderMap::new();
@@ -3462,6 +3480,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         };
 
         let response = handle_webhook(
@@ -3530,6 +3549,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3603,6 +3623,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3681,6 +3702,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -3755,6 +3777,7 @@ mod tests {
             channel_session_backend: None,
             channel_registry: None,
             conversation_store: None,
+            run_store: None,
         };
 
         let mut headers = HeaderMap::new();
