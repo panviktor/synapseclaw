@@ -49,7 +49,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | Slice | Status | Description |
 |-------|--------|-------------|
 | 1 | **DONE** | `delivery_service` + `SendScheduledNotification` — heartbeat/cron delivery policy moved into fork_core |
-| 2 | **PARTIAL** | `inbound_message_service` — parsing, classification, 6 decision functions extracted; orchestration shell pending |
+| 2 | **DONE** | `inbound_message_service` + `HandleInboundMessage` — 5 new ports, orchestrator, decision functions, 56 tests |
 | 3 | TODO | `conversation_service` + `StartConversationRun` — session lifecycle, summary policy |
 | 4 | TODO | `approval_service` + `RequestApproval` + `ReviewQuarantineItem` — needs `domain/approval.rs` + `ports/approval.rs` |
 | 5 | TODO | `ipc_service` + `DispatchIpcMessage` — needs `domain/ipc.rs` + `ports/ipc_bus.rs` |
@@ -65,18 +65,25 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | `domain/memory.rs` | TODO |
 | `domain/implementation.rs` | TODO |
 
-### Missing ports
+### Ports
 
 | Port | Status |
 |------|--------|
+| `ports/channel_registry.rs` | **DONE** |
+| `ports/conversation_store.rs` | **DONE** |
+| `ports/run_store.rs` | **DONE** |
+| `ports/conversation_history.rs` | **DONE** |
+| `ports/route_selection.rs` | **DONE** |
+| `ports/agent_runtime.rs` | **DONE** |
+| `ports/channel_output.rs` | **DONE** |
+| `ports/hooks.rs` | **DONE** |
+| `ports/session_summary.rs` | **DONE** |
 | `ports/memory_tiers.rs` | TODO |
 | `ports/approval.rs` | TODO |
 | `ports/scheduler.rs` | TODO |
-| `ports/runtime.rs` | TODO |
 | `ports/ipc_bus.rs` | TODO |
 | `ports/audit.rs` | TODO |
 | `ports/identity.rs` | TODO |
-| `ports/summary.rs` | TODO |
 | `ports/coding_worker.rs` | TODO |
 
 ### Cleanup and verification

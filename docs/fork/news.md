@@ -2,7 +2,7 @@
 
 ## 2026-03-24
 
-### Phase 4.0 Slice 2: InboundMessageService — domain logic extraction
+### Phase 4.0 Slice 2: InboundMessageService — ports + orchestrator + domain logic
 - `RuntimeCommand` enum moved from channels/mod.rs to fork_core domain
 - `parse_runtime_command()` — capability-driven command parsing
 - `conversation_key()` — canonical key from InboundEnvelope
@@ -16,7 +16,11 @@
 - `HistoryEnrichment` enum — strategy pattern for first-turn context
 - channels/mod.rs delegates to fork_core for all decision points
 - Removed: `supports_runtime_model_switch()`, local `ChannelRuntimeCommand` enum, local `parse_runtime_command()`
-- 33 unit tests
+- 5 new ports: `ConversationHistoryPort`, `RouteSelectionPort`, `AgentRuntimePort`, `ChannelOutputPort`, `HooksPort` + `SessionSummaryPort`
+- `HandleInboundMessage` use case — full orchestration: hook → classify → route → enrich → execute → respond
+- `HandleResult` enum — adapter acts on Command/Response/Cancelled
+- `NoOpHooks` default implementation for hookless configurations
+- 56 unit tests (services + use case)
 
 ### Phase 4.0 Slice 1: DeliveryService — first application service
 - `DeliveryService` in `fork_core/application/services/delivery_service.rs` — first real application service
