@@ -182,48 +182,67 @@ pub fn validate_send(
 /// Validate shared state write access.
 ///
 /// Key format: `{scope}:{owner}:{name}`
-/// - `public:*` — any agent can write to their own namespace
-/// - `shared:*` — L0-L2 can write
-/// - `secret:*` — L0-L1 only
+/// Scopes: agent (own namespace), public (L0-L3), team (L0-L2), global (L0-L1), secret (reserved)
 pub fn validate_state_write(trust_level: i32, agent_id: &str, key: &str) -> Result<(), AclError> {
     let parts: Vec<&str> = key.splitn(3, ':').collect();
-    if parts.len() < 3 {
+    if parts.len() < 2 {
         return Err(AclError {
             code: "invalid_key_format".into(),
-            message: "State key must be {scope}:{owner}:{name}".into(),
+            message: "Key must be in format scope:owner:key".into(),
             retryable: false,
         });
     }
 
-    let (scope, owner) = (parts[0], parts[1]);
+    let scope = parts[0];
 
-    // Owner must match agent_id
-    if owner != agent_id {
+    // Secret namespace is reserved
+    if scope == "secret" {
         return Err(AclError {
-            code: "state_owner_mismatch".into(),
-            message: format!("Cannot write to namespace owned by '{owner}'"),
+            code: "secret_denied".into(),
+            message: "Secret namespace is reserved".into(),
             retryable: false,
         });
     }
 
     match scope {
-        "public" => Ok(()),
-        "shared" => {
-            if trust_level > 2 {
+        "agent" => {
+            let owner = parts.get(1).unwrap_or(&"");
+            if *owner != agent_id {
+                return Err(AclError {
+                    code: "agent_namespace_denied".into(),
+                    message: "Can only write to own agent namespace".into(),
+                    retryable: false,
+                });
+            }
+            Ok(())
+        }
+        "public" => {
+            if trust_level > 3 {
                 Err(AclError {
-                    code: "state_shared_denied".into(),
-                    message: "Only L0-L2 agents can write shared state".into(),
+                    code: "public_denied".into(),
+                    message: "L4 agents cannot write to public namespace".into(),
                     retryable: false,
                 })
             } else {
                 Ok(())
             }
         }
-        "secret" => {
+        "team" => {
+            if trust_level > 2 {
+                Err(AclError {
+                    code: "team_denied".into(),
+                    message: "Only L1-L2 can write to team namespace".into(),
+                    retryable: false,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        "global" => {
             if trust_level > 1 {
                 Err(AclError {
-                    code: "state_secret_denied".into(),
-                    message: "Only L0-L1 agents can write secret state".into(),
+                    code: "global_denied".into(),
+                    message: "Only L1 can write to global namespace".into(),
                     retryable: false,
                 })
             } else {
@@ -231,19 +250,20 @@ pub fn validate_state_write(trust_level: i32, agent_id: &str, key: &str) -> Resu
             }
         }
         _ => Err(AclError {
-            code: "invalid_scope".into(),
-            message: format!("Unknown scope '{scope}'. Valid: public, shared, secret"),
+            code: "unknown_scope".into(),
+            message: format!("Unknown scope: {scope}"),
             retryable: false,
         }),
     }
 }
 
 /// Validate shared state read access.
+/// All agents can read all keys except `secret:*` (L0-L1 only).
 pub fn validate_state_read(trust_level: i32, key: &str) -> Result<(), AclError> {
     if key.starts_with("secret:") && trust_level > 1 {
         return Err(AclError {
-            code: "state_secret_read_denied".into(),
-            message: "Only L0-L1 agents can read secret state".into(),
+            code: "secret_read_denied".into(),
+            message: "Secret namespace requires L0-L1".into(),
             retryable: false,
         });
     }
@@ -337,42 +357,59 @@ mod tests {
     // ── State validation ─────────────────────────────────────────
 
     #[test]
-    fn state_write_own_public() {
+    fn state_write_own_agent_namespace() {
+        assert!(validate_state_write(3, "agent-a", "agent:agent-a:key").is_ok());
+    }
+
+    #[test]
+    fn state_write_other_agent_namespace() {
+        let err = validate_state_write(3, "agent-a", "agent:agent-b:key").unwrap_err();
+        assert_eq!(err.code, "agent_namespace_denied");
+    }
+
+    #[test]
+    fn state_write_public_l3() {
         assert!(validate_state_write(3, "agent-a", "public:agent-a:key").is_ok());
     }
 
     #[test]
-    fn state_write_other_namespace() {
-        let err = validate_state_write(3, "agent-a", "public:agent-b:key").unwrap_err();
-        assert_eq!(err.code, "state_owner_mismatch");
+    fn state_write_public_l4_denied() {
+        let err = validate_state_write(4, "agent-a", "public:agent-a:key").unwrap_err();
+        assert_eq!(err.code, "public_denied");
     }
 
     #[test]
-    fn state_write_shared_l2() {
-        assert!(validate_state_write(2, "agent-a", "shared:agent-a:key").is_ok());
+    fn state_write_team_l2() {
+        assert!(validate_state_write(2, "agent-a", "team:agent-a:key").is_ok());
     }
 
     #[test]
-    fn state_write_shared_l3_denied() {
-        let err = validate_state_write(3, "agent-a", "shared:agent-a:key").unwrap_err();
-        assert_eq!(err.code, "state_shared_denied");
+    fn state_write_team_l3_denied() {
+        let err = validate_state_write(3, "agent-a", "team:agent-a:key").unwrap_err();
+        assert_eq!(err.code, "team_denied");
     }
 
     #[test]
-    fn state_write_secret_l1() {
-        assert!(validate_state_write(1, "agent-a", "secret:agent-a:key").is_ok());
+    fn state_write_global_l1() {
+        assert!(validate_state_write(1, "agent-a", "global:agent-a:key").is_ok());
     }
 
     #[test]
-    fn state_write_secret_l2_denied() {
-        let err = validate_state_write(2, "agent-a", "secret:agent-a:key").unwrap_err();
-        assert_eq!(err.code, "state_secret_denied");
+    fn state_write_global_l2_denied() {
+        let err = validate_state_write(2, "agent-a", "global:agent-a:key").unwrap_err();
+        assert_eq!(err.code, "global_denied");
+    }
+
+    #[test]
+    fn state_write_secret_reserved() {
+        let err = validate_state_write(0, "agent-a", "secret:agent-a:key").unwrap_err();
+        assert_eq!(err.code, "secret_denied");
     }
 
     #[test]
     fn state_read_secret_l2_denied() {
         let err = validate_state_read(2, "secret:agent-a:key").unwrap_err();
-        assert_eq!(err.code, "state_secret_read_denied");
+        assert_eq!(err.code, "secret_read_denied");
     }
 
     #[test]

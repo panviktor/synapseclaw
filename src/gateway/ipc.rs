@@ -2137,95 +2137,32 @@ pub fn validate_send(
 /// - L2: + `team:*`
 /// - L1: + `global:*`
 /// - `secret:*` denied for all (reserved for Phase 2)
+/// Phase 4.0 Slice 5: delegates state write validation to fork_core domain.
 pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<(), IpcError> {
-    let parts: Vec<&str> = key.splitn(3, ':').collect();
-    if parts.len() < 2 {
-        return Err(IpcError {
-            status: StatusCode::BAD_REQUEST,
-            error: "Key must be in format scope:owner:key".into(),
-            code: "invalid_key_format".into(),
-            retryable: false,
-        });
-    }
-
-    let scope = parts[0];
-
-    if scope == "secret" {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Secret namespace is reserved".into(),
-            code: "secret_denied".into(),
-            retryable: false,
-        });
-    }
-
-    match scope {
-        "agent" => {
-            let owner = parts.get(1).unwrap_or(&"");
-            if *owner != agent_id {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "Can only write to own agent namespace".into(),
-                    code: "agent_namespace_denied".into(),
-                    retryable: false,
-                });
+    crate::fork_core::domain::ipc::validate_state_write(i32::from(trust_level), agent_id, key)
+        .map_err(|acl_err| {
+            let status = match acl_err.code.as_str() {
+                "invalid_key_format" | "unknown_scope" => StatusCode::BAD_REQUEST,
+                _ => StatusCode::FORBIDDEN,
+            };
+            IpcError {
+                status,
+                error: acl_err.message,
+                code: acl_err.code,
+                retryable: acl_err.retryable,
             }
-        }
-        "public" => {
-            if trust_level > 3 {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "L4 agents cannot write to public namespace".into(),
-                    code: "public_denied".into(),
-                    retryable: false,
-                });
-            }
-        }
-        "team" => {
-            if trust_level > 2 {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "Only L1-L2 can write to team namespace".into(),
-                    code: "team_denied".into(),
-                    retryable: false,
-                });
-            }
-        }
-        "global" => {
-            if trust_level > 1 {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "Only L1 can write to global namespace".into(),
-                    code: "global_denied".into(),
-                    retryable: false,
-                });
-            }
-        }
-        _ => {
-            return Err(IpcError {
-                status: StatusCode::BAD_REQUEST,
-                error: format!("Unknown scope: {scope}"),
-                code: "unknown_scope".into(),
-                retryable: false,
-            });
-        }
-    }
-
-    Ok(())
+        })
 }
 
-/// Validate whether a state read is permitted.
-/// All agents can read all keys except `secret:*` (L0-L1 only).
+/// Phase 4.0 Slice 5: delegates state read validation to fork_core domain.
 pub fn validate_state_get(trust_level: u8, key: &str) -> Result<(), IpcError> {
-    if key.starts_with("secret:") && trust_level > 1 {
-        return Err(IpcError {
+    crate::fork_core::domain::ipc::validate_state_read(i32::from(trust_level), key)
+        .map_err(|acl_err| IpcError {
             status: StatusCode::FORBIDDEN,
-            error: "Secret namespace requires L0-L1".into(),
-            code: "secret_read_denied".into(),
-            retryable: false,
-        });
-    }
-    Ok(())
+            error: acl_err.message,
+            code: acl_err.code,
+            retryable: acl_err.retryable,
+        })
 }
 
 // ── Auth helper ─────────────────────────────────────────────────

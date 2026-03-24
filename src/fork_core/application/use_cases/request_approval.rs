@@ -19,23 +19,11 @@ pub async fn execute(
     port: &dyn ApprovalPort,
     tool_name: &str,
     arguments: &str,
-    autonomy: AutonomyLevel,
-    auto_approve: &[String],
-    always_ask: &[String],
 ) -> Result<ApprovalResponse> {
-    // Check if tool is session-allowed (previous "Always" response)
-    if port.is_session_allowed(tool_name) {
+    // Port.needs_approval() delegates to approval_service::check_needs_approval
+    // with full context (autonomy, auto_approve, always_ask, session_allowlist, non_interactive)
+    if !port.needs_approval(tool_name) {
         return Ok(ApprovalResponse::Yes);
-    }
-
-    // Check if approval is needed at all
-    if !approval_service::check_needs_approval(tool_name, autonomy, auto_approve, always_ask) {
-        return Ok(ApprovalResponse::Yes);
-    }
-
-    // ReadOnly = always deny
-    if autonomy == AutonomyLevel::ReadOnly {
-        return Ok(ApprovalResponse::No);
     }
 
     // Request approval via port (interactive prompt or auto-deny)
@@ -57,21 +45,28 @@ mod tests {
 
     struct MockApprovalPort {
         response: ApprovalResponse,
+        needs: bool,
         session_allowed: Mutex<Vec<String>>,
     }
 
     impl MockApprovalPort {
-        fn new(response: ApprovalResponse) -> Self {
-            Self {
-                response,
-                session_allowed: Mutex::new(vec![]),
-            }
+        fn needs(response: ApprovalResponse) -> Self {
+            Self { response, needs: true, session_allowed: Mutex::new(vec![]) }
+        }
+        fn auto_approved() -> Self {
+            Self { response: ApprovalResponse::No, needs: false, session_allowed: Mutex::new(vec![]) }
         }
     }
 
     #[async_trait]
     impl ApprovalPort for MockApprovalPort {
-        fn needs_approval(&self, _tool_name: &str) -> bool { true }
+        fn needs_approval(&self, tool_name: &str) -> bool {
+            // Check session allowlist first (mirrors real behavior)
+            if self.session_allowed.lock().unwrap().contains(&tool_name.to_string()) {
+                return false;
+            }
+            self.needs
+        }
         async fn request_approval(&self, _tool: &str, _args: &str) -> Result<ApprovalResponse> {
             Ok(self.response)
         }
@@ -85,39 +80,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_autonomy_auto_approves() {
-        let port = MockApprovalPort::new(ApprovalResponse::No);
-        let result = execute(&port, "shell", "ls", AutonomyLevel::Full, &[], &[]).await.unwrap();
+    async fn auto_approved_tool_passes() {
+        let port = MockApprovalPort::auto_approved();
+        let result = execute(&port, "shell", "ls").await.unwrap();
         assert_eq!(result, ApprovalResponse::Yes);
-    }
-
-    #[tokio::test]
-    async fn read_only_denies() {
-        let port = MockApprovalPort::new(ApprovalResponse::Yes);
-        let result = execute(&port, "shell", "ls", AutonomyLevel::ReadOnly, &[], &[]).await.unwrap();
-        assert_eq!(result, ApprovalResponse::No);
     }
 
     #[tokio::test]
     async fn supervised_delegates_to_port() {
-        let port = MockApprovalPort::new(ApprovalResponse::Yes);
-        let result = execute(&port, "shell", "ls", AutonomyLevel::Supervised, &[], &[]).await.unwrap();
+        let port = MockApprovalPort::needs(ApprovalResponse::Yes);
+        let result = execute(&port, "shell", "ls").await.unwrap();
         assert_eq!(result, ApprovalResponse::Yes);
     }
 
     #[tokio::test]
+    async fn supervised_denied_by_port() {
+        let port = MockApprovalPort::needs(ApprovalResponse::No);
+        let result = execute(&port, "shell", "ls").await.unwrap();
+        assert_eq!(result, ApprovalResponse::No);
+    }
+
+    #[tokio::test]
     async fn always_adds_to_session() {
-        let port = MockApprovalPort::new(ApprovalResponse::Always);
-        let result = execute(&port, "shell", "ls", AutonomyLevel::Supervised, &[], &[]).await.unwrap();
+        let port = MockApprovalPort::needs(ApprovalResponse::Always);
+        let result = execute(&port, "shell", "ls").await.unwrap();
         assert_eq!(result, ApprovalResponse::Always);
         assert!(port.is_session_allowed("shell"));
     }
 
     #[tokio::test]
     async fn session_allowed_skips_port() {
-        let port = MockApprovalPort::new(ApprovalResponse::No);
+        let port = MockApprovalPort::needs(ApprovalResponse::No);
         port.add_session_allowlist("shell");
-        let result = execute(&port, "shell", "ls", AutonomyLevel::Supervised, &[], &[]).await.unwrap();
+        let result = execute(&port, "shell", "ls").await.unwrap();
         assert_eq!(result, ApprovalResponse::Yes);
     }
 }

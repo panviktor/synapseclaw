@@ -42,18 +42,30 @@ pub fn check_needs_approval(
     autonomy: AutonomyLevel,
     auto_approve: &[String],
     always_ask: &[String],
+    session_allowlist: &[String],
+    non_interactive: bool,
 ) -> bool {
     match autonomy {
-        AutonomyLevel::ReadOnly => true, // will be denied
+        AutonomyLevel::ReadOnly => false, // blocked elsewhere, no prompt needed
         AutonomyLevel::Full => {
             // Even full autonomy respects always_ask
             always_ask.iter().any(|t| t == tool_name)
         }
         AutonomyLevel::Supervised => {
+            // always_ask overrides everything
             if always_ask.iter().any(|t| t == tool_name) {
                 return true;
             }
+            // Non-interactive shell: skip outer approval (shell's own policy guards)
+            if non_interactive && tool_name == "shell" {
+                return false;
+            }
+            // auto_approve skips
             if auto_approve.iter().any(|t| t == tool_name) {
+                return false;
+            }
+            // Session allowlist (prior "Always" responses)
+            if session_allowlist.iter().any(|t| t == tool_name) {
                 return false;
             }
             true // supervised = ask by default
@@ -133,57 +145,48 @@ mod tests {
 
     #[test]
     fn full_autonomy_no_approval_needed() {
-        assert!(!check_needs_approval("shell", AutonomyLevel::Full, &[], &[]));
+        assert!(!check_needs_approval("shell", AutonomyLevel::Full, &[], &[], &[], false));
     }
 
     #[test]
     fn full_autonomy_always_ask_overrides() {
-        assert!(check_needs_approval(
-            "shell",
-            AutonomyLevel::Full,
-            &[],
-            &["shell".into()]
-        ));
+        assert!(check_needs_approval("shell", AutonomyLevel::Full, &[], &["shell".into()], &[], false));
     }
 
     #[test]
     fn supervised_auto_approve_skips() {
-        assert!(!check_needs_approval(
-            "file_read",
-            AutonomyLevel::Supervised,
-            &["file_read".into()],
-            &[]
-        ));
+        assert!(!check_needs_approval("file_read", AutonomyLevel::Supervised, &["file_read".into()], &[], &[], false));
     }
 
     #[test]
     fn supervised_default_asks() {
-        assert!(check_needs_approval(
-            "shell",
-            AutonomyLevel::Supervised,
-            &[],
-            &[]
-        ));
+        assert!(check_needs_approval("shell", AutonomyLevel::Supervised, &[], &[], &[], false));
     }
 
     #[test]
     fn supervised_always_ask_overrides_auto_approve() {
-        assert!(check_needs_approval(
-            "shell",
-            AutonomyLevel::Supervised,
-            &["shell".into()],
-            &["shell".into()]
-        ));
+        assert!(check_needs_approval("shell", AutonomyLevel::Supervised, &["shell".into()], &["shell".into()], &[], false));
     }
 
     #[test]
-    fn read_only_always_needs_approval() {
-        assert!(check_needs_approval(
-            "file_read",
-            AutonomyLevel::ReadOnly,
-            &["file_read".into()],
-            &[]
-        ));
+    fn read_only_no_prompt_needed() {
+        // ReadOnly blocks elsewhere — needs_approval returns false (no prompt)
+        assert!(!check_needs_approval("file_read", AutonomyLevel::ReadOnly, &["file_read".into()], &[], &[], false));
+    }
+
+    #[test]
+    fn session_allowlist_skips_approval() {
+        assert!(!check_needs_approval("shell", AutonomyLevel::Supervised, &[], &[], &["shell".into()], false));
+    }
+
+    #[test]
+    fn non_interactive_shell_skips() {
+        assert!(!check_needs_approval("shell", AutonomyLevel::Supervised, &[], &[], &[], true));
+    }
+
+    #[test]
+    fn non_interactive_non_shell_still_asks() {
+        assert!(check_needs_approval("file_write", AutonomyLevel::Supervised, &[], &[], &[], true));
     }
 
     #[test]

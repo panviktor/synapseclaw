@@ -109,45 +109,29 @@ impl ApprovalManager {
 
     /// Check whether a tool call requires interactive approval.
     ///
-    /// Returns `true` if the call needs a prompt, `false` if it can proceed.
+    /// Phase 4.0: delegates to fork_core approval_service for the business rule.
     pub fn needs_approval(&self, tool_name: &str) -> bool {
-        // Full autonomy never prompts.
-        if self.autonomy_level == AutonomyLevel::Full {
-            return false;
-        }
+        use crate::fork_core::application::services::approval_service;
 
-        // ReadOnly blocks everything — handled elsewhere; no prompt needed.
-        if self.autonomy_level == AutonomyLevel::ReadOnly {
-            return false;
-        }
+        let autonomy = match self.autonomy_level {
+            AutonomyLevel::Full => approval_service::AutonomyLevel::Full,
+            AutonomyLevel::Supervised => approval_service::AutonomyLevel::Supervised,
+            AutonomyLevel::ReadOnly => approval_service::AutonomyLevel::ReadOnly,
+        };
 
-        // always_ask overrides everything.
-        if self.always_ask.contains(tool_name) {
-            return true;
-        }
+        let auto_approve: Vec<String> = self.auto_approve.iter().cloned().collect();
+        let always_ask: Vec<String> = self.always_ask.iter().cloned().collect();
+        let session_allowlist: Vec<String> =
+            self.session_allowlist.lock().iter().cloned().collect();
 
-        // Channel-driven shell execution is still guarded by the shell tool's
-        // own command allowlist and risk policy. Skipping the outer approval
-        // gate here lets low-risk allowlisted commands (e.g. `ls`) work in
-        // non-interactive channels without silently allowing medium/high-risk
-        // commands.
-        if self.non_interactive && tool_name == "shell" {
-            return false;
-        }
-
-        // auto_approve skips the prompt.
-        if self.auto_approve.contains(tool_name) {
-            return false;
-        }
-
-        // Session allowlist (from prior "Always" responses).
-        let allowlist = self.session_allowlist.lock();
-        if allowlist.contains(tool_name) {
-            return false;
-        }
-
-        // Default: supervised mode requires approval.
-        true
+        approval_service::check_needs_approval(
+            tool_name,
+            autonomy,
+            &auto_approve,
+            &always_ask,
+            &session_allowlist,
+            self.non_interactive,
+        )
     }
 
     /// Record an approval decision and update session state.
