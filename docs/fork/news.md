@@ -2,6 +2,13 @@
 
 ## 2026-03-24
 
+### Phase 4.0 Slice 2: InboundMessageService — full migration + dead code removal
+- channels/mod.rs reduced from 9300 → 5017 lines (−4287 lines)
+- Deleted: `process_channel_message` (848 lines), 13 orphaned helper functions, 9 dead constants
+- Deleted: 40+ dead tests, 8 dead test helper types
+- Deleted: old `inbound_message.rs` bridge module
+- Session store persistence fixed in ConversationHistoryPort adapter (JSONL survives restarts)
+
 ### Phase 4.0 Slice 2: InboundMessageService — ports + orchestrator + domain logic
 - `RuntimeCommand` enum moved from channels/mod.rs to fork_core domain
 - `parse_runtime_command()` — capability-driven command parsing
