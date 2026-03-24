@@ -6,6 +6,7 @@
 pub mod agent_runtime;
 pub mod approval;
 pub mod channel_output;
+pub mod coding_worker;
 pub mod memory;
 pub mod channel_registry;
 pub mod conversation_history;

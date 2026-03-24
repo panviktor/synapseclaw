@@ -3,6 +3,7 @@
 //! Each use case is a single operation that adapters invoke.
 //! Use cases compose services and ports to implement business flows.
 
+pub mod delegate_implementation_task;
 pub mod handle_inbound_message;
 pub mod request_approval;
 pub mod review_quarantine_item;

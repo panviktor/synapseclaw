@@ -1,6 +1,6 @@
 # IPC Phase 4.0 Progress
 
-**Status**: infrastructure scaffolded, application services not yet started
+**Status**: all 7 application service slices complete; cleanup and verification remaining
 
 Phase 3.12: channel session intelligence | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
 
@@ -54,7 +54,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | 4 | **DONE** | `approval_service` + `RequestApproval` + `ReviewQuarantineItem` — domain types, ports, policy, adapter |
 | 5 | **DONE** | `ipc_service` + domain/ipc.rs + ports/ipc_bus.rs — ACL validation, routing, session limits |
 | 6 | **DONE** | `memory_service` + `domain/memory.rs` — tier types, recall formatting, consolidation policy |
-| 7 | TODO | `CodingWorkerPort` + `DelegateImplementationTask` — needs `domain/implementation.rs` |
+| 7 | **DONE** | `CodingWorkerPort` + `DelegateImplementationTask` — domain types, port, use case |
 
 ### Missing domain types
 
@@ -63,7 +63,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | `domain/ipc.rs` | **DONE** |
 | `domain/approval.rs` | **DONE** |
 | `domain/memory.rs` | **DONE** |
-| `domain/implementation.rs` | TODO |
+| `domain/implementation.rs` | **DONE** |
 
 ### Ports
 

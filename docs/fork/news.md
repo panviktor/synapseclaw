@@ -2,6 +2,13 @@
 
 ## 2026-03-24
 
+### Phase 4.0 Slice 7: CodingWorkerPort + DelegateImplementationTask
+- `domain/implementation.rs` — ImplementationTask, CodingWorkerResult, ImplementationEvent, ImplementationState
+- `ports/coding_worker.rs` — CodingWorkerPort (submit, poll, events, cancel)
+- `delegate_implementation_task.rs` — use case: submit + track via RunStorePort + finalize
+- Narrow seam: external workers are leaf executors, not replacement cores
+- 158 total fork_core tests
+
 ### Phase 4.0 Slice 6: MemoryService — tier types, recall, consolidation policy
 - `domain/memory.rs` — MemoryCategory, MemoryEntry, SessionMemory, RecallConfig
 - `memory_service.rs` — autosave policy, recall_context() formatting, consolidation policy, tier selection
