@@ -212,6 +212,8 @@ const CHANNEL_HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
 const CHANNEL_SUMMARY_INTERVAL: usize = 20;
 
 type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
+/// Phase 4.0: RouteSelection from fork_core replaces the old ChannelRouteSelection.
+type ChannelRouteSelection = crate::fork_core::ports::route_selection::RouteSelection;
 type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
 
 fn effective_channel_message_timeout_secs(configured: u64) -> u64 {
@@ -225,12 +227,6 @@ fn channel_message_timeout_budget_secs(
     let iterations = max_tool_iterations.max(1) as u64;
     let scale = iterations.min(CHANNEL_MESSAGE_TIMEOUT_SCALE_CAP);
     message_timeout_secs.saturating_mul(scale)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ChannelRouteSelection {
-    provider: String,
-    model: String,
 }
 
 /// Re-export from fork_core — runtime commands are domain logic.
@@ -2792,6 +2788,257 @@ async fn process_channel_message(
     }
 }
 
+/// Phase 4.0 Slice 2: process an inbound message through the fork_core orchestrator.
+///
+/// Builds ports from ChannelRuntimeContext, calls HandleInboundMessage,
+/// and delivers the result to the channel.
+async fn handle_message_via_orchestrator(
+    ctx: &Arc<ChannelRuntimeContext>,
+    envelope: &crate::fork_core::domain::channel::InboundEnvelope,
+    caps: &[crate::fork_core::domain::channel::ChannelCapability],
+    original_msg: &traits::ChannelMessage,
+) {
+    use crate::fork_adapters::inbound::*;
+    use crate::fork_core::application::use_cases::handle_inbound_message as uc;
+    use crate::fork_core::ports::hooks::NoOpHooks;
+
+    // ── Build ports from ChannelRuntimeContext ────────────────────
+    let history_port: Arc<dyn crate::fork_core::ports::conversation_history::ConversationHistoryPort> =
+        Arc::new(conversation_history_adapter::MutexMapConversationHistory::new(
+            ctx.conversation_histories.clone(),
+        ));
+
+    let route_port: Arc<dyn crate::fork_core::ports::route_selection::RouteSelectionPort> =
+        Arc::new(route_selection_adapter::MutexMapRouteSelection::new(
+            ctx.route_overrides.clone(),
+            ctx.default_provider.to_string(),
+            ctx.model.to_string(),
+        ));
+
+    let hooks_port: Arc<dyn crate::fork_core::ports::hooks::HooksPort> =
+        if let Some(ref runner) = ctx.hooks {
+            Arc::new(hooks_adapter::HookRunnerAdapter::new(Arc::clone(runner)))
+        } else {
+            Arc::new(NoOpHooks)
+        };
+
+    let target_channel = ctx
+        .channels_by_name
+        .get(&original_msg.channel)
+        .or_else(|| {
+            original_msg
+                .channel
+                .split_once(':')
+                .and_then(|(base, _)| ctx.channels_by_name.get(base))
+        })
+        .cloned();
+
+    let channel_output: Arc<dyn crate::fork_core::ports::channel_output::ChannelOutputPort> =
+        if let Some(ref ch) = target_channel {
+            Arc::new(channel_output_adapter::ChannelOutputAdapter::new(Arc::clone(ch)))
+        } else {
+            // No channel — use a null output that drops everything
+            Arc::new(NullChannelOutput)
+        };
+
+    let agent_runtime: Arc<dyn crate::fork_core::ports::agent_runtime::AgentRuntimePort> =
+        Arc::new(agent_runtime_adapter::ChannelAgentRuntime {
+            provider: Arc::clone(&ctx.provider),
+            tools_registry: Arc::clone(&ctx.tools_registry),
+            observer: Arc::clone(&ctx.observer),
+            approval_manager: Arc::clone(&ctx.approval_manager),
+            channel_name: original_msg.channel.clone(),
+            multimodal: ctx.multimodal.clone(),
+            excluded_tools: Arc::clone(&ctx.non_cli_excluded_tools),
+            dedup_exempt_tools: Arc::clone(&ctx.tool_call_dedup_exempt),
+            hooks: ctx.hooks.clone(),
+            activated_tools: ctx.activated_tools.clone(),
+        });
+
+    let registry: Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort> =
+        ctx.channel_registry
+            .clone()
+            .unwrap_or_else(|| {
+                Arc::new(
+                    crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                        crate::config::Config::default(),
+                    ),
+                )
+            });
+
+    let session_summary: Option<Arc<dyn crate::fork_core::ports::session_summary::SessionSummaryPort>> =
+        ctx.session_store.as_ref().map(|store| {
+            Arc::new(session_summary_adapter::SessionStoreAdapter::new(Arc::clone(store)))
+                as Arc<dyn crate::fork_core::ports::session_summary::SessionSummaryPort>
+        });
+
+    let model_routes: Vec<(String, String, String)> = ctx
+        .model_routes
+        .iter()
+        .map(|r| (r.provider.clone(), r.model.clone(), r.hint.clone()))
+        .collect();
+
+    let config = uc::InboundMessageConfig {
+        system_prompt: ctx.system_prompt.to_string(),
+        default_provider: ctx.default_provider.to_string(),
+        default_model: ctx.model.to_string(),
+        temperature: ctx.temperature,
+        max_tool_iterations: ctx.max_tool_iterations,
+        auto_save_memory: ctx.auto_save_memory,
+        model_routes,
+        thread_root_max_chars: 500,
+    };
+
+    let ports = uc::InboundMessagePorts {
+        history: history_port,
+        routes: route_port,
+        hooks: hooks_port,
+        channel_output: channel_output.clone(),
+        agent_runtime,
+        channel_registry: registry,
+        session_summary,
+    };
+
+    // ── Call orchestrator ─────────────────────────────────────────
+    match uc::handle(envelope, caps, &config, &ports).await {
+        Ok(uc::HandleResult::Response {
+            response_text,
+            ..
+        }) => {
+            if let Some(ch) = &target_channel {
+                let send_msg = SendMessage::new(&response_text, &original_msg.reply_target)
+                    .in_thread(original_msg.thread_ts.clone());
+                if let Err(e) = ch.send(&send_msg).await {
+                    tracing::warn!("Failed to send response: {e}");
+                }
+            }
+        }
+        Ok(uc::HandleResult::Command {
+            effect,
+            conversation_key,
+        }) => {
+            // Format command response and send
+            let response = format_command_effect(
+                &effect,
+                ctx,
+                &conversation_key,
+            )
+            .await;
+            if let Some(ch) = &target_channel {
+                let send_msg = SendMessage::new(&response, &original_msg.reply_target)
+                    .in_thread(original_msg.thread_ts.clone());
+                if let Err(e) = ch.send(&send_msg).await {
+                    tracing::warn!("Failed to send command response: {e}");
+                }
+            }
+        }
+        Ok(uc::HandleResult::Cancelled { reason }) => {
+            tracing::info!(%reason, "Message cancelled by hook");
+        }
+        Ok(uc::HandleResult::CommandNoChannel) => {}
+        Err(e) => {
+            tracing::warn!("Message handling failed: {e}");
+            if let Some(ch) = &target_channel {
+                let error_text = format!("⚠️ {e}");
+                let send_msg = SendMessage::new(&error_text, &original_msg.reply_target)
+                    .in_thread(original_msg.thread_ts.clone());
+                let _ = ch.send(&send_msg).await;
+            }
+        }
+    }
+
+    // Persist session store turn if available
+    if let Some(ref store) = ctx.session_store {
+        let key = crate::fork_core::application::services::inbound_message_service::conversation_key(envelope);
+        let history = ports.history.get_history(&key);
+        // Session store is already updated through the history port's append_turn
+        // Just trigger summary generation if needed
+        let ctx_summary = ctx.clone();
+        let key_summary = key;
+        tokio::spawn(async move {
+            summarize_channel_session_if_needed(&ctx_summary, &key_summary).await;
+        });
+    }
+}
+
+/// Null channel output for when no channel is available.
+struct NullChannelOutput;
+
+#[async_trait::async_trait]
+impl crate::fork_core::ports::channel_output::ChannelOutputPort for NullChannelOutput {
+    async fn send_message(&self, _r: &str, _t: &str, _th: Option<&str>) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn start_typing(&self, _r: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn stop_typing(&self, _r: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn add_reaction(&self, _r: &str, _m: &str, _e: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn remove_reaction(&self, _r: &str, _m: &str, _e: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn fetch_message_text(&self, _m: &str) -> anyhow::Result<Option<String>> {
+        Ok(None)
+    }
+    fn supports_streaming(&self) -> bool {
+        false
+    }
+}
+
+/// Format a command effect into a user-facing response string.
+async fn format_command_effect(
+    effect: &crate::fork_core::application::services::inbound_message_service::CommandEffect,
+    ctx: &ChannelRuntimeContext,
+    conversation_key: &str,
+) -> String {
+    use crate::fork_core::application::services::inbound_message_service::CommandEffect;
+
+    match effect {
+        CommandEffect::ShowProviders => {
+            let current = get_route_selection(ctx, conversation_key);
+            build_providers_help_response(&current)
+        }
+        CommandEffect::SwitchProvider { provider } => {
+            match resolve_provider_alias(provider) {
+                Some(provider_name) => match get_or_create_provider(ctx, &provider_name).await {
+                    Ok(_) => format!(
+                        "Provider switched to `{provider_name}`. Use `/model <model-id>` to set a model."
+                    ),
+                    Err(err) => {
+                        let safe_err = providers::sanitize_api_error(&err.to_string());
+                        format!("Failed to initialize provider `{provider_name}`: {safe_err}")
+                    }
+                },
+                None => format!("Unknown provider `{provider}`. Use `/models` to list valid providers."),
+            }
+        }
+        CommandEffect::ShowModel => {
+            let current = get_route_selection(ctx, conversation_key);
+            build_models_help_response(&current, ctx.workspace_dir.as_path(), &ctx.model_routes)
+        }
+        CommandEffect::SwitchModel {
+            model,
+            inferred_provider,
+        } => {
+            if model.is_empty() {
+                "Model ID cannot be empty. Use `/model <model-id>`.".to_string()
+            } else {
+                let provider = inferred_provider
+                    .as_deref()
+                    .unwrap_or(&ctx.default_provider);
+                format!("Model switched to `{model}` (provider: `{provider}`). Context preserved.")
+            }
+        }
+        CommandEffect::ClearSession => {
+            "Conversation history cleared. Starting fresh.".to_string()
+        }
+    }
+}
+
 async fn run_message_dispatch_loop(
     mut rx: tokio::sync::mpsc::Receiver<traits::ChannelMessage>,
     ctx: Arc<ChannelRuntimeContext>,
@@ -2856,21 +3103,17 @@ async fn run_message_dispatch_loop(
                 }
             }
 
-            // Phase 4.0 Step 7: canonical InboundEnvelope at the dispatch boundary.
-            // All messages pass through this conversion point.  Currently delegates
-            // to process_channel_message; as fork_core absorbs more logic, the
-            // envelope will be routed to HandleInboundMessage use case instead.
+            // Phase 4.0 Slice 2: route through HandleInboundMessage orchestrator.
             let envelope =
                 crate::fork_core::domain::channel::InboundEnvelope::from_channel_message(&msg);
-            tracing::debug!(
-                source = %envelope.source_adapter,
-                actor = %envelope.actor_id,
-                conversation = %envelope.conversation_ref,
-                "InboundEnvelope created"
-            );
-            let channel_msg =
-                crate::fork_core::application::inbound_message::to_channel_message(&envelope);
-            process_channel_message(worker_ctx, channel_msg, cancellation_token).await;
+
+            handle_message_via_orchestrator(
+                &worker_ctx,
+                &envelope,
+                &worker_caps,
+                &msg,
+            )
+            .await;
 
             if interrupt_enabled {
                 let mut active = in_flight.lock().await;
