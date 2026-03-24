@@ -2,6 +2,14 @@
 
 ## 2026-03-24
 
+### Phase 4.0 Slice 6: MemoryService — tier types, recall, consolidation policy
+- `domain/memory.rs` — MemoryCategory, MemoryEntry, SessionMemory, RecallConfig
+- `memory_service.rs` — autosave policy, recall_context() formatting, consolidation policy, tier selection
+- HandleInboundMessage: `build_memory_context()` replaced with `memory_service::recall_context()`
+- Deleted inline memory constants + local helper from orchestrator
+- 14 unit tests (recall formatting, filtering, truncation, policy)
+- 153 total fork_core tests
+
 ### Phase 4.0 Slice 5: IPC Service — domain types, ACL validation, bus port
 - `domain/ipc.rs` — IpcMessage, ValidatedSend, AclError, message kind constants
 - `validate_send()` — pure ACL validation (7 rules: kind, L4, direction, session, lateral)

@@ -9,3 +9,4 @@ pub mod conversation_service;
 pub mod delivery_service;
 pub mod inbound_message_service;
 pub mod ipc_service;
+pub mod memory_service;

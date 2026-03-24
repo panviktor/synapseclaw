@@ -24,14 +24,6 @@ use std::sync::Arc;
 /// Max chars for hook-modified outbound content.
 const HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
 
-/// Min relevance score for memory recall.
-const MEMORY_MIN_RELEVANCE: f64 = 0.5;
-/// Max memory entries in context.
-const MEMORY_MAX_ENTRIES: usize = 4;
-/// Max chars per memory entry.
-const MEMORY_ENTRY_MAX_CHARS: usize = 800;
-/// Max total chars for memory context block.
-const MEMORY_MAX_CHARS: usize = 4_000;
 
 /// Configuration for the inbound message handler.
 #[derive(Debug, Clone)]
@@ -257,9 +249,13 @@ async fn handle_regular_message(
         } => {
             // #8: Memory context enrichment
             if let Some(ref mem) = ports.memory {
-                let context =
-                    build_memory_context(mem.as_ref(), content, config.min_relevance_score, Some(&conv_key))
-                        .await;
+                let recall_cfg = crate::fork_core::domain::memory::RecallConfig {
+                    min_relevance_score: config.min_relevance_score,
+                    ..Default::default()
+                };
+                let context = crate::fork_core::application::services::memory_service::recall_context(
+                    mem.as_ref(), content, Some(&conv_key), &recall_cfg,
+                ).await;
                 if !context.is_empty() {
                     history.push(ChatMessage::user(format!("{context}\n{content}")));
                     // Skip the normal user turn append below
@@ -612,48 +608,6 @@ fn strip_image_markers(text: &str) -> String {
         }
     }
     result
-}
-
-/// Build memory context string from recalled entries.
-async fn build_memory_context(
-    mem: &dyn MemoryPort,
-    query: &str,
-    min_relevance: f64,
-    session_id: Option<&str>,
-) -> String {
-    let entries = match mem.recall(query, 5, session_id).await {
-        Ok(e) => e,
-        Err(_) => return String::new(),
-    };
-
-    let mut context = String::new();
-    let mut included = 0usize;
-    let mut used_chars = 0usize;
-
-    for entry in entries
-        .iter()
-        .filter(|e| e.score.map_or(true, |s| s >= min_relevance))
-    {
-        if included >= MEMORY_MAX_ENTRIES {
-            break;
-        }
-
-        let content = truncate_chars(&entry.content, MEMORY_ENTRY_MAX_CHARS);
-        let line = format!("- {}: {}\n", entry.key, content);
-        let line_chars = line.chars().count();
-        if used_chars + line_chars > MEMORY_MAX_CHARS {
-            break;
-        }
-
-        if included == 0 {
-            context.push_str("[Memory context]\n");
-        }
-        context.push_str(&line);
-        included += 1;
-        used_chars += line_chars;
-    }
-
-    context
 }
 
 #[cfg(test)]

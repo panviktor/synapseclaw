@@ -53,7 +53,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | 3 | **DONE** | `conversation_service` + `StartConversationRun` — session lifecycle, summary policy, run state machine |
 | 4 | **DONE** | `approval_service` + `RequestApproval` + `ReviewQuarantineItem` — domain types, ports, policy, adapter |
 | 5 | **DONE** | `ipc_service` + domain/ipc.rs + ports/ipc_bus.rs — ACL validation, routing, session limits |
-| 6 | TODO | `memory_service` + `MemoryTiersPort` — needs `domain/memory.rs` + `ports/memory_tiers.rs` |
+| 6 | **DONE** | `memory_service` + `domain/memory.rs` — tier types, recall formatting, consolidation policy |
 | 7 | TODO | `CodingWorkerPort` + `DelegateImplementationTask` — needs `domain/implementation.rs` |
 
 ### Missing domain types
@@ -62,7 +62,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 |------|--------|
 | `domain/ipc.rs` | **DONE** |
 | `domain/approval.rs` | **DONE** |
-| `domain/memory.rs` | TODO |
+| `domain/memory.rs` | **DONE** |
 | `domain/implementation.rs` | TODO |
 
 ### Ports

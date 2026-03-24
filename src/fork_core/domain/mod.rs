@@ -4,4 +4,5 @@ pub mod approval;
 pub mod channel;
 pub mod conversation;
 pub mod ipc;
+pub mod memory;
 pub mod run;
