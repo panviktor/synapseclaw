@@ -49,7 +49,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | Slice | Status | Description |
 |-------|--------|-------------|
 | 1 | **DONE** | `delivery_service` + `SendScheduledNotification` — heartbeat/cron delivery policy moved into fork_core |
-| 2 | TODO | `inbound_message_service` + `HandleInboundMessage` — real orchestration, not bridge |
+| 2 | **PARTIAL** | `inbound_message_service` — command parsing, conversation key, classification extracted; full orchestration pending |
 | 3 | TODO | `conversation_service` + `StartConversationRun` — session lifecycle, summary policy |
 | 4 | TODO | `approval_service` + `RequestApproval` + `ReviewQuarantineItem` — needs `domain/approval.rs` + `ports/approval.rs` |
 | 5 | TODO | `ipc_service` + `DispatchIpcMessage` — needs `domain/ipc.rs` + `ports/ipc_bus.rs` |

@@ -233,14 +233,8 @@ struct ChannelRouteSelection {
     model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ChannelRuntimeCommand {
-    ShowProviders,
-    SetProvider(String),
-    ShowModel,
-    SetModel(String),
-    NewSession,
-}
+/// Re-export from fork_core — runtime commands are domain logic.
+use crate::fork_core::application::services::inbound_message_service::RuntimeCommand as ChannelRuntimeCommand;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ModelCacheState {
@@ -391,12 +385,11 @@ fn conversation_memory_key(msg: &traits::ChannelMessage) -> String {
     }
 }
 
+/// Adapter wrapper — delegates to `conversation_key()` via InboundEnvelope.
+/// TODO(phase4): remove when callers switch to InboundEnvelope directly.
 fn conversation_history_key(msg: &traits::ChannelMessage) -> String {
-    // Include thread_ts for per-topic session isolation in forum groups
-    match &msg.thread_ts {
-        Some(tid) => format!("{}_{}_{}", msg.channel, tid, msg.sender),
-        None => format!("{}_{}", msg.channel, msg.sender),
-    }
+    let envelope = crate::fork_core::domain::channel::InboundEnvelope::from_channel_message(msg);
+    crate::fork_core::application::services::inbound_message_service::conversation_key(&envelope)
 }
 
 fn followup_thread_id(msg: &traits::ChannelMessage) -> Option<String> {
@@ -637,54 +630,14 @@ fn strip_tool_result_content(text: &str) -> String {
 
 /// Check if this channel supports runtime commands (/models, /model, /new).
 /// Phase 4.0: capability-driven via ChannelCapability::RuntimeCommands.
-fn supports_runtime_model_switch(
-    caps: &[crate::fork_core::domain::channel::ChannelCapability],
-) -> bool {
-    caps.contains(&crate::fork_core::domain::channel::ChannelCapability::RuntimeCommands)
-}
-
+/// Delegate to fork_core — command parsing is domain logic.
 fn parse_runtime_command(
     content: &str,
     caps: &[crate::fork_core::domain::channel::ChannelCapability],
 ) -> Option<ChannelRuntimeCommand> {
-    if !supports_runtime_model_switch(caps) {
-        return None;
-    }
-
-    let trimmed = content.trim();
-    if !trimmed.starts_with('/') {
-        return None;
-    }
-
-    let mut parts = trimmed.split_whitespace();
-    let command_token = parts.next()?;
-    let base_command = command_token
-        .split('@')
-        .next()
-        .unwrap_or(command_token)
-        .to_ascii_lowercase();
-
-    match base_command.as_str() {
-        "/models" => {
-            if let Some(provider) = parts.next() {
-                Some(ChannelRuntimeCommand::SetProvider(
-                    provider.trim().to_string(),
-                ))
-            } else {
-                Some(ChannelRuntimeCommand::ShowProviders)
-            }
-        }
-        "/model" => {
-            let model = parts.collect::<Vec<_>>().join(" ").trim().to_string();
-            if model.is_empty() {
-                Some(ChannelRuntimeCommand::ShowModel)
-            } else {
-                Some(ChannelRuntimeCommand::SetModel(model))
-            }
-        }
-        "/new" => Some(ChannelRuntimeCommand::NewSession),
-        _ => None,
-    }
+    crate::fork_core::application::services::inbound_message_service::parse_runtime_command(
+        content, caps,
+    )
 }
 
 fn resolve_provider_alias(name: &str) -> Option<String> {

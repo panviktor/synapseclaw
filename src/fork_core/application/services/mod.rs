@@ -5,3 +5,4 @@
 //! adapters translate, infrastructure executes.
 
 pub mod delivery_service;
+pub mod inbound_message_service;

@@ -2,6 +2,15 @@
 
 ## 2026-03-24
 
+### Phase 4.0 Slice 2 (partial): InboundMessageService — command parsing + classification
+- `RuntimeCommand` enum moved from channels/mod.rs to fork_core domain
+- `parse_runtime_command()` extracted to fork_core (capability-driven, no adapter deps)
+- `conversation_key()` extracted — canonical key from InboundEnvelope
+- `classify_message()` — command vs regular message classification
+- channels/mod.rs now delegates to fork_core for parsing and key construction
+- `supports_runtime_model_switch()` removed (folded into capability check in parser)
+- 16 unit tests for command parsing, key construction, classification
+
 ### Phase 4.0 Slice 1: DeliveryService — first application service
 - `DeliveryService` in `fork_core/application/services/delivery_service.rs` — first real application service
 - Heartbeat target resolution moved from daemon/mod.rs → DeliveryService
