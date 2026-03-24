@@ -2,282 +2,182 @@
   <img src="docs/assets/synapseclaw.png" alt="SynapseClaw" width="200" />
 </p>
 
-<h1 align="center">SynapseClaw 🦀（Русский）</h1>
+<h1 align="center">SynapseClaw</h1>
 
 <p align="center">
-  <strong>Единый Rust-бинарник для single-agent и broker-managed multi-agent workflows.</strong><br>
-  Модели, инструменты, память, каналы и выполнение — за одним deployable runtime.
+  <strong>Мультиагентный Rust-рантайм с IPC-брокером, веб-дашбордом и гексагональным ядром.</strong><br>
+  Модели, инструменты, память, каналы и выполнение — один бинарник.
 </p>
 
 <p align="center">
   <a href="LICENSE-APACHE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache%202.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
-  <a href="NOTICE"><img src="https://img.shields.io/badge/contributors-27+-green.svg" alt="Contributors" /></a>
-  <a href="https://buymeacoffee.com/argenistherose"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-yellow.svg?style=flat&logo=buy-me-a-coffee" alt="Buy Me a Coffee" /></a>
-  <a href="https://x.com/synapseclaw?s=21"><img src="https://img.shields.io/badge/X-%40synapseclaw-000000?style=flat&logo=x&logoColor=white" alt="X: @synapseclaw" /></a>
-  <a href="https://www.facebook.com/groups/synapseclaw"><img src="https://img.shields.io/badge/Facebook-Group-1877F2?style=flat&logo=facebook&logoColor=white" alt="Facebook Group" /></a>
-  <a href="https://www.reddit.com/r/synapseclaw/"><img src="https://img.shields.io/badge/Reddit-r%2Fsynapseclaw-FF4500?style=flat&logo=reddit&logoColor=white" alt="Reddit: r/synapseclaw" /></a>
 </p>
 
 <p align="center">
-  🌐 Языки:
-  <a href="README.md">🇺🇸 English</a> ·
-  <a href="README.zh-CN.md">🇨🇳 简体中文</a> ·
-  <a href="README.ja.md">🇯🇵 日本語</a> ·
-  <a href="README.ko.md">🇰🇷 한국어</a> ·
-  <a href="README.vi.md">🇻🇳 Tiếng Việt</a> ·
-  <a href="README.tl.md">🇵🇭 Tagalog</a> ·
-  <a href="README.es.md">🇪🇸 Español</a> ·
-  <a href="README.pt.md">🇧🇷 Português</a> ·
-  <a href="README.it.md">🇮🇹 Italiano</a> ·
-  <a href="README.de.md">🇩🇪 Deutsch</a> ·
-  <a href="README.fr.md">🇫🇷 Français</a> ·
-  <a href="README.ar.md">🇸🇦 العربية</a> ·
-  <a href="README.hi.md">🇮🇳 हिन्दी</a> ·
-  <a href="README.ru.md">🇷🇺 Русский</a> ·
-  <a href="README.bn.md">🇧🇩 বাংলা</a> ·
-  <a href="README.he.md">🇮🇱 עברית</a> ·
-  <a href="README.pl.md">🇵🇱 Polski</a> ·
-  <a href="README.cs.md">🇨🇿 Čeština</a> ·
-  <a href="README.nl.md">🇳🇱 Nederlands</a> ·
-  <a href="README.tr.md">🇹🇷 Türkçe</a> ·
-  <a href="README.uk.md">🇺🇦 Українська</a> ·
-  <a href="README.id.md">🇮🇩 Bahasa Indonesia</a> ·
-  <a href="README.th.md">🇹🇭 ไทย</a> ·
-  <a href="README.ur.md">🇵🇰 اردو</a> ·
-  <a href="README.ro.md">🇷🇴 Română</a> ·
-  <a href="README.sv.md">🇸🇪 Svenska</a> ·
-  <a href="README.el.md">🇬🇷 Ελληνικά</a> ·
-  <a href="README.hu.md">🇭🇺 Magyar</a> ·
-  <a href="README.fi.md">🇫🇮 Suomi</a> ·
-  <a href="README.da.md">🇩🇰 Dansk</a> ·
-  <a href="README.nb.md">🇳🇴 Norsk</a>
+  <a href="README.md">English</a> ·
+  <a href="README.ru.md">Русский</a>
 </p>
 
 <p align="center">
-  <a href="https://raw.githubusercontent.com/panviktor/synapseclaw/master/install.sh">Установка в 1 клик</a> |
-  <a href="docs/setup-guides/README.md">Быстрый старт</a> |
-  <a href="docs/README.ru.md">Хаб документации</a> |
-  <a href="docs/SUMMARY.md">TOC docs</a>
+  <a href="#быстрый-старт">Быстрый старт</a> |
+  <a href="docs/README.md">Документация</a> |
+  <a href="docs/fork/README.md">Архитектура и роадмап</a>
 </p>
 
-<p align="center">
-  <strong>Быстрые маршруты:</strong>
-  <a href="docs/reference/README.md">Справочники</a> ·
-  <a href="docs/ops/README.md">Операции</a> ·
-  <a href="docs/ops/troubleshooting.md">Диагностика</a> ·
-  <a href="docs/security/README.md">Безопасность</a> ·
-  <a href="docs/hardware/README.md">Аппаратная часть</a> ·
-  <a href="docs/contributing/README.md">Вклад и CI</a>
-</p>
+---
 
-> Этот файл — выверенный перевод `README.md` с акцентом на точность и читаемость (не дословный перевод).
->
-> Технические идентификаторы (команды, ключи конфигурации, API-пути, имена Trait) сохранены на английском.
->
-> Последняя синхронизация: **2026-03-20**.
+## Что такое SynapseClaw
 
-<!-- BEGIN:WHATS_NEW -->
+SynapseClaw — это **однобинарный Rust-рантайм** для автономных агентных воркфлоу. Запускает одного агента или семью агентов под управлением брокера из одного бинарника — без контейнеров, оркестраторов и JVM.
 
-### 🚀 What's New in v0.3.1 (March 2026)
+Проект начался как форк [ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw) и с тех пор стал полностью независимым проектом со своей архитектурой, IPC-системой, веб-дашбордом и модульным ядром.
 
-| Area | Highlights |
-|---|---|
-| ci | add Termux (aarch64-linux-android) release target |
+### Ключевые возможности
 
-<!-- END:WHATS_NEW -->
+- **Мультиагентный IPC-брокер** — trust-aware обмен сообщениями между агентами с направленными ACL, карантином, спавном эфемерных агентов и контролем доставки.
+- **Веб-дашборд оператора** — топология флота, рабочий стол агента, чат-сессии, лента активности, управление cron — всё из одного фронтенда.
+- **Гексагональное ядро** (`fork_core`) — чистая бизнес-логика как workspace crate с 0 зависимостей от upstream, 10 use cases, 180 тестов. Ports & adapters архитектура.
+- **Trait-driven расширяемость** — провайдеры, каналы, инструменты, память, обсерверы и runtime-адаптеры заменяются через трейты.
+- **Каналы** — Telegram, Discord, Slack, Matrix (E2EE), Mattermost, веб-чат и другие.
+- **Безопасность** — Ed25519 идентичность, PromptGuard, профили выполнения, allowlists инструментов, скоупинг workspace.
+- **Лёгкий рантайм** — < 5 МБ RAM, < 10 мс старт, ~9 МБ бинарник. Работает на ARM-платах за $10.
 
-## 📢 Доска объявлений
+### Обзор архитектуры
 
-Публикуйте здесь важные уведомления (breaking changes, security advisories, окна обслуживания и блокеры релиза).
-
-| Дата (UTC) | Уровень | Объявление | Действие |
-|---|---|---|---|
-| 2026-02-19 | _Срочно_ | Мы **не аффилированы** с `openagen/synapseclaw` и `synapseclaw.org`. Домен `synapseclaw.org` сейчас указывает на fork `openagen/synapseclaw`, и этот домен/репозиторий выдают себя за наш официальный сайт и проект. | Не доверяйте информации, бинарникам, сборам средств и «официальным» объявлениям из этих источников. Используйте только [этот репозиторий](https://github.com/panviktor/synapseclaw) и наши верифицированные соцсети. |
-| 2026-02-21 | _Важно_ | Наш официальный сайт уже запущен: [synapseclaw.dev](https://synapseclaw.dev). Спасибо, что дождались запуска. При этом попытки выдавать себя за SynapseClaw продолжаются, поэтому не участвуйте в инвестициях, сборах средств и похожих активностях, если они не подтверждены через наши официальные каналы. | Ориентируйтесь только на [этот репозиторий](https://github.com/panviktor/synapseclaw); также следите за [X (@synapseclaw)](https://x.com/synapseclaw?s=21), [Telegram (@synapseclaw)](https://t.me/synapseclaw), [Facebook (группа)](https://www.facebook.com/groups/synapseclaw), [Reddit (r/synapseclaw)](https://www.reddit.com/r/synapseclaw/) и [Xiaohongshu](https://www.xiaohongshu.com/user/profile/67cbfc43000000000d008307?xsec_token=AB73VnYnGNx5y36EtnnZfGmAmS-6Wzv8WMuGpfwfkg6Yc%3D&xsec_source=pc_search) для официальных обновлений. |
-| 2026-02-19 | _Важно_ | Anthropic обновил раздел Authentication and Credential Use 2026-02-19. В нем указано, что OAuth authentication (Free/Pro/Max) предназначена только для Claude Code и Claude.ai; использование OAuth-токенов, полученных через Claude Free/Pro/Max, в любых других продуктах, инструментах или сервисах (включая Agent SDK), не допускается и может считаться нарушением Consumer Terms of Service. | Чтобы избежать потерь, временно не используйте Claude Code OAuth-интеграции. Оригинал: [Authentication and Credential Use](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use). |
-
-## О проекте
-
-SynapseClaw — это производительная и расширяемая инфраструктура автономного AI-агента. SynapseClaw — это **операционная система времени выполнения** для агентных рабочих процессов — инфраструктура, абстрагирующая модели, инструменты, память и выполнение, позволяя создавать агентов один раз и запускать где угодно.
-
-- Нативно на Rust, единый бинарник, переносимость между ARM / x86 / RISC-V
-- Архитектура на Trait (`Provider`, `Channel`, `Tool`, `Memory` и др.)
-- Безопасные значения по умолчанию: pairing, явные allowlist, sandbox и scope-ограничения
-
-## Почему выбирают SynapseClaw
-
-- **Лёгкий runtime по умолчанию**: Повседневные CLI-операции и `status` обычно укладываются в несколько МБ памяти.
-- **Безопасный по конструкции**: pairing, sandbox, явные allowlist и рабочие каталоги с чёткими границами.
-- **Составной и заменяемый**: providers, channels, tools, memory и tunnels можно менять без переписывания всего рантайма.
-- **Одинаково пригоден и для локального агента, и для control plane**: один runtime поддерживает single-agent workbench и broker-managed agent family.
-- **Без lock-in**: OpenAI-compatible providers и pluggable custom endpoints.
-
-## Чем SynapseClaw отличается
-
-SynapseClaw — это не только локальный чат поверх LLM. Проект целенаправленно развивается как компактный runtime, который работает в двух режимах, не распадаясь на два отдельных продукта:
-
-- **Focused single-agent mode:** один daemon, один агент, один workbench для тюнинга prompts, tools, memory, logs, channels и runtime behavior.
-- **Brokered multi-agent mode:** один broker dashboard, много agent daemons, защищённый IPC, selected-agent workbench pages через broker и одна operator entrypoint вместо набора портов и SSH-туннелей.
-
-Практические отличия уже сейчас такие:
-
-- **Brokered agent families:** агенты умеют регистрироваться у broker, общаться по IPC bus и администрироваться из одного control plane вместо режима “каждый чат-бот сам по себе”.
-- **Trust-aware IPC:** межагентная коммуникация — это не best-effort chat hack, а модель с trust levels, directional ACLs, quarantine, revocation, signing и delivery controls.
-- **Operator-first UI:** один и тот же frontend shell работает и как local agent workbench, и как broker mode с fleet pages, selected-agent pages, traceability, provisioning и topology views.
-- **Durable sessions:** web chat больше не одноразовое состояние браузера; sessions, runs, summaries и goals становятся first-class runtime objects.
-- **Pragmatic infrastructure:** низкое потребление памяти, единый Rust-бинарник, swappable providers/channels/tools и деплой на дешёвое железо остаются жёсткими требованиями.
-
-## Куда движется SynapseClaw
-
-Текущий курс — не “добавлять ещё случайные интеграции”, а делать систему удобнее в эксплуатации, понятнее по архитектуре и чище по модульности:
-
-- **Сделать multi-agent operations удобными:** один broker, один dashboard, selected-agent drill-down, нормальная traceability между IPC, spawn runs, chats, channels и cron.
-- **Очистить fleet topology:** разделить declared policy topology и observed traffic, по умолчанию скрывать ephemeral clutter и добавить blueprint-level views для больших fleet.
-- **Перейти к очевидному modular core:** capability-driven channels, фиксированные transport boundaries, единый conversation store contract и единый run substrate вместо логики, размазанной между gateway, tools, channels, cron и agent loop.
-- **Сделать память явной:** working memory, session memory и long-term memory должны быть отдельными портами, а не случайными побочными эффектами разных подсистем.
-- **Держать внешние coding engines в роли bounded workers:** если позже появятся интеграции с Codex или Claude Code, они должны приходить как специализированные execution workers за чистым портом, а не как второй application core.
-
-Для fork-specific architecture plans, execution checklists и roadmap см. [`docs/fork/README.md`](docs/fork/README.md).
-
-## Снимок бенчмарка (SynapseClaw vs OpenClaw, воспроизводимо)
-
-Ниже — быстрый локальный сравнительный срез (macOS arm64, февраль 2026), нормализованный под 0.8GHz edge CPU.
-
-| | OpenClaw | NanoBot | PicoClaw | SynapseClaw 🦀 |
-|---|---|---|---|---|
-| **Язык** | TypeScript | Python | Go | **Rust** |
-| **RAM** | > 1GB | > 100MB | < 10MB | **< 5MB** |
-| **Старт (ядро 0.8GHz)** | > 500s | > 30s | < 1s | **< 10ms** |
-| **Размер бинарника** | ~28MB (dist) | N/A (скрипты) | ~8MB | **~8.8 MB** |
-| **Стоимость** | Mac Mini $599 | Linux SBC ~$50 | Linux-плата $10 | **Любое железо за $10** |
-
-> Примечание: результаты SynapseClaw получены на release-сборке с помощью `/usr/bin/time -l`. OpenClaw требует Node.js runtime; только этот runtime обычно добавляет около 390MB дополнительного потребления памяти. NanoBot требует Python runtime. PicoClaw и SynapseClaw — статические бинарники.
-
-<p align="center">
-  <img src="docs/assets/synapseclaw-comparison.jpeg" alt="Сравнение SynapseClaw и OpenClaw" width="800" />
-</p>
-
-### Локально воспроизводимое измерение
-
-Метрики могут меняться вместе с кодом и toolchain, поэтому проверяйте результаты в своей среде:
-
-```bash
-cargo build --release
-ls -lh target/release/synapseclaw
-
-/usr/bin/time -l target/release/synapseclaw --help
-/usr/bin/time -l target/release/synapseclaw status
+```
+fork_core (workspace crate)     fork_adapters (main crate)       Инфраструктура
+├── domain/                     ├── channels/registry            ├── gateway/ (HTTP + WS)
+│   ├── channel, conversation   ├── ipc/bus, quarantine           ├── cron/scheduler
+│   ├── ipc, memory, approval   ├── memory/                      ├── security/
+│   ├── run, spawn, config      ├── runtime/agent, hooks         ├── channels/ (транспорт)
+│   └── message                 ├── storage/conversation, run    └── tools/ (выполнение)
+├── ports/ (12 трейтов)         └── inbound/
+├── application/services/ (6)
+└── application/use_cases/ (10)
 ```
 
-Текущие примерные значения из README (macOS arm64, 2026-02-18):
+Полные планы архитектуры, история фаз и роадмап: [`docs/fork/README.md`](docs/fork/README.md).
+Последние обновления: [`docs/fork/news.md`](docs/fork/news.md).
 
-- Размер release-бинарника: `8.8M`
-- `synapseclaw --help`: ~`0.02s`, пик памяти ~`3.9MB`
-- `synapseclaw status`: ~`0.01s`, пик памяти ~`4.1MB`
+## Пререквизиты
 
-## Установка в 1 клик
+<details>
+<summary><strong>Linux / macOS</strong></summary>
+
+1. **Базовые зависимости:**
+    - **Linux (Debian/Ubuntu):** `sudo apt install build-essential pkg-config`
+    - **Linux (Fedora/RHEL):** `sudo dnf group install development-tools && sudo dnf install pkg-config`
+    - **macOS:** `xcode-select --install`
+
+2. **Rust:**
+
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+
+3. **Проверка:**
+    ```bash
+    rustc --version
+    cargo --version
+    ```
+
+#### Установка одной командой
+
+```bash
+curl -LsSf https://raw.githubusercontent.com/panviktor/synapseclaw/master/install.sh | bash
+```
+
+</details>
+
+<details>
+<summary><strong>Windows</strong></summary>
+
+1. **Visual Studio Build Tools:**
+    ```powershell
+    winget install Microsoft.VisualStudio.2022.BuildTools
+    ```
+    Выберите workload **"Desktop development with C++"**.
+
+2. **Rust:**
+    ```powershell
+    winget install Rustlang.Rustup
+    ```
+
+</details>
+
+## Быстрый старт
 
 ```bash
 git clone https://github.com/panviktor/synapseclaw.git
 cd synapseclaw
 ./install.sh
-```
 
-Для полной инициализации окружения: `./install.sh --install-system-deps --install-rust` (для системных пакетов может потребоваться `sudo`).
-
-Подробности: [`docs/setup-guides/one-click-bootstrap.md`](docs/setup-guides/one-click-bootstrap.md).
-
-## Быстрый старт
-
-### Homebrew (macOS/Linuxbrew)
-
-```bash
-brew install synapseclaw
-```
-
-```bash
-git clone https://github.com/panviktor/synapseclaw.git
-cd synapseclaw
+# Или сборка из исходников
 cargo build --release --locked
 cargo install --path . --force --locked
+```
 
+### Использование
+
+```bash
+# Настройка
 synapseclaw onboard --api-key sk-... --provider openrouter
-synapseclaw onboard
 
-synapseclaw agent -m "Hello, SynapseClaw!"
+# Чат
+synapseclaw agent -m "Привет, SynapseClaw!"
 
-# default: 127.0.0.1:42617
+# Интерактивный режим
+synapseclaw agent
+
+# Запуск gateway (вебхук-сервер)
 synapseclaw gateway
 
+# Запуск полного автономного рантайма
 synapseclaw daemon
+
+# Статус
+synapseclaw status
+
+# Диагностика
+synapseclaw doctor
 ```
 
-## Subscription Auth (OpenAI Codex / Claude Code)
+### Готовые бинарники
 
-SynapseClaw поддерживает нативные профили авторизации на основе подписки (мультиаккаунт, шифрование при хранении).
+Linux (x86_64, aarch64, armv7), macOS (x86_64, aarch64), Windows (x86_64).
 
-- Файл хранения: `~/.synapseclaw/auth-profiles.json`
-- Ключ шифрования: `~/.synapseclaw/.secret_key`
-- Формат Profile ID: `<provider>:<profile_name>` (пример: `openai-codex:work`)
+Скачать: <https://github.com/panviktor/synapseclaw/releases/latest>
 
-OpenAI Codex OAuth (подписка ChatGPT):
+## Документация
 
-```bash
-# Рекомендуется для серверов/headless-окружений
-synapseclaw auth login --provider openai-codex --device-code
+- Хаб документации: [`docs/README.md`](docs/README.md)
+- Справочник команд: [`docs/reference/cli/commands-reference.md`](docs/reference/cli/commands-reference.md)
+- Справочник конфигурации: [`docs/reference/api/config-reference.md`](docs/reference/api/config-reference.md)
+- Справочник провайдеров: [`docs/reference/api/providers-reference.md`](docs/reference/api/providers-reference.md)
+- Справочник каналов: [`docs/reference/api/channels-reference.md`](docs/reference/api/channels-reference.md)
+- Архитектура и роадмап: [`docs/fork/README.md`](docs/fork/README.md)
+- Безопасность: [`SECURITY.md`](SECURITY.md)
 
-# Браузерный/callback-поток с paste-фолбэком
-synapseclaw auth login --provider openai-codex --profile default
-synapseclaw auth paste-redirect --provider openai-codex --profile default
+## Лицензия
 
-# Проверка / обновление / переключение профиля
-synapseclaw auth status
-synapseclaw auth refresh --provider openai-codex --profile default
-synapseclaw auth use --provider openai-codex --profile work
-```
+SynapseClaw под двойной лицензией:
 
-Claude Code / Anthropic setup-token:
+| Лицензия | Применение |
+|---|---|
+| [MIT](LICENSE-MIT) | Open-source, исследования, академическое, личное использование |
+| [Apache 2.0](LICENSE-APACHE) | Патентная защита, институциональное, коммерческое развёртывание |
 
-```bash
-# Вставка subscription/setup token (режим Authorization header)
-synapseclaw auth paste-token --provider anthropic --profile default --auth-kind authorization
+Можно использовать любую. См. [CLA.md](docs/contributing/cla.md).
 
-# Команда-алиас
-synapseclaw auth setup-token --provider anthropic --profile default
-```
+## Участие в проекте
 
-Запуск agent с subscription auth:
+См. [CONTRIBUTING.md](CONTRIBUTING.md). Реализуй трейт, отправь PR:
 
-```bash
-synapseclaw agent --provider openai-codex -m "hello"
-synapseclaw agent --provider openai-codex --auth-profile openai-codex:work -m "hello"
-
-# Anthropic поддерживает и API key, и auth token через переменные окружения:
-# ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, ANTHROPIC_API_KEY
-synapseclaw agent --provider anthropic -m "hello"
-```
-
-## Вклад и лицензия
-
-- Contribution guide: [`CONTRIBUTING.md`](CONTRIBUTING.md)
-- PR workflow: [`docs/contributing/pr-workflow.md`](docs/contributing/pr-workflow.md)
-- Reviewer playbook: [`docs/contributing/reviewer-playbook.md`](docs/contributing/reviewer-playbook.md)
-- License: MIT or Apache 2.0 ([`LICENSE-MIT`](LICENSE-MIT), [`LICENSE-APACHE`](LICENSE-APACHE), [`NOTICE`](NOTICE))
-
-<!-- BEGIN:RECENT_CONTRIBUTORS -->
-
-### 🌟 Recent Contributors (v0.3.1)
-
-3 contributors shipped features, fixes, and improvements in this release cycle:
-
-- **Argenis**
-- **argenis de la rosa**
-- **Claude Opus 4.6**
-
-Thank you to everyone who opened issues, reviewed PRs, translated docs, and helped test. Every contribution matters. 🦀
-
-<!-- END:RECENT_CONTRIBUTORS -->
+- Новый `Provider` → `src/providers/`
+- Новый `Channel` → `src/channels/`
+- Новый `Tool` → `src/tools/`
+- Новый `Memory` → `src/memory/`
 
 ---
 
-Для полной и исчерпывающей информации (архитектура, все команды, API, разработка) используйте основной английский документ: [`README.md`](README.md).
+**SynapseClaw** — мультиагентный рантайм. Один бинарник. Деплой куда угодно.
