@@ -3,4 +3,5 @@
 //! Design rule: `fork_core` owns *what* happens; `fork_adapters` owns *how*.
 
 pub mod channels;
+pub mod inbound;
 pub mod storage;
