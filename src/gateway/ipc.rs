@@ -2451,19 +2451,19 @@ pub async fn handle_ipc_send(
                 count as usize,
                 max as usize,
             ) {
-                let escalation_payload = serde_json::json!({
-                    "type": "session_limit_exceeded",
-                    "session_id": sid,
-                    "participants": [&meta.agent_id, &resolved_to],
-                    "exchange_count": count,
-                    "max_allowed": max,
-                })
-                .to_string();
-
+                // Phase 4.0: escalation payload built by ipc_service
+                let escalation_payload =
+                    crate::fork_core::application::services::ipc_service::build_escalation_payload(
+                        sid,
+                        &meta.agent_id,
+                        &resolved_to,
+                        count as usize,
+                        max as usize,
+                    );
                 let _ = db.insert_message(
                     &meta.agent_id,
                     &coordinator,
-                    ESCALATION_KIND,
+                    crate::fork_core::domain::ipc::ESCALATION_KIND,
                     &escalation_payload,
                     meta.trust_level,
                     Some(sid),
@@ -2673,10 +2673,12 @@ pub async fn handle_ipc_send(
         });
     }
 
-    // ── Phase 3A: Result delivery for ephemeral spawn sessions ──
-    // When an ephemeral child sends kind=result with a session_id that
-    // matches a running spawn_run, complete the run and auto-revoke the child.
-    if body.kind == "result" {
+    // ── Phase 4.0: Spawn result completion via ipc_service ──
+    // Business rule: check is owned by fork_core; DB ops stay in gateway.
+    if crate::fork_core::application::services::ipc_service::should_complete_spawn(
+        &body.kind,
+        body.session_id.as_deref(),
+    ) {
         if let Some(ref session_id) = body.session_id {
             if let Some(run) = db.get_spawn_run(session_id) {
                 if run.status == "running" && run.child_id == meta.agent_id {

@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/robot-kit"]
+members = [".", "crates/robot-kit", "crates/fork_core"]
 resolver = "2"
 
 [package]
@@ -34,6 +34,9 @@ include = [
 ]
 
 [dependencies]
+# Fork-owned application core (pure business logic)
+fork_core = { path = "crates/fork_core" }
+
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"

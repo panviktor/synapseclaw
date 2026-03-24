@@ -84,7 +84,8 @@ mod cron;
 mod daemon;
 mod doctor;
 mod fork_adapters;
-mod fork_core;
+/// Re-export workspace crate so `crate::fork_core::` paths work in the binary.
+pub use fork_core;
 mod gateway;
 mod hardware;
 mod health;

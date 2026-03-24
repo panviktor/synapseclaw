@@ -112,11 +112,18 @@ Related documents:
 |----|--------|--------|------------|------------|-------|
 | CH-001 | Matrix channel fixes (media, E2EE, dedup) | `temporary-backport` | `medium` | `src/channels/matrix.rs` | May be resolved by upstream; review on every sync |
 
-## Fork Core (CORE-001)
+## Fork Core (CORE-001 .. CORE-008)
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
-| CORE-001 | Fork-owned application core: OutboundIntent, ChannelRegistryPort, CachedChannelRegistry, bus, push relay | `fork-only` | `low` | `src/fork_core/*`, `src/fork_adapters/*`, `src/daemon/mod.rs` | Phase 4.0 Steps 1-2; new files, fork-owned |
+| CORE-001 | Fork-owned application core skeleton: OutboundIntent, ChannelRegistryPort, CachedChannelRegistry, bus, push relay | `fork-only` | `low` | `src/fork_core/*`, `src/fork_adapters/*`, `src/daemon/mod.rs` | Phase 4.0 Steps 1-2; new files, fork-owned |
+| CORE-002 | DeliveryService: heartbeat/cron delivery policy, capability-driven target resolution | `fork-only` | `low` | `src/fork_core/application/services/delivery_service.rs`, `src/daemon/mod.rs`, `src/cron/scheduler.rs` | Slice 1; daemon/cron delegate to service |
+| CORE-003 | InboundMessageService + HandleInboundMessage: 24-behavior orchestrator, 7 ports, 8 adapters | `fork-only` | `medium` | `src/fork_core/application/services/inbound_message_service.rs`, `src/fork_core/application/use_cases/handle_inbound_message.rs`, `src/fork_adapters/inbound/*`, `src/channels/mod.rs` | Slice 2; channels/mod.rs reduced by 4287 lines |
+| CORE-004 | ConversationService + StartConversationRun + AbortConversationRun: session lifecycle, summary policy, run state machine | `fork-only` | `low` | `src/fork_core/application/services/conversation_service.rs`, `src/fork_core/application/use_cases/start_conversation_run.rs`, `src/fork_core/application/use_cases/abort_conversation_run.rs`, `src/gateway/ws.rs` | Slice 3; ws.rs delegates to service |
+| CORE-005 | ApprovalService + RequestApproval + ReviewQuarantineItem: domain types, ports, policy | `fork-only` | `low` | `src/fork_core/application/services/approval_service.rs`, `src/fork_core/domain/approval.rs`, `src/fork_core/ports/approval.rs`, `src/approval/mod.rs`, `src/agent/loop_.rs` | Slice 4; ApprovalManager implements ApprovalPort |
+| CORE-006 | IpcService + DispatchIpcMessage: ACL validation, routing, session limits, bus port | `fork-only` | `medium` | `src/fork_core/application/services/ipc_service.rs`, `src/fork_core/domain/ipc.rs`, `src/fork_core/ports/ipc_bus.rs`, `src/gateway/ipc.rs` | Slice 5; gateway/ipc.rs delegates to domain |
+| CORE-007 | MemoryService + MemoryTiersPort: tier types, recall formatting, consolidation policy, adapter | `fork-only` | `low` | `src/fork_core/application/services/memory_service.rs`, `src/fork_core/domain/memory.rs`, `src/fork_core/ports/memory.rs`, `src/fork_adapters/inbound/memory_adapter.rs` | Slice 6; tier-aware abstraction over existing backends |
+| CORE-008 | CodingWorkerPort + DelegateImplementationTask: external coding worker seam | `fork-only` | `low` | `src/fork_core/ports/coding_worker.rs`, `src/fork_core/domain/implementation.rs`, `src/fork_core/application/use_cases/delegate_implementation_task.rs` | Slice 7; narrow port, IPC-backed adapter deferred |
 
 ## Other (MISC-001 .. MISC-003)
 
@@ -235,10 +242,10 @@ Update this registry when:
 | Web UI | 6 | 0 | 0 | 6 |
 | Web Infra | 3 | 0 | 0 | 3 |
 | Channels | 0 | 0 | 1 | 1 |
-| Fork Core | 1 | 0 | 0 | 1 |
+| Fork Core | 8 | 0 | 0 | 8 |
 | Other | 3 | 0 | 0 | 3 |
 | Infra/CI | 2 | 0 | 0 | 2 |
-| **Total** | **32** | **12** | **1** | **45** |
+| **Total** | **39** | **12** | **1** | **52** |
 
 ## Current Conclusion
 

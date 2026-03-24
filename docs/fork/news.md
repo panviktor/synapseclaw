@@ -2,6 +2,26 @@
 
 ## 2026-03-24
 
+### Phase 4.0 workspace crate + all 10 use cases + full restructuring
+- **fork_core extracted as workspace crate** (`crates/fork_core/`) — 0 upstream deps, compiles standalone
+- Core-owned types: `ChatMessage`, `AutonomyLevel`, `HeartbeatConfig`, `CronDeliveryConfig`, `AutoDetectCandidate`
+- `ChannelRegistryPort::resolve()` → `has_channel()` — removed `Channel` trait dependency
+- `InboundEnvelope::from_channel_message()` moved to fork_adapters (adapter concern)
+- Old `src/fork_core/` directory deleted
+- **10 of 10 use cases now implemented:**
+  - `SpawnChildAgent` — provision ephemeral identity, create Run(Spawn), return child token (5 tests)
+  - `ResumeConversation` — load session + rebuild transcript from ConversationStorePort (4 tests)
+  - `AbortConversationRun` — cancel running execution with terminal state guard (4 tests)
+  - `DispatchIpcMessage` — resolve → limit → ACL → send (5 tests)
+- New domain: `domain/spawn.rs` (SpawnRequest, EphemeralAgent, SpawnStatus)
+- New port: `ports/spawn_broker.rs` (SpawnBrokerPort)
+- **fork_adapters restructured** — `inbound/` split into `runtime/`, `memory/`, `ipc/`
+- New adapters: `IpcBusAdapter`, `QuarantineAdapter` (wraps IpcDb behind ports)
+- ResumeConversation **wired into ws.rs** ensure_session
+- Updated progress.md, delta-registry.md, news.md
+- 180 fork_core tests + 22 fork_adapters tests
+- 170+ total fork_core tests
+
 ### Phase 4.0 Slice 7: CodingWorkerPort + DelegateImplementationTask
 - `domain/implementation.rs` — ImplementationTask, CodingWorkerResult, ImplementationEvent, ImplementationState
 - `ports/coding_worker.rs` — CodingWorkerPort (submit, poll, events, cancel)

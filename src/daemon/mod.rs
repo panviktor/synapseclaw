@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::fork_core::domain::config::{AutoDetectCandidate, CronDeliveryConfig, HeartbeatConfig};
 use anyhow::Result;
 use chrono::Utc;
 use std::future::Future;
@@ -266,6 +267,50 @@ where
     })
 }
 
+// ── Config projection helpers for fork_core types ───────────────
+//
+// These convert from the upstream `Config` to the lean domain types
+// that `DeliveryService` expects, keeping fork_core free from
+// upstream config dependencies.
+
+fn heartbeat_config_from(config: &Config) -> HeartbeatConfig {
+    HeartbeatConfig {
+        target: config.heartbeat.target.clone(),
+        to: config.heartbeat.to.clone(),
+        deadman_channel: config.heartbeat.deadman_channel.clone(),
+        deadman_to: config.heartbeat.deadman_to.clone(),
+    }
+}
+
+fn auto_detect_candidates(config: &Config) -> Vec<AutoDetectCandidate> {
+    let mut candidates = Vec::new();
+
+    // Priority order mirrors the old auto_detect_heartbeat_channel:
+    // matrix > telegram (channels where allowed_users[0] works as recipient).
+    if let Some(mx) = &config.channels_config.matrix {
+        candidates.push(AutoDetectCandidate {
+            channel_name: "matrix".into(),
+            recipient: mx.allowed_users.first().cloned().filter(|u| !u.is_empty()),
+        });
+    }
+    if let Some(tg) = &config.channels_config.telegram {
+        candidates.push(AutoDetectCandidate {
+            channel_name: "telegram".into(),
+            recipient: tg.allowed_users.first().cloned().filter(|u| !u.is_empty()),
+        });
+    }
+
+    candidates
+}
+
+pub(crate) fn cron_delivery_config_from(delivery: &crate::cron::DeliveryConfig) -> CronDeliveryConfig {
+    CronDeliveryConfig {
+        mode: delivery.mode.clone(),
+        channel: delivery.channel.clone(),
+        to: delivery.to.clone(),
+    }
+}
+
 async fn run_heartbeat_worker(
     config: Config,
     delivery_service: std::sync::Arc<
@@ -285,7 +330,9 @@ async fn run_heartbeat_worker(
         observer,
     );
     let metrics = engine.metrics();
-    let delivery = delivery_service.resolve_heartbeat_target(&config)?;
+    let hb_config = heartbeat_config_from(&config);
+    let candidates = auto_detect_candidates(&config);
+    let delivery = delivery_service.resolve_heartbeat_target(&hb_config, &candidates)?;
     let two_phase = config.heartbeat.two_phase;
     let adaptive = config.heartbeat.adaptive;
     let start_time = std::time::Instant::now();
@@ -294,7 +341,7 @@ async fn run_heartbeat_worker(
     let deadman_timeout = config.heartbeat.deadman_timeout_minutes;
     if deadman_timeout > 0 {
         let dm_metrics = Arc::clone(&metrics);
-        let dm_target = delivery_service.resolve_deadman_target(&config, &delivery);
+        let dm_target = delivery_service.resolve_deadman_target(&hb_config, &delivery);
         let dm_delivery_svc = delivery_service.clone();
         tokio::spawn(async move {
             let check_interval = Duration::from_secs(60);

@@ -2,9 +2,15 @@
 //!
 //! Also persists turns to the optional SessionStore (JSONL) so history
 //! survives restarts.
+//!
+//! The internal map and session store use the upstream `providers::ChatMessage`.
+//! The port trait expects `fork_core::domain::message::ChatMessage`.
+//! Conversions happen at the trait boundary using helpers from `fork_adapters`.
 
 use crate::channels::session_backend::SessionBackend;
 use crate::channels::session_store::SessionStore;
+use crate::fork_adapters::{from_core_message, to_core_message};
+use crate::fork_core::domain::message::ChatMessage as CoreChatMessage;
 use crate::fork_core::ports::conversation_history::ConversationHistoryPort;
 use crate::providers::ChatMessage;
 use std::collections::HashMap;
@@ -36,25 +42,27 @@ impl ConversationHistoryPort for MutexMapConversationHistory {
             .is_some_and(|v| !v.is_empty())
     }
 
-    fn get_history(&self, key: &str) -> Vec<ChatMessage> {
+    fn get_history(&self, key: &str) -> Vec<CoreChatMessage> {
         self.map
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(key)
-            .cloned()
+            .map(|v| v.iter().map(to_core_message).collect())
             .unwrap_or_default()
     }
 
-    fn append_turn(&self, key: &str, turn: ChatMessage) {
+    fn append_turn(&self, key: &str, turn: CoreChatMessage) {
+        let provider_msg = from_core_message(&turn);
+
         // Persist to JSONL session store (survives restart)
         if let Some(ref store) = self.session_store {
-            let _ = store.append(key, &turn);
+            let _ = store.append(key, &provider_msg);
         }
 
         // Append to in-memory map
         let mut guard = self.map.lock().unwrap_or_else(|e| e.into_inner());
         let history = guard.entry(key.to_string()).or_default();
-        history.push(turn);
+        history.push(provider_msg);
         if history.len() > MAX_HISTORY {
             history.remove(0);
         }
@@ -99,8 +107,12 @@ impl ConversationHistoryPort for MutexMapConversationHistory {
         false
     }
 
-    fn prepend_turn(&self, key: &str, turn: ChatMessage) {
+    fn prepend_turn(&self, key: &str, turn: CoreChatMessage) {
+        let provider_msg = from_core_message(&turn);
         let mut guard = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        guard.entry(key.to_string()).or_default().insert(0, turn);
+        guard
+            .entry(key.to_string())
+            .or_default()
+            .insert(0, provider_msg);
     }
 }

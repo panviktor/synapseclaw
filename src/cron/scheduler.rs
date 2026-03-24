@@ -334,7 +334,9 @@ async fn persist_job_result(
 ) -> bool {
     let duration_ms = (finished_at - started_at).num_milliseconds();
 
-    if let Err(e) = delivery_service.deliver_cron_output(&job.delivery, output).await {
+    let core_delivery = crate::daemon::cron_delivery_config_from(&job.delivery);
+
+    if let Err(e) = delivery_service.deliver_cron_output(&core_delivery, output).await {
         if job.delivery.best_effort {
             tracing::warn!("Cron delivery failed (best_effort): {e}");
         } else {

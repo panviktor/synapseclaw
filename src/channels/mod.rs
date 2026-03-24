@@ -346,7 +346,7 @@ impl InFlightTaskCompletion {
 /// Adapter wrapper — delegates to `conversation_key()` via InboundEnvelope.
 /// TODO(phase4): remove when callers switch to InboundEnvelope directly.
 fn conversation_history_key(msg: &traits::ChannelMessage) -> String {
-    let envelope = crate::fork_core::domain::channel::InboundEnvelope::from_channel_message(msg);
+    let envelope = crate::fork_adapters::envelope_from_channel_message(msg);
     crate::fork_core::application::services::inbound_message_service::conversation_key(&envelope)
 }
 
@@ -1399,6 +1399,8 @@ async fn handle_message_via_orchestrator(
     original_msg: &traits::ChannelMessage,
 ) {
     use crate::fork_adapters::inbound::*;
+    use crate::fork_adapters::runtime::{agent_runtime_adapter, hooks_adapter};
+    use crate::fork_adapters::memory::memory_adapter;
     use crate::fork_core::application::use_cases::handle_inbound_message as uc;
     use crate::fork_core::ports::hooks::NoOpHooks;
 
@@ -1490,7 +1492,16 @@ async fn handle_message_via_orchestrator(
         auto_save_memory: ctx.auto_save_memory,
         model_routes,
         thread_root_max_chars: 500,
-        query_classification: ctx.query_classification.clone(),
+        query_classifier: {
+            let qc = ctx.query_classification.clone();
+            if qc.enabled {
+                Some(std::sync::Arc::new(move |msg: &str| {
+                    crate::agent::classifier::classify(&qc, msg)
+                }) as std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>)
+            } else {
+                None
+            }
+        },
         message_timeout_secs: ctx.message_timeout_secs,
         min_relevance_score: ctx.min_relevance_score,
         ack_reactions: ctx.ack_reactions,
@@ -1703,7 +1714,7 @@ async fn run_message_dispatch_loop(
 
             // Phase 4.0 Slice 2: route through HandleInboundMessage orchestrator.
             let envelope =
-                crate::fork_core::domain::channel::InboundEnvelope::from_channel_message(&msg);
+                crate::fork_adapters::envelope_from_channel_message(&msg);
 
             handle_message_via_orchestrator(
                 &worker_ctx,

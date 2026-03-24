@@ -469,59 +469,89 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
         }
     }
 
-    // Try loading from DB via ConversationStorePort
-    let db_session = if let Some(store) = state.conversation_store.as_ref() {
-        store.get_session(session_key).await
-    } else {
-        state
-            .chat_db
-            .as_ref()
-            .and_then(|db| db.get_session(session_key).ok().flatten())
-            .map(|r| ConversationSession {
-                key: r.key,
-                kind: ConversationKind::Web,
-                label: r.label,
-                summary: r.session_summary,
-                current_goal: r.current_goal,
-                #[allow(clippy::cast_sign_loss)]
-                created_at: r.created_at as u64,
-                #[allow(clippy::cast_sign_loss)]
-                last_active: r.last_active as u64,
-                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                message_count: r.message_count as u32,
-                #[allow(clippy::cast_sign_loss)]
-                input_tokens: r.input_tokens as u64,
-                #[allow(clippy::cast_sign_loss)]
-                output_tokens: r.output_tokens as u64,
-            })
-    };
-
+    // Try resuming via fork_core use case (ConversationStorePort path)
+    // or fall back to legacy ChatDb path.
+    let db_session;
     let config = state.config.lock().clone();
     let mut agent = crate::agent::Agent::from_config(&config)?;
 
     let now = Instant::now();
-    let now_secs_val = now_secs();
+    let _now_secs_val = now_secs();
 
     let (label, msg_count, input_tok, output_tok, current_goal, session_summary) =
-        if let Some(ref session) = db_session {
-            // Replay messages into agent
-            if let Some(store) = state.conversation_store.as_ref() {
-                let events = store.get_events(session_key, 200).await;
-                replay_events_into_agent(&mut agent, &events)?;
-            } else if let Some(db) = state.chat_db.as_ref() {
-                let messages = db.get_messages(session_key, 200)?;
-                replay_messages_into_agent(&mut agent, &messages)?;
-            }
-            (
-                session.label.clone(),
-                session.message_count,
-                session.input_tokens,
-                session.output_tokens,
-                session.current_goal.clone(),
-                session.summary.clone(),
+        if let Some(store) = state.conversation_store.as_ref() {
+            // Phase 4.0 path: use ResumeConversation use case
+            match crate::fork_core::application::use_cases::resume_conversation::execute(
+                store.as_ref(),
+                session_key,
             )
+            .await
+            {
+                Ok(resumed) => {
+                    // Replay transcript into agent
+                    for turn in &resumed.transcript {
+                        agent.push_history(crate::providers::ConversationMessage::Chat(
+                            crate::providers::ChatMessage {
+                                role: turn.role.clone(),
+                                content: turn.content.clone(),
+                            },
+                        ));
+                    }
+                    db_session = Some(resumed.session.clone());
+                    (
+                        resumed.session.label,
+                        resumed.session.message_count,
+                        resumed.session.input_tokens,
+                        resumed.session.output_tokens,
+                        resumed.session.current_goal,
+                        resumed.session.summary,
+                    )
+                }
+                Err(_) => {
+                    // Session not found — will create fresh
+                    db_session = None;
+                    (None, 0, 0, 0, None, None)
+                }
+            }
         } else {
-            (None, 0, 0, 0, None, None)
+            // Legacy ChatDb fallback
+            db_session = state
+                .chat_db
+                .as_ref()
+                .and_then(|db| db.get_session(session_key).ok().flatten())
+                .map(|r| ConversationSession {
+                    key: r.key,
+                    kind: ConversationKind::Web,
+                    label: r.label,
+                    summary: r.session_summary,
+                    current_goal: r.current_goal,
+                    #[allow(clippy::cast_sign_loss)]
+                    created_at: r.created_at as u64,
+                    #[allow(clippy::cast_sign_loss)]
+                    last_active: r.last_active as u64,
+                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                    message_count: r.message_count as u32,
+                    #[allow(clippy::cast_sign_loss)]
+                    input_tokens: r.input_tokens as u64,
+                    #[allow(clippy::cast_sign_loss)]
+                    output_tokens: r.output_tokens as u64,
+                });
+            if let Some(ref session) = db_session {
+                if let Some(db) = state.chat_db.as_ref() {
+                    let messages = db.get_messages(session_key, 200)?;
+                    replay_messages_into_agent(&mut agent, &messages)?;
+                }
+                (
+                    session.label.clone(),
+                    session.message_count,
+                    session.input_tokens,
+                    session.output_tokens,
+                    session.current_goal.clone(),
+                    session.summary.clone(),
+                )
+            } else {
+                (None, 0, 0, 0, None, None)
+            }
         };
 
     let session = ChatSession {
@@ -1509,7 +1539,7 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
     };
 
     let generator =
-        crate::fork_adapters::inbound::summary_generator_adapter::ProviderSummaryGenerator::new(
+        crate::fork_adapters::memory::summary_generator_adapter::ProviderSummaryGenerator::new(
             provider,
             summary_model,
             temperature,
