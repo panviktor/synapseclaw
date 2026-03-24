@@ -62,26 +62,28 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     let mut handles: Vec<JoinHandle<()>> = vec![spawn_state_writer(config.clone())];
 
-    // ── Phase 4.0: ChannelRegistryPort + OutboundIntent bus ────────
-    // CachedChannelRegistry is shared between the relay task (consumer)
-    // and the gateway (REST API: capabilities + deliver endpoints).
-    let channel_registry: Option<
-        std::sync::Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
-    > = if config.agents_ipc.enabled {
-        Some(std::sync::Arc::new(
-            crate::fork_adapters::channels::registry::CachedChannelRegistry::new(config.clone()),
-        ))
-    } else {
-        None
-    };
+    // ── Phase 4.0: ChannelRegistryPort ─────────────────────────────
+    // Always available in daemon mode.  Shared between relay, heartbeat,
+    // scheduler, delivery service, and gateway REST API.
+    let channel_registry: std::sync::Arc<
+        dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort,
+    > = std::sync::Arc::new(
+        crate::fork_adapters::channels::registry::CachedChannelRegistry::new(config.clone()),
+    );
+
+    // Phase 4.0 Slice 1: DeliveryService owns delivery policy.
+    let delivery_service = std::sync::Arc::new(
+        crate::fork_core::application::services::delivery_service::DeliveryService::new(
+            channel_registry.clone(),
+        ),
+    );
 
     // OutboundIntent bus: gateway emits intents, relay delivers via registry.
-    let outbound_tx = if channel_registry.is_some()
-        && config.agents_ipc.push_relay_channel.is_some()
+    let outbound_tx = if config.agents_ipc.push_relay_channel.is_some()
         && config.agents_ipc.push_relay_recipient.is_some()
     {
         let (tx, rx) = crate::fork_core::bus::outbound_intent_bus();
-        let relay_registry = channel_registry.clone().unwrap();
+        let relay_registry = channel_registry.clone();
         handles.push(tokio::spawn(async move {
             Box::pin(outbound_intent_relay(relay_registry, rx)).await;
         }));
@@ -94,7 +96,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
         let gateway_cfg = config.clone();
         let gateway_host = host.clone();
         let gw_outbound_tx = outbound_tx.clone();
-        let gw_registry = channel_registry.clone();
+        let gw_registry = Some(channel_registry.clone());
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -131,30 +133,30 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     if config.heartbeat.enabled {
         let heartbeat_cfg = config.clone();
-        let hb_registry = channel_registry.clone();
+        let hb_delivery = delivery_service.clone();
         handles.push(spawn_component_supervisor(
             "heartbeat",
             initial_backoff,
             max_backoff,
             move || {
                 let cfg = heartbeat_cfg.clone();
-                let reg = hb_registry.clone();
-                async move { Box::pin(run_heartbeat_worker(cfg, reg)).await }
+                let ds = hb_delivery.clone();
+                async move { Box::pin(run_heartbeat_worker(cfg, ds)).await }
             },
         ));
     }
 
     if config.cron.enabled {
         let scheduler_cfg = config.clone();
-        let sched_registry = channel_registry.clone();
+        let sched_delivery = delivery_service.clone();
         handles.push(spawn_component_supervisor(
             "scheduler",
             initial_backoff,
             max_backoff,
             move || {
                 let cfg = scheduler_cfg.clone();
-                let reg = sched_registry.clone();
-                async move { Box::pin(crate::cron::scheduler::run(cfg, reg)).await }
+                let ds = sched_delivery.clone();
+                async move { Box::pin(crate::cron::scheduler::run(cfg, ds)).await }
             },
         ));
     } else {
@@ -266,8 +268,8 @@ where
 
 async fn run_heartbeat_worker(
     config: Config,
-    registry: Option<
-        std::sync::Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+    delivery_service: std::sync::Arc<
+        crate::fork_core::application::services::delivery_service::DeliveryService,
     >,
 ) -> Result<()> {
     use crate::heartbeat::engine::{
@@ -283,7 +285,7 @@ async fn run_heartbeat_worker(
         observer,
     );
     let metrics = engine.metrics();
-    let delivery = resolve_heartbeat_delivery(&config)?;
+    let delivery = delivery_service.resolve_heartbeat_target(&config)?;
     let two_phase = config.heartbeat.two_phase;
     let adaptive = config.heartbeat.adaptive;
     let start_time = std::time::Instant::now();
@@ -292,9 +294,8 @@ async fn run_heartbeat_worker(
     let deadman_timeout = config.heartbeat.deadman_timeout_minutes;
     if deadman_timeout > 0 {
         let dm_metrics = Arc::clone(&metrics);
-        let dm_config = config.clone();
-        let dm_delivery = delivery.clone();
-        let dm_registry = registry.clone();
+        let dm_target = delivery_service.resolve_deadman_target(&config, &delivery);
+        let dm_delivery_svc = delivery_service.clone();
         tokio::spawn(async move {
             let check_interval = Duration::from_secs(60);
             let timeout = chrono::Duration::minutes(i64::from(deadman_timeout));
@@ -306,28 +307,9 @@ async fn run_heartbeat_worker(
                         let alert = format!(
                             "⚠️ Heartbeat dead-man's switch: no tick in {deadman_timeout} minutes"
                         );
-                        let (channel, target) =
-                            if let Some(ch) = &dm_config.heartbeat.deadman_channel {
-                                let to = dm_config
-                                    .heartbeat
-                                    .deadman_to
-                                    .as_deref()
-                                    .or(dm_config.heartbeat.to.as_deref())
-                                    .unwrap_or_default();
-                                (ch.clone(), to.to_string())
-                            } else if let Some((ch, to)) = &dm_delivery {
-                                (ch.clone(), to.clone())
-                            } else {
-                                continue;
-                            };
-                        let _ = crate::cron::scheduler::deliver_announcement(
-                            &dm_config,
-                            &channel,
-                            &target,
-                            &alert,
-                            dm_registry.as_deref(),
-                        )
-                        .await;
+                        if let Some(target) = &dm_target {
+                            let _ = dm_delivery_svc.deliver(target, &alert).await;
+                        }
                     }
                 }
             }
@@ -460,13 +442,10 @@ async fn run_heartbeat_worker(
                     } else {
                         output
                     };
-                    if let Some((channel, target)) = &delivery {
-                        if let Err(e) = crate::cron::scheduler::deliver_announcement(
-                            &config,
-                            channel,
+                    if let Some(target) = &delivery {
+                        if let Err(e) = delivery_service.deliver(
                             target,
                             &announcement,
-                            registry.as_deref(),
                         )
                         .await
                         {
@@ -526,79 +505,6 @@ async fn run_heartbeat_worker(
             sleep_mins = base_interval;
         }
     }
-}
-
-/// Resolve delivery target: explicit config > auto-detect first configured channel.
-fn resolve_heartbeat_delivery(config: &Config) -> Result<Option<(String, String)>> {
-    let channel = config
-        .heartbeat
-        .target
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-    let target = config
-        .heartbeat
-        .to
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
-    match (channel, target) {
-        // Both explicitly set — validate and use.
-        (Some(channel), Some(target)) => {
-            validate_heartbeat_channel_config(config, channel)?;
-            Ok(Some((channel.to_string(), target.to_string())))
-        }
-        // Only one set — error.
-        (Some(_), None) => anyhow::bail!("heartbeat.to is required when heartbeat.target is set"),
-        (None, Some(_)) => anyhow::bail!("heartbeat.target is required when heartbeat.to is set"),
-        // Neither set — try auto-detect the first configured channel.
-        (None, None) => Ok(auto_detect_heartbeat_channel(config)),
-    }
-}
-
-/// Auto-detect the best channel for heartbeat delivery by checking which
-/// channels are configured. Returns the first match in priority order.
-fn auto_detect_heartbeat_channel(config: &Config) -> Option<(String, String)> {
-    // Priority order: matrix > telegram > discord > slack > mattermost
-    if let Some(mx) = &config.channels_config.matrix {
-        let target = mx.allowed_users.first().cloned().unwrap_or_default();
-        if !target.is_empty() {
-            return Some(("matrix".to_string(), target));
-        }
-    }
-    if let Some(tg) = &config.channels_config.telegram {
-        // Use the first allowed_user as target, or fall back to empty (broadcast)
-        let target = tg.allowed_users.first().cloned().unwrap_or_default();
-        if !target.is_empty() {
-            return Some(("telegram".to_string(), target));
-        }
-    }
-    if config.channels_config.discord.is_some() {
-        // Discord requires explicit target — can't auto-detect
-        return None;
-    }
-    if config.channels_config.slack.is_some() {
-        // Slack requires explicit target
-        return None;
-    }
-    if config.channels_config.mattermost.is_some() {
-        // Mattermost requires explicit target
-        return None;
-    }
-    None
-}
-
-/// Validate that the heartbeat target channel is buildable.
-/// Uses `build_channel_by_id` which checks both channel support and config presence.
-fn validate_heartbeat_channel_config(config: &Config, channel: &str) -> Result<()> {
-    crate::channels::build_channel_by_id(config, &channel.to_ascii_lowercase())
-        .map(|_| ())
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "heartbeat.target is set to '{channel}' but channel is not available: {e}"
-            )
-        })
 }
 
 // ── Phase 4.0: OutboundIntent relay ──────────────────────────────
@@ -903,102 +809,9 @@ mod tests {
         assert!(has_supervised_channels(&config));
     }
 
-    #[test]
-    fn resolve_delivery_none_when_unset() {
-        let config = Config::default();
-        let target = resolve_heartbeat_delivery(&config).unwrap();
-        assert!(target.is_none());
-    }
-
-    #[test]
-    fn resolve_delivery_requires_to_field() {
-        let mut config = Config::default();
-        config.heartbeat.target = Some("telegram".into());
-        let err = resolve_heartbeat_delivery(&config).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("heartbeat.to is required when heartbeat.target is set"));
-    }
-
-    #[test]
-    fn resolve_delivery_requires_target_field() {
-        let mut config = Config::default();
-        config.heartbeat.to = Some("123456".into());
-        let err = resolve_heartbeat_delivery(&config).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("heartbeat.target is required when heartbeat.to is set"));
-    }
-
-    #[test]
-    fn resolve_delivery_rejects_unsupported_channel() {
-        let mut config = Config::default();
-        config.heartbeat.target = Some("email".into());
-        config.heartbeat.to = Some("ops@example.com".into());
-        let err = resolve_heartbeat_delivery(&config).unwrap_err();
-        // email is not yet in build_channel_by_id → "Unknown channel" or "not available"
-        assert!(
-            err.to_string().contains("not available"),
-            "expected 'not available' in: {err}"
-        );
-    }
-
-    #[test]
-    fn resolve_delivery_requires_channel_configuration() {
-        let mut config = Config::default();
-        config.heartbeat.target = Some("telegram".into());
-        config.heartbeat.to = Some("123456".into());
-        let err = resolve_heartbeat_delivery(&config).unwrap_err();
-        // Telegram not configured → build_channel_by_id returns "not configured"
-        assert!(
-            err.to_string().contains("not available"),
-            "expected 'not available' in: {err}"
-        );
-    }
-
-    #[test]
-    fn resolve_delivery_accepts_telegram_configuration() {
-        let mut config = Config::default();
-        config.heartbeat.target = Some("telegram".into());
-        config.heartbeat.to = Some("123456".into());
-        config.channels_config.telegram = Some(crate::config::TelegramConfig {
-            bot_token: "bot-token".into(),
-            allowed_users: vec![],
-            stream_mode: crate::config::StreamMode::default(),
-            draft_update_interval_ms: 1000,
-            interrupt_on_new_message: false,
-            mention_only: false,
-        });
-
-        let target = resolve_heartbeat_delivery(&config).unwrap();
-        assert_eq!(target, Some(("telegram".to_string(), "123456".to_string())));
-    }
-
-    #[test]
-    fn auto_detect_telegram_when_configured() {
-        let mut config = Config::default();
-        config.channels_config.telegram = Some(crate::config::TelegramConfig {
-            bot_token: "bot-token".into(),
-            allowed_users: vec!["user123".into()],
-            stream_mode: crate::config::StreamMode::default(),
-            draft_update_interval_ms: 1000,
-            interrupt_on_new_message: false,
-            mention_only: false,
-        });
-
-        let target = resolve_heartbeat_delivery(&config).unwrap();
-        assert_eq!(
-            target,
-            Some(("telegram".to_string(), "user123".to_string()))
-        );
-    }
-
-    #[test]
-    fn auto_detect_none_when_no_channels() {
-        let config = Config::default();
-        let target = auto_detect_heartbeat_channel(&config);
-        assert!(target.is_none());
-    }
+    // Heartbeat delivery target resolution tests are now in
+    // fork_core::application::services::delivery_service::tests.
+    // The old daemon-local functions have been replaced by DeliveryService.
 
     /// Verify that SIGHUP does not cause shutdown — the daemon should ignore it
     /// and only terminate on SIGINT or SIGTERM.

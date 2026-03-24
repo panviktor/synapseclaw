@@ -4,3 +4,4 @@
 //! Use cases are the primary API that adapters call.
 
 pub mod inbound_message;
+pub mod services;

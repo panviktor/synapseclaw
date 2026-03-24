@@ -1,5 +1,18 @@
 # SynapseClaw News & Changelog
 
+## 2026-03-24
+
+### Phase 4.0 Slice 1: DeliveryService — first application service
+- `DeliveryService` in `fork_core/application/services/delivery_service.rs` — first real application service
+- Heartbeat target resolution moved from daemon/mod.rs → DeliveryService
+- Auto-detect channel selection now uses `ChannelCapability::SendText` via registry (replaces hardcoded matrix>telegram>discord priority)
+- Deadman alert target resolution moved to DeliveryService
+- Cron delivery validation + dispatch moved from scheduler.rs → DeliveryService
+- Deleted: `resolve_heartbeat_delivery()`, `auto_detect_heartbeat_channel()`, `validate_heartbeat_channel_config()` from daemon
+- Deleted: `deliver_if_configured()`, `deliver_announcement()` from scheduler
+- `CachedChannelRegistry` now always created in daemon mode (was IPC-only)
+- 15 unit tests for delivery policy
+
 ## 2026-03-23
 
 ### Phase 4.0 Step 12: Remove transport-name branching + docs update

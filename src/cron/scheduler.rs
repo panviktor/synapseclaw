@@ -1,9 +1,7 @@
-use crate::channels::SendMessage;
 use crate::config::Config;
 use crate::cron::{
     due_jobs, next_run_for_schedule, record_last_run, record_run, remove_job, reschedule_after_run,
-    update_job, CronJob, CronJobPatch, DeliveryConfig, ExecutionMode, JobType, Schedule,
-    SessionTarget,
+    update_job, CronJob, CronJobPatch, ExecutionMode, JobType, Schedule, SessionTarget,
 };
 use crate::security::SecurityPolicy;
 use anyhow::Result;
@@ -20,7 +18,9 @@ const SCHEDULER_COMPONENT: &str = "scheduler";
 
 pub async fn run(
     config: Config,
-    registry: Option<Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>>,
+    delivery_service: Arc<
+        crate::fork_core::application::services::delivery_service::DeliveryService,
+    >,
 ) -> Result<()> {
     let poll_secs = config.reliability.scheduler_poll_secs.max(MIN_POLL_SECONDS);
     let mut interval = time::interval(Duration::from_secs(poll_secs));
@@ -50,7 +50,7 @@ pub async fn run(
             &security,
             jobs,
             SCHEDULER_COMPONENT,
-            registry.clone(),
+            delivery_service.clone(),
         )
         .await;
     }
@@ -101,7 +101,9 @@ async fn process_due_jobs(
     security: &Arc<SecurityPolicy>,
     jobs: Vec<CronJob>,
     component: &str,
-    registry: Option<Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>>,
+    delivery_service: Arc<
+        crate::fork_core::application::services::delivery_service::DeliveryService,
+    >,
 ) {
     // Refresh scheduler health on every successful poll cycle, including idle cycles.
     crate::health::mark_component_ok(component);
@@ -111,14 +113,14 @@ async fn process_due_jobs(
         let config = config.clone();
         let security = Arc::clone(security);
         let component = component.to_owned();
-        let reg = registry.clone();
+        let ds = delivery_service.clone();
         async move {
             Box::pin(execute_and_persist_job(
                 &config,
                 security.as_ref(),
                 &job,
                 &component,
-                reg.as_deref(),
+                ds,
             ))
             .await
         }
@@ -137,7 +139,9 @@ async fn execute_and_persist_job(
     security: &SecurityPolicy,
     job: &CronJob,
     component: &str,
-    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+    delivery_service: Arc<
+        crate::fork_core::application::services::delivery_service::DeliveryService,
+    >,
 ) -> (String, bool, String) {
     crate::health::mark_component_ok(component);
     warn_if_high_frequency_agent_job(job);
@@ -152,7 +156,7 @@ async fn execute_and_persist_job(
         &output,
         started_at,
         finished_at,
-        registry,
+        delivery_service,
     ))
     .await;
 
@@ -324,11 +328,13 @@ async fn persist_job_result(
     output: &str,
     started_at: DateTime<Utc>,
     finished_at: DateTime<Utc>,
-    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+    delivery_service: Arc<
+        crate::fork_core::application::services::delivery_service::DeliveryService,
+    >,
 ) -> bool {
     let duration_ms = (finished_at - started_at).num_milliseconds();
 
-    if let Err(e) = deliver_if_configured(config, job, output, registry).await {
+    if let Err(e) = delivery_service.deliver_cron_output(&job.delivery, output).await {
         if job.delivery.best_effort {
             tracing::warn!("Cron delivery failed (best_effort): {e}");
         } else {
@@ -406,54 +412,6 @@ fn warn_if_high_frequency_agent_job(job: &CronJob) {
     }
 }
 
-async fn deliver_if_configured(
-    config: &Config,
-    job: &CronJob,
-    output: &str,
-    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
-) -> Result<()> {
-    let delivery: &DeliveryConfig = &job.delivery;
-    if !delivery.mode.eq_ignore_ascii_case("announce") {
-        return Ok(());
-    }
-
-    let channel = delivery
-        .channel
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("delivery.channel is required for announce mode"))?;
-    let target = delivery
-        .to
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("delivery.to is required for announce mode"))?;
-
-    deliver_announcement(config, channel, target, output, registry).await
-}
-
-/// Deliver an announcement to a channel via `ChannelRegistryPort`.
-///
-/// When `registry` is available (daemon mode), uses the cached adapter from
-/// `CachedChannelRegistry`. Falls back to `build_channel_by_id` for standalone
-/// scheduler invocations (e.g. `execute_job_now` from CLI).
-pub(crate) async fn deliver_announcement(
-    config: &Config,
-    channel: &str,
-    target: &str,
-    output: &str,
-    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
-) -> Result<()> {
-    if let Some(reg) = registry {
-        let intent = crate::fork_core::domain::channel::OutboundIntent::notify(
-            channel,
-            target,
-            output.to_string(),
-        );
-        return reg.deliver(&intent).await;
-    }
-    // Fallback: no registry (standalone CLI mode) — one-shot via build_channel_by_id
-    let ch = crate::channels::build_channel_by_id(config, channel)?;
-    ch.send(&SendMessage::new(output, target)).await?;
-    Ok(())
-}
 
 async fn run_job_command(
     config: &Config,
@@ -556,6 +514,25 @@ mod tests {
     use crate::security::SecurityPolicy;
     use chrono::{Duration as ChronoDuration, Utc};
     use tempfile::TempDir;
+
+    /// No-op delivery service for tests that don't exercise delivery.
+    /// Uses a mock registry that has no channels — delivery attempts will
+    /// fail, which is fine because test jobs don't configure announce mode.
+    fn noop_delivery_service() -> Arc<
+        crate::fork_core::application::services::delivery_service::DeliveryService,
+    > {
+        let registry: Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort> =
+            Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    Config::default(),
+                ),
+            );
+        Arc::new(
+            crate::fork_core::application::services::delivery_service::DeliveryService::new(
+                registry,
+            ),
+        )
+    }
 
     async fn test_config(tmp: &TempDir) -> Config {
         let config = Config {
@@ -851,7 +828,7 @@ mod tests {
         let component = unique_component("scheduler-idle");
 
         crate::health::mark_component_error(&component, "pre-existing error");
-        process_due_jobs(&config, &security, Vec::new(), &component, None).await;
+        process_due_jobs(&config, &security, Vec::new(), &component, noop_delivery_service()).await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -872,7 +849,7 @@ mod tests {
         let component = unique_component("scheduler-fail");
 
         crate::health::mark_component_ok(&component);
-        process_due_jobs(&config, &security, vec![job], &component, None).await;
+        process_due_jobs(&config, &security, vec![job], &component, noop_delivery_service()).await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -887,7 +864,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
         assert!(success);
 
         let runs = cron::list_runs(&config, &job.id, 10).unwrap();
@@ -915,7 +892,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
         assert!(success);
         let lookup = cron::get_job(&config, &job.id);
         assert!(lookup.is_err());
@@ -941,7 +918,7 @@ mod tests {
         let finished = started + ChronoDuration::milliseconds(10);
 
         let success =
-            persist_job_result(&config, &job, false, "boom", started, finished, None).await;
+            persist_job_result(&config, &job, false, "boom", started, finished, noop_delivery_service()).await;
         assert!(!success);
         let updated = cron::get_job(&config, &job.id).unwrap();
         assert!(!updated.enabled);
@@ -958,7 +935,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
         assert!(success);
         let lookup = cron::get_job(&config, &job.id);
         assert!(lookup.is_err());
@@ -975,7 +952,7 @@ mod tests {
         let finished = started + ChronoDuration::milliseconds(10);
 
         let success =
-            persist_job_result(&config, &job, false, "boom", started, finished, None).await;
+            persist_job_result(&config, &job, false, "boom", started, finished, noop_delivery_service()).await;
         assert!(!success);
         let updated = cron::get_job(&config, &job.id).unwrap();
         assert!(!updated.enabled);
@@ -1008,7 +985,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
         assert!(!success);
 
         let updated = cron::get_job(&config, &job.id).unwrap();
@@ -1046,7 +1023,7 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
         assert!(success);
 
         let updated = cron::get_job(&config, &job.id).unwrap();
@@ -1078,83 +1055,12 @@ mod tests {
 
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, None).await;
+        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
         assert!(success);
 
         let updated = cron::get_job(&config, &job.id).unwrap();
         assert!(updated.enabled);
         assert_eq!(updated.last_status.as_deref(), Some("ok"));
-    }
-
-    #[tokio::test]
-    async fn deliver_if_configured_handles_none_and_invalid_channel() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let mut job = test_job("echo ok");
-
-        // No delivery configured — should be no-op
-        assert!(deliver_if_configured(&config, &job, "x", None)
-            .await
-            .is_ok());
-
-        job.delivery = DeliveryConfig {
-            mode: "announce".into(),
-            channel: Some("invalid".into()),
-            to: Some("target".into()),
-            best_effort: true,
-        };
-        let err = deliver_if_configured(&config, &job, "x", None)
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("Unknown channel"),
-            "expected 'Unknown channel' in error, got: {err}"
-        );
-    }
-
-    #[cfg(feature = "channel-matrix")]
-    #[tokio::test]
-    async fn deliver_if_configured_matrix_missing_config() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let mut job = test_job("echo ok");
-        job.delivery = DeliveryConfig {
-            mode: "announce".into(),
-            channel: Some("matrix".into()),
-            to: Some("!ops:matrix.org".into()),
-            best_effort: false,
-        };
-
-        let err = deliver_if_configured(&config, &job, "hello", None)
-            .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("Matrix channel is not configured"),
-            "expected 'Matrix channel is not configured' in error, got: {err}"
-        );
-    }
-
-    #[cfg(not(feature = "channel-matrix"))]
-    #[tokio::test]
-    async fn deliver_if_configured_matrix_feature_disabled() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let mut job = test_job("echo ok");
-        job.delivery = DeliveryConfig {
-            mode: "announce".into(),
-            channel: Some("matrix".into()),
-            to: Some("!ops:matrix.org".into()),
-            best_effort: false,
-        };
-
-        let err = deliver_if_configured(&config, &job, "hello", None)
-            .await
-            .unwrap_err();
-        // Without channel-matrix feature, "matrix" falls through to Unknown channel
-        assert!(
-            err.to_string().contains("Unknown channel"),
-            "expected 'Unknown channel' in error, got: {err}"
-        );
     }
 
     // ── Subprocess execution mode tests ──────────────────────────

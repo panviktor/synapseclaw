@@ -48,7 +48,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 
 | Slice | Status | Description |
 |-------|--------|-------------|
-| 1 | TODO | `delivery_service` + `SendScheduledNotification` — move heartbeat/cron delivery policy into fork_core |
+| 1 | **DONE** | `delivery_service` + `SendScheduledNotification` — heartbeat/cron delivery policy moved into fork_core |
 | 2 | TODO | `inbound_message_service` + `HandleInboundMessage` — real orchestration, not bridge |
 | 3 | TODO | `conversation_service` + `StartConversationRun` — session lifecycle, summary policy |
 | 4 | TODO | `approval_service` + `RequestApproval` + `ReviewQuarantineItem` — needs `domain/approval.rs` + `ports/approval.rs` |
@@ -92,12 +92,12 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 
 | # | Criterion | Status | Notes |
 |---|-----------|--------|-------|
-| 1 | At least one migrated use case no longer depends on transport names | **PARTIAL** | Cron/heartbeat delivery uses ChannelRegistryPort. But no application *service* exists — logic still in cron/daemon, just routed through port |
-| 2 | Heartbeat/scheduled notifications work for any channel that satisfies required capabilities and policy | **PARTIAL** | Delivery goes through capability check. But heartbeat auto-detect still has hardcoded priority order in daemon/mod.rs |
+| 1 | At least one migrated use case no longer depends on transport names | **DONE** | `DeliveryService` owns delivery policy; daemon/scheduler delegate to it |
+| 2 | Heartbeat/scheduled notifications work for any channel that satisfies required capabilities and policy | **DONE** | Auto-detect uses `ChannelCapability::SendText` via registry; hardcoded priority removed |
 | 3 | Web chat uses `ConversationStorePort`, not hardcoded embedded storage logic | **DONE** | ws.rs fully migrated to ConversationStorePort (PR #166) |
 | 4 | Chat, IPC execution share unified `RunStorePort` | **DONE** | Web chat + IPC push runs tracked via RunStorePort (PRs #167, #168) |
 | 5 | Session memory and long-term memory are explicit and separated | **NOT STARTED** | MemoryTiersPort not defined |
-| 6 | New fork logic lands in fork-owned modules instead of upstream hotspots | **PARTIAL** | Ports/domain/adapters in fork_core. But 0 application services — business logic still in old modules |
+| 6 | New fork logic lands in fork-owned modules instead of upstream hotspots | **PARTIAL** | 1 application service (delivery_service). Remaining 5 services TODO |
 | 7 | External coding engines can only attach through a narrow port | **NOT STARTED** | CodingWorkerPort not defined |
 
 ---
