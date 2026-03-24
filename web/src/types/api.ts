@@ -149,7 +149,7 @@ export interface ChatSessionInfo {
 
 export interface ChatMessageInfo {
   id: number;
-  kind: string;
+  event_type: string;
   role: string | null;
   content: string;
   tool_name: string | null;

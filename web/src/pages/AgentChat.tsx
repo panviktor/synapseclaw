@@ -21,15 +21,15 @@ interface ChatMessage {
   role: 'user' | 'agent';
   content: string;
   timestamp: Date;
-  kind?: string;
+  event_type?: string;
 }
 
 function toCache(msg: ChatMessage) {
-  return { id: msg.id, role: msg.role, content: msg.content, timestamp: msg.timestamp.getTime(), kind: msg.kind };
+  return { id: msg.id, role: msg.role, content: msg.content, timestamp: msg.timestamp.getTime(), event_type: msg.event_type };
 }
 
-function fromCache(msg: { id: string; role: 'user' | 'agent'; content: string; timestamp: number; kind?: string }): ChatMessage {
-  return { id: msg.id, role: msg.role, content: msg.content, timestamp: new Date(msg.timestamp), kind: msg.kind };
+function fromCache(msg: { id: string; role: 'user' | 'agent'; content: string; timestamp: number; event_type?: string }): ChatMessage {
+  return { id: msg.id, role: msg.role, content: msg.content, timestamp: new Date(msg.timestamp), event_type: msg.event_type };
 }
 
 export default function AgentChat() {
@@ -157,7 +157,7 @@ export default function AgentChat() {
             role: 'agent',
             content: `[Error] ${msg.message ?? 'Unknown error'}`,
             timestamp: new Date(),
-            kind: 'error',
+            event_type: 'error',
           };
           setMessages((prev) => [...prev, chatMsg]);
           if (activeSessionRef.current) {
@@ -176,7 +176,7 @@ export default function AgentChat() {
             role: 'agent',
             content: msg.content ?? '',
             timestamp: new Date(),
-            kind: 'tool_call',
+            event_type: 'tool_call',
           };
           setMessages((prev) => [...prev, toolCallMsg]);
           if (msg.session_key) {
@@ -192,7 +192,7 @@ export default function AgentChat() {
             role: 'agent',
             content: msg.content ?? '',
             timestamp: new Date(),
-            kind: 'tool_result',
+            event_type: 'tool_result',
           };
           setMessages((prev) => [...prev, toolResultMsg]);
           if (msg.session_key) {
@@ -262,7 +262,7 @@ export default function AgentChat() {
         role: (m.role === 'user' ? 'user' : 'agent') as 'user' | 'agent',
         content: m.content,
         timestamp: new Date(m.timestamp * 1000),
-        kind: m.kind,
+        event_type: m.event_type,
       }));
       setMessages(mapped);
       // Update cache with server data (source of truth)
@@ -415,7 +415,7 @@ export default function AgentChat() {
       role: 'user',
       content: trimmed,
       timestamp: new Date(),
-      kind: 'user',
+      event_type: 'user',
     };
     setMessages((prev) => [...prev, chatMsg]);
     appendCachedMessage(sendSession, toCache(chatMsg));
@@ -434,7 +434,7 @@ export default function AgentChat() {
           role: 'agent',
           content: res.response,
           timestamp: new Date(),
-          kind: 'assistant',
+          event_type: 'assistant',
         };
         // Only append to visible messages if still on the same session
         if (activeSessionRef.current === sendSession) {
@@ -448,7 +448,7 @@ export default function AgentChat() {
           role: 'agent',
           content: '[Generation aborted]',
           timestamp: new Date(),
-          kind: 'interrupted',
+          event_type: 'interrupted',
         };
         if (activeSessionRef.current === sendSession) {
           setMessages((prev) => [...prev, abortMsg]);
@@ -473,7 +473,7 @@ export default function AgentChat() {
         role: 'agent',
         content: `[Error] ${err.message ?? 'Unknown error'}`,
         timestamp: new Date(),
-        kind: 'error',
+        event_type: 'error',
       };
       if (activeSessionRef.current === sendSession) {
         setMessages((prev) => [...prev, errorMsg]);
@@ -686,7 +686,7 @@ export default function AgentChat() {
                     className={`rounded-2xl px-4 py-3 ${
                       msg.role === 'user'
                         ? 'text-white'
-                        : msg.kind === 'tool_call' || msg.kind === 'tool_result'
+                        : msg.event_type === 'tool_call' || msg.event_type === 'tool_result'
                           ? 'text-[var(--text-secondary)] border border-[var(--border-default)]'
                           : 'text-[var(--text-primary)] border border-[var(--border-default)]'
                     }`}
@@ -694,19 +694,19 @@ export default function AgentChat() {
                       background:
                         msg.role === 'user'
                           ? 'var(--accent-primary)'
-                          : msg.kind === 'tool_call' || msg.kind === 'tool_result'
+                          : msg.event_type === 'tool_call' || msg.event_type === 'tool_result'
                             ? 'var(--bg-primary)'
                             : 'var(--bg-card)',
                     }}
                   >
-                    {msg.kind === 'tool_call' && (
+                    {msg.event_type === 'tool_call' && (
                       <p className="text-[10px] text-[var(--text-muted)] mb-1 uppercase tracking-wide">Tool Call</p>
                     )}
-                    {msg.kind === 'tool_result' && (
+                    {msg.event_type === 'tool_result' && (
                       <p className="text-[10px] text-[var(--text-muted)] mb-1 uppercase tracking-wide">Tool Result</p>
                     )}
                     <p className={`text-sm whitespace-pre-wrap break-words ${
-                      msg.kind === 'tool_call' || msg.kind === 'tool_result' ? 'font-mono text-xs' : ''
+                      msg.event_type === 'tool_call' || msg.event_type === 'tool_result' ? 'font-mono text-xs' : ''
                     }`}>{msg.content}</p>
                     <p
                       className={`text-[10px] mt-1.5 ${

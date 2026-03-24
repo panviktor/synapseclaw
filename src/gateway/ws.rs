@@ -734,7 +734,7 @@ async fn handle_chat_history(
         .map(|(i, e)| {
             serde_json::json!({
                 "id": i + 1,
-                "kind": e.event_type.to_string(),
+                "event_type": e.event_type.to_string(),
                 "role": e.actor,
                 "content": e.content,
                 "tool_name": e.tool_name,
@@ -843,7 +843,7 @@ async fn handle_chat_send_rpc(
         (u, history_snapshot)
     };
     // Persist tool events outside the lock (async-safe)
-    persist_tool_events(state, &session_key, &tool_history, 0).await;
+    persist_tool_events(state, &session_key, &tool_history).await;
 
     match result {
         Ok(response) => {
@@ -996,6 +996,29 @@ async fn handle_sessions_list(
 
     let store_sessions = if let Some(store) = state.conversation_store.as_ref() {
         store.list_sessions(Some(&prefix)).await
+    } else if let Some(db) = state.chat_db.as_ref() {
+        // Fallback: convert ChatSessionRow → ConversationSession
+        db.list_sessions(&prefix)
+            .unwrap_or_default()
+            .iter()
+            .map(|r| ConversationSession {
+                key: r.key.clone(),
+                kind: ConversationKind::Web,
+                label: r.label.clone(),
+                summary: r.session_summary.clone(),
+                current_goal: r.current_goal.clone(),
+                #[allow(clippy::cast_sign_loss)]
+                created_at: r.created_at as u64,
+                #[allow(clippy::cast_sign_loss)]
+                last_active: r.last_active as u64,
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                message_count: r.message_count as u32,
+                #[allow(clippy::cast_sign_loss)]
+                input_tokens: r.input_tokens as u64,
+                #[allow(clippy::cast_sign_loss)]
+                output_tokens: r.output_tokens as u64,
+            })
+            .collect()
     } else {
         Vec::new()
     };
@@ -1021,6 +1044,10 @@ async fn handle_sessions_list(
         let preview = if let Some(store) = state.conversation_store.as_ref() {
             let evts = store.get_events(&s.key, 1).await;
             evts.last().map(|e| truncate_str(&e.content, 60))
+        } else if let Some(db) = state.chat_db.as_ref() {
+            db.get_messages(&s.key, 1)
+                .ok()
+                .and_then(|msgs| msgs.last().map(|m| truncate_str(&m.content, 60)))
         } else {
             None
         };
@@ -1313,11 +1340,10 @@ async fn persist_tool_events(
     state: &AppState,
     session_key: &str,
     history: &[crate::providers::ConversationMessage],
-    start_idx: usize,
 ) {
     use crate::providers::ConversationMessage;
 
-    for msg in history.iter().skip(start_idx) {
+    for msg in history {
         match msg {
             ConversationMessage::AssistantToolCalls { tool_calls, .. } => {
                 for tc in tool_calls {
@@ -1451,6 +1477,26 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
     // Fetch last 10 messages from conversation store
     let recent = if let Some(store) = state.conversation_store.as_ref() {
         store.get_events(session_key, 10).await
+    } else if let Some(db) = state.chat_db.as_ref() {
+        db.get_messages(session_key, 10)
+            .unwrap_or_default()
+            .iter()
+            .map(|m| ConversationEvent {
+                event_type: match m.kind.as_str() {
+                    "user" => EventType::User,
+                    "assistant" => EventType::Assistant,
+                    _ => EventType::System,
+                },
+                actor: m.role.clone().unwrap_or_else(|| m.kind.clone()),
+                content: m.content.clone(),
+                tool_name: None,
+                run_id: None,
+                input_tokens: None,
+                output_tokens: None,
+                #[allow(clippy::cast_sign_loss)]
+                timestamp: m.timestamp as u64,
+            })
+            .collect()
     } else {
         return;
     };
