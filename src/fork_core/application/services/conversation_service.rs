@@ -78,6 +78,60 @@ pub fn truncate_summary(summary: &str) -> String {
     }
 }
 
+/// Max chars per event in summary prompt.
+const SUMMARY_EVENT_MAX_CHARS: usize = 200;
+
+/// Generate and persist a session summary if the trigger condition is met.
+///
+/// Full orchestration: check trigger → load events → build prompt →
+/// call LLM → truncate → persist to store.
+///
+/// Returns `Some(summary)` if generated, `None` if skipped.
+pub async fn generate_session_summary(
+    store: &dyn ConversationStorePort,
+    summary_generator: &dyn crate::fork_core::ports::summary::SummaryGeneratorPort,
+    session_key: &str,
+    message_count: usize,
+    last_summary_count: usize,
+    previous_summary: Option<&str>,
+    interval: usize,
+) -> Result<Option<String>> {
+    if !needs_summary(message_count, last_summary_count, interval) {
+        return Ok(None);
+    }
+
+    // Load recent events
+    let events = store.get_events(session_key, 10).await;
+    if events.is_empty() {
+        return Ok(None);
+    }
+
+    // Build prompt from events
+    let recent_turns: Vec<String> = events
+        .iter()
+        .map(|e| {
+            let content = if e.content.chars().count() > SUMMARY_EVENT_MAX_CHARS {
+                let t: String = e.content.chars().take(SUMMARY_EVENT_MAX_CHARS).collect();
+                format!("{t}…")
+            } else {
+                e.content.clone()
+            };
+            format!("{}: {content}", e.actor)
+        })
+        .collect();
+
+    let prompt = build_summary_prompt(previous_summary, &recent_turns);
+
+    // Generate via LLM
+    let raw_summary = summary_generator.generate_summary(&prompt).await?;
+    let summary = truncate_summary(&raw_summary);
+
+    // Persist
+    store.set_summary(session_key, &summary).await?;
+
+    Ok(Some(summary))
+}
+
 // ── Token tracking ───────────────────────────────────────────────
 
 /// Accumulate token usage for a session.

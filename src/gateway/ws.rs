@@ -1445,158 +1445,99 @@ fn push_tool_events(
 
 /// Generate a rolling session summary every N messages (fire-and-forget).
 ///
-/// Uses `last_summary_count` instead of modulo to avoid skipping summaries
-/// when message count jumps over a multiple (e.g. error drops a message).
+/// Phase 4.0 Slice 3: delegates to conversation_service::generate_session_summary.
 pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
     use crate::fork_core::application::services::conversation_service::WEB_SUMMARY_INTERVAL;
-    let summary_interval = WEB_SUMMARY_INTERVAL as u32;
 
-    // Try in-memory session first, fall back to chat_db (for channel sessions).
+    let Some(store) = state.conversation_store.as_ref() else {
+        return;
+    };
+
+    // Read session state (in-memory first, then DB)
     let (msg_count, last_summary, prev_summary) = {
         let from_memory = state.chat_sessions.lock().ok().and_then(|sessions| {
             sessions.get(session_key).map(|s| {
                 (
-                    s.message_count,
-                    s.last_summary_count,
+                    s.message_count as usize,
+                    s.last_summary_count as usize,
                     s.session_summary.clone(),
                 )
             })
         });
         match from_memory {
             Some(v) => v,
-            None => {
-                // Fall back to conversation_store for channel sessions
-                if let Some(store) = state.conversation_store.as_ref() {
-                    match store.get_session(session_key).await {
-                        Some(s) => (s.message_count, 0, s.summary),
-                        None => return,
-                    }
-                } else {
-                    return;
-                }
-            }
+            None => match store.get_session(session_key).await {
+                Some(s) => (s.message_count as usize, 0, s.summary),
+                None => return,
+            },
         }
     };
 
-    if !crate::fork_core::application::services::conversation_service::needs_summary(
-        msg_count as usize, last_summary as usize, summary_interval as usize,
-    ) {
-        return;
-    }
-
-    // Fetch last 10 messages from conversation store
-    let recent = if let Some(store) = state.conversation_store.as_ref() {
-        store.get_events(session_key, 10).await
-    } else if let Some(db) = state.chat_db.as_ref() {
-        db.get_messages(session_key, 10)
-            .unwrap_or_default()
-            .iter()
-            .map(|m| ConversationEvent {
-                event_type: match m.kind.as_str() {
-                    "user" => EventType::User,
-                    "assistant" => EventType::Assistant,
-                    _ => EventType::System,
-                },
-                actor: m.role.clone().unwrap_or_else(|| m.kind.clone()),
-                content: m.content.clone(),
-                tool_name: None,
-                run_id: None,
-                input_tokens: None,
-                output_tokens: None,
-                #[allow(clippy::cast_sign_loss)]
-                timestamp: m.timestamp as u64,
-            })
-            .collect()
-    } else {
-        return;
-    };
-
-    if recent.is_empty() {
-        return;
-    }
-
-    // Build prompt
-    let mut messages_text = String::new();
-    for e in &recent {
-        let role = &e.actor;
-        use std::fmt::Write;
-        let _ = writeln!(messages_text, "{role}: {}", truncate_str(&e.content, 200));
-    }
-
-    let prompt = format!(
-        "Summarize this conversation in 2-3 sentences. Preserve: key decisions, user goals, open tasks.\n\
-         Previous summary: {}\n\n\
-         Recent messages:\n{}",
-        prev_summary.as_deref().unwrap_or("(none)"),
-        messages_text,
-    );
-
-    // Read summary config from live config (supports runtime switching)
-    let (summary_cfg, config_summary_model, options) = {
+    // Build summary generator from config
+    let (summary_model, temperature, provider) = {
         let config_guard = state.config.lock();
-        let sc = config_guard.summary.clone();
-        let sm = config_guard.summary_model.clone();
-        let opts = crate::providers::provider_runtime_options_from_config(&config_guard);
-        (sc, sm, opts)
+        let sc = &config_guard.summary;
+        let model = sc
+            .model
+            .clone()
+            .or_else(|| config_guard.summary_model.clone())
+            .unwrap_or_else(|| state.model.clone());
+        let temp = sc.temperature;
+        let prov: std::sync::Arc<dyn crate::providers::Provider> =
+            if let Some(ref provider_name) = sc.provider {
+                let opts =
+                    crate::providers::provider_runtime_options_from_config(&config_guard);
+                let api_key = sc
+                    .api_key_env
+                    .as_deref()
+                    .and_then(|env| std::env::var(env).ok());
+                match crate::providers::create_provider_with_options(
+                    provider_name,
+                    api_key.as_deref(),
+                    &opts,
+                ) {
+                    Ok(p) => p.into(),
+                    Err(e) => {
+                        tracing::warn!("Summary provider init failed: {e}, using default");
+                        state.provider.clone()
+                    }
+                }
+            } else {
+                state.provider.clone()
+            };
+        (model, temp, prov)
     };
 
-    let model = summary_cfg
-        .model
-        .as_deref()
-        .or(config_summary_model.as_deref())
-        .unwrap_or(&state.model)
-        .to_string();
-    let temperature = summary_cfg.temperature;
-    let summary_result = if let Some(ref provider_name) = summary_cfg.provider {
-        let api_key = summary_cfg
-            .api_key_env
-            .as_deref()
-            .and_then(|env| std::env::var(env).ok());
-        match crate::providers::create_provider_with_options(
-            provider_name,
-            api_key.as_deref(),
-            &options,
-        ) {
-            Ok(provider) => {
-                provider
-                    .chat_with_system(None, &prompt, &model, temperature)
-                    .await
-            }
-            Err(e) => {
-                tracing::warn!("Summary provider '{provider_name}' failed to init: {e}, falling back to default");
-                state
-                    .provider
-                    .chat_with_system(None, &prompt, &model, temperature)
-                    .await
-            }
-        }
-    } else {
-        state
-            .provider
-            .chat_with_system(None, &prompt, &model, temperature)
-            .await
-    };
+    let generator =
+        crate::fork_adapters::inbound::summary_generator_adapter::ProviderSummaryGenerator::new(
+            provider,
+            summary_model,
+            temperature,
+        );
 
-    match summary_result {
-        Ok(summary) => {
-            let summary = truncate_str(&summary, 300);
-            // Update in-memory
+    match crate::fork_core::application::services::conversation_service::generate_session_summary(
+        store.as_ref(),
+        &generator,
+        session_key,
+        msg_count,
+        last_summary,
+        prev_summary.as_deref(),
+        WEB_SUMMARY_INTERVAL,
+    )
+    .await
+    {
+        Ok(Some(summary)) => {
+            // Update in-memory cache
             if let Ok(mut sessions) = state.chat_sessions.lock() {
                 if let Some(s) = sessions.get_mut(session_key) {
                     s.session_summary = Some(summary.clone());
                     s.last_summary_count = s.message_count;
                 }
             }
-            // Update DB via conversation store
-            if let Some(store) = state.conversation_store.as_ref() {
-                if let Err(e) = store.set_summary(session_key, &summary).await {
-                    tracing::warn!("conversation_store: failed to update session summary: {e}");
-                }
-            }
-            // Notify other tabs/clients about the updated summary
             emit_session_event(state, "session.updated", session_key);
             tracing::debug!("session summary updated for {session_key}");
         }
+        Ok(None) => {} // not needed yet
         Err(e) => {
             tracing::warn!("session summary generation failed: {e}");
         }

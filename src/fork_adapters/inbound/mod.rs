@@ -10,3 +10,4 @@ pub mod hooks_adapter;
 pub mod memory_adapter;
 pub mod route_selection_adapter;
 pub mod session_summary_adapter;
+pub mod summary_generator_adapter;

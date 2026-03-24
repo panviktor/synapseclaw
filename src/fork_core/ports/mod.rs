@@ -13,3 +13,4 @@ pub mod hooks;
 pub mod route_selection;
 pub mod run_store;
 pub mod session_summary;
+pub mod summary;
