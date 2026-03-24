@@ -29,6 +29,9 @@ pub trait RunStorePort: Send + Sync {
     /// List runs for a conversation, newest first.
     async fn list_runs(&self, conversation_key: &str, limit: usize) -> Vec<Run>;
 
+    /// List all runs across all conversations, newest first.
+    async fn list_all_runs(&self, limit: usize) -> Vec<Run>;
+
     /// Append an event to a run.
     async fn append_event(&self, event: &RunEvent) -> anyhow::Result<()>;
 

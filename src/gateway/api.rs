@@ -1262,9 +1262,12 @@ pub async fn handle_api_runs_list(
     };
 
     let limit = params.limit.unwrap_or(50);
-    let conv_key = params.conversation_key.as_deref().unwrap_or("");
 
-    let runs = store.list_runs(conv_key, limit).await;
+    let runs = if let Some(ref conv_key) = params.conversation_key {
+        store.list_runs(conv_key, limit).await
+    } else {
+        store.list_all_runs(limit).await
+    };
     let result: Vec<serde_json::Value> = runs
         .iter()
         .map(|r| {
