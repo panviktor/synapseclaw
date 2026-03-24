@@ -81,12 +81,42 @@ pub async fn send_message(
 
 /// Check session exchange limit for lateral same-level messaging.
 ///
-/// Returns the current count. Caller decides what to do if over limit.
+/// Returns true if limit is exceeded.
 pub fn check_session_limit(
     message_count: usize,
     max_exchanges: usize,
 ) -> bool {
     message_count >= max_exchanges
+}
+
+/// Check if session limit applies (same-level lateral exchange, L2+).
+pub fn session_limit_applies(from_trust: i32, to_trust: i32) -> bool {
+    from_trust == to_trust && from_trust >= 2
+}
+
+// ── Recipient resolution ─────────────────────────────────────────
+
+/// Resolve recipient for L4 agents (alias → real agent_id).
+///
+/// L4 agents use logical aliases (e.g. "supervisor", "escalation").
+/// L0-L3 agents use real agent_id directly.
+pub fn resolve_recipient(
+    to: &str,
+    from_trust_level: i32,
+    l4_destinations: &std::collections::HashMap<String, String>,
+) -> Result<String, AclError> {
+    if from_trust_level >= 4 {
+        l4_destinations
+            .get(to)
+            .cloned()
+            .ok_or_else(|| AclError {
+                code: "unknown_recipient".into(),
+                message: format!("Unknown destination alias '{to}'"),
+                retryable: false,
+            })
+    } else {
+        Ok(to.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -169,5 +199,35 @@ mod tests {
         assert!(!check_session_limit(5, 10));
         assert!(check_session_limit(10, 10));
         assert!(check_session_limit(15, 10));
+    }
+
+    #[test]
+    fn session_limit_applies_same_level_l2_plus() {
+        assert!(session_limit_applies(2, 2));
+        assert!(session_limit_applies(3, 3));
+        assert!(!session_limit_applies(1, 1)); // L1 exempt
+        assert!(!session_limit_applies(2, 3)); // different levels
+    }
+
+    #[test]
+    fn resolve_recipient_l4_alias() {
+        let mut dests = std::collections::HashMap::new();
+        dests.insert("supervisor".into(), "marketing-lead".into());
+        let resolved = resolve_recipient("supervisor", 4, &dests).unwrap();
+        assert_eq!(resolved, "marketing-lead");
+    }
+
+    #[test]
+    fn resolve_recipient_l4_unknown_alias() {
+        let dests = std::collections::HashMap::new();
+        let err = resolve_recipient("unknown", 4, &dests).unwrap_err();
+        assert_eq!(err.code, "unknown_recipient");
+    }
+
+    #[test]
+    fn resolve_recipient_non_l4_passthrough() {
+        let dests = std::collections::HashMap::new();
+        let resolved = resolve_recipient("agent-b", 2, &dests).unwrap();
+        assert_eq!(resolved, "agent-b");
     }
 }

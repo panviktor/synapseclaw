@@ -2303,27 +2303,22 @@ pub async fn handle_ipc_send(
         }
     }
 
-    // Resolve recipient — L4 agents may use logical aliases
+    // Phase 4.0: recipient resolution via ipc_service
     let config = state.config.lock();
-    let resolved_to = if meta.trust_level >= 4 {
-        // Resolve alias → real agent_id; reject if alias is not configured
-        config
-            .agents_ipc
-            .l4_destinations
-            .get(&body.to)
-            .cloned()
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": "Unknown destination",
-                        "code": "unknown_recipient"
-                    })),
-                )
-            })?
-    } else {
-        body.to.clone()
-    };
+    let resolved_to = crate::fork_core::application::services::ipc_service::resolve_recipient(
+        &body.to,
+        i32::from(meta.trust_level),
+        &config.agents_ipc.l4_destinations,
+    )
+    .map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": e.message,
+                "code": e.code
+            })),
+        )
+    })?;
 
     let to_level = db
         .list_agents(config.agents_ipc.staleness_secs)
@@ -2439,8 +2434,11 @@ pub async fn handle_ipc_send(
         }
     }
 
-    // Session length limit for lateral (same-level) exchanges
-    if meta.trust_level == to_level && meta.trust_level >= 2 {
+    // Phase 4.0: session limit check via ipc_service
+    if crate::fork_core::application::services::ipc_service::session_limit_applies(
+        i32::from(meta.trust_level),
+        i32::from(to_level),
+    ) {
         if let Some(ref sid) = body.session_id {
             let count = db.session_message_count(sid);
             let config_lock = state.config.lock();
@@ -2449,7 +2447,10 @@ pub async fn handle_ipc_send(
             let ttl = config_lock.agents_ipc.message_ttl_secs;
             drop(config_lock);
 
-            if count >= i64::from(max) {
+            if crate::fork_core::application::services::ipc_service::check_session_limit(
+                count as usize,
+                max as usize,
+            ) {
                 let escalation_payload = serde_json::json!({
                     "type": "session_limit_exceeded",
                     "session_id": sid,
