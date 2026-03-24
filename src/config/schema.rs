@@ -1914,7 +1914,7 @@ fn default_push_peer_cooldown_secs() -> u64 {
 }
 
 fn default_push_auto_process_kinds() -> Vec<String> {
-    vec!["task".into(), "query".into(), "result".into()]
+    vec!["task".into(), "query".into(), "result".into(), "done".into(), "report".into()]
 }
 
 fn default_coordinator_agent() -> String {

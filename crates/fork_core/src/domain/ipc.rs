@@ -7,7 +7,7 @@ use std::fmt;
 // ── Message kinds ────────────────────────────────────────────────
 
 /// Valid message kinds that agents can send.
-pub const VALID_KINDS: &[&str] = &["text", "task", "query", "result"];
+pub const VALID_KINDS: &[&str] = &["text", "task", "query", "result", "done", "report"];
 
 /// System-generated escalation kind (not agent-sendable).
 pub const ESCALATION_KIND: &str = "escalation";
