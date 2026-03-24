@@ -2,14 +2,21 @@
 
 ## 2026-03-24
 
-### Phase 4.0 Slice 2 (partial): InboundMessageService — command parsing + classification
+### Phase 4.0 Slice 2: InboundMessageService — domain logic extraction
 - `RuntimeCommand` enum moved from channels/mod.rs to fork_core domain
-- `parse_runtime_command()` extracted to fork_core (capability-driven, no adapter deps)
-- `conversation_key()` extracted — canonical key from InboundEnvelope
+- `parse_runtime_command()` — capability-driven command parsing
+- `conversation_key()` — canonical key from InboundEnvelope
 - `classify_message()` — command vs regular message classification
-- channels/mod.rs now delegates to fork_core for parsing and key construction
-- `supports_runtime_model_switch()` removed (folded into capability check in parser)
-- 16 unit tests for command parsing, key construction, classification
+- `decide_history_enrichment()` — thread seeding vs memory context vs none
+- `should_autosave()` / `should_consolidate_memory()` — memory policy
+- `should_include_tool_summary()` — ToolContextDisplay capability check
+- `should_interrupt_previous()` — InterruptOnNewMessage capability check
+- `command_effect()` — model route resolution for runtime commands
+- `CommandEffect` enum — tells adapter what state changes to make
+- `HistoryEnrichment` enum — strategy pattern for first-turn context
+- channels/mod.rs delegates to fork_core for all decision points
+- Removed: `supports_runtime_model_switch()`, local `ChannelRuntimeCommand` enum, local `parse_runtime_command()`
+- 33 unit tests
 
 ### Phase 4.0 Slice 1: DeliveryService — first application service
 - `DeliveryService` in `fork_core/application/services/delivery_service.rs` — first real application service

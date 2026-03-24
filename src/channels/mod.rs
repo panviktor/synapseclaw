@@ -286,15 +286,14 @@ struct InterruptOnNewMessageConfig {
 }
 
 impl InterruptOnNewMessageConfig {
-    /// Phase 4.0: capability-driven — checks InterruptOnNewMessage capability.
+    /// Phase 4.0: delegates to fork_core decision logic.
     fn enabled_for_channel(
         self,
         caps: &[crate::fork_core::domain::channel::ChannelCapability],
     ) -> bool {
-        self.enabled
-            && caps.contains(
-                &crate::fork_core::domain::channel::ChannelCapability::InterruptOnNewMessage,
-            )
+        crate::fork_core::application::services::inbound_message_service::should_interrupt_previous(
+            self.enabled, caps,
+        )
     }
 }
 
@@ -2061,8 +2060,7 @@ async fn process_channel_message(
             return;
         }
     };
-    if ctx.auto_save_memory
-        && msg.content.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS
+    if crate::fork_core::application::services::inbound_message_service::should_autosave(ctx.auto_save_memory, &msg.content)
         && !memory::should_skip_autosave_content(&msg.content)
     {
         let autosave_key = conversation_memory_key(&msg);
@@ -2519,14 +2517,11 @@ async fn process_channel_message(
             // added during run_tool_call_loop, so the LLM retains awareness
             // of what it did on subsequent turns.
             let tool_summary = extract_tool_context_summary(&history, history_len_before_tools);
-            // Phase 4.0: capability-driven — no channel name checks
-            let supports_tool_context = channel_caps.contains(
-                &crate::fork_core::domain::channel::ChannelCapability::ToolContextDisplay,
-            );
-            let history_response = if tool_summary.is_empty() || !supports_tool_context {
-                delivered_response.clone()
-            } else {
+            // Phase 4.0: capability-driven tool context display
+            let history_response = if crate::fork_core::application::services::inbound_message_service::should_include_tool_summary(&tool_summary, &channel_caps) {
                 format!("{tool_summary}\n{delivered_response}")
+            } else {
+                delivered_response.clone()
             };
 
             append_sender_turn(
@@ -2536,7 +2531,7 @@ async fn process_channel_message(
             );
 
             // Fire-and-forget LLM-driven memory consolidation.
-            if ctx.auto_save_memory && msg.content.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS {
+            if crate::fork_core::application::services::inbound_message_service::should_consolidate_memory(ctx.auto_save_memory, &msg.content) {
                 let provider = Arc::clone(&ctx.provider);
                 let model = ctx.model.to_string();
                 let memory = Arc::clone(&ctx.memory);
