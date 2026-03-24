@@ -4,5 +4,6 @@
 //! Services are the *only* place where business policy lives;
 //! adapters translate, infrastructure executes.
 
+pub mod conversation_service;
 pub mod delivery_service;
 pub mod inbound_message_service;

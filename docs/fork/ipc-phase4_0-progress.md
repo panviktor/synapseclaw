@@ -50,7 +50,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 |-------|--------|-------------|
 | 1 | **DONE** | `delivery_service` + `SendScheduledNotification` — heartbeat/cron delivery policy moved into fork_core |
 | 2 | **DONE** | `inbound_message_service` + `HandleInboundMessage` — 7 ports, 7 adapters, orchestrator, old code deleted (−4287 lines) |
-| 3 | TODO | `conversation_service` + `StartConversationRun` — session lifecycle, summary policy |
+| 3 | **DONE** | `conversation_service` + `StartConversationRun` — session lifecycle, summary policy, run state machine |
 | 4 | TODO | `approval_service` + `RequestApproval` + `ReviewQuarantineItem` — needs `domain/approval.rs` + `ports/approval.rs` |
 | 5 | TODO | `ipc_service` + `DispatchIpcMessage` — needs `domain/ipc.rs` + `ports/ipc_bus.rs` |
 | 6 | TODO | `memory_service` + `MemoryTiersPort` — needs `domain/memory.rs` + `ports/memory_tiers.rs` |

@@ -2,6 +2,14 @@
 
 ## 2026-03-24
 
+### Phase 4.0 Slice 3: ConversationService + StartConversationRun
+- `conversation_service.rs` — session key format, creation, deletion, reset, summary policy, token tracking, run lifecycle
+- `start_conversation_run.rs` — use case: create run → track → finalize (success/fail/interrupt)
+- Summary trigger policy: `needs_summary(count, last, interval)` — configurable per web/channel
+- Summary prompt builder + truncation (300 chars max)
+- Run state machine: Running → Completed | Failed | Interrupted
+- 11 unit tests (6 service + 4 use case + 1 truncation)
+
 ### Phase 4.0 Slice 2: InboundMessageService — full migration + dead code removal
 - channels/mod.rs reduced from 9300 → 5017 lines (−4287 lines)
 - Deleted: `process_channel_message` (848 lines), 13 orphaned helper functions, 9 dead constants
