@@ -2080,6 +2080,7 @@ const PROMOTED_KIND: &str = "promoted_quarantine";
 /// 4. L4↔L4 direct messaging is denied (must go through a higher-trust agent).
 /// 5. L3 lateral `text` requires an explicit allowlist entry.
 #[allow(clippy::implicit_hasher)]
+/// Phase 4.0 Slice 5: delegates ACL validation to fork_core domain.
 pub fn validate_send(
     from_level: u8,
     to_level: u8,
@@ -2091,98 +2092,41 @@ pub fn validate_send(
     l4_destinations: &std::collections::HashMap<String, String>,
     db: &IpcDb,
 ) -> Result<(), IpcError> {
-    // Rule 0: kind whitelist
-    if !VALID_KINDS.contains(&kind) {
-        return Err(IpcError {
-            status: StatusCode::BAD_REQUEST,
-            error: format!("Invalid message kind: {kind}"),
-            code: "invalid_kind".into(),
-            retryable: false,
-        });
-    }
+    // Convert types for fork_core domain function
+    let lateral: Vec<(String, String)> = lateral_text_pairs
+        .iter()
+        .map(|p| (p[0].clone(), p[1].clone()))
+        .collect();
+    let l4_dests: Vec<String> = l4_destinations.values().cloned().collect();
+    let session_has_request = if kind == "result" {
+        session_id
+            .map(|sid| db.session_has_request_for(sid, from_agent))
+            .unwrap_or(false)
+    } else {
+        false
+    };
 
-    // Rule 1: L4 can only send text
-    if from_level >= 4 && kind != "text" {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Restricted agents can only send text".into(),
-            code: "l4_text_only".into(),
-            retryable: false,
-        });
-    }
-
-    // L4 destination whitelist (to_agent is already resolved from alias)
-    if from_level >= 4 && !l4_destinations.values().any(|v| v == to_agent) {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Destination not in L4 allowlist".into(),
-            code: "l4_destination_denied".into(),
-            retryable: false,
-        });
-    }
-
-    // Rule 2: task cannot be sent upward
-    if kind == "task" && to_level < from_level {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Cannot assign tasks to higher-trust agents".into(),
-            code: "task_upward_denied".into(),
-            retryable: false,
-        });
-    }
-
-    // Rule 2b: task cannot be sent to same level
-    if kind == "task" && to_level == from_level {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Cannot assign tasks to same-trust agents".into(),
-            code: "task_lateral_denied".into(),
-            retryable: false,
-        });
-    }
-
-    // Rule 3: result requires correlated task or query
-    if kind == "result" {
-        match session_id {
-            Some(sid) if db.session_has_request_for(sid, from_agent) => {}
-            _ => {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "Result requires a correlated task or query in the same session".into(),
-                    code: "result_no_task".into(),
-                    retryable: false,
-                });
-            }
-        }
-    }
-
-    // Rule 4: L4↔L4 denied
-    if from_level >= 4 && to_level >= 4 {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "L4 agents cannot message each other directly".into(),
-            code: "l4_lateral_denied".into(),
-            retryable: false,
-        });
-    }
-
-    // Rule 5: L3 lateral text requires allowlist
-    if from_level == 3 && to_level == 3 && kind == "text" {
-        let pair_allowed = lateral_text_pairs.iter().any(|pair| {
-            (pair[0] == from_agent && pair[1] == to_agent)
-                || (pair[0] == to_agent && pair[1] == from_agent)
-        });
-        if !pair_allowed {
-            return Err(IpcError {
-                status: StatusCode::FORBIDDEN,
-                error: "L3 lateral text requires allowlist entry".into(),
-                code: "l3_lateral_denied".into(),
-                retryable: false,
-            });
-        }
-    }
-
-    Ok(())
+    crate::fork_core::domain::ipc::validate_send(
+        from_agent,
+        to_agent,
+        kind,
+        i32::from(from_level),
+        i32::from(to_level),
+        session_id,
+        session_has_request,
+        &lateral,
+        &l4_dests,
+    )
+    .map_err(|acl_err| IpcError {
+        status: if acl_err.code == "invalid_kind" {
+            StatusCode::BAD_REQUEST
+        } else {
+            StatusCode::FORBIDDEN
+        },
+        error: acl_err.message,
+        code: acl_err.code,
+        retryable: acl_err.retryable,
+    })
 }
 
 /// Validate whether a state write is permitted.
@@ -2193,95 +2137,32 @@ pub fn validate_send(
 /// - L2: + `team:*`
 /// - L1: + `global:*`
 /// - `secret:*` denied for all (reserved for Phase 2)
+/// Phase 4.0 Slice 5: delegates state write validation to fork_core domain.
 pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<(), IpcError> {
-    let parts: Vec<&str> = key.splitn(3, ':').collect();
-    if parts.len() < 2 {
-        return Err(IpcError {
-            status: StatusCode::BAD_REQUEST,
-            error: "Key must be in format scope:owner:key".into(),
-            code: "invalid_key_format".into(),
-            retryable: false,
-        });
-    }
-
-    let scope = parts[0];
-
-    if scope == "secret" {
-        return Err(IpcError {
-            status: StatusCode::FORBIDDEN,
-            error: "Secret namespace is reserved".into(),
-            code: "secret_denied".into(),
-            retryable: false,
-        });
-    }
-
-    match scope {
-        "agent" => {
-            let owner = parts.get(1).unwrap_or(&"");
-            if *owner != agent_id {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "Can only write to own agent namespace".into(),
-                    code: "agent_namespace_denied".into(),
-                    retryable: false,
-                });
+    crate::fork_core::domain::ipc::validate_state_write(i32::from(trust_level), agent_id, key)
+        .map_err(|acl_err| {
+            let status = match acl_err.code.as_str() {
+                "invalid_key_format" | "unknown_scope" => StatusCode::BAD_REQUEST,
+                _ => StatusCode::FORBIDDEN,
+            };
+            IpcError {
+                status,
+                error: acl_err.message,
+                code: acl_err.code,
+                retryable: acl_err.retryable,
             }
-        }
-        "public" => {
-            if trust_level > 3 {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "L4 agents cannot write to public namespace".into(),
-                    code: "public_denied".into(),
-                    retryable: false,
-                });
-            }
-        }
-        "team" => {
-            if trust_level > 2 {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "Only L1-L2 can write to team namespace".into(),
-                    code: "team_denied".into(),
-                    retryable: false,
-                });
-            }
-        }
-        "global" => {
-            if trust_level > 1 {
-                return Err(IpcError {
-                    status: StatusCode::FORBIDDEN,
-                    error: "Only L1 can write to global namespace".into(),
-                    code: "global_denied".into(),
-                    retryable: false,
-                });
-            }
-        }
-        _ => {
-            return Err(IpcError {
-                status: StatusCode::BAD_REQUEST,
-                error: format!("Unknown scope: {scope}"),
-                code: "unknown_scope".into(),
-                retryable: false,
-            });
-        }
-    }
-
-    Ok(())
+        })
 }
 
-/// Validate whether a state read is permitted.
-/// All agents can read all keys except `secret:*` (L0-L1 only).
+/// Phase 4.0 Slice 5: delegates state read validation to fork_core domain.
 pub fn validate_state_get(trust_level: u8, key: &str) -> Result<(), IpcError> {
-    if key.starts_with("secret:") && trust_level > 1 {
-        return Err(IpcError {
+    crate::fork_core::domain::ipc::validate_state_read(i32::from(trust_level), key)
+        .map_err(|acl_err| IpcError {
             status: StatusCode::FORBIDDEN,
-            error: "Secret namespace requires L0-L1".into(),
-            code: "secret_read_denied".into(),
-            retryable: false,
-        });
-    }
-    Ok(())
+            error: acl_err.message,
+            code: acl_err.code,
+            retryable: acl_err.retryable,
+        })
 }
 
 // ── Auth helper ─────────────────────────────────────────────────
@@ -2422,27 +2303,22 @@ pub async fn handle_ipc_send(
         }
     }
 
-    // Resolve recipient — L4 agents may use logical aliases
+    // Phase 4.0: recipient resolution via ipc_service
     let config = state.config.lock();
-    let resolved_to = if meta.trust_level >= 4 {
-        // Resolve alias → real agent_id; reject if alias is not configured
-        config
-            .agents_ipc
-            .l4_destinations
-            .get(&body.to)
-            .cloned()
-            .ok_or_else(|| {
-                (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({
-                        "error": "Unknown destination",
-                        "code": "unknown_recipient"
-                    })),
-                )
-            })?
-    } else {
-        body.to.clone()
-    };
+    let resolved_to = crate::fork_core::application::services::ipc_service::resolve_recipient(
+        &body.to,
+        i32::from(meta.trust_level),
+        &config.agents_ipc.l4_destinations,
+    )
+    .map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": e.message,
+                "code": e.code
+            })),
+        )
+    })?;
 
     let to_level = db
         .list_agents(config.agents_ipc.staleness_secs)
@@ -2558,8 +2434,11 @@ pub async fn handle_ipc_send(
         }
     }
 
-    // Session length limit for lateral (same-level) exchanges
-    if meta.trust_level == to_level && meta.trust_level >= 2 {
+    // Phase 4.0: session limit check via ipc_service
+    if crate::fork_core::application::services::ipc_service::session_limit_applies(
+        i32::from(meta.trust_level),
+        i32::from(to_level),
+    ) {
         if let Some(ref sid) = body.session_id {
             let count = db.session_message_count(sid);
             let config_lock = state.config.lock();
@@ -2568,20 +2447,23 @@ pub async fn handle_ipc_send(
             let ttl = config_lock.agents_ipc.message_ttl_secs;
             drop(config_lock);
 
-            if count >= i64::from(max) {
-                let escalation_payload = serde_json::json!({
-                    "type": "session_limit_exceeded",
-                    "session_id": sid,
-                    "participants": [&meta.agent_id, &resolved_to],
-                    "exchange_count": count,
-                    "max_allowed": max,
-                })
-                .to_string();
-
+            if crate::fork_core::application::services::ipc_service::check_session_limit(
+                count as usize,
+                max as usize,
+            ) {
+                // Phase 4.0: escalation payload built by ipc_service
+                let escalation_payload =
+                    crate::fork_core::application::services::ipc_service::build_escalation_payload(
+                        sid,
+                        &meta.agent_id,
+                        &resolved_to,
+                        count as usize,
+                        max as usize,
+                    );
                 let _ = db.insert_message(
                     &meta.agent_id,
                     &coordinator,
-                    ESCALATION_KIND,
+                    crate::fork_core::domain::ipc::ESCALATION_KIND,
                     &escalation_payload,
                     meta.trust_level,
                     Some(sid),
@@ -2791,10 +2673,12 @@ pub async fn handle_ipc_send(
         });
     }
 
-    // ── Phase 3A: Result delivery for ephemeral spawn sessions ──
-    // When an ephemeral child sends kind=result with a session_id that
-    // matches a running spawn_run, complete the run and auto-revoke the child.
-    if body.kind == "result" {
+    // ── Phase 4.0: Spawn result completion via ipc_service ──
+    // Business rule: check is owned by fork_core; DB ops stay in gateway.
+    if crate::fork_core::application::services::ipc_service::should_complete_spawn(
+        &body.kind,
+        body.session_id.as_deref(),
+    ) {
         if let Some(ref session_id) = body.session_id {
             if let Some(run) = db.get_spawn_run(session_id) {
                 if run.status == "running" && run.child_id == meta.agent_id {

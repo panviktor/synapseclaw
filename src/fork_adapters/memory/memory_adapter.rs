@@ -1,0 +1,163 @@
+//! Adapter: wraps existing `dyn Memory` + `ConversationStorePort` as MemoryTiersPort.
+
+use crate::fork_core::domain::memory::{MemoryCategory, MemoryEntry, SessionMemory};
+use crate::fork_core::ports::conversation_store::ConversationStorePort;
+use crate::fork_core::ports::memory::MemoryTiersPort;
+use crate::memory::Memory;
+use crate::providers::Provider;
+use anyhow::Result;
+use async_trait::async_trait;
+use std::sync::Arc;
+
+pub struct MemoryTiersAdapter {
+    /// Long-term memory backend (sqlite/qdrant/markdown).
+    memory: Arc<dyn Memory>,
+    /// Conversation store for session memory (goal/summary).
+    conversation_store: Option<Arc<dyn ConversationStorePort>>,
+    /// Provider for consolidation LLM calls.
+    provider: Arc<dyn Provider>,
+    /// Model for consolidation.
+    model: String,
+}
+
+impl MemoryTiersAdapter {
+    pub fn new(
+        memory: Arc<dyn Memory>,
+        conversation_store: Option<Arc<dyn ConversationStorePort>>,
+        provider: Arc<dyn Provider>,
+        model: String,
+    ) -> Self {
+        Self {
+            memory,
+            conversation_store,
+            provider,
+            model,
+        }
+    }
+}
+
+/// Map fork_core MemoryCategory to upstream MemoryCategory.
+fn to_upstream_category(cat: &MemoryCategory) -> crate::memory::MemoryCategory {
+    match cat {
+        MemoryCategory::Core => crate::memory::MemoryCategory::Core,
+        MemoryCategory::Daily => crate::memory::MemoryCategory::Daily,
+        MemoryCategory::Conversation => crate::memory::MemoryCategory::Conversation,
+        MemoryCategory::Custom(s) => crate::memory::MemoryCategory::Custom(s.clone()),
+    }
+}
+
+/// Map upstream MemoryEntry to fork_core domain MemoryEntry.
+fn to_domain_entry(e: crate::memory::MemoryEntry) -> MemoryEntry {
+    MemoryEntry {
+        key: e.key,
+        content: e.content,
+        category: MemoryCategory::Core, // upstream doesn't return category
+        score: e.score,
+        timestamp: e.timestamp,
+        session_id: e.session_id,
+    }
+}
+
+#[async_trait]
+impl MemoryTiersPort for MemoryTiersAdapter {
+    // ── Tier 2: Session memory ───────────────────────────────────
+
+    async fn get_session_memory(&self, conversation_key: &str) -> Result<SessionMemory> {
+        if let Some(ref store) = self.conversation_store {
+            let session = store.get_session(conversation_key).await;
+            Ok(SessionMemory {
+                conversation_key: conversation_key.to_string(),
+                goal: session.as_ref().and_then(|s| s.current_goal.clone()),
+                summary: session.as_ref().and_then(|s| s.summary.clone()),
+            })
+        } else {
+            Ok(SessionMemory {
+                conversation_key: conversation_key.to_string(),
+                ..Default::default()
+            })
+        }
+    }
+
+    async fn set_session_goal(&self, conversation_key: &str, goal: &str) -> Result<()> {
+        if let Some(ref store) = self.conversation_store {
+            store.update_goal(conversation_key, goal).await?;
+        }
+        Ok(())
+    }
+
+    async fn set_session_summary(&self, conversation_key: &str, summary: &str) -> Result<()> {
+        if let Some(ref store) = self.conversation_store {
+            store.set_summary(conversation_key, summary).await?;
+        }
+        Ok(())
+    }
+
+    // ── Tier 3: Long-term memory ─────────────────────────────────
+
+    async fn recall(
+        &self,
+        query: &str,
+        limit: usize,
+        _category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>> {
+        // Upstream Memory::recall doesn't filter by category — recall all, let caller filter
+        let entries = self.memory.recall(query, limit, session_id).await?;
+        Ok(entries.into_iter().map(to_domain_entry).collect())
+    }
+
+    async fn store(
+        &self,
+        key: &str,
+        content: &str,
+        category: &MemoryCategory,
+        session_id: Option<&str>,
+    ) -> Result<()> {
+        self.memory
+            .store(key, content, to_upstream_category(category), session_id)
+            .await
+    }
+
+    async fn forget(&self, key: &str) -> Result<bool> {
+        self.memory.forget(key).await
+    }
+
+    async fn list(
+        &self,
+        category: &MemoryCategory,
+        session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>> {
+        let entries = self
+            .memory
+            .list(Some(&to_upstream_category(category)), session_id)
+            .await?;
+        Ok(entries.into_iter().map(to_domain_entry).collect())
+    }
+
+    // ── Consolidation ────────────────────────────────────────────
+
+    async fn consolidate_turn(
+        &self,
+        user_message: &str,
+        assistant_response: &str,
+    ) -> Result<()> {
+        crate::memory::consolidation::consolidate_turn(
+            self.provider.as_ref(),
+            &self.model,
+            self.memory.as_ref(),
+            user_message,
+            assistant_response,
+        )
+        .await
+    }
+
+    // ── Utility ──────────────────────────────────────────────────
+
+    fn should_skip_autosave(&self, content: &str) -> bool {
+        crate::memory::should_skip_autosave_content(content)
+    }
+
+    async fn count(&self) -> Result<usize> {
+        self.memory.count().await
+    }
+}

@@ -3,4 +3,5 @@
 //! Each use case orchestrates domain logic and delegates to ports/adapters.
 //! Use cases are the primary API that adapters call.
 
-pub mod inbound_message;
+pub mod services;
+pub mod use_cases;

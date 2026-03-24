@@ -32,12 +32,35 @@ impl CachedChannelRegistry {
         self.cache.write().insert(name.to_string(), ch);
     }
 
+    /// Resolve a channel adapter by name, building and caching if needed.
+    ///
+    /// This is an inherent method (not part of the `ChannelRegistryPort` trait)
+    /// so that callers with a concrete `CachedChannelRegistry` can still
+    /// obtain the underlying `Arc<dyn Channel>` for direct use.
+    pub fn resolve(&self, channel_name: &str) -> anyhow::Result<Arc<dyn Channel>> {
+        // Fast path: read lock
+        {
+            let cache = self.cache.read();
+            if let Some(ch) = cache.get(channel_name) {
+                return Ok(Arc::clone(ch));
+            }
+        }
+        // Slow path: build adapter, cache under write lock
+        let ch = build_channel_by_id(&self.config, channel_name)?;
+        let mut cache = self.cache.write();
+        // Double-check: another thread may have inserted while we upgraded
+        let entry = cache
+            .entry(channel_name.to_string())
+            .or_insert_with(|| Arc::clone(&ch));
+        Ok(Arc::clone(entry))
+    }
+
     /// Per-channel formatting instructions for the system prompt.
     ///
     /// This is adapter metadata — the core asks "how should I format?" and the
     /// adapter returns transport-specific instructions.  New channels just add
     /// a match arm here.
-    pub fn delivery_hints(&self, channel_name: &str) -> Option<String> {
+    pub fn delivery_hints_impl(&self, channel_name: &str) -> Option<String> {
         match channel_name {
             "telegram" => Some(
                 "Format replies using Telegram HTML (bold=<b>, italic=<i>, \
@@ -70,22 +93,16 @@ impl CachedChannelRegistry {
 
 #[async_trait]
 impl ChannelRegistryPort for CachedChannelRegistry {
-    fn resolve(&self, channel_name: &str) -> anyhow::Result<Arc<dyn Channel>> {
-        // Fast path: read lock
+    fn has_channel(&self, channel_name: &str) -> bool {
+        // Check cache first, then try to build (which validates config).
         {
             let cache = self.cache.read();
-            if let Some(ch) = cache.get(channel_name) {
-                return Ok(Arc::clone(ch));
+            if cache.contains_key(channel_name) {
+                return true;
             }
         }
-        // Slow path: build adapter, cache under write lock
-        let ch = build_channel_by_id(&self.config, channel_name)?;
-        let mut cache = self.cache.write();
-        // Double-check: another thread may have inserted while we upgraded
-        let entry = cache
-            .entry(channel_name.to_string())
-            .or_insert_with(|| Arc::clone(&ch));
-        Ok(Arc::clone(entry))
+        // Attempt to resolve — success means the channel is available.
+        self.resolve(channel_name).is_ok()
     }
 
     fn capabilities(&self, channel_name: &str) -> Vec<ChannelCapability> {
@@ -146,7 +163,7 @@ impl ChannelRegistryPort for CachedChannelRegistry {
     }
 
     fn delivery_hints(&self, channel_name: &str) -> Option<String> {
-        CachedChannelRegistry::delivery_hints(self, channel_name)
+        self.delivery_hints_impl(channel_name)
     }
 
     async fn deliver(&self, intent: &OutboundIntent) -> anyhow::Result<()> {
@@ -235,6 +252,16 @@ mod tests {
         let config = Config::default();
         let registry = CachedChannelRegistry::new(config);
         assert!(registry.resolve("nonexistent").is_err());
+    }
+
+    #[test]
+    fn has_channel_returns_true_for_injected() {
+        let config = Config::default();
+        let registry = CachedChannelRegistry::new(config);
+        let mock = Arc::new(MockChannel::new("test"));
+        registry.inject("test", mock);
+        assert!(registry.has_channel("test"));
+        assert!(!registry.has_channel("nonexistent"));
     }
 
     #[test]

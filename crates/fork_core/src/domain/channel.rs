@@ -164,25 +164,6 @@ pub struct InboundEnvelope {
     pub received_at: u64,
 }
 
-impl InboundEnvelope {
-    /// Create an envelope from a `ChannelMessage` (adapter → core boundary).
-    pub fn from_channel_message(msg: &crate::channels::traits::ChannelMessage) -> Self {
-        Self {
-            source_kind: SourceKind::Channel,
-            source_adapter: msg.channel.clone(),
-            actor_id: msg.sender.clone(),
-            conversation_ref: if let Some(ref thread) = msg.thread_ts {
-                format!("{}_{}_{}", msg.channel, thread, msg.sender)
-            } else {
-                format!("{}_{}", msg.channel, msg.sender)
-            },
-            reply_ref: msg.reply_target.clone(),
-            thread_ref: msg.thread_ts.clone(),
-            content: msg.content.clone(),
-            received_at: msg.timestamp,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -223,40 +204,4 @@ mod tests {
         assert_eq!(SourceKind::Ipc.to_string(), "ipc");
     }
 
-    #[test]
-    fn inbound_envelope_from_channel_message() {
-        let msg = crate::channels::traits::ChannelMessage {
-            id: "msg-1".into(),
-            sender: "user123".into(),
-            reply_target: "chat456".into(),
-            content: "hello".into(),
-            channel: "telegram".into(),
-            timestamp: 1_711_234_567,
-            thread_ts: None,
-        };
-        let env = InboundEnvelope::from_channel_message(&msg);
-        assert_eq!(env.source_kind, SourceKind::Channel);
-        assert_eq!(env.source_adapter, "telegram");
-        assert_eq!(env.actor_id, "user123");
-        assert_eq!(env.conversation_ref, "telegram_user123");
-        assert_eq!(env.reply_ref, "chat456");
-        assert!(env.thread_ref.is_none());
-        assert_eq!(env.content, "hello");
-    }
-
-    #[test]
-    fn inbound_envelope_threaded_conversation_ref() {
-        let msg = crate::channels::traits::ChannelMessage {
-            id: "msg-2".into(),
-            sender: "user123".into(),
-            reply_target: "chat456".into(),
-            content: "in thread".into(),
-            channel: "slack".into(),
-            timestamp: 1_711_234_567,
-            thread_ts: Some("1711234000.000100".into()),
-        };
-        let env = InboundEnvelope::from_channel_message(&msg);
-        assert_eq!(env.conversation_ref, "slack_1711234000.000100_user123");
-        assert_eq!(env.thread_ref, Some("1711234000.000100".into()));
-    }
 }

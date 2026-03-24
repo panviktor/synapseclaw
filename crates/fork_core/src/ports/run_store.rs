@@ -3,7 +3,7 @@
 //! Unifies chat runs, IPC execution, spawn runs, and cron jobs under
 //! a single contract.  Phase 4.0 Step 4.
 
-use crate::fork_core::domain::run::{Run, RunEvent, RunState};
+use crate::domain::run::{Run, RunEvent, RunState};
 use async_trait::async_trait;
 
 /// Port for storing and querying execution runs and their events.

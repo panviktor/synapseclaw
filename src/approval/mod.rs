@@ -109,48 +109,32 @@ impl ApprovalManager {
 
     /// Check whether a tool call requires interactive approval.
     ///
-    /// Returns `true` if the call needs a prompt, `false` if it can proceed.
+    /// Phase 4.0: delegates to fork_core approval_service for the business rule.
     pub fn needs_approval(&self, tool_name: &str) -> bool {
-        // Full autonomy never prompts.
-        if self.autonomy_level == AutonomyLevel::Full {
-            return false;
-        }
+        let auto_approve: Vec<String> = self.auto_approve.iter().cloned().collect();
+        let always_ask: Vec<String> = self.always_ask.iter().cloned().collect();
+        let session_allowlist: Vec<String> =
+            self.session_allowlist.lock().iter().cloned().collect();
 
-        // ReadOnly blocks everything — handled elsewhere; no prompt needed.
-        if self.autonomy_level == AutonomyLevel::ReadOnly {
-            return false;
-        }
-
-        // always_ask overrides everything.
-        if self.always_ask.contains(tool_name) {
-            return true;
-        }
-
-        // Channel-driven shell execution is still guarded by the shell tool's
-        // own command allowlist and risk policy. Skipping the outer approval
-        // gate here lets low-risk allowlisted commands (e.g. `ls`) work in
-        // non-interactive channels without silently allowing medium/high-risk
-        // commands.
-        if self.non_interactive && tool_name == "shell" {
-            return false;
-        }
-
-        // auto_approve skips the prompt.
-        if self.auto_approve.contains(tool_name) {
-            return false;
-        }
-
-        // Session allowlist (from prior "Always" responses).
-        let allowlist = self.session_allowlist.lock();
-        if allowlist.contains(tool_name) {
-            return false;
-        }
-
-        // Default: supervised mode requires approval.
-        true
+        // Convert upstream AutonomyLevel to fork_core's owned type
+        let core_level = match self.autonomy_level {
+            AutonomyLevel::ReadOnly => fork_core::domain::config::AutonomyLevel::ReadOnly,
+            AutonomyLevel::Supervised => fork_core::domain::config::AutonomyLevel::Supervised,
+            AutonomyLevel::Full => fork_core::domain::config::AutonomyLevel::Full,
+        };
+        crate::fork_core::application::services::approval_service::check_needs_approval(
+            tool_name,
+            core_level,
+            &auto_approve,
+            &always_ask,
+            &session_allowlist,
+            self.non_interactive,
+        )
     }
 
     /// Record an approval decision and update session state.
+    ///
+    /// Phase 4.0: "Always" → allowlist decision is from approval_service.
     pub fn record_decision(
         &self,
         tool_name: &str,
@@ -158,13 +142,22 @@ impl ApprovalManager {
         decision: ApprovalResponse,
         channel: &str,
     ) {
-        // If "Always", add to session allowlist.
-        if decision == ApprovalResponse::Always {
-            let mut allowlist = self.session_allowlist.lock();
-            allowlist.insert(tool_name.to_string());
+        use crate::fork_core::application::services::approval_service;
+        use crate::fork_core::domain::approval::ApprovalResponse as DomainResponse;
+
+        // Map to domain type for policy check
+        let domain_resp = match decision {
+            ApprovalResponse::Yes => DomainResponse::Yes,
+            ApprovalResponse::No => DomainResponse::No,
+            ApprovalResponse::Always => DomainResponse::Always,
+        };
+
+        // Business rule: "Always" → add to session allowlist
+        if approval_service::should_add_to_allowlist(&domain_resp) {
+            self.session_allowlist.lock().insert(tool_name.to_string());
         }
 
-        // Append to audit log.
+        // Audit log (adapter responsibility — format for this manager's log)
         let summary = summarize_args(args);
         let entry = ApprovalLogEntry {
             timestamp: Utc::now().to_rfc3339(),
@@ -173,8 +166,7 @@ impl ApprovalManager {
             decision,
             channel: channel.to_string(),
         };
-        let mut log = self.audit_log.lock();
-        log.push(entry);
+        self.audit_log.lock().push(entry);
     }
 
     /// Get a snapshot of the audit log.
@@ -193,6 +185,64 @@ impl ApprovalManager {
     /// auto-deny in the tool-call loop before reaching this point.
     pub fn prompt_cli(&self, request: &ApprovalRequest) -> ApprovalResponse {
         prompt_cli_interactive(request)
+    }
+}
+
+// ── Phase 4.0: ApprovalPort implementation ──────────────────────
+
+#[async_trait::async_trait]
+impl crate::fork_core::ports::approval::ApprovalPort for ApprovalManager {
+    fn needs_approval(&self, tool_name: &str) -> bool {
+        ApprovalManager::needs_approval(self, tool_name)
+    }
+
+    async fn request_approval(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+    ) -> anyhow::Result<crate::fork_core::domain::approval::ApprovalResponse> {
+        if self.non_interactive {
+            return Ok(crate::fork_core::domain::approval::ApprovalResponse::No);
+        }
+
+        // CLI interactive: prompt
+        let args: serde_json::Value =
+            serde_json::from_str(arguments).unwrap_or(serde_json::json!({"raw": arguments}));
+        let request = ApprovalRequest {
+            tool_name: tool_name.to_string(),
+            arguments: args,
+        };
+        let cli_response = self.prompt_cli(&request);
+        Ok(match cli_response {
+            ApprovalResponse::Yes => crate::fork_core::domain::approval::ApprovalResponse::Yes,
+            ApprovalResponse::No => crate::fork_core::domain::approval::ApprovalResponse::No,
+            ApprovalResponse::Always => {
+                crate::fork_core::domain::approval::ApprovalResponse::Always
+            }
+        })
+    }
+
+    fn record_decision(
+        &self,
+        decision: &crate::fork_core::domain::approval::ApprovalDecision,
+    ) {
+        let cli_response = match decision.response {
+            crate::fork_core::domain::approval::ApprovalResponse::Yes => ApprovalResponse::Yes,
+            crate::fork_core::domain::approval::ApprovalResponse::No => ApprovalResponse::No,
+            crate::fork_core::domain::approval::ApprovalResponse::Always => {
+                ApprovalResponse::Always
+            }
+        };
+        let args = serde_json::json!({"summary": &decision.request_id});
+        ApprovalManager::record_decision(self, &decision.request_id, &args, cli_response, &decision.channel);
+    }
+
+    fn is_session_allowed(&self, tool_name: &str) -> bool {
+        self.session_allowlist.lock().contains(tool_name)
+    }
+
+    fn add_session_allowlist(&self, tool_name: &str) {
+        self.session_allowlist.lock().insert(tool_name.to_string());
     }
 }
 

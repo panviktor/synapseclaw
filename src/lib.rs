@@ -48,7 +48,8 @@ pub(crate) mod cron;
 pub(crate) mod daemon;
 pub(crate) mod doctor;
 pub(crate) mod fork_adapters;
-pub mod fork_core;
+/// Re-export fork_core workspace crate so `crate::fork_core::` paths keep working.
+pub use fork_core;
 pub mod gateway;
 pub mod hands;
 pub(crate) mod hardware;

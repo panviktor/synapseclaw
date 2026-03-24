@@ -1,5 +1,107 @@
 # SynapseClaw News & Changelog
 
+## 2026-03-24
+
+### Phase 4.0 workspace crate + all 10 use cases + full restructuring
+- **fork_core extracted as workspace crate** (`crates/fork_core/`) — 0 upstream deps, compiles standalone
+- Core-owned types: `ChatMessage`, `AutonomyLevel`, `HeartbeatConfig`, `CronDeliveryConfig`, `AutoDetectCandidate`
+- `ChannelRegistryPort::resolve()` → `has_channel()` — removed `Channel` trait dependency
+- `InboundEnvelope::from_channel_message()` moved to fork_adapters (adapter concern)
+- Old `src/fork_core/` directory deleted
+- **10 of 10 use cases now implemented:**
+  - `SpawnChildAgent` — provision ephemeral identity, create Run(Spawn), return child token (5 tests)
+  - `ResumeConversation` — load session + rebuild transcript from ConversationStorePort (4 tests)
+  - `AbortConversationRun` — cancel running execution with terminal state guard (4 tests)
+  - `DispatchIpcMessage` — resolve → limit → ACL → send (5 tests)
+- New domain: `domain/spawn.rs` (SpawnRequest, EphemeralAgent, SpawnStatus)
+- New port: `ports/spawn_broker.rs` (SpawnBrokerPort)
+- **fork_adapters restructured** — `inbound/` split into `runtime/`, `memory/`, `ipc/`
+- New adapters: `IpcBusAdapter`, `QuarantineAdapter` (wraps IpcDb behind ports)
+- ResumeConversation **wired into ws.rs** ensure_session
+- Updated progress.md, delta-registry.md, news.md
+- 180 fork_core tests + 22 fork_adapters tests
+- 170+ total fork_core tests
+
+### Phase 4.0 Slice 7: CodingWorkerPort + DelegateImplementationTask
+- `domain/implementation.rs` — ImplementationTask, CodingWorkerResult, ImplementationEvent, ImplementationState
+- `ports/coding_worker.rs` — CodingWorkerPort (submit, poll, events, cancel)
+- `delegate_implementation_task.rs` — use case: submit + track via RunStorePort + finalize
+- Narrow seam: external workers are leaf executors, not replacement cores
+- 158 total fork_core tests
+
+### Phase 4.0 Slice 6: MemoryService — tier types, recall, consolidation policy
+- `domain/memory.rs` — MemoryCategory, MemoryEntry, SessionMemory, RecallConfig
+- `memory_service.rs` — autosave policy, recall_context() formatting, consolidation policy, tier selection
+- HandleInboundMessage: `build_memory_context()` replaced with `memory_service::recall_context()`
+- Deleted inline memory constants + local helper from orchestrator
+- 14 unit tests (recall formatting, filtering, truncation, policy)
+- 153 total fork_core tests
+
+### Phase 4.0 Slice 5: IPC Service — domain types, ACL validation, bus port
+- `domain/ipc.rs` — IpcMessage, ValidatedSend, AclError, message kind constants
+- `validate_send()` — pure ACL validation (7 rules: kind, L4, direction, session, lateral)
+- `validate_state_write()` / `validate_state_read()` — namespace auth (public/shared/secret)
+- `ports/ipc_bus.rs` — IpcBusPort (send, fetch inbox, ack, session check, trust level)
+- `ipc_service.rs` — orchestrates: resolve trust → session check → ACL validate → send via port
+- gateway/ipc.rs `validate_send()` now delegates to fork_core domain function
+- 28 domain tests (ACL rules + state validation) + 6 service tests
+- 133 total fork_core tests
+
+### Phase 4.0 Slice 4: ApprovalService + RequestApproval + ReviewQuarantineItem
+- `domain/approval.rs` — ApprovalRequest, ApprovalResponse, ApprovalStatus, QuarantineItem, ApprovalDecision
+- `ports/approval.rs` — ApprovalPort (needs_approval, request, record, session allowlist) + QuarantinePort (quarantine/promote/dismiss/list)
+- `approval_service.rs` — check_needs_approval(), is_session_allowed(), create_approval_request(), quarantine operations
+- `request_approval.rs` — use case: full approval workflow (session allowlist → config → port)
+- `review_quarantine_item.rs` — use case: promote/dismiss/list/quarantine_agent
+- `ApprovalManagerAdapter` — wraps existing ApprovalManager behind ApprovalPort
+- 105 unit tests across all fork_core modules
+
+### Phase 4.0 Slice 3: ConversationService + StartConversationRun
+- `conversation_service.rs` — session key format, creation, deletion, reset, summary policy, token tracking, run lifecycle
+- `start_conversation_run.rs` — use case: create run → track → finalize (success/fail/interrupt)
+- Summary trigger policy: `needs_summary(count, last, interval)` — configurable per web/channel
+- Summary prompt builder + truncation (300 chars max)
+- Run state machine: Running → Completed | Failed | Interrupted
+- 11 unit tests (6 service + 4 use case + 1 truncation)
+
+### Phase 4.0 Slice 2: InboundMessageService — full migration + dead code removal
+- channels/mod.rs reduced from 9300 → 5017 lines (−4287 lines)
+- Deleted: `process_channel_message` (848 lines), 13 orphaned helper functions, 9 dead constants
+- Deleted: 40+ dead tests, 8 dead test helper types
+- Deleted: old `inbound_message.rs` bridge module
+- Session store persistence fixed in ConversationHistoryPort adapter (JSONL survives restarts)
+
+### Phase 4.0 Slice 2: InboundMessageService — ports + orchestrator + domain logic
+- `RuntimeCommand` enum moved from channels/mod.rs to fork_core domain
+- `parse_runtime_command()` — capability-driven command parsing
+- `conversation_key()` — canonical key from InboundEnvelope
+- `classify_message()` — command vs regular message classification
+- `decide_history_enrichment()` — thread seeding vs memory context vs none
+- `should_autosave()` / `should_consolidate_memory()` — memory policy
+- `should_include_tool_summary()` — ToolContextDisplay capability check
+- `should_interrupt_previous()` — InterruptOnNewMessage capability check
+- `command_effect()` — model route resolution for runtime commands
+- `CommandEffect` enum — tells adapter what state changes to make
+- `HistoryEnrichment` enum — strategy pattern for first-turn context
+- channels/mod.rs delegates to fork_core for all decision points
+- Removed: `supports_runtime_model_switch()`, local `ChannelRuntimeCommand` enum, local `parse_runtime_command()`
+- 5 new ports: `ConversationHistoryPort`, `RouteSelectionPort`, `AgentRuntimePort`, `ChannelOutputPort`, `HooksPort` + `SessionSummaryPort`
+- `HandleInboundMessage` use case — full orchestration: hook → classify → route → enrich → execute → respond
+- `HandleResult` enum — adapter acts on Command/Response/Cancelled
+- `NoOpHooks` default implementation for hookless configurations
+- 56 unit tests (services + use case)
+
+### Phase 4.0 Slice 1: DeliveryService — first application service
+- `DeliveryService` in `fork_core/application/services/delivery_service.rs` — first real application service
+- Heartbeat target resolution moved from daemon/mod.rs → DeliveryService
+- Auto-detect channel selection now uses `ChannelCapability::SendText` via registry (replaces hardcoded matrix>telegram>discord priority)
+- Deadman alert target resolution moved to DeliveryService
+- Cron delivery validation + dispatch moved from scheduler.rs → DeliveryService
+- Deleted: `resolve_heartbeat_delivery()`, `auto_detect_heartbeat_channel()`, `validate_heartbeat_channel_config()` from daemon
+- Deleted: `deliver_if_configured()`, `deliver_announcement()` from scheduler
+- `CachedChannelRegistry` now always created in daemon mode (was IPC-only)
+- 15 unit tests for delivery policy
+
 ## 2026-03-23
 
 ### Phase 4.0 Step 12: Remove transport-name branching + docs update

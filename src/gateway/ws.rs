@@ -15,7 +15,7 @@ use super::{AppState, ChatSession};
 use crate::fork_core::domain::conversation::{
     ConversationEvent, ConversationKind, ConversationSession, EventType,
 };
-use crate::fork_core::domain::run::{Run, RunOrigin, RunState};
+// Run types no longer needed directly — lifecycle managed by conversation_service
 use axum::{
     extract::{
         ws::{Message, WebSocket},
@@ -469,59 +469,89 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
         }
     }
 
-    // Try loading from DB via ConversationStorePort
-    let db_session = if let Some(store) = state.conversation_store.as_ref() {
-        store.get_session(session_key).await
-    } else {
-        state
-            .chat_db
-            .as_ref()
-            .and_then(|db| db.get_session(session_key).ok().flatten())
-            .map(|r| ConversationSession {
-                key: r.key,
-                kind: ConversationKind::Web,
-                label: r.label,
-                summary: r.session_summary,
-                current_goal: r.current_goal,
-                #[allow(clippy::cast_sign_loss)]
-                created_at: r.created_at as u64,
-                #[allow(clippy::cast_sign_loss)]
-                last_active: r.last_active as u64,
-                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                message_count: r.message_count as u32,
-                #[allow(clippy::cast_sign_loss)]
-                input_tokens: r.input_tokens as u64,
-                #[allow(clippy::cast_sign_loss)]
-                output_tokens: r.output_tokens as u64,
-            })
-    };
-
+    // Try resuming via fork_core use case (ConversationStorePort path)
+    // or fall back to legacy ChatDb path.
+    let db_session;
     let config = state.config.lock().clone();
     let mut agent = crate::agent::Agent::from_config(&config)?;
 
     let now = Instant::now();
-    let now_secs_val = now_secs();
+    let _now_secs_val = now_secs();
 
     let (label, msg_count, input_tok, output_tok, current_goal, session_summary) =
-        if let Some(ref session) = db_session {
-            // Replay messages into agent
-            if let Some(store) = state.conversation_store.as_ref() {
-                let events = store.get_events(session_key, 200).await;
-                replay_events_into_agent(&mut agent, &events)?;
-            } else if let Some(db) = state.chat_db.as_ref() {
-                let messages = db.get_messages(session_key, 200)?;
-                replay_messages_into_agent(&mut agent, &messages)?;
-            }
-            (
-                session.label.clone(),
-                session.message_count,
-                session.input_tokens,
-                session.output_tokens,
-                session.current_goal.clone(),
-                session.summary.clone(),
+        if let Some(store) = state.conversation_store.as_ref() {
+            // Phase 4.0 path: use ResumeConversation use case
+            match crate::fork_core::application::use_cases::resume_conversation::execute(
+                store.as_ref(),
+                session_key,
             )
+            .await
+            {
+                Ok(resumed) => {
+                    // Replay transcript into agent
+                    for turn in &resumed.transcript {
+                        agent.push_history(crate::providers::ConversationMessage::Chat(
+                            crate::providers::ChatMessage {
+                                role: turn.role.clone(),
+                                content: turn.content.clone(),
+                            },
+                        ));
+                    }
+                    db_session = Some(resumed.session.clone());
+                    (
+                        resumed.session.label,
+                        resumed.session.message_count,
+                        resumed.session.input_tokens,
+                        resumed.session.output_tokens,
+                        resumed.session.current_goal,
+                        resumed.session.summary,
+                    )
+                }
+                Err(_) => {
+                    // Session not found — will create fresh
+                    db_session = None;
+                    (None, 0, 0, 0, None, None)
+                }
+            }
         } else {
-            (None, 0, 0, 0, None, None)
+            // Legacy ChatDb fallback
+            db_session = state
+                .chat_db
+                .as_ref()
+                .and_then(|db| db.get_session(session_key).ok().flatten())
+                .map(|r| ConversationSession {
+                    key: r.key,
+                    kind: ConversationKind::Web,
+                    label: r.label,
+                    summary: r.session_summary,
+                    current_goal: r.current_goal,
+                    #[allow(clippy::cast_sign_loss)]
+                    created_at: r.created_at as u64,
+                    #[allow(clippy::cast_sign_loss)]
+                    last_active: r.last_active as u64,
+                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                    message_count: r.message_count as u32,
+                    #[allow(clippy::cast_sign_loss)]
+                    input_tokens: r.input_tokens as u64,
+                    #[allow(clippy::cast_sign_loss)]
+                    output_tokens: r.output_tokens as u64,
+                });
+            if let Some(ref session) = db_session {
+                if let Some(db) = state.chat_db.as_ref() {
+                    let messages = db.get_messages(session_key, 200)?;
+                    replay_messages_into_agent(&mut agent, &messages)?;
+                }
+                (
+                    session.label.clone(),
+                    session.message_count,
+                    session.input_tokens,
+                    session.output_tokens,
+                    session.current_goal.clone(),
+                    session.summary.clone(),
+                )
+            } else {
+                (None, 0, 0, 0, None, None)
+            }
         };
 
     let session = ChatSession {
@@ -560,24 +590,11 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
         db_session.is_none()
     }; // MutexGuard dropped here
 
-    // Persist new session to DB if it doesn't exist yet (after lock release)
+    // Phase 4.0 Slice 3: persist new session via conversation_service
     if need_persist {
         if let Some(store) = state.conversation_store.as_ref() {
-            #[allow(clippy::cast_sign_loss)]
-            let _ = store
-                .upsert_session(&ConversationSession {
-                    key: session_key.to_string(),
-                    kind: ConversationKind::Web,
-                    label: None,
-                    summary: None,
-                    current_goal: None,
-                    created_at: now_secs_val as u64,
-                    last_active: now_secs_val as u64,
-                    message_count: 0,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                })
-                .await;
+            let session = crate::fork_core::application::services::conversation_service::new_web_session(session_key, None);
+            let _ = store.upsert_session(&session).await;
         }
     }
 
@@ -775,23 +792,22 @@ async fn handle_chat_send_rpc(
         .ok_or_else(|| anyhow::anyhow!("missing 'message' param"))?
         .to_string();
 
-    let run_id = uuid::Uuid::new_v4().to_string();
-
-    // Persist run record via RunStorePort
-    if let Some(store) = state.run_store.as_ref() {
-        let run = Run {
-            run_id: run_id.clone(),
-            conversation_key: Some(session_key.clone()),
-            origin: RunOrigin::Web,
-            state: RunState::Running,
-            #[allow(clippy::cast_sign_loss)]
-            started_at: now_secs() as u64,
-            finished_at: None,
-        };
-        if let Err(e) = store.create_run(&run).await {
-            tracing::warn!("run_store: failed to create run: {e}");
+    // Phase 4.0 Slice 3: run lifecycle via conversation_service
+    let run_id = if let Some(store) = state.run_store.as_ref() {
+        match crate::fork_core::application::use_cases::start_conversation_run::create_and_track_run(
+            state.conversation_store.as_deref().expect("conversation_store required"),
+            store.as_ref(),
+            &session_key,
+        ).await {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!("run_store: failed to create run: {e}");
+                uuid::Uuid::new_v4().to_string()
+            }
         }
-    }
+    } else {
+        uuid::Uuid::new_v4().to_string()
+    };
 
     // Create abort channel and store run_id
     let (abort_tx, abort_rx) = tokio::sync::watch::channel(false);
@@ -874,17 +890,19 @@ async fn handle_chat_send_rpc(
                 None,
             )
             .await;
-            persist_increment_count(state, &session_key, 2).await;
-            sync_memory_count(state, &session_key, 2);
-            persist_usage(state, &session_key, usage.as_ref()).await;
-            update_session_goal(state, &session_key, &message).await;
-            // Mark run completed
-            if let Some(store) = state.run_store.as_ref() {
-                #[allow(clippy::cast_sign_loss)]
-                let _ = store
-                    .update_state(&run_id, RunState::Completed, Some(now_secs() as u64))
-                    .await;
+            // Phase 4.0 Slice 3: finalize via conversation_service
+            {
+                let input = usage.as_ref().and_then(|u| u.input_tokens).unwrap_or(0) as i64;
+                let output = usage.as_ref().and_then(|u| u.output_tokens).unwrap_or(0) as i64;
+                if let (Some(cs), Some(rs)) = (state.conversation_store.as_ref(), state.run_store.as_ref()) {
+                    let _ = crate::fork_core::application::use_cases::start_conversation_run::finalize_success(
+                        cs.as_ref(), rs.as_ref(), &session_key, &run_id, input, output,
+                    ).await;
+                }
             }
+            sync_memory_count(state, &session_key, 2);
+            persist_usage_memory(state, &session_key, usage.as_ref());
+            update_session_goal(state, &session_key, &message).await;
             emit_session_event(state, "session.updated", &session_key);
             emit_run_event(state, "session.run_finished", &session_key, &run_id);
 
@@ -913,15 +931,13 @@ async fn handle_chat_send_rpc(
                     Some(&run_id),
                 )
                 .await;
-                persist_increment_count(state, &session_key, 2).await;
-                sync_memory_count(state, &session_key, 2);
-                // Mark run interrupted
-                if let Some(store) = state.run_store.as_ref() {
-                    #[allow(clippy::cast_sign_loss)]
-                    let _ = store
-                        .update_state(&run_id, RunState::Interrupted, Some(now_secs() as u64))
-                        .await;
+                // Phase 4.0 Slice 3: finalize interrupted
+                if let (Some(cs), Some(rs)) = (state.conversation_store.as_ref(), state.run_store.as_ref()) {
+                    let _ = crate::fork_core::application::use_cases::start_conversation_run::finalize_interrupted(
+                        rs.as_ref(), cs.as_ref(), &session_key, &run_id,
+                    ).await;
                 }
+                sync_memory_count(state, &session_key, 2);
                 emit_run_event(state, "session.run_interrupted", &session_key, &run_id);
                 return Ok(serde_json::json!({
                     "run_id": run_id,
@@ -930,15 +946,13 @@ async fn handle_chat_send_rpc(
             }
             let sanitized = crate::providers::sanitize_api_error(&msg);
             persist_message(state, &session_key, "error", None, &sanitized, None, None).await;
-            persist_increment_count(state, &session_key, 2).await;
-            sync_memory_count(state, &session_key, 2);
-            // Mark run failed
-            if let Some(store) = state.run_store.as_ref() {
-                #[allow(clippy::cast_sign_loss)]
-                let _ = store
-                    .update_state(&run_id, RunState::Failed, Some(now_secs() as u64))
-                    .await;
+            // Phase 4.0 Slice 3: finalize failed
+            if let (Some(cs), Some(rs)) = (state.conversation_store.as_ref(), state.run_store.as_ref()) {
+                let _ = crate::fork_core::application::use_cases::start_conversation_run::finalize_failure(
+                    rs.as_ref(), cs.as_ref(), &session_key, &run_id,
+                ).await;
             }
+            sync_memory_count(state, &session_key, 2);
             emit_run_event(state, "session.run_finished", &session_key, &run_id);
             Err(anyhow::anyhow!("{sanitized}"))
         }
@@ -1115,8 +1129,8 @@ async fn handle_sessions_new(
     token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
     let label = params["label"].as_str().map(String::from);
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let session_key = format!("web:{token_prefix}:{session_id}");
+    // Phase 4.0 Slice 3: session key from conversation_service
+    let session_key = crate::fork_core::application::services::conversation_service::new_web_session_key(token_prefix);
 
     ensure_session(state, &session_key).await?;
 
@@ -1194,8 +1208,11 @@ async fn handle_sessions_delete(
         sessions.remove(key);
     }
 
+    // Phase 4.0 Slice 3: delete via conversation_service
     if let Some(store) = state.conversation_store.as_ref() {
-        store.delete_session(key).await?;
+        let _ = crate::fork_core::application::services::conversation_service::delete_session(
+            store.as_ref(), key,
+        ).await;
     }
 
     emit_session_event(state, "session.deleted", key);
@@ -1229,8 +1246,11 @@ async fn handle_sessions_reset(
         }
     }
 
+    // Phase 4.0 Slice 3: reset via conversation_service
     if let Some(store) = state.conversation_store.as_ref() {
-        store.clear_events(key).await?;
+        let _ = crate::fork_core::application::services::conversation_service::reset_session(
+            store.as_ref(), key,
+        ).await;
     }
 
     emit_session_event(state, "session.updated", key);
@@ -1278,38 +1298,17 @@ async fn persist_message(
     }
 }
 
-/// Increment DB message count for a session.
-async fn persist_increment_count(state: &AppState, session_key: &str, count: i64) {
-    if let Some(store) = state.conversation_store.as_ref() {
-        for _ in 0..count {
-            if let Err(e) = store.increment_message_count(session_key).await {
-                tracing::warn!("conversation_store: failed to increment count: {e}");
-                break;
-            }
-        }
-    }
-}
-
-/// Persist token usage from a completed turn.
-async fn persist_usage(
+/// Update in-memory token counters only (DB update handled by conversation_service).
+fn persist_usage_memory(
     state: &AppState,
     session_key: &str,
     usage: Option<&crate::providers::traits::TokenUsage>,
 ) {
     if let Some(u) = usage {
-        let input = u.input_tokens.unwrap_or(0) as i64;
-        let output = u.output_tokens.unwrap_or(0) as i64;
-        if input > 0 || output > 0 {
-            if let Some(store) = state.conversation_store.as_ref() {
-                if let Err(e) = store.add_token_usage(session_key, input, output).await {
-                    tracing::warn!("conversation_store: failed to add token usage: {e}");
-                }
-            }
-            if let Ok(mut sessions) = state.chat_sessions.lock() {
-                if let Some(s) = sessions.get_mut(session_key) {
-                    s.input_tokens += u.input_tokens.unwrap_or(0);
-                    s.output_tokens += u.output_tokens.unwrap_or(0);
-                }
+        if let Ok(mut sessions) = state.chat_sessions.lock() {
+            if let Some(s) = sessions.get_mut(session_key) {
+                s.input_tokens += u.input_tokens.unwrap_or(0);
+                s.output_tokens += u.output_tokens.unwrap_or(0);
             }
         }
     }
@@ -1476,155 +1475,99 @@ fn push_tool_events(
 
 /// Generate a rolling session summary every N messages (fire-and-forget).
 ///
-/// Uses `last_summary_count` instead of modulo to avoid skipping summaries
-/// when message count jumps over a multiple (e.g. error drops a message).
+/// Phase 4.0 Slice 3: delegates to conversation_service::generate_session_summary.
 pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
-    const SUMMARY_INTERVAL: u32 = 10;
+    use crate::fork_core::application::services::conversation_service::WEB_SUMMARY_INTERVAL;
 
-    // Try in-memory session first, fall back to chat_db (for channel sessions).
+    let Some(store) = state.conversation_store.as_ref() else {
+        return;
+    };
+
+    // Read session state (in-memory first, then DB)
     let (msg_count, last_summary, prev_summary) = {
         let from_memory = state.chat_sessions.lock().ok().and_then(|sessions| {
             sessions.get(session_key).map(|s| {
                 (
-                    s.message_count,
-                    s.last_summary_count,
+                    s.message_count as usize,
+                    s.last_summary_count as usize,
                     s.session_summary.clone(),
                 )
             })
         });
         match from_memory {
             Some(v) => v,
-            None => {
-                // Fall back to conversation_store for channel sessions
-                if let Some(store) = state.conversation_store.as_ref() {
-                    match store.get_session(session_key).await {
-                        Some(s) => (s.message_count, 0, s.summary),
-                        None => return,
-                    }
-                } else {
-                    return;
-                }
-            }
+            None => match store.get_session(session_key).await {
+                Some(s) => (s.message_count as usize, 0, s.summary),
+                None => return,
+            },
         }
     };
 
-    if msg_count < SUMMARY_INTERVAL || msg_count - last_summary < SUMMARY_INTERVAL {
-        return;
-    }
-
-    // Fetch last 10 messages from conversation store
-    let recent = if let Some(store) = state.conversation_store.as_ref() {
-        store.get_events(session_key, 10).await
-    } else if let Some(db) = state.chat_db.as_ref() {
-        db.get_messages(session_key, 10)
-            .unwrap_or_default()
-            .iter()
-            .map(|m| ConversationEvent {
-                event_type: match m.kind.as_str() {
-                    "user" => EventType::User,
-                    "assistant" => EventType::Assistant,
-                    _ => EventType::System,
-                },
-                actor: m.role.clone().unwrap_or_else(|| m.kind.clone()),
-                content: m.content.clone(),
-                tool_name: None,
-                run_id: None,
-                input_tokens: None,
-                output_tokens: None,
-                #[allow(clippy::cast_sign_loss)]
-                timestamp: m.timestamp as u64,
-            })
-            .collect()
-    } else {
-        return;
-    };
-
-    if recent.is_empty() {
-        return;
-    }
-
-    // Build prompt
-    let mut messages_text = String::new();
-    for e in &recent {
-        let role = &e.actor;
-        use std::fmt::Write;
-        let _ = writeln!(messages_text, "{role}: {}", truncate_str(&e.content, 200));
-    }
-
-    let prompt = format!(
-        "Summarize this conversation in 2-3 sentences. Preserve: key decisions, user goals, open tasks.\n\
-         Previous summary: {}\n\n\
-         Recent messages:\n{}",
-        prev_summary.as_deref().unwrap_or("(none)"),
-        messages_text,
-    );
-
-    // Read summary config from live config (supports runtime switching)
-    let (summary_cfg, config_summary_model, options) = {
+    // Build summary generator from config
+    let (summary_model, temperature, provider) = {
         let config_guard = state.config.lock();
-        let sc = config_guard.summary.clone();
-        let sm = config_guard.summary_model.clone();
-        let opts = crate::providers::provider_runtime_options_from_config(&config_guard);
-        (sc, sm, opts)
+        let sc = &config_guard.summary;
+        let model = sc
+            .model
+            .clone()
+            .or_else(|| config_guard.summary_model.clone())
+            .unwrap_or_else(|| state.model.clone());
+        let temp = sc.temperature;
+        let prov: std::sync::Arc<dyn crate::providers::Provider> =
+            if let Some(ref provider_name) = sc.provider {
+                let opts =
+                    crate::providers::provider_runtime_options_from_config(&config_guard);
+                let api_key = sc
+                    .api_key_env
+                    .as_deref()
+                    .and_then(|env| std::env::var(env).ok());
+                match crate::providers::create_provider_with_options(
+                    provider_name,
+                    api_key.as_deref(),
+                    &opts,
+                ) {
+                    Ok(p) => p.into(),
+                    Err(e) => {
+                        tracing::warn!("Summary provider init failed: {e}, using default");
+                        state.provider.clone()
+                    }
+                }
+            } else {
+                state.provider.clone()
+            };
+        (model, temp, prov)
     };
 
-    let model = summary_cfg
-        .model
-        .as_deref()
-        .or(config_summary_model.as_deref())
-        .unwrap_or(&state.model)
-        .to_string();
-    let temperature = summary_cfg.temperature;
-    let summary_result = if let Some(ref provider_name) = summary_cfg.provider {
-        let api_key = summary_cfg
-            .api_key_env
-            .as_deref()
-            .and_then(|env| std::env::var(env).ok());
-        match crate::providers::create_provider_with_options(
-            provider_name,
-            api_key.as_deref(),
-            &options,
-        ) {
-            Ok(provider) => {
-                provider
-                    .chat_with_system(None, &prompt, &model, temperature)
-                    .await
-            }
-            Err(e) => {
-                tracing::warn!("Summary provider '{provider_name}' failed to init: {e}, falling back to default");
-                state
-                    .provider
-                    .chat_with_system(None, &prompt, &model, temperature)
-                    .await
-            }
-        }
-    } else {
-        state
-            .provider
-            .chat_with_system(None, &prompt, &model, temperature)
-            .await
-    };
+    let generator =
+        crate::fork_adapters::memory::summary_generator_adapter::ProviderSummaryGenerator::new(
+            provider,
+            summary_model,
+            temperature,
+        );
 
-    match summary_result {
-        Ok(summary) => {
-            let summary = truncate_str(&summary, 300);
-            // Update in-memory
+    match crate::fork_core::application::services::conversation_service::generate_session_summary(
+        store.as_ref(),
+        &generator,
+        session_key,
+        msg_count,
+        last_summary,
+        prev_summary.as_deref(),
+        WEB_SUMMARY_INTERVAL,
+    )
+    .await
+    {
+        Ok(Some(summary)) => {
+            // Update in-memory cache
             if let Ok(mut sessions) = state.chat_sessions.lock() {
                 if let Some(s) = sessions.get_mut(session_key) {
                     s.session_summary = Some(summary.clone());
                     s.last_summary_count = s.message_count;
                 }
             }
-            // Update DB via conversation store
-            if let Some(store) = state.conversation_store.as_ref() {
-                if let Err(e) = store.set_summary(session_key, &summary).await {
-                    tracing::warn!("conversation_store: failed to update session summary: {e}");
-                }
-            }
-            // Notify other tabs/clients about the updated summary
             emit_session_event(state, "session.updated", session_key);
             tracing::debug!("session summary updated for {session_key}");
         }
+        Ok(None) => {} // not needed yet
         Err(e) => {
             tracing::warn!("session summary generation failed: {e}");
         }

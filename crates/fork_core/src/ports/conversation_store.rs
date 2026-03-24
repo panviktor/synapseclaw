@@ -3,7 +3,7 @@
 //! Abstracts web chat (`ChatDb`) and channel session persistence behind
 //! a single contract.  Phase 4.0 Step 3.
 
-use crate::fork_core::domain::conversation::{ConversationEvent, ConversationSession};
+use crate::domain::conversation::{ConversationEvent, ConversationSession};
 use async_trait::async_trait;
 
 /// Port for storing and retrieving conversation sessions and transcript events.

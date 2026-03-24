@@ -1,4 +1,5 @@
-use crate::approval::{ApprovalManager, ApprovalRequest, ApprovalResponse};
+use crate::approval::{ApprovalManager, ApprovalRequest as CliApprovalRequest, ApprovalResponse as CliApprovalResponse};
+use crate::fork_core::ports::approval::ApprovalPort;
 use crate::config::Config;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::multimodal;
@@ -2288,14 +2289,14 @@ struct ToolExecutionOutcome {
 
 fn should_execute_tools_in_parallel(
     tool_calls: &[ParsedToolCall],
-    approval: Option<&ApprovalManager>,
+    approval: Option<&dyn ApprovalPort>,
 ) -> bool {
     if tool_calls.len() <= 1 {
         return false;
     }
 
-    if let Some(mgr) = approval {
-        if tool_calls.iter().any(|call| mgr.needs_approval(&call.name)) {
+    if let Some(port) = approval {
+        if tool_calls.iter().any(|call| port.needs_approval(&call.name)) {
             // Approval-gated calls must keep sequential handling so the caller can
             // enforce CLI prompt/deny policy consistently.
             return false;
@@ -2384,7 +2385,7 @@ pub(crate) async fn run_tool_call_loop(
     model: &str,
     temperature: f64,
     silent: bool,
-    approval: Option<&ApprovalManager>,
+    approval: Option<&dyn ApprovalPort>,
     channel_name: &str,
     multimodal_config: &crate::config::MultimodalConfig,
     max_tool_iterations: usize,
@@ -2773,26 +2774,25 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
 
-            // ── Approval hook ────────────────────────────────
-            if let Some(mgr) = approval {
-                if mgr.needs_approval(&tool_name) {
-                    let request = ApprovalRequest {
-                        tool_name: tool_name.clone(),
-                        arguments: tool_args.clone(),
+            // ── Approval hook (Phase 4.0: via ApprovalPort) ──
+            if let Some(port) = approval {
+                if port.needs_approval(&tool_name) {
+                    let args_str = tool_args.to_string();
+                    let decision = match port.request_approval(&tool_name, &args_str).await {
+                        Ok(resp) => resp,
+                        Err(_) => crate::fork_core::domain::approval::ApprovalResponse::No,
                     };
 
-                    // Interactive CLI: prompt the operator.
-                    // Non-interactive (channels): auto-deny since no operator
-                    // is present to approve.
-                    let decision = if mgr.is_non_interactive() {
-                        ApprovalResponse::No
-                    } else {
-                        mgr.prompt_cli(&request)
+                    let audit = crate::fork_core::domain::approval::ApprovalDecision {
+                        request_id: tool_name.clone(),
+                        response: decision,
+                        decided_by: "system".into(),
+                        channel: channel_name.to_string(),
+                        timestamp: chrono::Utc::now().timestamp() as u64,
                     };
+                    port.record_decision(&audit);
 
-                    mgr.record_decision(&tool_name, &tool_args, decision, channel_name);
-
-                    if decision == ApprovalResponse::No {
+                    if decision == crate::fork_core::domain::approval::ApprovalResponse::No {
                         let denied = "Denied by user.".to_string();
                         runtime_trace::record_event(
                             "tool_call_result",
@@ -3478,8 +3478,8 @@ pub async fn run(
     }
 
     // ── Approval manager (supervised mode) ───────────────────────
-    let approval_manager = if interactive {
-        Some(ApprovalManager::from_config(&config.autonomy))
+    let approval_manager: Option<Box<dyn ApprovalPort>> = if interactive {
+        Some(Box::new(ApprovalManager::from_config(&config.autonomy)))
     } else {
         None
     };
@@ -3549,7 +3549,7 @@ pub async fn run(
             model_name,
             temperature,
             false,
-            approval_manager.as_ref(),
+            approval_manager.as_deref(),
             channel_name,
             &config.multimodal,
             config.agent.max_tool_iterations,
@@ -3712,7 +3712,7 @@ pub async fn run(
                 model_name,
                 temperature,
                 false,
-                approval_manager.as_ref(),
+                approval_manager.as_deref(),
                 channel_name,
                 &config.multimodal,
                 config.agent.max_tool_iterations,
