@@ -196,6 +196,64 @@ impl ApprovalManager {
     }
 }
 
+// ── Phase 4.0: ApprovalPort implementation ──────────────────────
+
+#[async_trait::async_trait]
+impl crate::fork_core::ports::approval::ApprovalPort for ApprovalManager {
+    fn needs_approval(&self, tool_name: &str) -> bool {
+        ApprovalManager::needs_approval(self, tool_name)
+    }
+
+    async fn request_approval(
+        &self,
+        tool_name: &str,
+        arguments: &str,
+    ) -> anyhow::Result<crate::fork_core::domain::approval::ApprovalResponse> {
+        if self.non_interactive {
+            return Ok(crate::fork_core::domain::approval::ApprovalResponse::No);
+        }
+
+        // CLI interactive: prompt
+        let args: serde_json::Value =
+            serde_json::from_str(arguments).unwrap_or(serde_json::json!({"raw": arguments}));
+        let request = ApprovalRequest {
+            tool_name: tool_name.to_string(),
+            arguments: args,
+        };
+        let cli_response = self.prompt_cli(&request);
+        Ok(match cli_response {
+            ApprovalResponse::Yes => crate::fork_core::domain::approval::ApprovalResponse::Yes,
+            ApprovalResponse::No => crate::fork_core::domain::approval::ApprovalResponse::No,
+            ApprovalResponse::Always => {
+                crate::fork_core::domain::approval::ApprovalResponse::Always
+            }
+        })
+    }
+
+    fn record_decision(
+        &self,
+        decision: &crate::fork_core::domain::approval::ApprovalDecision,
+    ) {
+        let cli_response = match decision.response {
+            crate::fork_core::domain::approval::ApprovalResponse::Yes => ApprovalResponse::Yes,
+            crate::fork_core::domain::approval::ApprovalResponse::No => ApprovalResponse::No,
+            crate::fork_core::domain::approval::ApprovalResponse::Always => {
+                ApprovalResponse::Always
+            }
+        };
+        let args = serde_json::json!({"summary": &decision.request_id});
+        ApprovalManager::record_decision(self, &decision.request_id, &args, cli_response, &decision.channel);
+    }
+
+    fn is_session_allowed(&self, tool_name: &str) -> bool {
+        self.session_allowlist.lock().contains(tool_name)
+    }
+
+    fn add_session_allowlist(&self, tool_name: &str) {
+        self.session_allowlist.lock().insert(tool_name.to_string());
+    }
+}
+
 // ── CLI prompt ───────────────────────────────────────────────────
 
 /// Display the approval prompt and read user input from stdin.

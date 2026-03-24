@@ -56,7 +56,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             model,
             temperature,
             true, // silent (channel mode)
-            Some(&*self.approval_manager),
+            Some(&*self.approval_manager as &dyn crate::fork_core::ports::approval::ApprovalPort),
             &self.channel_name,
             &self.multimodal,
             max_iterations,
