@@ -966,11 +966,13 @@ pub async fn run_gateway(
         state.ipc_push_signal = Some(push_tx);
         let inbox_config = config.clone();
         let inbox_outbound_tx = outbound_tx.clone();
+        let inbox_run_store = state.run_store.clone();
         tokio::spawn(async move {
             Box::pin(agent_inbox_processor(
                 inbox_config,
                 push_rx,
                 inbox_outbound_tx,
+                inbox_run_store,
             ))
             .await;
         });
@@ -1296,6 +1298,7 @@ async fn agent_inbox_processor(
     config: Config,
     mut push_rx: tokio::sync::mpsc::UnboundedReceiver<ipc::PushMeta>,
     outbound_tx: Option<crate::fork_core::bus::OutboundIntentSender>,
+    run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>>,
 ) {
     let max_auto = config.agents_ipc.push_max_auto_processes;
     let cooldown = Duration::from_secs(config.agents_ipc.push_peer_cooldown_secs);
@@ -1473,6 +1476,23 @@ async fn agent_inbox_processor(
             // Used by auto-reply safety net to detect if agents_reply was called.
             let run_ctx = std::sync::Arc::new(crate::agent::run_context::RunContext::new());
 
+            // Phase 4.0: Track IPC run in RunStore
+            let ipc_run_id = uuid::Uuid::new_v4().to_string();
+            if let Some(ref store) = run_store {
+                let run = crate::fork_core::domain::run::Run {
+                    run_id: ipc_run_id.clone(),
+                    conversation_key: Some(format!("ipc:{peer}")),
+                    origin: crate::fork_core::domain::run::RunOrigin::Ipc,
+                    state: crate::fork_core::domain::run::RunState::Running,
+                    #[allow(clippy::cast_sign_loss)]
+                    started_at: chrono::Utc::now().timestamp() as u64,
+                    finished_at: None,
+                };
+                if let Err(e) = store.create_run(&run).await {
+                    tracing::warn!("run_store: failed to create IPC run: {e}");
+                }
+            }
+
             match Box::pin(crate::agent::run(
                 config.clone(),
                 Some(prompt),
@@ -1488,6 +1508,18 @@ async fn agent_inbox_processor(
             .await
             {
                 Ok(last_text) => {
+                    // Mark IPC run completed
+                    if let Some(ref store) = run_store {
+                        #[allow(clippy::cast_sign_loss)]
+                        let _ = store
+                            .update_state(
+                                &ipc_run_id,
+                                crate::fork_core::domain::run::RunState::Completed,
+                                Some(chrono::Utc::now().timestamp() as u64),
+                            )
+                            .await;
+                    }
+
                     // Ack via broker HTTP — mark as read only after success
                     if let Err(e) = ipc_client.ack_messages(&msg_ids).await {
                         tracing::warn!(
@@ -1619,6 +1651,17 @@ async fn agent_inbox_processor(
                     );
                 }
                 Err(e) => {
+                    // Mark IPC run failed
+                    if let Some(ref store) = run_store {
+                        #[allow(clippy::cast_sign_loss)]
+                        let _ = store
+                            .update_state(
+                                &ipc_run_id,
+                                crate::fork_core::domain::run::RunState::Failed,
+                                Some(chrono::Utc::now().timestamp() as u64),
+                            )
+                            .await;
+                    }
                     // Messages stay unread on broker — picked up by next poll/push
                     tracing::warn!(
                         peer = %peer,
