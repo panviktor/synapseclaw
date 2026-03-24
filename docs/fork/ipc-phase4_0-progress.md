@@ -1,6 +1,6 @@
 # IPC Phase 4.0 Progress
 
-**Status**: groundwork in progress
+**Status**: Steps 1-12 complete, Steps 13-14 remaining
 
 Phase 3.12: channel session intelligence | **Phase 4.0: modular core refactor** | Phase 4.1: federated execution
 
@@ -31,13 +31,16 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | 5 | **DONE** | Migrate scheduled notification delivery to capability-driven `ChannelRegistryPort.deliver()` |
 | 6 | **DONE** | Migrate heartbeat delivery + validation away from hardcoded channel-name matches |
 | 7 | **DONE** | Route inbound messages through `InboundEnvelope` at dispatch boundary + `HandleInboundMessage` application module |
-| 8 | TODO | Extract approval/quarantine orchestration into fork-owned application services |
-| 9 | TODO | Bridge selected IPC flows into the same conversation/run model |
-| 10 | TODO | Add `MemoryTiersPort` adapters for working/session/long-term memory |
-| 11 | TODO | Define `CodingWorkerPort` and `DelegateImplementationTask` as a narrow seam for external coding executors over IPC + `RunStorePort` |
-| 12 | TODO | Remove migrated transport-name branching from old paths |
+| 8 | **DONE** | Audit fixes + wire ConversationStorePort into gateway AppState + REST `/api/conversations` (PR #165) |
+| 9 | **DONE** | Migrate ws.rs from ChatDb to ConversationStorePort — all 10 direct calls replaced (PR #166) |
+| 10 | **DONE** | Wire RunStorePort into gateway AppState + REST `/api/runs` — web chat runs durably persisted (PR #167) |
+| 11 | **DONE** | IPC run tracking via RunStorePort — push-triggered runs create/update Run records (PR #168) |
+| 12 | **DONE** | Remove transport-name branching — 5 channel-name checks replaced with capability queries (PR #169) |
 | 13 | TODO | Add verification tests for capability routing, conversation storage, run storage, and adapter boundaries |
 | 14 | TODO | Update docs, delta registry, and sync notes after first migrated slices land |
+| — | DEFERRED | Extract approval/quarantine orchestration into fork-owned application services (original Step 8) |
+| — | DEFERRED | Add `MemoryTiersPort` adapters for working/session/long-term memory (original Step 10) |
+| — | DEFERRED | Define `CodingWorkerPort` seam for external coding executors (original Step 11) |
 
 ---
 

@@ -31,6 +31,41 @@ impl CachedChannelRegistry {
     fn inject(&self, name: &str, ch: Arc<dyn Channel>) {
         self.cache.write().insert(name.to_string(), ch);
     }
+
+    /// Per-channel formatting instructions for the system prompt.
+    ///
+    /// This is adapter metadata — the core asks "how should I format?" and the
+    /// adapter returns transport-specific instructions.  New channels just add
+    /// a match arm here.
+    pub fn delivery_hints(&self, channel_name: &str) -> Option<String> {
+        match channel_name {
+            "telegram" => Some(
+                "Format replies using Telegram HTML (bold=<b>, italic=<i>, \
+                 code=<code>, pre=<pre>). Keep messages under 4096 characters. \
+                 Use concise formatting."
+                    .to_string(),
+            ),
+            "matrix" => Some(
+                "Format replies using Markdown (bold=**, italic=*, \
+                 code=```, headings=#). Matrix supports full CommonMark."
+                    .to_string(),
+            ),
+            "discord" => Some(
+                "Format replies using Discord Markdown (bold=**, italic=*, \
+                 code=```, spoiler=||). Keep messages under 2000 characters."
+                    .to_string(),
+            ),
+            "slack" => Some(
+                "Format replies using Slack mrkdwn (bold=*, italic=_, \
+                 code=```, link=<url|text>). Keep messages under 4000 characters."
+                    .to_string(),
+            ),
+            "mattermost" => {
+                Some("Format replies using Markdown (bold=**, italic=*, code=```).".to_string())
+            }
+            _ => None,
+        }
+    }
 }
 
 #[async_trait]
@@ -61,6 +96,8 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::ReceiveText,
                 ChannelCapability::RichFormatting,
                 ChannelCapability::EditMessage,
+                ChannelCapability::RuntimeCommands,
+                ChannelCapability::InterruptOnNewMessage,
             ],
             "discord" => vec![
                 ChannelCapability::SendText,
@@ -69,6 +106,8 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::Reactions,
                 ChannelCapability::RichFormatting,
                 ChannelCapability::EditMessage,
+                ChannelCapability::RuntimeCommands,
+                ChannelCapability::ToolContextDisplay,
             ],
             "slack" => vec![
                 ChannelCapability::SendText,
@@ -76,6 +115,8 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::Threads,
                 ChannelCapability::Reactions,
                 ChannelCapability::RichFormatting,
+                ChannelCapability::InterruptOnNewMessage,
+                ChannelCapability::ToolContextDisplay,
             ],
             #[cfg(feature = "channel-matrix")]
             "matrix" => vec![
@@ -84,6 +125,8 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::Threads,
                 ChannelCapability::Reactions,
                 ChannelCapability::RichFormatting,
+                ChannelCapability::RuntimeCommands,
+                ChannelCapability::ToolContextDisplay,
             ],
             "mattermost" => vec![
                 ChannelCapability::SendText,
@@ -91,6 +134,7 @@ impl ChannelRegistryPort for CachedChannelRegistry {
                 ChannelCapability::Threads,
                 ChannelCapability::Reactions,
                 ChannelCapability::RichFormatting,
+                ChannelCapability::ToolContextDisplay,
             ],
             "signal" => vec![
                 ChannelCapability::SendText,
@@ -99,6 +143,10 @@ impl ChannelRegistryPort for CachedChannelRegistry {
             ],
             _ => vec![],
         }
+    }
+
+    fn delivery_hints(&self, channel_name: &str) -> Option<String> {
+        CachedChannelRegistry::delivery_hints(self, channel_name)
     }
 
     async fn deliver(&self, intent: &OutboundIntent) -> anyhow::Result<()> {

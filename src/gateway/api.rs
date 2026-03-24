@@ -997,6 +997,15 @@ pub async fn handle_api_channel_capabilities(
                     crate::fork_core::domain::channel::ChannelCapability::EditMessage => {
                         "EditMessage"
                     }
+                    crate::fork_core::domain::channel::ChannelCapability::RuntimeCommands => {
+                        "RuntimeCommands"
+                    }
+                    crate::fork_core::domain::channel::ChannelCapability::InterruptOnNewMessage => {
+                        "InterruptOnNewMessage"
+                    }
+                    crate::fork_core::domain::channel::ChannelCapability::ToolContextDisplay => {
+                        "ToolContextDisplay"
+                    }
                 })
                 .collect();
             result.insert((*name).to_string(), serde_json::json!(cap_names));

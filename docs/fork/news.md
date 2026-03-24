@@ -2,6 +2,15 @@
 
 ## 2026-03-23
 
+### Phase 4.0 Step 12: Remove transport-name branching + docs update
+- 3 new `ChannelCapability` variants: `RuntimeCommands`, `InterruptOnNewMessage`, `ToolContextDisplay`
+- `supports_runtime_model_switch()` → capability-driven with fallback
+- Tool context summary: `msg.channel == "telegram"` → `!caps.contains(ToolContextDisplay)`
+- `channel_delivery_instructions()` → `delivery_hints()` in ChannelRegistryPort (adapter metadata)
+- `delivery_hints()` added to trait with default None; CachedChannelRegistry returns per-channel formatting
+- `ChannelRuntimeContext` gets `channel_registry` field for capability resolution
+- Progress doc updated: Steps 8-11 marked DONE, deferred items documented
+
 ### Phase 4.0 Step 11: IPC run tracking via RunStorePort
 - Push-triggered IPC runs now create Run(RunOrigin::Ipc, Running) before agent execution
 - Run state updated to Completed/Failed on finish

@@ -293,6 +293,9 @@ struct InterruptOnNewMessageConfig {
 
 impl InterruptOnNewMessageConfig {
     fn enabled_for_channel(self, channel: &str) -> bool {
+        // Config-driven: user enables per-channel via config schema.
+        // TODO(Phase 4.1): gate on InterruptOnNewMessage capability first,
+        // then check config toggle. Requires ChannelRegistryPort in dispatch context.
         match channel {
             "telegram" => self.telegram,
             "slack" => self.slack,
@@ -342,6 +345,9 @@ struct ChannelRuntimeContext {
     /// approval since no operator is present on channel runs.
     approval_manager: Arc<ApprovalManager>,
     activated_tools: Option<std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
+    /// Phase 4.0: channel registry for capability queries (None in standalone CLI mode).
+    channel_registry:
+        Option<Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>>,
 }
 
 #[derive(Clone)]
@@ -517,55 +523,22 @@ fn strip_tool_call_tags(message: &str) -> String {
     result.trim().to_string()
 }
 
-fn channel_delivery_instructions(channel_name: &str) -> Option<&'static str> {
-    match channel_name {
-        "telegram" => Some(
-            "When responding on Telegram:\n\
-             - Include media markers for files or URLs that should be sent as attachments\n\
-             - Use **bold** for key terms, section titles, and important info (renders as <b>)\n\
-             - Use *italic* for emphasis (renders as <i>)\n\
-             - Use `backticks` for inline code, commands, or technical terms\n\
-             - Use triple backticks for code blocks\n\
-             - Use emoji naturally to add personality — but don't overdo it\n\
-             - Be concise and direct. Skip filler phrases like 'Great question!' or 'Certainly!'\n\
-             - Structure longer answers with bold headers, not raw markdown ## headers\n\
-             - For media attachments use markers: [IMAGE:<path-or-url>], [DOCUMENT:<path-or-url>], [VIDEO:<path-or-url>], [AUDIO:<path-or-url>], or [VOICE:<path-or-url>]\n\
-             - Keep normal text outside markers and never wrap markers in code fences.\n\
-             - Use tool results silently: answer the latest user message directly, and do not narrate delayed/internal tool execution bookkeeping.",
-        ),
-        "matrix" => Some(
-            "When responding on Matrix:\n\n\
-             ## Media\n\
-             - You CAN send files, images, audio, and voice messages.\n\
-             - Markers: [IMAGE:<path>], [FILE:<path>], [AUDIO:<path>], [VOICE:<path>]\n\
-             - Create the file first with your tools, then include the marker.\n\n\
-             ## Reactions\n\
-             - Each incoming message starts with [msg_id:<event_id>] — use that event_id to react.\n\
-             - You CAN react to messages with emoji: [REACT:<emoji>:<event_id>]\n\
-             - React naturally and sparingly — only when genuinely appropriate.\n\
-             - Do NOT react to every message. Do NOT copy the user's reaction back.\n\
-             - When you receive [Reaction: emoji on your message: \"text\"] — this is feedback on YOUR response. Understand the emoji meaning (👍=good, 👎=bad, ❤️=love, 😂=funny, ❌=wrong/redo).\n\
-             - When you receive [Reaction: emoji on their message: \"text\"] — user reacted to their own message as an addition/emphasis.\n\
-             - Do NOT send a text reply just to acknowledge a reaction unless it requires action (like ❌ or 👎).\n\n\
-             ## Location\n\
-             - You CAN send locations: [LOCATION:geo:lat,lon:Description]\n\
-             - When you receive [Location: geo:lat,lon] — user shared their location.\n\n\
-             ## Replies\n\
-             - When you receive [Reply to $event_id] prefix — user is replying to a specific earlier message, consider that context.\n\n\
-             ## Formatting\n\
-             - Keep markers outside normal text, never in code fences.\n\
-             - Use Markdown: **bold**, *italic*, `code`, code blocks.\n\
-             - Be concise and direct. Skip filler phrases.\n\
-             - Use tool results silently: answer directly, do not narrate internal execution.",
-        ),
-        _ => None,
+/// Phase 4.0: delivery instructions resolved from registry (adapter metadata).
+fn channel_delivery_instructions(
+    channel_name: &str,
+    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+) -> Option<String> {
+    if let Some(reg) = registry {
+        return reg.delivery_hints(channel_name);
     }
+    None
 }
 
 fn build_channel_system_prompt(
     base_prompt: &str,
     channel_name: &str,
     reply_target: &str,
+    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
 ) -> String {
     let mut prompt = base_prompt.to_string();
 
@@ -588,7 +561,7 @@ fn build_channel_system_prompt(
         }
     }
 
-    if let Some(instructions) = channel_delivery_instructions(channel_name) {
+    if let Some(instructions) = channel_delivery_instructions(channel_name, registry) {
         if prompt.is_empty() {
             prompt = instructions.to_string();
         } else {
@@ -662,12 +635,26 @@ fn strip_tool_result_content(text: &str) -> String {
     cleaned.to_string()
 }
 
-fn supports_runtime_model_switch(channel_name: &str) -> bool {
+/// Check if this channel supports runtime commands (/models, /model, /new).
+/// Phase 4.0: capability-driven via ChannelCapability::RuntimeCommands.
+fn supports_runtime_model_switch(
+    channel_name: &str,
+    caps: &[crate::fork_core::domain::channel::ChannelCapability],
+) -> bool {
+    if !caps.is_empty() {
+        return caps
+            .contains(&crate::fork_core::domain::channel::ChannelCapability::RuntimeCommands);
+    }
+    // Fallback when registry unavailable (standalone CLI mode)
     matches!(channel_name, "telegram" | "discord" | "matrix")
 }
 
-fn parse_runtime_command(channel_name: &str, content: &str) -> Option<ChannelRuntimeCommand> {
-    if !supports_runtime_model_switch(channel_name) {
+fn parse_runtime_command(
+    channel_name: &str,
+    content: &str,
+    caps: &[crate::fork_core::domain::channel::ChannelCapability],
+) -> Option<ChannelRuntimeCommand> {
+    if !supports_runtime_model_switch(channel_name, caps) {
         return None;
     }
 
@@ -1435,8 +1422,9 @@ async fn handle_runtime_command_if_needed(
     ctx: &ChannelRuntimeContext,
     msg: &traits::ChannelMessage,
     target_channel: Option<&Arc<dyn Channel>>,
+    caps: &[crate::fork_core::domain::channel::ChannelCapability],
 ) -> bool {
-    let Some(command) = parse_runtime_command(&msg.channel, &msg.content) else {
+    let Some(command) = parse_runtime_command(&msg.channel, &msg.content, caps) else {
         return false;
     };
 
@@ -2068,7 +2056,16 @@ async fn process_channel_message(
     if let Err(err) = maybe_apply_runtime_config_update(ctx.as_ref()).await {
         tracing::warn!("Failed to apply runtime config update: {err}");
     }
-    if handle_runtime_command_if_needed(ctx.as_ref(), &msg, target_channel.as_ref()).await {
+    // Phase 4.0: resolve channel capabilities once for this message
+    let channel_caps = ctx
+        .channel_registry
+        .as_ref()
+        .map(|r| r.capabilities(&msg.channel))
+        .unwrap_or_default();
+
+    if handle_runtime_command_if_needed(ctx.as_ref(), &msg, target_channel.as_ref(), &channel_caps)
+        .await
+    {
         return;
     }
 
@@ -2263,8 +2260,12 @@ async fn process_channel_message(
         }
     }
 
-    let system_prompt =
-        build_channel_system_prompt(ctx.system_prompt.as_str(), &msg.channel, &msg.reply_target);
+    let system_prompt = build_channel_system_prompt(
+        ctx.system_prompt.as_str(),
+        &msg.channel,
+        &msg.reply_target,
+        ctx.channel_registry.as_deref(),
+    );
     let mut history = vec![ChatMessage::system(system_prompt)];
     history.extend(prior_turns);
     let use_streaming = target_channel
@@ -2572,7 +2573,11 @@ async fn process_channel_message(
             // added during run_tool_call_loop, so the LLM retains awareness
             // of what it did on subsequent turns.
             let tool_summary = extract_tool_context_summary(&history, history_len_before_tools);
-            let history_response = if tool_summary.is_empty() || msg.channel == "telegram" {
+            // Phase 4.0: use ToolContextDisplay capability instead of channel name
+            let supports_tool_context = channel_caps.contains(
+                &crate::fork_core::domain::channel::ChannelCapability::ToolContextDisplay,
+            );
+            let history_response = if tool_summary.is_empty() || !supports_tool_context {
                 delivered_response.clone()
             } else {
                 format!("{tool_summary}\n{delivered_response}")
@@ -4505,6 +4510,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         summary_model: config.summary_model.clone(),
         approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
         activated_tools: ch_activated_handle,
+        channel_registry: None, // Standalone CLI mode — no registry
     });
 
     // Hydrate in-memory conversation histories from persisted JSONL session files.
@@ -4804,6 +4810,7 @@ mod tests {
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -4915,6 +4922,7 @@ mod tests {
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -4982,6 +4990,7 @@ mod tests {
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -5068,6 +5077,7 @@ mod tests {
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         };
 
         assert!(rollback_orphan_user_turn(
@@ -5604,6 +5614,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -5679,6 +5690,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -5768,6 +5780,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -5842,6 +5855,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -5926,6 +5940,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -6030,6 +6045,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -6116,6 +6132,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -6217,6 +6234,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -6303,6 +6321,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -6379,6 +6398,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -6566,6 +6586,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -6661,6 +6682,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -6771,6 +6793,7 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             activated_tools: None,
             query_classification: crate::config::QueryClassificationConfig::default(),
+            channel_registry: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -6878,6 +6901,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -6967,6 +6991,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -7041,6 +7066,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -7673,6 +7699,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -7773,6 +7800,7 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -7873,6 +7901,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -7903,12 +7936,8 @@ BTC is currently around $65,000 based on latest tool output."#
             .collect::<Vec<_>>();
         assert_eq!(roles, vec!["system", "user", "assistant", "user"]);
         assert!(
-            calls[0][0].1.contains("When responding on Telegram:"),
+            calls[0][0].1.contains("Telegram HTML"),
             "telegram channel instructions should be embedded into the system prompt"
-        );
-        assert!(
-            calls[0][0].1.contains("For media attachments use markers:"),
-            "telegram media marker guidance should live in the system prompt"
         );
         assert!(!calls[0].iter().skip(1).any(|(role, _)| role == "system"));
     }
@@ -8437,6 +8466,7 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -8518,6 +8548,7 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -8673,6 +8704,7 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -8778,6 +8810,7 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -8875,6 +8908,7 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(
@@ -8992,6 +9026,7 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
+            channel_registry: None,
         });
 
         process_channel_message(

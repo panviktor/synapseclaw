@@ -66,6 +66,12 @@ pub enum ChannelCapability {
     Attachments,
     RichFormatting,
     EditMessage,
+    /// Channel supports runtime /models, /model, /new commands.
+    RuntimeCommands,
+    /// Channel supports interrupt-on-new-message (cancel previous run).
+    InterruptOnNewMessage,
+    /// Channel supports displaying tool call context in history.
+    ToolContextDisplay,
 }
 
 /// The canonical outbound intent — Phase 4.0's first domain object.

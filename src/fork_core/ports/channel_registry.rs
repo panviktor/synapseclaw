@@ -24,4 +24,14 @@ pub trait ChannelRegistryPort: Send + Sync {
     /// Resolve adapter, check required capabilities, apply degradation
     /// policy, and deliver the intent via `channel.send()`.
     async fn deliver(&self, intent: &OutboundIntent) -> anyhow::Result<()>;
+
+    /// Per-channel formatting instructions for the system prompt.
+    ///
+    /// Returns transport-specific rendering hints (Telegram HTML, Matrix
+    /// CommonMark, Discord Markdown, etc.).  The core asks "how should I
+    /// format?" and the adapter returns the instructions.
+    fn delivery_hints(&self, channel_name: &str) -> Option<String> {
+        let _ = channel_name;
+        None
+    }
 }
