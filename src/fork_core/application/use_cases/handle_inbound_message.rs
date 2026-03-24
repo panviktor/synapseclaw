@@ -14,7 +14,7 @@ use crate::fork_core::ports::channel_output::ChannelOutputPort;
 use crate::fork_core::ports::channel_registry::ChannelRegistryPort;
 use crate::fork_core::ports::conversation_history::ConversationHistoryPort;
 use crate::fork_core::ports::hooks::{HookOutcome, HooksPort};
-use crate::fork_core::ports::memory::MemoryPort;
+use crate::fork_core::ports::memory::MemoryTiersPort;
 use crate::fork_core::ports::route_selection::RouteSelectionPort;
 use crate::fork_core::ports::session_summary::SessionSummaryPort;
 use crate::providers::ChatMessage;
@@ -55,7 +55,7 @@ pub struct InboundMessagePorts {
     pub agent_runtime: Arc<dyn AgentRuntimePort>,
     pub channel_registry: Arc<dyn ChannelRegistryPort>,
     pub session_summary: Option<Arc<dyn SessionSummaryPort>>,
-    pub memory: Option<Arc<dyn MemoryPort>>,
+    pub memory: Option<Arc<dyn MemoryTiersPort>>,
 }
 
 /// Result of handling an inbound message.
@@ -186,7 +186,12 @@ async fn handle_regular_message(
             && !mem.should_skip_autosave(content)
         {
             let autosave_key = format!("channel:{conversation_key}:user");
-            let _ = mem.store(&autosave_key, content, Some(conversation_key)).await;
+            let _ = mem.store(
+                &autosave_key,
+                content,
+                &crate::fork_core::domain::memory::MemoryCategory::Conversation,
+                Some(conversation_key),
+            ).await;
         }
     }
 

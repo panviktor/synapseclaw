@@ -9,7 +9,7 @@
 //! - tier selection (which category for which operation)
 
 use crate::fork_core::domain::memory::{MemoryCategory, MemoryEntry, RecallConfig};
-use crate::fork_core::ports::memory::MemoryPort;
+use crate::fork_core::ports::memory::MemoryTiersPort;
 use anyhow::Result;
 
 /// Minimum message length (chars) to trigger autosave.
@@ -74,32 +74,22 @@ pub fn format_recall_context(entries: &[MemoryEntry], config: &RecallConfig) -> 
 
 /// Recall and format memory context for a conversation turn.
 ///
-/// Orchestrates: recall from port → filter → format → return context string.
+/// Uses tier-aware recall: searches long-term memory, formats for prompt injection.
 pub async fn recall_context(
-    mem: &dyn MemoryPort,
+    mem: &dyn MemoryTiersPort,
     query: &str,
     session_id: Option<&str>,
     config: &RecallConfig,
 ) -> String {
-    let entries = match mem.recall(query, config.max_entries + 2, session_id).await {
+    let entries = match mem
+        .recall(query, config.max_entries + 2, None, session_id)
+        .await
+    {
         Ok(e) => e,
         Err(_) => return String::new(),
     };
 
-    // Convert port entries to domain entries
-    let domain_entries: Vec<MemoryEntry> = entries
-        .into_iter()
-        .map(|e| MemoryEntry {
-            key: e.key,
-            content: e.content,
-            category: MemoryCategory::Core, // port doesn't expose category
-            score: e.score,
-            timestamp: String::new(),
-            session_id: None,
-        })
-        .collect();
-
-    format_recall_context(&domain_entries, config)
+    format_recall_context(&entries, config)
 }
 
 // ── Consolidation policy ─────────────────────────────────────────
@@ -111,9 +101,10 @@ pub fn should_consolidate(auto_save_enabled: bool, user_message: &str) -> bool {
 
 /// Run memory consolidation (fire-and-forget).
 ///
-/// Delegates to MemoryPort which handles LLM extraction internally.
+/// Delegates to MemoryTiersPort which handles LLM extraction internally.
+/// Extracts facts → Core tier, journal → Daily tier.
 pub async fn consolidate_turn(
-    mem: &dyn MemoryPort,
+    mem: &dyn MemoryTiersPort,
     user_message: &str,
     assistant_response: &str,
 ) -> Result<()> {

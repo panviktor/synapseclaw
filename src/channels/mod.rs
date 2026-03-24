@@ -1496,9 +1496,10 @@ async fn handle_message_via_orchestrator(
         ack_reactions: ctx.ack_reactions,
     };
 
-    let memory_port: Option<Arc<dyn crate::fork_core::ports::memory::MemoryPort>> =
-        Some(Arc::new(memory_adapter::MemoryAdapter::new(
+    let memory_port: Option<Arc<dyn crate::fork_core::ports::memory::MemoryTiersPort>> =
+        Some(Arc::new(memory_adapter::MemoryTiersAdapter::new(
             Arc::clone(&ctx.memory),
+            None, // conversation_store not available in channel context
             Arc::clone(&ctx.provider),
             ctx.model.to_string(),
         )));
