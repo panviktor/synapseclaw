@@ -287,20 +287,20 @@ const OPENRC_RESTART_ARGS: [&str; 2] = ["synapseclaw", "restart"];
 
 #[derive(Clone, Copy)]
 struct InterruptOnNewMessageConfig {
-    telegram: bool,
-    slack: bool,
+    /// Global toggle — any channel with InterruptOnNewMessage capability will use it.
+    enabled: bool,
 }
 
 impl InterruptOnNewMessageConfig {
-    fn enabled_for_channel(self, channel: &str) -> bool {
-        // Config-driven: user enables per-channel via config schema.
-        // TODO(Phase 4.1): gate on InterruptOnNewMessage capability first,
-        // then check config toggle. Requires ChannelRegistryPort in dispatch context.
-        match channel {
-            "telegram" => self.telegram,
-            "slack" => self.slack,
-            _ => false,
-        }
+    /// Phase 4.0: capability-driven — checks InterruptOnNewMessage capability.
+    fn enabled_for_channel(
+        self,
+        caps: &[crate::fork_core::domain::channel::ChannelCapability],
+    ) -> bool {
+        self.enabled
+            && caps.contains(
+                &crate::fork_core::domain::channel::ChannelCapability::InterruptOnNewMessage,
+            )
     }
 }
 
@@ -638,23 +638,16 @@ fn strip_tool_result_content(text: &str) -> String {
 /// Check if this channel supports runtime commands (/models, /model, /new).
 /// Phase 4.0: capability-driven via ChannelCapability::RuntimeCommands.
 fn supports_runtime_model_switch(
-    channel_name: &str,
     caps: &[crate::fork_core::domain::channel::ChannelCapability],
 ) -> bool {
-    if !caps.is_empty() {
-        return caps
-            .contains(&crate::fork_core::domain::channel::ChannelCapability::RuntimeCommands);
-    }
-    // Fallback when registry unavailable (standalone CLI mode)
-    matches!(channel_name, "telegram" | "discord" | "matrix")
+    caps.contains(&crate::fork_core::domain::channel::ChannelCapability::RuntimeCommands)
 }
 
 fn parse_runtime_command(
-    channel_name: &str,
     content: &str,
     caps: &[crate::fork_core::domain::channel::ChannelCapability],
 ) -> Option<ChannelRuntimeCommand> {
-    if !supports_runtime_model_switch(channel_name, caps) {
+    if !supports_runtime_model_switch(caps) {
         return None;
     }
 
@@ -1424,7 +1417,7 @@ async fn handle_runtime_command_if_needed(
     target_channel: Option<&Arc<dyn Channel>>,
     caps: &[crate::fork_core::domain::channel::ChannelCapability],
 ) -> bool {
-    let Some(command) = parse_runtime_command(&msg.channel, &msg.content, caps) else {
+    let Some(command) = parse_runtime_command(&msg.content, caps) else {
         return false;
     };
 
@@ -2573,7 +2566,7 @@ async fn process_channel_message(
             // added during run_tool_call_loop, so the LLM retains awareness
             // of what it did on subsequent turns.
             let tool_summary = extract_tool_context_summary(&history, history_len_before_tools);
-            // Phase 4.0: use ToolContextDisplay capability instead of channel name
+            // Phase 4.0: capability-driven — no channel name checks
             let supports_tool_context = channel_caps.contains(
                 &crate::fork_core::domain::channel::ChannelCapability::ToolContextDisplay,
             );
@@ -2878,9 +2871,14 @@ async fn run_message_dispatch_loop(
         let task_sequence = Arc::clone(&task_sequence);
         workers.spawn(async move {
             let _permit = permit;
+            let worker_caps = worker_ctx
+                .channel_registry
+                .as_ref()
+                .map(|r| r.capabilities(&msg.channel))
+                .unwrap_or_default();
             let interrupt_enabled = worker_ctx
                 .interrupt_on_new_message
-                .enabled_for_channel(msg.channel.as_str());
+                .enabled_for_channel(&worker_caps);
             let sender_scope_key = interruption_scope_key(&msg);
             let cancellation_token = CancellationToken::new();
             let completion = Arc::new(InFlightTaskCompletion::new());
@@ -4468,8 +4466,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
         workspace_dir: Arc::new(config.workspace_dir.clone()),
         message_timeout_secs,
         interrupt_on_new_message: InterruptOnNewMessageConfig {
-            telegram: interrupt_on_new_message,
-            slack: interrupt_on_new_message_slack,
+            enabled: interrupt_on_new_message || interrupt_on_new_message_slack,
         },
         multimodal: config.multimodal.clone(),
         hooks: if config.hooks.enabled {
@@ -4510,7 +4507,9 @@ pub async fn start_channels(config: Config) -> Result<()> {
         summary_model: config.summary_model.clone(),
         approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
         activated_tools: ch_activated_handle,
-        channel_registry: None, // Standalone CLI mode — no registry
+        channel_registry: Some(Arc::new(
+            crate::fork_adapters::channels::registry::CachedChannelRegistry::new(config.clone()),
+        )),
     });
 
     // Hydrate in-memory conversation histories from persisted JSONL session files.
@@ -4788,10 +4787,7 @@ mod tests {
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
@@ -4810,7 +4806,11 @@ mod tests {
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         };
 
         assert!(compact_sender_history(&ctx, &sender));
@@ -4900,10 +4900,7 @@ mod tests {
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
@@ -4922,7 +4919,11 @@ mod tests {
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         };
 
         append_sender_turn(&ctx, &sender, ChatMessage::user("hello"));
@@ -4968,10 +4969,7 @@ mod tests {
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
@@ -4990,7 +4988,11 @@ mod tests {
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         };
 
         assert!(rollback_orphan_user_turn(&ctx, &sender, "pending"));
@@ -5055,10 +5057,7 @@ mod tests {
             api_key: None,
             api_url: None,
             reliability: Arc::new(crate::config::ReliabilityConfig::default()),
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
@@ -5077,7 +5076,11 @@ mod tests {
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         };
 
         assert!(rollback_orphan_user_turn(
@@ -5595,10 +5598,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             multimodal: crate::config::MultimodalConfig::default(),
@@ -5614,7 +5614,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -5671,10 +5675,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             multimodal: crate::config::MultimodalConfig::default(),
@@ -5690,7 +5691,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -5761,10 +5766,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -5780,7 +5782,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -5836,10 +5842,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -5855,7 +5858,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -5921,10 +5928,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -5940,7 +5944,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -6026,10 +6034,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6045,7 +6050,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -6113,10 +6122,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6132,7 +6138,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -6215,10 +6225,7 @@ BTC is currently around $65,000 based on latest tool output."#
             },
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6234,7 +6241,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -6302,10 +6313,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6321,7 +6329,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -6379,10 +6391,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6398,7 +6407,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -6567,10 +6580,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6586,7 +6596,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -6663,10 +6677,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: true,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6682,7 +6693,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -6774,10 +6789,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: true,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
@@ -6793,7 +6805,11 @@ BTC is currently around $65,000 based on latest tool output."#
             )),
             activated_tools: None,
             query_classification: crate::config::QueryClassificationConfig::default(),
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -6882,10 +6898,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: true,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6901,7 +6914,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -6972,10 +6989,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -6991,7 +7005,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -7047,10 +7065,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -7066,7 +7081,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -7680,10 +7699,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -7699,7 +7715,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -7781,10 +7801,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -7800,7 +7817,11 @@ BTC is currently around $65,000 based on latest tool output."#
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -7882,10 +7903,7 @@ BTC is currently around $65,000 based on latest tool output."#
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -8447,10 +8465,7 @@ This is an example JSON object for profile settings."#;
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -8466,7 +8481,11 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         // Simulate a photo attachment message with [IMAGE:] marker.
@@ -8529,10 +8548,7 @@ This is an example JSON object for profile settings."#;
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -8548,7 +8564,11 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -8685,10 +8705,7 @@ This is an example JSON object for profile settings."#;
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -8704,7 +8721,11 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -8791,10 +8812,7 @@ This is an example JSON object for profile settings."#;
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -8810,7 +8828,11 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -8889,10 +8911,7 @@ This is an example JSON object for profile settings."#;
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -8908,7 +8927,11 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
@@ -9007,10 +9030,7 @@ This is an example JSON object for profile settings."#;
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
-            interrupt_on_new_message: InterruptOnNewMessageConfig {
-                telegram: false,
-                slack: false,
-            },
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
             multimodal: crate::config::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
@@ -9026,7 +9046,11 @@ This is an example JSON object for profile settings."#;
                 &crate::config::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            channel_registry: None,
+            channel_registry: Some(Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )),
         });
 
         process_channel_message(
