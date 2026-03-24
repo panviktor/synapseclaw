@@ -146,7 +146,7 @@ enum EstopLevelArg {
 /// `SynapseClaw` - Zero overhead. Zero compromise. 100% Rust.
 #[derive(Parser, Debug)]
 #[command(name = "synapseclaw")]
-#[command(author = "theonlyhennygod")]
+#[command(author = "panviktor")]
 #[command(version)]
 #[command(about = "The fastest, smallest AI assistant.", long_about = None)]
 struct Cli {

@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Multi-agent Rust runtime with IPC broker, web dashboard, and hexagonal core.</strong><br>
-  Models, tools, memory, channels, and execution behind one deployable binary.
+  Models, tools, memory, channels, and execution — one deployable binary.
 </p>
 
 <p align="center">
@@ -56,13 +56,13 @@ The project started as a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zer
 ### Architecture overview
 
 ```
-fork_core (workspace crate)     fork_adapters (main crate)       Infrastructure
-├── domain/                     ├── channels/registry            ├── gateway/ (HTTP + WS)
-│   ├── channel, conversation   ├── ipc/bus, quarantine           ├── cron/scheduler
-│   ├── ipc, memory, approval   ├── memory/                      ├── security/
-│   ├── run, spawn, config      ├── runtime/agent, hooks         ├── channels/ (transport)
-│   └── message                 ├── storage/conversation, run    └── tools/ (execution)
-├── ports/ (12 traits)          └── inbound/
+fork_core (workspace crate)    fork_adapters (main crate)      Infrastructure
+├── domain/                    ├── channels/registry           ├── gateway/ (HTTP + WS)
+│   ├── channel, conversation  ├── ipc/bus, quarantine          ├── cron/scheduler
+│   ├── ipc, memory, approval  ├── memory/                     ├── security/
+│   ├── run, spawn, config     ├── runtime/agent, hooks        ├── channels/ (transport)
+│   └── message                ├── storage/conversation, run   └── tools/ (execution)
+├── ports/ (12 traits)         └── inbound/
 ├── application/services/ (6)
 └── application/use_cases/ (10)
 ```
