@@ -4,6 +4,7 @@
 //! Adapters (in `fork_adapters`) implement these ports.
 
 pub mod agent_runtime;
+pub mod approval;
 pub mod channel_output;
 pub mod memory;
 pub mod channel_registry;

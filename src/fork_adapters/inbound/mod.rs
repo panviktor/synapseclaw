@@ -4,6 +4,7 @@
 //! fork_core ports, enabling the HandleInboundMessage orchestrator.
 
 pub mod agent_runtime_adapter;
+pub mod approval_adapter;
 pub mod channel_output_adapter;
 pub mod conversation_history_adapter;
 pub mod hooks_adapter;

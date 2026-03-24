@@ -51,7 +51,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | 1 | **DONE** | `delivery_service` + `SendScheduledNotification` — heartbeat/cron delivery policy moved into fork_core |
 | 2 | **DONE** | `inbound_message_service` + `HandleInboundMessage` — 7 ports, 7 adapters, orchestrator, old code deleted (−4287 lines) |
 | 3 | **DONE** | `conversation_service` + `StartConversationRun` — session lifecycle, summary policy, run state machine |
-| 4 | TODO | `approval_service` + `RequestApproval` + `ReviewQuarantineItem` — needs `domain/approval.rs` + `ports/approval.rs` |
+| 4 | **DONE** | `approval_service` + `RequestApproval` + `ReviewQuarantineItem` — domain types, ports, policy, adapter |
 | 5 | TODO | `ipc_service` + `DispatchIpcMessage` — needs `domain/ipc.rs` + `ports/ipc_bus.rs` |
 | 6 | TODO | `memory_service` + `MemoryTiersPort` — needs `domain/memory.rs` + `ports/memory_tiers.rs` |
 | 7 | TODO | `CodingWorkerPort` + `DelegateImplementationTask` — needs `domain/implementation.rs` |
@@ -61,7 +61,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | Type | Status |
 |------|--------|
 | `domain/ipc.rs` | TODO |
-| `domain/approval.rs` | TODO |
+| `domain/approval.rs` | **DONE** |
 | `domain/memory.rs` | TODO |
 | `domain/implementation.rs` | TODO |
 
@@ -79,7 +79,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 | `ports/hooks.rs` | **DONE** |
 | `ports/session_summary.rs` | **DONE** |
 | `ports/memory_tiers.rs` | TODO |
-| `ports/approval.rs` | TODO |
+| `ports/approval.rs` | **DONE** |
 | `ports/scheduler.rs` | TODO |
 | `ports/ipc_bus.rs` | TODO |
 | `ports/audit.rs` | TODO |

@@ -2,6 +2,15 @@
 
 ## 2026-03-24
 
+### Phase 4.0 Slice 4: ApprovalService + RequestApproval + ReviewQuarantineItem
+- `domain/approval.rs` — ApprovalRequest, ApprovalResponse, ApprovalStatus, QuarantineItem, ApprovalDecision
+- `ports/approval.rs` — ApprovalPort (needs_approval, request, record, session allowlist) + QuarantinePort (quarantine/promote/dismiss/list)
+- `approval_service.rs` — check_needs_approval(), is_session_allowed(), create_approval_request(), quarantine operations
+- `request_approval.rs` — use case: full approval workflow (session allowlist → config → port)
+- `review_quarantine_item.rs` — use case: promote/dismiss/list/quarantine_agent
+- `ApprovalManagerAdapter` — wraps existing ApprovalManager behind ApprovalPort
+- 105 unit tests across all fork_core modules
+
 ### Phase 4.0 Slice 3: ConversationService + StartConversationRun
 - `conversation_service.rs` — session key format, creation, deletion, reset, summary policy, token tracking, run lifecycle
 - `start_conversation_run.rs` — use case: create run → track → finalize (success/fail/interrupt)
