@@ -394,6 +394,18 @@ pub struct AppState {
         Option<Arc<dyn crate::fork_core::ports::conversation_store::ConversationStorePort>>,
     /// Phase 4.0: Unified run execution store
     pub run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>>,
+    /// Phase 4.1: Pipeline definition store (TOML loader)
+    pub pipeline_store:
+        Option<Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort>>,
+    /// Phase 4.1: Pipeline step executor (IPC bridge)
+    pub pipeline_executor:
+        Option<Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>>,
+    /// Phase 4.1: Message router for deterministic inbound routing
+    pub message_router:
+        Option<Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort>>,
+    /// Phase 4.1: Tool middleware chain
+    pub tool_middleware:
+        Option<Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -909,8 +921,147 @@ pub async fn run_gateway(
         },
         channel_registry,
         conversation_store,
-        run_store,
+        run_store: run_store.clone(),
+        pipeline_store: None,    // initialized below if pipelines enabled
+        pipeline_executor: None, // initialized below if pipelines enabled
+        message_router: None,    // initialized below if pipelines enabled
+        tool_middleware: None,    // initialized below if pipelines enabled
     };
+
+    // Phase 4.1: Initialize pipeline engine if enabled
+    if config.pipelines.enabled {
+        let pipeline_dir = config
+            .pipelines
+            .directory
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| config.workspace_dir.join("pipelines"));
+
+        // Ensure pipeline directory exists
+        if let Err(e) = std::fs::create_dir_all(&pipeline_dir) {
+            tracing::warn!(dir = %pipeline_dir.display(), error = %e, "cannot create pipeline directory");
+        }
+
+        // Load pipeline TOML definitions
+        let pipeline_store: Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort> =
+            Arc::new(
+                crate::fork_adapters::pipeline::toml_loader::TomlPipelineLoader::new(&pipeline_dir),
+            );
+        if let Err(e) = pipeline_store.reload().await {
+            tracing::error!(error = %e, "failed to load pipeline definitions");
+        } else {
+            let names = pipeline_store.list().await;
+            tracing::info!(pipelines = ?names, "pipeline definitions loaded");
+        }
+
+        // Create IPC step executor (only if IPC is also enabled)
+        let pipeline_executor: Option<
+            Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
+        > = state.ipc_db.as_ref().map(|db| {
+            let ipc_bus: Arc<dyn crate::fork_core::ports::ipc_bus::IpcBusPort> = Arc::new(
+                crate::fork_adapters::ipc::ipc_bus_adapter::IpcBusAdapter::new(Arc::clone(db)),
+            );
+            let runner_id = config
+                .pipelines
+                .runner_agent_id
+                .clone()
+                .unwrap_or_else(|| "pipeline-runner".into());
+            Arc::new(
+                crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
+                    ipc_bus,
+                    runner_id,
+                    config.pipelines.runner_trust_level,
+                ),
+            ) as Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>
+        });
+
+        // Load routing table
+        let routing_path = config
+            .pipelines
+            .routing_file
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| pipeline_dir.join("routing.toml"));
+        let routing_fallback = config
+            .pipelines
+            .routing_fallback
+            .clone()
+            .unwrap_or_else(|| "default".into());
+        let message_router: Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort> =
+            Arc::new(
+                crate::fork_adapters::routing::rule_chain::TomlMessageRouter::load(
+                    &routing_path,
+                    &routing_fallback,
+                ),
+            );
+
+        // Build tool middleware chain
+        let mut middleware_chain =
+            crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain::new();
+
+        if config.pipelines.default_tool_rate_limit > 0 {
+            middleware_chain.push(Box::new(
+                crate::fork_adapters::middleware::rate_limit::RateLimitMiddleware::with_default_limit(
+                    config.pipelines.default_tool_rate_limit,
+                ),
+            ));
+        }
+
+        if !config.pipelines.approval_required_tools.is_empty() {
+            let tools: std::collections::HashSet<String> =
+                config.pipelines.approval_required_tools.iter().cloned().collect();
+            middleware_chain.push(Box::new(
+                crate::fork_adapters::middleware::approval_gate::ApprovalGateMiddleware::new(tools),
+            ));
+        }
+
+        state.pipeline_store = Some(pipeline_store.clone());
+        state.pipeline_executor = pipeline_executor;
+        state.message_router = Some(message_router);
+        if !middleware_chain.is_empty() {
+            state.tool_middleware = Some(Arc::new(middleware_chain));
+        }
+
+        // Start hot-reload watcher
+        if config.pipelines.hot_reload {
+            match crate::fork_adapters::pipeline::hot_reload::start_watcher(
+                pipeline_dir,
+                pipeline_store,
+            ) {
+                Ok(_handle) => {
+                    // Handle is stored implicitly — watcher runs until daemon exits.
+                    // TODO: store handle for graceful shutdown
+                    tracing::info!("pipeline hot-reload watcher started");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to start pipeline hot-reload watcher");
+                }
+            }
+        }
+
+        // Pipeline recovery: resume incomplete runs
+        if let (Some(ref ps), Some(ref pe), Some(ref rs)) =
+            (&state.pipeline_store, &state.pipeline_executor, &state.run_store)
+        {
+            let ports = crate::fork_core::application::services::pipeline_service::PipelineRunnerPorts {
+                pipeline_store: ps.clone(),
+                run_store: rs.clone(),
+                executor: pe.clone(),
+            };
+            let report =
+                crate::fork_core::application::use_cases::resume_pipeline::recover_all(&ports)
+                    .await;
+            if report.found > 0 {
+                tracing::info!(
+                    found = report.found,
+                    resumed = report.resumed,
+                    failed = report.failed,
+                    skipped = report.skipped,
+                    "pipeline recovery complete"
+                );
+            }
+        }
+    }
 
     // Phase 3.8: seed AgentRegistry from DB + start health polling
     if config.agents_ipc.enabled {
@@ -1007,6 +1158,9 @@ pub async fn run_gateway(
         .route("/api/ipc/ack", post(ipc::handle_ipc_ack))
         .route("/api/ipc/state", get(ipc::handle_ipc_state_get))
         .route("/api/ipc/state", post(ipc::handle_ipc_state_set))
+        // ── Pipeline routes (Phase 4.1) ──
+        .route("/api/pipelines/start", post(ipc::handle_pipeline_start))
+        .route("/api/pipelines/list", get(ipc::handle_pipeline_list))
         .route(
             "/api/ipc/provision-ephemeral",
             post(ipc::handle_ipc_provision_ephemeral),
@@ -2876,6 +3030,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2947,6 +3105,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -3342,6 +3504,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3427,6 +3593,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let headers = HeaderMap::new();
@@ -3524,6 +3694,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let response = handle_webhook(
@@ -3593,6 +3767,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3667,6 +3845,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3746,6 +3928,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -3821,6 +4007,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let mut headers = HeaderMap::new();
