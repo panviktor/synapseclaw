@@ -146,6 +146,10 @@ fn default_retry_backoff() -> u64 {
     5
 }
 
+fn default_approval_timeout() -> u64 {
+    3600 // 1 hour
+}
+
 // ---------------------------------------------------------------------------
 // StepTransition
 // ---------------------------------------------------------------------------
@@ -188,6 +192,10 @@ pub enum ComplexTransition {
         next_approved: String,
         /// Step to go to on denial.
         next_denied: String,
+        /// Timeout in seconds (default: 3600 = 1 hour).
+        /// On timeout, pipeline fails — operator must re-run.
+        #[serde(default = "default_approval_timeout")]
+        timeout_secs: u64,
     },
 
     /// Execute multiple steps in parallel, then join.

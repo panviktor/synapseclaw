@@ -366,6 +366,7 @@ async fn execute_loop(
                         prompt,
                         next_approved,
                         next_denied,
+                        timeout_secs,
                     } => {
                         info!(
                             run_id = %ctx.run_id,
@@ -390,7 +391,7 @@ async fn execute_loop(
                                 }),
                                 &[],
                                 prompt,
-                                None, // no timeout — approval waits indefinitely (safety-net applies)
+                                Some(*timeout_secs),
                             )
                             .await;
 
@@ -1693,6 +1694,7 @@ mod tests {
                             prompt: "Approve this draft?".into(),
                             next_approved: "publish".into(),
                             next_denied: "revise".into(),
+                            timeout_secs: 3600,
                         },
                     )),
                     max_retries: 0,
