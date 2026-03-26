@@ -24,6 +24,7 @@ impl RoutingTable {
             if route.rule.matches(input) {
                 return RoutingResult {
                     target: route.target.clone(),
+                    pipeline: route.pipeline.clone(),
                     matched_rule: Some(route.name.clone()),
                     is_fallback: false,
                 };
@@ -31,6 +32,7 @@ impl RoutingTable {
         }
         RoutingResult {
             target: self.fallback.clone(),
+            pipeline: None,
             matched_rule: None,
             is_fallback: true,
         }
@@ -46,6 +48,9 @@ pub struct Route {
     pub rule: RoutingRule,
     /// Agent ID to route to on match.
     pub target: String,
+    /// Pipeline name to trigger (if routing to a pipeline instead of an agent).
+    #[serde(default)]
+    pub pipeline: Option<String>,
     /// Priority (lower = higher precedence). Routes sorted by this.
     #[serde(default)]
     pub priority: u16,
@@ -56,6 +61,8 @@ pub struct Route {
 pub struct RoutingResult {
     /// Target agent ID.
     pub target: String,
+    /// Pipeline name (if this route triggers a pipeline).
+    pub pipeline: Option<String>,
     /// Name of the matched rule (None if fallback).
     pub matched_rule: Option<String>,
     /// Whether the fallback was used.
