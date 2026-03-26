@@ -1,6 +1,6 @@
 # IPC Phase 4.1 Progress
 
-**Status**: Slices 1-9 complete, Slice 10 next (final)
+**Status**: ALL 10 SLICES COMPLETE — Phase 4.1 engine ready for wiring
 
 Phase 4.0: modular core refactor | **Phase 4.1: deterministic pipeline engine** | Phase 4.2: federated execution
 
@@ -40,7 +40,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | `domain/routing.rs` — RoutingTable, Route, RoutingRule | **DONE** | Slice 6 |
 | ConditionalBranch, Operator enum | **DONE** | In pipeline.rs |
 | FanOutSpec, FanOutBranch | **DONE** | In pipeline.rs |
-| PipelineEvent enum (observability) | TODO | |
+| `domain/pipeline_event.rs` — PipelineEvent enum | **DONE** | Slice 10 |
 
 ### Ports (fork_core)
 
@@ -50,7 +50,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | `ports/pipeline_executor.rs` — PipelineExecutorPort | **DONE** | Slice 2 |
 | `ports/tool_middleware.rs` — ToolMiddlewarePort | **DONE** | Slice 3 |
 | `ports/message_router.rs` — MessageRouterPort | **DONE** | Slice 6 |
-| `ports/pipeline_observer.rs` — PipelineObserverPort | TODO | |
+| `ports/pipeline_observer.rs` — PipelineObserverPort | **DONE** | Slice 10 |
 
 ### Application services and use cases (fork_core)
 
@@ -100,7 +100,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | 7 | WaitForApproval — human-in-the-loop via ApprovalPort | **DONE** | |
 | 8 | Hot-reload — notify filesystem watcher | **DONE** | |
 | 9 | Nested pipelines — pipeline as step | **DONE** | |
-| 10 | Observability — pipeline events via Observer | TODO | |
+| 10 | Observability — pipeline events via Observer | **DONE** | |
 
 ---
 

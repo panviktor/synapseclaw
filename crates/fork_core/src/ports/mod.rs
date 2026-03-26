@@ -15,6 +15,7 @@ pub mod hooks;
 pub mod ipc_bus;
 pub mod message_router;
 pub mod pipeline_executor;
+pub mod pipeline_observer;
 pub mod pipeline_store;
 pub mod route_selection;
 pub mod run_store;

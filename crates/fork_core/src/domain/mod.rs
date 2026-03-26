@@ -10,6 +10,7 @@ pub mod memory;
 pub mod message;
 pub mod pipeline;
 pub mod pipeline_context;
+pub mod pipeline_event;
 pub mod pipeline_validation;
 pub mod routing;
 pub mod run;
