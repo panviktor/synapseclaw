@@ -4,6 +4,7 @@
 //! Use cases compose services and ports to implement business flows.
 
 pub mod abort_conversation_run;
+pub mod cancel_pipeline;
 pub mod delegate_implementation_task;
 pub mod dispatch_ipc_message;
 pub mod handle_inbound_message;
@@ -11,5 +12,6 @@ pub mod request_approval;
 pub mod resume_conversation;
 pub mod review_quarantine_item;
 pub mod spawn_child_agent;
+pub mod resume_pipeline;
 pub mod start_conversation_run;
 pub mod start_pipeline;

@@ -155,6 +155,61 @@ pub async fn run_pipeline(
     result
 }
 
+/// Resume a pipeline from a recovered checkpoint.
+///
+/// Phase 4.1 Slice 5: called by `resume_pipeline` use case after daemon restart.
+/// Takes an existing `PipelineContext` (deserialized from last checkpoint)
+/// and continues execution from `ctx.current_step`.
+pub async fn resume_pipeline(
+    ports: &PipelineRunnerPorts<'_>,
+    mut ctx: PipelineContext,
+    definition: &PipelineDefinition,
+) -> PipelineRunResult {
+    info!(
+        run_id = %ctx.run_id,
+        pipeline = %ctx.pipeline_name,
+        current_step = %ctx.current_step,
+        checkpoint_state = %ctx.state,
+        "resuming pipeline from checkpoint"
+    );
+
+    // Reset state to Running (was WaitingForAgent/WaitingForFanOut at crash time)
+    ctx.state = PipelineState::Running;
+
+    // Use accumulated data as "initial input" for the resumed execution
+    let input = ctx.data.clone();
+
+    let result = execute_loop(ports, definition, &mut ctx, &input).await;
+
+    // Final checkpoint + Run state update
+    checkpoint(ports.run_store, &ctx).await;
+
+    let run_state = match ctx.state {
+        PipelineState::Completed => RunState::Completed,
+        PipelineState::Cancelled => RunState::Cancelled,
+        PipelineState::TimedOut => RunState::Failed,
+        _ => RunState::Failed,
+    };
+    let finished_at = Some(chrono::Utc::now().timestamp() as u64);
+    if let Err(e) = ports
+        .run_store
+        .update_state(&ctx.run_id, run_state, finished_at)
+        .await
+    {
+        warn!(run_id = %ctx.run_id, error = %e, "failed to update run state after resume");
+    }
+
+    info!(
+        run_id = %ctx.run_id,
+        pipeline = %ctx.pipeline_name,
+        state = %ctx.state,
+        steps = ctx.completed_step_count(),
+        "resumed pipeline finished"
+    );
+
+    result
+}
+
 /// Inner execution loop — iterates through steps until End or failure.
 async fn execute_loop(
     ports: &PipelineRunnerPorts<'_>,

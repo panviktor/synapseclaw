@@ -1,6 +1,6 @@
 # IPC Phase 4.1 Progress
 
-**Status**: Slices 1-4 complete, Slice 5 next
+**Status**: Slices 1-5 complete (Checkpoint B done), Slice 6 next
 
 Phase 4.0: modular core refactor | **Phase 4.1: deterministic pipeline engine** | Phase 4.2: federated execution
 
@@ -60,8 +60,8 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | `services/tool_middleware_service.rs` — middleware chain | **DONE** | Slice 3 |
 | `services/routing_service.rs` — rule evaluation | TODO | |
 | `use_cases/start_pipeline.rs` | **DONE** | Slice 2 |
-| `use_cases/resume_pipeline.rs` | TODO | |
-| `use_cases/cancel_pipeline.rs` | TODO | |
+| `use_cases/resume_pipeline.rs` | **DONE** | Slice 5 |
+| `use_cases/cancel_pipeline.rs` | **DONE** | Slice 5 |
 | `use_cases/route_inbound.rs` | TODO | |
 
 ### Adapters (fork_adapters)
@@ -95,7 +95,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | 2 | IPC bridge — step execution through broker + checkpointing | **DONE** | |
 | 3 | ToolMiddleware — before/after hooks on tool calls | **DONE** | |
 | 4 | FanOut + Join — parallel step execution | **DONE** | |
-| 5 | Checkpointing — resume after crash | TODO | |
+| 5 | Checkpointing — resume after crash | **DONE** | |
 | 6 | MessageRouter — deterministic routing | TODO | |
 | 7 | WaitForApproval — human-in-the-loop via ApprovalPort | TODO | |
 | 8 | Hot-reload — notify filesystem watcher | TODO | |
