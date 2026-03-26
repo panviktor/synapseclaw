@@ -112,7 +112,7 @@ Related documents:
 |----|--------|--------|------------|------------|-------|
 | CH-001 | Matrix channel fixes (media, E2EE, dedup) | `temporary-backport` | `medium` | `src/channels/matrix.rs` | May be resolved by upstream; review on every sync |
 
-## Fork Core (CORE-001 .. CORE-011)
+## Fork Core (CORE-001 .. CORE-012)
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
@@ -126,7 +126,8 @@ Related documents:
 | CORE-008 | CodingWorkerPort + DelegateImplementationTask: external coding worker seam | `fork-only` | `low` | `src/fork_core/ports/coding_worker.rs`, `src/fork_core/domain/implementation.rs`, `src/fork_core/application/use_cases/delegate_implementation_task.rs` | Slice 7; narrow port, IPC-backed adapter deferred |
 | CORE-009 | Pipeline engine: domain types, TOML loader, schema validation | `fork-only` | `low` | `crates/fork_core/src/domain/pipeline.rs`, `crates/fork_core/src/domain/pipeline_context.rs`, `crates/fork_core/src/ports/pipeline_store.rs`, `src/fork_adapters/pipeline/toml_loader.rs`, `src/fork_adapters/pipeline/schema_validator.rs` | Phase 4.1 Slice 1; new files only |
 | CORE-010 | PipelineRunner + IPC bridge + checkpointing | `fork-only` | `low` | `crates/fork_core/src/application/services/pipeline_service.rs`, `crates/fork_core/src/application/use_cases/start_pipeline.rs`, `crates/fork_core/src/ports/pipeline_executor.rs`, `src/fork_adapters/pipeline/ipc_step_executor.rs` | Phase 4.1 Slice 2; new files only |
-| CORE-011 | ToolMiddleware: chain, rate limit, validation, approval gate | `fork-only` | `low` | `crates/fork_core/src/domain/tool_middleware.rs`, `crates/fork_core/src/ports/tool_middleware.rs`, `crates/fork_core/src/application/services/tool_middleware_service.rs`, `src/fork_adapters/middleware/*` | Phase 4.1 Slice 3; new files only, hook into loop_.rs deferred |
+| CORE-011 | ToolMiddleware: chain, rate limit, validation, approval gate | `fork-only` | `low` | `crates/fork_core/src/domain/tool_middleware.rs`, `crates/fork_core/src/ports/tool_middleware.rs`, `crates/fork_core/src/application/services/tool_middleware_service.rs`, `src/fork_adapters/middleware/*` | Phase 4.1 Slice 3; hook in loop_.rs wired |
+| CORE-012 | Pipeline wiring: config, gateway, IPC endpoints, agent inbox | `fork-only` | `medium` | `src/config/schema.rs`, `src/gateway/mod.rs`, `src/gateway/ipc.rs`, `src/agent/loop_.rs` | Phase 4.1 wiring; shared hotspots |
 
 ## Other (MISC-001 .. MISC-003)
 
@@ -245,10 +246,10 @@ Update this registry when:
 | Web UI | 6 | 0 | 0 | 6 |
 | Web Infra | 3 | 0 | 0 | 3 |
 | Channels | 0 | 0 | 1 | 1 |
-| Fork Core | 11 | 0 | 0 | 11 |
+| Fork Core | 12 | 0 | 0 | 12 |
 | Other | 3 | 0 | 0 | 3 |
 | Infra/CI | 2 | 0 | 0 | 2 |
-| **Total** | **42** | **12** | **1** | **55** |
+| **Total** | **43** | **12** | **1** | **56** |
 
 ## Current Conclusion
 

@@ -1,6 +1,6 @@
 # IPC Phase 4.1 Progress
 
-**Status**: ALL 10 SLICES COMPLETE — Phase 4.1 engine ready for wiring
+**Status**: COMPLETE — all 10 slices + wiring + deploy
 
 Phase 4.0: modular core refactor | **Phase 4.1: deterministic pipeline engine** | Phase 4.2: federated execution
 
@@ -81,11 +81,13 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 
 | Item | Status | PRs |
 |------|--------|-----|
-| `src/agent/loop_.rs` → `execute_one_tool` middleware hook | TODO | |
-| `HandleInboundMessage` → MessageRouter pre-routing | TODO | |
-| Daemon startup → pipeline recovery from RunStorePort | TODO | |
-| Daemon startup → hot-reload watcher | TODO | |
-| Pipeline TOML directory in workspace config | TODO | |
+| `src/agent/loop_.rs` → `execute_one_tool` middleware hook | **DONE** | Wiring step 4 |
+| `src/gateway/mod.rs` → pipeline-aware inbox processing | **DONE** | Wiring step 6 |
+| Daemon startup → pipeline recovery from RunStorePort | **DONE** | Wiring step 2 |
+| Daemon startup → hot-reload watcher | **DONE** | Wiring step 2 |
+| Pipeline TOML directory in workspace config | **DONE** | Wiring step 1 |
+| Gateway AppState → pipeline adapters | **DONE** | Wiring step 2 |
+| IPC endpoints → `/api/pipelines/start`, `/api/pipelines/list` | **DONE** | Wiring step 3 |
 
 ### Slices (implementation order)
 
@@ -108,16 +110,16 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 
 | # | Criterion | Status | Notes |
 |---|-----------|--------|-------|
-| 1 | Multi-step workflow executes deterministically | TODO | |
-| 2 | Invalid step output rejected by JSON Schema validation | TODO | |
-| 3 | Tool calls rate-limited; feedback loops impossible | TODO | |
-| 4 | Inbound messages routed by deterministic rules | TODO | |
-| 5 | Pipeline resumes from checkpoint after daemon restart | TODO | |
-| 6 | TOML hot-reload: new runs use new def, running runs use old | TODO | |
-| 7 | FanOut parallel branches + join with merged results | TODO | |
-| 8 | Sub-pipeline execution with depth limit | TODO | |
-| 9 | Pipeline events visible in journalctl | TODO | |
-| 10 | Zero new storage dependencies | TODO | |
+| 1 | Multi-step workflow executes deterministically | **DONE** | 15 pipeline_service tests |
+| 2 | Invalid step output rejected by JSON Schema validation | **DONE** | + non-JSON rejection |
+| 3 | Tool calls rate-limited; feedback loops impossible | **DONE** | RateLimitMiddleware + eviction |
+| 4 | Inbound messages routed by deterministic rules | **DONE** | RoutingTable + TOML loader |
+| 5 | Pipeline resumes from checkpoint after daemon restart | **DONE** | resume_pipeline + version check |
+| 6 | TOML hot-reload: new runs use new def, running runs use old | **DONE** | notify watcher + debounce |
+| 7 | FanOut parallel branches + join with merged results | **DONE** | Arc+JoinSet true parallel |
+| 8 | Sub-pipeline execution with depth limit | **DONE** | max_depth, recursive Box::pin |
+| 9 | Pipeline events visible in journalctl | **DONE** | 18 PipelineEvent types |
+| 10 | Zero new storage dependencies | **DONE** | All via existing RunStorePort (SQLite) |
 
 ---
 

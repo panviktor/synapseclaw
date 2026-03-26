@@ -33,8 +33,13 @@
 - **Wiring**: PipelineEngineConfig, gateway AppState integration,
   IPC endpoints (POST /api/pipelines/start, GET /api/pipelines/list),
   ToolMiddleware hook in execute_one_tool, pipeline recovery on startup
+- **Agent integration**: pipeline-aware inbox processing — detects pipeline_step
+  in IPC payload, enforces JSON response via prompt, auto-reply JSON extraction
+  (markdown code blocks, brace extraction, fallback wrapping)
 - Example pipelines: content-creation.toml, parallel-research.toml, routing.toml
+  (matched to real fleet: news-reader/copywriter/marketing-lead/publisher/trend-aggregator)
 - 315 tests (252 fork_core + 63 adapters), 0 failures
+- Merged to master and deployed
 
 ## 2026-03-24
 
