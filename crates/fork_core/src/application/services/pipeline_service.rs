@@ -342,11 +342,74 @@ async fn execute_loop(
                             }
                         }
                     }
-                    other => {
+                    crate::domain::pipeline::ComplexTransition::WaitForApproval {
+                        prompt,
+                        next_approved,
+                        next_denied,
+                    } => {
+                        info!(
+                            run_id = %ctx.run_id,
+                            step = %current_step_id,
+                            "pipeline waiting for approval"
+                        );
+                        ctx.state = PipelineState::WaitingForApproval(current_step_id.clone());
+                        checkpoint(ports.run_store, ctx).await;
+
+                        // Request approval via executor (blocking call).
+                        // The executor adapter translates this to an IPC approval request.
+                        let approved = ports
+                            .executor
+                            .execute_step(
+                                &ctx.run_id,
+                                &format!("{current_step_id}__approval"),
+                                "_approval_gate",
+                                &serde_json::json!({
+                                    "prompt": prompt,
+                                    "step_id": current_step_id,
+                                    "pipeline": ctx.pipeline_name,
+                                }),
+                                &[],
+                                prompt,
+                                None, // no timeout — approval waits indefinitely (safety-net applies)
+                            )
+                            .await;
+
+                        ctx.state = PipelineState::Running;
+
+                        match approved {
+                            Ok(result) => {
+                                let is_approved = result.output.get("approved")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false);
+
+                                info!(
+                                    run_id = %ctx.run_id,
+                                    step = %current_step_id,
+                                    approved = is_approved,
+                                    "approval received"
+                                );
+
+                                let target = if is_approved { next_approved } else { next_denied };
+                                if target == "end" {
+                                    ctx.complete();
+                                    return make_result(ctx);
+                                }
+                                current_step_id = target.clone();
+                            }
+                            Err(err) => {
+                                ctx.fail(format!(
+                                    "approval request failed for step '{}': {}",
+                                    current_step_id, err.message
+                                ));
+                                return make_result(ctx);
+                            }
+                        }
+                    }
+                    crate::domain::pipeline::ComplexTransition::SubPipeline { .. } => {
+                        // Slice 9: nested pipelines — not yet implemented
                         ctx.fail(format!(
-                            "step '{}' uses unsupported transition type (not yet implemented): {:?}",
+                            "step '{}' uses sub_pipeline transition (not yet implemented)",
                             current_step_id,
-                            std::mem::discriminant(other)
                         ));
                         return make_result(ctx);
                     }
@@ -1508,5 +1571,132 @@ mod tests {
         let fanout = result.data.get("fanout").unwrap();
         assert!(fanout.get("news").is_some()); // succeeded
         assert!(fanout.get("trends").is_none()); // failed, not merged
+    }
+
+    // -- WaitForApproval tests (Slice 7) ------------------------------------
+
+    fn approval_pipeline(approved: bool) -> (PipelineDefinition, MockExecutor) {
+        let pipeline = PipelineDefinition {
+            name: "approval-test".into(),
+            version: "1.0".into(),
+            description: "".into(),
+            steps: vec![
+                PipelineStep {
+                    id: "draft".into(),
+                    agent_id: "copywriter".into(),
+                    description: "Write draft".into(),
+                    tools: vec![],
+                    input_schema: None,
+                    output_schema: None,
+                    next: StepTransition::Complex(Box::new(
+                        ComplexTransition::WaitForApproval {
+                            prompt: "Approve this draft?".into(),
+                            next_approved: "publish".into(),
+                            next_denied: "revise".into(),
+                        },
+                    )),
+                    max_retries: 0,
+                    retry_backoff_secs: 1,
+                    timeout_secs: None,
+                },
+                PipelineStep {
+                    id: "publish".into(),
+                    agent_id: "publisher".into(),
+                    description: "".into(),
+                    tools: vec![],
+                    input_schema: None,
+                    output_schema: None,
+                    next: StepTransition::Next("end".into()),
+                    max_retries: 0,
+                    retry_backoff_secs: 1,
+                    timeout_secs: None,
+                },
+                PipelineStep {
+                    id: "revise".into(),
+                    agent_id: "copywriter".into(),
+                    description: "".into(),
+                    tools: vec![],
+                    input_schema: None,
+                    output_schema: None,
+                    next: StepTransition::Next("end".into()),
+                    max_retries: 0,
+                    retry_backoff_secs: 1,
+                    timeout_secs: None,
+                },
+            ],
+            entry_point: "draft".into(),
+            max_depth: 5,
+            timeout_secs: None,
+        };
+
+        let executor = MockExecutor::new(vec![
+            ("draft".into(), Ok(json!({"text": "my draft"}))),
+            (
+                "draft__approval".into(),
+                Ok(json!({"approved": approved})),
+            ),
+            ("publish".into(), Ok(json!({"published": true}))),
+            ("revise".into(), Ok(json!({"revised": true}))),
+        ]);
+
+        (pipeline, executor)
+    }
+
+    #[tokio::test]
+    async fn wait_for_approval_approved_path() {
+        let (pipeline, executor) = approval_pipeline(true);
+        let store = MockPipelineStore {
+            defs: vec![pipeline],
+        };
+        let run_store = MockRunStore::new();
+
+        let result = run_pipeline(
+            &PipelineRunnerPorts {
+                pipeline_store: &store,
+                run_store: &run_store,
+                executor: &executor,
+            },
+            StartPipelineParams {
+                pipeline_name: "approval-test".into(),
+                input: json!({}),
+                triggered_by: "test".into(),
+                depth: 0,
+                parent_run_id: None,
+            },
+        )
+        .await;
+
+        assert_eq!(result.state, PipelineState::Completed);
+        assert!(result.data.get("publish").is_some());
+        assert!(result.data.get("revise").is_none());
+    }
+
+    #[tokio::test]
+    async fn wait_for_approval_denied_path() {
+        let (pipeline, executor) = approval_pipeline(false);
+        let store = MockPipelineStore {
+            defs: vec![pipeline],
+        };
+        let run_store = MockRunStore::new();
+
+        let result = run_pipeline(
+            &PipelineRunnerPorts {
+                pipeline_store: &store,
+                run_store: &run_store,
+                executor: &executor,
+            },
+            StartPipelineParams {
+                pipeline_name: "approval-test".into(),
+                input: json!({}),
+                triggered_by: "test".into(),
+                depth: 0,
+                parent_run_id: None,
+            },
+        )
+        .await;
+
+        assert_eq!(result.state, PipelineState::Completed);
+        assert!(result.data.get("revise").is_some());
+        assert!(result.data.get("publish").is_none());
     }
 }
