@@ -1,6 +1,6 @@
 # IPC Phase 4.1 Progress
 
-**Status**: Slice 1 complete, Slice 2 next
+**Status**: Slices 1-2 complete, Slice 3 next
 
 Phase 4.0: modular core refactor | **Phase 4.1: deterministic pipeline engine** | Phase 4.2: federated execution
 
@@ -35,6 +35,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 |------|--------|-----|
 | `domain/pipeline.rs` — PipelineDefinition, PipelineStep, StepTransition | **DONE** | Slice 1 |
 | `domain/pipeline_context.rs` — PipelineContext, PipelineState, StepRecord | **DONE** | Slice 1 |
+| `domain/pipeline_validation.rs` — JSON Schema validation helper | **DONE** | Slice 2 |
 | `domain/tool_middleware.rs` — ToolBlock, ToolCallContext | TODO | |
 | `domain/routing.rs` — Route, RoutingRule, MessageRouter | TODO | |
 | ConditionalBranch, Operator enum | **DONE** | In pipeline.rs |
@@ -46,6 +47,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | Item | Status | PRs |
 |------|--------|-----|
 | `ports/pipeline_store.rs` — PipelineStorePort | **DONE** | Slice 1 |
+| `ports/pipeline_executor.rs` — PipelineExecutorPort | **DONE** | Slice 2 |
 | `ports/tool_middleware.rs` — ToolMiddlewarePort | TODO | |
 | `ports/message_router.rs` — MessageRouterPort | TODO | |
 | `ports/pipeline_observer.rs` — PipelineObserverPort | TODO | |
@@ -54,10 +56,10 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 
 | Item | Status | PRs |
 |------|--------|-----|
-| `services/pipeline_service.rs` — PipelineRunner | TODO | |
+| `services/pipeline_service.rs` — PipelineRunner | **DONE** | Slice 2 |
 | `services/tool_middleware_service.rs` — middleware chain | TODO | |
 | `services/routing_service.rs` — rule evaluation | TODO | |
-| `use_cases/start_pipeline.rs` | TODO | |
+| `use_cases/start_pipeline.rs` | **DONE** | Slice 2 |
 | `use_cases/resume_pipeline.rs` | TODO | |
 | `use_cases/cancel_pipeline.rs` | TODO | |
 | `use_cases/route_inbound.rs` | TODO | |
@@ -68,7 +70,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 |------|--------|-----|
 | `pipeline/toml_loader.rs` — TOML → PipelineDefinition | **DONE** | Slice 1 |
 | `pipeline/hot_reload.rs` — notify watcher | TODO | |
-| `pipeline/ipc_step_executor.rs` — step via IPC broker | TODO | |
+| `pipeline/ipc_step_executor.rs` — step via IPC broker | **DONE** | Slice 2 |
 | `pipeline/schema_validator.rs` — jsonschema validation | **DONE** | Slice 1 |
 | `middleware/rate_limit.rs` | TODO | |
 | `middleware/validation.rs` | TODO | |
@@ -90,7 +92,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | Slice | Description | Status | PRs |
 |-------|-------------|--------|-----|
 | 1 | Pipeline core — domain types + TOML loading + schema validation | **DONE** | |
-| 2 | IPC bridge — step execution through broker + checkpointing | TODO | |
+| 2 | IPC bridge — step execution through broker + checkpointing | **DONE** | |
 | 3 | ToolMiddleware — before/after hooks on tool calls | TODO | |
 | 4 | FanOut + Join — parallel step execution | TODO | |
 | 5 | Checkpointing — resume after crash | TODO | |

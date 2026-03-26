@@ -12,6 +12,7 @@ uuid = { version = "1.22", default-features = false, features = ["v4", "std"] }
 tracing = { version = "0.1", default-features = false }
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
+jsonschema = "0.29"
 tokio = { version = "1.50", default-features = false, features = ["sync", "rt", "macros"] }
 
 [dev-dependencies]

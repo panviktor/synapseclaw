@@ -12,3 +12,4 @@ pub mod resume_conversation;
 pub mod review_quarantine_item;
 pub mod spawn_child_agent;
 pub mod start_conversation_run;
+pub mod start_pipeline;
