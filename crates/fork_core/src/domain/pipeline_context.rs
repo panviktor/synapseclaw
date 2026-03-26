@@ -75,10 +75,30 @@ impl PipelineContext {
         }
     }
 
+    /// Maximum serialized size of accumulated data (10 MB).
+    const MAX_DATA_SIZE: usize = 10 * 1024 * 1024;
+
     /// Merge a step's output into accumulated data under the step's ID.
+    /// If the output would push accumulated data over the size cap,
+    /// the output is truncated to a summary.
     pub fn merge_step_output(&mut self, step_id: &str, output: Value) {
+        // Check size before inserting to prevent unbounded growth
+        let output_size = output.to_string().len();
+        let current_size = self.data.to_string().len();
+        let truncated = current_size + output_size > Self::MAX_DATA_SIZE;
+
         if let Value::Object(ref mut map) = self.data {
-            map.insert(step_id.to_string(), output);
+            if truncated {
+                map.insert(
+                    step_id.to_string(),
+                    Value::String(format!(
+                        "[output truncated: {output_size} bytes exceeded {}-byte cap]",
+                        Self::MAX_DATA_SIZE
+                    )),
+                );
+            } else {
+                map.insert(step_id.to_string(), output);
+            }
         }
         self.updated_at = chrono::Utc::now().timestamp();
     }
@@ -101,8 +121,15 @@ impl PipelineContext {
         self.data.get(step_id)
     }
 
+    /// Maximum step history entries to prevent unbounded growth.
+    const MAX_STEP_HISTORY: usize = 500;
+
     /// Record a step as started.
     pub fn record_step_start(&mut self, step_id: &str, agent_id: &str, attempt: u8) {
+        // Evict oldest entries if history is too large
+        if self.step_history.len() >= Self::MAX_STEP_HISTORY {
+            self.step_history.drain(..self.step_history.len() / 2);
+        }
         let now = chrono::Utc::now().timestamp();
         self.step_history.push(StepRecord {
             step_id: step_id.to_string(),

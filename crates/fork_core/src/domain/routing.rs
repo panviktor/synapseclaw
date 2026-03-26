@@ -79,8 +79,9 @@ pub struct RoutingInput {
 pub enum RoutingRule {
     /// Exact command prefix match (e.g. "/research").
     Command(String),
-    /// Regex match on message content.
-    Regex(String),
+    /// Substring match on message content (will become regex when `regex` crate added).
+    #[serde(alias = "regex")]
+    Substring(String),
     /// Any keyword present in message content (case-insensitive).
     Keywords(Vec<String>),
     /// Metadata field equals value.
@@ -99,11 +100,7 @@ impl RoutingRule {
                 let trimmed = input.content.trim();
                 trimmed == cmd || trimmed.starts_with(&format!("{cmd} "))
             }
-            Self::Regex(pattern) => {
-                // Simple substring match for now (full regex via `regex` crate
-                // is a future optimization — avoids adding the dependency).
-                input.content.contains(pattern)
-            }
+            Self::Substring(pattern) => input.content.contains(pattern),
             Self::Keywords(keywords) => {
                 let lower = input.content.to_lowercase();
                 keywords.iter().any(|kw| lower.contains(&kw.to_lowercase()))
@@ -121,7 +118,7 @@ impl fmt::Display for RoutingRule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Command(cmd) => write!(f, "command:{cmd}"),
-            Self::Regex(pat) => write!(f, "regex:{pat}"),
+            Self::Substring(pat) => write!(f, "substring:{pat}"),
             Self::Keywords(kw) => write!(f, "keywords:[{}]", kw.join(",")),
             Self::FieldEquals { field, value } => write!(f, "field:{field}={value}"),
             Self::SourceKind(kind) => write!(f, "source:{kind}"),
@@ -206,13 +203,10 @@ mod tests {
     }
 
     #[test]
-    fn regex_substring() {
-        let rule = RoutingRule::Regex("PR #\\d+".into());
-        // Currently substring match, not real regex
-        assert!(!rule.matches(&input("review PR #123")));
-        // Literal substring
-        let rule2 = RoutingRule::Regex("PR #".into());
-        assert!(rule2.matches(&input("review PR #123")));
+    fn substring_match() {
+        let rule = RoutingRule::Substring("PR #".into());
+        assert!(rule.matches(&input("review PR #123")));
+        assert!(!rule.matches(&input("no match here")));
     }
 
     #[test]

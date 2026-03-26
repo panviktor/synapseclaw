@@ -24,7 +24,7 @@ pub async fn execute(run_store: &dyn RunStorePort, run_id: &str) -> Result<(), S
         ));
     }
 
-    let finished_at = Some(chrono::Utc::now().timestamp() as u64);
+    let finished_at = Some(chrono::Utc::now().timestamp().max(0) as u64);
     run_store
         .update_state(run_id, RunState::Cancelled, finished_at)
         .await

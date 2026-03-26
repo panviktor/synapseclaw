@@ -162,15 +162,29 @@ async fn recover_one(ports: &PipelineRunnerPorts<'_>, run_id: &str) -> RecoveryD
         }
     };
 
-    // Warn if definition version changed
+    // Refuse to resume if definition version changed — structural changes
+    // (removed/renamed steps, changed transitions) would cause confusing failures.
+    // Operator should re-run the pipeline manually on the new version.
     if definition.version != ctx.pipeline_version {
         warn!(
             run_id = %run_id,
             pipeline = %ctx.pipeline_name,
             checkpoint_version = %ctx.pipeline_version,
             current_version = %definition.version,
-            "resuming with stale definition"
+            "pipeline definition changed, refusing to resume"
         );
+        let _ = ports
+            .run_store
+            .update_state(run_id, RunState::Failed, Some(now_secs()))
+            .await;
+        return RecoveryDetail {
+            run_id: run_id.into(),
+            pipeline_name,
+            outcome: RecoveryOutcome::Skipped(format!(
+                "definition version changed: {} -> {} (re-run manually)",
+                ctx.pipeline_version, definition.version
+            )),
+        };
     }
 
     // Check that current step still exists in definition
@@ -210,7 +224,7 @@ async fn recover_one(ports: &PipelineRunnerPorts<'_>, run_id: &str) -> RecoveryD
 }
 
 fn now_secs() -> u64 {
-    chrono::Utc::now().timestamp() as u64
+    chrono::Utc::now().timestamp().max(0) as u64
 }
 
 #[cfg(test)]

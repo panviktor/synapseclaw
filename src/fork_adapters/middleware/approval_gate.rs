@@ -39,16 +39,17 @@ impl ApprovalGateMiddleware {
         self
     }
 
-    /// Mark a tool as approved for a specific run.
-    pub fn approve(&self, run_id: &str, tool_name: &str) {
-        let key = format!("{run_id}:{tool_name}");
+    /// Mark a tool as approved for a specific run + step.
+    pub fn approve(&self, run_id: &str, step_id: &str, tool_name: &str) {
+        let key = format!("{run_id}:{step_id}:{tool_name}");
         self.approved.lock().unwrap().insert(key);
     }
 
-    /// Check if a tool has been approved for a run.
+    /// Check if a tool has been approved for this run + step.
     fn is_approved(&self, ctx: &ToolCallContext) -> bool {
         let run_id = ctx.run_id.as_deref().unwrap_or(&ctx.agent_id);
-        let key = format!("{run_id}:{}", ctx.tool_name);
+        let step_id = ctx.step_id.as_deref().unwrap_or("_");
+        let key = format!("{run_id}:{step_id}:{}", ctx.tool_name);
         self.approved.lock().unwrap().contains(&key)
     }
 }
@@ -96,7 +97,7 @@ mod tests {
         ToolCallContext {
             run_id: Some(run_id.into()),
             pipeline_name: None,
-            step_id: None,
+            step_id: Some("step1".into()),
             agent_id: "agent".into(),
             tool_name: tool.into(),
             args: json!({}),
@@ -120,19 +121,31 @@ mod tests {
     #[tokio::test]
     async fn approved_tool_passes() {
         let mw = ApprovalGateMiddleware::new(HashSet::from(["shell".into()]));
-        mw.approve("run-1", "shell");
+        mw.approve("run-1", "step1", "shell");
         assert!(mw.before(&ctx("shell", "run-1")).await.is_ok());
     }
 
     #[tokio::test]
-    async fn approval_is_per_run() {
+    async fn approval_is_per_run_and_step() {
         let mw = ApprovalGateMiddleware::new(HashSet::from(["shell".into()]));
-        mw.approve("run-1", "shell");
+        mw.approve("run-1", "step1", "shell");
 
-        // run-1 approved
+        // run-1:step1 approved
         assert!(mw.before(&ctx("shell", "run-1")).await.is_ok());
-        // run-2 NOT approved
+        // run-2:step1 NOT approved
         assert!(mw.before(&ctx("shell", "run-2")).await.is_err());
+
+        // run-1:step2 NOT approved (different step)
+        let ctx_step2 = ToolCallContext {
+            run_id: Some("run-1".into()),
+            pipeline_name: None,
+            step_id: Some("step2".into()),
+            agent_id: "agent".into(),
+            tool_name: "shell".into(),
+            args: json!({}),
+            call_count: 0,
+        };
+        assert!(mw.before(&ctx_step2).await.is_err());
     }
 
     #[tokio::test]

@@ -144,7 +144,7 @@ async fn run_pipeline_inner(
         PipelineState::TimedOut => RunState::Failed,
         _ => RunState::Failed,
     };
-    let finished_at = Some(chrono::Utc::now().timestamp() as u64);
+    let finished_at = Some(chrono::Utc::now().timestamp().max(0) as u64);
     if let Err(e) = ports
         .run_store
         .update_state(&ctx.run_id, run_state, finished_at)
@@ -199,7 +199,7 @@ pub async fn resume_pipeline(
         PipelineState::TimedOut => RunState::Failed,
         _ => RunState::Failed,
     };
-    let finished_at = Some(chrono::Utc::now().timestamp() as u64);
+    let finished_at = Some(chrono::Utc::now().timestamp().max(0) as u64);
     if let Err(e) = ports
         .run_store
         .update_state(&ctx.run_id, run_state, finished_at)
@@ -740,9 +740,18 @@ fn resolve_step_input(
         return initial_input.clone();
     }
 
-    // If fanout data exists, the next step likely needs the merged results.
-    // Pass the full accumulated data so the join step can access fanout.<key>.
-    if ctx.data.get("fanout").is_some() {
+    // If this step is a fan-out join target, pass full accumulated data
+    // (including fanout.* namespace). Check by looking for a FanOut
+    // transition in any step that references this step_id as join_step.
+    let is_join_step = definition.steps.iter().any(|s| {
+        if let StepTransition::Complex(ref c) = s.next {
+            if let crate::domain::pipeline::ComplexTransition::FanOut(ref spec) = c.as_ref() {
+                return spec.join_step == step_id;
+            }
+        }
+        false
+    });
+    if is_join_step {
         return ctx.data.clone();
     }
 
@@ -775,7 +784,7 @@ async fn checkpoint(run_store: &dyn RunStorePort, ctx: &PipelineContext) {
         event_type: RunEventType::Progress,
         content,
         tool_name: Some("pipeline_checkpoint".into()),
-        created_at: chrono::Utc::now().timestamp() as u64,
+        created_at: chrono::Utc::now().timestamp().max(0) as u64,
     };
 
     if let Err(e) = run_store.append_event(&event).await {

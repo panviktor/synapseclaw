@@ -279,14 +279,17 @@ impl ConditionalBranch {
                     _ => false,
                 },
             },
-            Operator::Matches => match (actual.as_str(), self.value.as_str()) {
-                (Some(text), Some(pattern)) => {
-                    // Simple regex-like matching: exact substring for now.
-                    // Full regex support can be added later if needed.
-                    text.contains(pattern)
+            Operator::Matches => {
+                // NOTE: currently identical to Contains for strings.
+                // Will implement actual regex when `regex` crate is added.
+                // Kept as separate variant so TOML pipelines can be
+                // forward-compatible — they'll get regex behavior without
+                // changing their definitions.
+                match (actual.as_str(), self.value.as_str()) {
+                    (Some(text), Some(pattern)) => text.contains(pattern),
+                    _ => false,
                 }
-                _ => false,
-            },
+            }
         }
     }
 }
@@ -302,7 +305,8 @@ pub enum Operator {
     Gte,
     Lte,
     Contains,
-    /// Regex match (currently substring; full regex in future).
+    /// Regex match (currently substring; full regex when `regex` crate added).
+    /// Kept as distinct variant for TOML forward-compatibility.
     Matches,
 }
 
