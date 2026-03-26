@@ -1,6 +1,6 @@
 # IPC Phase 4.1 Progress
 
-**Status**: Slices 1-5 complete (Checkpoint B done), Slice 6 next
+**Status**: Slices 1-6 complete, Slice 7 next
 
 Phase 4.0: modular core refactor | **Phase 4.1: deterministic pipeline engine** | Phase 4.2: federated execution
 
@@ -37,7 +37,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | `domain/pipeline_context.rs` — PipelineContext, PipelineState, StepRecord | **DONE** | Slice 1 |
 | `domain/pipeline_validation.rs` — JSON Schema validation helper | **DONE** | Slice 2 |
 | `domain/tool_middleware.rs` — ToolBlock, ToolCallContext | **DONE** | Slice 3 |
-| `domain/routing.rs` — Route, RoutingRule, MessageRouter | TODO | |
+| `domain/routing.rs` — RoutingTable, Route, RoutingRule | **DONE** | Slice 6 |
 | ConditionalBranch, Operator enum | **DONE** | In pipeline.rs |
 | FanOutSpec, FanOutBranch | **DONE** | In pipeline.rs |
 | PipelineEvent enum (observability) | TODO | |
@@ -49,7 +49,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | `ports/pipeline_store.rs` — PipelineStorePort | **DONE** | Slice 1 |
 | `ports/pipeline_executor.rs` — PipelineExecutorPort | **DONE** | Slice 2 |
 | `ports/tool_middleware.rs` — ToolMiddlewarePort | **DONE** | Slice 3 |
-| `ports/message_router.rs` — MessageRouterPort | TODO | |
+| `ports/message_router.rs` — MessageRouterPort | **DONE** | Slice 6 |
 | `ports/pipeline_observer.rs` — PipelineObserverPort | TODO | |
 
 ### Application services and use cases (fork_core)
@@ -75,7 +75,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | `middleware/rate_limit.rs` | **DONE** | Slice 3 |
 | `middleware/validation.rs` | **DONE** | Slice 3 |
 | `middleware/approval_gate.rs` | **DONE** | Slice 3 |
-| `routing/rule_chain.rs` — ordered rule evaluation | TODO | |
+| `routing/rule_chain.rs` — TomlMessageRouter | **DONE** | Slice 6 |
 
 ### Integration points (existing code modifications)
 
@@ -96,7 +96,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | 3 | ToolMiddleware — before/after hooks on tool calls | **DONE** | |
 | 4 | FanOut + Join — parallel step execution | **DONE** | |
 | 5 | Checkpointing — resume after crash | **DONE** | |
-| 6 | MessageRouter — deterministic routing | TODO | |
+| 6 | MessageRouter — deterministic routing | **DONE** | |
 | 7 | WaitForApproval — human-in-the-loop via ApprovalPort | TODO | |
 | 8 | Hot-reload — notify filesystem watcher | TODO | |
 | 9 | Nested pipelines — pipeline as step | TODO | |

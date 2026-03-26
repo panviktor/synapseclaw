@@ -11,6 +11,7 @@ pub mod message;
 pub mod pipeline;
 pub mod pipeline_context;
 pub mod pipeline_validation;
+pub mod routing;
 pub mod run;
 pub mod spawn;
 pub mod tool_middleware;
