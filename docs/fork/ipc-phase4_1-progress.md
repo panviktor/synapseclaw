@@ -1,6 +1,6 @@
 # IPC Phase 4.1 Progress
 
-**Status**: Slices 1-7 complete, Slice 8 next
+**Status**: Slices 1-8 complete (Checkpoint C done), Slice 9 next
 
 Phase 4.0: modular core refactor | **Phase 4.1: deterministic pipeline engine** | Phase 4.2: federated execution
 
@@ -18,7 +18,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 
 | Item | Status | Notes |
 |------|--------|-------|
-| `notify` crate added to workspace | TODO | Filesystem watcher for hot-reload (Slice 8) |
+| `notify` crate added to workspace | **DONE** | Filesystem watcher for hot-reload |
 | `jsonschema` crate added to workspace | **DONE** | JSON Schema validation for step contracts |
 | `serde` with `derive` added to fork_core | **DONE** | Pipeline domain type serialization |
 
@@ -69,7 +69,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | Item | Status | PRs |
 |------|--------|-----|
 | `pipeline/toml_loader.rs` — TOML → PipelineDefinition | **DONE** | Slice 1 |
-| `pipeline/hot_reload.rs` — notify watcher | TODO | |
+| `pipeline/hot_reload.rs` — notify watcher | **DONE** | Slice 8 |
 | `pipeline/ipc_step_executor.rs` — step via IPC broker | **DONE** | Slice 2 |
 | `pipeline/schema_validator.rs` — jsonschema validation | **DONE** | Slice 1 |
 | `middleware/rate_limit.rs` | **DONE** | Slice 3 |
@@ -98,7 +98,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | 5 | Checkpointing — resume after crash | **DONE** | |
 | 6 | MessageRouter — deterministic routing | **DONE** | |
 | 7 | WaitForApproval — human-in-the-loop via ApprovalPort | **DONE** | |
-| 8 | Hot-reload — notify filesystem watcher | TODO | |
+| 8 | Hot-reload — notify filesystem watcher | **DONE** | |
 | 9 | Nested pipelines — pipeline as step | TODO | |
 | 10 | Observability — pipeline events via Observer | TODO | |
 
