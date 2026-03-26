@@ -1,7 +1,7 @@
 # Message routing rules for the marketing fleet.
 #
-# Deterministic routing: first rule match wins, fallback if none match.
-# Place in: {workspace}/pipelines/routing.toml
+# Routes inbound messages to the right agent by content analysis.
+# marketing-lead is the fallback (coordinator, trust=1).
 
 fallback = "marketing-lead"
 
@@ -14,7 +14,7 @@ priority = 10
 command = "/research"
 
 [[routes]]
-name = "trend-command"
+name = "trends-command"
 target = "trend-aggregator"
 priority = 11
 
@@ -22,20 +22,44 @@ priority = 11
 command = "/trends"
 
 [[routes]]
+name = "write-command"
+target = "copywriter"
+priority = 12
+
+[routes.rule]
+command = "/write"
+
+[[routes]]
 name = "publish-command"
 target = "publisher"
-priority = 12
+priority = 13
 
 [routes.rule]
 command = "/publish"
 
 [[routes]]
-name = "deploy-keywords"
+name = "pipeline-command"
 target = "marketing-lead"
+priority = 14
+
+[routes.rule]
+command = "/pipeline"
+
+[[routes]]
+name = "news-keywords"
+target = "news-reader"
 priority = 50
 
 [routes.rule]
-keywords = ["deploy", "restart", "server", "systemd"]
+keywords = ["news", "latest", "what happened", "breaking"]
+
+[[routes]]
+name = "trend-keywords"
+target = "trend-aggregator"
+priority = 51
+
+[routes.rule]
+keywords = ["trend", "competitor", "market", "analysis", "compare"]
 
 [[routes]]
 name = "content-keywords"
@@ -43,4 +67,12 @@ target = "copywriter"
 priority = 60
 
 [routes.rule]
-keywords = ["write", "draft", "post", "article", "content"]
+keywords = ["write", "draft", "post", "article", "content", "blog"]
+
+[[routes]]
+name = "publish-keywords"
+target = "publisher"
+priority = 70
+
+[routes.rule]
+keywords = ["publish", "send", "translate", "telegram", "channel"]

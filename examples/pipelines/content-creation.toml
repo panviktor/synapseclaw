@@ -1,28 +1,33 @@
-# Content creation pipeline for the marketing fleet.
+# Content creation pipeline — marketing fleet.
 #
-# Flow: news-reader researches → copywriter drafts → marketing-lead reviews
-# → (approved?) publisher publishes / (denied?) copywriter revises.
+# Matches the actual agent configuration:
+# - news-reader (trust=3, qwen3.5-plus) — web research
+# - copywriter (trust=3, MiniMax-M2.5) — content writing
+# - marketing-lead (trust=1, glm-5) — review & coordination
+# - publisher (trust=2, glm-4.7) — publishing to channels
 #
-# Place in: {workspace}/pipelines/content-creation.toml
-# Trigger:  POST /api/pipelines/start {"pipeline_name": "content-creation", "input": {"topic": "..."}}
+# Trigger: POST /api/pipelines/start
+#   {"pipeline_name": "content-creation", "input": {"topic": "AI agents 2026"}}
 
 [pipeline]
 name = "content-creation"
 version = "1.0"
-description = "Research, draft, review, and publish content"
+description = "Research → Draft → Review → Publish"
 entry_point = "research"
 max_depth = 3
 timeout_secs = 3600
 
-# ── Step 1: Research ──────────────────────────────────────────────────────
+# ── Research (news-reader, trust=3) ───────────────────────────────────────
 
 [[steps]]
 id = "research"
 agent_id = "news-reader"
-description = "Research the given topic, gather sources and write a summary"
-tools = ["web_search", "rss_fetch", "memory_read"]
+description = "Search the web for current information on the given topic. Return JSON with topic, sources array, and summary."
+tools = ["web_search"]
 next = "draft"
 timeout_secs = 300
+max_retries = 1
+retry_backoff_secs = 15
 
 [steps.output_schema]
 type = "object"
@@ -33,13 +38,13 @@ topic = { type = "string" }
 sources = { type = "array", items = { type = "string" } }
 summary = { type = "string", minLength = 10 }
 
-# ── Step 2: Draft ─────────────────────────────────────────────────────────
+# ── Draft (copywriter, trust=3) ──────────────────────────────────────────
 
 [[steps]]
 id = "draft"
 agent_id = "copywriter"
-description = "Write a post based on the research summary and sources"
-tools = ["memory_read", "memory_write"]
+description = "Write a post based on the research. Return JSON with title, body, and tags array."
+tools = ["memory_recall"]
 max_retries = 2
 retry_backoff_secs = 10
 timeout_secs = 600
@@ -58,13 +63,13 @@ title = { type = "string", maxLength = 120 }
 body = { type = "string", minLength = 20 }
 tags = { type = "array", items = { type = "string" } }
 
-# ── Step 3: Review ────────────────────────────────────────────────────────
+# ── Review (marketing-lead, trust=1) ─────────────────────────────────────
 
 [[steps]]
 id = "review"
 agent_id = "marketing-lead"
-description = "Review the draft for quality. Return approved=true or false with feedback."
-tools = ["memory_read"]
+description = "Review the draft for quality. Return JSON with approved (boolean) and feedback (string)."
+tools = []
 timeout_secs = 300
 next = "publish"
 
@@ -80,13 +85,13 @@ required = ["approved", "feedback"]
 approved = { type = "boolean" }
 feedback = { type = "string" }
 
-# ── Step 4: Publish ───────────────────────────────────────────────────────
+# ── Publish (publisher, trust=2) ──────────────────────────────────────────
 
 [[steps]]
 id = "publish"
 agent_id = "publisher"
-description = "Publish the approved content to channels"
-tools = ["channel_send"]
+description = "Publish the approved content. Return JSON with published (boolean) and channel (string)."
+tools = []
 next = "end"
 timeout_secs = 120
 
