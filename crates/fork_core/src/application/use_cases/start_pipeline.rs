@@ -45,13 +45,8 @@ pub async fn execute(
     ports: &PipelineRunnerPorts<'_>,
     input: StartPipelineInput,
 ) -> Result<PipelineRunResult, StartPipelineError> {
-    // Validate pipeline exists
-    if ports.pipeline_store.get(&input.pipeline_name).await.is_none() {
-        return Err(StartPipelineError {
-            message: format!("pipeline '{}' not found", input.pipeline_name),
-        });
-    }
-
+    // Single fetch: run_pipeline handles "not found" internally.
+    // No pre-check to avoid TOCTOU race with hot-reload.
     let result = pipeline_service::run_pipeline(
         ports,
         StartPipelineParams {
@@ -64,11 +59,8 @@ pub async fn execute(
     )
     .await;
 
-    if result.state == PipelineState::Failed {
-        // Still return Ok — the pipeline ran but failed.
-        // StartPipelineError is for cases where we can't even start.
-    }
-
+    // run_pipeline returns Failed with error message if pipeline not found.
+    // StartPipelineError is reserved for infrastructure failures.
     Ok(result)
 }
 
@@ -155,7 +147,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_nonexistent_pipeline_errors() {
+    async fn start_nonexistent_pipeline_returns_failed() {
         let store = MockStore { defs: vec![] };
         let run_store = MockRunStore;
         let executor = OkExecutor;
@@ -165,7 +157,7 @@ mod tests {
             executor: &executor,
         };
 
-        let err = execute(
+        let result = execute(
             &ports,
             StartPipelineInput {
                 pipeline_name: "nope".into(),
@@ -174,9 +166,10 @@ mod tests {
             },
         )
         .await
-        .unwrap_err();
+        .unwrap();
 
-        assert!(err.message.contains("not found"));
+        assert_eq!(result.state, PipelineState::Failed);
+        assert!(result.error.unwrap().contains("not found"));
     }
 
     #[tokio::test]

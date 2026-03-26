@@ -217,7 +217,10 @@ async fn execute_loop(
     ctx: &mut PipelineContext,
     initial_input: &Value,
 ) -> PipelineRunResult {
-    let mut current_step_id = definition.entry_point.clone();
+    // Start from ctx.current_step (resume) or entry_point (fresh run).
+    // PipelineContext is initialized with entry_point in new(), so this
+    // is always correct for both fresh and resumed runs.
+    let mut current_step_id = ctx.current_step.clone();
 
     // Global timeout: explicit or safety-net default (2 hours).
     const DEFAULT_PIPELINE_TIMEOUT_SECS: u64 = 7200;
@@ -587,17 +590,27 @@ async fn execute_fan_out(
 
 /// Determine what input to pass to a step.
 ///
-/// - First step: receives the initial pipeline input (from `_input`).
-/// - Subsequent steps: receive the previous step's output.
+/// Strategy:
+/// - Entry point: receives the initial pipeline input.
+/// - After fan-out join: receives the full accumulated data (including
+///   `fanout.*` namespace with merged branch results).
+/// - Normal step: receives the previous step's output.
+/// - Fallback: full accumulated data.
 fn resolve_step_input(
     ctx: &PipelineContext,
     step_id: &str,
     initial_input: &Value,
     definition: &PipelineDefinition,
 ) -> Value {
-    // If this is the entry point, use initial input
+    // If this is the entry point (or current_step on fresh run), use initial input
     if step_id == definition.entry_point {
         return initial_input.clone();
+    }
+
+    // If fanout data exists, the next step likely needs the merged results.
+    // Pass the full accumulated data so the join step can access fanout.<key>.
+    if ctx.data.get("fanout").is_some() {
+        return ctx.data.clone();
     }
 
     // Find the most recent completed step in history and use its output
@@ -666,22 +679,7 @@ fn make_result(ctx: &PipelineContext) -> PipelineRunResult {
 
 /// Generate a UUID v4 string.
 fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    // Simple pseudo-UUID from timestamp + random-ish bits.
-    // Good enough for run IDs; not cryptographic.
-    let hash = nanos.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
-    format!(
-        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
-        (hash >> 96) as u32,
-        (hash >> 80) as u16,
-        (hash >> 64) as u16 & 0xFFF,
-        ((hash >> 48) as u16 & 0x3FFF) | 0x8000,
-        hash as u64 & 0xFFFF_FFFF_FFFF,
-    )
+    uuid::Uuid::new_v4().to_string()
 }
 
 // ---------------------------------------------------------------------------
