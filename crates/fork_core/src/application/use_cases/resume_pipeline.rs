@@ -110,7 +110,17 @@ async fn recover_one(ports: &PipelineRunnerPorts<'_>, run_id: &str) -> RecoveryD
         .iter()
         .rev()
         .find(|e| e.tool_name.as_deref() == Some("pipeline_checkpoint"))
-        .and_then(|e| serde_json::from_str::<PipelineContext>(&e.content).ok());
+        .and_then(|e| {
+            serde_json::from_str::<PipelineContext>(&e.content)
+                .map_err(|err| {
+                    warn!(
+                        run_id = %run_id,
+                        error = %err,
+                        "checkpoint deserialization failed"
+                    );
+                })
+                .ok()
+        });
 
     let ctx = match last_checkpoint {
         Some(c) => c,

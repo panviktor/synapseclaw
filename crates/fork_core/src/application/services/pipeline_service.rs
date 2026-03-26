@@ -237,6 +237,16 @@ async fn execute_loop(
     let deadline = ctx.started_at + timeout as i64;
 
     loop {
+        // Cancellation check: read run state from store
+        if let Some(run) = ports.run_store.get_run(&ctx.run_id).await {
+            if run.state == RunState::Cancelled {
+                ctx.state = PipelineState::Cancelled;
+                ctx.error = Some("pipeline cancelled by operator".into());
+                info!(run_id = %ctx.run_id, "pipeline cancelled");
+                return make_result(ctx);
+            }
+        }
+
         // Global timeout check
         if chrono::Utc::now().timestamp() > deadline {
             ctx.state = PipelineState::TimedOut;

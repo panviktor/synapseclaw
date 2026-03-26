@@ -114,7 +114,13 @@ pub struct PipelineStep {
     /// Human-readable description.
     #[serde(default)]
     pub description: String,
-    /// Scoped tool allowlist for this step (empty = all tools allowed).
+    /// Advisory tool allowlist for this step (empty = all tools allowed).
+    ///
+    /// **Note**: this field is included in the IPC task payload but is NOT
+    /// enforced by the pipeline engine. The receiving agent's own
+    /// `SYNAPSECLAW_ALLOWED_TOOLS` is the security boundary. This field
+    /// serves as documentation and a hint to the agent's system prompt.
+    /// Enforcement requires wiring into the agent's tool filter (future work).
     #[serde(default)]
     pub tools: Vec<String>,
     /// JSON Schema for expected input (validated before step runs).

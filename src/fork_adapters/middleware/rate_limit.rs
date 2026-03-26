@@ -14,6 +14,9 @@ use std::sync::Mutex;
 ///
 /// Limits are per-tool per-run. If no run_id is present (standalone agent),
 /// limits apply per-agent globally.
+/// Maximum number of tracked run scopes before eviction.
+const MAX_TRACKED_SCOPES: usize = 10_000;
+
 pub struct RateLimitMiddleware {
     /// Max calls per tool per run. Key = tool name, value = max calls.
     /// Tools not in the map have no limit.
@@ -21,6 +24,7 @@ pub struct RateLimitMiddleware {
     /// Default limit for tools not in the map (0 = unlimited).
     default_limit: u32,
     /// Counters: key = (run_or_agent_id, tool_name), value = call count.
+    /// Evicted when exceeding MAX_TRACKED_SCOPES to prevent memory leak.
     counters: Mutex<HashMap<(String, String), u32>>,
 }
 
@@ -64,6 +68,12 @@ impl ToolMiddlewarePort for RateLimitMiddleware {
 
         let key = (Self::scope_key(ctx), ctx.tool_name.clone());
         let mut counters = self.counters.lock().unwrap();
+
+        // Evict old entries to prevent unbounded memory growth
+        if counters.len() > MAX_TRACKED_SCOPES {
+            counters.clear();
+        }
+
         let count = counters.entry(key).or_insert(0);
         *count += 1;
 
