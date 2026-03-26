@@ -31,11 +31,10 @@ retry_backoff_secs = 15
 
 [steps.output_schema]
 type = "object"
-required = ["topic", "sources", "summary"]
+required = ["topic", "summary"]
 
 [steps.output_schema.properties]
 topic = { type = "string" }
-sources = { type = "array", items = { type = "string" } }
 summary = { type = "string", minLength = 10 }
 
 # ── Draft (copywriter, trust=3) ──────────────────────────────────────────
@@ -52,15 +51,11 @@ next = "review"
 
 [steps.input_schema]
 type = "object"
-required = ["topic", "sources", "summary"]
+required = ["topic"]
 
 [steps.output_schema]
 type = "object"
-required = ["title", "body", "tags"]
-
-[steps.output_schema.properties]
-title = { type = "string", maxLength = 120 }
-body = { type = "string", minLength = 20 }
+required = ["title", "body"]
 tags = { type = "array", items = { type = "string" } }
 
 # ── Review (marketing-lead, trust=1) ─────────────────────────────────────
@@ -73,28 +68,16 @@ tools = []
 timeout_secs = 300
 next = "publish"
 
-[steps.input_schema]
-type = "object"
-required = ["title", "body", "tags"]
-
 [steps.output_schema]
 type = "object"
-required = ["approved", "feedback"]
-
-[steps.output_schema.properties]
-approved = { type = "boolean" }
-feedback = { type = "string" }
+required = ["approved"]
 
 # ── Publish (publisher, trust=2) ──────────────────────────────────────────
 
 [[steps]]
 id = "publish"
 agent_id = "publisher"
-description = "Publish the approved content. Return JSON with published (boolean) and channel (string)."
+description = "Publish the approved content. Return JSON with published (boolean) and status (string)."
 tools = []
 next = "end"
 timeout_secs = 120
-
-[steps.input_schema]
-type = "object"
-required = ["title", "body", "tags"]

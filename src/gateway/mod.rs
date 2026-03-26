@@ -954,25 +954,34 @@ pub async fn run_gateway(
             tracing::info!(pipelines = ?names, "pipeline definitions loaded");
         }
 
-        // Create IPC step executor via HTTP API (triggers push notifications)
+        // Create IPC step executor via HTTP API (triggers push notifications).
+        // Pipeline engine runs as the broker (openclaw, trust=0) — can send tasks
+        // to all agents regardless of trust level.  Uses broker's own token.
         let pipeline_executor: Option<
             Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
         > = if config.agents_ipc.enabled {
-            let broker_url = format!("http://{}:{}", host, port);
-            let runner_id = config
-                .pipelines
-                .runner_agent_id
-                .clone()
-                .unwrap_or_else(|| "pipeline-runner".into());
-            // Use the pipeline-runner bearer token (plaintext, will be hashed by PairingGuard)
-            let bearer_token = "zc_pipeline_runner_test_token_2026".to_string();
-            Some(Arc::new(
-                crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
-                    broker_url,
-                    bearer_token,
-                    runner_id,
-                ),
-            ) as Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>)
+            if let Some(ref broker_token) = config.agents_ipc.broker_token {
+                let broker_url = format!("http://{}:{}", host, port);
+                let runner_id = config
+                    .pipelines
+                    .runner_agent_id
+                    .clone()
+                    .or_else(|| config.agents_ipc.agent_id.clone())
+                    .unwrap_or_else(|| config.agents_ipc.role.clone());
+                Some(Arc::new(
+                    crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
+                        broker_url,
+                        broker_token.clone(),
+                        runner_id,
+                    ),
+                )
+                    as Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>)
+            } else {
+                tracing::warn!(
+                    "Pipeline engine disabled: agents_ipc.broker_token not configured"
+                );
+                None
+            }
         } else {
             None
         };

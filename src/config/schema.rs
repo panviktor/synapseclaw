@@ -1806,13 +1806,10 @@ pub struct PipelineEngineConfig {
     #[serde(default)]
     pub routing_fallback: Option<String>,
 
-    /// Agent ID used by the pipeline runner for IPC dispatch (default: "pipeline-runner").
-    #[serde(default = "default_pipeline_runner_id")]
+    /// Agent ID used by the pipeline runner for IPC dispatch.
+    /// Defaults to the broker's own agent ID (trust=0, can send tasks to all agents).
+    #[serde(default)]
     pub runner_agent_id: Option<String>,
-
-    /// Trust level of the pipeline runner (default: 1 = operator level).
-    #[serde(default = "default_pipeline_runner_trust")]
-    pub runner_trust_level: i32,
 
     /// Default rate limit for tool calls per pipeline run (0 = unlimited).
     #[serde(default)]
@@ -1832,7 +1829,6 @@ impl Default for PipelineEngineConfig {
             hot_reload: true,
             routing_fallback: None,
             runner_agent_id: None,
-            runner_trust_level: 1,
             default_tool_rate_limit: 0,
             approval_required_tools: vec![],
         }
@@ -1840,11 +1836,7 @@ impl Default for PipelineEngineConfig {
 }
 
 fn default_pipeline_runner_id() -> Option<String> {
-    Some("pipeline-runner".into())
-}
-
-fn default_pipeline_runner_trust() -> i32 {
-    1
+    None // resolved at runtime to broker's own agent_id
 }
 
 fn default_true_val() -> bool {
