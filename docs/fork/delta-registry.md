@@ -112,7 +112,7 @@ Related documents:
 |----|--------|--------|------------|------------|-------|
 | CH-001 | Matrix channel fixes (media, E2EE, dedup) | `temporary-backport` | `medium` | `src/channels/matrix.rs` | May be resolved by upstream; review on every sync |
 
-## Fork Core (CORE-001 .. CORE-008)
+## Fork Core (CORE-001 .. CORE-011)
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
@@ -124,6 +124,9 @@ Related documents:
 | CORE-006 | IpcService + DispatchIpcMessage: ACL validation, routing, session limits, bus port | `fork-only` | `medium` | `src/fork_core/application/services/ipc_service.rs`, `src/fork_core/domain/ipc.rs`, `src/fork_core/ports/ipc_bus.rs`, `src/gateway/ipc.rs` | Slice 5; gateway/ipc.rs delegates to domain |
 | CORE-007 | MemoryService + MemoryTiersPort: tier types, recall formatting, consolidation policy, adapter | `fork-only` | `low` | `src/fork_core/application/services/memory_service.rs`, `src/fork_core/domain/memory.rs`, `src/fork_core/ports/memory.rs`, `src/fork_adapters/inbound/memory_adapter.rs` | Slice 6; tier-aware abstraction over existing backends |
 | CORE-008 | CodingWorkerPort + DelegateImplementationTask: external coding worker seam | `fork-only` | `low` | `src/fork_core/ports/coding_worker.rs`, `src/fork_core/domain/implementation.rs`, `src/fork_core/application/use_cases/delegate_implementation_task.rs` | Slice 7; narrow port, IPC-backed adapter deferred |
+| CORE-009 | Pipeline engine: domain types, TOML loader, schema validation | `fork-only` | `low` | `crates/fork_core/src/domain/pipeline.rs`, `crates/fork_core/src/domain/pipeline_context.rs`, `crates/fork_core/src/ports/pipeline_store.rs`, `src/fork_adapters/pipeline/toml_loader.rs`, `src/fork_adapters/pipeline/schema_validator.rs` | Phase 4.1 Slice 1; new files only |
+| CORE-010 | PipelineRunner + IPC bridge + checkpointing | `fork-only` | `low` | `crates/fork_core/src/application/services/pipeline_service.rs`, `crates/fork_core/src/application/use_cases/start_pipeline.rs`, `crates/fork_core/src/ports/pipeline_executor.rs`, `src/fork_adapters/pipeline/ipc_step_executor.rs` | Phase 4.1 Slice 2; new files only |
+| CORE-011 | ToolMiddleware: chain, rate limit, validation, approval gate | `fork-only` | `low` | `crates/fork_core/src/domain/tool_middleware.rs`, `crates/fork_core/src/ports/tool_middleware.rs`, `crates/fork_core/src/application/services/tool_middleware_service.rs`, `src/fork_adapters/middleware/*` | Phase 4.1 Slice 3; new files only, hook into loop_.rs deferred |
 
 ## Other (MISC-001 .. MISC-003)
 
@@ -242,10 +245,10 @@ Update this registry when:
 | Web UI | 6 | 0 | 0 | 6 |
 | Web Infra | 3 | 0 | 0 | 3 |
 | Channels | 0 | 0 | 1 | 1 |
-| Fork Core | 8 | 0 | 0 | 8 |
+| Fork Core | 11 | 0 | 0 | 11 |
 | Other | 3 | 0 | 0 | 3 |
 | Infra/CI | 2 | 0 | 0 | 2 |
-| **Total** | **39** | **12** | **1** | **52** |
+| **Total** | **42** | **12** | **1** | **55** |
 
 ## Current Conclusion
 

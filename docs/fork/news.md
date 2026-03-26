@@ -1,5 +1,33 @@
 # SynapseClaw News & Changelog
 
+## 2026-03-26
+
+### Phase 4.1 Slices 1-3: Deterministic Pipeline Engine foundation
+- **Slice 1 — Pipeline domain types + TOML loading + schema validation**
+  - `domain/pipeline.rs`: PipelineDefinition, PipelineStep, StepTransition, ConditionalBranch, Operator, FanOutSpec
+  - `domain/pipeline_context.rs`: PipelineContext, PipelineState, StepRecord for run tracking
+  - `ports/pipeline_store.rs`: PipelineStorePort trait + ReloadEvent
+  - `fork_adapters/pipeline/toml_loader.rs`: TomlPipelineLoader (directory scan, validation, reload diffing)
+  - `fork_adapters/pipeline/schema_validator.rs`: JSON Schema validation for step contracts
+  - Phase 4.0 extensions: `RunOrigin::Pipeline`, `RunStorePort::list_by_state()`
+  - Fixture: `content-creation.toml` (4-step marketing pipeline)
+- **Slice 2 — PipelineRunner + IPC bridge + checkpointing**
+  - `services/pipeline_service.rs`: full execution loop — sequential + conditional branches, retry with backoff, global/per-step timeouts, checkpointing after each step
+  - `use_cases/start_pipeline.rs`: entry point for triggering pipeline runs
+  - `ports/pipeline_executor.rs`: PipelineExecutorPort trait (mockable step dispatch)
+  - `domain/pipeline_validation.rs`: JSON Schema validation helper for fork_core
+  - `fork_adapters/pipeline/ipc_step_executor.rs`: IPC adapter (task dispatch via DispatchIpcMessage, poll for result)
+  - Safety-net timeouts: 30min default per step, 2h default per pipeline
+- **Slice 3 — ToolMiddleware: rate limit, validation, approval gate**
+  - `domain/tool_middleware.rs`: ToolBlock enum + ToolCallContext
+  - `ports/tool_middleware.rs`: ToolMiddlewarePort trait (before/after hooks)
+  - `services/tool_middleware_service.rs`: ToolMiddlewareChain (ordered execution)
+  - `fork_adapters/middleware/rate_limit.rs`: per-tool per-run call limits
+  - `fork_adapters/middleware/validation.rs`: JSON Schema on tool arguments
+  - `fork_adapters/middleware/approval_gate.rs`: human-in-the-loop for dangerous tools
+- New dependencies: `jsonschema` (step contracts), `notify` planned (hot-reload)
+- 280 tests (222 fork_core + 58 adapters), 0 failures
+
 ## 2026-03-24
 
 ### Phase 4.0 workspace crate + all 10 use cases + full restructuring
