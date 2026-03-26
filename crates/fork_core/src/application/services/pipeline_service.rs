@@ -328,108 +328,98 @@ async fn execute_loop(
                 current_step_id = next_id.clone();
             }
             StepTransition::Complex(complex) => {
-                // Slice 2: only sequential. Complex transitions handled in later slices.
-                // For now, evaluate conditionals if possible, else fail.
-                match complex.as_ref() {
-                    crate::domain::pipeline::ComplexTransition::Conditional {
-                        branches,
-                        fallback,
-                    } => {
-                        let target = branches
-                            .iter()
-                            .find(|b| b.evaluate(&step_output))
-                            .map(|b| b.target.as_str())
-                            .unwrap_or(fallback.as_str());
+                let ct = complex.as_ref();
 
-                        if target == "end" {
-                            ctx.complete();
+                if !ct.conditional.is_empty() {
+                    // -- Conditional --
+                    let fallback = ct.fallback.as_deref().unwrap_or("end");
+                    let target = ct.conditional
+                        .iter()
+                        .find(|b| b.evaluate(&step_output))
+                        .map(|b| b.target.as_str())
+                        .unwrap_or(fallback);
+
+                    if target == "end" {
+                        ctx.complete();
+                        return make_result(ctx);
+                    }
+                    current_step_id = target.to_string();
+                } else if let Some(ref spec) = ct.fan_out {
+                    // -- FanOut --
+                    match execute_fan_out(ports, ctx, definition, spec).await {
+                        Ok(join_step) => {
+                            if join_step == "end" {
+                                ctx.complete();
+                                return make_result(ctx);
+                            }
+                            current_step_id = join_step;
+                        }
+                        Err(error) => {
+                            ctx.fail(error);
                             return make_result(ctx);
                         }
-                        current_step_id = target.to_string();
                     }
-                    crate::domain::pipeline::ComplexTransition::FanOut(spec) => {
-                        match execute_fan_out(ports, ctx, definition, spec).await {
-                            Ok(join_step) => {
-                                if join_step == "end" {
-                                    ctx.complete();
-                                    return make_result(ctx);
-                                }
-                                current_step_id = join_step;
-                            }
-                            Err(error) => {
-                                ctx.fail(error);
+                } else if let Some(ref wfa) = ct.wait_for_approval {
+                    // -- WaitForApproval --
+                    info!(
+                        run_id = %ctx.run_id,
+                        step = %current_step_id,
+                        "pipeline waiting for approval"
+                    );
+                    ctx.state = PipelineState::WaitingForApproval(current_step_id.clone());
+                    checkpoint(ports.run_store.as_ref(), ctx).await;
+
+                    let approved = ports
+                        .executor
+                        .execute_step(
+                            &ctx.run_id,
+                            &format!("{current_step_id}__approval"),
+                            "_approval_gate",
+                            &serde_json::json!({
+                                "prompt": &wfa.prompt,
+                                "step_id": current_step_id,
+                                "pipeline": ctx.pipeline_name,
+                            }),
+                            &[],
+                            &wfa.prompt,
+                            Some(wfa.timeout_secs),
+                        )
+                        .await;
+
+                    ctx.state = PipelineState::Running;
+
+                    match approved {
+                        Ok(result) => {
+                            let is_approved = result.output.get("approved")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+
+                            info!(
+                                run_id = %ctx.run_id,
+                                step = %current_step_id,
+                                approved = is_approved,
+                                "approval received"
+                            );
+
+                            let target = if is_approved { &wfa.next_approved } else { &wfa.next_denied };
+                            if target == "end" {
+                                ctx.complete();
                                 return make_result(ctx);
                             }
+                            current_step_id = target.clone();
+                        }
+                        Err(err) => {
+                            ctx.fail(format!(
+                                "approval request failed for step '{}': {}",
+                                current_step_id, err.message
+                            ));
+                            return make_result(ctx);
                         }
                     }
-                    crate::domain::pipeline::ComplexTransition::WaitForApproval {
-                        prompt,
-                        next_approved,
-                        next_denied,
-                        timeout_secs,
-                    } => {
-                        info!(
-                            run_id = %ctx.run_id,
-                            step = %current_step_id,
-                            "pipeline waiting for approval"
-                        );
-                        ctx.state = PipelineState::WaitingForApproval(current_step_id.clone());
-                        checkpoint(ports.run_store.as_ref(), ctx).await;
-
-                        // Request approval via executor (blocking call).
-                        // The executor adapter translates this to an IPC approval request.
-                        let approved = ports
-                            .executor
-                            .execute_step(
-                                &ctx.run_id,
-                                &format!("{current_step_id}__approval"),
-                                "_approval_gate",
-                                &serde_json::json!({
-                                    "prompt": prompt,
-                                    "step_id": current_step_id,
-                                    "pipeline": ctx.pipeline_name,
-                                }),
-                                &[],
-                                prompt,
-                                Some(*timeout_secs),
-                            )
-                            .await;
-
-                        ctx.state = PipelineState::Running;
-
-                        match approved {
-                            Ok(result) => {
-                                let is_approved = result.output.get("approved")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
-
-                                info!(
-                                    run_id = %ctx.run_id,
-                                    step = %current_step_id,
-                                    approved = is_approved,
-                                    "approval received"
-                                );
-
-                                let target = if is_approved { next_approved } else { next_denied };
-                                if target == "end" {
-                                    ctx.complete();
-                                    return make_result(ctx);
-                                }
-                                current_step_id = target.clone();
-                            }
-                            Err(err) => {
-                                ctx.fail(format!(
-                                    "approval request failed for step '{}': {}",
-                                    current_step_id, err.message
-                                ));
-                                return make_result(ctx);
-                            }
-                        }
-                    }
-                    crate::domain::pipeline::ComplexTransition::SubPipeline {
-                        pipeline_name,
-                        next,
-                    } => {
+                } else if let Some(ref sp) = ct.sub_pipeline {
+                    // -- SubPipeline --
+                    let pipeline_name = &sp.pipeline_name;
+                    let next = &sp.next;
                         // Check depth limit
                         if ctx.depth >= definition.max_depth {
                             ctx.fail(format!(
@@ -484,12 +474,17 @@ async fn execute_loop(
                             return make_result(ctx);
                         }
                         current_step_id = next.clone();
+                    } else {
+                        ctx.fail(format!(
+                            "step '{}' has empty complex transition",
+                            current_step_id
+                        ));
+                        return make_result(ctx);
                     }
                 }
             }
         }
     }
-}
 
 /// Execute a step with retry logic.
 /// Returns `Some(output)` on success, `None` on failure (ctx.state already set).
@@ -767,7 +762,7 @@ fn resolve_step_input(
     // transition in any step that references this step_id as join_step.
     let is_join_step = definition.steps.iter().any(|s| {
         if let StepTransition::Complex(ref c) = s.next {
-            if let crate::domain::pipeline::ComplexTransition::FanOut(ref spec) = c.as_ref() {
+            if let Some(ref spec) = c.fan_out {
                 return spec.join_step == step_id;
             }
         }
@@ -855,7 +850,7 @@ mod tests {
     use super::*;
     use crate::domain::pipeline::{
         ConditionalBranch, ComplexTransition, FanOutSpec, Operator, PipelineDefinition,
-        PipelineStep, StepTransition,
+        PipelineStep, StepTransition, SubPipelineSpec, WaitForApprovalSpec,
     };
     use crate::ports::pipeline_executor::{StepExecutionError, StepExecutionResult};
     use crate::ports::pipeline_store::ReloadEvent;
@@ -1300,15 +1295,15 @@ mod tests {
                     input_schema: None,
                     output_schema: None,
                     next: StepTransition::Complex(Box::new(
-                        ComplexTransition::Conditional {
-                            branches: vec![ConditionalBranch {
+                        ComplexTransition::conditional(
+                            vec![ConditionalBranch {
                                 field: "/approved".into(),
                                 operator: Operator::Eq,
                                 value: json!(true),
                                 target: "publish".into(),
                             }],
-                            fallback: "revise".into(),
-                        },
+                            "revise".into(),
+                        ),
                     )),
                     max_retries: 0,
                     retry_backoff_secs: 1,
@@ -1475,7 +1470,7 @@ mod tests {
                     input_schema: None,
                     output_schema: None,
                     next: StepTransition::Complex(Box::new(
-                        ComplexTransition::FanOut(FanOutSpec {
+                        ComplexTransition::fan_out(FanOutSpec {
                             branches: vec![
                                 FanOutBranch {
                                     step_id: "fetch-news".into(),
@@ -1628,7 +1623,7 @@ mod tests {
         let mut pipeline = fan_out_pipeline();
         // Change require_all to false
         if let StepTransition::Complex(ref mut complex) = pipeline.steps[0].next {
-            if let ComplexTransition::FanOut(ref mut spec) = complex.as_mut() {
+            if let Some(ref mut spec) = complex.fan_out {
                 spec.require_all = false;
             }
         }
@@ -1690,12 +1685,12 @@ mod tests {
                     input_schema: None,
                     output_schema: None,
                     next: StepTransition::Complex(Box::new(
-                        ComplexTransition::WaitForApproval {
+                        ComplexTransition::wait_for_approval(WaitForApprovalSpec {
                             prompt: "Approve this draft?".into(),
                             next_approved: "publish".into(),
                             next_denied: "revise".into(),
                             timeout_secs: 3600,
-                        },
+                        }),
                     )),
                     max_retries: 0,
                     retry_backoff_secs: 1,
@@ -1821,10 +1816,10 @@ mod tests {
                     input_schema: None,
                     output_schema: None,
                     next: StepTransition::Complex(Box::new(
-                        ComplexTransition::SubPipeline {
+                        ComplexTransition::sub_pipeline(SubPipelineSpec {
                             pipeline_name: "child".into(),
                             next: "s3".into(),
-                        },
+                        }),
                     )),
                     max_retries: 0,
                     retry_backoff_secs: 1,
@@ -1916,10 +1911,10 @@ mod tests {
                 input_schema: None,
                 output_schema: None,
                 next: StepTransition::Complex(Box::new(
-                    ComplexTransition::SubPipeline {
+                    ComplexTransition::sub_pipeline(SubPipelineSpec {
                         pipeline_name: "recursive".into(),
                         next: "end".into(),
-                    },
+                    }),
                 )),
                 max_retries: 0,
                 retry_backoff_secs: 1,

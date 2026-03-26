@@ -172,42 +172,135 @@ pub enum StepTransition {
     Complex(Box<ComplexTransition>),
 }
 
-/// Complex transition variants, boxed to keep `StepTransition` small.
+/// Complex transition — flat struct with optional fields.
+///
+/// Exactly one of `conditional`, `wait_for_approval`, `fan_out`, or
+/// `sub_pipeline` should be set. This flat layout ensures reliable TOML
+/// deserialization (avoids `#[serde(untagged)]` enum ambiguity).
+///
+/// TOML examples:
+/// ```toml
+/// [steps.next]
+/// conditional = [{field="/approved", operator="eq", value=true, target="publish"}]
+/// fallback = "draft"
+///
+/// [steps.next.fan_out]
+/// join_step = "draft"
+/// branches = [...]
+///
+/// [steps.next.wait_for_approval]
+/// prompt = "Publish?"
+/// next_approved = "publish"
+/// next_denied = "draft"
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ComplexTransition {
-    /// Branch based on output data.
-    Conditional {
-        /// Ordered list of branches; first match wins.
-        branches: Vec<ConditionalBranch>,
-        /// Step to go to if no branch matches.
-        fallback: String,
-    },
+pub struct ComplexTransition {
+    // -- Conditional --
+    /// Ordered list of branches; first match wins.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditional: Vec<ConditionalBranch>,
+    /// Step to go to if no conditional branch matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
 
-    /// Wait for human approval before continuing.
-    WaitForApproval {
-        /// Prompt shown to the approver.
-        prompt: String,
-        /// Step to go to on approval.
-        next_approved: String,
-        /// Step to go to on denial.
-        next_denied: String,
-        /// Timeout in seconds (default: 3600 = 1 hour).
-        /// On timeout, pipeline fails — operator must re-run.
-        #[serde(default = "default_approval_timeout")]
-        timeout_secs: u64,
-    },
+    // -- WaitForApproval --
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_for_approval: Option<WaitForApprovalSpec>,
 
-    /// Execute multiple steps in parallel, then join.
-    FanOut(FanOutSpec),
+    // -- FanOut --
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fan_out: Option<FanOutSpec>,
 
-    /// Run another pipeline as a sub-pipeline.
-    SubPipeline {
-        /// Name of the pipeline to invoke.
-        pipeline_name: String,
-        /// Step to go to after sub-pipeline completes.
-        next: String,
-    },
+    // -- SubPipeline --
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_pipeline: Option<SubPipelineSpec>,
+}
+
+/// Which kind of complex transition is active.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComplexTransitionKind {
+    Conditional,
+    WaitForApproval,
+    FanOut,
+    SubPipeline,
+}
+
+impl ComplexTransition {
+    /// Determine which variant is active.
+    pub fn kind(&self) -> Option<ComplexTransitionKind> {
+        if !self.conditional.is_empty() {
+            Some(ComplexTransitionKind::Conditional)
+        } else if self.wait_for_approval.is_some() {
+            Some(ComplexTransitionKind::WaitForApproval)
+        } else if self.fan_out.is_some() {
+            Some(ComplexTransitionKind::FanOut)
+        } else if self.sub_pipeline.is_some() {
+            Some(ComplexTransitionKind::SubPipeline)
+        } else {
+            None
+        }
+    }
+
+    /// Create a Conditional transition.
+    pub fn conditional(branches: Vec<ConditionalBranch>, fallback: String) -> Self {
+        Self {
+            conditional: branches,
+            fallback: Some(fallback),
+            wait_for_approval: None,
+            fan_out: None,
+            sub_pipeline: None,
+        }
+    }
+
+    /// Create a WaitForApproval transition.
+    pub fn wait_for_approval(spec: WaitForApprovalSpec) -> Self {
+        Self {
+            conditional: vec![],
+            fallback: None,
+            wait_for_approval: Some(spec),
+            fan_out: None,
+            sub_pipeline: None,
+        }
+    }
+
+    /// Create a FanOut transition.
+    pub fn fan_out(spec: FanOutSpec) -> Self {
+        Self {
+            conditional: vec![],
+            fallback: None,
+            wait_for_approval: None,
+            fan_out: Some(spec),
+            sub_pipeline: None,
+        }
+    }
+
+    /// Create a SubPipeline transition.
+    pub fn sub_pipeline(spec: SubPipelineSpec) -> Self {
+        Self {
+            conditional: vec![],
+            fallback: None,
+            wait_for_approval: None,
+            fan_out: None,
+            sub_pipeline: Some(spec),
+        }
+    }
+}
+
+/// Wait-for-approval specification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaitForApprovalSpec {
+    pub prompt: String,
+    pub next_approved: String,
+    pub next_denied: String,
+    #[serde(default = "default_approval_timeout")]
+    pub timeout_secs: u64,
+}
+
+/// Sub-pipeline specification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubPipelineSpec {
+    pub pipeline_name: String,
+    pub next: String,
 }
 
 impl StepTransition {
@@ -220,29 +313,34 @@ impl StepTransition {
     pub fn target_step_ids(&self) -> Vec<&str> {
         match self {
             Self::Next(s) => vec![s.as_str()],
-            Self::Complex(c) => match c.as_ref() {
-                ComplexTransition::Conditional {
-                    branches,
-                    fallback,
-                } => {
-                    let mut ids: Vec<&str> =
-                        branches.iter().map(|b| b.target.as_str()).collect();
-                    ids.push(fallback.as_str());
-                    ids
+            Self::Complex(c) => {
+                let c = c.as_ref();
+                let mut ids = Vec::new();
+                // Conditional
+                for b in &c.conditional {
+                    ids.push(b.target.as_str());
                 }
-                ComplexTransition::WaitForApproval {
-                    next_approved,
-                    next_denied,
-                    ..
-                } => vec![next_approved.as_str(), next_denied.as_str()],
-                ComplexTransition::FanOut(spec) => {
-                    let mut ids: Vec<&str> =
-                        spec.branches.iter().map(|b| b.step_id.as_str()).collect();
-                    ids.push(spec.join_step.as_str());
-                    ids
+                if let Some(ref fb) = c.fallback {
+                    ids.push(fb.as_str());
                 }
-                ComplexTransition::SubPipeline { next, .. } => vec![next.as_str()],
-            },
+                // WaitForApproval
+                if let Some(ref wfa) = c.wait_for_approval {
+                    ids.push(wfa.next_approved.as_str());
+                    ids.push(wfa.next_denied.as_str());
+                }
+                // FanOut
+                if let Some(ref fo) = c.fan_out {
+                    for b in &fo.branches {
+                        ids.push(b.step_id.as_str());
+                    }
+                    ids.push(fo.join_step.as_str());
+                }
+                // SubPipeline
+                if let Some(ref sp) = c.sub_pipeline {
+                    ids.push(sp.next.as_str());
+                }
+                ids
+            }
         }
     }
 }
