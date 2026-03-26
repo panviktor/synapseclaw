@@ -204,12 +204,20 @@ async fn execute_loop(
             }
         }
 
-        // Execute the step (with retries)
-        let step_output = match execute_step_with_retries(ports, ctx, step, &step_input).await {
-            Some(output) => output,
-            None => {
-                // ctx.state and error already set by execute_step_with_retries
-                return make_result(ctx);
+        // Skip execution for pseudo-steps (fan-out orchestration nodes).
+        // They exist only for their transition; the actual work happens in branches.
+        let is_pseudo_step = step.agent_id.starts_with('_');
+
+        let step_output = if is_pseudo_step {
+            step_input.clone()
+        } else {
+            // Execute the step (with retries)
+            match execute_step_with_retries(ports, ctx, step, &step_input).await {
+                Some(output) => output,
+                None => {
+                    // ctx.state and error already set by execute_step_with_retries
+                    return make_result(ctx);
+                }
             }
         };
 
@@ -260,6 +268,21 @@ async fn execute_loop(
                             return make_result(ctx);
                         }
                         current_step_id = target.to_string();
+                    }
+                    crate::domain::pipeline::ComplexTransition::FanOut(spec) => {
+                        match execute_fan_out(ports, ctx, definition, spec).await {
+                            Ok(join_step) => {
+                                if join_step == "end" {
+                                    ctx.complete();
+                                    return make_result(ctx);
+                                }
+                                current_step_id = join_step;
+                            }
+                            Err(error) => {
+                                ctx.fail(error);
+                                return make_result(ctx);
+                            }
+                        }
                     }
                     other => {
                         ctx.fail(format!(
@@ -366,6 +389,145 @@ async fn execute_step_with_retries(
         }
     }
     None
+}
+
+/// Execute a FanOut transition: dispatch all branches concurrently, wait for
+/// all (or partial) results, merge into context, return the join_step ID.
+///
+/// Phase 4.1 Slice 4.
+async fn execute_fan_out(
+    ports: &PipelineRunnerPorts<'_>,
+    ctx: &mut PipelineContext,
+    definition: &PipelineDefinition,
+    spec: &crate::domain::pipeline::FanOutSpec,
+) -> Result<String, String> {
+    let branch_count = spec.branches.len();
+    info!(
+        run_id = %ctx.run_id,
+        branches = branch_count,
+        join_step = %spec.join_step,
+        "fan-out started"
+    );
+
+    // Track which branches we're waiting for
+    let branch_ids: Vec<String> = spec
+        .branches
+        .iter()
+        .map(|b| b.step_id.clone())
+        .collect();
+    ctx.state = PipelineState::WaitingForFanOut(branch_ids);
+    checkpoint(ports.run_store, ctx).await;
+
+    // Build fan-out timeout
+    let fan_out_deadline = spec.timeout_secs.map(|t| {
+        std::time::Instant::now() + std::time::Duration::from_secs(t)
+    });
+
+    // Input for all branches: current accumulated context data
+    let branch_input = ctx.data.clone();
+
+    // Validate all branch steps exist before dispatching any
+    for branch in &spec.branches {
+        if definition.step(&branch.step_id).is_none() {
+            return Err(format!(
+                "fan-out branch step '{}' not found",
+                branch.step_id
+            ));
+        }
+    }
+
+    // Dispatch branches and collect results.
+    // Currently sequential dispatch (lifetime constraints on ports prevent
+    // JoinSet spawning). Agents process concurrently on IPC side — we poll
+    // results one by one. True parallel dispatch (Arc<dyn Executor>) is a
+    // future optimization.
+    let mut results: Vec<(String, Result<Value, String>)> = Vec::new();
+
+    for branch in &spec.branches {
+        let step = definition.step(&branch.step_id).unwrap();
+
+        // Check fan-out timeout
+        if let Some(dl) = fan_out_deadline {
+            if std::time::Instant::now() >= dl {
+                return Err(format!(
+                    "fan-out timed out after {} branches of {}",
+                    results.len(),
+                    branch_count
+                ));
+            }
+        }
+
+        ctx.record_step_start(&step.id, &step.agent_id, 0);
+
+        let exec_result = ports
+            .executor
+            .execute_step(
+                &ctx.run_id,
+                &step.id,
+                &step.agent_id,
+                &branch_input,
+                &step.tools,
+                &step.description,
+                step.timeout_secs,
+            )
+            .await;
+
+        match exec_result {
+            Ok(result) => {
+                ctx.record_step_complete(&step.id, Some(result.output.clone()));
+                info!(
+                    run_id = %ctx.run_id,
+                    branch = %branch.result_key,
+                    step = %step.id,
+                    "fan-out branch completed"
+                );
+                results.push((branch.result_key.clone(), Ok(result.output)));
+            }
+            Err(err) => {
+                ctx.record_step_failure(&step.id, err.message.clone());
+                warn!(
+                    run_id = %ctx.run_id,
+                    branch = %branch.result_key,
+                    step = %step.id,
+                    error = %err.message,
+                    "fan-out branch failed"
+                );
+                results.push((branch.result_key.clone(), Err(err.message)));
+            }
+        }
+    }
+
+    // Check results
+    let failures: Vec<&str> = results
+        .iter()
+        .filter_map(|(key, r)| if r.is_err() { Some(key.as_str()) } else { None })
+        .collect();
+
+    if spec.require_all && !failures.is_empty() {
+        return Err(format!(
+            "fan-out failed: branches [{}] failed (require_all=true)",
+            failures.join(", ")
+        ));
+    }
+
+    // Merge results into context under fanout.<key>
+    for (key, result) in &results {
+        if let Ok(output) = result {
+            ctx.merge_fanout_output(key, output.clone());
+        }
+    }
+
+    ctx.state = PipelineState::Running;
+    checkpoint(ports.run_store, ctx).await;
+
+    info!(
+        run_id = %ctx.run_id,
+        completed = results.iter().filter(|(_, r)| r.is_ok()).count(),
+        failed = failures.len(),
+        "fan-out joined"
+    );
+
+    Ok(spec.join_step.clone())
 }
 
 /// Determine what input to pass to a step.
@@ -1076,5 +1238,222 @@ mod tests {
 
         assert_eq!(result.state, PipelineState::Failed);
         assert!(result.error.unwrap().contains("input validation failed"));
+    }
+
+    // -- FanOut tests (Slice 4) -----------------------------------------
+
+    fn fan_out_pipeline() -> PipelineDefinition {
+        use crate::domain::pipeline::{FanOutBranch, FanOutSpec};
+
+        PipelineDefinition {
+            name: "fan-out-test".into(),
+            version: "1.0".into(),
+            description: "".into(),
+            steps: vec![
+                PipelineStep {
+                    id: "gather".into(),
+                    agent_id: "_fanout".into(),
+                    description: "fan-out trigger".into(),
+                    tools: vec![],
+                    input_schema: None,
+                    output_schema: None,
+                    next: StepTransition::Complex(Box::new(
+                        ComplexTransition::FanOut(FanOutSpec {
+                            branches: vec![
+                                FanOutBranch {
+                                    step_id: "fetch-news".into(),
+                                    result_key: "news".into(),
+                                },
+                                FanOutBranch {
+                                    step_id: "fetch-trends".into(),
+                                    result_key: "trends".into(),
+                                },
+                            ],
+                            join_step: "draft".into(),
+                            timeout_secs: None,
+                            require_all: true,
+                        }),
+                    )),
+                    max_retries: 0,
+                    retry_backoff_secs: 1,
+                    timeout_secs: None,
+                },
+                PipelineStep {
+                    id: "fetch-news".into(),
+                    agent_id: "news-reader".into(),
+                    description: "Fetch news".into(),
+                    tools: vec!["web_search".into()],
+                    input_schema: None,
+                    output_schema: None,
+                    next: StepTransition::Next("_join".into()),
+                    max_retries: 0,
+                    retry_backoff_secs: 1,
+                    timeout_secs: None,
+                },
+                PipelineStep {
+                    id: "fetch-trends".into(),
+                    agent_id: "trend-aggregator".into(),
+                    description: "Fetch trends".into(),
+                    tools: vec!["web_search".into()],
+                    input_schema: None,
+                    output_schema: None,
+                    next: StepTransition::Next("_join".into()),
+                    max_retries: 0,
+                    retry_backoff_secs: 1,
+                    timeout_secs: None,
+                },
+                PipelineStep {
+                    id: "draft".into(),
+                    agent_id: "copywriter".into(),
+                    description: "Draft from merged data".into(),
+                    tools: vec![],
+                    input_schema: None,
+                    output_schema: None,
+                    next: StepTransition::Next("end".into()),
+                    max_retries: 0,
+                    retry_backoff_secs: 1,
+                    timeout_secs: None,
+                },
+            ],
+            entry_point: "gather".into(),
+            max_depth: 5,
+            timeout_secs: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn fan_out_both_branches_succeed() {
+        let store = MockPipelineStore {
+            defs: vec![fan_out_pipeline()],
+        };
+        let run_store = MockRunStore::new();
+        let executor = MockExecutor::succeeds(vec![
+            ("gather", json!({"trigger": true})),
+            ("fetch-news", json!({"headlines": ["Rust 2026"]})),
+            ("fetch-trends", json!({"top": "AI agents"})),
+            ("draft", json!({"post": "content here"})),
+        ]);
+
+        let result = run_pipeline(
+            &PipelineRunnerPorts {
+                pipeline_store: &store,
+                run_store: &run_store,
+                executor: &executor,
+            },
+            StartPipelineParams {
+                pipeline_name: "fan-out-test".into(),
+                input: json!({"topic": "tech"}),
+                triggered_by: "test".into(),
+                depth: 0,
+                parent_run_id: None,
+            },
+        )
+        .await;
+
+        assert_eq!(result.state, PipelineState::Completed);
+        // Fan-out results should be under fanout.<key>
+        let fanout = result.data.get("fanout").expect("fanout key missing");
+        assert_eq!(
+            fanout.get("news"),
+            Some(&json!({"headlines": ["Rust 2026"]}))
+        );
+        assert_eq!(
+            fanout.get("trends"),
+            Some(&json!({"top": "AI agents"}))
+        );
+        // Draft step should have run after join
+        assert!(result.data.get("draft").is_some());
+    }
+
+    #[tokio::test]
+    async fn fan_out_branch_failure_with_require_all() {
+        let store = MockPipelineStore {
+            defs: vec![fan_out_pipeline()],
+        };
+        let run_store = MockRunStore::new();
+        let executor = MockExecutor::new(vec![
+            ("gather".into(), Ok(json!({"trigger": true}))),
+            ("fetch-news".into(), Ok(json!({"headlines": []}))),
+            (
+                "fetch-trends".into(),
+                Err(StepExecutionError {
+                    code: "timeout".into(),
+                    message: "agent timed out".into(),
+                    retryable: false,
+                }),
+            ),
+        ]);
+
+        let result = run_pipeline(
+            &PipelineRunnerPorts {
+                pipeline_store: &store,
+                run_store: &run_store,
+                executor: &executor,
+            },
+            StartPipelineParams {
+                pipeline_name: "fan-out-test".into(),
+                input: json!({}),
+                triggered_by: "test".into(),
+                depth: 0,
+                parent_run_id: None,
+            },
+        )
+        .await;
+
+        assert_eq!(result.state, PipelineState::Failed);
+        assert!(result.error.unwrap().contains("require_all"));
+    }
+
+    #[tokio::test]
+    async fn fan_out_partial_success_without_require_all() {
+        use crate::domain::pipeline::{FanOutBranch, FanOutSpec};
+
+        let mut pipeline = fan_out_pipeline();
+        // Change require_all to false
+        if let StepTransition::Complex(ref mut complex) = pipeline.steps[0].next {
+            if let ComplexTransition::FanOut(ref mut spec) = complex.as_mut() {
+                spec.require_all = false;
+            }
+        }
+
+        let store = MockPipelineStore {
+            defs: vec![pipeline],
+        };
+        let run_store = MockRunStore::new();
+        let executor = MockExecutor::new(vec![
+            ("gather".into(), Ok(json!({"trigger": true}))),
+            ("fetch-news".into(), Ok(json!({"headlines": ["ok"]}))),
+            (
+                "fetch-trends".into(),
+                Err(StepExecutionError {
+                    code: "error".into(),
+                    message: "failed".into(),
+                    retryable: false,
+                }),
+            ),
+            ("draft".into(), Ok(json!({"post": "partial"}))),
+        ]);
+
+        let result = run_pipeline(
+            &PipelineRunnerPorts {
+                pipeline_store: &store,
+                run_store: &run_store,
+                executor: &executor,
+            },
+            StartPipelineParams {
+                pipeline_name: "fan-out-test".into(),
+                input: json!({}),
+                triggered_by: "test".into(),
+                depth: 0,
+                parent_run_id: None,
+            },
+        )
+        .await;
+
+        // Should complete even with one failed branch
+        assert_eq!(result.state, PipelineState::Completed);
+        let fanout = result.data.get("fanout").unwrap();
+        assert!(fanout.get("news").is_some()); // succeeded
+        assert!(fanout.get("trends").is_none()); // failed, not merged
     }
 }

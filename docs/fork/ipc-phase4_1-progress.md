@@ -1,6 +1,6 @@
 # IPC Phase 4.1 Progress
 
-**Status**: Slices 1-3 complete, Slice 4 next
+**Status**: Slices 1-4 complete, Slice 5 next
 
 Phase 4.0: modular core refactor | **Phase 4.1: deterministic pipeline engine** | Phase 4.2: federated execution
 
@@ -94,7 +94,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | 1 | Pipeline core — domain types + TOML loading + schema validation | **DONE** | |
 | 2 | IPC bridge — step execution through broker + checkpointing | **DONE** | |
 | 3 | ToolMiddleware — before/after hooks on tool calls | **DONE** | |
-| 4 | FanOut + Join — parallel step execution | TODO | |
+| 4 | FanOut + Join — parallel step execution | **DONE** | |
 | 5 | Checkpointing — resume after crash | TODO | |
 | 6 | MessageRouter — deterministic routing | TODO | |
 | 7 | WaitForApproval — human-in-the-loop via ApprovalPort | TODO | |
