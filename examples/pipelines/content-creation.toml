@@ -4,7 +4,7 @@
 # - news-reader (trust=3, qwen3.5-plus) — web research
 # - copywriter (trust=3, MiniMax-M2.5) — content writing
 # - marketing-lead (trust=1, glm-5) — review & coordination
-# - publisher (trust=2, glm-4.7) — publishing to channels
+# - publisher (trust=2, glm-5) — publishing to channels
 #
 # Trigger: POST /api/pipelines/start
 #   {"pipeline_name": "content-creation", "input": {"topic": "AI agents 2026"}}
