@@ -1597,6 +1597,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         }
     }
 
