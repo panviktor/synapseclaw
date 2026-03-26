@@ -1,0 +1,46 @@
+# Message routing rules for the marketing fleet.
+#
+# Deterministic routing: first rule match wins, fallback if none match.
+# Place in: {workspace}/pipelines/routing.toml
+
+fallback = "marketing-lead"
+
+[[routes]]
+name = "research-command"
+target = "news-reader"
+priority = 10
+
+[routes.rule]
+command = "/research"
+
+[[routes]]
+name = "trend-command"
+target = "trend-aggregator"
+priority = 11
+
+[routes.rule]
+command = "/trends"
+
+[[routes]]
+name = "publish-command"
+target = "publisher"
+priority = 12
+
+[routes.rule]
+command = "/publish"
+
+[[routes]]
+name = "deploy-keywords"
+target = "marketing-lead"
+priority = 50
+
+[routes.rule]
+keywords = ["deploy", "restart", "server", "systemd"]
+
+[[routes]]
+name = "content-keywords"
+target = "copywriter"
+priority = 60
+
+[routes.rule]
+keywords = ["write", "draft", "post", "article", "content"]

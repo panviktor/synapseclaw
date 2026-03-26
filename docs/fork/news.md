@@ -25,8 +25,16 @@
   - `fork_adapters/middleware/rate_limit.rs`: per-tool per-run call limits
   - `fork_adapters/middleware/validation.rs`: JSON Schema on tool arguments
   - `fork_adapters/middleware/approval_gate.rs`: human-in-the-loop for dangerous tools
-- New dependencies: `jsonschema` (step contracts), `notify` planned (hot-reload)
-- 280 tests (222 fork_core + 58 adapters), 0 failures
+- New dependencies: `jsonschema` (step contracts), `notify` (hot-reload)
+- **Audit**: 2 rounds, all CRITICAL/MODERATE/MINOR findings fixed
+  - Parallel FanOut via Arc+JoinSet, flat struct ComplexTransition (TOML fix),
+    cancel pipeline works, context 10MB cap, step history cap 500,
+    approval per-step, rate limit eviction, safe timestamps
+- **Wiring**: PipelineEngineConfig, gateway AppState integration,
+  IPC endpoints (POST /api/pipelines/start, GET /api/pipelines/list),
+  ToolMiddleware hook in execute_one_tool, pipeline recovery on startup
+- Example pipelines: content-creation.toml, parallel-research.toml, routing.toml
+- 315 tests (252 fork_core + 63 adapters), 0 failures
 
 ## 2026-03-24
 

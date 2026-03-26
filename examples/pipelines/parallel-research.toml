@@ -1,0 +1,63 @@
+# Parallel research pipeline — news + trends gathered concurrently.
+#
+# Flow: fan-out (news-reader + trend-aggregator) → join → copywriter drafts.
+#
+# Place in: {workspace}/pipelines/parallel-research.toml
+
+[pipeline]
+name = "parallel-research"
+version = "1.0"
+description = "Research news and trends in parallel, then draft content"
+entry_point = "gather"
+max_depth = 3
+timeout_secs = 1800
+
+# ── Fan-out orchestration node ────────────────────────────────────────────
+
+[[steps]]
+id = "gather"
+agent_id = "_fanout"
+description = "Dispatch parallel research branches"
+
+[steps.next.fan_out]
+join_step = "draft"
+require_all = true
+timeout_secs = 300
+
+[[steps.next.fan_out.branches]]
+step_id = "fetch-news"
+result_key = "news"
+
+[[steps.next.fan_out.branches]]
+step_id = "fetch-trends"
+result_key = "trends"
+
+# ── Branch 1: News ────────────────────────────────────────────────────────
+
+[[steps]]
+id = "fetch-news"
+agent_id = "news-reader"
+description = "Search for recent news on the given topic"
+tools = ["web_search", "rss_fetch"]
+next = "_join"
+timeout_secs = 120
+
+# ── Branch 2: Trends ──────────────────────────────────────────────────────
+
+[[steps]]
+id = "fetch-trends"
+agent_id = "trend-aggregator"
+description = "Analyze current trends related to the topic"
+tools = ["web_search"]
+next = "_join"
+timeout_secs = 120
+
+# ── Join: Draft ───────────────────────────────────────────────────────────
+
+[[steps]]
+id = "draft"
+agent_id = "copywriter"
+description = "Write content using merged news + trends data (in fanout.news and fanout.trends)"
+tools = ["memory_read"]
+next = "end"
+timeout_secs = 300

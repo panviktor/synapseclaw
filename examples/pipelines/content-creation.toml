@@ -1,0 +1,95 @@
+# Content creation pipeline for the marketing fleet.
+#
+# Flow: news-reader researches → copywriter drafts → marketing-lead reviews
+# → (approved?) publisher publishes / (denied?) copywriter revises.
+#
+# Place in: {workspace}/pipelines/content-creation.toml
+# Trigger:  POST /api/pipelines/start {"pipeline_name": "content-creation", "input": {"topic": "..."}}
+
+[pipeline]
+name = "content-creation"
+version = "1.0"
+description = "Research, draft, review, and publish content"
+entry_point = "research"
+max_depth = 3
+timeout_secs = 3600
+
+# ── Step 1: Research ──────────────────────────────────────────────────────
+
+[[steps]]
+id = "research"
+agent_id = "news-reader"
+description = "Research the given topic, gather sources and write a summary"
+tools = ["web_search", "rss_fetch", "memory_read"]
+next = "draft"
+timeout_secs = 300
+
+[steps.output_schema]
+type = "object"
+required = ["topic", "sources", "summary"]
+
+[steps.output_schema.properties]
+topic = { type = "string" }
+sources = { type = "array", items = { type = "string" } }
+summary = { type = "string", minLength = 10 }
+
+# ── Step 2: Draft ─────────────────────────────────────────────────────────
+
+[[steps]]
+id = "draft"
+agent_id = "copywriter"
+description = "Write a post based on the research summary and sources"
+tools = ["memory_read", "memory_write"]
+max_retries = 2
+retry_backoff_secs = 10
+timeout_secs = 600
+next = "review"
+
+[steps.input_schema]
+type = "object"
+required = ["topic", "sources", "summary"]
+
+[steps.output_schema]
+type = "object"
+required = ["title", "body", "tags"]
+
+[steps.output_schema.properties]
+title = { type = "string", maxLength = 120 }
+body = { type = "string", minLength = 20 }
+tags = { type = "array", items = { type = "string" } }
+
+# ── Step 3: Review ────────────────────────────────────────────────────────
+
+[[steps]]
+id = "review"
+agent_id = "marketing-lead"
+description = "Review the draft for quality. Return approved=true or false with feedback."
+tools = ["memory_read"]
+timeout_secs = 300
+next = "publish"
+
+[steps.input_schema]
+type = "object"
+required = ["title", "body", "tags"]
+
+[steps.output_schema]
+type = "object"
+required = ["approved", "feedback"]
+
+[steps.output_schema.properties]
+approved = { type = "boolean" }
+feedback = { type = "string" }
+
+# ── Step 4: Publish ───────────────────────────────────────────────────────
+
+[[steps]]
+id = "publish"
+agent_id = "publisher"
+description = "Publish the approved content to channels"
+tools = ["channel_send"]
+next = "end"
+timeout_secs = 120
+
+[steps.input_schema]
+type = "object"
+required = ["title", "body", "tags"]
