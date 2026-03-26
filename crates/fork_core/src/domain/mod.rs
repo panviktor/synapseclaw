@@ -13,3 +13,4 @@ pub mod pipeline_context;
 pub mod pipeline_validation;
 pub mod run;
 pub mod spawn;
+pub mod tool_middleware;

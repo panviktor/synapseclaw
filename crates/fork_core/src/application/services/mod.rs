@@ -11,3 +11,4 @@ pub mod inbound_message_service;
 pub mod ipc_service;
 pub mod memory_service;
 pub mod pipeline_service;
+pub mod tool_middleware_service;

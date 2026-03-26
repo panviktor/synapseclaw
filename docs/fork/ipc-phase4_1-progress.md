@@ -1,6 +1,6 @@
 # IPC Phase 4.1 Progress
 
-**Status**: Slices 1-2 complete, Slice 3 next
+**Status**: Slices 1-3 complete, Slice 4 next
 
 Phase 4.0: modular core refactor | **Phase 4.1: deterministic pipeline engine** | Phase 4.2: federated execution
 
@@ -36,7 +36,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | `domain/pipeline.rs` — PipelineDefinition, PipelineStep, StepTransition | **DONE** | Slice 1 |
 | `domain/pipeline_context.rs` — PipelineContext, PipelineState, StepRecord | **DONE** | Slice 1 |
 | `domain/pipeline_validation.rs` — JSON Schema validation helper | **DONE** | Slice 2 |
-| `domain/tool_middleware.rs` — ToolBlock, ToolCallContext | TODO | |
+| `domain/tool_middleware.rs` — ToolBlock, ToolCallContext | **DONE** | Slice 3 |
 | `domain/routing.rs` — Route, RoutingRule, MessageRouter | TODO | |
 | ConditionalBranch, Operator enum | **DONE** | In pipeline.rs |
 | FanOutSpec, FanOutBranch | **DONE** | In pipeline.rs |
@@ -48,7 +48,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 |------|--------|-----|
 | `ports/pipeline_store.rs` — PipelineStorePort | **DONE** | Slice 1 |
 | `ports/pipeline_executor.rs` — PipelineExecutorPort | **DONE** | Slice 2 |
-| `ports/tool_middleware.rs` — ToolMiddlewarePort | TODO | |
+| `ports/tool_middleware.rs` — ToolMiddlewarePort | **DONE** | Slice 3 |
 | `ports/message_router.rs` — MessageRouterPort | TODO | |
 | `ports/pipeline_observer.rs` — PipelineObserverPort | TODO | |
 
@@ -57,7 +57,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | Item | Status | PRs |
 |------|--------|-----|
 | `services/pipeline_service.rs` — PipelineRunner | **DONE** | Slice 2 |
-| `services/tool_middleware_service.rs` — middleware chain | TODO | |
+| `services/tool_middleware_service.rs` — middleware chain | **DONE** | Slice 3 |
 | `services/routing_service.rs` — rule evaluation | TODO | |
 | `use_cases/start_pipeline.rs` | **DONE** | Slice 2 |
 | `use_cases/resume_pipeline.rs` | TODO | |
@@ -72,9 +72,9 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | `pipeline/hot_reload.rs` — notify watcher | TODO | |
 | `pipeline/ipc_step_executor.rs` — step via IPC broker | **DONE** | Slice 2 |
 | `pipeline/schema_validator.rs` — jsonschema validation | **DONE** | Slice 1 |
-| `middleware/rate_limit.rs` | TODO | |
-| `middleware/validation.rs` | TODO | |
-| `middleware/approval_gate.rs` | TODO | |
+| `middleware/rate_limit.rs` | **DONE** | Slice 3 |
+| `middleware/validation.rs` | **DONE** | Slice 3 |
+| `middleware/approval_gate.rs` | **DONE** | Slice 3 |
 | `routing/rule_chain.rs` — ordered rule evaluation | TODO | |
 
 ### Integration points (existing code modifications)
@@ -93,7 +93,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 |-------|-------------|--------|-----|
 | 1 | Pipeline core — domain types + TOML loading + schema validation | **DONE** | |
 | 2 | IPC bridge — step execution through broker + checkpointing | **DONE** | |
-| 3 | ToolMiddleware — before/after hooks on tool calls | TODO | |
+| 3 | ToolMiddleware — before/after hooks on tool calls | **DONE** | |
 | 4 | FanOut + Join — parallel step execution | TODO | |
 | 5 | Checkpointing — resume after crash | TODO | |
 | 6 | MessageRouter — deterministic routing | TODO | |

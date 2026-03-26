@@ -20,3 +20,4 @@ pub mod run_store;
 pub mod session_summary;
 pub mod spawn_broker;
 pub mod summary;
+pub mod tool_middleware;
