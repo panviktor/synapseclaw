@@ -954,26 +954,28 @@ pub async fn run_gateway(
             tracing::info!(pipelines = ?names, "pipeline definitions loaded");
         }
 
-        // Create IPC step executor (only if IPC is also enabled)
+        // Create IPC step executor via HTTP API (triggers push notifications)
         let pipeline_executor: Option<
             Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
-        > = state.ipc_db.as_ref().map(|db| {
-            let ipc_bus: Arc<dyn crate::fork_core::ports::ipc_bus::IpcBusPort> = Arc::new(
-                crate::fork_adapters::ipc::ipc_bus_adapter::IpcBusAdapter::new(Arc::clone(db)),
-            );
+        > = if config.agents_ipc.enabled {
+            let broker_url = format!("http://{}:{}", host, port);
             let runner_id = config
                 .pipelines
                 .runner_agent_id
                 .clone()
                 .unwrap_or_else(|| "pipeline-runner".into());
-            Arc::new(
+            // Use the pipeline-runner bearer token (plaintext, will be hashed by PairingGuard)
+            let bearer_token = "zc_pipeline_runner_test_token_2026".to_string();
+            Some(Arc::new(
                 crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
-                    ipc_bus,
+                    broker_url,
+                    bearer_token,
                     runner_id,
-                    config.pipelines.runner_trust_level,
                 ),
-            ) as Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>
-        });
+            ) as Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>)
+        } else {
+            None
+        };
 
         // Load routing table
         let routing_path = config
