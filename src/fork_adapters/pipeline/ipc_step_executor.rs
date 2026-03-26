@@ -77,16 +77,18 @@ impl IpcStepExecutor {
         payload.to_string()
     }
 
-    /// Parse the agent's response payload into a JSON value.
+    /// Parse the agent's response payload as JSON.
+    /// Returns error if the payload is not valid JSON — the agent is expected
+    /// to respond with structured data. Plain text responses are treated as
+    /// failures (the model is hallucinating / not following instructions).
     fn parse_response(payload: &str) -> Result<Value, StepExecutionError> {
-        // Try to parse as JSON first
-        if let Ok(value) = serde_json::from_str::<Value>(payload) {
-            return Ok(value);
-        }
-
-        // If not valid JSON, wrap the raw text as a string value
-        // This handles agents that return plain text instead of JSON
-        Ok(Value::String(payload.to_string()))
+        serde_json::from_str::<Value>(payload).map_err(|e| StepExecutionError {
+            code: "invalid_json".into(),
+            message: format!(
+                "agent response is not valid JSON (model may be hallucinating): {e}"
+            ),
+            retryable: true, // pipeline can retry — agent may produce valid JSON on next attempt
+        })
     }
 }
 
@@ -323,7 +325,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_step_plain_text_response() {
+    async fn execute_step_plain_text_response_is_error() {
         let session_id = "pipeline:run-2:step1";
         let bus = Arc::new(MockIpcBus::with_response(
             "agent-b",
@@ -338,7 +340,7 @@ mod tests {
         )
         .with_poll_interval_ms(10);
 
-        let result = executor
+        let err = executor
             .execute_step(
                 "run-2",
                 "step1",
@@ -349,13 +351,11 @@ mod tests {
                 Some(5),
             )
             .await
-            .unwrap();
+            .unwrap_err();
 
-        // Plain text wrapped as string Value
-        assert_eq!(
-            result.output,
-            Value::String("Just a plain text response".into())
-        );
+        assert_eq!(err.code, "invalid_json");
+        assert!(err.retryable);
+        assert!(err.message.contains("hallucinating"));
     }
 
     #[test]
