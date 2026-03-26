@@ -63,7 +63,16 @@ pub struct StartPipelineParams {
 /// 4. Merge output into context
 /// 5. Checkpoint via RunStorePort
 /// 6. Advance to next step
-pub async fn run_pipeline(
+///
+/// Uses `Box::pin` internally to support recursive sub-pipeline calls.
+pub fn run_pipeline<'a>(
+    ports: &'a PipelineRunnerPorts<'a>,
+    params: StartPipelineParams,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = PipelineRunResult> + Send + 'a>> {
+    Box::pin(run_pipeline_inner(ports, params))
+}
+
+async fn run_pipeline_inner(
     ports: &PipelineRunnerPorts<'_>,
     params: StartPipelineParams,
 ) -> PipelineRunResult {
@@ -405,13 +414,64 @@ async fn execute_loop(
                             }
                         }
                     }
-                    crate::domain::pipeline::ComplexTransition::SubPipeline { .. } => {
-                        // Slice 9: nested pipelines — not yet implemented
-                        ctx.fail(format!(
-                            "step '{}' uses sub_pipeline transition (not yet implemented)",
-                            current_step_id,
-                        ));
-                        return make_result(ctx);
+                    crate::domain::pipeline::ComplexTransition::SubPipeline {
+                        pipeline_name,
+                        next,
+                    } => {
+                        // Check depth limit
+                        if ctx.depth >= definition.max_depth {
+                            ctx.fail(format!(
+                                "sub-pipeline depth limit exceeded ({}) at step '{}'",
+                                definition.max_depth, current_step_id
+                            ));
+                            return make_result(ctx);
+                        }
+
+                        info!(
+                            run_id = %ctx.run_id,
+                            step = %current_step_id,
+                            sub_pipeline = %pipeline_name,
+                            depth = ctx.depth + 1,
+                            "starting sub-pipeline"
+                        );
+
+                        // Run sub-pipeline with incremented depth
+                        let sub_result = run_pipeline(
+                            ports,
+                            StartPipelineParams {
+                                pipeline_name: pipeline_name.clone(),
+                                input: step_output.clone(),
+                                triggered_by: format!(
+                                    "pipeline:{}:{}",
+                                    ctx.pipeline_name, current_step_id
+                                ),
+                                depth: ctx.depth + 1,
+                                parent_run_id: Some(ctx.run_id.clone()),
+                            },
+                        )
+                        .await;
+
+                        if sub_result.state != PipelineState::Completed {
+                            ctx.fail(format!(
+                                "sub-pipeline '{}' failed: {}",
+                                pipeline_name,
+                                sub_result.error.unwrap_or_else(|| "unknown".into())
+                            ));
+                            return make_result(ctx);
+                        }
+
+                        // Merge sub-pipeline output into context
+                        ctx.merge_step_output(
+                            &format!("sub:{pipeline_name}"),
+                            sub_result.data,
+                        );
+                        checkpoint(ports.run_store, ctx).await;
+
+                        if next == "end" {
+                            ctx.complete();
+                            return make_result(ctx);
+                        }
+                        current_step_id = next.clone();
                     }
                 }
             }
@@ -1698,5 +1758,161 @@ mod tests {
         assert_eq!(result.state, PipelineState::Completed);
         assert!(result.data.get("revise").is_some());
         assert!(result.data.get("publish").is_none());
+    }
+
+    // -- Nested pipeline tests (Slice 9) ------------------------------------
+
+    #[tokio::test]
+    async fn sub_pipeline_executes_and_returns() {
+        // Parent: step1 → sub_pipeline("child") → step3
+        // Child:  c1 → end
+        let parent = PipelineDefinition {
+            name: "parent".into(),
+            version: "1.0".into(),
+            description: "".into(),
+            steps: vec![
+                PipelineStep {
+                    id: "s1".into(),
+                    agent_id: "a".into(),
+                    description: "".into(),
+                    tools: vec![],
+                    input_schema: None,
+                    output_schema: None,
+                    next: StepTransition::Complex(Box::new(
+                        ComplexTransition::SubPipeline {
+                            pipeline_name: "child".into(),
+                            next: "s3".into(),
+                        },
+                    )),
+                    max_retries: 0,
+                    retry_backoff_secs: 1,
+                    timeout_secs: None,
+                },
+                PipelineStep {
+                    id: "s3".into(),
+                    agent_id: "c".into(),
+                    description: "".into(),
+                    tools: vec![],
+                    input_schema: None,
+                    output_schema: None,
+                    next: StepTransition::Next("end".into()),
+                    max_retries: 0,
+                    retry_backoff_secs: 1,
+                    timeout_secs: None,
+                },
+            ],
+            entry_point: "s1".into(),
+            max_depth: 3,
+            timeout_secs: None,
+        };
+
+        let child = PipelineDefinition {
+            name: "child".into(),
+            version: "1.0".into(),
+            description: "".into(),
+            steps: vec![PipelineStep {
+                id: "c1".into(),
+                agent_id: "b".into(),
+                description: "".into(),
+                tools: vec![],
+                input_schema: None,
+                output_schema: None,
+                next: StepTransition::Next("end".into()),
+                max_retries: 0,
+                retry_backoff_secs: 1,
+                timeout_secs: None,
+            }],
+            entry_point: "c1".into(),
+            max_depth: 3,
+            timeout_secs: None,
+        };
+
+        let store = MockPipelineStore {
+            defs: vec![parent, child],
+        };
+        let run_store = MockRunStore::new();
+        let executor = MockExecutor::succeeds(vec![
+            ("s1", json!({"parent_step": true})),
+            ("c1", json!({"child_result": "done"})),
+            ("s3", json!({"final": true})),
+        ]);
+
+        let result = run_pipeline(
+            &PipelineRunnerPorts {
+                pipeline_store: &store,
+                run_store: &run_store,
+                executor: &executor,
+            },
+            StartPipelineParams {
+                pipeline_name: "parent".into(),
+                input: json!({}),
+                triggered_by: "test".into(),
+                depth: 0,
+                parent_run_id: None,
+            },
+        )
+        .await;
+
+        assert_eq!(result.state, PipelineState::Completed);
+        assert!(result.data.get("s1").is_some());
+        assert!(result.data.get("sub:child").is_some()); // sub-pipeline output
+        assert!(result.data.get("s3").is_some());
+    }
+
+    #[tokio::test]
+    async fn sub_pipeline_depth_limit() {
+        // Pipeline calls itself → depth limit should stop recursion
+        let recursive = PipelineDefinition {
+            name: "recursive".into(),
+            version: "1.0".into(),
+            description: "".into(),
+            steps: vec![PipelineStep {
+                id: "s1".into(),
+                agent_id: "a".into(),
+                description: "".into(),
+                tools: vec![],
+                input_schema: None,
+                output_schema: None,
+                next: StepTransition::Complex(Box::new(
+                    ComplexTransition::SubPipeline {
+                        pipeline_name: "recursive".into(),
+                        next: "end".into(),
+                    },
+                )),
+                max_retries: 0,
+                retry_backoff_secs: 1,
+                timeout_secs: None,
+            }],
+            entry_point: "s1".into(),
+            max_depth: 2,
+            timeout_secs: None,
+        };
+
+        let store = MockPipelineStore {
+            defs: vec![recursive],
+        };
+        let run_store = MockRunStore::new();
+        let executor = MockExecutor::succeeds(vec![
+            ("s1", json!({"x": 1})),
+        ]);
+
+        let result = run_pipeline(
+            &PipelineRunnerPorts {
+                pipeline_store: &store,
+                run_store: &run_store,
+                executor: &executor,
+            },
+            StartPipelineParams {
+                pipeline_name: "recursive".into(),
+                input: json!({}),
+                triggered_by: "test".into(),
+                depth: 0,
+                parent_run_id: None,
+            },
+        )
+        .await;
+
+        assert_eq!(result.state, PipelineState::Failed);
+        assert!(result.error.unwrap().contains("depth limit"));
     }
 }

@@ -1,6 +1,6 @@
 # IPC Phase 4.1 Progress
 
-**Status**: Slices 1-8 complete (Checkpoint C done), Slice 9 next
+**Status**: Slices 1-9 complete, Slice 10 next (final)
 
 Phase 4.0: modular core refactor | **Phase 4.1: deterministic pipeline engine** | Phase 4.2: federated execution
 
@@ -99,7 +99,7 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 | 6 | MessageRouter — deterministic routing | **DONE** | |
 | 7 | WaitForApproval — human-in-the-loop via ApprovalPort | **DONE** | |
 | 8 | Hot-reload — notify filesystem watcher | **DONE** | |
-| 9 | Nested pipelines — pipeline as step | TODO | |
+| 9 | Nested pipelines — pipeline as step | **DONE** | |
 | 10 | Observability — pipeline events via Observer | TODO | |
 
 ---
