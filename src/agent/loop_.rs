@@ -2184,6 +2184,7 @@ async fn execute_one_tool(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
+    tool_middleware: Option<&std::sync::Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>>,
 ) -> Result<ToolExecutionOutcome> {
     let args_summary = truncate_with_ellipsis(&call_arguments.to_string(), 300);
     observer.record_event(&ObserverEvent::ToolCallStart {
@@ -2220,6 +2221,34 @@ async fn execute_one_tool(
     } else {
         None
     };
+
+    // Phase 4.1: Tool middleware before() hook
+    if let Some(mw) = tool_middleware {
+        let mw_ctx = crate::fork_core::domain::tool_middleware::ToolCallContext {
+            run_id: None,
+            pipeline_name: None,
+            step_id: None,
+            agent_id: String::new(),
+            tool_name: call_name.to_string(),
+            args: call_arguments.clone(),
+            call_count: 0,
+        };
+        if let Err(block) = mw.run_before(&mw_ctx).await {
+            let reason = block.to_string();
+            let duration = start.elapsed();
+            observer.record_event(&ObserverEvent::ToolCall {
+                tool: call_name.to_string(),
+                duration,
+                success: false,
+            });
+            return Ok(ToolExecutionOutcome {
+                output: format!("[blocked] {reason}"),
+                success: false,
+                error_reason: Some(reason),
+                duration,
+            });
+        }
+    }
 
     let tool_future = tool.execute(call_arguments);
     let tool_result = if let Some(token) = cancellation_token {
@@ -2313,6 +2342,7 @@ async fn execute_tools_parallel(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
+    tool_middleware: Option<&std::sync::Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>>,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let futures: Vec<_> = tool_calls
         .iter()
@@ -2325,6 +2355,7 @@ async fn execute_tools_parallel(
                 observer,
                 cancellation_token,
                 run_ctx,
+                tool_middleware,
             )
         })
         .collect();
@@ -2340,6 +2371,7 @@ async fn execute_tools_sequential(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
+    tool_middleware: Option<&std::sync::Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>>,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let mut outcomes = Vec::with_capacity(tool_calls.len());
 
@@ -2353,6 +2385,7 @@ async fn execute_tools_sequential(
                 observer,
                 cancellation_token,
                 run_ctx,
+                tool_middleware,
             )
             .await?,
         );
@@ -2902,6 +2935,11 @@ pub(crate) async fn run_tool_call_loop(
             });
         }
 
+        // Phase 4.1: tool_middleware is threaded through but currently None
+        // at this call site. Full wiring (from ChannelRuntimeContext) is done
+        // when [pipelines] is enabled and middleware is configured.
+        let tool_mw: Option<&std::sync::Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>> = None;
+
         let executed_outcomes = if allow_parallel_execution && executable_calls.len() > 1 {
             execute_tools_parallel(
                 &executable_calls,
@@ -2910,6 +2948,7 @@ pub(crate) async fn run_tool_call_loop(
                 observer,
                 cancellation_token.as_ref(),
                 run_ctx,
+                tool_mw,
             )
             .await?
         } else {
@@ -2920,6 +2959,7 @@ pub(crate) async fn run_tool_call_loop(
                 observer,
                 cancellation_token.as_ref(),
                 run_ctx,
+                tool_mw,
             )
             .await?
         };
@@ -4137,6 +4177,7 @@ mod tests {
             &observer,
             None,
             None,
+            None, // tool_middleware
         )
         .await;
         assert!(result.is_ok(), "execute_one_tool should not panic or error");
@@ -4168,6 +4209,7 @@ mod tests {
             &observer,
             None,
             None,
+            None, // tool_middleware
         )
         .await
         .expect("suffix alias should execute the unique activated tool");
