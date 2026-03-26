@@ -1580,12 +1580,39 @@ async fn agent_inbox_processor(
             // correct session — without it the agent literally cannot reply
             // and the auto-reply safety net becomes the only path.
             let mut formatted = String::new();
+            let mut pipeline_task_detected = false;
+            let mut pipeline_output_schema: Option<String> = None;
             for msg in &messages {
                 let id = msg["id"].as_i64().unwrap_or(0);
                 let kind = msg["kind"].as_str().unwrap_or("unknown");
                 let from = msg["from_agent"].as_str().unwrap_or("unknown");
                 let session_id = msg["session_id"].as_str().unwrap_or("");
                 let payload = msg["payload"].as_str().unwrap_or("");
+
+                // Phase 4.1: detect pipeline task messages
+                if kind == "task" {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload) {
+                        if parsed.get("pipeline_step").is_some() {
+                            pipeline_task_detected = true;
+                            // Extract description and input for cleaner prompt
+                            let step_desc = parsed["description"].as_str().unwrap_or("");
+                            let step_input = &parsed["input"];
+                            // Extract output schema hint from step definition (if pipeline_store available)
+                            if let Some(schema) = parsed.get("output_schema") {
+                                pipeline_output_schema = Some(schema.to_string());
+                            }
+                            use std::fmt::Write;
+                            let _ = write!(
+                                formatted,
+                                "--- Pipeline Task (from: {from}, session_id: {session_id}) ---\n\
+                                 Task: {step_desc}\n\
+                                 Input data: {step_input}\n\n",
+                            );
+                            continue;
+                        }
+                    }
+                }
+
                 let payload_preview = if payload.len() > 4000 {
                     let end = truncate_at_char_boundary(payload, 4000);
                     format!("{end}… [truncated]")
@@ -1606,19 +1633,38 @@ async fn agent_inbox_processor(
                 }
             }
 
-            let prompt = format!(
-                "[IPC push: {} new message(s) from \"{}\"]\n\n\
-                 {}\
-                 Process the messages above and take action if required.\n\
-                 If a message has a session_id and requires a response, use \
-                 agents_reply with that session_id to send results back.\n\
-                 IMPORTANT: Do NOT send acknowledgments, confirmations, or \
-                 \"understood\" messages. Only reply if the message requires \
-                 concrete action or contains a question that needs answering.",
-                messages.len(),
-                peer,
-                formatted,
-            );
+            let prompt = if pipeline_task_detected {
+                // Phase 4.1: pipeline-specific prompt — enforce JSON response
+                let schema_hint = pipeline_output_schema
+                    .map(|s| format!("\nRequired output JSON schema: {s}\n"))
+                    .unwrap_or_default();
+                format!(
+                    "[Pipeline task from \"{peer}\"]\n\n\
+                     {formatted}\
+                     {schema_hint}\
+                     IMPORTANT: You MUST respond with a VALID JSON object as your final output.\n\
+                     Do NOT wrap it in markdown code blocks. Do NOT add explanatory text before or after.\n\
+                     The pipeline engine will parse your response as JSON. If it cannot parse it, \
+                     the step will be retried.\n\n\
+                     Use agents_reply with the session_id above, kind=\"result\", and your JSON as payload.\n\
+                     If you cannot complete the task, reply with: {{\"error\": \"reason\"}}",
+                    peer = peer,
+                )
+            } else {
+                format!(
+                    "[IPC push: {} new message(s) from \"{}\"]\n\n\
+                     {}\
+                     Process the messages above and take action if required.\n\
+                     If a message has a session_id and requires a response, use \
+                     agents_reply with that session_id to send results back.\n\
+                     IMPORTANT: Do NOT send acknowledgments, confirmations, or \
+                     \"understood\" messages. Only reply if the message requires \
+                     concrete action or contains a question that needs answering.",
+                    messages.len(),
+                    peer,
+                    formatted,
+                )
+            };
 
             tracing::info!(
                 peer = %peer,
@@ -1699,17 +1745,26 @@ async fn agent_inbox_processor(
                         }
 
                         let auto_payload = if last_text.trim().is_empty() {
-                            "[auto-reply] Agent completed processing but produced no output."
-                                .to_string()
+                            if pipeline_task_detected {
+                                r#"{"error": "agent produced no output"}"#.to_string()
+                            } else {
+                                "[auto-reply] Agent completed processing but produced no output."
+                                    .to_string()
+                            }
                         } else {
-                            // Scrub credentials — auto-reply payload is sent to peer
-                            // agents over IPC where it could leak secrets from tool output.
                             let scrubbed = crate::agent::loop_::scrub_credentials(last_text.trim());
                             let truncated = truncate_at_char_boundary(&scrubbed, 4000);
-                            format!(
-                                "[auto-reply] Agent completed processing but did not \
-                                 send explicit reply. Last output:\n{truncated}"
-                            )
+
+                            if pipeline_task_detected {
+                                // Phase 4.1: try to extract JSON from agent output
+                                // Agent may have wrapped JSON in text or markdown
+                                extract_json_from_text(truncated)
+                            } else {
+                                format!(
+                                    "[auto-reply] Agent completed processing but did not \
+                                     send explicit reply. Last output:\n{truncated}"
+                                )
+                            }
                         };
 
                         let body = serde_json::json!({
@@ -1842,6 +1897,46 @@ const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8"
 
 /// Truncate a UTF-8 string to at most `max_bytes`, ending on a char boundary.
 /// Returns the truncated slice (never panics on multi-byte characters).
+/// Phase 4.1: Extract JSON from agent text output.
+///
+/// LLMs often wrap JSON in markdown code blocks or add explanatory text.
+/// This function tries to find a JSON object in the text. Falls back to
+/// wrapping the raw text as `{"result": "..."}`.
+fn extract_json_from_text(text: &str) -> String {
+    let trimmed = text.trim();
+
+    // Try direct parse
+    if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        return trimmed.to_string();
+    }
+
+    // Try to find JSON in markdown code block: ```json ... ``` or ``` ... ```
+    if let Some(start) = trimmed.find("```") {
+        let after_fence = &trimmed[start + 3..];
+        // Skip optional language tag
+        let content_start = after_fence.find('\n').map_or(0, |n| n + 1);
+        if let Some(end) = after_fence[content_start..].find("```") {
+            let candidate = after_fence[content_start..content_start + end].trim();
+            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                return candidate.to_string();
+            }
+        }
+    }
+
+    // Try to find a JSON object between first { and last }
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if start < end {
+            let candidate = &trimmed[start..=end];
+            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                return candidate.to_string();
+            }
+        }
+    }
+
+    // Fallback: wrap raw text as JSON
+    serde_json::json!({"result": trimmed}).to_string()
+}
+
 fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;
