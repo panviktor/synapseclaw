@@ -1,0 +1,79 @@
+[pipeline]
+name = "content-creation"
+version = "1.0"
+description = "Research -> Draft -> Review -> Publish content pipeline"
+entry_point = "research"
+max_depth = 3
+timeout_secs = 3600
+
+[[steps]]
+id = "research"
+agent_id = "news-reader"
+description = "Research topic and gather sources"
+tools = ["web_search", "rss_fetch", "memory_read"]
+next = "draft"
+timeout_secs = 300
+
+[steps.output_schema]
+type = "object"
+required = ["topic", "sources", "summary"]
+
+[steps.output_schema.properties]
+topic = { type = "string" }
+sources = { type = "array", items = { type = "string" } }
+summary = { type = "string", minLength = 10 }
+
+[[steps]]
+id = "draft"
+agent_id = "copywriter"
+description = "Write content based on research"
+tools = ["memory_read", "memory_write"]
+max_retries = 2
+retry_backoff_secs = 10
+timeout_secs = 600
+next = "review"
+
+[steps.input_schema]
+type = "object"
+required = ["topic", "sources", "summary"]
+
+[steps.output_schema]
+type = "object"
+required = ["title", "body", "tags"]
+
+[steps.output_schema.properties]
+title = { type = "string", maxLength = 120 }
+body = { type = "string", minLength = 20 }
+tags = { type = "array", items = { type = "string" } }
+
+[[steps]]
+id = "review"
+agent_id = "marketing-lead"
+description = "Review draft quality and approve or request revision"
+tools = ["memory_read"]
+timeout_secs = 300
+next = "publish"
+
+[steps.input_schema]
+type = "object"
+required = ["title", "body", "tags"]
+
+[steps.output_schema]
+type = "object"
+required = ["approved", "feedback"]
+
+[steps.output_schema.properties]
+approved = { type = "boolean" }
+feedback = { type = "string" }
+
+[[steps]]
+id = "publish"
+agent_id = "publisher"
+description = "Publish approved content to channels"
+tools = ["channel_send"]
+next = "end"
+timeout_secs = 120
+
+[steps.input_schema]
+type = "object"
+required = ["title", "body", "tags", "approved"]

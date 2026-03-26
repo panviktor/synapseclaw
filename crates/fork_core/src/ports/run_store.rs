@@ -37,4 +37,14 @@ pub trait RunStorePort: Send + Sync {
 
     /// Get events for a run, chronological order.
     async fn get_events(&self, run_id: &str, limit: usize) -> Vec<RunEvent>;
+
+    /// List runs in any of the given states (for pipeline recovery on startup).
+    /// Default impl falls back to list_all_runs + filter.
+    async fn list_by_state(&self, states: &[RunState], limit: usize) -> Vec<Run> {
+        self.list_all_runs(limit)
+            .await
+            .into_iter()
+            .filter(|r| states.contains(&r.state))
+            .collect()
+    }
 }

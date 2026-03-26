@@ -19,6 +19,8 @@ pub enum RunOrigin {
     Spawn,
     /// Cron/scheduler-triggered execution.
     Cron,
+    /// Pipeline-orchestrated execution (Phase 4.1).
+    Pipeline,
 }
 
 impl fmt::Display for RunOrigin {
@@ -28,7 +30,23 @@ impl fmt::Display for RunOrigin {
             Self::Channel => write!(f, "channel"),
             Self::Ipc => write!(f, "ipc"),
             Self::Spawn => write!(f, "spawn"),
+            Self::Pipeline => write!(f, "pipeline"),
             Self::Cron => write!(f, "cron"),
+        }
+    }
+}
+
+impl RunOrigin {
+    /// Parse from string (e.g. from DB).
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s {
+            "web" => Self::Web,
+            "channel" => Self::Channel,
+            "ipc" => Self::Ipc,
+            "spawn" => Self::Spawn,
+            "cron" => Self::Cron,
+            "pipeline" => Self::Pipeline,
+            _ => Self::Ipc,
         }
     }
 }

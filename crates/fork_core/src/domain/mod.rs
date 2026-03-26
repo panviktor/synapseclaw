@@ -8,5 +8,7 @@ pub mod ipc;
 pub mod implementation;
 pub mod memory;
 pub mod message;
+pub mod pipeline;
+pub mod pipeline_context;
 pub mod run;
 pub mod spawn;
