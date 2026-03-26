@@ -46,7 +46,7 @@ pub enum RecoveryOutcome {
 /// 2. For each: load last checkpoint (PipelineContext from RunEvent)
 /// 3. Verify pipeline definition still exists (may have been removed)
 /// 4. Resume execution from the current step
-pub async fn recover_all(ports: &PipelineRunnerPorts<'_>) -> RecoveryReport {
+pub async fn recover_all(ports: &PipelineRunnerPorts) -> RecoveryReport {
     // Find incomplete pipeline runs
     let non_terminal = &[RunState::Running, RunState::Queued];
     let runs = ports.run_store.list_by_state(non_terminal, 100).await;
@@ -103,7 +103,7 @@ pub async fn recover_all(ports: &PipelineRunnerPorts<'_>) -> RecoveryReport {
 }
 
 /// Recover a single pipeline run.
-async fn recover_one(ports: &PipelineRunnerPorts<'_>, run_id: &str) -> RecoveryDetail {
+async fn recover_one(ports: &PipelineRunnerPorts, run_id: &str) -> RecoveryDetail {
     // Load last checkpoint from run events
     let events = ports.run_store.get_events(run_id, 1000).await;
     let last_checkpoint = events
@@ -240,7 +240,7 @@ mod tests {
     use crate::ports::run_store::RunStorePort;
     use async_trait::async_trait;
     use serde_json::{json, Value};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     // -- Mocks (reusable) ---------------------------------------------------
 
@@ -383,9 +383,9 @@ mod tests {
         let run_store = MockRunStore::new();
         let executor = OkExecutor;
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let report = recover_all(&ports).await;
@@ -413,9 +413,9 @@ mod tests {
         let run_store = MockRunStore::with_pipeline_run("run-crash", &ctx);
         let executor = OkExecutor;
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let report = recover_all(&ports).await;
@@ -448,9 +448,9 @@ mod tests {
         let run_store = MockRunStore::with_pipeline_run("run-orphan", &ctx);
         let executor = OkExecutor;
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let report = recover_all(&ports).await;
@@ -474,9 +474,9 @@ mod tests {
         let store = MockStore { defs: vec![] };
         let executor = OkExecutor;
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let report = recover_all(&ports).await;

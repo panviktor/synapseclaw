@@ -42,7 +42,7 @@ impl std::error::Error for StartPipelineError {}
 /// - Cron jobs
 /// - Other pipelines (nested, handled in Slice 9)
 pub async fn execute(
-    ports: &PipelineRunnerPorts<'_>,
+    ports: &PipelineRunnerPorts,
     input: StartPipelineInput,
 ) -> Result<PipelineRunResult, StartPipelineError> {
     // Single fetch: run_pipeline handles "not found" internally.
@@ -76,7 +76,7 @@ mod tests {
     use crate::domain::run::{Run, RunEvent, RunState};
     use async_trait::async_trait;
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     struct MockStore {
         defs: Vec<PipelineDefinition>,
@@ -152,9 +152,9 @@ mod tests {
         let run_store = MockRunStore;
         let executor = OkExecutor;
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let result = execute(
@@ -180,9 +180,9 @@ mod tests {
         let run_store = MockRunStore;
         let executor = OkExecutor;
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let result = execute(

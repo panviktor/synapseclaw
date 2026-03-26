@@ -16,13 +16,14 @@ use crate::ports::pipeline_executor::PipelineExecutorPort;
 use crate::ports::pipeline_store::PipelineStorePort;
 use crate::ports::run_store::RunStorePort;
 use serde_json::Value;
+use std::sync::Arc;
 use tracing::{error, info, warn};
 
 /// Ports required by the pipeline runner.
-pub struct PipelineRunnerPorts<'a> {
-    pub pipeline_store: &'a dyn PipelineStorePort,
-    pub run_store: &'a dyn RunStorePort,
-    pub executor: &'a dyn PipelineExecutorPort,
+pub struct PipelineRunnerPorts {
+    pub pipeline_store: Arc<dyn PipelineStorePort>,
+    pub run_store: Arc<dyn RunStorePort>,
+    pub executor: Arc<dyn PipelineExecutorPort>,
 }
 
 /// Result of starting a pipeline.
@@ -65,15 +66,15 @@ pub struct StartPipelineParams {
 /// 6. Advance to next step
 ///
 /// Uses `Box::pin` internally to support recursive sub-pipeline calls.
-pub fn run_pipeline<'a>(
-    ports: &'a PipelineRunnerPorts<'a>,
+pub fn run_pipeline(
+    ports: &PipelineRunnerPorts,
     params: StartPipelineParams,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = PipelineRunResult> + Send + 'a>> {
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = PipelineRunResult> + Send + '_>> {
     Box::pin(run_pipeline_inner(ports, params))
 }
 
 async fn run_pipeline_inner(
-    ports: &PipelineRunnerPorts<'_>,
+    ports: &PipelineRunnerPorts,
     params: StartPipelineParams,
 ) -> PipelineRunResult {
     // Load pipeline definition
@@ -109,7 +110,7 @@ async fn run_pipeline_inner(
     ctx.merge_step_output("_input", params.input.clone());
 
     // Create Run record
-    if let Err(e) = create_pipeline_run(ports.run_store, &ctx).await {
+    if let Err(e) = create_pipeline_run(ports.run_store.as_ref(), &ctx).await {
         error!(run_id = %run_id, error = %e, "failed to create pipeline run record");
         return PipelineRunResult {
             run_id,
@@ -121,7 +122,7 @@ async fn run_pipeline_inner(
     }
 
     // Checkpoint initial state
-    checkpoint(ports.run_store, &ctx).await;
+    checkpoint(ports.run_store.as_ref(), &ctx).await;
 
     info!(
         run_id = %run_id,
@@ -135,7 +136,7 @@ async fn run_pipeline_inner(
     let result = execute_loop(ports, &definition, &mut ctx, &params.input).await;
 
     // Final checkpoint
-    checkpoint(ports.run_store, &ctx).await;
+    checkpoint(ports.run_store.as_ref(), &ctx).await;
 
     // Update Run record to terminal state
     let run_state = match ctx.state {
@@ -170,7 +171,7 @@ async fn run_pipeline_inner(
 /// Takes an existing `PipelineContext` (deserialized from last checkpoint)
 /// and continues execution from `ctx.current_step`.
 pub async fn resume_pipeline(
-    ports: &PipelineRunnerPorts<'_>,
+    ports: &PipelineRunnerPorts,
     mut ctx: PipelineContext,
     definition: &PipelineDefinition,
 ) -> PipelineRunResult {
@@ -191,7 +192,7 @@ pub async fn resume_pipeline(
     let result = execute_loop(ports, definition, &mut ctx, &input).await;
 
     // Final checkpoint + Run state update
-    checkpoint(ports.run_store, &ctx).await;
+    checkpoint(ports.run_store.as_ref(), &ctx).await;
 
     let run_state = match ctx.state {
         PipelineState::Completed => RunState::Completed,
@@ -221,7 +222,7 @@ pub async fn resume_pipeline(
 
 /// Inner execution loop — iterates through steps until End or failure.
 async fn execute_loop(
-    ports: &PipelineRunnerPorts<'_>,
+    ports: &PipelineRunnerPorts,
     definition: &PipelineDefinition,
     ctx: &mut PipelineContext,
     initial_input: &Value,
@@ -315,7 +316,7 @@ async fn execute_loop(
         ctx.merge_step_output(&current_step_id, step_output.clone());
 
         // Checkpoint after successful step
-        checkpoint(ports.run_store, ctx).await;
+        checkpoint(ports.run_store.as_ref(), ctx).await;
 
         // Advance to next step
         match &step.next {
@@ -372,7 +373,7 @@ async fn execute_loop(
                             "pipeline waiting for approval"
                         );
                         ctx.state = PipelineState::WaitingForApproval(current_step_id.clone());
-                        checkpoint(ports.run_store, ctx).await;
+                        checkpoint(ports.run_store.as_ref(), ctx).await;
 
                         // Request approval via executor (blocking call).
                         // The executor adapter translates this to an IPC approval request.
@@ -475,7 +476,7 @@ async fn execute_loop(
                             &format!("sub:{pipeline_name}"),
                             sub_result.data,
                         );
-                        checkpoint(ports.run_store, ctx).await;
+                        checkpoint(ports.run_store.as_ref(), ctx).await;
 
                         if next == "end" {
                             ctx.complete();
@@ -492,7 +493,7 @@ async fn execute_loop(
 /// Execute a step with retry logic.
 /// Returns `Some(output)` on success, `None` on failure (ctx.state already set).
 async fn execute_step_with_retries(
-    ports: &PipelineRunnerPorts<'_>,
+    ports: &PipelineRunnerPorts,
     ctx: &mut PipelineContext,
     step: &PipelineStep,
     input: &Value,
@@ -504,7 +505,7 @@ async fn execute_step_with_retries(
         ctx.state = PipelineState::WaitingForAgent(step.agent_id.clone());
 
         // Checkpoint before dispatch (so recovery knows we're waiting)
-        checkpoint(ports.run_store, ctx).await;
+        checkpoint(ports.run_store.as_ref(), ctx).await;
 
         let result = ports
             .executor
@@ -587,7 +588,7 @@ async fn execute_step_with_retries(
 ///
 /// Phase 4.1 Slice 4.
 async fn execute_fan_out(
-    ports: &PipelineRunnerPorts<'_>,
+    ports: &PipelineRunnerPorts,
     ctx: &mut PipelineContext,
     definition: &PipelineDefinition,
     spec: &crate::domain::pipeline::FanOutSpec,
@@ -607,7 +608,7 @@ async fn execute_fan_out(
         .map(|b| b.step_id.clone())
         .collect();
     ctx.state = PipelineState::WaitingForFanOut(branch_ids);
-    checkpoint(ports.run_store, ctx).await;
+    checkpoint(ports.run_store.as_ref(), ctx).await;
 
     // Build fan-out timeout
     let fan_out_deadline = spec.timeout_secs.map(|t| {
@@ -627,63 +628,83 @@ async fn execute_fan_out(
         }
     }
 
-    // Dispatch branches and collect results.
-    // Currently sequential dispatch (lifetime constraints on ports prevent
-    // JoinSet spawning). Agents process concurrently on IPC side — we poll
-    // results one by one. True parallel dispatch (Arc<dyn Executor>) is a
-    // future optimization.
-    let mut results: Vec<(String, Result<Value, String>)> = Vec::new();
+    // Dispatch all branches concurrently via JoinSet.
+    let mut join_set = tokio::task::JoinSet::new();
 
     for branch in &spec.branches {
-        let step = definition.step(&branch.step_id).unwrap();
+        let step = definition.step(&branch.step_id).unwrap().clone();
+        let result_key = branch.result_key.clone();
+        let run_id = ctx.run_id.clone();
+        let input = branch_input.clone();
+        let executor = ports.executor.clone();
 
-        // Check fan-out timeout
-        if let Some(dl) = fan_out_deadline {
-            if std::time::Instant::now() >= dl {
+        join_set.spawn(async move {
+            let exec_result = executor
+                .execute_step(
+                    &run_id,
+                    &step.id,
+                    &step.agent_id,
+                    &input,
+                    &step.tools,
+                    &step.description,
+                    step.timeout_secs,
+                )
+                .await;
+            (result_key, step.id.clone(), step.agent_id.clone(), exec_result)
+        });
+    }
+
+    // Collect results (with optional fan-out timeout)
+    let mut results: Vec<(String, Result<Value, String>)> = Vec::new();
+
+    while let Some(join_result) = if let Some(dl) = fan_out_deadline {
+        let remaining = dl.saturating_duration_since(std::time::Instant::now());
+        match tokio::time::timeout(remaining, join_set.join_next()).await {
+            Ok(r) => r,
+            Err(_) => {
+                // Timeout — abort remaining branches
+                join_set.abort_all();
                 return Err(format!(
-                    "fan-out timed out after {} branches of {}",
-                    results.len(),
-                    branch_count
+                    "fan-out timed out after {} of {} branches",
+                    results.len(), branch_count
                 ));
             }
         }
-
-        ctx.record_step_start(&step.id, &step.agent_id, 0);
-
-        let exec_result = ports
-            .executor
-            .execute_step(
-                &ctx.run_id,
-                &step.id,
-                &step.agent_id,
-                &branch_input,
-                &step.tools,
-                &step.description,
-                step.timeout_secs,
-            )
-            .await;
-
-        match exec_result {
-            Ok(result) => {
-                ctx.record_step_complete(&step.id, Some(result.output.clone()));
-                info!(
-                    run_id = %ctx.run_id,
-                    branch = %branch.result_key,
-                    step = %step.id,
-                    "fan-out branch completed"
-                );
-                results.push((branch.result_key.clone(), Ok(result.output)));
+    } else {
+        join_set.join_next().await
+    } {
+        match join_result {
+            Ok((result_key, step_id, agent_id, exec_result)) => {
+                match exec_result {
+                    Ok(result) => {
+                        ctx.record_step_start(&step_id, &agent_id, 0);
+                        ctx.record_step_complete(&step_id, Some(result.output.clone()));
+                        info!(
+                            run_id = %ctx.run_id,
+                            branch = %result_key,
+                            step = %step_id,
+                            "fan-out branch completed"
+                        );
+                        results.push((result_key, Ok(result.output)));
+                    }
+                    Err(err) => {
+                        ctx.record_step_start(&step_id, &agent_id, 0);
+                        ctx.record_step_failure(&step_id, err.message.clone());
+                        warn!(
+                            run_id = %ctx.run_id,
+                            branch = %result_key,
+                            step = %step_id,
+                            error = %err.message,
+                            "fan-out branch failed"
+                        );
+                        results.push((result_key, Err(err.message)));
+                    }
+                }
             }
-            Err(err) => {
-                ctx.record_step_failure(&step.id, err.message.clone());
-                warn!(
-                    run_id = %ctx.run_id,
-                    branch = %branch.result_key,
-                    step = %step.id,
-                    error = %err.message,
-                    "fan-out branch failed"
-                );
-                results.push((branch.result_key.clone(), Err(err.message)));
+            Err(join_err) => {
+                // JoinError — task panicked
+                warn!(run_id = %ctx.run_id, error = %join_err, "fan-out branch task panicked");
+                results.push(("_panic".into(), Err(join_err.to_string())));
             }
         }
     }
@@ -709,7 +730,7 @@ async fn execute_fan_out(
     }
 
     ctx.state = PipelineState::Running;
-    checkpoint(ports.run_store, ctx).await;
+    checkpoint(ports.run_store.as_ref(), ctx).await;
 
     info!(
         run_id = %ctx.run_id,
@@ -1026,9 +1047,9 @@ mod tests {
         ]);
 
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let result = run_pipeline(
@@ -1058,9 +1079,9 @@ mod tests {
         let executor = MockExecutor::succeeds(vec![]);
 
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let result = run_pipeline(
@@ -1097,9 +1118,9 @@ mod tests {
         ]);
 
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let result = run_pipeline(
@@ -1164,9 +1185,9 @@ mod tests {
         };
 
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: Arc::new(run_store),
+            executor: Arc::new(executor),
         };
 
         let result = run_pipeline(
@@ -1190,16 +1211,16 @@ mod tests {
         let store = MockPipelineStore {
             defs: vec![two_step_pipeline()],
         };
-        let run_store = MockRunStore::new();
+        let run_store = Arc::new(MockRunStore::new());
         let executor = MockExecutor::succeeds(vec![
             ("step1", json!({"a": 1})),
             ("step2", json!({"b": 2})),
         ]);
 
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: run_store.clone(),
+            executor: Arc::new(executor),
         };
 
         let result = run_pipeline(
@@ -1229,16 +1250,16 @@ mod tests {
         let store = MockPipelineStore {
             defs: vec![two_step_pipeline()],
         };
-        let run_store = MockRunStore::new();
+        let run_store = Arc::new(MockRunStore::new());
         let executor = MockExecutor::succeeds(vec![
             ("step1", json!({"a": 1})),
             ("step2", json!({"b": 2})),
         ]);
 
         let ports = PipelineRunnerPorts {
-            pipeline_store: &store,
-            run_store: &run_store,
-            executor: &executor,
+            pipeline_store: Arc::new(store),
+            run_store: run_store.clone(),
+            executor: Arc::new(executor),
         };
 
         let result = run_pipeline(
@@ -1334,9 +1355,9 @@ mod tests {
 
         let result = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store,
-                run_store: &run_store,
-                executor: &executor,
+                pipeline_store: Arc::new(store),
+                run_store: Arc::new(run_store),
+                executor: Arc::new(executor),
             },
             StartPipelineParams {
                 pipeline_name: "cond-test".into(),
@@ -1364,9 +1385,9 @@ mod tests {
 
         let result2 = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store2,
-                run_store: &run_store2,
-                executor: &executor2,
+                pipeline_store: Arc::new(store2),
+                run_store: Arc::new(run_store2),
+                executor: Arc::new(executor2),
             },
             StartPipelineParams {
                 pipeline_name: "cond-test".into(),
@@ -1417,9 +1438,9 @@ mod tests {
 
         let result = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store,
-                run_store: &run_store,
-                executor: &executor,
+                pipeline_store: Arc::new(store),
+                run_store: Arc::new(run_store),
+                executor: Arc::new(executor),
             },
             StartPipelineParams {
                 pipeline_name: "schema-test".into(),
@@ -1531,9 +1552,9 @@ mod tests {
 
         let result = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store,
-                run_store: &run_store,
-                executor: &executor,
+                pipeline_store: Arc::new(store),
+                run_store: Arc::new(run_store),
+                executor: Arc::new(executor),
             },
             StartPipelineParams {
                 pipeline_name: "fan-out-test".into(),
@@ -1581,9 +1602,9 @@ mod tests {
 
         let result = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store,
-                run_store: &run_store,
-                executor: &executor,
+                pipeline_store: Arc::new(store),
+                run_store: Arc::new(run_store),
+                executor: Arc::new(executor),
             },
             StartPipelineParams {
                 pipeline_name: "fan-out-test".into(),
@@ -1631,9 +1652,9 @@ mod tests {
 
         let result = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store,
-                run_store: &run_store,
-                executor: &executor,
+                pipeline_store: Arc::new(store),
+                run_store: Arc::new(run_store),
+                executor: Arc::new(executor),
             },
             StartPipelineParams {
                 pipeline_name: "fan-out-test".into(),
@@ -1731,9 +1752,9 @@ mod tests {
 
         let result = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store,
-                run_store: &run_store,
-                executor: &executor,
+                pipeline_store: Arc::new(store),
+                run_store: Arc::new(run_store),
+                executor: Arc::new(executor),
             },
             StartPipelineParams {
                 pipeline_name: "approval-test".into(),
@@ -1760,9 +1781,9 @@ mod tests {
 
         let result = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store,
-                run_store: &run_store,
-                executor: &executor,
+                pipeline_store: Arc::new(store),
+                run_store: Arc::new(run_store),
+                executor: Arc::new(executor),
             },
             StartPipelineParams {
                 pipeline_name: "approval-test".into(),
@@ -1858,9 +1879,9 @@ mod tests {
 
         let result = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store,
-                run_store: &run_store,
-                executor: &executor,
+                pipeline_store: Arc::new(store),
+                run_store: Arc::new(run_store),
+                executor: Arc::new(executor),
             },
             StartPipelineParams {
                 pipeline_name: "parent".into(),
@@ -1917,9 +1938,9 @@ mod tests {
 
         let result = run_pipeline(
             &PipelineRunnerPorts {
-                pipeline_store: &store,
-                run_store: &run_store,
-                executor: &executor,
+                pipeline_store: Arc::new(store),
+                run_store: Arc::new(run_store),
+                executor: Arc::new(executor),
             },
             StartPipelineParams {
                 pipeline_name: "recursive".into(),
