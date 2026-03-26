@@ -164,19 +164,19 @@ async fn execute_loop(
 ) -> PipelineRunResult {
     let mut current_step_id = definition.entry_point.clone();
 
-    // Check global timeout
-    let deadline = definition
-        .timeout_secs
-        .map(|t| ctx.started_at + t as i64);
+    // Global timeout: explicit or safety-net default (2 hours).
+    const DEFAULT_PIPELINE_TIMEOUT_SECS: u64 = 7200;
+    let timeout = definition.timeout_secs.unwrap_or(DEFAULT_PIPELINE_TIMEOUT_SECS);
+    let deadline = ctx.started_at + timeout as i64;
 
     loop {
         // Global timeout check
-        if let Some(dl) = deadline {
-            if chrono::Utc::now().timestamp() > dl {
-                ctx.state = PipelineState::TimedOut;
-                ctx.error = Some("pipeline global timeout exceeded".into());
-                return make_result(ctx);
-            }
+        if chrono::Utc::now().timestamp() > deadline {
+            ctx.state = PipelineState::TimedOut;
+            ctx.error = Some(format!(
+                "pipeline global timeout exceeded ({timeout}s)"
+            ));
+            return make_result(ctx);
         }
 
         // Resolve the step definition

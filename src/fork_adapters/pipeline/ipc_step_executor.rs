@@ -142,28 +142,26 @@ impl PipelineExecutorPort for IpcStepExecutor {
             "step task dispatched"
         );
 
-        // Wait for the agent's result response
-        let deadline = timeout_secs.map(|t| {
-            std::time::Instant::now() + std::time::Duration::from_secs(t)
-        });
+        // Wait for the agent's result response.
+        // Safety net: if no timeout specified, default to 30 minutes to prevent
+        // infinite polling if the agent never responds.
+        const DEFAULT_STEP_TIMEOUT_SECS: u64 = 1800;
+        let effective_timeout = timeout_secs.unwrap_or(DEFAULT_STEP_TIMEOUT_SECS);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(effective_timeout);
 
         let poll_duration = std::time::Duration::from_millis(self.poll_interval_ms);
 
         loop {
             // Check timeout
-            if let Some(dl) = deadline {
-                if std::time::Instant::now() >= dl {
-                    return Err(StepExecutionError {
-                        code: "step_timeout".into(),
-                        message: format!(
-                            "step '{}' timed out waiting for agent '{}' ({}s)",
-                            step_id,
-                            agent_id,
-                            timeout_secs.unwrap_or(0)
-                        ),
-                        retryable: true,
-                    });
-                }
+            if std::time::Instant::now() >= deadline {
+                return Err(StepExecutionError {
+                    code: "step_timeout".into(),
+                    message: format!(
+                        "step '{}' timed out waiting for agent '{}' ({}s)",
+                        step_id, agent_id, effective_timeout
+                    ),
+                    retryable: true,
+                });
             }
 
             // Poll the runner's inbox for a result from this session
