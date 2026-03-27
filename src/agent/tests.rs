@@ -29,13 +29,13 @@ use crate::agent::dispatcher::{
     NativeToolDispatcher, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
 use crate::config::{AgentConfig, MemoryConfig};
-use crate::memory::{self, Memory};
-use crate::observability::{NoopObserver, Observer};
-use crate::providers::{
+use crate::fork_adapters::observability::{NoopObserver, Observer};
+use crate::fork_adapters::providers::{
     ChatMessage, ChatRequest, ChatResponse, ConversationMessage, Provider, ToolCall,
     ToolResultMessage,
 };
-use crate::tools::{Tool, ToolResult};
+use crate::fork_adapters::tools::{Tool, ToolResult};
+use crate::memory::{self, Memory};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};

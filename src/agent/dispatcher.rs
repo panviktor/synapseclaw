@@ -1,5 +1,7 @@
-use crate::providers::{ChatMessage, ChatResponse, ConversationMessage, ToolResultMessage};
-use crate::tools::{Tool, ToolSpec};
+use crate::fork_adapters::providers::{
+    ChatMessage, ChatResponse, ConversationMessage, ToolResultMessage,
+};
+use crate::fork_adapters::tools::{Tool, ToolSpec};
 use serde_json::Value;
 use std::fmt::Write;
 
@@ -309,7 +311,7 @@ mod tests {
     fn native_dispatcher_roundtrip() {
         let response = ChatResponse {
             text: Some("ok".into()),
-            tool_calls: vec![crate::providers::ToolCall {
+            tool_calls: vec![crate::fork_adapters::providers::ToolCall {
                 id: "tc1".into(),
                 name: "file_read".into(),
                 arguments: "{\"path\":\"a.txt\"}".into(),
@@ -382,7 +384,7 @@ mod tests {
         let dispatcher = NativeToolDispatcher;
         let history = vec![ConversationMessage::AssistantToolCalls {
             text: Some("answer".into()),
-            tool_calls: vec![crate::providers::ToolCall {
+            tool_calls: vec![crate::fork_adapters::providers::ToolCall {
                 id: "tc_1".into(),
                 name: "shell".into(),
                 arguments: "{}".into(),
@@ -405,7 +407,7 @@ mod tests {
         let dispatcher = NativeToolDispatcher;
         let history = vec![ConversationMessage::AssistantToolCalls {
             text: Some("answer".into()),
-            tool_calls: vec![crate::providers::ToolCall {
+            tool_calls: vec![crate::fork_adapters::providers::ToolCall {
                 id: "tc_1".into(),
                 name: "shell".into(),
                 arguments: "{}".into(),
@@ -425,7 +427,7 @@ mod tests {
         let dispatcher = XmlToolDispatcher;
         let history = vec![ConversationMessage::AssistantToolCalls {
             text: Some("answer".into()),
-            tool_calls: vec![crate::providers::ToolCall {
+            tool_calls: vec![crate::fork_adapters::providers::ToolCall {
                 id: "tc_1".into(),
                 name: "shell".into(),
                 arguments: "{}".into(),

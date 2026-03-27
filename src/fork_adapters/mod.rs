@@ -2,6 +2,7 @@
 //!
 //! Design rule: `fork_core` owns *what* happens; `fork_adapters` owns *how*.
 
+// ── Port implementations (fork_core ports → concrete adapters) ──
 pub mod channels;
 pub mod inbound;
 pub mod ipc;
@@ -12,6 +13,25 @@ pub mod routing;
 pub mod runtime;
 pub mod storage;
 
+// ── Infrastructure adapters (moved from src/ top-level) ──
+pub mod approval;
+pub mod auth;
+pub mod cost;
+pub mod cron;
+pub mod daemon;
+pub mod doctor;
+pub mod gateway;
+pub mod health;
+pub mod heartbeat;
+pub mod hooks;
+pub mod integrations;
+pub mod observability;
+pub mod onboard;
+pub mod providers;
+pub mod service;
+pub mod tools;
+pub mod tunnel;
+
 // ── ChatMessage conversion helpers ──────────────────────────────────────────
 //
 // The upstream `providers::ChatMessage` and fork_core's
@@ -20,7 +40,7 @@ pub mod storage;
 
 /// Convert an upstream `providers::ChatMessage` to a `fork_core` `ChatMessage`.
 pub(crate) fn to_core_message(
-    msg: &crate::providers::ChatMessage,
+    msg: &crate::fork_adapters::providers::ChatMessage,
 ) -> crate::fork_core::domain::message::ChatMessage {
     crate::fork_core::domain::message::ChatMessage {
         role: msg.role.clone(),
@@ -31,8 +51,8 @@ pub(crate) fn to_core_message(
 /// Convert a `fork_core` `ChatMessage` to an upstream `providers::ChatMessage`.
 pub(crate) fn from_core_message(
     msg: &crate::fork_core::domain::message::ChatMessage,
-) -> crate::providers::ChatMessage {
-    crate::providers::ChatMessage {
+) -> crate::fork_adapters::providers::ChatMessage {
+    crate::fork_adapters::providers::ChatMessage {
         role: msg.role.clone(),
         content: msg.content.clone(),
     }
@@ -43,7 +63,7 @@ pub(crate) fn from_core_message(
 /// This conversion lived in fork_core before the workspace crate extraction.
 /// Now it's adapter logic — fork_core must not depend on upstream channel types.
 pub(crate) fn envelope_from_channel_message(
-    msg: &crate::channels::traits::ChannelMessage,
+    msg: &crate::fork_adapters::channels::traits::ChannelMessage,
 ) -> crate::fork_core::domain::channel::InboundEnvelope {
     use crate::fork_core::domain::channel::{InboundEnvelope, SourceKind};
     InboundEnvelope {

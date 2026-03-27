@@ -3,9 +3,9 @@
 //! Phase 4.0: extracts IPC DB operations from gateway handlers into
 //! a clean port implementation.
 
+use crate::fork_adapters::gateway::ipc::IpcDb;
 use crate::fork_core::domain::ipc::IpcMessage;
 use crate::fork_core::ports::ipc_bus::IpcBusPort;
-use crate::gateway::ipc::IpcDb;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;

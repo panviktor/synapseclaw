@@ -4,8 +4,8 @@
 //! `build_channel_by_id`.  Stateful channels (Matrix) keep their authenticated
 //! SDK client alive across deliveries instead of re-initialising per message.
 
-use crate::channels::{build_channel_by_id, Channel, SendMessage};
 use crate::config::Config;
+use crate::fork_adapters::channels::{build_channel_by_id, Channel, SendMessage};
 use crate::fork_core::domain::channel::{ChannelCapability, DegradationPolicy, OutboundIntent};
 use crate::fork_core::ports::channel_registry::ChannelRegistryPort;
 use async_trait::async_trait;
@@ -207,7 +207,7 @@ impl ChannelRegistryPort for CachedChannelRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channels::traits::ChannelMessage;
+    use crate::fork_adapters::channels::traits::ChannelMessage;
 
     /// Minimal test channel that records sends.
     struct MockChannel {

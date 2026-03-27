@@ -1,10 +1,10 @@
 //! Adapter: wraps existing `dyn Memory` + `ConversationStorePort` as MemoryTiersPort.
 
+use crate::fork_adapters::providers::Provider;
 use crate::fork_core::domain::memory::{MemoryCategory, MemoryEntry, SessionMemory};
 use crate::fork_core::ports::conversation_store::ConversationStorePort;
 use crate::fork_core::ports::memory::MemoryTiersPort;
 use crate::memory::Memory;
-use crate::providers::Provider;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;

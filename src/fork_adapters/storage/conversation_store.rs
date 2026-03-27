@@ -3,11 +3,11 @@
 //! This is NOT a rewrite — it delegates to the existing SQLite backend
 //! and maps between fork_core domain types and ChatDb row types.
 
+use crate::fork_adapters::gateway::chat_db::{ChatDb, ChatMessageRow, ChatSessionRow};
 use crate::fork_core::domain::conversation::{
     ConversationEvent, ConversationKind, ConversationSession, EventType,
 };
 use crate::fork_core::ports::conversation_store::ConversationStorePort;
-use crate::gateway::chat_db::{ChatDb, ChatMessageRow, ChatSessionRow};
 use async_trait::async_trait;
 use std::sync::Arc;
 

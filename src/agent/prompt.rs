@@ -1,7 +1,7 @@
 use crate::config::IdentityConfig;
+use crate::fork_adapters::tools::Tool;
 use crate::identity;
 use crate::skills::Skill;
-use crate::tools::Tool;
 use anyhow::Result;
 use chrono::Local;
 use std::fmt::Write;
@@ -307,7 +307,7 @@ fn inject_workspace_file(prompt: &mut String, workspace_dir: &Path, filename: &s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::traits::Tool;
+    use crate::fork_adapters::tools::traits::Tool;
     use async_trait::async_trait;
 
     struct TestTool;
@@ -329,8 +329,8 @@ mod tests {
         async fn execute(
             &self,
             _args: serde_json::Value,
-        ) -> anyhow::Result<crate::tools::ToolResult> {
-            Ok(crate::tools::ToolResult {
+        ) -> anyhow::Result<crate::fork_adapters::tools::ToolResult> {
+            Ok(crate::fork_adapters::tools::ToolResult {
                 success: true,
                 output: "ok".into(),
                 error: None,

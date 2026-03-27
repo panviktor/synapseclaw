@@ -2,9 +2,9 @@
 //!
 //! Phase 4.0: exposes quarantine operations through a clean port.
 
+use crate::fork_adapters::gateway::ipc::IpcDb;
 use crate::fork_core::domain::approval::QuarantineItem;
 use crate::fork_core::ports::approval::QuarantinePort;
-use crate::gateway::ipc::IpcDb;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
