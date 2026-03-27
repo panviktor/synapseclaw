@@ -1,5 +1,8 @@
 # Fork Sync Strategy: SynapseClaw IPC Fork
 
+> **ARCHIVED** — Upstream sync discontinued after Phase 4.0 fork divergence (March 2026).
+> SynapseClaw is now an independent project. This document is kept for historical reference only.
+
 ## Purpose
 
 This document describes the **operational strategy for maintaining a long-lived fork**, not the workflow of a single feature branch.

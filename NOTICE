@@ -1,27 +1,7 @@
 SynapseClaw
 Copyright 2025-2026 SynapseClaw Contributors
 
-SynapseClaw is a fork of ZeroClaw (https://github.com/zeroclaw-labs/zeroclaw),
-originally developed by ZeroClaw Labs under MIT and Apache 2.0 licenses.
+Originally based on ZeroClaw (https://github.com/zeroclaw-labs/zeroclaw),
+developed by ZeroClaw Labs under MIT and Apache 2.0 licenses.
 
-Forked to add inter-agent IPC coordination, multi-agent fleet management,
-webhook push delivery, and security hardening.
-
-Original Notice
-===============
-
-ZeroClaw
-Copyright 2025 ZeroClaw Labs
-
-This product includes software developed at ZeroClaw Labs
-(https://github.com/zeroclaw-labs).
-
-License
-=======
-
-This software is available under a dual-license model:
-
-  1. MIT License — see LICENSE-MIT
-  2. Apache License 2.0 — see LICENSE-APACHE
-
-You may use either license. Contributors grant rights under both.
+License: MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE)

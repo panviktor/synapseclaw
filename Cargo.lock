@@ -6332,7 +6332,7 @@ dependencies = [
 
 [[package]]
 name = "synapseclaw"
-version = "0.4.3"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-imap",

@@ -4,11 +4,11 @@ resolver = "2"
 
 [package]
 name = "synapseclaw"
-version = "0.4.3"
+version = "0.1.0"
 edition = "2021"
-authors = ["theonlyhennygod"]
+authors = ["panviktor"]
 license = "MIT OR Apache-2.0"
-description = "Zero overhead. Zero compromise. 100% Rust. The fastest, smallest AI assistant."
+description = "Multi-agent Rust runtime with IPC broker, web dashboard, and hexagonal core."
 repository = "https://github.com/panviktor/synapseclaw"
 readme = "README.md"
 keywords = ["ai", "agent", "cli", "assistant", "chatbot"]

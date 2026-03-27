@@ -1985,7 +1985,7 @@ fn default_push_peer_cooldown_secs() -> u64 {
 }
 
 fn default_push_auto_process_kinds() -> Vec<String> {
-    vec!["task".into(), "query".into(), "result".into()]
+    vec!["task".into(), "query".into(), "result".into(), "done".into(), "report".into()]
 }
 
 fn default_coordinator_agent() -> String {
@@ -2993,7 +2993,7 @@ pub enum ProxyScope {
     Environment,
     /// Apply proxy to all SynapseClaw-managed HTTP traffic (default).
     #[default]
-    Zeroclaw,
+    Internal,
     /// Apply proxy only to explicitly listed service selectors.
     Services,
 }
@@ -3032,7 +3032,7 @@ impl Default for ProxyConfig {
             https_proxy: None,
             all_proxy: None,
             no_proxy: Vec::new(),
-            scope: ProxyScope::Zeroclaw,
+            scope: ProxyScope::Internal,
             services: Vec::new(),
         }
     }
@@ -3105,7 +3105,7 @@ impl ProxyConfig {
 
         match self.scope {
             ProxyScope::Environment => false,
-            ProxyScope::Zeroclaw => true,
+            ProxyScope::Internal => true,
             ProxyScope::Services => {
                 let service_key = service_key.trim().to_ascii_lowercase();
                 if service_key.is_empty() {
@@ -3493,7 +3493,7 @@ pub fn build_runtime_proxy_client_with_timeouts(
 fn parse_proxy_scope(raw: &str) -> Option<ProxyScope> {
     match raw.trim().to_ascii_lowercase().as_str() {
         "environment" | "env" => Some(ProxyScope::Environment),
-        "synapseclaw" | "internal" | "core" => Some(ProxyScope::Zeroclaw),
+        "synapseclaw" | "internal" | "core" => Some(ProxyScope::Internal),
         "services" | "service" => Some(ProxyScope::Services),
         _ => None,
     }
