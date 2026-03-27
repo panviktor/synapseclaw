@@ -10,12 +10,10 @@
 //! - audit trail recording
 
 use crate::domain::approval::{
-    ApprovalDecision, ApprovalRequest, ApprovalResponse, ApprovalRisk, ApprovalOrigin,
-    ApprovalStatus, QuarantineItem,
+    ApprovalOrigin, ApprovalRequest, ApprovalResponse, ApprovalRisk, ApprovalStatus,
 };
-use crate::ports::approval::{ApprovalPort, QuarantinePort};
+use crate::ports::approval::QuarantinePort;
 use anyhow::Result;
-use std::sync::Arc;
 
 // ── Tool approval policy ─────────────────────────────────────────
 
@@ -91,18 +89,12 @@ pub async fn promote_quarantine_item(
 }
 
 /// Dismiss a quarantine item.
-pub async fn dismiss_quarantine_item(
-    port: &dyn QuarantinePort,
-    message_id: i64,
-) -> Result<()> {
+pub async fn dismiss_quarantine_item(port: &dyn QuarantinePort, message_id: i64) -> Result<()> {
     port.dismiss_message(message_id).await
 }
 
 /// Quarantine an agent — set trust level and move messages.
-pub async fn quarantine_agent(
-    port: &dyn QuarantinePort,
-    agent_id: &str,
-) -> Result<u64> {
+pub async fn quarantine_agent(port: &dyn QuarantinePort, agent_id: &str) -> Result<u64> {
     port.quarantine_agent(agent_id).await
 }
 
@@ -146,48 +138,111 @@ mod tests {
 
     #[test]
     fn full_autonomy_no_approval_needed() {
-        assert!(!check_needs_approval("shell", AutonomyLevel::Full, &[], &[], &[], false));
+        assert!(!check_needs_approval(
+            "shell",
+            AutonomyLevel::Full,
+            &[],
+            &[],
+            &[],
+            false
+        ));
     }
 
     #[test]
     fn full_autonomy_always_ask_overrides() {
-        assert!(check_needs_approval("shell", AutonomyLevel::Full, &[], &["shell".into()], &[], false));
+        assert!(check_needs_approval(
+            "shell",
+            AutonomyLevel::Full,
+            &[],
+            &["shell".into()],
+            &[],
+            false
+        ));
     }
 
     #[test]
     fn supervised_auto_approve_skips() {
-        assert!(!check_needs_approval("file_read", AutonomyLevel::Supervised, &["file_read".into()], &[], &[], false));
+        assert!(!check_needs_approval(
+            "file_read",
+            AutonomyLevel::Supervised,
+            &["file_read".into()],
+            &[],
+            &[],
+            false
+        ));
     }
 
     #[test]
     fn supervised_default_asks() {
-        assert!(check_needs_approval("shell", AutonomyLevel::Supervised, &[], &[], &[], false));
+        assert!(check_needs_approval(
+            "shell",
+            AutonomyLevel::Supervised,
+            &[],
+            &[],
+            &[],
+            false
+        ));
     }
 
     #[test]
     fn supervised_always_ask_overrides_auto_approve() {
-        assert!(check_needs_approval("shell", AutonomyLevel::Supervised, &["shell".into()], &["shell".into()], &[], false));
+        assert!(check_needs_approval(
+            "shell",
+            AutonomyLevel::Supervised,
+            &["shell".into()],
+            &["shell".into()],
+            &[],
+            false
+        ));
     }
 
     #[test]
     fn read_only_no_prompt_needed() {
         // ReadOnly blocks elsewhere — needs_approval returns false (no prompt)
-        assert!(!check_needs_approval("file_read", AutonomyLevel::ReadOnly, &["file_read".into()], &[], &[], false));
+        assert!(!check_needs_approval(
+            "file_read",
+            AutonomyLevel::ReadOnly,
+            &["file_read".into()],
+            &[],
+            &[],
+            false
+        ));
     }
 
     #[test]
     fn session_allowlist_skips_approval() {
-        assert!(!check_needs_approval("shell", AutonomyLevel::Supervised, &[], &[], &["shell".into()], false));
+        assert!(!check_needs_approval(
+            "shell",
+            AutonomyLevel::Supervised,
+            &[],
+            &[],
+            &["shell".into()],
+            false
+        ));
     }
 
     #[test]
     fn non_interactive_shell_skips() {
-        assert!(!check_needs_approval("shell", AutonomyLevel::Supervised, &[], &[], &[], true));
+        assert!(!check_needs_approval(
+            "shell",
+            AutonomyLevel::Supervised,
+            &[],
+            &[],
+            &[],
+            true
+        ));
     }
 
     #[test]
     fn non_interactive_non_shell_still_asks() {
-        assert!(check_needs_approval("file_write", AutonomyLevel::Supervised, &[], &[], &[], true));
+        assert!(check_needs_approval(
+            "file_write",
+            AutonomyLevel::Supervised,
+            &[],
+            &[],
+            &[],
+            true
+        ));
     }
 
     #[test]

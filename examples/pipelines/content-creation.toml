@@ -1,0 +1,83 @@
+# Content creation pipeline — marketing fleet.
+#
+# Matches the actual agent configuration:
+# - news-reader (trust=3, qwen3.5-plus) — web research
+# - copywriter (trust=3, MiniMax-M2.5) — content writing
+# - marketing-lead (trust=1, glm-5) — review & coordination
+# - publisher (trust=2, glm-5) — publishing to channels
+#
+# Trigger: POST /api/pipelines/start
+#   {"pipeline_name": "content-creation", "input": {"topic": "AI agents 2026"}}
+
+[pipeline]
+name = "content-creation"
+version = "1.0"
+description = "Research → Draft → Review → Publish"
+entry_point = "research"
+max_depth = 3
+timeout_secs = 3600
+
+# ── Research (news-reader, trust=3) ───────────────────────────────────────
+
+[[steps]]
+id = "research"
+agent_id = "news-reader"
+description = "Search the web for current information on the given topic. Return JSON with topic, sources array, and summary."
+tools = ["web_search"]
+next = "draft"
+timeout_secs = 300
+max_retries = 1
+retry_backoff_secs = 15
+
+[steps.output_schema]
+type = "object"
+required = ["topic", "summary"]
+
+[steps.output_schema.properties]
+topic = { type = "string" }
+summary = { type = "string", minLength = 10 }
+
+# ── Draft (copywriter, trust=3) ──────────────────────────────────────────
+
+[[steps]]
+id = "draft"
+agent_id = "copywriter"
+description = "Write a post based on the research. Return JSON with title, body, and tags array."
+tools = ["memory_recall"]
+max_retries = 2
+retry_backoff_secs = 10
+timeout_secs = 600
+next = "review"
+
+[steps.input_schema]
+type = "object"
+required = ["topic"]
+
+[steps.output_schema]
+type = "object"
+required = ["title", "body"]
+tags = { type = "array", items = { type = "string" } }
+
+# ── Review (marketing-lead, trust=1) ─────────────────────────────────────
+
+[[steps]]
+id = "review"
+agent_id = "marketing-lead"
+description = "Review the draft for quality. Return JSON with approved (boolean) and feedback (string)."
+tools = []
+timeout_secs = 300
+next = "publish"
+
+[steps.output_schema]
+type = "object"
+required = ["approved"]
+
+# ── Publish (publisher, trust=2) ──────────────────────────────────────────
+
+[[steps]]
+id = "publish"
+agent_id = "publisher"
+description = "Publish the approved content. Return JSON with published (boolean) and status (string)."
+tools = []
+next = "end"
+timeout_secs = 120

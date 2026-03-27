@@ -165,9 +165,9 @@ pub fn validate_send(
     if from_trust_level == 3
         && to_trust_level == 3
         && kind == "text"
-        && !lateral_text_pairs.iter().any(|(a, b)| {
-            (a == from_agent && b == to_agent) || (a == to_agent && b == from_agent)
-        })
+        && !lateral_text_pairs
+            .iter()
+            .any(|(a, b)| (a == from_agent && b == to_agent) || (a == to_agent && b == from_agent))
     {
         return Err(AclError {
             code: "l3_lateral_denied".into(),
@@ -287,7 +287,8 @@ mod tests {
 
     #[test]
     fn l4_text_only() {
-        let err = validate_send("a", "b", "task", 4, 3, None, false, &[], &["b".into()]).unwrap_err();
+        let err =
+            validate_send("a", "b", "task", 4, 3, None, false, &[], &["b".into()]).unwrap_err();
         assert_eq!(err.code, "l4_text_only");
     }
 
@@ -338,7 +339,8 @@ mod tests {
 
     #[test]
     fn l4_lateral_denied() {
-        let err = validate_send("a", "b", "text", 4, 4, None, false, &[], &["b".into()]).unwrap_err();
+        let err =
+            validate_send("a", "b", "text", 4, 4, None, false, &[], &["b".into()]).unwrap_err();
         assert_eq!(err.code, "l4_lateral_denied");
     }
 

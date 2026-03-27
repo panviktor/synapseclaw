@@ -2080,6 +2080,7 @@ const PROMOTED_KIND: &str = "promoted_quarantine";
 /// 4. L4↔L4 direct messaging is denied (must go through a higher-trust agent).
 /// 5. L3 lateral `text` requires an explicit allowlist entry.
 #[allow(clippy::implicit_hasher)]
+///
 /// Phase 4.0 Slice 5: delegates ACL validation to fork_core domain.
 pub fn validate_send(
     from_level: u8,
@@ -2137,6 +2138,7 @@ pub fn validate_send(
 /// - L2: + `team:*`
 /// - L1: + `global:*`
 /// - `secret:*` denied for all (reserved for Phase 2)
+///
 /// Phase 4.0 Slice 5: delegates state write validation to fork_core domain.
 pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<(), IpcError> {
     crate::fork_core::domain::ipc::validate_state_write(i32::from(trust_level), agent_id, key)
@@ -2156,13 +2158,14 @@ pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<
 
 /// Phase 4.0 Slice 5: delegates state read validation to fork_core domain.
 pub fn validate_state_get(trust_level: u8, key: &str) -> Result<(), IpcError> {
-    crate::fork_core::domain::ipc::validate_state_read(i32::from(trust_level), key)
-        .map_err(|acl_err| IpcError {
+    crate::fork_core::domain::ipc::validate_state_read(i32::from(trust_level), key).map_err(
+        |acl_err| IpcError {
             status: StatusCode::FORBIDDEN,
             error: acl_err.message,
             code: acl_err.code,
             retryable: acl_err.retryable,
-        })
+        },
+    )
 }
 
 // ── Auth helper ─────────────────────────────────────────────────
@@ -2408,31 +2411,36 @@ pub async fn handle_ipc_send(
         }
     }
 
-    // Credential leak scan (after PromptGuard, before INSERT)
-    if let Some(ref detector) = state.ipc_leak_detector {
-        if let LeakResult::Detected { patterns, .. } = detector.scan(&body.payload) {
-            if let Some(ref logger) = state.audit_logger {
-                let mut event = AuditEvent::ipc(
-                    AuditEventType::IpcLeakDetected,
-                    &meta.agent_id,
-                    Some(&resolved_to),
-                    &format!("credential_leak: {patterns:?}"),
-                );
-                if let Some(a) = event.action.as_mut() {
-                    a.allowed = false;
+    // Credential leak scan (after PromptGuard, before INSERT).
+    // Pipeline engine (trust=0, kind=task) is exempt — its payloads contain
+    // UUIDs and session IDs that trigger high-entropy false positives.
+    let skip_leak_scan = meta.trust_level == 0 && body.kind == "task";
+    if !skip_leak_scan {
+        if let Some(ref detector) = state.ipc_leak_detector {
+            if let LeakResult::Detected { patterns, .. } = detector.scan(&body.payload) {
+                if let Some(ref logger) = state.audit_logger {
+                    let mut event = AuditEvent::ipc(
+                        AuditEventType::IpcLeakDetected,
+                        &meta.agent_id,
+                        Some(&resolved_to),
+                        &format!("credential_leak: {patterns:?}"),
+                    );
+                    if let Some(a) = event.action.as_mut() {
+                        a.allowed = false;
+                    }
+                    let _ = logger.log(&event);
                 }
-                let _ = logger.log(&event);
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": "Message blocked: contains credentials or secrets",
+                        "code": "credential_leak",
+                        "retryable": false
+                    })),
+                ));
             }
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "error": "Message blocked: contains credentials or secrets",
-                    "code": "credential_leak",
-                    "retryable": false
-                })),
-            ));
         }
-    }
+    } // end skip_leak_scan
 
     // Phase 4.0: session limit check via ipc_service
     if crate::fork_core::application::services::ipc_service::session_limit_applies(
@@ -2447,9 +2455,12 @@ pub async fn handle_ipc_send(
             let ttl = config_lock.agents_ipc.message_ttl_secs;
             drop(config_lock);
 
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let count_usize = count.max(0) as usize;
+            let max_usize = max as usize;
             if crate::fork_core::application::services::ipc_service::check_session_limit(
-                count as usize,
-                max as usize,
+                count_usize,
+                max_usize,
             ) {
                 // Phase 4.0: escalation payload built by ipc_service
                 let escalation_payload =
@@ -2457,8 +2468,8 @@ pub async fn handle_ipc_send(
                         sid,
                         &meta.agent_id,
                         &resolved_to,
-                        count as usize,
-                        max as usize,
+                        count_usize,
+                        max_usize,
                     );
                 let _ = db.insert_message(
                     &meta.agent_id,
@@ -6235,4 +6246,123 @@ mod tests {
         assert!(!dedup.insert(10)); // 10 still present
         assert!(!dedup.insert(20)); // 20 still present
     }
+}
+
+// ── Pipeline handlers (Phase 4.1) ────────────────────────────────────────
+
+/// Request body for `/api/pipelines/start`.
+#[derive(Debug, serde::Deserialize)]
+pub struct PipelineStartBody {
+    pub pipeline_name: String,
+    #[serde(default)]
+    pub input: serde_json::Value,
+}
+
+/// Start a pipeline run.
+pub async fn handle_pipeline_start(
+    State(state): State<super::AppState>,
+    headers: HeaderMap,
+    Json(body): Json<PipelineStartBody>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Require IPC auth (pipeline start is an authenticated operation)
+    let meta = require_ipc_auth(&state, &headers)?;
+
+    let pipeline_store = state.pipeline_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pipeline engine not enabled"})),
+        )
+    })?;
+
+    let executor = state.pipeline_executor.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pipeline executor not available (IPC disabled?)"})),
+        )
+    })?;
+
+    let run_store = state.run_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "run store not available"})),
+        )
+    })?;
+
+    // Verify pipeline exists
+    if pipeline_store.get(&body.pipeline_name).await.is_none() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({
+                "error": format!("pipeline '{}' not found", body.pipeline_name),
+                "code": "pipeline_not_found"
+            })),
+        ));
+    }
+
+    let ports = fork_core::application::services::pipeline_service::PipelineRunnerPorts {
+        pipeline_store: pipeline_store.clone(),
+        run_store: run_store.clone(),
+        executor: executor.clone(),
+    };
+
+    // Spawn pipeline execution in background (non-blocking)
+    let pipeline_name = body.pipeline_name.clone();
+    let triggered_by = meta.agent_id.clone();
+    let input = if body.input.is_null() {
+        serde_json::json!({})
+    } else {
+        body.input
+    };
+
+    // Generate run_id for immediate response
+    let run_id = uuid::Uuid::new_v4().to_string();
+
+    let run_id_clone = run_id.clone();
+    tokio::spawn(async move {
+        let result = fork_core::application::services::pipeline_service::run_pipeline(
+            &ports,
+            fork_core::application::services::pipeline_service::StartPipelineParams {
+                pipeline_name: pipeline_name.clone(),
+                input,
+                triggered_by,
+                depth: 0,
+                parent_run_id: None,
+            },
+        )
+        .await;
+
+        tracing::info!(
+            run_id = %run_id_clone,
+            pipeline = %pipeline_name,
+            state = %result.state,
+            steps = result.step_count,
+            "pipeline run finished"
+        );
+    });
+
+    Ok(Json(serde_json::json!({
+        "status": "started",
+        "pipeline": body.pipeline_name,
+        "triggered_by": meta.agent_id,
+    })))
+}
+
+/// List available pipelines.
+pub async fn handle_pipeline_list(
+    State(state): State<super::AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let _meta = require_ipc_auth(&state, &headers)?;
+
+    let pipeline_store = state.pipeline_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pipeline engine not enabled"})),
+        )
+    })?;
+
+    let names = pipeline_store.list().await;
+    Ok(Json(serde_json::json!({
+        "pipelines": names
+    })))
 }

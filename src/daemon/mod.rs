@@ -63,6 +63,57 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     let mut handles: Vec<JoinHandle<()>> = vec![spawn_state_writer(config.clone())];
 
+    // ── Phase 4.1: Shared IpcClient for pipeline executor + agent tools ──
+    // One Arc<IpcClient> with a single AtomicI64 seq counter shared across
+    // gateway, channels, and tools. Prevents replay_rejected from duplicate
+    // seq numbers when multiple components send signed IPC messages.
+    let shared_ipc_client: Option<std::sync::Arc<crate::tools::agents_ipc::IpcClient>> =
+        if config.agents_ipc.enabled {
+            if let Some(ref token) = config.agents_ipc.broker_token {
+                let mut client = crate::tools::agents_ipc::IpcClient::new(
+                    &config.agents_ipc.broker_url,
+                    token,
+                    config.agents_ipc.request_timeout_secs,
+                );
+                let key_path = config
+                    .config_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("agent.key");
+                match crate::security::identity::AgentIdentity::load_or_generate(&key_path) {
+                    Ok(identity) => {
+                        let agent_id = config
+                            .agents_ipc
+                            .agent_id
+                            .clone()
+                            .unwrap_or_else(|| config.agents_ipc.role.clone());
+                        tracing::info!(
+                            agent_id = %agent_id,
+                            "daemon: shared IpcClient with Ed25519 identity"
+                        );
+                        client = client.with_identity(identity, agent_id);
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "daemon: Ed25519 identity unavailable");
+                    }
+                }
+                let client = std::sync::Arc::new(client);
+                // Fire-and-forget key registration with background retry.
+                // Gateway listener may not be up yet — retries handle that.
+                {
+                    let c = client.clone();
+                    tokio::spawn(async move {
+                        c.register_public_key_with_background_retry().await;
+                    });
+                }
+                Some(client)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
     // ── Phase 4.0: ChannelRegistryPort ─────────────────────────────
     // Always available in daemon mode.  Shared between relay, heartbeat,
     // scheduler, delivery service, and gateway REST API.
@@ -98,6 +149,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
         let gateway_host = host.clone();
         let gw_outbound_tx = outbound_tx.clone();
         let gw_registry = Some(channel_registry.clone());
+        let gw_ipc = shared_ipc_client.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -107,8 +159,9 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 let host = gateway_host.clone();
                 let otx = gw_outbound_tx.clone();
                 let reg = gw_registry.clone();
+                let ipc = gw_ipc.clone();
                 async move {
-                    Box::pin(crate::gateway::run_gateway(&host, port, cfg, otx, reg)).await
+                    Box::pin(crate::gateway::run_gateway(&host, port, cfg, otx, reg, ipc)).await
                 }
             },
         ));
@@ -117,13 +170,15 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     {
         if has_supervised_channels(&config) {
             let channels_cfg = config.clone();
+            let ch_ipc = shared_ipc_client.clone();
             handles.push(spawn_component_supervisor(
                 "channels",
                 initial_backoff,
                 max_backoff,
                 move || {
                     let cfg = channels_cfg.clone();
-                    async move { Box::pin(crate::channels::start_channels(cfg)).await }
+                    let ipc = ch_ipc.clone();
+                    async move { Box::pin(crate::channels::start_channels(cfg, ipc)).await }
                 },
             ));
         } else {
@@ -303,7 +358,9 @@ fn auto_detect_candidates(config: &Config) -> Vec<AutoDetectCandidate> {
     candidates
 }
 
-pub(crate) fn cron_delivery_config_from(delivery: &crate::cron::DeliveryConfig) -> CronDeliveryConfig {
+pub(crate) fn cron_delivery_config_from(
+    delivery: &crate::cron::DeliveryConfig,
+) -> CronDeliveryConfig {
     CronDeliveryConfig {
         mode: delivery.mode.clone(),
         channel: delivery.channel.clone(),
@@ -490,12 +547,7 @@ async fn run_heartbeat_worker(
                         output
                     };
                     if let Some(target) = &delivery {
-                        if let Err(e) = delivery_service.deliver(
-                            target,
-                            &announcement,
-                        )
-                        .await
-                        {
+                        if let Err(e) = delivery_service.deliver(target, &announcement).await {
                             crate::health::mark_component_error(
                                 "heartbeat",
                                 format!("delivery failed: {e}"),

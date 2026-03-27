@@ -7,7 +7,6 @@
 //! The port trait expects `fork_core::domain::message::ChatMessage`.
 //! Conversions happen at the trait boundary using helpers from `fork_adapters`.
 
-use crate::channels::session_backend::SessionBackend;
 use crate::channels::session_store::SessionStore;
 use crate::fork_adapters::{from_core_message, to_core_message};
 use crate::fork_core::domain::message::ChatMessage as CoreChatMessage;

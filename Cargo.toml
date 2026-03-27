@@ -66,6 +66,12 @@ shellexpand = "3.1"
 # JSON Schema generation for config export
 schemars = "1.2"
 
+# JSON Schema validation for pipeline step contracts (Phase 4.1)
+jsonschema = "0.29"
+
+# Filesystem watcher for pipeline/routing TOML hot-reload (Phase 4.1)
+notify = { version = "7.0", default-features = false, features = ["macos_fsevent"] }
+
 # Logging - minimal
 tracing = { version = "0.1", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "env-filter"] }

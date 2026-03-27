@@ -41,10 +41,7 @@ pub enum RuntimeCommand {
 /// - the command is not recognized
 ///
 /// This is pure domain logic — no adapter or infrastructure dependencies.
-pub fn parse_runtime_command(
-    content: &str,
-    caps: &[ChannelCapability],
-) -> Option<RuntimeCommand> {
+pub fn parse_runtime_command(content: &str, caps: &[ChannelCapability]) -> Option<RuntimeCommand> {
     if !caps.contains(&ChannelCapability::RuntimeCommands) {
         return None;
     }
@@ -94,10 +91,7 @@ pub fn parse_runtime_command(
 /// - Key format: `{adapter}_{thread}_{actor}` or `{adapter}_{actor}`
 pub fn conversation_key(envelope: &InboundEnvelope) -> String {
     match &envelope.thread_ref {
-        Some(tid) => format!(
-            "{}_{}_{}",
-            envelope.source_adapter, tid, envelope.actor_id
-        ),
+        Some(tid) => format!("{}_{}_{}", envelope.source_adapter, tid, envelope.actor_id),
         None => format!("{}_{}", envelope.source_adapter, envelope.actor_id),
     }
 }
@@ -117,10 +111,7 @@ pub enum MessageClassification {
 ///
 /// First checks for runtime commands (if the channel supports them),
 /// then falls through to regular message processing.
-pub fn classify_message(
-    content: &str,
-    caps: &[ChannelCapability],
-) -> MessageClassification {
+pub fn classify_message(content: &str, caps: &[ChannelCapability]) -> MessageClassification {
     if let Some(cmd) = parse_runtime_command(content, caps) {
         return MessageClassification::Command(cmd);
     }
@@ -190,10 +181,7 @@ pub fn should_autosave(auto_save_enabled: bool, content: &str) -> bool {
 /// Business rules:
 /// - Tools must have been used (non-empty summary)
 /// - Channel must support `ToolContextDisplay` capability
-pub fn should_include_tool_summary(
-    tool_summary: &str,
-    caps: &[ChannelCapability],
-) -> bool {
+pub fn should_include_tool_summary(tool_summary: &str, caps: &[ChannelCapability]) -> bool {
     !tool_summary.is_empty() && caps.contains(&ChannelCapability::ToolContextDisplay)
 }
 
@@ -255,9 +243,9 @@ pub fn command_effect(
         RuntimeCommand::SetModel(raw) => {
             let model = raw.trim().trim_matches('`').to_string();
             // Look up in model_routes by model name or hint
-            let matched = model_routes.iter().find(|(_, m, h)| {
-                m.eq_ignore_ascii_case(&model) || h.eq_ignore_ascii_case(&model)
-            });
+            let matched = model_routes
+                .iter()
+                .find(|(_, m, h)| m.eq_ignore_ascii_case(&model) || h.eq_ignore_ascii_case(&model));
             match matched {
                 Some((provider, resolved_model, _)) => CommandEffect::SwitchModel {
                     model: resolved_model.clone(),
@@ -300,10 +288,7 @@ mod tests {
     #[test]
     fn parse_models_set_provider() {
         let cmd = parse_runtime_command("/models anthropic", &caps_with_runtime());
-        assert_eq!(
-            cmd,
-            Some(RuntimeCommand::SetProvider("anthropic".into()))
-        );
+        assert_eq!(cmd, Some(RuntimeCommand::SetProvider("anthropic".into())));
     }
 
     #[test]
@@ -315,10 +300,7 @@ mod tests {
     #[test]
     fn parse_model_set() {
         let cmd = parse_runtime_command("/model claude-3-opus", &caps_with_runtime());
-        assert_eq!(
-            cmd,
-            Some(RuntimeCommand::SetModel("claude-3-opus".into()))
-        );
+        assert_eq!(cmd, Some(RuntimeCommand::SetModel("claude-3-opus".into())));
     }
 
     #[test]
@@ -470,12 +452,18 @@ mod tests {
 
     #[test]
     fn autosave_enabled_and_long_enough() {
-        assert!(should_autosave(true, "This is a message that is long enough"));
+        assert!(should_autosave(
+            true,
+            "This is a message that is long enough"
+        ));
     }
 
     #[test]
     fn autosave_disabled() {
-        assert!(!should_autosave(false, "This is a message that is long enough"));
+        assert!(!should_autosave(
+            false,
+            "This is a message that is long enough"
+        ));
     }
 
     #[test]
@@ -535,7 +523,10 @@ mod tests {
     #[test]
     fn effect_show_providers() {
         let cmd = RuntimeCommand::ShowProviders;
-        assert_eq!(command_effect(&cmd, &test_routes()), CommandEffect::ShowProviders);
+        assert_eq!(
+            command_effect(&cmd, &test_routes()),
+            CommandEffect::ShowProviders
+        );
     }
 
     #[test]
@@ -543,14 +534,19 @@ mod tests {
         let cmd = RuntimeCommand::SetProvider("anthropic".into());
         assert_eq!(
             command_effect(&cmd, &test_routes()),
-            CommandEffect::SwitchProvider { provider: "anthropic".into() }
+            CommandEffect::SwitchProvider {
+                provider: "anthropic".into()
+            }
         );
     }
 
     #[test]
     fn effect_show_model() {
         let cmd = RuntimeCommand::ShowModel;
-        assert_eq!(command_effect(&cmd, &test_routes()), CommandEffect::ShowModel);
+        assert_eq!(
+            command_effect(&cmd, &test_routes()),
+            CommandEffect::ShowModel
+        );
     }
 
     #[test]
@@ -592,6 +588,9 @@ mod tests {
     #[test]
     fn effect_new_session() {
         let cmd = RuntimeCommand::NewSession;
-        assert_eq!(command_effect(&cmd, &test_routes()), CommandEffect::ClearSession);
+        assert_eq!(
+            command_effect(&cmd, &test_routes()),
+            CommandEffect::ClearSession
+        );
     }
 }

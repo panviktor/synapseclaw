@@ -884,7 +884,7 @@ async fn main() -> Result<()> {
 
         // Auto-start channels if user said yes during wizard
         if std::env::var("SYNAPSECLAW_AUTOSTART_CHANNELS").as_deref() == Ok("1") {
-            Box::pin(channels::start_channels(config)).await?;
+            Box::pin(channels::start_channels(config, None)).await?;
         }
         return Ok(());
     }
@@ -972,7 +972,7 @@ async fn main() -> Result<()> {
                     }
 
                     log_gateway_start(&host, port);
-                    Box::pin(gateway::run_gateway(&host, port, config, None, None)).await
+                    Box::pin(gateway::run_gateway(&host, port, config, None, None, None)).await
                 }
                 Some(synapseclaw::GatewayCommands::GetPaircode { new }) => {
                     let port = config.gateway.port;
@@ -1021,13 +1021,13 @@ async fn main() -> Result<()> {
                 Some(synapseclaw::GatewayCommands::Start { port, host }) => {
                     let (port, host) = resolve_gateway_addr(&config, port, host);
                     log_gateway_start(&host, port);
-                    Box::pin(gateway::run_gateway(&host, port, config, None, None)).await
+                    Box::pin(gateway::run_gateway(&host, port, config, None, None, None)).await
                 }
                 None => {
                     let port = config.gateway.port;
                     let host = config.gateway.host.clone();
                     log_gateway_start(&host, port);
-                    Box::pin(gateway::run_gateway(&host, port, config, None, None)).await
+                    Box::pin(gateway::run_gateway(&host, port, config, None, None, None)).await
                 }
             }
         }
@@ -1281,7 +1281,7 @@ async fn main() -> Result<()> {
         },
 
         Commands::Channel { channel_command } => match channel_command {
-            ChannelCommands::Start => Box::pin(channels::start_channels(config)).await,
+            ChannelCommands::Start => Box::pin(channels::start_channels(config, None)).await,
             ChannelCommands::Doctor => Box::pin(channels::doctor_channels(config)).await,
             other => Box::pin(channels::handle_command(other, &config)).await,
         },

@@ -9,7 +9,6 @@ use crate::application::services::conversation_service;
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::run_store::RunStorePort;
 use anyhow::Result;
-use std::sync::Arc;
 
 /// Result of a conversation run.
 #[derive(Debug, Clone)]
@@ -56,9 +55,13 @@ pub async fn finalize_success(
     let _ = conversation_service::increment_message_count(conversation_store, session_key, 2).await;
 
     // Track token usage
-    let _ =
-        conversation_service::add_token_usage(conversation_store, session_key, input_tokens, output_tokens)
-            .await;
+    let _ = conversation_service::add_token_usage(
+        conversation_store,
+        session_key,
+        input_tokens,
+        output_tokens,
+    )
+    .await;
 
     // Mark run completed
     conversation_service::complete_run(run_store, run_id).await
@@ -101,20 +104,56 @@ mod tests {
 
     #[async_trait]
     impl ConversationStorePort for MockConversationStore {
-        async fn get_session(&self, _key: &str) -> Option<ConversationSession> { None }
-        async fn upsert_session(&self, _session: &ConversationSession) -> Result<()> { Ok(()) }
-        async fn delete_session(&self, _key: &str) -> Result<bool> { Ok(true) }
-        async fn list_sessions(&self, _prefix: Option<&str>) -> Vec<ConversationSession> { vec![] }
-        async fn touch_session(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn append_event(&self, _key: &str, _event: &crate::domain::conversation::ConversationEvent) -> Result<()> { Ok(()) }
-        async fn get_events(&self, _key: &str, _limit: usize) -> Vec<crate::domain::conversation::ConversationEvent> { vec![] }
-        async fn clear_events(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn update_label(&self, _key: &str, _label: &str) -> Result<()> { Ok(()) }
-        async fn update_goal(&self, _key: &str, _goal: &str) -> Result<()> { Ok(()) }
-        async fn increment_message_count(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn add_token_usage(&self, _key: &str, _input: i64, _output: i64) -> Result<()> { Ok(()) }
-        async fn set_summary(&self, _key: &str, _summary: &str) -> Result<()> { Ok(()) }
-        async fn get_summary(&self, _key: &str) -> Option<String> { None }
+        async fn get_session(&self, _key: &str) -> Option<ConversationSession> {
+            None
+        }
+        async fn upsert_session(&self, _session: &ConversationSession) -> Result<()> {
+            Ok(())
+        }
+        async fn delete_session(&self, _key: &str) -> Result<bool> {
+            Ok(true)
+        }
+        async fn list_sessions(&self, _prefix: Option<&str>) -> Vec<ConversationSession> {
+            vec![]
+        }
+        async fn touch_session(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn append_event(
+            &self,
+            _key: &str,
+            _event: &crate::domain::conversation::ConversationEvent,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn get_events(
+            &self,
+            _key: &str,
+            _limit: usize,
+        ) -> Vec<crate::domain::conversation::ConversationEvent> {
+            vec![]
+        }
+        async fn clear_events(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn update_label(&self, _key: &str, _label: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn update_goal(&self, _key: &str, _goal: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn increment_message_count(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn add_token_usage(&self, _key: &str, _input: i64, _output: i64) -> Result<()> {
+            Ok(())
+        }
+        async fn set_summary(&self, _key: &str, _summary: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn get_summary(&self, _key: &str) -> Option<String> {
+            None
+        }
     }
 
     struct MockRunStore {
@@ -165,7 +204,11 @@ mod tests {
         async fn append_event(&self, _event: &crate::domain::run::RunEvent) -> anyhow::Result<()> {
             Ok(())
         }
-        async fn get_events(&self, _run_id: &str, _limit: usize) -> Vec<crate::domain::run::RunEvent> {
+        async fn get_events(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Vec<crate::domain::run::RunEvent> {
             vec![]
         }
     }

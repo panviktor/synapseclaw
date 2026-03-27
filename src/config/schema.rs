@@ -331,6 +331,10 @@ pub struct Config {
     /// Inter-agent IPC configuration (`[agents_ipc]`).
     #[serde(default)]
     pub agents_ipc: AgentsIpcConfig,
+
+    /// Pipeline engine configuration (`[pipelines]`).
+    #[serde(default)]
+    pub pipelines: PipelineEngineConfig,
     /// Dynamic node discovery configuration (`[nodes]`).
     #[serde(default)]
     pub nodes: NodesConfig,
@@ -1770,6 +1774,73 @@ pub struct AgentsIpcConfig {
     /// Platform-specific recipient for push relay (e.g. Telegram chat ID, Matrix room ID).
     #[serde(default)]
     pub push_relay_recipient: Option<String>,
+}
+
+/// Pipeline engine configuration (`[pipelines]` section).
+///
+/// Enables deterministic multi-agent workflow execution.
+/// Pipeline definitions are loaded from TOML files in the pipeline directory.
+///
+/// Disabled by default — existing single-agent setups are unaffected.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct PipelineEngineConfig {
+    /// Enable the pipeline engine (default: false).
+    pub enabled: bool,
+
+    /// Directory containing pipeline TOML files.
+    /// Defaults to `{workspace_dir}/pipelines`.
+    #[serde(default)]
+    pub directory: Option<String>,
+
+    /// Directory containing routing TOML file.
+    /// Defaults to `{workspace_dir}/pipelines/routing.toml`.
+    #[serde(default)]
+    pub routing_file: Option<String>,
+
+    /// Enable hot-reload of pipeline TOML files (default: true).
+    #[serde(default = "default_true_val")]
+    pub hot_reload: bool,
+
+    /// Default fallback agent for message routing (default: agent's own ID).
+    #[serde(default)]
+    pub routing_fallback: Option<String>,
+
+    /// Agent ID used by the pipeline runner for IPC dispatch.
+    /// Defaults to the broker's own agent ID (trust=0, can send tasks to all agents).
+    #[serde(default)]
+    pub runner_agent_id: Option<String>,
+
+    /// Default rate limit for tool calls per pipeline run (0 = unlimited).
+    #[serde(default)]
+    pub default_tool_rate_limit: u32,
+
+    /// Tools that require human approval before execution.
+    #[serde(default)]
+    pub approval_required_tools: Vec<String>,
+}
+
+impl Default for PipelineEngineConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            directory: None,
+            routing_file: None,
+            hot_reload: true,
+            routing_fallback: None,
+            runner_agent_id: None,
+            default_tool_rate_limit: 0,
+            approval_required_tools: vec![],
+        }
+    }
+}
+
+fn default_pipeline_runner_id() -> Option<String> {
+    None // resolved at runtime to broker's own agent_id
+}
+
+fn default_true_val() -> bool {
+    true
 }
 
 /// PromptGuard configuration for IPC message payload scanning.
@@ -6332,6 +6403,7 @@ impl Default for Config {
             tts: TtsConfig::default(),
             mcp: McpConfig::default(),
             agents_ipc: AgentsIpcConfig::default(),
+            pipelines: PipelineEngineConfig::default(),
             nodes: NodesConfig::default(),
             workspace: WorkspaceConfig::default(),
             notion: NotionConfig::default(),
@@ -8907,6 +8979,7 @@ default_temperature = 0.7
             tts: TtsConfig::default(),
             mcp: McpConfig::default(),
             agents_ipc: AgentsIpcConfig::default(),
+            pipelines: PipelineEngineConfig::default(),
             nodes: NodesConfig::default(),
             workspace: WorkspaceConfig::default(),
             notion: NotionConfig::default(),
@@ -9251,6 +9324,7 @@ tool_dispatcher = "xml"
             tts: TtsConfig::default(),
             mcp: McpConfig::default(),
             agents_ipc: AgentsIpcConfig::default(),
+            pipelines: PipelineEngineConfig::default(),
             nodes: NodesConfig::default(),
             workspace: WorkspaceConfig::default(),
             notion: NotionConfig::default(),

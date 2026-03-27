@@ -40,12 +40,10 @@ impl TavilyExtractTool {
                 return Ok(key.clone());
             }
         }
-        let contents = std::fs::read_to_string(&self.config_path).map_err(|e| {
-            anyhow::anyhow!("Failed to read config for Tavily API key: {e}")
-        })?;
-        let config: crate::config::Config = toml::from_str(&contents).map_err(|e| {
-            anyhow::anyhow!("Failed to parse config for Tavily API key: {e}")
-        })?;
+        let contents = std::fs::read_to_string(&self.config_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read config for Tavily API key: {e}"))?;
+        let config: crate::config::Config = toml::from_str(&contents)
+            .map_err(|e| anyhow::anyhow!("Failed to parse config for Tavily API key: {e}"))?;
         let raw_key = config
             .web_search
             .tavily_api_key
@@ -165,7 +163,10 @@ impl Tool for TavilyExtractTool {
         if let Some(failed) = json.get("failed_results").and_then(|f| f.as_array()) {
             for fail in failed {
                 let url = fail.get("url").and_then(|u| u.as_str()).unwrap_or("?");
-                let err = fail.get("error").and_then(|e| e.as_str()).unwrap_or("unknown");
+                let err = fail
+                    .get("error")
+                    .and_then(|e| e.as_str())
+                    .unwrap_or("unknown");
                 let _ = write!(output, "\n\n[Failed] {}: {}", url, err);
             }
         }

@@ -83,7 +83,10 @@ mod tests {
         assert_eq!(MemoryCategory::Core.to_string(), "core");
         assert_eq!(MemoryCategory::Daily.to_string(), "daily");
         assert_eq!(MemoryCategory::Conversation.to_string(), "conversation");
-        assert_eq!(MemoryCategory::Custom("project".into()).to_string(), "project");
+        assert_eq!(
+            MemoryCategory::Custom("project".into()).to_string(),
+            "project"
+        );
     }
 
     #[test]

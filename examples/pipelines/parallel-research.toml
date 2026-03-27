@@ -1,0 +1,69 @@
+# Parallel research — news + trends gathered concurrently.
+#
+# Uses news-reader (qwen3.5-plus) and trend-aggregator (kimi-k2.5) in parallel,
+# then copywriter (MiniMax-M2.5) drafts from merged data.
+#
+# Trigger: POST /api/pipelines/start
+#   {"pipeline_name": "parallel-research", "input": {"topic": "LLM agents"}}
+
+[pipeline]
+name = "parallel-research"
+version = "1.0"
+description = "News + Trends in parallel → Draft"
+entry_point = "gather"
+max_depth = 3
+timeout_secs = 1800
+
+# ── Fan-out node (no agent execution) ────────────────────────────────────
+
+[[steps]]
+id = "gather"
+agent_id = "_fanout"
+description = "Dispatch parallel research"
+
+[steps.next.fan_out]
+join_step = "draft"
+require_all = false
+timeout_secs = 300
+
+[[steps.next.fan_out.branches]]
+step_id = "fetch-news"
+result_key = "news"
+
+[[steps.next.fan_out.branches]]
+step_id = "fetch-trends"
+result_key = "trends"
+
+# ── Branch 1: News (news-reader, trust=3) ────────────────────────────────
+
+[[steps]]
+id = "fetch-news"
+agent_id = "news-reader"
+description = "Search for recent news on the topic. Return JSON with headlines array and summary."
+tools = ["web_search"]
+next = "_join"
+timeout_secs = 120
+max_retries = 1
+retry_backoff_secs = 10
+
+# ── Branch 2: Trends (trend-aggregator, trust=3) ─────────────────────────
+
+[[steps]]
+id = "fetch-trends"
+agent_id = "trend-aggregator"
+description = "Analyze market trends and competitor activity. Return JSON with trends array and analysis."
+tools = ["web_search"]
+next = "_join"
+timeout_secs = 120
+max_retries = 1
+retry_backoff_secs = 10
+
+# ── Join: Draft (copywriter, trust=3) ────────────────────────────────────
+
+[[steps]]
+id = "draft"
+agent_id = "copywriter"
+description = "Write content using merged data from fanout.news and fanout.trends. Return JSON with title, body, tags."
+tools = ["memory_recall"]
+next = "end"
+timeout_secs = 300

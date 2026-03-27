@@ -2,10 +2,9 @@
 //!
 //! Phase 4.0 Slice 4.
 
-use crate::application::services::approval_service::{self, AutonomyLevel};
-use crate::domain::approval::{
-    ApprovalDecision, ApprovalOrigin, ApprovalRequest, ApprovalResponse, ApprovalRisk,
-};
+#[cfg(test)]
+use crate::domain::approval::ApprovalDecision;
+use crate::domain::approval::ApprovalResponse;
 use crate::ports::approval::ApprovalPort;
 use anyhow::Result;
 
@@ -51,10 +50,18 @@ mod tests {
 
     impl MockApprovalPort {
         fn needs(response: ApprovalResponse) -> Self {
-            Self { response, needs: true, session_allowed: Mutex::new(vec![]) }
+            Self {
+                response,
+                needs: true,
+                session_allowed: Mutex::new(vec![]),
+            }
         }
         fn auto_approved() -> Self {
-            Self { response: ApprovalResponse::No, needs: false, session_allowed: Mutex::new(vec![]) }
+            Self {
+                response: ApprovalResponse::No,
+                needs: false,
+                session_allowed: Mutex::new(vec![]),
+            }
         }
     }
 
@@ -62,7 +69,12 @@ mod tests {
     impl ApprovalPort for MockApprovalPort {
         fn needs_approval(&self, tool_name: &str) -> bool {
             // Check session allowlist first (mirrors real behavior)
-            if self.session_allowed.lock().unwrap().contains(&tool_name.to_string()) {
+            if self
+                .session_allowed
+                .lock()
+                .unwrap()
+                .contains(&tool_name.to_string())
+            {
                 return false;
             }
             self.needs
@@ -72,10 +84,16 @@ mod tests {
         }
         fn record_decision(&self, _decision: &ApprovalDecision) {}
         fn is_session_allowed(&self, tool_name: &str) -> bool {
-            self.session_allowed.lock().unwrap().contains(&tool_name.to_string())
+            self.session_allowed
+                .lock()
+                .unwrap()
+                .contains(&tool_name.to_string())
         }
         fn add_session_allowlist(&self, tool_name: &str) {
-            self.session_allowed.lock().unwrap().push(tool_name.to_string());
+            self.session_allowed
+                .lock()
+                .unwrap()
+                .push(tool_name.to_string());
         }
     }
 

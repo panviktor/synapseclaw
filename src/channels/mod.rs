@@ -259,7 +259,8 @@ impl InterruptOnNewMessageConfig {
         caps: &[crate::fork_core::domain::channel::ChannelCapability],
     ) -> bool {
         crate::fork_core::application::services::inbound_message_service::should_interrupt_previous(
-            self.enabled, caps,
+            self.enabled,
+            caps,
         )
     }
 }
@@ -308,6 +309,11 @@ struct ChannelRuntimeContext {
     /// Phase 4.0: channel registry for capability queries (None in standalone CLI mode).
     channel_registry:
         Option<Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>>,
+    /// Phase 4.1: pipeline engine ports (None if pipelines disabled).
+    pipeline_store: Option<Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort>>,
+    pipeline_executor:
+        Option<Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>>,
+    message_router: Option<Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort>>,
 }
 
 #[derive(Clone)]
@@ -1398,18 +1404,24 @@ async fn handle_message_via_orchestrator(
     caps: &[crate::fork_core::domain::channel::ChannelCapability],
     original_msg: &traits::ChannelMessage,
 ) {
-    use crate::fork_adapters::inbound::*;
-    use crate::fork_adapters::runtime::{agent_runtime_adapter, hooks_adapter};
+    use crate::fork_adapters::inbound::{
+        channel_output_adapter, conversation_history_adapter, route_selection_adapter,
+        session_summary_adapter,
+    };
     use crate::fork_adapters::memory::memory_adapter;
+    use crate::fork_adapters::runtime::{agent_runtime_adapter, hooks_adapter};
     use crate::fork_core::application::use_cases::handle_inbound_message as uc;
     use crate::fork_core::ports::hooks::NoOpHooks;
 
     // ── Build ports from ChannelRuntimeContext ────────────────────
-    let history_port: Arc<dyn crate::fork_core::ports::conversation_history::ConversationHistoryPort> =
-        Arc::new(conversation_history_adapter::MutexMapConversationHistory::new(
+    let history_port: Arc<
+        dyn crate::fork_core::ports::conversation_history::ConversationHistoryPort,
+    > = Arc::new(
+        conversation_history_adapter::MutexMapConversationHistory::new(
             ctx.conversation_histories.clone(),
             ctx.session_store.clone(),
-        ));
+        ),
+    );
 
     let route_port: Arc<dyn crate::fork_core::ports::route_selection::RouteSelectionPort> =
         Arc::new(route_selection_adapter::MutexMapRouteSelection::new(
@@ -1438,7 +1450,9 @@ async fn handle_message_via_orchestrator(
 
     let channel_output: Arc<dyn crate::fork_core::ports::channel_output::ChannelOutputPort> =
         if let Some(ref ch) = target_channel {
-            Arc::new(channel_output_adapter::ChannelOutputAdapter::new(Arc::clone(ch)))
+            Arc::new(channel_output_adapter::ChannelOutputAdapter::new(
+                Arc::clone(ch),
+            ))
         } else {
             // No channel — use a null output that drops everything
             Arc::new(NullChannelOutput)
@@ -1461,21 +1475,21 @@ async fn handle_message_via_orchestrator(
         });
 
     let registry: Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort> =
-        ctx.channel_registry
-            .clone()
-            .unwrap_or_else(|| {
-                Arc::new(
-                    crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
-                        crate::config::Config::default(),
-                    ),
-                )
-            });
-
-    let session_summary: Option<Arc<dyn crate::fork_core::ports::session_summary::SessionSummaryPort>> =
-        ctx.session_store.as_ref().map(|store| {
-            Arc::new(session_summary_adapter::SessionStoreAdapter::new(Arc::clone(store)))
-                as Arc<dyn crate::fork_core::ports::session_summary::SessionSummaryPort>
+        ctx.channel_registry.clone().unwrap_or_else(|| {
+            Arc::new(
+                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
+                    crate::config::Config::default(),
+                ),
+            )
         });
+
+    let session_summary: Option<
+        Arc<dyn crate::fork_core::ports::session_summary::SessionSummaryPort>,
+    > = ctx.session_store.as_ref().map(|store| {
+        Arc::new(session_summary_adapter::SessionStoreAdapter::new(
+            Arc::clone(store),
+        )) as Arc<dyn crate::fork_core::ports::session_summary::SessionSummaryPort>
+    });
 
     let model_routes: Vec<(String, String, String)> = ctx
         .model_routes
@@ -1497,7 +1511,10 @@ async fn handle_message_via_orchestrator(
             if qc.enabled {
                 Some(std::sync::Arc::new(move |msg: &str| {
                     crate::agent::classifier::classify(&qc, msg)
-                }) as std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>)
+                })
+                    as std::sync::Arc<
+                        dyn Fn(&str) -> Option<String> + Send + Sync,
+                    >)
             } else {
                 None
             }
@@ -1526,13 +1543,122 @@ async fn handle_message_via_orchestrator(
         memory: memory_port,
     };
 
+    // ── Phase 4.1: Check if message should trigger a pipeline ─────
+    tracing::info!(
+        has_router = ctx.message_router.is_some(),
+        has_store = ctx.pipeline_store.is_some(),
+        has_executor = ctx.pipeline_executor.is_some(),
+        content = %envelope.content,
+        "pipeline routing check"
+    );
+    if let (Some(ref router), Some(ref store), Some(ref executor)) = (
+        &ctx.message_router,
+        &ctx.pipeline_store,
+        &ctx.pipeline_executor,
+    ) {
+        let routing_input = crate::fork_core::domain::routing::RoutingInput {
+            content: envelope.content.clone(),
+            source_kind: format!("{:?}", envelope.source_kind),
+            metadata: std::collections::HashMap::new(),
+        };
+        let route_result = router.route(&routing_input).await;
+        tracing::info!(
+            target = %route_result.target,
+            pipeline = ?route_result.pipeline,
+            matched = ?route_result.matched_rule,
+            fallback = route_result.is_fallback,
+            "pipeline routing result"
+        );
+        if let Some(ref pipeline_name) = route_result.pipeline {
+            if store.get(pipeline_name).await.is_some() {
+                let matched = route_result.matched_rule.as_deref().unwrap_or("fallback");
+                tracing::info!(
+                    pipeline = %pipeline_name,
+                    matched_rule = %matched,
+                    content = %envelope.content,
+                    "message routed to pipeline"
+                );
+                // Build pipeline input from the message
+                let input = serde_json::json!({
+                    "message": envelope.content,
+                    "source": envelope.source_adapter,
+                    "sender": envelope.actor_id,
+                });
+                // Build minimal ports for pipeline run
+                let run_store: Arc<dyn crate::fork_core::ports::run_store::RunStorePort> =
+                    Arc::new(crate::fork_core::ports::run_store::NoOpRunStore);
+                let pipeline_ports =
+                        crate::fork_core::application::services::pipeline_service::PipelineRunnerPorts {
+                            pipeline_store: Arc::clone(store),
+                            executor: Arc::clone(executor),
+                            run_store,
+                        };
+                let params = crate::fork_core::application::services::pipeline_service::StartPipelineParams {
+                        pipeline_name: pipeline_name.clone(),
+                        input,
+                        triggered_by: envelope.actor_id.clone(),
+                        depth: 0,
+                        parent_run_id: None,
+                    };
+                let result =
+                    crate::fork_core::application::services::pipeline_service::run_pipeline(
+                        &pipeline_ports,
+                        params,
+                    )
+                    .await;
+                // Report result back to channel.
+                // Show the last step's "summary" or "status" field as a human-readable
+                // one-liner. The pipeline is generic — each step decides what to return.
+                // If no summary field, fall back to step name + "done".
+                let reply = match &result.state {
+                    crate::fork_core::domain::pipeline_context::PipelineState::Completed => {
+                        result
+                            .data
+                            .as_object()
+                            .and_then(|obj| {
+                                // Last step output (skip "_input" metadata key)
+                                obj.iter()
+                                    .rev()
+                                    .find(|(k, _)| *k != "_input")
+                                    .map(|(step, val)| {
+                                        // Prefer "summary", then "status", then stringify
+                                        let detail = val
+                                            .get("summary")
+                                            .and_then(|s| s.as_str())
+                                            .or_else(|| val.get("status").and_then(|s| s.as_str()))
+                                            .unwrap_or("done");
+                                        format!("Pipeline `{pipeline_name}` — {step}: {detail}")
+                                    })
+                            })
+                            .unwrap_or_else(|| format!("Pipeline `{pipeline_name}` completed."))
+                    }
+                    crate::fork_core::domain::pipeline_context::PipelineState::Failed => {
+                        let err = result.error.as_deref().unwrap_or("unknown error");
+                        format!("Pipeline `{pipeline_name}` failed: {err}")
+                    }
+                    _ => {
+                        format!(
+                            "Pipeline `{pipeline_name}` ended in state: {:?}",
+                            result.state
+                        )
+                    }
+                };
+                if let Some(ch) = &target_channel {
+                    let send_msg = SendMessage::new(&reply, &original_msg.reply_target)
+                        .in_thread(original_msg.thread_ts.clone());
+                    if let Err(e) = ch.send(&send_msg).await {
+                        tracing::warn!("Failed to send pipeline result: {e}");
+                    }
+                }
+                return; // pipeline handled the message — skip normal LLM processing
+            }
+        }
+    }
+
     // ── Call orchestrator ─────────────────────────────────────────
     // The orchestrator sends responses/errors directly via ChannelOutputPort.
     // The adapter only handles Command formatting and post-processing.
     match uc::handle(envelope, caps, &config, &ports).await {
-        Ok(uc::HandleResult::Response { .. }) => {
-            // Response already sent by orchestrator via ChannelOutputPort
-        }
         Ok(uc::HandleResult::Command {
             effect,
             conversation_key,
@@ -1549,7 +1675,8 @@ async fn handle_message_via_orchestrator(
         Ok(uc::HandleResult::Cancelled { reason }) => {
             tracing::info!(%reason, "Message cancelled by hook");
         }
-        Ok(uc::HandleResult::CommandNoChannel) => {}
+        // Response already sent by orchestrator via ChannelOutputPort
+        Ok(uc::HandleResult::Response { .. } | uc::HandleResult::CommandNoChannel) => {}
         Err(e) => {
             // Unexpected orchestrator error (should be rare — most errors handled internally)
             tracing::warn!("Message handling failed unexpectedly: {e}");
@@ -1557,9 +1684,12 @@ async fn handle_message_via_orchestrator(
     }
 
     // Persist session store turn if available
-    if let Some(ref store) = ctx.session_store {
-        let key = crate::fork_core::application::services::inbound_message_service::conversation_key(envelope);
-        let history = ports.history.get_history(&key);
+    if let Some(ref _store) = ctx.session_store {
+        let key =
+            crate::fork_core::application::services::inbound_message_service::conversation_key(
+                envelope,
+            );
+        let _history = ports.history.get_history(&key);
         // Session store is already updated through the history port's append_turn
         // Just trigger summary generation if needed
         let ctx_summary = ctx.clone();
@@ -1713,16 +1843,9 @@ async fn run_message_dispatch_loop(
             }
 
             // Phase 4.0 Slice 2: route through HandleInboundMessage orchestrator.
-            let envelope =
-                crate::fork_adapters::envelope_from_channel_message(&msg);
+            let envelope = crate::fork_adapters::envelope_from_channel_message(&msg);
 
-            handle_message_via_orchestrator(
-                &worker_ctx,
-                &envelope,
-                &worker_caps,
-                &msg,
-            )
-            .await;
+            handle_message_via_orchestrator(&worker_ctx, &envelope, &worker_caps, &msg).await;
 
             if interrupt_enabled {
                 let mut active = in_flight.lock().await;
@@ -2851,7 +2974,10 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 
 /// Start all configured channels and route messages to the agent
 #[allow(clippy::too_many_lines)]
-pub async fn start_channels(config: Config) -> Result<()> {
+pub async fn start_channels(
+    config: Config,
+    shared_ipc_client: Option<std::sync::Arc<crate::tools::agents_ipc::IpcClient>>,
+) -> Result<()> {
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = providers::ProviderRuntimeOptions {
         auth_profile_override: None,
@@ -2938,6 +3064,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
             &config.agents,
             config.api_key.as_deref(),
             &config,
+            shared_ipc_client.clone(),
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -3243,6 +3370,106 @@ pub async fn start_channels(config: Config) -> Result<()> {
         .as_ref()
         .is_some_and(|sl| sl.interrupt_on_new_message);
 
+    // ── Phase 4.1: Pipeline engine initialization ──────────────────
+    let (pipeline_store, pipeline_executor, message_router) = if config.pipelines.enabled {
+        let pipeline_dir = config
+            .pipelines
+            .directory
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| config.workspace_dir.join("pipelines"));
+
+        let store: Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort> = Arc::new(
+            crate::fork_adapters::pipeline::toml_loader::TomlPipelineLoader::new(&pipeline_dir),
+        );
+        if let Err(e) = store.reload().await {
+            tracing::warn!("Pipeline TOML load failed: {e}");
+        } else {
+            let names = store.list().await;
+            if !names.is_empty() {
+                tracing::info!(pipelines = ?names, "pipeline definitions loaded (channels)");
+            }
+        }
+
+        // IPC step executor for pipeline dispatch.
+        // In daemon mode, reuses the shared IpcClient (single seq counter).
+        // In standalone mode, creates a local IpcClient.
+        let executor: Option<
+            Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
+        > = if config.agents_ipc.enabled {
+            if let Some(ref broker_token) = config.agents_ipc.broker_token {
+                let ipc_client = if let Some(ref shared) = shared_ipc_client {
+                    Arc::clone(shared)
+                } else {
+                    let runner_id = config
+                        .pipelines
+                        .runner_agent_id
+                        .clone()
+                        .or_else(|| config.agents_ipc.agent_id.clone())
+                        .unwrap_or_else(|| config.agents_ipc.role.clone());
+                    let key_path = config
+                        .config_path
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("agent.key");
+
+                    let mut client = crate::tools::agents_ipc::IpcClient::new(
+                        &config.agents_ipc.broker_url,
+                        broker_token,
+                        config.agents_ipc.request_timeout_secs,
+                    );
+                    if let Ok(identity) =
+                        crate::security::identity::AgentIdentity::load_or_generate(&key_path)
+                    {
+                        client = client.with_identity(identity, runner_id);
+                    }
+                    Arc::new(client)
+                };
+                Some(Arc::new(
+                    crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
+                        ipc_client,
+                    ),
+                )
+                    as Arc<
+                        dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort,
+                    >)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Message router
+        let fallback_agent = config
+            .pipelines
+            .routing_fallback
+            .clone()
+            .or_else(|| config.agents_ipc.agent_id.clone())
+            .unwrap_or_else(|| config.agents_ipc.role.clone());
+        let router: Option<Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort>> = {
+            let routing_file = config
+                .pipelines
+                .routing_file
+                .as_ref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| config.workspace_dir.join("pipelines/routing.toml"));
+            let router = crate::fork_adapters::routing::rule_chain::TomlMessageRouter::load(
+                &routing_file,
+                &fallback_agent,
+            );
+            tracing::info!("message router loaded from {}", routing_file.display());
+            Some(Arc::new(router)
+                as Arc<
+                    dyn crate::fork_core::ports::message_router::MessageRouterPort,
+                >)
+        };
+
+        (Some(store), executor, router)
+    } else {
+        (None, None, None)
+    };
+
     let runtime_ctx = Arc::new(ChannelRuntimeContext {
         channels_by_name,
         provider: Arc::clone(&provider),
@@ -3310,6 +3537,9 @@ pub async fn start_channels(config: Config) -> Result<()> {
         channel_registry: Some(Arc::new(
             crate::fork_adapters::channels::registry::CachedChannelRegistry::new(config.clone()),
         )),
+        pipeline_store,
+        pipeline_executor,
+        message_router,
     });
 
     // Hydrate in-memory conversation histories from persisted JSONL session files.
@@ -3841,6 +4071,9 @@ mod tests {
                     crate::config::Config::default(),
                 ),
             )),
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(4);
@@ -3938,6 +4171,9 @@ mod tests {
                     crate::config::Config::default(),
                 ),
             )),
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4050,6 +4286,9 @@ mod tests {
                     crate::config::Config::default(),
                 ),
             )),
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);
@@ -4159,6 +4398,9 @@ mod tests {
                     crate::config::Config::default(),
                 ),
             )),
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
         });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<traits::ChannelMessage>(8);

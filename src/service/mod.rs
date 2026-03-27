@@ -547,7 +547,9 @@ fn is_root() -> bool {
 /// Returns Ok if user doesn't exist (OpenRC will handle creation or fail gracefully).
 /// Returns error if user exists but has unexpected properties.
 fn check_synapseclaw_user() -> Result<()> {
-    let output = Command::new("getent").args(["passwd", "synapseclaw"]).output();
+    let output = Command::new("getent")
+        .args(["passwd", "synapseclaw"])
+        .output();
     let is_alpine = Path::new("/etc/alpine-release").exists();
 
     let (del_cmd, add_cmd) = if is_alpine {
@@ -556,7 +558,10 @@ fn check_synapseclaw_user() -> Result<()> {
             "addgroup -S synapseclaw && adduser -S -s /sbin/nologin -H -D -G synapseclaw synapseclaw",
         )
     } else {
-        ("userdel synapseclaw", "useradd -r -s /sbin/nologin synapseclaw")
+        (
+            "userdel synapseclaw",
+            "useradd -r -s /sbin/nologin synapseclaw",
+        )
     };
 
     match output {
@@ -603,7 +608,9 @@ fn check_synapseclaw_user() -> Result<()> {
 }
 
 fn ensure_synapseclaw_user() -> Result<()> {
-    let output = Command::new("getent").args(["passwd", "synapseclaw"]).output();
+    let output = Command::new("getent")
+        .args(["passwd", "synapseclaw"])
+        .output();
     if let Ok(output) = output {
         if output.status.success() {
             return check_synapseclaw_user();
@@ -613,7 +620,9 @@ fn ensure_synapseclaw_user() -> Result<()> {
     let is_alpine = Path::new("/etc/alpine-release").exists();
 
     if is_alpine {
-        let group_output = Command::new("getent").args(["group", "synapseclaw"]).output();
+        let group_output = Command::new("getent")
+            .args(["group", "synapseclaw"])
+            .output();
         let group_exists = group_output.map(|o| o.status.success()).unwrap_or(false);
 
         if !group_exists {

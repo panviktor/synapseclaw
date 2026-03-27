@@ -9,11 +9,7 @@ use anyhow::Result;
 /// Promote a quarantined message to the recipient's inbox.
 ///
 /// Returns the new message ID created in the normal inbox.
-pub async fn promote(
-    port: &dyn QuarantinePort,
-    message_id: i64,
-    to_agent: &str,
-) -> Result<i64> {
+pub async fn promote(port: &dyn QuarantinePort, message_id: i64, to_agent: &str) -> Result<i64> {
     tracing::info!(
         message_id,
         to_agent,

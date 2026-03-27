@@ -6,6 +6,9 @@ pub mod channels;
 pub mod inbound;
 pub mod ipc;
 pub mod memory;
+pub mod middleware;
+pub mod pipeline;
+pub mod routing;
 pub mod runtime;
 pub mod storage;
 

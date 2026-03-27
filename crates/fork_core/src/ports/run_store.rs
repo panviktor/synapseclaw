@@ -37,4 +37,48 @@ pub trait RunStorePort: Send + Sync {
 
     /// Get events for a run, chronological order.
     async fn get_events(&self, run_id: &str, limit: usize) -> Vec<RunEvent>;
+
+    /// List runs in any of the given states (for pipeline recovery on startup).
+    /// Default impl falls back to list_all_runs + filter.
+    async fn list_by_state(&self, states: &[RunState], limit: usize) -> Vec<Run> {
+        self.list_all_runs(limit)
+            .await
+            .into_iter()
+            .filter(|r| states.contains(&r.state))
+            .collect()
+    }
+}
+
+/// No-op run store for contexts where persistence is not needed
+/// (e.g. channel-triggered pipeline runs without a backing DB).
+pub struct NoOpRunStore;
+
+#[async_trait]
+impl RunStorePort for NoOpRunStore {
+    async fn create_run(&self, _run: &Run) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn get_run(&self, _run_id: &str) -> Option<Run> {
+        None
+    }
+    async fn update_state(
+        &self,
+        _run_id: &str,
+        _state: RunState,
+        _finished_at: Option<u64>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn list_runs(&self, _conversation_key: &str, _limit: usize) -> Vec<Run> {
+        vec![]
+    }
+    async fn list_all_runs(&self, _limit: usize) -> Vec<Run> {
+        vec![]
+    }
+    async fn append_event(&self, _event: &RunEvent) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn get_events(&self, _run_id: &str, _limit: usize) -> Vec<RunEvent> {
+        vec![]
+    }
 }

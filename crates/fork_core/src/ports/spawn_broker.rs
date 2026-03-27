@@ -28,22 +28,11 @@ pub trait SpawnBrokerPort: Send + Sync {
     ///
     /// Returns (status, optional_result_json).
     /// Non-terminal statuses return None for result.
-    async fn get_spawn_status(
-        &self,
-        session_id: &str,
-    ) -> Result<(SpawnStatus, Option<String>)>;
+    async fn get_spawn_status(&self, session_id: &str) -> Result<(SpawnStatus, Option<String>)>;
 
     /// Report successful completion of a spawn run.
-    async fn complete_spawn(
-        &self,
-        session_id: &str,
-        result: &str,
-    ) -> Result<()>;
+    async fn complete_spawn(&self, session_id: &str, result: &str) -> Result<()>;
 
     /// Report spawn failure.
-    async fn fail_spawn(
-        &self,
-        session_id: &str,
-        reason: &str,
-    ) -> Result<()>;
+    async fn fail_spawn(&self, session_id: &str, reason: &str) -> Result<()>;
 }

@@ -28,10 +28,7 @@ pub async fn execute(
 
     // Guard: cannot abort a terminal run
     if run.state.is_terminal() {
-        bail!(
-            "Run '{run_id}' is already in terminal state: {}",
-            run.state
-        );
+        bail!("Run '{run_id}' is already in terminal state: {}", run.state);
     }
 
     let now = chrono::Utc::now().timestamp() as u64;
@@ -61,20 +58,56 @@ mod tests {
 
     #[async_trait]
     impl ConversationStorePort for MockConversationStore {
-        async fn get_session(&self, _key: &str) -> Option<ConversationSession> { None }
-        async fn upsert_session(&self, _session: &ConversationSession) -> Result<()> { Ok(()) }
-        async fn delete_session(&self, _key: &str) -> Result<bool> { Ok(true) }
-        async fn list_sessions(&self, _prefix: Option<&str>) -> Vec<ConversationSession> { vec![] }
-        async fn touch_session(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn append_event(&self, _key: &str, _event: &crate::domain::conversation::ConversationEvent) -> Result<()> { Ok(()) }
-        async fn get_events(&self, _key: &str, _limit: usize) -> Vec<crate::domain::conversation::ConversationEvent> { vec![] }
-        async fn clear_events(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn update_label(&self, _key: &str, _label: &str) -> Result<()> { Ok(()) }
-        async fn update_goal(&self, _key: &str, _goal: &str) -> Result<()> { Ok(()) }
-        async fn increment_message_count(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn add_token_usage(&self, _key: &str, _input: i64, _output: i64) -> Result<()> { Ok(()) }
-        async fn set_summary(&self, _key: &str, _summary: &str) -> Result<()> { Ok(()) }
-        async fn get_summary(&self, _key: &str) -> Option<String> { None }
+        async fn get_session(&self, _key: &str) -> Option<ConversationSession> {
+            None
+        }
+        async fn upsert_session(&self, _session: &ConversationSession) -> Result<()> {
+            Ok(())
+        }
+        async fn delete_session(&self, _key: &str) -> Result<bool> {
+            Ok(true)
+        }
+        async fn list_sessions(&self, _prefix: Option<&str>) -> Vec<ConversationSession> {
+            vec![]
+        }
+        async fn touch_session(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn append_event(
+            &self,
+            _key: &str,
+            _event: &crate::domain::conversation::ConversationEvent,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn get_events(
+            &self,
+            _key: &str,
+            _limit: usize,
+        ) -> Vec<crate::domain::conversation::ConversationEvent> {
+            vec![]
+        }
+        async fn clear_events(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn update_label(&self, _key: &str, _label: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn update_goal(&self, _key: &str, _goal: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn increment_message_count(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn add_token_usage(&self, _key: &str, _input: i64, _output: i64) -> Result<()> {
+            Ok(())
+        }
+        async fn set_summary(&self, _key: &str, _summary: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn get_summary(&self, _key: &str) -> Option<String> {
+            None
+        }
     }
 
     struct MockRunStore {
@@ -96,9 +129,19 @@ mod tests {
             Ok(())
         }
         async fn get_run(&self, run_id: &str) -> Option<Run> {
-            self.runs.lock().unwrap().iter().find(|r| r.run_id == run_id).cloned()
+            self.runs
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.run_id == run_id)
+                .cloned()
         }
-        async fn update_state(&self, run_id: &str, state: RunState, finished_at: Option<u64>) -> Result<()> {
+        async fn update_state(
+            &self,
+            run_id: &str,
+            state: RunState,
+            finished_at: Option<u64>,
+        ) -> Result<()> {
             let mut runs = self.runs.lock().unwrap();
             if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) {
                 run.state = state;
@@ -106,10 +149,22 @@ mod tests {
             }
             Ok(())
         }
-        async fn list_runs(&self, _key: &str, _limit: usize) -> Vec<Run> { vec![] }
-        async fn list_all_runs(&self, _limit: usize) -> Vec<Run> { vec![] }
-        async fn append_event(&self, _event: &crate::domain::run::RunEvent) -> Result<()> { Ok(()) }
-        async fn get_events(&self, _run_id: &str, _limit: usize) -> Vec<crate::domain::run::RunEvent> { vec![] }
+        async fn list_runs(&self, _key: &str, _limit: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn list_all_runs(&self, _limit: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn append_event(&self, _event: &crate::domain::run::RunEvent) -> Result<()> {
+            Ok(())
+        }
+        async fn get_events(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Vec<crate::domain::run::RunEvent> {
+            vec![]
+        }
     }
 
     fn running_run(id: &str, conv_key: Option<&str>) -> Run {
@@ -153,7 +208,9 @@ mod tests {
         let run_store = MockRunStore::with_run(running_run("r1", None));
         let conv_store = MockConversationStore;
 
-        let err = execute(&run_store, &conv_store, "nonexistent").await.unwrap_err();
+        let err = execute(&run_store, &conv_store, "nonexistent")
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("not found"));
     }
 

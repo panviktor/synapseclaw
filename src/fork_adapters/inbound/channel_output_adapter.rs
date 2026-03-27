@@ -40,11 +40,15 @@ impl ChannelOutputPort for ChannelOutputAdapter {
     }
 
     async fn add_reaction(&self, recipient: &str, message_id: &str, emoji: &str) -> Result<()> {
-        self.channel.add_reaction(recipient, message_id, emoji).await
+        self.channel
+            .add_reaction(recipient, message_id, emoji)
+            .await
     }
 
     async fn remove_reaction(&self, recipient: &str, message_id: &str, emoji: &str) -> Result<()> {
-        self.channel.remove_reaction(recipient, message_id, emoji).await
+        self.channel
+            .remove_reaction(recipient, message_id, emoji)
+            .await
     }
 
     async fn fetch_message_text(&self, message_id: &str) -> Result<Option<String>> {
@@ -68,21 +72,11 @@ impl ChannelOutputPort for ChannelOutputAdapter {
         self.channel.send_draft(&msg).await
     }
 
-    async fn update_draft(
-        &self,
-        recipient: &str,
-        draft_id: &str,
-        text: &str,
-    ) -> Result<()> {
+    async fn update_draft(&self, recipient: &str, draft_id: &str, text: &str) -> Result<()> {
         self.channel.update_draft(recipient, draft_id, text).await
     }
 
-    async fn finalize_draft(
-        &self,
-        recipient: &str,
-        draft_id: &str,
-        text: &str,
-    ) -> Result<()> {
+    async fn finalize_draft(&self, recipient: &str, draft_id: &str, text: &str) -> Result<()> {
         self.channel.finalize_draft(recipient, draft_id, text).await
     }
 

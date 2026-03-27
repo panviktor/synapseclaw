@@ -69,8 +69,8 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             &self.channel_name,
             &self.multimodal,
             max_iterations,
-            None,      // cancellation_token
-            on_delta,  // streaming deltas
+            None,     // cancellation_token
+            on_delta, // streaming deltas
             self.hooks.as_deref(),
             &self.excluded_tools,
             &self.dedup_exempt_tools,
@@ -80,17 +80,10 @@ impl AgentRuntimePort for ChannelAgentRuntime {
 
         // Apply timeout if configured
         let response = if budget_secs > 0 {
-            match tokio::time::timeout(
-                std::time::Duration::from_secs(budget_secs),
-                fut,
-            )
-            .await
-            {
+            match tokio::time::timeout(std::time::Duration::from_secs(budget_secs), fut).await {
                 Ok(result) => result?,
                 Err(_) => {
-                    anyhow::bail!(
-                        "Agent execution timed out after {budget_secs}s"
-                    );
+                    anyhow::bail!("Agent execution timed out after {budget_secs}s");
                 }
             }
         } else {

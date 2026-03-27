@@ -1,0 +1,78 @@
+# Message routing rules for the marketing fleet.
+#
+# Routes inbound messages to the right agent by content analysis.
+# marketing-lead is the fallback (coordinator, trust=1).
+
+fallback = "marketing-lead"
+
+[[routes]]
+name = "research-command"
+target = "news-reader"
+priority = 10
+
+[routes.rule]
+command = "/research"
+
+[[routes]]
+name = "trends-command"
+target = "trend-aggregator"
+priority = 11
+
+[routes.rule]
+command = "/trends"
+
+[[routes]]
+name = "write-command"
+target = "copywriter"
+priority = 12
+
+[routes.rule]
+command = "/write"
+
+[[routes]]
+name = "publish-command"
+target = "publisher"
+priority = 13
+
+[routes.rule]
+command = "/publish"
+
+[[routes]]
+name = "pipeline-command"
+target = "marketing-lead"
+priority = 14
+
+[routes.rule]
+command = "/pipeline"
+
+[[routes]]
+name = "news-keywords"
+target = "news-reader"
+priority = 50
+
+[routes.rule]
+keywords = ["news", "latest", "what happened", "breaking"]
+
+[[routes]]
+name = "trend-keywords"
+target = "trend-aggregator"
+priority = 51
+
+[routes.rule]
+keywords = ["trend", "competitor", "market", "analysis", "compare"]
+
+[[routes]]
+name = "content-keywords"
+target = "copywriter"
+priority = 60
+
+[routes.rule]
+keywords = ["write", "draft", "post", "article", "content", "blog"]
+
+[[routes]]
+name = "publish-keywords"
+target = "publisher"
+priority = 70
+
+[routes.rule]
+keywords = ["publish", "send", "translate", "telegram", "channel"]

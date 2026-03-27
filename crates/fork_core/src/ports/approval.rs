@@ -2,10 +2,7 @@
 //!
 //! Phase 4.0 Slice 4.
 
-use crate::domain::approval::{
-    ApprovalDecision, ApprovalRequest, ApprovalResponse, ApprovalRisk, ApprovalOrigin,
-    QuarantineItem,
-};
+use crate::domain::approval::{ApprovalDecision, ApprovalResponse, QuarantineItem};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -16,11 +13,7 @@ pub trait ApprovalPort: Send + Sync {
     fn needs_approval(&self, tool_name: &str) -> bool;
 
     /// Request approval (blocking with timeout for interactive, instant for non-interactive).
-    async fn request_approval(
-        &self,
-        tool_name: &str,
-        arguments: &str,
-    ) -> Result<ApprovalResponse>;
+    async fn request_approval(&self, tool_name: &str, arguments: &str) -> Result<ApprovalResponse>;
 
     /// Record an approval decision for audit.
     fn record_decision(&self, decision: &ApprovalDecision);

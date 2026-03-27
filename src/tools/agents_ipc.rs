@@ -86,6 +86,31 @@ impl IpcClient {
         home_synapseclaw_dir().map(|d| d.join(format!("sender-{agent_id}.seq")))
     }
 
+    /// Sync sender_seq from an authoritative source (e.g. broker's IpcDb).
+    ///
+    /// The pipeline executor runs inside the broker process but creates its own
+    /// IpcClient. Its on-disk seq file can become stale if the broker's DB has
+    /// seen higher sequences from the same agent_id via other code paths.
+    /// Call this after construction to set the counter to at least `db_seq`.
+    pub fn sync_sender_seq(&self, db_seq: i64) {
+        let current = self.sender_seq.load(std::sync::atomic::Ordering::Relaxed);
+        if db_seq > current {
+            self.sender_seq
+                .store(db_seq, std::sync::atomic::Ordering::Relaxed);
+            // Also persist so it survives restarts
+            if let Some(ref agent_id) = self.agent_id {
+                if let Some(path) = self.sender_seq_path(agent_id) {
+                    let _ = std::fs::write(&path, db_seq.to_string());
+                }
+            }
+            tracing::info!(
+                old_seq = current,
+                new_seq = db_seq,
+                "sender_seq synced from broker DB"
+            );
+        }
+    }
+
     /// Register the agent's Ed25519 public key with the broker.
     /// Called once on startup so the broker can verify future message signatures.
     pub async fn register_public_key(&self) -> Result<(), String> {
@@ -1597,6 +1622,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         }
     }
 

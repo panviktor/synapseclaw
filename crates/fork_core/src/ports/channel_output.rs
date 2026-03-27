@@ -47,23 +47,13 @@ pub trait ChannelOutputPort: Send + Sync {
     }
 
     /// Update an existing draft message.
-    async fn update_draft(
-        &self,
-        recipient: &str,
-        draft_id: &str,
-        text: &str,
-    ) -> Result<()> {
+    async fn update_draft(&self, recipient: &str, draft_id: &str, text: &str) -> Result<()> {
         let _ = (recipient, draft_id, text);
         Ok(())
     }
 
     /// Finalize a draft (replace with final text).
-    async fn finalize_draft(
-        &self,
-        recipient: &str,
-        draft_id: &str,
-        text: &str,
-    ) -> Result<()> {
+    async fn finalize_draft(&self, recipient: &str, draft_id: &str, text: &str) -> Result<()> {
         let _ = (recipient, draft_id, text);
         Ok(())
     }

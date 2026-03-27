@@ -5,9 +5,7 @@
 //! Design rule: external workers are leaf executors, not replacement cores.
 //! The fork core owns orchestration, trust, approval, and memory.
 
-use crate::domain::implementation::{
-    CodingWorkerResult, ImplementationEvent, ImplementationTask,
-};
+use crate::domain::implementation::{CodingWorkerResult, ImplementationEvent, ImplementationTask};
 use anyhow::Result;
 use async_trait::async_trait;
 

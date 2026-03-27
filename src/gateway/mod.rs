@@ -394,6 +394,17 @@ pub struct AppState {
         Option<Arc<dyn crate::fork_core::ports::conversation_store::ConversationStorePort>>,
     /// Phase 4.0: Unified run execution store
     pub run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>>,
+    /// Phase 4.1: Pipeline definition store (TOML loader)
+    pub pipeline_store: Option<Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort>>,
+    /// Phase 4.1: Pipeline step executor (IPC bridge)
+    pub pipeline_executor:
+        Option<Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>>,
+    /// Phase 4.1: Message router for deterministic inbound routing
+    pub message_router: Option<Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort>>,
+    /// Phase 4.1: Tool middleware chain
+    pub tool_middleware: Option<
+        Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>,
+    >,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -406,6 +417,7 @@ pub async fn run_gateway(
     channel_registry: Option<
         Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
     >,
+    shared_ipc_client: Option<Arc<crate::tools::agents_ipc::IpcClient>>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -491,6 +503,7 @@ pub async fn run_gateway(
         &config.agents,
         config.api_key.as_deref(),
         &config,
+        shared_ipc_client.clone(),
     );
     let tools_registry: Arc<Vec<ToolSpec>> =
         Arc::new(tools_registry_raw.iter().map(|t| t.spec()).collect());
@@ -791,9 +804,8 @@ pub async fn run_gateway(
     // ── Phase 4.0: RunStorePort (wraps ChatDb) ──
     let run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>> =
         chat_db.as_ref().map(|db| {
-            Arc::new(
-                crate::fork_adapters::storage::run_store::ChatDbRunStore::new(Arc::clone(db)),
-            ) as Arc<dyn crate::fork_core::ports::run_store::RunStorePort>
+            Arc::new(crate::fork_adapters::storage::run_store::ChatDbRunStore::new(Arc::clone(db)))
+                as Arc<dyn crate::fork_core::ports::run_store::RunStorePort>
         });
 
     // Parse admin CIDR allowlist — fail at boot on invalid entries
@@ -909,8 +921,219 @@ pub async fn run_gateway(
         },
         channel_registry,
         conversation_store,
-        run_store,
+        run_store: run_store.clone(),
+        pipeline_store: None,    // initialized below if pipelines enabled
+        pipeline_executor: None, // initialized below if pipelines enabled
+        message_router: None,    // initialized below if pipelines enabled
+        tool_middleware: None,   // initialized below if pipelines enabled
     };
+
+    // Phase 4.1: Initialize pipeline engine if enabled
+    if config.pipelines.enabled {
+        let pipeline_dir = config
+            .pipelines
+            .directory
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| config.workspace_dir.join("pipelines"));
+
+        // Ensure pipeline directory exists
+        if let Err(e) = std::fs::create_dir_all(&pipeline_dir) {
+            tracing::warn!(dir = %pipeline_dir.display(), error = %e, "cannot create pipeline directory");
+        }
+
+        // Load pipeline TOML definitions
+        let pipeline_store: Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort> =
+            Arc::new(
+                crate::fork_adapters::pipeline::toml_loader::TomlPipelineLoader::new(&pipeline_dir),
+            );
+        if let Err(e) = pipeline_store.reload().await {
+            tracing::error!(error = %e, "failed to load pipeline definitions");
+        } else {
+            let names = pipeline_store.list().await;
+            tracing::info!(pipelines = ?names, "pipeline definitions loaded");
+        }
+
+        // Create IPC step executor for pipeline dispatch.
+        // If a shared IpcClient was provided (daemon mode), reuse it to avoid
+        // duplicate AtomicI64 seq counters → replay_rejected.
+        // In standalone gateway mode, create a local IpcClient.
+        let pipeline_executor: Option<
+            Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
+        > = if config.agents_ipc.enabled {
+            if let Some(ref broker_token) = config.agents_ipc.broker_token {
+                let ipc_client = if let Some(ref shared) = shared_ipc_client {
+                    // Daemon mode: reuse the shared IpcClient (single seq counter).
+                    // Still sync sender_seq from broker DB in case DB advanced.
+                    if let Some(ref db) = state.ipc_db {
+                        let runner_id = config
+                            .pipelines
+                            .runner_agent_id
+                            .clone()
+                            .or_else(|| config.agents_ipc.agent_id.clone())
+                            .unwrap_or_else(|| config.agents_ipc.role.clone());
+                        let db_seq = db.get_last_sender_seq(&runner_id);
+                        shared.sync_sender_seq(db_seq);
+                    }
+                    Arc::clone(shared)
+                } else {
+                    // Standalone gateway mode: create a local IpcClient.
+                    let broker_url = format!("http://{}:{}", host, port);
+                    let runner_id = config
+                        .pipelines
+                        .runner_agent_id
+                        .clone()
+                        .or_else(|| config.agents_ipc.agent_id.clone())
+                        .unwrap_or_else(|| config.agents_ipc.role.clone());
+                    let key_path = config
+                        .config_path
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("agent.key");
+
+                    let mut client = crate::tools::agents_ipc::IpcClient::new(
+                        &broker_url,
+                        broker_token,
+                        config.agents_ipc.request_timeout_secs,
+                    );
+                    if let Ok(identity) =
+                        crate::security::identity::AgentIdentity::load_or_generate(&key_path)
+                    {
+                        client = client.with_identity(identity, runner_id.clone());
+                        tracing::info!(
+                            agent_id = %runner_id,
+                            "pipeline executor: IpcClient with Ed25519 identity"
+                        );
+                    }
+                    if let Some(ref db) = state.ipc_db {
+                        let db_seq = db.get_last_sender_seq(&runner_id);
+                        client.sync_sender_seq(db_seq);
+                    }
+
+                    let client = Arc::new(client);
+
+                    // Register public key with broker
+                    {
+                        let c = Arc::clone(&client);
+                        tokio::spawn(async move {
+                            if let Err(e) = c.register_public_key().await {
+                                tracing::warn!("pipeline executor: key registration failed: {e}");
+                            }
+                        });
+                    }
+                    client
+                };
+
+                Some(Arc::new(
+                    crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
+                        ipc_client,
+                    ),
+                )
+                    as Arc<
+                        dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort,
+                    >)
+            } else {
+                tracing::warn!("Pipeline engine disabled: agents_ipc.broker_token not configured");
+                None
+            }
+        } else {
+            None
+        };
+
+        // Load routing table
+        let routing_path = config
+            .pipelines
+            .routing_file
+            .as_ref()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| pipeline_dir.join("routing.toml"));
+        let routing_fallback = config
+            .pipelines
+            .routing_fallback
+            .clone()
+            .unwrap_or_else(|| "default".into());
+        let message_router: Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort> =
+            Arc::new(
+                crate::fork_adapters::routing::rule_chain::TomlMessageRouter::load(
+                    &routing_path,
+                    &routing_fallback,
+                ),
+            );
+
+        // Build tool middleware chain
+        let mut middleware_chain =
+            crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain::new();
+
+        if config.pipelines.default_tool_rate_limit > 0 {
+            middleware_chain.push(Box::new(
+                crate::fork_adapters::middleware::rate_limit::RateLimitMiddleware::with_default_limit(
+                    config.pipelines.default_tool_rate_limit,
+                ),
+            ));
+        }
+
+        if !config.pipelines.approval_required_tools.is_empty() {
+            let tools: std::collections::HashSet<String> = config
+                .pipelines
+                .approval_required_tools
+                .iter()
+                .cloned()
+                .collect();
+            middleware_chain.push(Box::new(
+                crate::fork_adapters::middleware::approval_gate::ApprovalGateMiddleware::new(tools),
+            ));
+        }
+
+        state.pipeline_store = Some(pipeline_store.clone());
+        state.pipeline_executor = pipeline_executor;
+        state.message_router = Some(message_router);
+        if !middleware_chain.is_empty() {
+            state.tool_middleware = Some(Arc::new(middleware_chain));
+        }
+
+        // Start hot-reload watcher
+        if config.pipelines.hot_reload {
+            match crate::fork_adapters::pipeline::hot_reload::start_watcher(
+                pipeline_dir,
+                pipeline_store,
+            ) {
+                Ok(_handle) => {
+                    // Handle is stored implicitly — watcher runs until daemon exits.
+                    // TODO: store handle for graceful shutdown
+                    tracing::info!("pipeline hot-reload watcher started");
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to start pipeline hot-reload watcher");
+                }
+            }
+        }
+
+        // Pipeline recovery: resume incomplete runs
+        if let (Some(ref ps), Some(ref pe), Some(ref rs)) = (
+            &state.pipeline_store,
+            &state.pipeline_executor,
+            &state.run_store,
+        ) {
+            let ports =
+                crate::fork_core::application::services::pipeline_service::PipelineRunnerPorts {
+                    pipeline_store: ps.clone(),
+                    run_store: rs.clone(),
+                    executor: pe.clone(),
+                };
+            let report =
+                crate::fork_core::application::use_cases::resume_pipeline::recover_all(&ports)
+                    .await;
+            if report.found > 0 {
+                tracing::info!(
+                    found = report.found,
+                    resumed = report.resumed,
+                    failed = report.failed,
+                    skipped = report.skipped,
+                    "pipeline recovery complete"
+                );
+            }
+        }
+    }
 
     // Phase 3.8: seed AgentRegistry from DB + start health polling
     if config.agents_ipc.enabled {
@@ -1007,6 +1230,9 @@ pub async fn run_gateway(
         .route("/api/ipc/ack", post(ipc::handle_ipc_ack))
         .route("/api/ipc/state", get(ipc::handle_ipc_state_get))
         .route("/api/ipc/state", post(ipc::handle_ipc_state_set))
+        // ── Pipeline routes (Phase 4.1) ──
+        .route("/api/pipelines/start", post(ipc::handle_pipeline_start))
+        .route("/api/pipelines/list", get(ipc::handle_pipeline_list))
         .route(
             "/api/ipc/provision-ephemeral",
             post(ipc::handle_ipc_provision_ephemeral),
@@ -1426,12 +1652,39 @@ async fn agent_inbox_processor(
             // correct session — without it the agent literally cannot reply
             // and the auto-reply safety net becomes the only path.
             let mut formatted = String::new();
+            let mut pipeline_task_detected = false;
+            let mut pipeline_output_schema: Option<String> = None;
             for msg in &messages {
                 let id = msg["id"].as_i64().unwrap_or(0);
                 let kind = msg["kind"].as_str().unwrap_or("unknown");
                 let from = msg["from_agent"].as_str().unwrap_or("unknown");
                 let session_id = msg["session_id"].as_str().unwrap_or("");
                 let payload = msg["payload"].as_str().unwrap_or("");
+
+                // Phase 4.1: detect pipeline task messages
+                if kind == "task" {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload) {
+                        if parsed.get("pipeline_step").is_some() {
+                            pipeline_task_detected = true;
+                            // Extract description and input for cleaner prompt
+                            let step_desc = parsed["description"].as_str().unwrap_or("");
+                            let step_input = &parsed["input"];
+                            // Extract output schema hint from step definition (if pipeline_store available)
+                            if let Some(schema) = parsed.get("output_schema") {
+                                pipeline_output_schema = Some(schema.to_string());
+                            }
+                            use std::fmt::Write;
+                            let _ = write!(
+                                formatted,
+                                "--- Pipeline Task (from: {from}, session_id: {session_id}) ---\n\
+                                 Task: {step_desc}\n\
+                                 Input data: {step_input}\n\n",
+                            );
+                            continue;
+                        }
+                    }
+                }
+
                 let payload_preview = if payload.len() > 4000 {
                     let end = truncate_at_char_boundary(payload, 4000);
                     format!("{end}… [truncated]")
@@ -1452,19 +1705,38 @@ async fn agent_inbox_processor(
                 }
             }
 
-            let prompt = format!(
-                "[IPC push: {} new message(s) from \"{}\"]\n\n\
-                 {}\
-                 Process the messages above and take action if required.\n\
-                 If a message has a session_id and requires a response, use \
-                 agents_reply with that session_id to send results back.\n\
-                 IMPORTANT: Do NOT send acknowledgments, confirmations, or \
-                 \"understood\" messages. Only reply if the message requires \
-                 concrete action or contains a question that needs answering.",
-                messages.len(),
-                peer,
-                formatted,
-            );
+            let prompt = if pipeline_task_detected {
+                // Phase 4.1: pipeline-specific prompt — enforce JSON response
+                let schema_hint = pipeline_output_schema
+                    .map(|s| format!("\nRequired output JSON schema: {s}\n"))
+                    .unwrap_or_default();
+                format!(
+                    "[Pipeline task from \"{peer}\"]\n\n\
+                     {formatted}\
+                     {schema_hint}\
+                     IMPORTANT: You MUST respond with a VALID JSON object as your final output.\n\
+                     Do NOT wrap it in markdown code blocks. Do NOT add explanatory text before or after.\n\
+                     The pipeline engine will parse your response as JSON. If it cannot parse it, \
+                     the step will be retried.\n\n\
+                     Use agents_reply with the session_id above, kind=\"result\", and your JSON as payload.\n\
+                     If you cannot complete the task, reply with: {{\"error\": \"reason\"}}",
+                    peer = peer,
+                )
+            } else {
+                format!(
+                    "[IPC push: {} new message(s) from \"{}\"]\n\n\
+                     {}\
+                     Process the messages above and take action if required.\n\
+                     If a message has a session_id and requires a response, use \
+                     agents_reply with that session_id to send results back.\n\
+                     IMPORTANT: Do NOT send acknowledgments, confirmations, or \
+                     \"understood\" messages. Only reply if the message requires \
+                     concrete action or contains a question that needs answering.",
+                    messages.len(),
+                    peer,
+                    formatted,
+                )
+            };
 
             tracing::info!(
                 peer = %peer,
@@ -1545,17 +1817,26 @@ async fn agent_inbox_processor(
                         }
 
                         let auto_payload = if last_text.trim().is_empty() {
-                            "[auto-reply] Agent completed processing but produced no output."
-                                .to_string()
+                            if pipeline_task_detected {
+                                r#"{"error": "agent produced no output"}"#.to_string()
+                            } else {
+                                "[auto-reply] Agent completed processing but produced no output."
+                                    .to_string()
+                            }
                         } else {
-                            // Scrub credentials — auto-reply payload is sent to peer
-                            // agents over IPC where it could leak secrets from tool output.
                             let scrubbed = crate::agent::loop_::scrub_credentials(last_text.trim());
                             let truncated = truncate_at_char_boundary(&scrubbed, 4000);
-                            format!(
-                                "[auto-reply] Agent completed processing but did not \
-                                 send explicit reply. Last output:\n{truncated}"
-                            )
+
+                            if pipeline_task_detected {
+                                // Phase 4.1: try to extract JSON from agent output
+                                // Agent may have wrapped JSON in text or markdown
+                                extract_json_from_text(truncated)
+                            } else {
+                                format!(
+                                    "[auto-reply] Agent completed processing but did not \
+                                     send explicit reply. Last output:\n{truncated}"
+                                )
+                            }
                         };
 
                         let body = serde_json::json!({
@@ -1688,6 +1969,46 @@ const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8"
 
 /// Truncate a UTF-8 string to at most `max_bytes`, ending on a char boundary.
 /// Returns the truncated slice (never panics on multi-byte characters).
+/// Phase 4.1: Extract JSON from agent text output.
+///
+/// LLMs often wrap JSON in markdown code blocks or add explanatory text.
+/// This function tries to find a JSON object in the text. Falls back to
+/// wrapping the raw text as `{"result": "..."}`.
+fn extract_json_from_text(text: &str) -> String {
+    let trimmed = text.trim();
+
+    // Try direct parse
+    if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        return trimmed.to_string();
+    }
+
+    // Try to find JSON in markdown code block: ```json ... ``` or ``` ... ```
+    if let Some(start) = trimmed.find("```") {
+        let after_fence = &trimmed[start + 3..];
+        // Skip optional language tag
+        let content_start = after_fence.find('\n').map_or(0, |n| n + 1);
+        if let Some(end) = after_fence[content_start..].find("```") {
+            let candidate = after_fence[content_start..content_start + end].trim();
+            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                return candidate.to_string();
+            }
+        }
+    }
+
+    // Try to find a JSON object between first { and last }
+    if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}')) {
+        if start < end {
+            let candidate = &trimmed[start..=end];
+            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                return candidate.to_string();
+            }
+        }
+    }
+
+    // Fallback: wrap raw text as JSON
+    serde_json::json!({"result": trimmed}).to_string()
+}
+
 fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
         return s;
@@ -2644,18 +2965,33 @@ pub(crate) fn require_localhost(
     peer: &SocketAddr,
     admin_cidrs: &[AdminCidr],
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    if peer.ip().is_loopback() {
+    let ip = peer.ip();
+    if ip.is_loopback() {
         return Ok(());
     }
-    if let IpAddr::V4(v4) = peer.ip() {
+    // Extract IPv4 from IPv6-mapped addresses (::ffff:A.B.C.D)
+    let v4 = match ip {
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(v6) => v6.to_ipv4_mapped(),
+    };
+    if let Some(v4) = v4 {
+        if v4.is_loopback() {
+            return Ok(());
+        }
         if admin_cidrs.iter().any(|cidr| cidr.contains(v4)) {
             return Ok(());
         }
     }
+    tracing::debug!(
+        peer_ip = %ip,
+        v4 = ?v4,
+        cidrs = admin_cidrs.len(),
+        "admin access denied"
+    );
     Err((
         StatusCode::FORBIDDEN,
         Json(serde_json::json!({
-            "error": "Admin endpoints are restricted to localhost and configured admin_cidrs"
+            "error": format!("Admin endpoints restricted to localhost/admin_cidrs (peer: {ip})")
         })),
     ))
 }
@@ -2876,6 +3212,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -2947,6 +3287,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let response = handle_metrics(State(state)).await.into_response();
@@ -3342,6 +3686,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3427,6 +3775,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let headers = HeaderMap::new();
@@ -3524,6 +3876,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let response = handle_webhook(
@@ -3593,6 +3949,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3667,6 +4027,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let mut headers = HeaderMap::new();
@@ -3746,6 +4110,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -3821,6 +4189,10 @@ mod tests {
             channel_registry: None,
             conversation_store: None,
             run_store: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+            tool_middleware: None,
         };
 
         let mut headers = HeaderMap::new();

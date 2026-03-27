@@ -2,9 +2,7 @@
 //!
 //! Phase 4.0 Slice 7: orchestrates task submission + run tracking.
 
-use crate::domain::implementation::{
-    CodingWorkerResult, ExpectedOutput, ImplementationState, ImplementationTask,
-};
+use crate::domain::implementation::{CodingWorkerResult, ImplementationState, ImplementationTask};
 use crate::domain::run::{Run, RunOrigin, RunState};
 use crate::ports::coding_worker::CodingWorkerPort;
 use crate::ports::run_store::RunStorePort;
@@ -64,6 +62,7 @@ pub async fn finalize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::implementation::ExpectedOutput;
     use async_trait::async_trait;
     use std::sync::Mutex;
 
@@ -94,7 +93,9 @@ mod tests {
     }
     impl MockRunStore {
         fn new() -> Self {
-            Self { runs: Mutex::new(vec![]) }
+            Self {
+                runs: Mutex::new(vec![]),
+            }
         }
     }
 
@@ -105,9 +106,19 @@ mod tests {
             Ok(())
         }
         async fn get_run(&self, run_id: &str) -> Option<Run> {
-            self.runs.lock().unwrap().iter().find(|r| r.run_id == run_id).cloned()
+            self.runs
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.run_id == run_id)
+                .cloned()
         }
-        async fn update_state(&self, run_id: &str, state: RunState, finished_at: Option<u64>) -> Result<()> {
+        async fn update_state(
+            &self,
+            run_id: &str,
+            state: RunState,
+            finished_at: Option<u64>,
+        ) -> Result<()> {
             let mut runs = self.runs.lock().unwrap();
             if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) {
                 run.state = state;
@@ -115,10 +126,22 @@ mod tests {
             }
             Ok(())
         }
-        async fn list_runs(&self, _key: &str, _limit: usize) -> Vec<Run> { vec![] }
-        async fn list_all_runs(&self, _limit: usize) -> Vec<Run> { vec![] }
-        async fn append_event(&self, _event: &crate::domain::run::RunEvent) -> Result<()> { Ok(()) }
-        async fn get_events(&self, _run_id: &str, _limit: usize) -> Vec<crate::domain::run::RunEvent> { vec![] }
+        async fn list_runs(&self, _key: &str, _limit: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn list_all_runs(&self, _limit: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn append_event(&self, _event: &crate::domain::run::RunEvent) -> Result<()> {
+            Ok(())
+        }
+        async fn get_events(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Vec<crate::domain::run::RunEvent> {
+            vec![]
+        }
     }
 
     fn test_task() -> ImplementationTask {
@@ -140,7 +163,9 @@ mod tests {
     async fn execute_creates_run_and_submits() {
         let worker = MockWorker;
         let store = MockRunStore::new();
-        let run_id = execute(&worker, &store, &test_task(), Some("conv-1")).await.unwrap();
+        let run_id = execute(&worker, &store, &test_task(), Some("conv-1"))
+            .await
+            .unwrap();
 
         let run = store.get_run(&run_id).await.unwrap();
         assert_eq!(run.state, RunState::Running);
