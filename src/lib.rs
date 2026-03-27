@@ -51,14 +51,12 @@ pub(crate) mod fork_adapters;
 /// Re-export fork_core workspace crate so `crate::fork_core::` paths keep working.
 pub use fork_core;
 pub mod gateway;
-pub mod hands;
 pub(crate) mod health;
 pub(crate) mod heartbeat;
 pub mod hooks;
 pub(crate) mod identity;
 pub(crate) mod integrations;
 pub mod memory;
-pub(crate) mod migration;
 pub(crate) mod multimodal;
 pub mod nodes;
 pub mod observability;
@@ -251,21 +249,6 @@ pub enum SkillCommands {
     Remove {
         /// Skill name to remove
         name: String,
-    },
-}
-
-/// Migration subcommands
-#[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum MigrateCommands {
-    /// Import memory from an `OpenClaw` workspace into this `SynapseClaw` workspace
-    Openclaw {
-        /// Optional path to `OpenClaw` workspace (defaults to ~/.openclaw/workspace)
-        #[arg(long)]
-        source: Option<std::path::PathBuf>,
-
-        /// Validate and preview migration without writing any data
-        #[arg(long)]
-        dry_run: bool,
     },
 }
 
