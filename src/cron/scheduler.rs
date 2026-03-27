@@ -209,7 +209,6 @@ async fn run_agent_job_in_process(config: &Config, job: &CronJob) -> (bool, Stri
                 None,
                 model_override,
                 config.default_temperature,
-                vec![],
                 false,
                 None,
                 job.allowed_tools.clone(),

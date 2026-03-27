@@ -1771,7 +1771,6 @@ async fn agent_inbox_processor(
                 None,
                 None,
                 config.default_temperature,
-                vec![],
                 false,
                 None,
                 None,
