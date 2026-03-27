@@ -87,7 +87,6 @@ mod fork_adapters;
 /// Re-export workspace crate so `crate::fork_core::` paths work in the binary.
 pub use fork_core;
 mod gateway;
-mod hardware;
 mod health;
 mod heartbeat;
 mod hooks;
@@ -98,7 +97,6 @@ mod migration;
 mod multimodal;
 mod observability;
 mod onboard;
-mod peripherals;
 mod providers;
 mod runtime;
 mod security;
@@ -113,8 +111,8 @@ use config::Config;
 
 // Re-export so binary modules can use crate::<CommandEnum> while keeping a single source of truth.
 pub use synapseclaw::{
-    ChannelCommands, CronCommands, GatewayCommands, HardwareCommands, IntegrationCommands,
-    MigrateCommands, PeripheralCommands, ServiceCommands, SkillCommands,
+    ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MigrateCommands,
+    ServiceCommands, SkillCommands,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -198,8 +196,7 @@ Use --message for single-shot queries without entering interactive mode.
 Examples:
   synapseclaw agent                              # interactive session
   synapseclaw agent -m \"Summarize today's logs\"  # single message
-  synapseclaw agent -p anthropic --model claude-sonnet-4-20250514
-  synapseclaw agent --peripheral nucleo-f401re:/dev/ttyACM0")]
+  synapseclaw agent -p anthropic --model claude-sonnet-4-20250514")]
     Agent {
         /// Single message mode (don't enter interactive mode)
         #[arg(short, long)]
@@ -220,10 +217,6 @@ Examples:
         /// Temperature (0.0 - 2.0, defaults to config default_temperature)
         #[arg(short, long, value_parser = parse_temperature)]
         temperature: Option<f64>,
-
-        /// Attach a peripheral (board:path, e.g. nucleo-f401re:/dev/ttyACM0)
-        #[arg(long)]
-        peripheral: Vec<String>,
     },
 
     /// Start/manage the gateway server (webhooks, websockets)
@@ -400,42 +393,6 @@ Examples:
     Auth {
         #[command(subcommand)]
         auth_command: AuthCommands,
-    },
-
-    /// Discover and introspect USB hardware
-    #[command(long_about = "\
-Discover and introspect USB hardware.
-
-Enumerate connected USB devices, identify known development boards \
-(STM32 Nucleo, Arduino, ESP32), and retrieve chip information via \
-probe-rs / ST-Link.
-
-Examples:
-  synapseclaw hardware discover
-  synapseclaw hardware introspect /dev/ttyACM0
-  synapseclaw hardware info --chip STM32F401RETx")]
-    Hardware {
-        #[command(subcommand)]
-        hardware_command: synapseclaw::HardwareCommands,
-    },
-
-    /// Manage hardware peripherals (STM32, RPi GPIO, etc.)
-    #[command(long_about = "\
-Manage hardware peripherals.
-
-Add, list, flash, and configure hardware boards that expose tools \
-to the agent (GPIO, sensors, actuators). Supported boards: \
-nucleo-f401re, rpi-gpio, esp32, arduino-uno.
-
-Examples:
-  synapseclaw peripheral list
-  synapseclaw peripheral add nucleo-f401re /dev/ttyACM0
-  synapseclaw peripheral add rpi-gpio native
-  synapseclaw peripheral flash --port /dev/cu.usbmodem12345
-  synapseclaw peripheral flash-nucleo")]
-    Peripheral {
-        #[command(subcommand)]
-        peripheral_command: synapseclaw::PeripheralCommands,
     },
 
     /// Manage agent memory (list, get, stats, clear)
@@ -916,7 +873,6 @@ async fn main() -> Result<()> {
             provider,
             model,
             temperature,
-            peripheral,
         } => {
             let final_temperature = temperature.unwrap_or(config.default_temperature);
 
@@ -926,7 +882,6 @@ async fn main() -> Result<()> {
                 provider,
                 model,
                 final_temperature,
-                peripheral,
                 true,
                 session_state_file,
                 None,
@@ -1170,17 +1125,6 @@ async fn main() -> Result<()> {
                     }
                 );
             }
-            println!();
-            println!("Peripherals:");
-            println!(
-                "  Enabled:   {}",
-                if config.peripherals.enabled {
-                    "yes"
-                } else {
-                    "no"
-                }
-            );
-            println!("  Boards:    {}", config.peripherals.boards.len());
 
             Ok(())
         }
@@ -1301,18 +1245,6 @@ async fn main() -> Result<()> {
         }
 
         Commands::Auth { auth_command } => handle_auth_command(auth_command, &config).await,
-
-        Commands::Hardware { hardware_command } => {
-            hardware::handle_command(hardware_command.clone(), &config)
-        }
-
-        Commands::Peripheral { peripheral_command } => {
-            Box::pin(peripherals::handle_command(
-                peripheral_command.clone(),
-                &config,
-            ))
-            .await
-        }
 
         Commands::Config { config_command } => match config_command {
             ConfigCommands::Schema => {

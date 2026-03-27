@@ -18,7 +18,6 @@ Treat documentation as a first-class product surface, not a post-merge artifact.
 - `docs/reference/README.md`
 - `docs/ops/README.md`
 - `docs/security/README.md`
-- `docs/hardware/README.md`
 - `docs/contributing/README.md`
 - `docs/maintainers/README.md`
 
