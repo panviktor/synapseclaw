@@ -104,8 +104,17 @@ impl RoutingRule {
     pub fn matches(&self, input: &RoutingInput) -> bool {
         match self {
             Self::Command(cmd) => {
+                // Strip channel-specific prefixes like "[msg_id:...] "
                 let trimmed = input.content.trim();
-                trimmed == cmd || trimmed.starts_with(&format!("{cmd} "))
+                let text = if let Some(after) = trimmed.strip_prefix('[') {
+                    after
+                        .find("] ")
+                        .map(|i| after[i + 2..].trim())
+                        .unwrap_or(trimmed)
+                } else {
+                    trimmed
+                };
+                text == cmd || text.starts_with(&format!("{cmd} "))
             }
             Self::Substring(pattern) => input.content.contains(pattern),
             Self::Keywords(keywords) => {

@@ -2408,7 +2408,11 @@ pub async fn handle_ipc_send(
         }
     }
 
-    // Credential leak scan (after PromptGuard, before INSERT)
+    // Credential leak scan (after PromptGuard, before INSERT).
+    // Pipeline engine (trust=0, kind=task) is exempt — its payloads contain
+    // UUIDs and session IDs that trigger high-entropy false positives.
+    let skip_leak_scan = meta.trust_level == 0 && body.kind == "task";
+    if !skip_leak_scan {
     if let Some(ref detector) = state.ipc_leak_detector {
         if let LeakResult::Detected { patterns, .. } = detector.scan(&body.payload) {
             if let Some(ref logger) = state.audit_logger {
@@ -2433,6 +2437,7 @@ pub async fn handle_ipc_send(
             ));
         }
     }
+    } // end skip_leak_scan
 
     // Phase 4.0: session limit check via ipc_service
     if crate::fork_core::application::services::ipc_service::session_limit_applies(
