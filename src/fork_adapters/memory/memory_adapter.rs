@@ -36,26 +36,18 @@ impl MemoryTiersAdapter {
     }
 }
 
-/// Map fork_core MemoryCategory to upstream MemoryCategory.
-fn to_upstream_category(cat: &MemoryCategory) -> crate::memory::MemoryCategory {
-    match cat {
-        MemoryCategory::Core => crate::memory::MemoryCategory::Core,
-        MemoryCategory::Daily => crate::memory::MemoryCategory::Daily,
-        MemoryCategory::Conversation => crate::memory::MemoryCategory::Conversation,
-        MemoryCategory::Custom(s) => crate::memory::MemoryCategory::Custom(s.clone()),
-    }
+// MemoryCategory and MemoryEntry are now the same type in both
+// fork_core and crate::memory (re-exported from fork_core).
+// No conversion functions needed.
+
+/// Alias for readability — identity function since types are unified.
+fn to_upstream_category(cat: &MemoryCategory) -> MemoryCategory {
+    cat.clone()
 }
 
-/// Map upstream MemoryEntry to fork_core domain MemoryEntry.
+/// Alias for readability — identity function since types are unified.
 fn to_domain_entry(e: crate::memory::MemoryEntry) -> MemoryEntry {
-    MemoryEntry {
-        key: e.key,
-        content: e.content,
-        category: MemoryCategory::Core, // upstream doesn't return category
-        score: e.score,
-        timestamp: e.timestamp,
-        session_id: e.session_id,
-    }
+    e
 }
 
 #[async_trait]

@@ -32,15 +32,47 @@ impl fmt::Display for MemoryCategory {
     }
 }
 
+impl serde::Serialize for MemoryCategory {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for MemoryCategory {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "core" => Self::Core,
+            "daily" => Self::Daily,
+            "conversation" => Self::Conversation,
+            _ => Self::Custom(s),
+        })
+    }
+}
+
 /// A recalled memory entry.
-#[derive(Debug, Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct MemoryEntry {
+    pub id: String,
     pub key: String,
     pub content: String,
     pub category: MemoryCategory,
-    pub score: Option<f64>,
     pub timestamp: String,
     pub session_id: Option<String>,
+    pub score: Option<f64>,
+}
+
+impl fmt::Debug for MemoryEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemoryEntry")
+            .field("id", &self.id)
+            .field("key", &self.key)
+            .field("content", &self.content)
+            .field("category", &self.category)
+            .field("timestamp", &self.timestamp)
+            .field("score", &self.score)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Session memory — conversation-scoped durable context.
