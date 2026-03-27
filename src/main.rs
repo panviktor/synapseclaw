@@ -75,9 +75,6 @@ mod agent;
 mod approval;
 mod auth;
 mod channels;
-mod rag {
-    pub use synapseclaw::rag::*;
-}
 mod config;
 mod cost;
 mod cron;
@@ -93,7 +90,6 @@ mod hooks;
 mod identity;
 mod integrations;
 mod memory;
-mod migration;
 mod multimodal;
 mod observability;
 mod onboard;
@@ -101,7 +97,6 @@ mod providers;
 mod runtime;
 mod security;
 mod service;
-mod skillforge;
 mod skills;
 mod tools;
 mod tunnel;
@@ -111,8 +106,8 @@ use config::Config;
 
 // Re-export so binary modules can use crate::<CommandEnum> while keeping a single source of truth.
 pub use synapseclaw::{
-    ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MigrateCommands,
-    ServiceCommands, SkillCommands,
+    ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, ServiceCommands,
+    SkillCommands,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -381,12 +376,6 @@ Examples:
     Skills {
         #[command(subcommand)]
         skill_command: SkillCommands,
-    },
-
-    /// Migrate data from other agent runtimes
-    Migrate {
-        #[command(subcommand)]
-        migrate_command: MigrateCommands,
     },
 
     /// Manage provider subscription authentication profiles
@@ -1235,10 +1224,6 @@ async fn main() -> Result<()> {
         } => integrations::handle_command(integration_command, &config),
 
         Commands::Skills { skill_command } => skills::handle_command(skill_command, &config),
-
-        Commands::Migrate { migrate_command } => {
-            migration::handle_command(migrate_command, &config).await
-        }
 
         Commands::Memory { memory_command } => {
             memory::cli::handle_command(memory_command, &config).await
