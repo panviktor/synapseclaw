@@ -73,11 +73,11 @@ pub mod screenshot;
 pub mod security_ops;
 pub mod shell;
 pub mod swarm;
+pub mod tavily_extract;
+pub mod telegram_post;
 pub mod tool_search;
 pub mod traits;
 pub mod web_fetch;
-pub mod tavily_extract;
-pub mod telegram_post;
 pub mod web_search_tool;
 pub mod workspace_tool;
 
@@ -256,6 +256,7 @@ pub fn all_tools(
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
     root_config: &crate::config::Config,
+    shared_ipc_client: Option<Arc<IpcClient>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
@@ -275,6 +276,7 @@ pub fn all_tools(
         agents,
         fallback_api_key,
         root_config,
+        shared_ipc_client,
     )
 }
 
@@ -298,6 +300,7 @@ pub fn all_tools_with_runtime(
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
     root_config: &crate::config::Config,
+    shared_ipc_client: Option<Arc<IpcClient>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
@@ -415,12 +418,14 @@ pub fn all_tools_with_runtime(
 
         // Tavily Extract tool — available when Tavily is the search provider
         if root_config.web_search.provider == "tavily" {
-            tool_arcs.push(Arc::new(tavily_extract::TavilyExtractTool::new_with_config(
-                root_config.web_search.tavily_api_key.clone(),
-                root_config.web_search.timeout_secs,
-                root_config.config_path.clone(),
-                root_config.secrets.encrypt,
-            )));
+            tool_arcs.push(Arc::new(
+                tavily_extract::TavilyExtractTool::new_with_config(
+                    root_config.web_search.tavily_api_key.clone(),
+                    root_config.web_search.timeout_secs,
+                    root_config.config_path.clone(),
+                    root_config.secrets.encrypt,
+                ),
+            ));
         }
     }
 
@@ -523,47 +528,54 @@ pub fn all_tools_with_runtime(
         }
     }
 
-    // IPC tools (inter-agent communication via broker)
+    // IPC tools (inter-agent communication via broker).
+    // In daemon mode, a shared IpcClient is injected to avoid duplicate seq counters.
     let mut ipc_client_for_registration: Option<Arc<IpcClient>> = None;
     if root_config.agents_ipc.enabled {
         if let Some(ref token) = root_config.agents_ipc.broker_token {
-            let mut ipc_client = IpcClient::new(
-                &root_config.agents_ipc.broker_url,
-                token,
-                root_config.agents_ipc.request_timeout_secs,
-            );
+            let ipc_client = if let Some(shared) = shared_ipc_client {
+                // Daemon mode: reuse the shared IpcClient (single AtomicI64 seq counter).
+                // Key registration is handled by daemon::run().
+                shared
+            } else {
+                // Standalone / agent mode: create a local IpcClient.
+                let mut client = IpcClient::new(
+                    &root_config.agents_ipc.broker_url,
+                    token,
+                    root_config.agents_ipc.request_timeout_secs,
+                );
 
-            // Phase 3B: Load or generate Ed25519 identity for message signing
-            let key_path = root_config
-                .config_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("agent.key");
-            match crate::security::identity::AgentIdentity::load_or_generate(&key_path) {
-                Ok(identity) => {
-                    // Resolve canonical agent_id: explicit config > env > role fallback
-                    let agent_id = root_config
-                        .agents_ipc
-                        .agent_id
-                        .clone()
-                        .unwrap_or_else(|| root_config.agents_ipc.role.clone());
-                    tracing::info!(
-                        key_path = %key_path.display(),
-                        agent_id = %agent_id,
-                        pubkey = &identity.public_key_hex()[..16],
-                        "Ed25519 agent identity loaded"
-                    );
-                    ipc_client = ipc_client.with_identity(identity, agent_id);
+                // Phase 3B: Load or generate Ed25519 identity for message signing
+                let key_path = root_config
+                    .config_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("agent.key");
+                match crate::security::identity::AgentIdentity::load_or_generate(&key_path) {
+                    Ok(identity) => {
+                        let agent_id = root_config
+                            .agents_ipc
+                            .agent_id
+                            .clone()
+                            .unwrap_or_else(|| root_config.agents_ipc.role.clone());
+                        tracing::info!(
+                            key_path = %key_path.display(),
+                            agent_id = %agent_id,
+                            pubkey = &identity.public_key_hex()[..16],
+                            "Ed25519 agent identity loaded"
+                        );
+                        client = client.with_identity(identity, agent_id);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to load Ed25519 identity — messages will be unsigned"
+                        );
+                    }
                 }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to load Ed25519 identity — messages will be unsigned"
-                    );
-                }
-            }
+                Arc::new(client)
+            };
 
-            let ipc_client = Arc::new(ipc_client);
             if ipc_client.has_identity() {
                 ipc_client_for_registration = Some(ipc_client.clone());
             }
@@ -801,6 +813,7 @@ mod tests {
             &HashMap::new(),
             None,
             &cfg,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"browser_open"));
@@ -843,6 +856,7 @@ mod tests {
             &HashMap::new(),
             None,
             &cfg,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"browser_open"));
@@ -993,6 +1007,7 @@ mod tests {
             &agents,
             Some("delegate-test-credential"),
             &cfg,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"delegate"));
@@ -1026,6 +1041,7 @@ mod tests {
             &HashMap::new(),
             None,
             &cfg,
+            None,
         );
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(!names.contains(&"delegate"));

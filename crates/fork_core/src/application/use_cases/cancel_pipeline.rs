@@ -4,7 +4,7 @@
 
 use crate::domain::run::RunState;
 use crate::ports::run_store::RunStorePort;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Cancel a pipeline run by its run_id.
 ///
@@ -63,11 +63,23 @@ mod tests {
 
     #[async_trait]
     impl RunStorePort for MockRunStore {
-        async fn create_run(&self, _run: &Run) -> anyhow::Result<()> { Ok(()) }
-        async fn get_run(&self, run_id: &str) -> Option<Run> {
-            self.runs.lock().unwrap().iter().find(|r| r.run_id == run_id).cloned()
+        async fn create_run(&self, _run: &Run) -> anyhow::Result<()> {
+            Ok(())
         }
-        async fn update_state(&self, run_id: &str, state: RunState, finished_at: Option<u64>) -> anyhow::Result<()> {
+        async fn get_run(&self, run_id: &str) -> Option<Run> {
+            self.runs
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.run_id == run_id)
+                .cloned()
+        }
+        async fn update_state(
+            &self,
+            run_id: &str,
+            state: RunState,
+            finished_at: Option<u64>,
+        ) -> anyhow::Result<()> {
             let mut runs = self.runs.lock().unwrap();
             if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) {
                 run.state = state;
@@ -75,10 +87,18 @@ mod tests {
             }
             Ok(())
         }
-        async fn list_runs(&self, _k: &str, _l: usize) -> Vec<Run> { vec![] }
-        async fn list_all_runs(&self, _l: usize) -> Vec<Run> { vec![] }
-        async fn append_event(&self, _e: &RunEvent) -> anyhow::Result<()> { Ok(()) }
-        async fn get_events(&self, _id: &str, _l: usize) -> Vec<RunEvent> { vec![] }
+        async fn list_runs(&self, _k: &str, _l: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn list_all_runs(&self, _l: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn append_event(&self, _e: &RunEvent) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn get_events(&self, _id: &str, _l: usize) -> Vec<RunEvent> {
+            vec![]
+        }
     }
 
     #[tokio::test]

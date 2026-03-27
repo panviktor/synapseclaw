@@ -44,10 +44,7 @@ impl RateLimitMiddleware {
     }
 
     fn scope_key(ctx: &ToolCallContext) -> String {
-        ctx.run_id
-            .as_deref()
-            .unwrap_or(&ctx.agent_id)
-            .to_string()
+        ctx.run_id.as_deref().unwrap_or(&ctx.agent_id).to_string()
     }
 
     fn limit_for(&self, tool_name: &str) -> u32 {
@@ -88,11 +85,7 @@ impl ToolMiddlewarePort for RateLimitMiddleware {
         Ok(())
     }
 
-    async fn after(
-        &self,
-        _ctx: &ToolCallContext,
-        _result: &mut Value,
-    ) -> Result<(), ToolBlock> {
+    async fn after(&self, _ctx: &ToolCallContext, _result: &mut Value) -> Result<(), ToolBlock> {
         Ok(())
     }
 

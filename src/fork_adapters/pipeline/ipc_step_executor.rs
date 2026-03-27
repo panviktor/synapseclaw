@@ -51,9 +51,7 @@ impl IpcStepExecutor {
     fn parse_response(payload: &str) -> Result<Value, StepExecutionError> {
         serde_json::from_str::<Value>(payload).map_err(|e| StepExecutionError {
             code: "invalid_json".into(),
-            message: format!(
-                "agent response is not valid JSON (model may be hallucinating): {e}"
-            ),
+            message: format!("agent response is not valid JSON (model may be hallucinating): {e}"),
             retryable: true,
         })
     }
@@ -86,13 +84,15 @@ impl PipelineExecutorPort for IpcStepExecutor {
         // Sign the message (adds signature, sender_seq, sender_timestamp)
         self.ipc_client.sign_send_body(&mut body);
 
-        let resp = self.ipc_client.send_message(&body).await.map_err(|e| {
-            StepExecutionError {
+        let resp = self
+            .ipc_client
+            .send_message(&body)
+            .await
+            .map_err(|e| StepExecutionError {
                 code: "http_error".into(),
                 message: format!("broker send failed: {e}"),
                 retryable: true,
-            }
-        })?;
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -142,9 +142,10 @@ impl PipelineExecutorPort for IpcStepExecutor {
                 .unwrap_or_default();
 
             // Find a result matching our session
-            if let Some(result_msg) = messages.iter().find(|m| {
-                m["session_id"].as_str() == Some(&session_id)
-            }) {
+            if let Some(result_msg) = messages
+                .iter()
+                .find(|m| m["session_id"].as_str() == Some(&session_id))
+            {
                 let msg_id = result_msg["id"].as_i64().unwrap_or(0);
                 let payload_str = result_msg["payload"].as_str().unwrap_or("{}");
 

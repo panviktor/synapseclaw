@@ -222,10 +222,7 @@ impl crate::fork_core::ports::approval::ApprovalPort for ApprovalManager {
         })
     }
 
-    fn record_decision(
-        &self,
-        decision: &crate::fork_core::domain::approval::ApprovalDecision,
-    ) {
+    fn record_decision(&self, decision: &crate::fork_core::domain::approval::ApprovalDecision) {
         let cli_response = match decision.response {
             crate::fork_core::domain::approval::ApprovalResponse::Yes => ApprovalResponse::Yes,
             crate::fork_core::domain::approval::ApprovalResponse::No => ApprovalResponse::No,
@@ -234,7 +231,13 @@ impl crate::fork_core::ports::approval::ApprovalPort for ApprovalManager {
             }
         };
         let args = serde_json::json!({"summary": &decision.request_id});
-        ApprovalManager::record_decision(self, &decision.request_id, &args, cli_response, &decision.channel);
+        ApprovalManager::record_decision(
+            self,
+            &decision.request_id,
+            &args,
+            cli_response,
+            &decision.channel,
+        );
     }
 
     fn is_session_allowed(&self, tool_name: &str) -> bool {

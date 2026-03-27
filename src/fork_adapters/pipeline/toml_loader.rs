@@ -208,8 +208,10 @@ next = "end"
         let events = loader.load_initial().await.unwrap();
 
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], ReloadEvent::Updated { name, new_version, old_version }
-            if name == "test-simple" && new_version == "1.0" && old_version.is_none()));
+        assert!(
+            matches!(&events[0], ReloadEvent::Updated { name, new_version, old_version }
+            if name == "test-simple" && new_version == "1.0" && old_version.is_none())
+        );
 
         let def = loader.get("test-simple").await.unwrap();
         assert_eq!(def.steps.len(), 2);
@@ -345,7 +347,10 @@ next = "end"
         // Step details
         let research = def.step("research").unwrap();
         assert_eq!(research.agent_id, "news-reader");
-        assert_eq!(research.tools, vec!["web_search", "rss_fetch", "memory_read"]);
+        assert_eq!(
+            research.tools,
+            vec!["web_search", "rss_fetch", "memory_read"]
+        );
         assert!(research.output_schema.is_some());
 
         let draft = def.step("draft").unwrap();

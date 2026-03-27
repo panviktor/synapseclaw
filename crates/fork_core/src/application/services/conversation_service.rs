@@ -16,7 +16,6 @@ use crate::domain::run::{Run, RunOrigin, RunState};
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::run_store::RunStorePort;
 use anyhow::Result;
-use std::sync::Arc;
 
 /// Summary every N messages (web sessions).
 pub const WEB_SUMMARY_INTERVAL: usize = 10;
@@ -164,10 +163,7 @@ pub async fn increment_message_count(
 // ── Run lifecycle ────────────────────────────────────────────────
 
 /// Create a new run for a web conversation.
-pub async fn create_web_run(
-    store: &dyn RunStorePort,
-    session_key: &str,
-) -> Result<String> {
+pub async fn create_web_run(store: &dyn RunStorePort, session_key: &str) -> Result<String> {
     let run_id = uuid::Uuid::new_v4().to_string();
     let run = Run {
         run_id: run_id.clone(),
@@ -205,10 +201,7 @@ pub async fn interrupt_run(store: &dyn RunStorePort, run_id: &str) -> Result<()>
 // ── Session operations ───────────────────────────────────────────
 
 /// Reset a session — clear events, zero counters, clear summary/goal.
-pub async fn reset_session(
-    store: &dyn ConversationStorePort,
-    session_key: &str,
-) -> Result<()> {
+pub async fn reset_session(store: &dyn ConversationStorePort, session_key: &str) -> Result<()> {
     store.clear_events(session_key).await?;
     // Zero the counters by touching the session
     // (ConversationStorePort doesn't have a reset_counters method,
@@ -217,10 +210,7 @@ pub async fn reset_session(
 }
 
 /// Delete a session and all its events.
-pub async fn delete_session(
-    store: &dyn ConversationStorePort,
-    session_key: &str,
-) -> Result<bool> {
+pub async fn delete_session(store: &dyn ConversationStorePort, session_key: &str) -> Result<bool> {
     store.delete_session(session_key).await
 }
 

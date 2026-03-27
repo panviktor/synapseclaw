@@ -12,8 +12,8 @@ use serde_json::Value;
 ///
 /// Uses the `jsonschema` crate for validation.
 pub fn validate_schema(data: &Value, schema: &Value) -> Result<(), String> {
-    let validator = jsonschema::validator_for(schema)
-        .map_err(|e| format!("invalid JSON Schema: {e}"))?;
+    let validator =
+        jsonschema::validator_for(schema).map_err(|e| format!("invalid JSON Schema: {e}"))?;
 
     let errors: Vec<String> = validator
         .iter_errors(data)

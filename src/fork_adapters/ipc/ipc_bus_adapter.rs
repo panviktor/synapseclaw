@@ -40,7 +40,7 @@ impl IpcBusPort for IpcBusAdapter {
                 to_agent,
                 kind,
                 payload,
-                from_trust_level as u8,
+                u8::try_from(from_trust_level).unwrap_or(0),
                 session_id,
                 priority,
                 None, // message_ttl_secs — use default
@@ -65,7 +65,7 @@ impl IpcBusPort for IpcBusAdapter {
                 kind: r.kind,
                 payload: r.payload,
                 session_id: r.session_id,
-                from_trust_level: r.from_trust_level as i32,
+                from_trust_level: i32::from(r.from_trust_level),
                 priority: r.priority,
                 created_at: r.created_at,
                 promoted: r.quarantined == Some(false),
@@ -80,17 +80,13 @@ impl IpcBusPort for IpcBusAdapter {
         Ok(message_ids.len() as u64)
     }
 
-    async fn session_has_request(
-        &self,
-        session_id: &str,
-        from_agent: &str,
-    ) -> Result<bool> {
+    async fn session_has_request(&self, session_id: &str, from_agent: &str) -> Result<bool> {
         Ok(self.db.session_has_request_for(session_id, from_agent))
     }
 
     async fn get_agent_trust_level(&self, agent_id: &str) -> Option<i32> {
         self.db
             .agent_detail(agent_id, 0)
-            .and_then(|info| info.agent.trust_level.map(|tl| tl as i32))
+            .and_then(|info| info.agent.trust_level.map(i32::from))
     }
 }

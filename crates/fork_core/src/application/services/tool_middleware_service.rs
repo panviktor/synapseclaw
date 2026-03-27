@@ -121,7 +121,11 @@ mod tests {
             self.before_count.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
-        async fn after(&self, _ctx: &ToolCallContext, _result: &mut Value) -> Result<(), ToolBlock> {
+        async fn after(
+            &self,
+            _ctx: &ToolCallContext,
+            _result: &mut Value,
+        ) -> Result<(), ToolBlock> {
             self.after_count.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
@@ -142,7 +146,11 @@ mod tests {
                 reason: format!("blocked by {}", self.name),
             })
         }
-        async fn after(&self, _ctx: &ToolCallContext, _result: &mut Value) -> Result<(), ToolBlock> {
+        async fn after(
+            &self,
+            _ctx: &ToolCallContext,
+            _result: &mut Value,
+        ) -> Result<(), ToolBlock> {
             Ok(())
         }
         fn name(&self) -> &str {

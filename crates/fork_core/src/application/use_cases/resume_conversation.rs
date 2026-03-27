@@ -89,7 +89,9 @@ pub async fn execute_with_updates(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::conversation::{ConversationEvent, ConversationKind, ConversationSession, EventType};
+    use crate::domain::conversation::{
+        ConversationEvent, ConversationKind, ConversationSession, EventType,
+    };
     use async_trait::async_trait;
 
     struct MockStore {
@@ -118,21 +120,45 @@ mod tests {
         async fn get_session(&self, _key: &str) -> Option<ConversationSession> {
             self.session.clone()
         }
-        async fn upsert_session(&self, _session: &ConversationSession) -> Result<()> { Ok(()) }
-        async fn delete_session(&self, _key: &str) -> Result<bool> { Ok(true) }
-        async fn list_sessions(&self, _prefix: Option<&str>) -> Vec<ConversationSession> { vec![] }
-        async fn touch_session(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn append_event(&self, _key: &str, _event: &ConversationEvent) -> Result<()> { Ok(()) }
+        async fn upsert_session(&self, _session: &ConversationSession) -> Result<()> {
+            Ok(())
+        }
+        async fn delete_session(&self, _key: &str) -> Result<bool> {
+            Ok(true)
+        }
+        async fn list_sessions(&self, _prefix: Option<&str>) -> Vec<ConversationSession> {
+            vec![]
+        }
+        async fn touch_session(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn append_event(&self, _key: &str, _event: &ConversationEvent) -> Result<()> {
+            Ok(())
+        }
         async fn get_events(&self, _key: &str, _limit: usize) -> Vec<ConversationEvent> {
             self.events.clone()
         }
-        async fn clear_events(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn update_label(&self, _key: &str, _label: &str) -> Result<()> { Ok(()) }
-        async fn update_goal(&self, _key: &str, _goal: &str) -> Result<()> { Ok(()) }
-        async fn increment_message_count(&self, _key: &str) -> Result<()> { Ok(()) }
-        async fn add_token_usage(&self, _key: &str, _input: i64, _output: i64) -> Result<()> { Ok(()) }
-        async fn set_summary(&self, _key: &str, _summary: &str) -> Result<()> { Ok(()) }
-        async fn get_summary(&self, _key: &str) -> Option<String> { None }
+        async fn clear_events(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn update_label(&self, _key: &str, _label: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn update_goal(&self, _key: &str, _goal: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn increment_message_count(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn add_token_usage(&self, _key: &str, _input: i64, _output: i64) -> Result<()> {
+            Ok(())
+        }
+        async fn set_summary(&self, _key: &str, _summary: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn get_summary(&self, _key: &str) -> Option<String> {
+            None
+        }
     }
 
     fn test_session() -> ConversationSession {

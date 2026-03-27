@@ -124,64 +124,136 @@ impl PipelineEvent {
     /// Human-readable one-line summary for logging.
     pub fn summary(&self) -> String {
         match self {
-            Self::PipelineStarted { run_id, pipeline_name, .. } => {
+            Self::PipelineStarted {
+                run_id,
+                pipeline_name,
+                ..
+            } => {
                 format!("pipeline '{pipeline_name}' started (run {run_id})")
             }
-            Self::StepStarted { run_id, step_id, agent_id, attempt } => {
+            Self::StepStarted {
+                run_id,
+                step_id,
+                agent_id,
+                attempt,
+            } => {
                 format!("step '{step_id}' started on {agent_id} (run {run_id}, attempt {attempt})")
             }
-            Self::StepCompleted { step_id, agent_id, duration_ms, .. } => {
+            Self::StepCompleted {
+                step_id,
+                agent_id,
+                duration_ms,
+                ..
+            } => {
                 format!("step '{step_id}' completed on {agent_id} ({duration_ms}ms)")
             }
-            Self::StepFailed { step_id, error, will_retry, .. } => {
+            Self::StepFailed {
+                step_id,
+                error,
+                will_retry,
+                ..
+            } => {
                 format!("step '{step_id}' failed: {error} (retry: {will_retry})")
             }
-            Self::StepRetrying { step_id, attempt, backoff_secs, .. } => {
+            Self::StepRetrying {
+                step_id,
+                attempt,
+                backoff_secs,
+                ..
+            } => {
                 format!("step '{step_id}' retrying (attempt {attempt}, backoff {backoff_secs}s)")
             }
-            Self::FanOutStarted { step_id, branch_count, .. } => {
+            Self::FanOutStarted {
+                step_id,
+                branch_count,
+                ..
+            } => {
                 format!("fan-out '{step_id}' started ({branch_count} branches)")
             }
-            Self::FanOutJoined { step_id, completed, failed, .. } => {
+            Self::FanOutJoined {
+                step_id,
+                completed,
+                failed,
+                ..
+            } => {
                 format!("fan-out '{step_id}' joined ({completed} ok, {failed} failed)")
             }
             Self::ApprovalRequested { step_id, .. } => {
                 format!("approval requested at step '{step_id}'")
             }
-            Self::ApprovalReceived { step_id, approved, .. } => {
+            Self::ApprovalReceived {
+                step_id, approved, ..
+            } => {
                 format!("approval received at step '{step_id}': {approved}")
             }
-            Self::SubPipelineStarted { sub_pipeline, depth, .. } => {
+            Self::SubPipelineStarted {
+                sub_pipeline,
+                depth,
+                ..
+            } => {
                 format!("sub-pipeline '{sub_pipeline}' started (depth {depth})")
             }
-            Self::SubPipelineCompleted { sub_pipeline, success, .. } => {
+            Self::SubPipelineCompleted {
+                sub_pipeline,
+                success,
+                ..
+            } => {
                 format!("sub-pipeline '{sub_pipeline}' completed (success: {success})")
             }
-            Self::PipelineCompleted { pipeline_name, duration_ms, step_count, .. } => {
-                format!("pipeline '{pipeline_name}' completed ({step_count} steps, {duration_ms}ms)")
+            Self::PipelineCompleted {
+                pipeline_name,
+                duration_ms,
+                step_count,
+                ..
+            } => {
+                format!(
+                    "pipeline '{pipeline_name}' completed ({step_count} steps, {duration_ms}ms)"
+                )
             }
-            Self::PipelineFailed { pipeline_name, error, .. } => {
+            Self::PipelineFailed {
+                pipeline_name,
+                error,
+                ..
+            } => {
                 format!("pipeline '{pipeline_name}' failed: {error}")
             }
             Self::PipelineCancelled { pipeline_name, .. } => {
                 format!("pipeline '{pipeline_name}' cancelled")
             }
-            Self::PipelineTimedOut { pipeline_name, timeout_secs, .. } => {
+            Self::PipelineTimedOut {
+                pipeline_name,
+                timeout_secs,
+                ..
+            } => {
                 format!("pipeline '{pipeline_name}' timed out ({timeout_secs}s)")
             }
-            Self::PipelineReloaded { pipeline_name, old_version, new_version } => {
+            Self::PipelineReloaded {
+                pipeline_name,
+                old_version,
+                new_version,
+            } => {
                 format!(
                     "pipeline '{pipeline_name}' reloaded: {} -> {new_version}",
                     old_version.as_deref().unwrap_or("(new)")
                 )
             }
-            Self::PipelineReloadFailed { pipeline_name, error } => {
+            Self::PipelineReloadFailed {
+                pipeline_name,
+                error,
+            } => {
                 format!("pipeline '{pipeline_name}' reload failed: {error}")
             }
-            Self::ToolBlocked { tool_name, reason, .. } => {
+            Self::ToolBlocked {
+                tool_name, reason, ..
+            } => {
                 format!("tool '{tool_name}' blocked: {reason}")
             }
-            Self::MessageRouted { target_agent, rule_name, is_fallback, .. } => {
+            Self::MessageRouted {
+                target_agent,
+                rule_name,
+                is_fallback,
+                ..
+            } => {
                 if *is_fallback {
                     format!("message routed to {target_agent} (fallback)")
                 } else {

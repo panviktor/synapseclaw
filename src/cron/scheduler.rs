@@ -336,7 +336,10 @@ async fn persist_job_result(
 
     let core_delivery = crate::daemon::cron_delivery_config_from(&job.delivery);
 
-    if let Err(e) = delivery_service.deliver_cron_output(&core_delivery, output).await {
+    if let Err(e) = delivery_service
+        .deliver_cron_output(&core_delivery, output)
+        .await
+    {
         if job.delivery.best_effort {
             tracing::warn!("Cron delivery failed (best_effort): {e}");
         } else {
@@ -413,7 +416,6 @@ fn warn_if_high_frequency_agent_job(job: &CronJob) {
         );
     }
 }
-
 
 async fn run_job_command(
     config: &Config,
@@ -520,9 +522,8 @@ mod tests {
     /// No-op delivery service for tests that don't exercise delivery.
     /// Uses a mock registry that has no channels — delivery attempts will
     /// fail, which is fine because test jobs don't configure announce mode.
-    fn noop_delivery_service() -> Arc<
-        crate::fork_core::application::services::delivery_service::DeliveryService,
-    > {
+    fn noop_delivery_service(
+    ) -> Arc<crate::fork_core::application::services::delivery_service::DeliveryService> {
         let registry: Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort> =
             Arc::new(
                 crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
@@ -830,7 +831,14 @@ mod tests {
         let component = unique_component("scheduler-idle");
 
         crate::health::mark_component_error(&component, "pre-existing error");
-        process_due_jobs(&config, &security, Vec::new(), &component, noop_delivery_service()).await;
+        process_due_jobs(
+            &config,
+            &security,
+            Vec::new(),
+            &component,
+            noop_delivery_service(),
+        )
+        .await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -851,7 +859,14 @@ mod tests {
         let component = unique_component("scheduler-fail");
 
         crate::health::mark_component_ok(&component);
-        process_due_jobs(&config, &security, vec![job], &component, noop_delivery_service()).await;
+        process_due_jobs(
+            &config,
+            &security,
+            vec![job],
+            &component,
+            noop_delivery_service(),
+        )
+        .await;
 
         let snapshot = crate::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
@@ -866,7 +881,16 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
+        let success = persist_job_result(
+            &config,
+            &job,
+            true,
+            "ok",
+            started,
+            finished,
+            noop_delivery_service(),
+        )
+        .await;
         assert!(success);
 
         let runs = cron::list_runs(&config, &job.id, 10).unwrap();
@@ -894,7 +918,16 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
+        let success = persist_job_result(
+            &config,
+            &job,
+            true,
+            "ok",
+            started,
+            finished,
+            noop_delivery_service(),
+        )
+        .await;
         assert!(success);
         let lookup = cron::get_job(&config, &job.id);
         assert!(lookup.is_err());
@@ -919,8 +952,16 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success =
-            persist_job_result(&config, &job, false, "boom", started, finished, noop_delivery_service()).await;
+        let success = persist_job_result(
+            &config,
+            &job,
+            false,
+            "boom",
+            started,
+            finished,
+            noop_delivery_service(),
+        )
+        .await;
         assert!(!success);
         let updated = cron::get_job(&config, &job.id).unwrap();
         assert!(!updated.enabled);
@@ -937,7 +978,16 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
+        let success = persist_job_result(
+            &config,
+            &job,
+            true,
+            "ok",
+            started,
+            finished,
+            noop_delivery_service(),
+        )
+        .await;
         assert!(success);
         let lookup = cron::get_job(&config, &job.id);
         assert!(lookup.is_err());
@@ -953,8 +1003,16 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success =
-            persist_job_result(&config, &job, false, "boom", started, finished, noop_delivery_service()).await;
+        let success = persist_job_result(
+            &config,
+            &job,
+            false,
+            "boom",
+            started,
+            finished,
+            noop_delivery_service(),
+        )
+        .await;
         assert!(!success);
         let updated = cron::get_job(&config, &job.id).unwrap();
         assert!(!updated.enabled);
@@ -987,7 +1045,16 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
+        let success = persist_job_result(
+            &config,
+            &job,
+            true,
+            "ok",
+            started,
+            finished,
+            noop_delivery_service(),
+        )
+        .await;
         assert!(!success);
 
         let updated = cron::get_job(&config, &job.id).unwrap();
@@ -1025,7 +1092,16 @@ mod tests {
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
+        let success = persist_job_result(
+            &config,
+            &job,
+            true,
+            "ok",
+            started,
+            finished,
+            noop_delivery_service(),
+        )
+        .await;
         assert!(success);
 
         let updated = cron::get_job(&config, &job.id).unwrap();
@@ -1057,7 +1133,16 @@ mod tests {
 
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
-        let success = persist_job_result(&config, &job, true, "ok", started, finished, noop_delivery_service()).await;
+        let success = persist_job_result(
+            &config,
+            &job,
+            true,
+            "ok",
+            started,
+            finished,
+            noop_delivery_service(),
+        )
+        .await;
         assert!(success);
 
         let updated = cron::get_job(&config, &job.id).unwrap();

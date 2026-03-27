@@ -593,7 +593,11 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
     // Phase 4.0 Slice 3: persist new session via conversation_service
     if need_persist {
         if let Some(store) = state.conversation_store.as_ref() {
-            let session = crate::fork_core::application::services::conversation_service::new_web_session(session_key, None);
+            let session =
+                crate::fork_core::application::services::conversation_service::new_web_session(
+                    session_key,
+                    None,
+                );
             let _ = store.upsert_session(&session).await;
         }
     }
@@ -894,7 +898,9 @@ async fn handle_chat_send_rpc(
             {
                 let input = usage.as_ref().and_then(|u| u.input_tokens).unwrap_or(0) as i64;
                 let output = usage.as_ref().and_then(|u| u.output_tokens).unwrap_or(0) as i64;
-                if let (Some(cs), Some(rs)) = (state.conversation_store.as_ref(), state.run_store.as_ref()) {
+                if let (Some(cs), Some(rs)) =
+                    (state.conversation_store.as_ref(), state.run_store.as_ref())
+                {
                     let _ = crate::fork_core::application::use_cases::start_conversation_run::finalize_success(
                         cs.as_ref(), rs.as_ref(), &session_key, &run_id, input, output,
                     ).await;
@@ -932,7 +938,9 @@ async fn handle_chat_send_rpc(
                 )
                 .await;
                 // Phase 4.0 Slice 3: finalize interrupted
-                if let (Some(cs), Some(rs)) = (state.conversation_store.as_ref(), state.run_store.as_ref()) {
+                if let (Some(cs), Some(rs)) =
+                    (state.conversation_store.as_ref(), state.run_store.as_ref())
+                {
                     let _ = crate::fork_core::application::use_cases::start_conversation_run::finalize_interrupted(
                         rs.as_ref(), cs.as_ref(), &session_key, &run_id,
                     ).await;
@@ -947,7 +955,9 @@ async fn handle_chat_send_rpc(
             let sanitized = crate::providers::sanitize_api_error(&msg);
             persist_message(state, &session_key, "error", None, &sanitized, None, None).await;
             // Phase 4.0 Slice 3: finalize failed
-            if let (Some(cs), Some(rs)) = (state.conversation_store.as_ref(), state.run_store.as_ref()) {
+            if let (Some(cs), Some(rs)) =
+                (state.conversation_store.as_ref(), state.run_store.as_ref())
+            {
                 let _ = crate::fork_core::application::use_cases::start_conversation_run::finalize_failure(
                     rs.as_ref(), cs.as_ref(), &session_key, &run_id,
                 ).await;
@@ -1130,7 +1140,10 @@ async fn handle_sessions_new(
 ) -> anyhow::Result<serde_json::Value> {
     let label = params["label"].as_str().map(String::from);
     // Phase 4.0 Slice 3: session key from conversation_service
-    let session_key = crate::fork_core::application::services::conversation_service::new_web_session_key(token_prefix);
+    let session_key =
+        crate::fork_core::application::services::conversation_service::new_web_session_key(
+            token_prefix,
+        );
 
     ensure_session(state, &session_key).await?;
 
@@ -1211,8 +1224,10 @@ async fn handle_sessions_delete(
     // Phase 4.0 Slice 3: delete via conversation_service
     if let Some(store) = state.conversation_store.as_ref() {
         let _ = crate::fork_core::application::services::conversation_service::delete_session(
-            store.as_ref(), key,
-        ).await;
+            store.as_ref(),
+            key,
+        )
+        .await;
     }
 
     emit_session_event(state, "session.deleted", key);
@@ -1249,8 +1264,10 @@ async fn handle_sessions_reset(
     // Phase 4.0 Slice 3: reset via conversation_service
     if let Some(store) = state.conversation_store.as_ref() {
         let _ = crate::fork_core::application::services::conversation_service::reset_session(
-            store.as_ref(), key,
-        ).await;
+            store.as_ref(),
+            key,
+        )
+        .await;
     }
 
     emit_session_event(state, "session.updated", key);
@@ -1515,8 +1532,7 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
         let temp = sc.temperature;
         let prov: std::sync::Arc<dyn crate::providers::Provider> =
             if let Some(ref provider_name) = sc.provider {
-                let opts =
-                    crate::providers::provider_runtime_options_from_config(&config_guard);
+                let opts = crate::providers::provider_runtime_options_from_config(&config_guard);
                 let api_key = sc
                     .api_key_env
                     .as_deref()

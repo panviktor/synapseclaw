@@ -137,21 +137,37 @@ mod tests {
     #[async_trait]
     impl IpcBusPort for MockBus {
         async fn send_message(
-            &self, _from: &str, to: &str, kind: &str, _payload: &str,
-            _sid: Option<&str>, _ftl: i32, _pri: i32,
+            &self,
+            _from: &str,
+            to: &str,
+            kind: &str,
+            _payload: &str,
+            _sid: Option<&str>,
+            _ftl: i32,
+            _pri: i32,
         ) -> Result<i64> {
             self.sent.lock().unwrap().push(format!("{to}:{kind}"));
             Ok(42)
         }
-        async fn fetch_inbox(&self, _agent: &str, _q: bool, _limit: u32) -> Result<Vec<IpcMessage>> {
+        async fn fetch_inbox(
+            &self,
+            _agent: &str,
+            _q: bool,
+            _limit: u32,
+        ) -> Result<Vec<IpcMessage>> {
             Ok(vec![])
         }
-        async fn ack_messages(&self, _agent: &str, _ids: &[i64]) -> Result<u64> { Ok(0) }
+        async fn ack_messages(&self, _agent: &str, _ids: &[i64]) -> Result<u64> {
+            Ok(0)
+        }
         async fn session_has_request(&self, sid: &str, from: &str) -> Result<bool> {
             Ok(self.sessions.iter().any(|(s, f)| s == sid && f == from))
         }
         async fn get_agent_trust_level(&self, agent_id: &str) -> Option<i32> {
-            self.agents.iter().find(|(a, _)| a == agent_id).map(|(_, l)| *l)
+            self.agents
+                .iter()
+                .find(|(a, _)| a == agent_id)
+                .map(|(_, l)| *l)
         }
     }
 

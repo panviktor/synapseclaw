@@ -9,6 +9,7 @@ use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
 use crate::domain::channel::{ChannelCapability, InboundEnvelope};
+use crate::domain::message::ChatMessage;
 use crate::ports::agent_runtime::AgentRuntimePort;
 use crate::ports::channel_output::ChannelOutputPort;
 use crate::ports::channel_registry::ChannelRegistryPort;
@@ -17,13 +18,11 @@ use crate::ports::hooks::{HookOutcome, HooksPort};
 use crate::ports::memory::MemoryTiersPort;
 use crate::ports::route_selection::RouteSelectionPort;
 use crate::ports::session_summary::SessionSummaryPort;
-use crate::domain::message::ChatMessage;
 use anyhow::Result;
 use std::sync::Arc;
 
 /// Max chars for hook-modified outbound content.
 const HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
-
 
 /// Configuration for the inbound message handler.
 #[derive(Clone)]
@@ -38,6 +37,7 @@ pub struct InboundMessageConfig {
     pub thread_root_max_chars: usize,
     /// Query classification config for route override.
     /// Optional query classifier: message -> model hint.
+    #[allow(clippy::type_complexity)]
     pub query_classifier: Option<std::sync::Arc<dyn Fn(&str) -> Option<String> + Send + Sync>>,
     /// Timeout for agent execution in seconds (0 = no timeout).
     pub message_timeout_secs: u64,
@@ -52,7 +52,10 @@ impl std::fmt::Debug for InboundMessageConfig {
         f.debug_struct("InboundMessageConfig")
             .field("default_provider", &self.default_provider)
             .field("default_model", &self.default_model)
-            .field("query_classifier", &self.query_classifier.as_ref().map(|_| "<fn>"))
+            .field(
+                "query_classifier",
+                &self.query_classifier.as_ref().map(|_| "<fn>"),
+            )
             .finish()
     }
 }
@@ -152,8 +155,7 @@ pub async fn handle(
         }
 
         MessageClassification::RegularMessage => {
-            handle_regular_message(envelope, &content, &conversation_key, caps, config, ports)
-                .await
+            handle_regular_message(envelope, &content, &conversation_key, caps, config, ports).await
         }
     }
 }
@@ -172,9 +174,7 @@ async fn handle_regular_message(
 
     // #4: Query classification override
     if config.query_classifier.is_some() {
-        if let Some(hint) =
-            config.query_classifier.as_ref().and_then(|f| f(content))
-        {
+        if let Some(hint) = config.query_classifier.as_ref().and_then(|f| f(content)) {
             if let Some((provider, model, _)) = config
                 .model_routes
                 .iter()
@@ -197,12 +197,14 @@ async fn handle_regular_message(
             && !mem.should_skip_autosave(content)
         {
             let autosave_key = format!("channel:{conversation_key}:user");
-            let _ = mem.store(
-                &autosave_key,
-                content,
-                &crate::domain::memory::MemoryCategory::Conversation,
-                Some(conversation_key),
-            ).await;
+            let _ = mem
+                .store(
+                    &autosave_key,
+                    content,
+                    &crate::domain::memory::MemoryCategory::Conversation,
+                    Some(conversation_key),
+                )
+                .await;
         }
     }
 
@@ -212,7 +214,10 @@ async fn handle_regular_message(
     // ── 5. Build initial history ─────────────────────────────────
     let mut history = vec![ChatMessage::system(config.system_prompt.clone())];
 
-    if let Some(hints) = ports.channel_registry.delivery_hints(&envelope.source_adapter) {
+    if let Some(hints) = ports
+        .channel_registry
+        .delivery_hints(&envelope.source_adapter)
+    {
         history.push(ChatMessage::system(hints));
     }
 
@@ -222,10 +227,6 @@ async fn handle_regular_message(
     for turn in prior_turns {
         if !supports_vision && turn.content.contains("[IMAGE:") {
             // Strip image markers from history for non-vision providers
-            let cleaned = turn.content.replace(
-                |c: char| false, // placeholder — actual stripping done by regex below
-                "",
-            );
             // Simple approach: remove [IMAGE:...] blocks
             let cleaned = strip_image_markers(&turn.content);
             history.push(ChatMessage {
@@ -251,9 +252,7 @@ async fn handle_regular_message(
                     )));
                 }
             }
-            if let Ok(Some(root_text)) =
-                ports.channel_output.fetch_message_text(&thread_id).await
-            {
+            if let Ok(Some(root_text)) = ports.channel_output.fetch_message_text(&thread_id).await {
                 let truncated = truncate_chars(&root_text, config.thread_root_max_chars);
                 history.push(ChatMessage::system(format!(
                     "[Thread root message]\n{truncated}"
@@ -270,8 +269,12 @@ async fn handle_regular_message(
                     ..Default::default()
                 };
                 let context = crate::application::services::memory_service::recall_context(
-                    mem.as_ref(), content, Some(&conv_key), &recall_cfg,
-                ).await;
+                    mem.as_ref(),
+                    content,
+                    Some(&conv_key),
+                    &recall_cfg,
+                )
+                .await;
                 if !context.is_empty() {
                     history.push(ChatMessage::user(format!("{context}\n{content}")));
                     // Skip the normal user turn append below
@@ -279,7 +282,14 @@ async fn handle_regular_message(
                         .history
                         .append_turn(conversation_key, ChatMessage::user(content));
                     return execute_agent_turn(
-                        envelope, content, conversation_key, caps, config, ports, &route, history,
+                        envelope,
+                        content,
+                        conversation_key,
+                        caps,
+                        config,
+                        ports,
+                        &route,
+                        history,
                     )
                     .await;
                 }
@@ -295,7 +305,14 @@ async fn handle_regular_message(
     history.push(ChatMessage::user(content));
 
     execute_agent_turn(
-        envelope, content, conversation_key, caps, config, ports, &route, history,
+        envelope,
+        content,
+        conversation_key,
+        caps,
+        config,
+        ports,
+        &route,
+        history,
     )
     .await
 }
@@ -318,10 +335,7 @@ async fn execute_agent_turn(
             .add_reaction(&envelope.reply_ref, &envelope.conversation_ref, "👀")
             .await;
     }
-    let _ = ports
-        .channel_output
-        .start_typing(&envelope.reply_ref)
-        .await;
+    let _ = ports.channel_output.start_typing(&envelope.reply_ref).await;
 
     // ── #10: Streaming decision ──────────────────────────────────
     let use_streaming = ports.channel_output.supports_streaming();
@@ -378,10 +392,7 @@ async fn execute_agent_turn(
         .await;
 
     // ── Stop typing ──────────────────────────────────────────────
-    let _ = ports
-        .channel_output
-        .stop_typing(&envelope.reply_ref)
-        .await;
+    let _ = ports.channel_output.stop_typing(&envelope.reply_ref).await;
 
     // Collect draft state
     let draft_state = if let Some(handle) = draft_handle {
@@ -404,9 +415,7 @@ async fn execute_agent_turn(
             {
                 HookOutcome::Continue(text) => text,
                 HookOutcome::Cancel(reason) => {
-                    ports
-                        .history
-                        .rollback_last_turn(conversation_key, content);
+                    ports.history.rollback_last_turn(conversation_key, content);
                     // Cancel draft if active
                     if let Some((_, Some(ref id))) = draft_state {
                         let _ = ports
@@ -442,20 +451,17 @@ async fn execute_agent_turn(
 
             // ── #15: Tool context summary for history ────────────
             let tool_summary = &turn_result.tool_summary;
-            let history_response = if inbound_message_service::should_include_tool_summary(
-                tool_summary,
-                caps,
-            ) {
-                format!("{tool_summary}\n{response_text}")
-            } else {
-                response_text.clone()
-            };
+            let history_response =
+                if inbound_message_service::should_include_tool_summary(tool_summary, caps) {
+                    format!("{tool_summary}\n{response_text}")
+                } else {
+                    response_text.clone()
+                };
 
             // ── #16: Persist assistant turn ──────────────────────
-            ports.history.append_turn(
-                conversation_key,
-                ChatMessage::assistant(&history_response),
-            );
+            ports
+                .history
+                .append_turn(conversation_key, ChatMessage::assistant(&history_response));
 
             // ── #18: Memory consolidation (fire-and-forget) ──────
             if let Some(ref mem) = ports.memory {
@@ -541,9 +547,7 @@ async fn execute_agent_turn(
 
             // ── #22: Timeout detection ───────────────────────────
             if err_str.contains("deadline has elapsed") || err_str.contains("timed out") {
-                ports
-                    .history
-                    .rollback_last_turn(conversation_key, content);
+                ports.history.rollback_last_turn(conversation_key, content);
                 let msg = "⏱️ Request timed out. Try a simpler question or `/new`.";
                 let _ = ports
                     .channel_output
@@ -558,9 +562,7 @@ async fn execute_agent_turn(
             }
 
             // ── #21: Generic error ───────────────────────────────
-            ports
-                .history
-                .rollback_last_turn(conversation_key, content);
+            ports.history.rollback_last_turn(conversation_key, content);
             let safe_err = err_str.replace("Bearer ", "Bearer [REDACTED]");
             let msg = format!("⚠️ {safe_err}");
             let _ = ports
@@ -642,49 +644,93 @@ mod tests {
     }
     impl MockHistory {
         fn new() -> Self {
-            Self { turns: Mutex::new(std::collections::HashMap::new()) }
+            Self {
+                turns: Mutex::new(std::collections::HashMap::new()),
+            }
         }
     }
     impl ConversationHistoryPort for MockHistory {
         fn has_history(&self, key: &str) -> bool {
-            self.turns.lock().unwrap().get(key).is_some_and(|v| !v.is_empty())
+            self.turns
+                .lock()
+                .unwrap()
+                .get(key)
+                .is_some_and(|v| !v.is_empty())
         }
         fn get_history(&self, key: &str) -> Vec<ChatMessage> {
-            self.turns.lock().unwrap().get(key).cloned().unwrap_or_default()
+            self.turns
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .unwrap_or_default()
         }
         fn append_turn(&self, key: &str, turn: ChatMessage) {
-            self.turns.lock().unwrap().entry(key.to_string()).or_default().push(turn);
+            self.turns
+                .lock()
+                .unwrap()
+                .entry(key.to_string())
+                .or_default()
+                .push(turn);
         }
-        fn clear_history(&self, key: &str) { self.turns.lock().unwrap().remove(key); }
-        fn compact_history(&self, _key: &str, _keep: usize) -> bool { false }
+        fn clear_history(&self, key: &str) {
+            self.turns.lock().unwrap().remove(key);
+        }
+        fn compact_history(&self, _key: &str, _keep: usize) -> bool {
+            false
+        }
         fn rollback_last_turn(&self, key: &str, _expected: &str) -> bool {
-            if let Some(turns) = self.turns.lock().unwrap().get_mut(key) { turns.pop(); return true; }
+            if let Some(turns) = self.turns.lock().unwrap().get_mut(key) {
+                turns.pop();
+                return true;
+            }
             false
         }
         fn prepend_turn(&self, key: &str, turn: ChatMessage) {
-            self.turns.lock().unwrap().entry(key.to_string()).or_default().insert(0, turn);
+            self.turns
+                .lock()
+                .unwrap()
+                .entry(key.to_string())
+                .or_default()
+                .insert(0, turn);
         }
     }
 
-    struct MockRoutes { default_provider: String, default_model: String }
+    struct MockRoutes {
+        default_provider: String,
+        default_model: String,
+    }
     impl RouteSelectionPort for MockRoutes {
         fn get_route(&self, _key: &str) -> RouteSelection {
-            RouteSelection { provider: self.default_provider.clone(), model: self.default_model.clone() }
+            RouteSelection {
+                provider: self.default_provider.clone(),
+                model: self.default_model.clone(),
+            }
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}
         fn clear_route(&self, _key: &str) {}
     }
 
-    struct MockRuntime { response: String }
+    struct MockRuntime {
+        response: String,
+    }
     #[async_trait]
     impl AgentRuntimePort for MockRuntime {
         async fn execute_turn(
-            &self, _h: Vec<ChatMessage>, _p: &str, _m: &str, _t: f64, _mi: usize,
-            _to: u64, _delta: Option<tokio::sync::mpsc::Sender<String>>,
+            &self,
+            _h: Vec<ChatMessage>,
+            _p: &str,
+            _m: &str,
+            _t: f64,
+            _mi: usize,
+            _to: u64,
+            _delta: Option<tokio::sync::mpsc::Sender<String>>,
         ) -> Result<crate::ports::agent_runtime::AgentTurnResult> {
             Ok(crate::ports::agent_runtime::AgentTurnResult {
-                response: self.response.clone(), history: vec![],
-                tools_used: false, tool_summary: String::new(),
+                response: self.response.clone(),
+                history: vec![],
+                tools_used: false,
+                tool_summary: String::new(),
             })
         }
     }
@@ -692,23 +738,44 @@ mod tests {
     struct MockChannelOutput;
     #[async_trait]
     impl ChannelOutputPort for MockChannelOutput {
-        async fn send_message(&self, _r: &str, _t: &str, _th: Option<&str>) -> Result<()> { Ok(()) }
-        async fn start_typing(&self, _r: &str) -> Result<()> { Ok(()) }
-        async fn stop_typing(&self, _r: &str) -> Result<()> { Ok(()) }
-        async fn add_reaction(&self, _r: &str, _m: &str, _e: &str) -> Result<()> { Ok(()) }
-        async fn remove_reaction(&self, _r: &str, _m: &str, _e: &str) -> Result<()> { Ok(()) }
-        async fn fetch_message_text(&self, _m: &str) -> Result<Option<String>> { Ok(None) }
-        fn supports_streaming(&self) -> bool { false }
+        async fn send_message(&self, _r: &str, _t: &str, _th: Option<&str>) -> Result<()> {
+            Ok(())
+        }
+        async fn start_typing(&self, _r: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn stop_typing(&self, _r: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn add_reaction(&self, _r: &str, _m: &str, _e: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn remove_reaction(&self, _r: &str, _m: &str, _e: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn fetch_message_text(&self, _m: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn supports_streaming(&self) -> bool {
+            false
+        }
     }
 
     struct MockRegistry;
     #[async_trait]
     impl ChannelRegistryPort for MockRegistry {
-        fn has_channel(&self, _n: &str) -> bool { false }
-        fn capabilities(&self, _n: &str) -> Vec<ChannelCapability> {
-            vec![ChannelCapability::SendText, ChannelCapability::RuntimeCommands]
+        fn has_channel(&self, _n: &str) -> bool {
+            false
         }
-        async fn deliver(&self, _i: &crate::domain::channel::OutboundIntent) -> Result<()> { Ok(()) }
+        fn capabilities(&self, _n: &str) -> Vec<ChannelCapability> {
+            vec![
+                ChannelCapability::SendText,
+                ChannelCapability::RuntimeCommands,
+            ]
+        }
+        async fn deliver(&self, _i: &crate::domain::channel::OutboundIntent) -> Result<()> {
+            Ok(())
+        }
     }
 
     fn test_config() -> InboundMessageConfig {
@@ -744,10 +811,15 @@ mod tests {
     fn test_ports(response: &str) -> InboundMessagePorts {
         InboundMessagePorts {
             history: Arc::new(MockHistory::new()),
-            routes: Arc::new(MockRoutes { default_provider: "openrouter".into(), default_model: "default-model".into() }),
+            routes: Arc::new(MockRoutes {
+                default_provider: "openrouter".into(),
+                default_model: "default-model".into(),
+            }),
             hooks: Arc::new(NoOpHooks),
             channel_output: Arc::new(MockChannelOutput),
-            agent_runtime: Arc::new(MockRuntime { response: response.into() }),
+            agent_runtime: Arc::new(MockRuntime {
+                response: response.into(),
+            }),
             channel_registry: Arc::new(MockRegistry),
             session_summary: None,
             memory: None,
@@ -758,7 +830,9 @@ mod tests {
     async fn handle_regular_message_returns_response() {
         let env = test_envelope("Hello");
         let caps = vec![ChannelCapability::SendText];
-        let result = handle(&env, &caps, &test_config(), &test_ports("Hi!")).await.unwrap();
+        let result = handle(&env, &caps, &test_config(), &test_ports("Hi!"))
+            .await
+            .unwrap();
         match result {
             HandleResult::Response { response_text, .. } => assert_eq!(response_text, "Hi!"),
             other => panic!("expected Response, got {other:?}"),
@@ -777,11 +851,22 @@ mod tests {
     #[tokio::test]
     async fn handle_command_clears_session() {
         let env = test_envelope("/new");
-        let caps = vec![ChannelCapability::SendText, ChannelCapability::RuntimeCommands];
+        let caps = vec![
+            ChannelCapability::SendText,
+            ChannelCapability::RuntimeCommands,
+        ];
         let ports = test_ports("");
-        ports.history.append_turn("telegram_user1", ChatMessage::user("old"));
+        ports
+            .history
+            .append_turn("telegram_user1", ChatMessage::user("old"));
         let result = handle(&env, &caps, &test_config(), &ports).await.unwrap();
-        assert!(matches!(result, HandleResult::Command { effect: CommandEffect::ClearSession, .. }));
+        assert!(matches!(
+            result,
+            HandleResult::Command {
+                effect: CommandEffect::ClearSession,
+                ..
+            }
+        ));
         assert!(!ports.history.has_history("telegram_user1"));
     }
 

@@ -33,9 +33,10 @@ pub fn start_watcher(
             match res {
                 Ok(event) => {
                     // Only react to TOML file modifications/creations/deletions
-                    let dominated_by_toml = event.paths.iter().any(|p| {
-                        p.extension().and_then(|e| e.to_str()) == Some("toml")
-                    });
+                    let dominated_by_toml = event
+                        .paths
+                        .iter()
+                        .any(|p| p.extension().and_then(|e| e.to_str()) == Some("toml"));
                     let is_relevant = matches!(
                         event.kind,
                         EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
@@ -107,9 +108,7 @@ pub fn start_watcher(
         }
     });
 
-    Ok(WatcherHandle {
-        _stop: stop_tx,
-    })
+    Ok(WatcherHandle { _stop: stop_tx })
 }
 
 /// Handle for stopping the watcher. Drop to stop.

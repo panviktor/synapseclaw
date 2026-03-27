@@ -86,10 +86,7 @@ async fn run_pipeline_inner(
                 state: PipelineState::Failed,
                 data: Value::Null,
                 step_count: 0,
-                error: Some(format!(
-                    "pipeline '{}' not found",
-                    params.pipeline_name
-                )),
+                error: Some(format!("pipeline '{}' not found", params.pipeline_name)),
             };
         }
     };
@@ -234,7 +231,9 @@ async fn execute_loop(
 
     // Global timeout: explicit or safety-net default (2 hours).
     const DEFAULT_PIPELINE_TIMEOUT_SECS: u64 = 7200;
-    let timeout = definition.timeout_secs.unwrap_or(DEFAULT_PIPELINE_TIMEOUT_SECS);
+    let timeout = definition
+        .timeout_secs
+        .unwrap_or(DEFAULT_PIPELINE_TIMEOUT_SECS);
     let deadline = ctx.started_at + timeout as i64;
 
     loop {
@@ -251,9 +250,7 @@ async fn execute_loop(
         // Global timeout check
         if chrono::Utc::now().timestamp() > deadline {
             ctx.state = PipelineState::TimedOut;
-            ctx.error = Some(format!(
-                "pipeline global timeout exceeded ({timeout}s)"
-            ));
+            ctx.error = Some(format!("pipeline global timeout exceeded ({timeout}s)"));
             return make_result(ctx);
         }
 
@@ -261,7 +258,10 @@ async fn execute_loop(
         let step = match definition.step(&current_step_id) {
             Some(s) => s,
             None => {
-                ctx.fail(format!("step '{}' not found in definition", current_step_id));
+                ctx.fail(format!(
+                    "step '{}' not found in definition",
+                    current_step_id
+                ));
                 return make_result(ctx);
             }
         };
@@ -333,7 +333,8 @@ async fn execute_loop(
                 if !ct.conditional.is_empty() {
                     // -- Conditional --
                     let fallback = ct.fallback.as_deref().unwrap_or("end");
-                    let target = ct.conditional
+                    let target = ct
+                        .conditional
                         .iter()
                         .find(|b| b.evaluate(&step_output))
                         .map(|b| b.target.as_str())
@@ -390,7 +391,9 @@ async fn execute_loop(
 
                     match approved {
                         Ok(result) => {
-                            let is_approved = result.output.get("approved")
+                            let is_approved = result
+                                .output
+                                .get("approved")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
 
@@ -401,7 +404,11 @@ async fn execute_loop(
                                 "approval received"
                             );
 
-                            let target = if is_approved { &wfa.next_approved } else { &wfa.next_denied };
+                            let target = if is_approved {
+                                &wfa.next_approved
+                            } else {
+                                &wfa.next_denied
+                            };
                             if target == "end" {
                                 ctx.complete();
                                 return make_result(ctx);
@@ -420,71 +427,68 @@ async fn execute_loop(
                     // -- SubPipeline --
                     let pipeline_name = &sp.pipeline_name;
                     let next = &sp.next;
-                        // Check depth limit
-                        if ctx.depth >= definition.max_depth {
-                            ctx.fail(format!(
-                                "sub-pipeline depth limit exceeded ({}) at step '{}'",
-                                definition.max_depth, current_step_id
-                            ));
-                            return make_result(ctx);
-                        }
-
-                        info!(
-                            run_id = %ctx.run_id,
-                            step = %current_step_id,
-                            sub_pipeline = %pipeline_name,
-                            depth = ctx.depth + 1,
-                            "starting sub-pipeline"
-                        );
-
-                        // Run sub-pipeline with incremented depth
-                        let sub_result = run_pipeline(
-                            ports,
-                            StartPipelineParams {
-                                pipeline_name: pipeline_name.clone(),
-                                input: step_output.clone(),
-                                triggered_by: format!(
-                                    "pipeline:{}:{}",
-                                    ctx.pipeline_name, current_step_id
-                                ),
-                                depth: ctx.depth + 1,
-                                parent_run_id: Some(ctx.run_id.clone()),
-                            },
-                        )
-                        .await;
-
-                        if sub_result.state != PipelineState::Completed {
-                            ctx.fail(format!(
-                                "sub-pipeline '{}' failed: {}",
-                                pipeline_name,
-                                sub_result.error.unwrap_or_else(|| "unknown".into())
-                            ));
-                            return make_result(ctx);
-                        }
-
-                        // Merge sub-pipeline output into context
-                        ctx.merge_step_output(
-                            &format!("sub:{pipeline_name}"),
-                            sub_result.data,
-                        );
-                        checkpoint(ports.run_store.as_ref(), ctx).await;
-
-                        if next == "end" {
-                            ctx.complete();
-                            return make_result(ctx);
-                        }
-                        current_step_id = next.clone();
-                    } else {
+                    // Check depth limit
+                    if ctx.depth >= definition.max_depth {
                         ctx.fail(format!(
-                            "step '{}' has empty complex transition",
-                            current_step_id
+                            "sub-pipeline depth limit exceeded ({}) at step '{}'",
+                            definition.max_depth, current_step_id
                         ));
                         return make_result(ctx);
                     }
+
+                    info!(
+                        run_id = %ctx.run_id,
+                        step = %current_step_id,
+                        sub_pipeline = %pipeline_name,
+                        depth = ctx.depth + 1,
+                        "starting sub-pipeline"
+                    );
+
+                    // Run sub-pipeline with incremented depth
+                    let sub_result = run_pipeline(
+                        ports,
+                        StartPipelineParams {
+                            pipeline_name: pipeline_name.clone(),
+                            input: step_output.clone(),
+                            triggered_by: format!(
+                                "pipeline:{}:{}",
+                                ctx.pipeline_name, current_step_id
+                            ),
+                            depth: ctx.depth + 1,
+                            parent_run_id: Some(ctx.run_id.clone()),
+                        },
+                    )
+                    .await;
+
+                    if sub_result.state != PipelineState::Completed {
+                        ctx.fail(format!(
+                            "sub-pipeline '{}' failed: {}",
+                            pipeline_name,
+                            sub_result.error.unwrap_or_else(|| "unknown".into())
+                        ));
+                        return make_result(ctx);
+                    }
+
+                    // Merge sub-pipeline output into context
+                    ctx.merge_step_output(&format!("sub:{pipeline_name}"), sub_result.data);
+                    checkpoint(ports.run_store.as_ref(), ctx).await;
+
+                    if next == "end" {
+                        ctx.complete();
+                        return make_result(ctx);
+                    }
+                    current_step_id = next.clone();
+                } else {
+                    ctx.fail(format!(
+                        "step '{}' has empty complex transition",
+                        current_step_id
+                    ));
+                    return make_result(ctx);
                 }
             }
         }
     }
+}
 
 /// Execute a step with retry logic.
 /// Returns `Some(output)` on success, `None` on failure (ctx.state already set).
@@ -598,18 +602,14 @@ async fn execute_fan_out(
     );
 
     // Track which branches we're waiting for
-    let branch_ids: Vec<String> = spec
-        .branches
-        .iter()
-        .map(|b| b.step_id.clone())
-        .collect();
+    let branch_ids: Vec<String> = spec.branches.iter().map(|b| b.step_id.clone()).collect();
     ctx.state = PipelineState::WaitingForFanOut(branch_ids);
     checkpoint(ports.run_store.as_ref(), ctx).await;
 
     // Build fan-out timeout
-    let fan_out_deadline = spec.timeout_secs.map(|t| {
-        std::time::Instant::now() + std::time::Duration::from_secs(t)
-    });
+    let fan_out_deadline = spec
+        .timeout_secs
+        .map(|t| std::time::Instant::now() + std::time::Duration::from_secs(t));
 
     // Input for all branches: current accumulated context data
     let branch_input = ctx.data.clone();
@@ -646,7 +646,12 @@ async fn execute_fan_out(
                     step.timeout_secs,
                 )
                 .await;
-            (result_key, step.id.clone(), step.agent_id.clone(), exec_result)
+            (
+                result_key,
+                step.id.clone(),
+                step.agent_id.clone(),
+                exec_result,
+            )
         });
     }
 
@@ -662,7 +667,8 @@ async fn execute_fan_out(
                 join_set.abort_all();
                 return Err(format!(
                     "fan-out timed out after {} of {} branches",
-                    results.len(), branch_count
+                    results.len(),
+                    branch_count
                 ));
             }
         }
@@ -670,33 +676,31 @@ async fn execute_fan_out(
         join_set.join_next().await
     } {
         match join_result {
-            Ok((result_key, step_id, agent_id, exec_result)) => {
-                match exec_result {
-                    Ok(result) => {
-                        ctx.record_step_start(&step_id, &agent_id, 0);
-                        ctx.record_step_complete(&step_id, Some(result.output.clone()));
-                        info!(
-                            run_id = %ctx.run_id,
-                            branch = %result_key,
-                            step = %step_id,
-                            "fan-out branch completed"
-                        );
-                        results.push((result_key, Ok(result.output)));
-                    }
-                    Err(err) => {
-                        ctx.record_step_start(&step_id, &agent_id, 0);
-                        ctx.record_step_failure(&step_id, err.message.clone());
-                        warn!(
-                            run_id = %ctx.run_id,
-                            branch = %result_key,
-                            step = %step_id,
-                            error = %err.message,
-                            "fan-out branch failed"
-                        );
-                        results.push((result_key, Err(err.message)));
-                    }
+            Ok((result_key, step_id, agent_id, exec_result)) => match exec_result {
+                Ok(result) => {
+                    ctx.record_step_start(&step_id, &agent_id, 0);
+                    ctx.record_step_complete(&step_id, Some(result.output.clone()));
+                    info!(
+                        run_id = %ctx.run_id,
+                        branch = %result_key,
+                        step = %step_id,
+                        "fan-out branch completed"
+                    );
+                    results.push((result_key, Ok(result.output)));
                 }
-            }
+                Err(err) => {
+                    ctx.record_step_start(&step_id, &agent_id, 0);
+                    ctx.record_step_failure(&step_id, err.message.clone());
+                    warn!(
+                        run_id = %ctx.run_id,
+                        branch = %result_key,
+                        step = %step_id,
+                        error = %err.message,
+                        "fan-out branch failed"
+                    );
+                    results.push((result_key, Err(err.message)));
+                }
+            },
             Err(join_err) => {
                 // JoinError — task panicked
                 warn!(run_id = %ctx.run_id, error = %join_err, "fan-out branch task panicked");
@@ -772,17 +776,8 @@ fn resolve_step_input(
         return ctx.data.clone();
     }
 
-    // Find the most recent completed step in history and use its output
-    if let Some(record) = ctx
-        .step_history
-        .iter()
-        .rev()
-        .find(|r| r.status == StepStatus::Completed && r.output.is_some())
-    {
-        return record.output.clone().unwrap_or(Value::Null);
-    }
-
-    // Fallback: pass the full accumulated data
+    // Pass the full accumulated context so later steps can access earlier results.
+    // e.g. publish step needs both draft content and review approval.
     ctx.data.clone()
 }
 
@@ -849,8 +844,8 @@ fn uuid_v4() -> String {
 mod tests {
     use super::*;
     use crate::domain::pipeline::{
-        ConditionalBranch, ComplexTransition, FanOutSpec, Operator, PipelineDefinition,
-        PipelineStep, StepTransition, SubPipelineSpec, WaitForApprovalSpec,
+        ComplexTransition, ConditionalBranch, Operator, PipelineDefinition, PipelineStep,
+        StepTransition, SubPipelineSpec, WaitForApprovalSpec,
     };
     use crate::ports::pipeline_executor::{StepExecutionError, StepExecutionResult};
     use crate::ports::pipeline_store::ReloadEvent;
@@ -914,9 +909,19 @@ mod tests {
             Ok(())
         }
         async fn get_run(&self, run_id: &str) -> Option<Run> {
-            self.runs.lock().unwrap().iter().find(|r| r.run_id == run_id).cloned()
+            self.runs
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.run_id == run_id)
+                .cloned()
         }
-        async fn update_state(&self, run_id: &str, state: RunState, finished_at: Option<u64>) -> anyhow::Result<()> {
+        async fn update_state(
+            &self,
+            run_id: &str,
+            state: RunState,
+            finished_at: Option<u64>,
+        ) -> anyhow::Result<()> {
             let mut runs = self.runs.lock().unwrap();
             if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) {
                 run.state = state;
@@ -924,14 +929,24 @@ mod tests {
             }
             Ok(())
         }
-        async fn list_runs(&self, _key: &str, _limit: usize) -> Vec<Run> { vec![] }
-        async fn list_all_runs(&self, _limit: usize) -> Vec<Run> { vec![] }
+        async fn list_runs(&self, _key: &str, _limit: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn list_all_runs(&self, _limit: usize) -> Vec<Run> {
+            vec![]
+        }
         async fn append_event(&self, event: &RunEvent) -> anyhow::Result<()> {
             self.events.lock().unwrap().push(event.clone());
             Ok(())
         }
         async fn get_events(&self, run_id: &str, _limit: usize) -> Vec<RunEvent> {
-            self.events.lock().unwrap().iter().filter(|e| e.run_id == run_id).cloned().collect()
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.run_id == run_id)
+                .cloned()
+                .collect()
         }
     }
 
@@ -1102,16 +1117,14 @@ mod tests {
             defs: vec![two_step_pipeline()],
         };
         let run_store = MockRunStore::new();
-        let executor = MockExecutor::new(vec![
-            (
-                "step1".into(),
-                Err(StepExecutionError {
-                    code: "agent_error".into(),
-                    message: "agent crashed".into(),
-                    retryable: false,
-                }),
-            ),
-        ]);
+        let executor = MockExecutor::new(vec![(
+            "step1".into(),
+            Err(StepExecutionError {
+                code: "agent_error".into(),
+                message: "agent crashed".into(),
+                retryable: false,
+            }),
+        )]);
 
         let ports = PipelineRunnerPorts {
             pipeline_store: Arc::new(store),
@@ -1155,8 +1168,14 @@ mod tests {
         #[async_trait]
         impl PipelineExecutorPort for RetryExecutor {
             async fn execute_step(
-                &self, _run_id: &str, step_id: &str, _agent_id: &str,
-                _input: &Value, _tools: &[String], _desc: &str, _timeout: Option<u64>,
+                &self,
+                _run_id: &str,
+                step_id: &str,
+                _agent_id: &str,
+                _input: &Value,
+                _tools: &[String],
+                _desc: &str,
+                _timeout: Option<u64>,
             ) -> Result<StepExecutionResult, StepExecutionError> {
                 if step_id == "step1" {
                     let mut attempt = self.attempt.lock().unwrap();
@@ -1208,10 +1227,8 @@ mod tests {
             defs: vec![two_step_pipeline()],
         };
         let run_store = Arc::new(MockRunStore::new());
-        let executor = MockExecutor::succeeds(vec![
-            ("step1", json!({"a": 1})),
-            ("step2", json!({"b": 2})),
-        ]);
+        let executor =
+            MockExecutor::succeeds(vec![("step1", json!({"a": 1})), ("step2", json!({"b": 2}))]);
 
         let ports = PipelineRunnerPorts {
             pipeline_store: Arc::new(store),
@@ -1247,10 +1264,8 @@ mod tests {
             defs: vec![two_step_pipeline()],
         };
         let run_store = Arc::new(MockRunStore::new());
-        let executor = MockExecutor::succeeds(vec![
-            ("step1", json!({"a": 1})),
-            ("step2", json!({"b": 2})),
-        ]);
+        let executor =
+            MockExecutor::succeeds(vec![("step1", json!({"a": 1})), ("step2", json!({"b": 2}))]);
 
         let ports = PipelineRunnerPorts {
             pipeline_store: Arc::new(store),
@@ -1274,10 +1289,7 @@ mod tests {
         assert_eq!(run.origin, RunOrigin::Pipeline);
         assert_eq!(run.state, RunState::Completed);
         assert!(run.finished_at.is_some());
-        assert_eq!(
-            run.conversation_key,
-            Some("pipeline:test-two-step".into())
-        );
+        assert_eq!(run.conversation_key, Some("pipeline:test-two-step".into()));
     }
 
     #[tokio::test]
@@ -1294,17 +1306,15 @@ mod tests {
                     tools: vec![],
                     input_schema: None,
                     output_schema: None,
-                    next: StepTransition::Complex(Box::new(
-                        ComplexTransition::conditional(
-                            vec![ConditionalBranch {
-                                field: "/approved".into(),
-                                operator: Operator::Eq,
-                                value: json!(true),
-                                target: "publish".into(),
-                            }],
-                            "revise".into(),
-                        ),
-                    )),
+                    next: StepTransition::Complex(Box::new(ComplexTransition::conditional(
+                        vec![ConditionalBranch {
+                            field: "/approved".into(),
+                            operator: Operator::Eq,
+                            value: json!(true),
+                            target: "publish".into(),
+                        }],
+                        "revise".into(),
+                    ))),
                     max_retries: 0,
                     retry_backoff_secs: 1,
                     timeout_secs: None,
@@ -1375,7 +1385,10 @@ mod tests {
         };
         let run_store2 = MockRunStore::new();
         let executor2 = MockExecutor::succeeds(vec![
-            ("review", json!({"approved": false, "feedback": "needs work"})),
+            (
+                "review",
+                json!({"approved": false, "feedback": "needs work"}),
+            ),
             ("revise", json!({"revised": true})),
         ]);
 
@@ -1469,8 +1482,8 @@ mod tests {
                     tools: vec![],
                     input_schema: None,
                     output_schema: None,
-                    next: StepTransition::Complex(Box::new(
-                        ComplexTransition::fan_out(FanOutSpec {
+                    next: StepTransition::Complex(Box::new(ComplexTransition::fan_out(
+                        FanOutSpec {
                             branches: vec![
                                 FanOutBranch {
                                     step_id: "fetch-news".into(),
@@ -1484,8 +1497,8 @@ mod tests {
                             join_step: "draft".into(),
                             timeout_secs: None,
                             require_all: true,
-                        }),
-                    )),
+                        },
+                    ))),
                     max_retries: 0,
                     retry_backoff_secs: 1,
                     timeout_secs: None,
@@ -1569,10 +1582,7 @@ mod tests {
             fanout.get("news"),
             Some(&json!({"headlines": ["Rust 2026"]}))
         );
-        assert_eq!(
-            fanout.get("trends"),
-            Some(&json!({"top": "AI agents"}))
-        );
+        assert_eq!(fanout.get("trends"), Some(&json!({"top": "AI agents"})));
         // Draft step should have run after join
         assert!(result.data.get("draft").is_some());
     }
@@ -1618,8 +1628,6 @@ mod tests {
 
     #[tokio::test]
     async fn fan_out_partial_success_without_require_all() {
-        use crate::domain::pipeline::{FanOutBranch, FanOutSpec};
-
         let mut pipeline = fan_out_pipeline();
         // Change require_all to false
         if let StepTransition::Complex(ref mut complex) = pipeline.steps[0].next {
@@ -1684,14 +1692,14 @@ mod tests {
                     tools: vec![],
                     input_schema: None,
                     output_schema: None,
-                    next: StepTransition::Complex(Box::new(
-                        ComplexTransition::wait_for_approval(WaitForApprovalSpec {
+                    next: StepTransition::Complex(Box::new(ComplexTransition::wait_for_approval(
+                        WaitForApprovalSpec {
                             prompt: "Approve this draft?".into(),
                             next_approved: "publish".into(),
                             next_denied: "revise".into(),
                             timeout_secs: 3600,
-                        }),
-                    )),
+                        },
+                    ))),
                     max_retries: 0,
                     retry_backoff_secs: 1,
                     timeout_secs: None,
@@ -1728,10 +1736,7 @@ mod tests {
 
         let executor = MockExecutor::new(vec![
             ("draft".into(), Ok(json!({"text": "my draft"}))),
-            (
-                "draft__approval".into(),
-                Ok(json!({"approved": approved})),
-            ),
+            ("draft__approval".into(), Ok(json!({"approved": approved}))),
             ("publish".into(), Ok(json!({"published": true}))),
             ("revise".into(), Ok(json!({"revised": true}))),
         ]);
@@ -1815,12 +1820,12 @@ mod tests {
                     tools: vec![],
                     input_schema: None,
                     output_schema: None,
-                    next: StepTransition::Complex(Box::new(
-                        ComplexTransition::sub_pipeline(SubPipelineSpec {
+                    next: StepTransition::Complex(Box::new(ComplexTransition::sub_pipeline(
+                        SubPipelineSpec {
                             pipeline_name: "child".into(),
                             next: "s3".into(),
-                        }),
-                    )),
+                        },
+                    ))),
                     max_retries: 0,
                     retry_backoff_secs: 1,
                     timeout_secs: None,
@@ -1910,12 +1915,12 @@ mod tests {
                 tools: vec![],
                 input_schema: None,
                 output_schema: None,
-                next: StepTransition::Complex(Box::new(
-                    ComplexTransition::sub_pipeline(SubPipelineSpec {
+                next: StepTransition::Complex(Box::new(ComplexTransition::sub_pipeline(
+                    SubPipelineSpec {
                         pipeline_name: "recursive".into(),
                         next: "end".into(),
-                    }),
-                )),
+                    },
+                ))),
                 max_retries: 0,
                 retry_backoff_secs: 1,
                 timeout_secs: None,
@@ -1929,9 +1934,7 @@ mod tests {
             defs: vec![recursive],
         };
         let run_store = MockRunStore::new();
-        let executor = MockExecutor::succeeds(vec![
-            ("s1", json!({"x": 1})),
-        ]);
+        let executor = MockExecutor::succeeds(vec![("s1", json!({"x": 1}))]);
 
         let result = run_pipeline(
             &PipelineRunnerPorts {

@@ -63,11 +63,7 @@ impl ToolMiddlewarePort for ValidationMiddleware {
         })
     }
 
-    async fn after(
-        &self,
-        _ctx: &ToolCallContext,
-        _result: &mut Value,
-    ) -> Result<(), ToolBlock> {
+    async fn after(&self, _ctx: &ToolCallContext, _result: &mut Value) -> Result<(), ToolBlock> {
         Ok(())
     }
 

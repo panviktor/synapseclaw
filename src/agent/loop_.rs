@@ -1,6 +1,6 @@
-use crate::approval::{ApprovalManager, ApprovalRequest as CliApprovalRequest, ApprovalResponse as CliApprovalResponse};
-use crate::fork_core::ports::approval::ApprovalPort;
+use crate::approval::ApprovalManager;
 use crate::config::Config;
+use crate::fork_core::ports::approval::ApprovalPort;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::multimodal;
 use crate::observability::{self, runtime_trace, Observer, ObserverEvent};
@@ -2184,7 +2184,11 @@ async fn execute_one_tool(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
-    tool_middleware: Option<&std::sync::Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>>,
+    tool_middleware: Option<
+        &std::sync::Arc<
+            crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain,
+        >,
+    >,
 ) -> Result<ToolExecutionOutcome> {
     let args_summary = truncate_with_ellipsis(&call_arguments.to_string(), 300);
     observer.record_event(&ObserverEvent::ToolCallStart {
@@ -2325,7 +2329,10 @@ fn should_execute_tools_in_parallel(
     }
 
     if let Some(port) = approval {
-        if tool_calls.iter().any(|call| port.needs_approval(&call.name)) {
+        if tool_calls
+            .iter()
+            .any(|call| port.needs_approval(&call.name))
+        {
             // Approval-gated calls must keep sequential handling so the caller can
             // enforce CLI prompt/deny policy consistently.
             return false;
@@ -2342,7 +2349,11 @@ async fn execute_tools_parallel(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
-    tool_middleware: Option<&std::sync::Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>>,
+    tool_middleware: Option<
+        &std::sync::Arc<
+            crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain,
+        >,
+    >,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let futures: Vec<_> = tool_calls
         .iter()
@@ -2371,7 +2382,11 @@ async fn execute_tools_sequential(
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
-    tool_middleware: Option<&std::sync::Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>>,
+    tool_middleware: Option<
+        &std::sync::Arc<
+            crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain,
+        >,
+    >,
 ) -> Result<Vec<ToolExecutionOutcome>> {
     let mut outcomes = Vec::with_capacity(tool_calls.len());
 
@@ -2821,7 +2836,7 @@ pub(crate) async fn run_tool_call_loop(
                         response: decision,
                         decided_by: "system".into(),
                         channel: channel_name.to_string(),
-                        timestamp: chrono::Utc::now().timestamp() as u64,
+                        timestamp: chrono::Utc::now().timestamp().cast_unsigned(),
                     };
                     port.record_decision(&audit);
 
@@ -3178,6 +3193,7 @@ pub async fn run(
             &config.agents,
             config.api_key.as_deref(),
             &config,
+            None, // Agents create their own IpcClient (no shared daemon client)
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -3864,6 +3880,7 @@ pub async fn process_message(
         &config.agents,
         config.api_key.as_deref(),
         &config,
+        None,
     );
     let peripheral_tools: Vec<Box<dyn Tool>> =
         crate::peripherals::create_peripheral_tools(&config.peripherals).await?;

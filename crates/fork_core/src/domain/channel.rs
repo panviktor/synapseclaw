@@ -164,7 +164,6 @@ pub struct InboundEnvelope {
     pub received_at: u64,
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +202,4 @@ mod tests {
         assert_eq!(SourceKind::Web.to_string(), "web");
         assert_eq!(SourceKind::Ipc.to_string(), "ipc");
     }
-
 }

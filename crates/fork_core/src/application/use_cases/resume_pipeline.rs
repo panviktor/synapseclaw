@@ -3,7 +3,9 @@
 //! Phase 4.1 Slice 5: on daemon startup, find all pipeline runs in
 //! non-terminal state, deserialize their last checkpoint, and resume.
 
-use crate::application::services::pipeline_service::{self, PipelineRunResult, PipelineRunnerPorts};
+use crate::application::services::pipeline_service::{
+    self, PipelineRunResult, PipelineRunnerPorts,
+};
 use crate::domain::pipeline_context::PipelineContext;
 use crate::domain::run::{RunOrigin, RunState};
 use tracing::{info, warn};
@@ -302,9 +304,19 @@ mod tests {
             Ok(())
         }
         async fn get_run(&self, run_id: &str) -> Option<Run> {
-            self.runs.lock().unwrap().iter().find(|r| r.run_id == run_id).cloned()
+            self.runs
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.run_id == run_id)
+                .cloned()
         }
-        async fn update_state(&self, run_id: &str, state: RunState, finished_at: Option<u64>) -> anyhow::Result<()> {
+        async fn update_state(
+            &self,
+            run_id: &str,
+            state: RunState,
+            finished_at: Option<u64>,
+        ) -> anyhow::Result<()> {
             let mut runs = self.runs.lock().unwrap();
             if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) {
                 run.state = state;
@@ -312,7 +324,9 @@ mod tests {
             }
             Ok(())
         }
-        async fn list_runs(&self, _k: &str, _l: usize) -> Vec<Run> { vec![] }
+        async fn list_runs(&self, _k: &str, _l: usize) -> Vec<Run> {
+            vec![]
+        }
         async fn list_all_runs(&self, _l: usize) -> Vec<Run> {
             self.runs.lock().unwrap().clone()
         }
@@ -321,7 +335,13 @@ mod tests {
             Ok(())
         }
         async fn get_events(&self, run_id: &str, _limit: usize) -> Vec<RunEvent> {
-            self.events.lock().unwrap().iter().filter(|e| e.run_id == run_id).cloned().collect()
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|e| e.run_id == run_id)
+                .cloned()
+                .collect()
         }
     }
 
@@ -330,8 +350,14 @@ mod tests {
     #[async_trait]
     impl PipelineExecutorPort for OkExecutor {
         async fn execute_step(
-            &self, _run_id: &str, _step_id: &str, _agent_id: &str,
-            _input: &Value, _tools: &[String], _desc: &str, _timeout: Option<u64>,
+            &self,
+            _run_id: &str,
+            _step_id: &str,
+            _agent_id: &str,
+            _input: &Value,
+            _tools: &[String],
+            _desc: &str,
+            _timeout: Option<u64>,
         ) -> Result<StepExecutionResult, StepExecutionError> {
             Ok(StepExecutionResult {
                 output: json!({"ok": true}),

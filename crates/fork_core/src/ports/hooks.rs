@@ -3,7 +3,6 @@
 //! Abstracts the hook runner so the application core can execute
 //! hooks without depending on the concrete hook implementation.
 
-use anyhow::Result;
 use async_trait::async_trait;
 
 /// Result of a hook execution.

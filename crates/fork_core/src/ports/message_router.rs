@@ -62,6 +62,7 @@ mod tests {
                 name: "test".into(),
                 rule: RoutingRule::Command("/test".into()),
                 target: "test-agent".into(),
+                pipeline: None,
                 priority: 10,
             }],
             fallback: "default".into(),

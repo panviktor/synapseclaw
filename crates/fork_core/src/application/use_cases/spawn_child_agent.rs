@@ -115,9 +115,7 @@ pub async fn poll_and_finalize(
         _ => unreachable!("non-terminal filtered above"),
     };
 
-    run_store
-        .update_state(run_id, run_state, Some(now))
-        .await?;
+    run_store.update_state(run_id, run_state, Some(now)).await?;
 
     Ok(result)
 }
@@ -204,9 +202,19 @@ mod tests {
             Ok(())
         }
         async fn get_run(&self, run_id: &str) -> Option<Run> {
-            self.runs.lock().unwrap().iter().find(|r| r.run_id == run_id).cloned()
+            self.runs
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|r| r.run_id == run_id)
+                .cloned()
         }
-        async fn update_state(&self, run_id: &str, state: RunState, finished_at: Option<u64>) -> Result<()> {
+        async fn update_state(
+            &self,
+            run_id: &str,
+            state: RunState,
+            finished_at: Option<u64>,
+        ) -> Result<()> {
             let mut runs = self.runs.lock().unwrap();
             if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) {
                 run.state = state;
@@ -214,10 +222,22 @@ mod tests {
             }
             Ok(())
         }
-        async fn list_runs(&self, _key: &str, _limit: usize) -> Vec<Run> { vec![] }
-        async fn list_all_runs(&self, _limit: usize) -> Vec<Run> { vec![] }
-        async fn append_event(&self, _event: &crate::domain::run::RunEvent) -> Result<()> { Ok(()) }
-        async fn get_events(&self, _run_id: &str, _limit: usize) -> Vec<crate::domain::run::RunEvent> { vec![] }
+        async fn list_runs(&self, _key: &str, _limit: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn list_all_runs(&self, _limit: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn append_event(&self, _event: &crate::domain::run::RunEvent) -> Result<()> {
+            Ok(())
+        }
+        async fn get_events(
+            &self,
+            _run_id: &str,
+            _limit: usize,
+        ) -> Vec<crate::domain::run::RunEvent> {
+            vec![]
+        }
     }
 
     fn test_request() -> SpawnRequest {
@@ -282,7 +302,9 @@ mod tests {
         let broker = MockBroker::new(SpawnStatus::Running, None);
         let run_store = MockRunStore::new();
 
-        let result = poll_and_finalize(&broker, &run_store, "sess", "run-1").await.unwrap();
+        let result = poll_and_finalize(&broker, &run_store, "sess", "run-1")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 

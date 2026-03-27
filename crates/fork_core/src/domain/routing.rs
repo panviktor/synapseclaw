@@ -4,7 +4,6 @@
 //! Rules are evaluated in priority order; first match wins.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::fmt;
 
 /// A complete routing configuration, typically loaded from TOML.
@@ -121,9 +120,7 @@ impl RoutingRule {
                 let lower = input.content.to_lowercase();
                 keywords.iter().any(|kw| lower.contains(&kw.to_lowercase()))
             }
-            Self::FieldEquals { field, value } => {
-                input.metadata.get(field).map_or(false, |v| v == value)
-            }
+            Self::FieldEquals { field, value } => input.metadata.get(field) == Some(value),
             Self::SourceKind(kind) => input.source_kind == *kind,
             Self::Always => true,
         }
@@ -256,12 +253,14 @@ mod tests {
                     name: "research".into(),
                     rule: RoutingRule::Command("/research".into()),
                     target: "news-reader".into(),
+                    pipeline: None,
                     priority: 10,
                 },
                 Route {
                     name: "catch-all".into(),
                     rule: RoutingRule::Always,
                     target: "general".into(),
+                    pipeline: None,
                     priority: 100,
                 },
             ],
@@ -285,6 +284,7 @@ mod tests {
                 name: "commands".into(),
                 rule: RoutingRule::Command("/cmd".into()),
                 target: "bot".into(),
+                pipeline: None,
                 priority: 10,
             }],
             fallback: "default-agent".into(),
@@ -345,18 +345,21 @@ source_kind = "cron"
                     name: "low".into(),
                     rule: RoutingRule::Always,
                     target: "c".into(),
+                    pipeline: None,
                     priority: 99,
                 },
                 Route {
                     name: "high".into(),
                     rule: RoutingRule::Always,
                     target: "a".into(),
+                    pipeline: None,
                     priority: 1,
                 },
                 Route {
                     name: "mid".into(),
                     rule: RoutingRule::Always,
                     target: "b".into(),
+                    pipeline: None,
                     priority: 50,
                 },
             ],

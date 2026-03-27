@@ -64,11 +64,7 @@ pub trait MemoryTiersPort: Send + Sync {
     /// Run LLM-driven memory consolidation for a turn.
     ///
     /// Extracts facts → Core tier, journal → Daily tier.
-    async fn consolidate_turn(
-        &self,
-        user_message: &str,
-        assistant_response: &str,
-    ) -> Result<()>;
+    async fn consolidate_turn(&self, user_message: &str, assistant_response: &str) -> Result<()>;
 
     // ── Utility ──────────────────────────────────────────────────
 

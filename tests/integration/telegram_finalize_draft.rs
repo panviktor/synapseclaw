@@ -1,8 +1,8 @@
 use serde_json::json;
-use wiremock::matchers::{body_partial_json, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
 use synapseclaw::channels::telegram::TelegramChannel;
 use synapseclaw::channels::traits::Channel;
+use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn test_channel(mock_url: &str) -> TelegramChannel {
     TelegramChannel::new("TEST_TOKEN".into(), vec!["*".into()], false)

@@ -33,11 +33,7 @@ pub trait IpcBusPort: Send + Sync {
     async fn ack_messages(&self, agent_id: &str, message_ids: &[i64]) -> Result<u64>;
 
     /// Check if a session has a prior task/query from a specific agent.
-    async fn session_has_request(
-        &self,
-        session_id: &str,
-        from_agent: &str,
-    ) -> Result<bool>;
+    async fn session_has_request(&self, session_id: &str, from_agent: &str) -> Result<bool>;
 
     /// Get agent trust level (None if agent not found).
     async fn get_agent_trust_level(&self, agent_id: &str) -> Option<i32>;

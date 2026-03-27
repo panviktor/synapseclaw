@@ -134,7 +134,10 @@ mod tests {
     #[test]
     fn state_display() {
         assert_eq!(ImplementationState::Running.to_string(), "running");
-        assert_eq!(ImplementationState::ApprovalRequired.to_string(), "approval_required");
+        assert_eq!(
+            ImplementationState::ApprovalRequired.to_string(),
+            "approval_required"
+        );
     }
 
     #[test]

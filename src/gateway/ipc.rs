@@ -2080,6 +2080,7 @@ const PROMOTED_KIND: &str = "promoted_quarantine";
 /// 4. L4↔L4 direct messaging is denied (must go through a higher-trust agent).
 /// 5. L3 lateral `text` requires an explicit allowlist entry.
 #[allow(clippy::implicit_hasher)]
+///
 /// Phase 4.0 Slice 5: delegates ACL validation to fork_core domain.
 pub fn validate_send(
     from_level: u8,
@@ -2137,6 +2138,7 @@ pub fn validate_send(
 /// - L2: + `team:*`
 /// - L1: + `global:*`
 /// - `secret:*` denied for all (reserved for Phase 2)
+///
 /// Phase 4.0 Slice 5: delegates state write validation to fork_core domain.
 pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<(), IpcError> {
     crate::fork_core::domain::ipc::validate_state_write(i32::from(trust_level), agent_id, key)
@@ -2156,13 +2158,14 @@ pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<
 
 /// Phase 4.0 Slice 5: delegates state read validation to fork_core domain.
 pub fn validate_state_get(trust_level: u8, key: &str) -> Result<(), IpcError> {
-    crate::fork_core::domain::ipc::validate_state_read(i32::from(trust_level), key)
-        .map_err(|acl_err| IpcError {
+    crate::fork_core::domain::ipc::validate_state_read(i32::from(trust_level), key).map_err(
+        |acl_err| IpcError {
             status: StatusCode::FORBIDDEN,
             error: acl_err.message,
             code: acl_err.code,
             retryable: acl_err.retryable,
-        })
+        },
+    )
 }
 
 // ── Auth helper ─────────────────────────────────────────────────
@@ -2413,30 +2416,30 @@ pub async fn handle_ipc_send(
     // UUIDs and session IDs that trigger high-entropy false positives.
     let skip_leak_scan = meta.trust_level == 0 && body.kind == "task";
     if !skip_leak_scan {
-    if let Some(ref detector) = state.ipc_leak_detector {
-        if let LeakResult::Detected { patterns, .. } = detector.scan(&body.payload) {
-            if let Some(ref logger) = state.audit_logger {
-                let mut event = AuditEvent::ipc(
-                    AuditEventType::IpcLeakDetected,
-                    &meta.agent_id,
-                    Some(&resolved_to),
-                    &format!("credential_leak: {patterns:?}"),
-                );
-                if let Some(a) = event.action.as_mut() {
-                    a.allowed = false;
+        if let Some(ref detector) = state.ipc_leak_detector {
+            if let LeakResult::Detected { patterns, .. } = detector.scan(&body.payload) {
+                if let Some(ref logger) = state.audit_logger {
+                    let mut event = AuditEvent::ipc(
+                        AuditEventType::IpcLeakDetected,
+                        &meta.agent_id,
+                        Some(&resolved_to),
+                        &format!("credential_leak: {patterns:?}"),
+                    );
+                    if let Some(a) = event.action.as_mut() {
+                        a.allowed = false;
+                    }
+                    let _ = logger.log(&event);
                 }
-                let _ = logger.log(&event);
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(serde_json::json!({
+                        "error": "Message blocked: contains credentials or secrets",
+                        "code": "credential_leak",
+                        "retryable": false
+                    })),
+                ));
             }
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "error": "Message blocked: contains credentials or secrets",
-                    "code": "credential_leak",
-                    "retryable": false
-                })),
-            ));
         }
-    }
     } // end skip_leak_scan
 
     // Phase 4.0: session limit check via ipc_service
@@ -2452,9 +2455,12 @@ pub async fn handle_ipc_send(
             let ttl = config_lock.agents_ipc.message_ttl_secs;
             drop(config_lock);
 
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let count_usize = count.max(0) as usize;
+            let max_usize = max as usize;
             if crate::fork_core::application::services::ipc_service::check_session_limit(
-                count as usize,
-                max as usize,
+                count_usize,
+                max_usize,
             ) {
                 // Phase 4.0: escalation payload built by ipc_service
                 let escalation_payload =
@@ -2462,8 +2468,8 @@ pub async fn handle_ipc_send(
                         sid,
                         &meta.agent_id,
                         &resolved_to,
-                        count as usize,
-                        max as usize,
+                        count_usize,
+                        max_usize,
                     );
                 let _ = db.insert_message(
                     &meta.agent_id,
@@ -6293,12 +6299,11 @@ pub async fn handle_pipeline_start(
         ));
     }
 
-    let ports =
-        fork_core::application::services::pipeline_service::PipelineRunnerPorts {
-            pipeline_store: pipeline_store.clone(),
-            run_store: run_store.clone(),
-            executor: executor.clone(),
-        };
+    let ports = fork_core::application::services::pipeline_service::PipelineRunnerPorts {
+        pipeline_store: pipeline_store.clone(),
+        run_store: run_store.clone(),
+        executor: executor.clone(),
+    };
 
     // Spawn pipeline execution in background (non-blocking)
     let pipeline_name = body.pipeline_name.clone();

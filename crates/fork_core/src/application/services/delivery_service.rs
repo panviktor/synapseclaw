@@ -121,9 +121,7 @@ impl DeliveryService {
     /// Validate that a channel is available in the registry.
     fn validate_channel(&self, channel: &str) -> Result<()> {
         if !self.registry.has_channel(&channel.to_ascii_lowercase()) {
-            bail!(
-                "heartbeat.target is set to '{channel}' but channel is not available"
-            );
+            bail!("heartbeat.target is set to '{channel}' but channel is not available");
         }
         Ok(())
     }
@@ -198,7 +196,9 @@ mod tests {
     #[async_trait]
     impl ChannelRegistryPort for MockRegistry {
         fn has_channel(&self, channel_name: &str) -> bool {
-            self.capabilities.iter().any(|(name, _)| name == channel_name)
+            self.capabilities
+                .iter()
+                .any(|(name, _)| name == channel_name)
         }
 
         fn capabilities(&self, channel_name: &str) -> Vec<ChannelCapability> {

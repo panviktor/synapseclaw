@@ -66,16 +66,25 @@ impl QuarantinePort for QuarantineAdapter {
     }
 
     async fn list_quarantine(&self, limit: u32) -> Result<Vec<QuarantineItem>> {
-        let rows = self
-            .db
-            .list_messages_admin(None, None, None, Some(true), None, None, None, None, limit, 0);
+        let rows = self.db.list_messages_admin(
+            None,
+            None,
+            None,
+            Some(true),
+            None,
+            None,
+            None,
+            None,
+            limit,
+            0,
+        );
         Ok(rows
             .into_iter()
             .map(|r| QuarantineItem {
                 message_id: r.id,
                 from_agent: r.from_agent,
                 to_agent: r.to_agent,
-                from_trust_level: r.from_trust_level as i32,
+                from_trust_level: i32::from(r.from_trust_level),
                 original_kind: r.kind,
                 payload: r.payload,
                 created_at: r.created_at,

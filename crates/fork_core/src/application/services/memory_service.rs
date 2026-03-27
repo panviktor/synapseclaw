@@ -23,11 +23,8 @@ pub fn should_autosave(auto_save_enabled: bool, content: &str) -> bool {
 }
 
 /// Generate an autosave key for an inbound message.
-pub fn autosave_key(conversation_key: &str) -> String {
-    format!(
-        "user_msg_{}",
-        &uuid::Uuid::new_v4().to_string()[..8]
-    )
+pub fn autosave_key(_conversation_key: &str) -> String {
+    format!("user_msg_{}", &uuid::Uuid::new_v4().to_string()[..8])
 }
 
 // ── Recall formatting ────────────────────────────────────────────
@@ -37,12 +34,12 @@ pub fn autosave_key(conversation_key: &str) -> String {
 /// Filters by relevance, truncates per entry and total, formats for prompt injection.
 pub fn format_recall_context(entries: &[MemoryEntry], config: &RecallConfig) -> String {
     let mut context = String::new();
-    let mut included = 0usize;
     let mut used_chars = 0usize;
 
-    for entry in entries
+    for (included, entry) in entries
         .iter()
-        .filter(|e| e.score.map_or(true, |s| s >= config.min_relevance_score))
+        .filter(|e| e.score.is_none_or(|s| s >= config.min_relevance_score))
+        .enumerate()
     {
         if included >= config.max_entries {
             break;
@@ -65,7 +62,6 @@ pub fn format_recall_context(entries: &[MemoryEntry], config: &RecallConfig) -> 
             context.push_str("[Memory context]\n");
         }
         context.push_str(&line);
-        included += 1;
         used_chars += line_chars;
     }
 
@@ -134,12 +130,18 @@ mod tests {
 
     #[test]
     fn autosave_enabled_long_enough() {
-        assert!(should_autosave(true, "This message is definitely long enough to save"));
+        assert!(should_autosave(
+            true,
+            "This message is definitely long enough to save"
+        ));
     }
 
     #[test]
     fn autosave_disabled() {
-        assert!(!should_autosave(false, "This message is long enough but disabled"));
+        assert!(!should_autosave(
+            false,
+            "This message is long enough but disabled"
+        ));
     }
 
     #[test]
@@ -241,7 +243,10 @@ mod tests {
     #[test]
     fn consolidation_policy() {
         assert!(should_consolidate(true, "A sufficiently long user message"));
-        assert!(!should_consolidate(false, "A sufficiently long user message"));
+        assert!(!should_consolidate(
+            false,
+            "A sufficiently long user message"
+        ));
         assert!(!should_consolidate(true, "short"));
     }
 

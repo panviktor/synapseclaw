@@ -47,13 +47,19 @@ impl PrometheusObserver {
         .expect("valid metric");
 
         let llm_requests = IntCounterVec::new(
-            prometheus::Opts::new("synapseclaw_llm_requests_total", "Total LLM provider requests"),
+            prometheus::Opts::new(
+                "synapseclaw_llm_requests_total",
+                "Total LLM provider requests",
+            ),
             &["provider", "model", "success"],
         )
         .expect("valid metric");
 
         let tokens_input_total = IntCounterVec::new(
-            prometheus::Opts::new("synapseclaw_tokens_input_total", "Total input tokens consumed"),
+            prometheus::Opts::new(
+                "synapseclaw_tokens_input_total",
+                "Total input tokens consumed",
+            ),
             &["provider", "model"],
         )
         .expect("valid metric");
@@ -74,14 +80,19 @@ impl PrometheusObserver {
         .expect("valid metric");
 
         let channel_messages = IntCounterVec::new(
-            prometheus::Opts::new("synapseclaw_channel_messages_total", "Total channel messages"),
+            prometheus::Opts::new(
+                "synapseclaw_channel_messages_total",
+                "Total channel messages",
+            ),
             &["channel", "direction"],
         )
         .expect("valid metric");
 
-        let heartbeat_ticks =
-            prometheus::IntCounter::new("synapseclaw_heartbeat_ticks_total", "Total heartbeat ticks")
-                .expect("valid metric");
+        let heartbeat_ticks = prometheus::IntCounter::new(
+            "synapseclaw_heartbeat_ticks_total",
+            "Total heartbeat ticks",
+        )
+        .expect("valid metric");
 
         let errors = IntCounterVec::new(
             prometheus::Opts::new("synapseclaw_errors_total", "Total errors by component"),
@@ -96,7 +107,10 @@ impl PrometheusObserver {
         .expect("valid metric");
 
         let cache_misses = IntCounterVec::new(
-            prometheus::Opts::new("synapseclaw_cache_misses_total", "Total response cache misses"),
+            prometheus::Opts::new(
+                "synapseclaw_cache_misses_total",
+                "Total response cache misses",
+            ),
             &["cache_type"],
         )
         .expect("valid metric");

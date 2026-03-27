@@ -395,17 +395,16 @@ pub struct AppState {
     /// Phase 4.0: Unified run execution store
     pub run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>>,
     /// Phase 4.1: Pipeline definition store (TOML loader)
-    pub pipeline_store:
-        Option<Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort>>,
+    pub pipeline_store: Option<Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort>>,
     /// Phase 4.1: Pipeline step executor (IPC bridge)
     pub pipeline_executor:
         Option<Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>>,
     /// Phase 4.1: Message router for deterministic inbound routing
-    pub message_router:
-        Option<Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort>>,
+    pub message_router: Option<Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort>>,
     /// Phase 4.1: Tool middleware chain
-    pub tool_middleware:
-        Option<Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>>,
+    pub tool_middleware: Option<
+        Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>,
+    >,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -418,6 +417,7 @@ pub async fn run_gateway(
     channel_registry: Option<
         Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
     >,
+    shared_ipc_client: Option<Arc<crate::tools::agents_ipc::IpcClient>>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -503,6 +503,7 @@ pub async fn run_gateway(
         &config.agents,
         config.api_key.as_deref(),
         &config,
+        shared_ipc_client.clone(),
     );
     let tools_registry: Arc<Vec<ToolSpec>> =
         Arc::new(tools_registry_raw.iter().map(|t| t.spec()).collect());
@@ -803,9 +804,8 @@ pub async fn run_gateway(
     // ── Phase 4.0: RunStorePort (wraps ChatDb) ──
     let run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>> =
         chat_db.as_ref().map(|db| {
-            Arc::new(
-                crate::fork_adapters::storage::run_store::ChatDbRunStore::new(Arc::clone(db)),
-            ) as Arc<dyn crate::fork_core::ports::run_store::RunStorePort>
+            Arc::new(crate::fork_adapters::storage::run_store::ChatDbRunStore::new(Arc::clone(db)))
+                as Arc<dyn crate::fork_core::ports::run_store::RunStorePort>
         });
 
     // Parse admin CIDR allowlist — fail at boot on invalid entries
@@ -925,7 +925,7 @@ pub async fn run_gateway(
         pipeline_store: None,    // initialized below if pipelines enabled
         pipeline_executor: None, // initialized below if pipelines enabled
         message_router: None,    // initialized below if pipelines enabled
-        tool_middleware: None,    // initialized below if pipelines enabled
+        tool_middleware: None,   // initialized below if pipelines enabled
     };
 
     // Phase 4.1: Initialize pipeline engine if enabled
@@ -954,61 +954,86 @@ pub async fn run_gateway(
             tracing::info!(pipelines = ?names, "pipeline definitions loaded");
         }
 
-        // Create IPC step executor that reuses the broker's IpcClient
-        // (handles Ed25519 signing, sender_seq, replay protection).
+        // Create IPC step executor for pipeline dispatch.
+        // If a shared IpcClient was provided (daemon mode), reuse it to avoid
+        // duplicate AtomicI64 seq counters → replay_rejected.
+        // In standalone gateway mode, create a local IpcClient.
         let pipeline_executor: Option<
             Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
         > = if config.agents_ipc.enabled {
             if let Some(ref broker_token) = config.agents_ipc.broker_token {
-                let broker_url = format!("http://{}:{}", host, port);
-                let runner_id = config
-                    .pipelines
-                    .runner_agent_id
-                    .clone()
-                    .or_else(|| config.agents_ipc.agent_id.clone())
-                    .unwrap_or_else(|| config.agents_ipc.role.clone());
-                let key_path = config
-                    .config_path
-                    .parent()
-                    .unwrap_or(std::path::Path::new("."))
-                    .join("agent.key");
+                let ipc_client = if let Some(ref shared) = shared_ipc_client {
+                    // Daemon mode: reuse the shared IpcClient (single seq counter).
+                    // Still sync sender_seq from broker DB in case DB advanced.
+                    if let Some(ref db) = state.ipc_db {
+                        let runner_id = config
+                            .pipelines
+                            .runner_agent_id
+                            .clone()
+                            .or_else(|| config.agents_ipc.agent_id.clone())
+                            .unwrap_or_else(|| config.agents_ipc.role.clone());
+                        let db_seq = db.get_last_sender_seq(&runner_id);
+                        shared.sync_sender_seq(db_seq);
+                    }
+                    Arc::clone(shared)
+                } else {
+                    // Standalone gateway mode: create a local IpcClient.
+                    let broker_url = format!("http://{}:{}", host, port);
+                    let runner_id = config
+                        .pipelines
+                        .runner_agent_id
+                        .clone()
+                        .or_else(|| config.agents_ipc.agent_id.clone())
+                        .unwrap_or_else(|| config.agents_ipc.role.clone());
+                    let key_path = config
+                        .config_path
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("agent.key");
 
-                let mut ipc_client = crate::tools::agents_ipc::IpcClient::new(
-                    &broker_url,
-                    broker_token,
-                    config.agents_ipc.request_timeout_secs,
-                );
-                if let Ok(identity) =
-                    crate::security::identity::AgentIdentity::load_or_generate(&key_path)
-                {
-                    ipc_client = ipc_client.with_identity(identity, runner_id.clone());
-                    tracing::info!(
-                        agent_id = %runner_id,
-                        "pipeline executor: IpcClient with Ed25519 identity"
+                    let mut client = crate::tools::agents_ipc::IpcClient::new(
+                        &broker_url,
+                        broker_token,
+                        config.agents_ipc.request_timeout_secs,
                     );
-                }
-                let ipc_client = Arc::new(ipc_client);
+                    if let Ok(identity) =
+                        crate::security::identity::AgentIdentity::load_or_generate(&key_path)
+                    {
+                        client = client.with_identity(identity, runner_id.clone());
+                        tracing::info!(
+                            agent_id = %runner_id,
+                            "pipeline executor: IpcClient with Ed25519 identity"
+                        );
+                    }
+                    if let Some(ref db) = state.ipc_db {
+                        let db_seq = db.get_last_sender_seq(&runner_id);
+                        client.sync_sender_seq(db_seq);
+                    }
 
-                // Register public key with broker
-                {
-                    let client = Arc::clone(&ipc_client);
-                    tokio::spawn(async move {
-                        if let Err(e) = client.register_public_key().await {
-                            tracing::warn!("pipeline executor: key registration failed: {e}");
-                        }
-                    });
-                }
+                    let client = Arc::new(client);
+
+                    // Register public key with broker
+                    {
+                        let c = Arc::clone(&client);
+                        tokio::spawn(async move {
+                            if let Err(e) = c.register_public_key().await {
+                                tracing::warn!("pipeline executor: key registration failed: {e}");
+                            }
+                        });
+                    }
+                    client
+                };
 
                 Some(Arc::new(
                     crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
                         ipc_client,
                     ),
                 )
-                    as Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>)
+                    as Arc<
+                        dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort,
+                    >)
             } else {
-                tracing::warn!(
-                    "Pipeline engine disabled: agents_ipc.broker_token not configured"
-                );
+                tracing::warn!("Pipeline engine disabled: agents_ipc.broker_token not configured");
                 None
             }
         } else {
@@ -1048,8 +1073,12 @@ pub async fn run_gateway(
         }
 
         if !config.pipelines.approval_required_tools.is_empty() {
-            let tools: std::collections::HashSet<String> =
-                config.pipelines.approval_required_tools.iter().cloned().collect();
+            let tools: std::collections::HashSet<String> = config
+                .pipelines
+                .approval_required_tools
+                .iter()
+                .cloned()
+                .collect();
             middleware_chain.push(Box::new(
                 crate::fork_adapters::middleware::approval_gate::ApprovalGateMiddleware::new(tools),
             ));
@@ -1080,14 +1109,17 @@ pub async fn run_gateway(
         }
 
         // Pipeline recovery: resume incomplete runs
-        if let (Some(ref ps), Some(ref pe), Some(ref rs)) =
-            (&state.pipeline_store, &state.pipeline_executor, &state.run_store)
-        {
-            let ports = crate::fork_core::application::services::pipeline_service::PipelineRunnerPorts {
-                pipeline_store: ps.clone(),
-                run_store: rs.clone(),
-                executor: pe.clone(),
-            };
+        if let (Some(ref ps), Some(ref pe), Some(ref rs)) = (
+            &state.pipeline_store,
+            &state.pipeline_executor,
+            &state.run_store,
+        ) {
+            let ports =
+                crate::fork_core::application::services::pipeline_service::PipelineRunnerPorts {
+                    pipeline_store: ps.clone(),
+                    run_store: rs.clone(),
+                    executor: pe.clone(),
+                };
             let report =
                 crate::fork_core::application::use_cases::resume_pipeline::recover_all(&ports)
                     .await;

@@ -28,6 +28,7 @@ impl HooksPort for HookRunnerAdapter {
             reply_target: sender.to_string(),
             content,
             channel: channel.to_string(),
+            #[allow(clippy::cast_sign_loss)]
             timestamp: chrono::Utc::now().timestamp() as u64,
             thread_ts: None,
         };

@@ -65,9 +65,7 @@ impl ToolMiddlewarePort for ApprovalGateMiddleware {
             return Ok(());
         }
 
-        let prompt = self
-            .prompt_template
-            .replace("{tool}", &ctx.tool_name);
+        let prompt = self.prompt_template.replace("{tool}", &ctx.tool_name);
 
         Err(ToolBlock::ApprovalRequired {
             tool: ctx.tool_name.clone(),
@@ -75,11 +73,7 @@ impl ToolMiddlewarePort for ApprovalGateMiddleware {
         })
     }
 
-    async fn after(
-        &self,
-        _ctx: &ToolCallContext,
-        _result: &mut Value,
-    ) -> Result<(), ToolBlock> {
+    async fn after(&self, _ctx: &ToolCallContext, _result: &mut Value) -> Result<(), ToolBlock> {
         Ok(())
     }
 

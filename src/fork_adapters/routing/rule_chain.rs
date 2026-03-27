@@ -53,8 +53,8 @@ impl TomlMessageRouter {
     }
 
     fn parse_file(path: &std::path::Path) -> Result<RoutingTable, String> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         let toml_val: RoutingToml =
             toml::from_str(&content).map_err(|e| format!("parse {}: {e}", path.display()))?;
         Ok(toml_val.into_table())
@@ -83,6 +83,7 @@ impl MessageRouterPort for TomlMessageRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
 
@@ -118,7 +119,7 @@ keywords = ["deploy", "restart", "server"]
             .route(&RoutingInput {
                 content: "/research AI trends".into(),
                 source_kind: "channel".into(),
-                metadata: Default::default(),
+                metadata: HashMap::default(),
             })
             .await;
         assert_eq!(r.target, "news-reader");
@@ -127,7 +128,7 @@ keywords = ["deploy", "restart", "server"]
             .route(&RoutingInput {
                 content: "please deploy the new version".into(),
                 source_kind: "channel".into(),
-                metadata: Default::default(),
+                metadata: HashMap::default(),
             })
             .await;
         assert_eq!(r2.target, "devops");
@@ -136,7 +137,7 @@ keywords = ["deploy", "restart", "server"]
             .route(&RoutingInput {
                 content: "hello there".into(),
                 source_kind: "channel".into(),
-                metadata: Default::default(),
+                metadata: HashMap::default(),
             })
             .await;
         assert_eq!(r3.target, "marketing-lead");
@@ -151,7 +152,7 @@ keywords = ["deploy", "restart", "server"]
             .route(&RoutingInput {
                 content: "test".into(),
                 source_kind: "web".into(),
-                metadata: Default::default(),
+                metadata: HashMap::default(),
             })
             .await;
         assert_eq!(r.target, "fallback-agent");
@@ -175,7 +176,7 @@ keywords = ["deploy", "restart", "server"]
             .route(&RoutingInput {
                 content: "unmatched".into(),
                 source_kind: "channel".into(),
-                metadata: Default::default(),
+                metadata: HashMap::default(),
             })
             .await;
         assert_eq!(r.target, "new-default");

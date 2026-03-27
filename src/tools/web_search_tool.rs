@@ -293,14 +293,8 @@ impl WebSearchTool {
                     .and_then(|t| t.as_str())
                     .unwrap_or("No title");
                 let url = result.get("url").and_then(|u| u.as_str()).unwrap_or("");
-                let content = result
-                    .get("content")
-                    .and_then(|c| c.as_str())
-                    .unwrap_or("");
-                let score = result
-                    .get("score")
-                    .and_then(|s| s.as_f64())
-                    .unwrap_or(0.0);
+                let content = result.get("content").and_then(|c| c.as_str()).unwrap_or("");
+                let score = result.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
 
                 lines.push(format!("{}. {} (relevance: {:.2})", i + 1, title, score));
                 lines.push(format!("   {}", url));
@@ -569,8 +563,15 @@ mod tests {
         .unwrap();
 
         // No boot key -- forces reload from config
-        let tool =
-            WebSearchTool::new_with_config("brave".to_string(), None, None, 5, 15, config_path, false);
+        let tool = WebSearchTool::new_with_config(
+            "brave".to_string(),
+            None,
+            None,
+            5,
+            15,
+            config_path,
+            false,
+        );
         let key = tool.resolve_brave_api_key().unwrap();
         assert_eq!(key, "fresh-key-from-disk");
     }

@@ -7,7 +7,6 @@
 use crate::application::services::pipeline_service::{
     self, PipelineRunResult, PipelineRunnerPorts, StartPipelineParams,
 };
-use crate::domain::pipeline_context::PipelineState;
 use serde_json::Value;
 
 /// Parameters for the start_pipeline use case.
@@ -68,15 +67,16 @@ pub async fn execute(
 mod tests {
     use super::*;
     use crate::domain::pipeline::{PipelineDefinition, PipelineStep, StepTransition};
+    use crate::domain::pipeline_context::PipelineState;
+    use crate::domain::run::{Run, RunEvent, RunState};
     use crate::ports::pipeline_executor::{
         PipelineExecutorPort, StepExecutionError, StepExecutionResult,
     };
     use crate::ports::pipeline_store::{PipelineStorePort, ReloadEvent};
     use crate::ports::run_store::RunStorePort;
-    use crate::domain::run::{Run, RunEvent, RunState};
     use async_trait::async_trait;
     use serde_json::json;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     struct MockStore {
         defs: Vec<PipelineDefinition>,
@@ -99,13 +99,32 @@ mod tests {
 
     #[async_trait]
     impl RunStorePort for MockRunStore {
-        async fn create_run(&self, _run: &Run) -> anyhow::Result<()> { Ok(()) }
-        async fn get_run(&self, _run_id: &str) -> Option<Run> { None }
-        async fn update_state(&self, _id: &str, _s: RunState, _f: Option<u64>) -> anyhow::Result<()> { Ok(()) }
-        async fn list_runs(&self, _k: &str, _l: usize) -> Vec<Run> { vec![] }
-        async fn list_all_runs(&self, _l: usize) -> Vec<Run> { vec![] }
-        async fn append_event(&self, _e: &RunEvent) -> anyhow::Result<()> { Ok(()) }
-        async fn get_events(&self, _id: &str, _l: usize) -> Vec<RunEvent> { vec![] }
+        async fn create_run(&self, _run: &Run) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn get_run(&self, _run_id: &str) -> Option<Run> {
+            None
+        }
+        async fn update_state(
+            &self,
+            _id: &str,
+            _s: RunState,
+            _f: Option<u64>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn list_runs(&self, _k: &str, _l: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn list_all_runs(&self, _l: usize) -> Vec<Run> {
+            vec![]
+        }
+        async fn append_event(&self, _e: &RunEvent) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn get_events(&self, _id: &str, _l: usize) -> Vec<RunEvent> {
+            vec![]
+        }
     }
 
     struct OkExecutor;
@@ -113,8 +132,14 @@ mod tests {
     #[async_trait]
     impl PipelineExecutorPort for OkExecutor {
         async fn execute_step(
-            &self, _run_id: &str, _step_id: &str, _agent_id: &str,
-            _input: &Value, _tools: &[String], _desc: &str, _timeout: Option<u64>,
+            &self,
+            _run_id: &str,
+            _step_id: &str,
+            _agent_id: &str,
+            _input: &Value,
+            _tools: &[String],
+            _desc: &str,
+            _timeout: Option<u64>,
         ) -> Result<StepExecutionResult, StepExecutionError> {
             Ok(StepExecutionResult {
                 output: json!({"ok": true}),
