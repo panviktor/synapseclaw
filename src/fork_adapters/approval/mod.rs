@@ -116,15 +116,10 @@ impl ApprovalManager {
         let session_allowlist: Vec<String> =
             self.session_allowlist.lock().iter().cloned().collect();
 
-        // Convert upstream AutonomyLevel to fork_core's owned type
-        let core_level = match self.autonomy_level {
-            AutonomyLevel::ReadOnly => fork_core::domain::config::AutonomyLevel::ReadOnly,
-            AutonomyLevel::Supervised => fork_core::domain::config::AutonomyLevel::Supervised,
-            AutonomyLevel::Full => fork_core::domain::config::AutonomyLevel::Full,
-        };
+        // AutonomyLevel is now a single type from fork_core — no conversion needed.
         crate::fork_core::application::services::approval_service::check_needs_approval(
             tool_name,
-            core_level,
+            self.autonomy_level,
             &auto_approve,
             &always_ask,
             &session_allowlist,

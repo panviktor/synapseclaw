@@ -1748,6 +1748,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "jsonschema",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",
