@@ -1,57 +1,34 @@
 //! IPC-based pipeline step executor adapter.
 //!
-//! Phase 4.1: dispatches pipeline steps to agents via the IPC broker HTTP API.
+//! Phase 4.1: dispatches pipeline steps to agents via the IPC broker.
 //!
-//! Uses the same HTTP path as all other agents:
-//! - POST /api/ipc/send → triggers push notification to target agent
-//! - GET /api/ipc/inbox → polls for result messages
-//! - POST /api/ipc/ack → acknowledges processed messages
-//!
-//! This ensures push dispatcher, ACL, audit, and rate limiting all work
-//! correctly — the pipeline runner is just another IPC client.
+//! Delegates all IPC communication to the existing `IpcClient`, which
+//! handles Ed25519 signing, sender_seq, replay protection, and key
+//! registration — no duplication.
 
 use async_trait::async_trait;
 use fork_core::ports::pipeline_executor::{
     PipelineExecutorPort, StepExecutionError, StepExecutionResult,
 };
 use serde_json::Value;
-use tracing::{debug, warn};
+use std::sync::Arc;
+use tracing::debug;
 
-/// Adapter: executes pipeline steps via broker HTTP API.
+/// Adapter: executes pipeline steps via the existing IpcClient.
 pub struct IpcStepExecutor {
-    /// Broker HTTP base URL (e.g. "http://127.0.0.1:42617").
-    broker_url: String,
-    /// Bearer token for authenticating with the broker.
-    bearer_token: String,
-    /// Agent ID of the pipeline runner (used as `from_agent`).
-    runner_agent_id: String,
-    /// HTTP client.
-    client: reqwest::Client,
+    /// Shared IPC client (same instance the broker uses for its own IPC).
+    ipc_client: Arc<crate::tools::agents_ipc::IpcClient>,
     /// Poll interval for checking agent responses (milliseconds).
     poll_interval_ms: u64,
 }
 
 impl IpcStepExecutor {
-    /// Create a new IPC step executor.
-    ///
-    /// - `broker_url`: broker gateway URL
-    /// - `bearer_token`: authentication token for the broker
-    /// - `runner_agent_id`: pipeline runner's agent identity
-    pub fn new(broker_url: String, bearer_token: String, runner_agent_id: String) -> Self {
+    /// Create a new executor wrapping an existing IpcClient.
+    pub fn new(ipc_client: Arc<crate::tools::agents_ipc::IpcClient>) -> Self {
         Self {
-            broker_url,
-            bearer_token,
-            runner_agent_id,
-            client: reqwest::Client::new(),
+            ipc_client,
             poll_interval_ms: 2000,
         }
-    }
-
-    /// Override the poll interval (for testing).
-    #[cfg(test)]
-    pub fn with_poll_interval_ms(mut self, ms: u64) -> Self {
-        self.poll_interval_ms = ms;
-        self
     }
 
     /// Build the task payload JSON sent to the agent.
@@ -80,88 +57,6 @@ impl IpcStepExecutor {
             retryable: true,
         })
     }
-
-    /// Send a message via broker HTTP API (POST /api/ipc/send).
-    async fn send_message(
-        &self,
-        to_agent: &str,
-        kind: &str,
-        payload: &str,
-        session_id: &str,
-    ) -> Result<i64, StepExecutionError> {
-        let body = serde_json::json!({
-            "to": to_agent,
-            "kind": kind,
-            "payload": payload,
-            "session_id": session_id,
-            "priority": 5,
-        });
-
-        let resp = self
-            .client
-            .post(format!("{}/api/ipc/send", self.broker_url))
-            .header("Authorization", format!("Bearer {}", self.bearer_token))
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| StepExecutionError {
-                code: "http_error".into(),
-                message: format!("broker send failed: {e}"),
-                retryable: true,
-            })?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(StepExecutionError {
-                code: format!("broker_{}", status.as_u16()),
-                message: format!("broker returned {status}: {text}"),
-                retryable: status.is_server_error(),
-            });
-        }
-
-        let json: Value = resp.json().await.unwrap_or(Value::Null);
-        let seq = json["seq"].as_i64().unwrap_or(0);
-        Ok(seq)
-    }
-
-    /// Fetch inbox messages via broker HTTP API (GET /api/ipc/inbox).
-    async fn fetch_inbox(&self) -> Result<Vec<Value>, StepExecutionError> {
-        let resp = self
-            .client
-            .get(format!("{}/api/ipc/inbox", self.broker_url))
-            .header("Authorization", format!("Bearer {}", self.bearer_token))
-            .send()
-            .await
-            .map_err(|e| StepExecutionError {
-                code: "http_error".into(),
-                message: format!("broker inbox fetch failed: {e}"),
-                retryable: true,
-            })?;
-
-        if !resp.status().is_success() {
-            return Ok(vec![]);
-        }
-
-        let json: Value = resp.json().await.unwrap_or(Value::Null);
-        let messages = json["messages"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        Ok(messages)
-    }
-
-    /// Acknowledge messages via broker HTTP API (POST /api/ipc/ack).
-    async fn ack_messages(&self, message_ids: &[i64]) {
-        let body = serde_json::json!({"message_ids": message_ids});
-        let _ = self
-            .client
-            .post(format!("{}/api/ipc/ack", self.broker_url))
-            .header("Authorization", format!("Bearer {}", self.bearer_token))
-            .json(&body)
-            .send()
-            .await;
-    }
 }
 
 #[async_trait]
@@ -179,10 +74,35 @@ impl PipelineExecutorPort for IpcStepExecutor {
         let session_id = format!("pipeline:{}:{}", run_id, step_id);
         let payload = Self::build_task_payload(step_id, input, tools, description);
 
-        // Send task via broker HTTP API (triggers push notification)
-        let seq = self
-            .send_message(agent_id, "task", &payload, &session_id)
-            .await?;
+        // Send task via IpcClient (handles signing, seq, etc.)
+        let body = serde_json::json!({
+            "to": agent_id,
+            "kind": "task",
+            "payload": payload,
+            "session_id": session_id,
+            "priority": 5,
+        });
+
+        let resp = self.ipc_client.send_message(&body).await.map_err(|e| {
+            StepExecutionError {
+                code: "http_error".into(),
+                message: format!("broker send failed: {e}"),
+                retryable: true,
+            }
+        })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(StepExecutionError {
+                code: format!("broker_{}", status.as_u16()),
+                message: format!("broker returned {status}: {text}"),
+                retryable: status.is_server_error(),
+            });
+        }
+
+        let json: Value = resp.json().await.unwrap_or(Value::Null);
+        let seq = json["seq"].as_i64().unwrap_or(0);
 
         debug!(
             run_id = %run_id,
@@ -190,7 +110,7 @@ impl PipelineExecutorPort for IpcStepExecutor {
             agent = %agent_id,
             seq = seq,
             session = %session_id,
-            "step task dispatched via HTTP"
+            "step task dispatched"
         );
 
         // Poll for result
@@ -212,19 +132,21 @@ impl PipelineExecutorPort for IpcStepExecutor {
                 });
             }
 
-            let messages = self.fetch_inbox().await?;
+            let messages = self
+                .ipc_client
+                .peek_inbox(Some(agent_id), Some(&["result"]), 50)
+                .await
+                .unwrap_or_default();
 
             // Find a result matching our session
             if let Some(result_msg) = messages.iter().find(|m| {
                 m["session_id"].as_str() == Some(&session_id)
-                    && m["from_agent"].as_str() == Some(agent_id)
-                    && m["kind"].as_str() == Some("result")
             }) {
                 let msg_id = result_msg["id"].as_i64().unwrap_or(0);
                 let payload_str = result_msg["payload"].as_str().unwrap_or("{}");
 
                 // ACK the message
-                self.ack_messages(&[msg_id]).await;
+                let _ = self.ipc_client.ack_messages(&[msg_id]).await;
 
                 // Parse response
                 let output = Self::parse_response(payload_str)?;

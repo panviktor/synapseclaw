@@ -954,9 +954,8 @@ pub async fn run_gateway(
             tracing::info!(pipelines = ?names, "pipeline definitions loaded");
         }
 
-        // Create IPC step executor via HTTP API (triggers push notifications).
-        // Pipeline engine runs as the broker (openclaw, trust=0) — can send tasks
-        // to all agents regardless of trust level.  Uses broker's own token.
+        // Create IPC step executor that reuses the broker's IpcClient
+        // (handles Ed25519 signing, sender_seq, replay protection).
         let pipeline_executor: Option<
             Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
         > = if config.agents_ipc.enabled {
@@ -968,11 +967,41 @@ pub async fn run_gateway(
                     .clone()
                     .or_else(|| config.agents_ipc.agent_id.clone())
                     .unwrap_or_else(|| config.agents_ipc.role.clone());
+                let key_path = config
+                    .config_path
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join("agent.key");
+
+                let mut ipc_client = crate::tools::agents_ipc::IpcClient::new(
+                    &broker_url,
+                    broker_token,
+                    config.agents_ipc.request_timeout_secs,
+                );
+                if let Ok(identity) =
+                    crate::security::identity::AgentIdentity::load_or_generate(&key_path)
+                {
+                    ipc_client = ipc_client.with_identity(identity, runner_id.clone());
+                    tracing::info!(
+                        agent_id = %runner_id,
+                        "pipeline executor: IpcClient with Ed25519 identity"
+                    );
+                }
+                let ipc_client = Arc::new(ipc_client);
+
+                // Register public key with broker
+                {
+                    let client = Arc::clone(&ipc_client);
+                    tokio::spawn(async move {
+                        if let Err(e) = client.register_public_key().await {
+                            tracing::warn!("pipeline executor: key registration failed: {e}");
+                        }
+                    });
+                }
+
                 Some(Arc::new(
                     crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
-                        broker_url,
-                        broker_token.clone(),
-                        runner_id,
+                        ipc_client,
                     ),
                 )
                     as Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>)
@@ -2904,18 +2933,33 @@ pub(crate) fn require_localhost(
     peer: &SocketAddr,
     admin_cidrs: &[AdminCidr],
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    if peer.ip().is_loopback() {
+    let ip = peer.ip();
+    if ip.is_loopback() {
         return Ok(());
     }
-    if let IpAddr::V4(v4) = peer.ip() {
+    // Extract IPv4 from IPv6-mapped addresses (::ffff:A.B.C.D)
+    let v4 = match ip {
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(v6) => v6.to_ipv4_mapped(),
+    };
+    if let Some(v4) = v4 {
+        if v4.is_loopback() {
+            return Ok(());
+        }
         if admin_cidrs.iter().any(|cidr| cidr.contains(v4)) {
             return Ok(());
         }
     }
+    tracing::debug!(
+        peer_ip = %ip,
+        v4 = ?v4,
+        cidrs = admin_cidrs.len(),
+        "admin access denied"
+    );
     Err((
         StatusCode::FORBIDDEN,
         Json(serde_json::json!({
-            "error": "Admin endpoints are restricted to localhost and configured admin_cidrs"
+            "error": format!("Admin endpoints restricted to localhost/admin_cidrs (peer: {ip})")
         })),
     ))
 }

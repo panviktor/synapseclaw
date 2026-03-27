@@ -1534,6 +1534,13 @@ async fn handle_message_via_orchestrator(
     };
 
     // ── Phase 4.1: Check if message should trigger a pipeline ─────
+    tracing::info!(
+        has_router = ctx.message_router.is_some(),
+        has_store = ctx.pipeline_store.is_some(),
+        has_executor = ctx.pipeline_executor.is_some(),
+        content = %envelope.content,
+        "pipeline routing check"
+    );
     if let (Some(ref router), Some(ref store), Some(ref executor)) =
         (&ctx.message_router, &ctx.pipeline_store, &ctx.pipeline_executor)
     {
@@ -1543,6 +1550,13 @@ async fn handle_message_via_orchestrator(
             metadata: std::collections::HashMap::new(),
         };
         let route_result = router.route(&routing_input).await;
+        tracing::info!(
+            target = %route_result.target,
+            pipeline = ?route_result.pipeline,
+            matched = ?route_result.matched_rule,
+            fallback = route_result.is_fallback,
+            "pipeline routing result"
+        );
         if let Some(ref pipeline_name) = route_result.pipeline {
             if store.get(pipeline_name).await.is_some() {
                 let matched = route_result
@@ -3360,7 +3374,7 @@ pub async fn start_channels(config: Config) -> Result<()> {
             }
         }
 
-        // IPC step executor — uses broker's own token for dispatch
+        // IPC step executor — reuses broker's IpcClient for dispatch
         let executor: Option<
             Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
         > = if config.agents_ipc.enabled {
@@ -3371,13 +3385,27 @@ pub async fn start_channels(config: Config) -> Result<()> {
                     .clone()
                     .or_else(|| config.agents_ipc.agent_id.clone())
                     .unwrap_or_else(|| config.agents_ipc.role.clone());
+                let key_path = config
+                    .config_path
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join("agent.key");
+
+                let mut ipc_client = crate::tools::agents_ipc::IpcClient::new(
+                    &config.agents_ipc.broker_url,
+                    broker_token,
+                    config.agents_ipc.request_timeout_secs,
+                );
+                if let Ok(identity) =
+                    crate::security::identity::AgentIdentity::load_or_generate(&key_path)
+                {
+                    ipc_client = ipc_client.with_identity(identity, runner_id);
+                }
                 Some(Arc::new(
                     crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
-                        config.agents_ipc.broker_url.clone(),
-                        broker_token.clone(),
-                        runner_id,
+                        Arc::new(ipc_client),
                     ),
-                ))
+                ) as Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>)
             } else {
                 None
             }
