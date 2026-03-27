@@ -74,14 +74,17 @@ impl PipelineExecutorPort for IpcStepExecutor {
         let session_id = format!("pipeline:{}:{}", run_id, step_id);
         let payload = Self::build_task_payload(step_id, input, tools, description);
 
-        // Send task via IpcClient (handles signing, seq, etc.)
-        let body = serde_json::json!({
+        // Send task via IpcClient
+        let mut body = serde_json::json!({
             "to": agent_id,
             "kind": "task",
             "payload": payload,
             "session_id": session_id,
             "priority": 5,
         });
+
+        // Sign the message (adds signature, sender_seq, sender_timestamp)
+        self.ipc_client.sign_send_body(&mut body);
 
         let resp = self.ipc_client.send_message(&body).await.map_err(|e| {
             StepExecutionError {
