@@ -395,7 +395,7 @@ pub async fn handle_api_cron_list(
     }
 
     let config = state.config.lock().clone();
-    match crate::cron::list_jobs(&config) {
+    match crate::fork_adapters::cron::list_jobs(&config) {
         Ok(jobs) => {
             let jobs_json: Vec<serde_json::Value> = jobs
                 .iter()
@@ -432,12 +432,12 @@ pub async fn handle_api_cron_add(
     }
 
     let config = state.config.lock().clone();
-    let schedule = crate::cron::Schedule::Cron {
+    let schedule = crate::fork_adapters::cron::Schedule::Cron {
         expr: body.schedule,
         tz: None,
     };
 
-    match crate::cron::add_shell_job_with_approval(
+    match crate::fork_adapters::cron::add_shell_job_with_approval(
         &config,
         body.name,
         schedule,
@@ -477,7 +477,7 @@ pub async fn handle_api_cron_runs(
     let config = state.config.lock().clone();
 
     // Verify the job exists before listing runs.
-    if let Err(e) = crate::cron::get_job(&config, &id) {
+    if let Err(e) = crate::fork_adapters::cron::get_job(&config, &id) {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": format!("Cron job not found: {e}")})),
@@ -485,7 +485,7 @@ pub async fn handle_api_cron_runs(
             .into_response();
     }
 
-    match crate::cron::list_runs(&config, &id, limit) {
+    match crate::fork_adapters::cron::list_runs(&config, &id, limit) {
         Ok(runs) => {
             let runs_json: Vec<serde_json::Value> = runs
                 .iter()
@@ -522,7 +522,7 @@ pub async fn handle_api_cron_delete(
     }
 
     let config = state.config.lock().clone();
-    match crate::cron::remove_job(&config, &id) {
+    match crate::fork_adapters::cron::remove_job(&config, &id) {
         Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -602,19 +602,19 @@ pub async fn handle_api_doctor(
     }
 
     let config = state.config.lock().clone();
-    let results = crate::doctor::diagnose(&config);
+    let results = crate::fork_adapters::doctor::diagnose(&config);
 
     let ok_count = results
         .iter()
-        .filter(|r| r.severity == crate::doctor::Severity::Ok)
+        .filter(|r| r.severity == crate::fork_adapters::doctor::Severity::Ok)
         .count();
     let warn_count = results
         .iter()
-        .filter(|r| r.severity == crate::doctor::Severity::Warn)
+        .filter(|r| r.severity == crate::fork_adapters::doctor::Severity::Warn)
         .count();
     let error_count = results
         .iter()
-        .filter(|r| r.severity == crate::doctor::Severity::Error)
+        .filter(|r| r.severity == crate::fork_adapters::doctor::Severity::Error)
         .count();
 
     Json(serde_json::json!({
@@ -1497,9 +1497,9 @@ pub async fn handle_api_activity(
     }
 
     // 2. Cron runs
-    if let Ok(jobs) = crate::cron::list_jobs(&config) {
+    if let Ok(jobs) = crate::fork_adapters::cron::list_jobs(&config) {
         for job in &jobs {
-            if let Ok(runs) = crate::cron::list_runs(&config, &job.id, 10) {
+            if let Ok(runs) = crate::fork_adapters::cron::list_runs(&config, &job.id, 10) {
                 for run in &runs {
                     let ts = run.started_at.timestamp();
                     if ts < from_ts {

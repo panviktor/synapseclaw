@@ -4,7 +4,7 @@
 //! `run_tool_call_loop` uses `providers::ChatMessage`. Conversions happen
 //! at entry and exit using helpers from `fork_adapters`.
 
-use crate::approval::ApprovalManager;
+use crate::fork_adapters::approval::ApprovalManager;
 use crate::fork_adapters::{from_core_message, to_core_message};
 use crate::fork_core::domain::message::ChatMessage as CoreChatMessage;
 use crate::fork_core::ports::agent_runtime::{AgentRuntimePort, AgentTurnResult};
@@ -18,13 +18,13 @@ use std::sync::Arc;
 pub struct ChannelAgentRuntime {
     pub provider: Arc<dyn Provider>,
     pub tools_registry: Arc<Vec<Box<dyn Tool>>>,
-    pub observer: Arc<dyn crate::observability::Observer>,
+    pub observer: Arc<dyn crate::fork_adapters::observability::Observer>,
     pub approval_manager: Arc<ApprovalManager>,
     pub channel_name: String,
     pub multimodal: crate::config::MultimodalConfig,
     pub excluded_tools: Arc<Vec<String>>,
     pub dedup_exempt_tools: Arc<Vec<String>>,
-    pub hooks: Option<Arc<crate::hooks::HookRunner>>,
+    pub hooks: Option<Arc<crate::fork_adapters::hooks::HookRunner>>,
     pub activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     pub message_timeout_secs: u64,
     pub max_tool_iterations: usize,

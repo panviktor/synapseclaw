@@ -691,8 +691,8 @@ mod tests {
 
     mod e2e_helpers {
         use crate::config::MemoryConfig;
+        use crate::fork_adapters::observability::{NoopObserver, Observer};
         use crate::memory::{self, Memory};
-        use crate::observability::{NoopObserver, Observer};
         use crate::providers::{ChatMessage, ChatRequest, ChatResponse, Provider};
         use std::sync::{Arc, Mutex};
 

@@ -72,26 +72,18 @@ fn pause_after_no_command_help() {
 }
 
 mod agent;
-mod approval;
 mod channels;
 mod config;
-mod cron;
-mod daemon;
-mod doctor;
 mod fork_adapters;
 /// Re-export workspace crate so `crate::fork_core::` paths work in the binary.
 pub use fork_core;
 mod gateway;
-mod hooks;
 mod identity;
 mod memory;
 mod multimodal;
-mod observability;
-mod onboard;
 mod providers;
 mod runtime;
 mod security;
-mod service;
 mod skills;
 mod tools;
 mod util;
@@ -800,11 +792,11 @@ async fn main() -> Result<()> {
         let is_tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
 
         let config = if channels_only {
-            Box::pin(onboard::run_channels_repair_wizard()).await
+            Box::pin(crate::fork_adapters::onboard::run_channels_repair_wizard()).await
         } else if is_tty && !has_provider_flags {
-            Box::pin(onboard::run_wizard(force)).await
+            Box::pin(crate::fork_adapters::onboard::run_wizard(force)).await
         } else {
-            Box::pin(onboard::run_quick_setup(
+            Box::pin(crate::fork_adapters::onboard::run_quick_setup(
                 api_key.as_deref(),
                 provider.as_deref(),
                 model.as_deref(),
@@ -832,7 +824,7 @@ async fn main() -> Result<()> {
     // All other commands need config loaded first
     let mut config = Box::pin(Config::load_or_init()).await?;
     config.apply_env_overrides();
-    observability::runtime_trace::init_from_config(&config.observability, &config.workspace_dir);
+    crate::fork_adapters::observability::runtime_trace::init_from_config(&config.observability, &config.workspace_dir);
     if config.security.otp.enabled {
         let config_dir = config
             .config_path
@@ -1026,7 +1018,7 @@ async fn main() -> Result<()> {
             } else {
                 info!("🧠 Starting SynapseClaw Daemon on {host}:{port}");
             }
-            Box::pin(daemon::run(config, host, port)).await
+            Box::pin(crate::fork_adapters::daemon::run(config, host, port)).await
         }
 
         Commands::Status => {
@@ -1119,7 +1111,7 @@ async fn main() -> Result<()> {
             tools,
         } => handle_estop_command(&config, estop_command, level, domains, tools),
 
-        Commands::Cron { cron_command } => cron::handle_command(cron_command, &config),
+        Commands::Cron { cron_command } => crate::fork_adapters::cron::handle_command(cron_command, &config),
 
         Commands::Models { model_command } => match model_command {
             ModelCommands::Refresh {
@@ -1131,18 +1123,28 @@ async fn main() -> Result<()> {
                     if provider.is_some() {
                         bail!("`models refresh --all` cannot be combined with --provider");
                     }
-                    onboard::run_models_refresh_all(&config, force).await
+                    crate::fork_adapters::onboard::run_models_refresh_all(&config, force).await
                 } else {
-                    onboard::run_models_refresh(&config, provider.as_deref(), force).await
+                    crate::fork_adapters::onboard::run_models_refresh(
+                        &config,
+                        provider.as_deref(),
+                        force,
+                    )
+                    .await
                 }
             }
             ModelCommands::List { provider } => {
-                onboard::run_models_list(&config, provider.as_deref()).await
+                crate::fork_adapters::onboard::run_models_list(&config, provider.as_deref()).await
             }
             ModelCommands::Set { model } => {
-                Box::pin(onboard::run_models_set(&config, &model)).await
+                Box::pin(crate::fork_adapters::onboard::run_models_set(
+                    &config, &model,
+                ))
+                .await
             }
-            ModelCommands::Status => onboard::run_models_status(&config).await,
+            ModelCommands::Status => {
+                crate::fork_adapters::onboard::run_models_status(&config).await
+            }
         },
 
         Commands::Providers => {
@@ -1184,27 +1186,35 @@ async fn main() -> Result<()> {
             instance,
         } => {
             let init_system = service_init.parse()?;
-            service::handle_command(&service_command, &config, init_system, instance.as_deref())
+            crate::fork_adapters::service::handle_command(
+                &service_command,
+                &config,
+                init_system,
+                instance.as_deref(),
+            )
         }
 
         Commands::Doctor { doctor_command } => match doctor_command {
             Some(DoctorCommands::Models {
                 provider,
                 use_cache,
-            }) => doctor::run_models(&config, provider.as_deref(), use_cache).await,
+            }) => {
+                crate::fork_adapters::doctor::run_models(&config, provider.as_deref(), use_cache)
+                    .await
+            }
             Some(DoctorCommands::Traces {
                 id,
                 event,
                 contains,
                 limit,
-            }) => doctor::run_traces(
+            }) => crate::fork_adapters::doctor::run_traces(
                 &config,
                 id.as_deref(),
                 event.as_deref(),
                 contains.as_deref(),
                 limit,
             ),
-            None => doctor::run(&config),
+            None => crate::fork_adapters::doctor::run(&config),
         },
 
         Commands::Channel { channel_command } => match channel_command {

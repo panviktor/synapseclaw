@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
 use crate::agent::loop_::run_tool_call_loop;
 use crate::config::DelegateAgentConfig;
-use crate::observability::traits::{Observer, ObserverEvent, ObserverMetric};
+use crate::fork_adapters::observability::traits::{Observer, ObserverEvent, ObserverMetric};
 use crate::providers::{self, ChatMessage, Provider};
 use crate::security::policy::ToolOperation;
 use crate::security::SecurityPolicy;

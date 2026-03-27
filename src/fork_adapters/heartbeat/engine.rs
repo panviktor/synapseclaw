@@ -1,5 +1,5 @@
 use crate::config::HeartbeatConfig;
-use crate::observability::{Observer, ObserverEvent};
+use crate::fork_adapters::observability::{Observer, ObserverEvent};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex as ParkingMutex;
@@ -684,7 +684,8 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
         tokio::fs::create_dir_all(&dir).await.unwrap();
 
-        let observer: Arc<dyn Observer> = Arc::new(crate::observability::NoopObserver);
+        let observer: Arc<dyn Observer> =
+            Arc::new(crate::fork_adapters::observability::NoopObserver);
         let engine = HeartbeatEngine::new(
             HeartbeatConfig {
                 enabled: true,
@@ -710,7 +711,8 @@ mod tests {
             .await
             .unwrap();
 
-        let observer: Arc<dyn Observer> = Arc::new(crate::observability::NoopObserver);
+        let observer: Arc<dyn Observer> =
+            Arc::new(crate::fork_adapters::observability::NoopObserver);
         let engine = HeartbeatEngine::new(
             HeartbeatConfig {
                 enabled: true,
@@ -728,7 +730,8 @@ mod tests {
 
     #[tokio::test]
     async fn run_returns_immediately_when_disabled() {
-        let observer: Arc<dyn Observer> = Arc::new(crate::observability::NoopObserver);
+        let observer: Arc<dyn Observer> =
+            Arc::new(crate::fork_adapters::observability::NoopObserver);
         let engine = HeartbeatEngine::new(
             HeartbeatConfig {
                 enabled: false,
@@ -756,7 +759,8 @@ mod tests {
         .await
         .unwrap();
 
-        let observer: Arc<dyn Observer> = Arc::new(crate::observability::NoopObserver);
+        let observer: Arc<dyn Observer> =
+            Arc::new(crate::fork_adapters::observability::NoopObserver);
         let engine = HeartbeatEngine::new(
             HeartbeatConfig {
                 enabled: true,
@@ -844,7 +848,8 @@ mod tests {
 
     #[test]
     fn engine_exposes_shared_metrics() {
-        let observer: Arc<dyn Observer> = Arc::new(crate::observability::NoopObserver);
+        let observer: Arc<dyn Observer> =
+            Arc::new(crate::fork_adapters::observability::NoopObserver);
         let engine =
             HeartbeatEngine::new(HeartbeatConfig::default(), std::env::temp_dir(), observer);
         let metrics = engine.metrics();

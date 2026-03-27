@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::hooks::traits::HookHandler;
+use crate::fork_adapters::hooks::traits::HookHandler;
 use crate::tools::traits::ToolResult;
 
 /// Logs tool calls for auditing.

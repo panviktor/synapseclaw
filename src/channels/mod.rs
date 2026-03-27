@@ -90,13 +90,13 @@ pub use whatsapp::WhatsAppChannel;
 pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::build_tool_instructions;
-use crate::approval::ApprovalManager;
 use crate::channels::session_backend::SessionBackend;
 use crate::config::Config;
+use crate::fork_adapters::approval::ApprovalManager;
+use crate::fork_adapters::observability::traits::{ObserverEvent, ObserverMetric};
+use crate::fork_adapters::observability::{self, Observer};
 use crate::identity;
 use crate::memory::{self, Memory};
-use crate::observability::traits::{ObserverEvent, ObserverMetric};
-use crate::observability::{self, Observer};
 use crate::providers::{self, ChatMessage, Provider};
 use crate::runtime;
 use crate::security::SecurityPolicy;
@@ -290,7 +290,7 @@ struct ChannelRuntimeContext {
     message_timeout_secs: u64,
     interrupt_on_new_message: InterruptOnNewMessageConfig,
     multimodal: crate::config::MultimodalConfig,
-    hooks: Option<Arc<crate::hooks::HookRunner>>,
+    hooks: Option<Arc<crate::fork_adapters::hooks::HookRunner>>,
     non_cli_excluded_tools: Arc<Vec<String>>,
     tool_call_dedup_exempt: Arc<Vec<String>>,
     model_routes: Arc<Vec<crate::config::ModelRouteConfig>>,
@@ -3479,14 +3479,18 @@ pub async fn start_channels(
         },
         multimodal: config.multimodal.clone(),
         hooks: if config.hooks.enabled {
-            let mut runner = crate::hooks::HookRunner::new();
+            let mut runner = crate::fork_adapters::hooks::HookRunner::new();
             if config.hooks.builtin.command_logger {
-                runner.register(Box::new(crate::hooks::builtin::CommandLoggerHook::new()));
+                runner.register(Box::new(
+                    crate::fork_adapters::hooks::builtin::CommandLoggerHook::new(),
+                ));
             }
             if config.hooks.builtin.webhook_audit.enabled {
-                runner.register(Box::new(crate::hooks::builtin::WebhookAuditHook::new(
-                    config.hooks.builtin.webhook_audit.clone(),
-                )));
+                runner.register(Box::new(
+                    crate::fork_adapters::hooks::builtin::WebhookAuditHook::new(
+                        config.hooks.builtin.webhook_audit.clone(),
+                    ),
+                ));
             }
             Some(Arc::new(runner))
         } else {
@@ -3557,8 +3561,8 @@ pub async fn start_channels(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fork_adapters::observability::NoopObserver;
     use crate::memory::Memory;
-    use crate::observability::NoopObserver;
     use crate::providers::{ChatMessage, Provider};
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -4780,7 +4784,7 @@ mod tests {
             .expect("should produce non-char-boundary data at byte index 120");
 
         observer.record_event(
-            &crate::observability::traits::ObserverEvent::ToolCallStart {
+            &crate::fork_adapters::observability::traits::ObserverEvent::ToolCallStart {
                 tool: "file_write".to_string(),
                 arguments: Some(payload),
             },

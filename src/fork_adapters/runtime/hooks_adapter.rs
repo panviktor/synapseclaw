@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use std::sync::Arc;
 
 pub struct HookRunnerAdapter {
-    runner: Arc<crate::hooks::HookRunner>,
+    runner: Arc<crate::fork_adapters::hooks::HookRunner>,
 }
 
 impl HookRunnerAdapter {
-    pub fn new(runner: Arc<crate::hooks::HookRunner>) -> Self {
+    pub fn new(runner: Arc<crate::fork_adapters::hooks::HookRunner>) -> Self {
         Self { runner }
     }
 }
@@ -34,10 +34,10 @@ impl HooksPort for HookRunnerAdapter {
         };
 
         match self.runner.run_on_message_received(msg).await {
-            crate::hooks::HookResult::Continue(modified_msg) => {
+            crate::fork_adapters::hooks::HookResult::Continue(modified_msg) => {
                 HookOutcome::Continue(modified_msg.content)
             }
-            crate::hooks::HookResult::Cancel(reason) => HookOutcome::Cancel(reason),
+            crate::fork_adapters::hooks::HookResult::Cancel(reason) => HookOutcome::Cancel(reason),
         }
     }
 
@@ -52,10 +52,10 @@ impl HooksPort for HookRunnerAdapter {
             .run_on_message_sending(channel.to_string(), recipient.to_string(), content)
             .await
         {
-            crate::hooks::HookResult::Continue((_ch, _rcpt, modified_content)) => {
+            crate::fork_adapters::hooks::HookResult::Continue((_ch, _rcpt, modified_content)) => {
                 HookOutcome::Continue(modified_content)
             }
-            crate::hooks::HookResult::Cancel(reason) => HookOutcome::Cancel(reason),
+            crate::fork_adapters::hooks::HookResult::Cancel(reason) => HookOutcome::Cancel(reason),
         }
     }
 }

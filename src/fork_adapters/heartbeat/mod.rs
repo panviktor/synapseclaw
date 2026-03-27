@@ -5,7 +5,7 @@ pub mod store;
 mod tests {
     use crate::config::HeartbeatConfig;
     use crate::fork_adapters::heartbeat::engine::HeartbeatEngine;
-    use crate::observability::NoopObserver;
+    use crate::fork_adapters::observability::NoopObserver;
     use std::sync::Arc;
 
     #[test]

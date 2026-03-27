@@ -39,28 +39,20 @@ use clap::Subcommand;
 use serde::{Deserialize, Serialize};
 
 pub mod agent;
-pub(crate) mod approval;
 pub mod channels;
 pub mod config;
-pub(crate) mod cron;
-pub(crate) mod daemon;
-pub(crate) mod doctor;
 pub(crate) mod fork_adapters;
 /// Re-export fork_core workspace crate so `crate::fork_core::` paths keep working.
 pub use fork_core;
 pub mod gateway;
-pub mod hooks;
 pub(crate) mod identity;
 pub mod memory;
 pub(crate) mod multimodal;
 pub mod nodes;
-pub mod observability;
-pub(crate) mod onboard;
 pub mod providers;
 pub mod rag;
 pub mod runtime;
 pub(crate) mod security;
-pub(crate) mod service;
 pub(crate) mod skills;
 pub mod tools;
 pub(crate) mod util;

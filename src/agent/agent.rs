@@ -4,8 +4,8 @@ use crate::agent::dispatcher::{
 use crate::agent::memory_loader::{DefaultMemoryLoader, MemoryLoader};
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
 use crate::config::Config;
+use crate::fork_adapters::observability::{self, Observer, ObserverEvent};
 use crate::memory::{self, Memory, MemoryCategory};
-use crate::observability::{self, Observer, ObserverEvent};
 use crate::providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
 use crate::runtime;
 use crate::security::SecurityPolicy;
@@ -919,7 +919,8 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> =
+            Arc::from(crate::fork_adapters::observability::NoopObserver {});
         let mut agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -966,7 +967,8 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> =
+            Arc::from(crate::fork_adapters::observability::NoopObserver {});
         let mut agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -1007,7 +1009,8 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> =
+            Arc::from(crate::fork_adapters::observability::NoopObserver {});
         let mut route_model_by_hint = HashMap::new();
         route_model_by_hint.insert("fast".to_string(), "anthropic/claude-haiku-4-5".to_string());
         let mut agent = Agent::builder()
@@ -1140,7 +1143,8 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> =
+            Arc::from(crate::fork_adapters::observability::NoopObserver {});
         let agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -1171,7 +1175,8 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> =
+            Arc::from(crate::fork_adapters::observability::NoopObserver {});
         let agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])

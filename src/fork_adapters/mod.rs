@@ -14,11 +14,19 @@ pub mod runtime;
 pub mod storage;
 
 // ── Infrastructure adapters (moved from src/ top-level) ──
+pub mod approval;
 pub mod auth;
 pub mod cost;
+pub mod cron;
+pub mod daemon;
+pub mod doctor;
 pub mod health;
 pub mod heartbeat;
+pub mod hooks;
 pub mod integrations;
+pub mod observability;
+pub mod onboard;
+pub mod service;
 pub mod tunnel;
 
 // ── ChatMessage conversion helpers ──────────────────────────────────────────

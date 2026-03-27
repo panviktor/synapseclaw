@@ -213,7 +213,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
             move || {
                 let cfg = scheduler_cfg.clone();
                 let ds = sched_delivery.clone();
-                async move { Box::pin(crate::cron::scheduler::run(cfg, ds)).await }
+                async move { Box::pin(crate::fork_adapters::cron::scheduler::run(cfg, ds)).await }
             },
         ));
     } else {
@@ -363,7 +363,7 @@ fn auto_detect_candidates(config: &Config) -> Vec<AutoDetectCandidate> {
 }
 
 pub(crate) fn cron_delivery_config_from(
-    delivery: &crate::cron::DeliveryConfig,
+    delivery: &crate::fork_adapters::cron::DeliveryConfig,
 ) -> CronDeliveryConfig {
     CronDeliveryConfig {
         mode: delivery.mode.clone(),
@@ -383,8 +383,10 @@ async fn run_heartbeat_worker(
     };
     use std::sync::Arc;
 
-    let observer: std::sync::Arc<dyn crate::observability::Observer> =
-        std::sync::Arc::from(crate::observability::create_observer(&config.observability));
+    let observer: std::sync::Arc<dyn crate::fork_adapters::observability::Observer> =
+        std::sync::Arc::from(crate::fork_adapters::observability::create_observer(
+            &config.observability,
+        ));
     let engine = HeartbeatEngine::new(
         config.heartbeat.clone(),
         config.workspace_dir.clone(),

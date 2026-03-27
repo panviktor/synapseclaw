@@ -29,8 +29,8 @@ use crate::agent::dispatcher::{
     NativeToolDispatcher, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
 use crate::config::{AgentConfig, MemoryConfig};
+use crate::fork_adapters::observability::{NoopObserver, Observer};
 use crate::memory::{self, Memory};
-use crate::observability::{NoopObserver, Observer};
 use crate::providers::{
     ChatMessage, ChatRequest, ChatResponse, ConversationMessage, Provider, ToolCall,
     ToolResultMessage,

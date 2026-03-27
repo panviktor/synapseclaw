@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::cron::{
+use crate::fork_adapters::cron::{
     due_jobs, next_run_for_schedule, record_last_run, record_run, remove_job, reschedule_after_run,
     update_job, CronJob, CronJobPatch, ExecutionMode, JobType, Schedule, SessionTarget,
 };
@@ -336,7 +336,7 @@ async fn persist_job_result(
 ) -> bool {
     let duration_ms = (finished_at - started_at).num_milliseconds();
 
-    let core_delivery = crate::daemon::cron_delivery_config_from(&job.delivery);
+    let core_delivery = crate::fork_adapters::daemon::cron_delivery_config_from(&job.delivery);
 
     if let Err(e) = delivery_service
         .deliver_cron_output(&core_delivery, output)
@@ -458,9 +458,11 @@ async fn run_job_command_with_timeout(
     // time, but we re-validate at execution time to catch policy changes and
     // manually-edited job stores.
     let approved = false; // scheduler runs are never pre-approved
-    if let Err(error) =
-        crate::cron::validate_shell_command_with_security(security, &job.command, approved)
-    {
+    if let Err(error) = crate::fork_adapters::cron::validate_shell_command_with_security(
+        security,
+        &job.command,
+        approved,
+    ) {
         return (false, error.to_string());
     }
 
@@ -516,7 +518,7 @@ async fn run_job_command_with_timeout(
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::cron::{self, DeliveryConfig};
+    use crate::fork_adapters::cron::{self, DeliveryConfig};
     use crate::security::SecurityPolicy;
     use chrono::{Duration as ChronoDuration, Utc};
     use tempfile::TempDir;
@@ -555,7 +557,7 @@ mod tests {
         CronJob {
             id: "test-job".into(),
             expression: "* * * * *".into(),
-            schedule: crate::cron::Schedule::Cron {
+            schedule: crate::fork_adapters::cron::Schedule::Cron {
                 expr: "* * * * *".into(),
                 tz: None,
             },
@@ -909,7 +911,7 @@ mod tests {
         let job = cron::add_agent_job(
             &config,
             Some("one-shot".into()),
-            crate::cron::Schedule::At { at },
+            crate::fork_adapters::cron::Schedule::At { at },
             "Hello",
             SessionTarget::Isolated,
             None,
@@ -943,7 +945,7 @@ mod tests {
         let job = cron::add_agent_job(
             &config,
             Some("one-shot".into()),
-            crate::cron::Schedule::At { at },
+            crate::fork_adapters::cron::Schedule::At { at },
             "Hello",
             SessionTarget::Isolated,
             None,
@@ -1028,7 +1030,7 @@ mod tests {
         let job = cron::add_agent_job(
             &config,
             Some("announce-job".into()),
-            crate::cron::Schedule::Cron {
+            crate::fork_adapters::cron::Schedule::Cron {
                 expr: "*/5 * * * *".into(),
                 tz: None,
             },
@@ -1075,7 +1077,7 @@ mod tests {
         let job = cron::add_agent_job(
             &config,
             Some("announce-job-best-effort".into()),
-            crate::cron::Schedule::Cron {
+            crate::fork_adapters::cron::Schedule::Cron {
                 expr: "*/5 * * * *".into(),
                 tz: None,
             },
@@ -1123,7 +1125,7 @@ mod tests {
         let job = cron::add_agent_job(
             &config,
             Some("at-no-autodelete".into()),
-            crate::cron::Schedule::At { at },
+            crate::fork_adapters::cron::Schedule::At { at },
             "Hello",
             SessionTarget::Isolated,
             None,
@@ -1158,7 +1160,7 @@ mod tests {
         CronJob {
             id: "test-subprocess".into(),
             expression: String::new(),
-            schedule: crate::cron::Schedule::At {
+            schedule: crate::fork_adapters::cron::Schedule::At {
                 at: Utc::now() + ChronoDuration::seconds(1),
             },
             command: String::new(),
@@ -1246,7 +1248,7 @@ mod tests {
         let job = cron::add_agent_job_full(
             &config,
             Some("subprocess-test".into()),
-            crate::cron::Schedule::At { at },
+            crate::fork_adapters::cron::Schedule::At { at },
             "Do something",
             SessionTarget::Isolated,
             None,
@@ -1293,7 +1295,7 @@ mod tests {
         let job = cron::add_agent_job(
             &config,
             Some("legacy-test".into()),
-            crate::cron::Schedule::At { at },
+            crate::fork_adapters::cron::Schedule::At { at },
             "Hello",
             SessionTarget::Isolated,
             None,

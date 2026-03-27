@@ -1,9 +1,9 @@
-use crate::approval::ApprovalManager;
 use crate::config::Config;
+use crate::fork_adapters::approval::ApprovalManager;
+use crate::fork_adapters::observability::{self, runtime_trace, Observer, ObserverEvent};
 use crate::fork_core::ports::approval::ApprovalPort;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::multimodal;
-use crate::observability::{self, runtime_trace, Observer, ObserverEvent};
 use crate::providers::{
     self, ChatMessage, ChatRequest, Provider, ProviderCapabilityError, ToolCall,
 };
@@ -2399,7 +2399,7 @@ pub(crate) async fn run_tool_call_loop(
     max_tool_iterations: usize,
     cancellation_token: Option<CancellationToken>,
     on_delta: Option<tokio::sync::mpsc::Sender<String>>,
-    hooks: Option<&crate::hooks::HookRunner>,
+    hooks: Option<&crate::fork_adapters::hooks::HookRunner>,
     excluded_tools: &[String],
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
@@ -2737,7 +2737,7 @@ pub(crate) async fn run_tool_call_loop(
                     .run_before_tool_call(tool_name.clone(), tool_args.clone())
                     .await
                 {
-                    crate::hooks::HookResult::Cancel(reason) => {
+                    crate::fork_adapters::hooks::HookResult::Cancel(reason) => {
                         tracing::info!(tool = %call.name, %reason, "tool call cancelled by hook");
                         let cancelled = format!("Cancelled by hook: {reason}");
                         runtime_trace::record_event(
@@ -2775,7 +2775,7 @@ pub(crate) async fn run_tool_call_loop(
                         ));
                         continue;
                     }
-                    crate::hooks::HookResult::Continue((name, args)) => {
+                    crate::fork_adapters::hooks::HookResult::Continue((name, args)) => {
                         tool_name = name;
                         tool_args = args;
                     }
@@ -4069,8 +4069,8 @@ mod tests {
         assert_eq!(invocations.load(Ordering::SeqCst), 1);
     }
 
+    use crate::fork_adapters::observability::NoopObserver;
     use crate::memory::{Memory, MemoryCategory, SqliteMemory};
-    use crate::observability::NoopObserver;
     use crate::providers::traits::ProviderCapabilities;
     use crate::providers::ChatResponse;
     use tempfile::TempDir;

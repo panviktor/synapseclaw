@@ -345,7 +345,7 @@ pub struct AppState {
     pub nextcloud_talk_webhook_secret: Option<Arc<str>>,
     pub wati: Option<Arc<WatiChannel>>,
     /// Observability backend for metrics scraping
-    pub observer: Arc<dyn crate::observability::Observer>,
+    pub observer: Arc<dyn crate::fork_adapters::observability::Observer>,
     /// Registered tool specs (for web dashboard tools page)
     pub tools_registry: Arc<Vec<ToolSpec>>,
     /// Cost tracker (optional, for web dashboard cost page)
@@ -431,11 +431,14 @@ pub async fn run_gateway(
     let config_state = Arc::new(Mutex::new(config.clone()));
 
     // ── Hooks ──────────────────────────────────────────────────────
-    let hooks: Option<std::sync::Arc<crate::hooks::HookRunner>> = if config.hooks.enabled {
-        Some(std::sync::Arc::new(crate::hooks::HookRunner::new()))
-    } else {
-        None
-    };
+    let hooks: Option<std::sync::Arc<crate::fork_adapters::hooks::HookRunner>> =
+        if config.hooks.enabled {
+            Some(std::sync::Arc::new(
+                crate::fork_adapters::hooks::HookRunner::new(),
+            ))
+        } else {
+            None
+        };
 
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -733,9 +736,9 @@ pub async fn run_gateway(
     }
 
     // Wrap observer with broadcast capability for SSE
-    let broadcast_observer: Arc<dyn crate::observability::Observer> =
+    let broadcast_observer: Arc<dyn crate::fork_adapters::observability::Observer> =
         Arc::new(sse::BroadcastObserver::new(
-            crate::observability::create_observer(&config.observability),
+            crate::fork_adapters::observability::create_observer(&config.observability),
             event_tx.clone(),
         ));
 
@@ -2032,8 +2035,8 @@ async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
                 .observer
                 .as_ref()
                 .as_any()
-                .downcast_ref::<crate::observability::PrometheusObserver>()
-            {
+                .downcast_ref::<crate::fork_adapters::observability::PrometheusObserver>(
+            ) {
                 prom.encode()
             } else {
                 prometheus_disabled_hint()
@@ -2291,26 +2294,25 @@ async fn handle_webhook(
     let model_label = state.model.clone();
     let started_at = Instant::now();
 
-    state
-        .observer
-        .record_event(&crate::observability::ObserverEvent::AgentStart {
+    state.observer.record_event(
+        &crate::fork_adapters::observability::ObserverEvent::AgentStart {
             provider: provider_label.clone(),
             model: model_label.clone(),
-        });
-    state
-        .observer
-        .record_event(&crate::observability::ObserverEvent::LlmRequest {
+        },
+    );
+    state.observer.record_event(
+        &crate::fork_adapters::observability::ObserverEvent::LlmRequest {
             provider: provider_label.clone(),
             model: model_label.clone(),
             messages_count: 1,
-        });
+        },
+    );
 
     match run_gateway_chat_simple(&state, message).await {
         Ok(response) => {
             let duration = started_at.elapsed();
-            state
-                .observer
-                .record_event(&crate::observability::ObserverEvent::LlmResponse {
+            state.observer.record_event(
+                &crate::fork_adapters::observability::ObserverEvent::LlmResponse {
                     provider: provider_label.clone(),
                     model: model_label.clone(),
                     duration,
@@ -2318,19 +2320,22 @@ async fn handle_webhook(
                     error_message: None,
                     input_tokens: None,
                     output_tokens: None,
-                });
-            state.observer.record_metric(
-                &crate::observability::traits::ObserverMetric::RequestLatency(duration),
+                },
             );
-            state
-                .observer
-                .record_event(&crate::observability::ObserverEvent::AgentEnd {
+            state.observer.record_metric(
+                &crate::fork_adapters::observability::traits::ObserverMetric::RequestLatency(
+                    duration,
+                ),
+            );
+            state.observer.record_event(
+                &crate::fork_adapters::observability::ObserverEvent::AgentEnd {
                     provider: provider_label,
                     model: model_label,
                     duration,
                     tokens_used: None,
                     cost_usd: None,
-                });
+                },
+            );
 
             let body = serde_json::json!({"response": response, "model": state.model});
             (StatusCode::OK, Json(body))
@@ -2339,9 +2344,8 @@ async fn handle_webhook(
             let duration = started_at.elapsed();
             let sanitized = providers::sanitize_api_error(&e.to_string());
 
-            state
-                .observer
-                .record_event(&crate::observability::ObserverEvent::LlmResponse {
+            state.observer.record_event(
+                &crate::fork_adapters::observability::ObserverEvent::LlmResponse {
                     provider: provider_label.clone(),
                     model: model_label.clone(),
                     duration,
@@ -2349,25 +2353,28 @@ async fn handle_webhook(
                     error_message: Some(sanitized.clone()),
                     input_tokens: None,
                     output_tokens: None,
-                });
-            state.observer.record_metric(
-                &crate::observability::traits::ObserverMetric::RequestLatency(duration),
+                },
             );
-            state
-                .observer
-                .record_event(&crate::observability::ObserverEvent::Error {
+            state.observer.record_metric(
+                &crate::fork_adapters::observability::traits::ObserverMetric::RequestLatency(
+                    duration,
+                ),
+            );
+            state.observer.record_event(
+                &crate::fork_adapters::observability::ObserverEvent::Error {
                     component: "gateway".to_string(),
                     message: sanitized.clone(),
-                });
-            state
-                .observer
-                .record_event(&crate::observability::ObserverEvent::AgentEnd {
+                },
+            );
+            state.observer.record_event(
+                &crate::fork_adapters::observability::ObserverEvent::AgentEnd {
                     provider: provider_label,
                     model: model_label,
                     duration,
                     tokens_used: None,
                     cost_usd: None,
-                });
+                },
+            );
 
             tracing::error!("Webhook provider error: {}", sanitized);
             let err = serde_json::json!({"error": "LLM request failed"});
@@ -3187,7 +3194,7 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             wati: None,
-            observer: Arc::new(crate::observability::NoopObserver),
+            observer: Arc::new(crate::fork_adapters::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
@@ -3235,13 +3242,13 @@ mod tests {
     #[cfg(feature = "observability-prometheus")]
     #[tokio::test]
     async fn metrics_endpoint_renders_prometheus_output() {
-        let prom = Arc::new(crate::observability::PrometheusObserver::new());
-        crate::observability::Observer::record_event(
+        let prom = Arc::new(crate::fork_adapters::observability::PrometheusObserver::new());
+        crate::fork_adapters::observability::Observer::record_event(
             prom.as_ref(),
-            &crate::observability::ObserverEvent::HeartbeatTick,
+            &crate::fork_adapters::observability::ObserverEvent::HeartbeatTick,
         );
 
-        let observer: Arc<dyn crate::observability::Observer> = prom;
+        let observer: Arc<dyn crate::fork_adapters::observability::Observer> = prom;
         let state = AppState {
             config: Arc::new(Mutex::new(Config::default())),
             provider: Arc::new(MockProvider::default()),
@@ -3661,7 +3668,7 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             wati: None,
-            observer: Arc::new(crate::observability::NoopObserver),
+            observer: Arc::new(crate::fork_adapters::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
@@ -3750,7 +3757,7 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             wati: None,
-            observer: Arc::new(crate::observability::NoopObserver),
+            observer: Arc::new(crate::fork_adapters::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
@@ -3851,7 +3858,7 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             wati: None,
-            observer: Arc::new(crate::observability::NoopObserver),
+            observer: Arc::new(crate::fork_adapters::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
@@ -3924,7 +3931,7 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             wati: None,
-            observer: Arc::new(crate::observability::NoopObserver),
+            observer: Arc::new(crate::fork_adapters::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
@@ -4002,7 +4009,7 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             wati: None,
-            observer: Arc::new(crate::observability::NoopObserver),
+            observer: Arc::new(crate::fork_adapters::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
@@ -4085,7 +4092,7 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             wati: None,
-            observer: Arc::new(crate::observability::NoopObserver),
+            observer: Arc::new(crate::fork_adapters::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
@@ -4164,7 +4171,7 @@ mod tests {
             nextcloud_talk: Some(channel),
             nextcloud_talk_webhook_secret: Some(Arc::from(secret)),
             wati: None,
-            observer: Arc::new(crate::observability::NoopObserver),
+            observer: Arc::new(crate::fork_adapters::observability::NoopObserver),
             tools_registry: Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,

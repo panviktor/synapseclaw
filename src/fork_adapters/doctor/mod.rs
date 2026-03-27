@@ -222,14 +222,23 @@ pub async fn run_models(
     for provider_name in &targets {
         println!("  [{}]", provider_name);
 
-        match crate::onboard::run_models_refresh(config, Some(provider_name), !use_cache).await {
+        match crate::fork_adapters::onboard::run_models_refresh(
+            config,
+            Some(provider_name),
+            !use_cache,
+        )
+        .await
+        {
             Ok(()) => {
                 ok_count += 1;
                 println!("    ✅ model catalog check passed");
                 let models_count =
-                    crate::onboard::wizard::cached_model_catalog_stats(config, provider_name)
-                        .await?
-                        .map(|(count, _)| count);
+                    crate::fork_adapters::onboard::wizard::cached_model_catalog_stats(
+                        config,
+                        provider_name,
+                    )
+                    .await?
+                    .map(|(count, _)| count);
                 matrix_rows.push((
                     provider_name.clone(),
                     ModelProbeOutcome::Ok,
@@ -339,13 +348,15 @@ pub fn run_traces(
     contains: Option<&str>,
     limit: usize,
 ) -> Result<()> {
-    let path = crate::observability::runtime_trace::resolve_trace_path(
+    let path = crate::fork_adapters::observability::runtime_trace::resolve_trace_path(
         &config.observability,
         &config.workspace_dir,
     );
 
     if let Some(target_id) = id.map(str::trim).filter(|value| !value.is_empty()) {
-        match crate::observability::runtime_trace::find_event_by_id(&path, target_id)? {
+        match crate::fork_adapters::observability::runtime_trace::find_event_by_id(
+            &path, target_id,
+        )? {
             Some(event) => {
                 println!("{}", serde_json::to_string_pretty(&event)?);
             }
@@ -370,7 +381,7 @@ pub fn run_traces(
     }
 
     let safe_limit = limit.max(1);
-    let events = crate::observability::runtime_trace::load_events(
+    let events = crate::fork_adapters::observability::runtime_trace::load_events(
         &path,
         safe_limit,
         event_filter,
@@ -770,7 +781,7 @@ fn workspace_probe_path(workspace_dir: &Path) -> std::path::PathBuf {
 
 fn check_daemon_state(config: &Config, items: &mut Vec<DiagItem>) {
     let cat = "daemon";
-    let state_file = crate::daemon::state_file_path(config);
+    let state_file = crate::fork_adapters::daemon::state_file_path(config);
 
     if !state_file.exists() {
         items.push(DiagItem::error(
