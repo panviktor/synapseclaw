@@ -4,7 +4,7 @@
 //! - SynapseClaw auth-profiles OAuth tokens
 //! - Google Cloud ADC (`GOOGLE_APPLICATION_CREDENTIALS`)
 
-use crate::auth::AuthService;
+use crate::fork_adapters::auth::AuthService;
 use crate::providers::traits::{ChatMessage, ChatResponse, Provider, TokenUsage};
 use async_trait::async_trait;
 use base64::Engine;

@@ -57,7 +57,7 @@ pub async fn run_mqtt_sop_listener(
         info!("MQTT SOP listener: subscribed to '{topic}'");
     }
 
-    crate::health::mark_component_ok("mqtt");
+    crate::fork_adapters::health::mark_component_ok("mqtt");
 
     loop {
         match eventloop.poll().await {
@@ -76,14 +76,14 @@ pub async fn run_mqtt_sop_listener(
                 process_headless_results(&results).await;
             }
             Ok(Event::Incoming(Packet::ConnAck(_))) => {
-                crate::health::mark_component_ok("mqtt");
+                crate::fork_adapters::health::mark_component_ok("mqtt");
                 info!("MQTT SOP listener: connected to broker");
             }
             Ok(_) => {
                 // Other events (PingResp, SubAck, etc.) — ignore
             }
             Err(e) => {
-                crate::health::mark_component_error("mqtt", e.to_string());
+                crate::fork_adapters::health::mark_component_error("mqtt", e.to_string());
                 warn!("MQTT SOP listener: connection error: {e}");
                 // rumqttc handles auto-reconnect; loop continues
             }

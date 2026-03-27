@@ -102,7 +102,7 @@ pub async fn handle_api_status(
     }
 
     let config = state.config.lock().clone();
-    let health = crate::health::snapshot();
+    let health = crate::fork_adapters::health::snapshot();
 
     let mut channels = serde_json::Map::new();
 
@@ -542,7 +542,7 @@ pub async fn handle_api_integrations(
     }
 
     let config = state.config.lock().clone();
-    let entries = crate::integrations::registry::all_integrations();
+    let entries = crate::fork_adapters::integrations::registry::all_integrations();
 
     let integrations: Vec<serde_json::Value> = entries
         .iter()
@@ -570,12 +570,15 @@ pub async fn handle_api_integrations_settings(
     }
 
     let config = state.config.lock().clone();
-    let entries = crate::integrations::registry::all_integrations();
+    let entries = crate::fork_adapters::integrations::registry::all_integrations();
 
     let mut settings = serde_json::Map::new();
     for entry in &entries {
         let status = (entry.status_fn)(&config);
-        let enabled = matches!(status, crate::integrations::IntegrationStatus::Active);
+        let enabled = matches!(
+            status,
+            crate::fork_adapters::integrations::IntegrationStatus::Active
+        );
         settings.insert(
             entry.name.to_string(),
             serde_json::json!({
@@ -778,7 +781,7 @@ pub async fn handle_api_health(
         return e.into_response();
     }
 
-    let snapshot = crate::health::snapshot();
+    let snapshot = crate::fork_adapters::health::snapshot();
     Json(serde_json::json!({"health": snapshot})).into_response()
 }
 

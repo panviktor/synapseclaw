@@ -21,7 +21,7 @@ use crate::channels::{
     Channel, LinqChannel, NextcloudTalkChannel, SendMessage, WatiChannel, WhatsAppChannel,
 };
 use crate::config::Config;
-use crate::cost::CostTracker;
+use crate::fork_adapters::cost::CostTracker;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::providers::{self, ChatMessage, Provider};
 use crate::runtime;
@@ -665,7 +665,7 @@ pub async fn run_gateway(
     ));
 
     // ── Tunnel ────────────────────────────────────────────────
-    let tunnel = crate::tunnel::create_tunnel(&config.tunnel)?;
+    let tunnel = crate::fork_adapters::tunnel::create_tunnel(&config.tunnel)?;
     let mut tunnel_url: Option<String> = None;
 
     if let Some(ref tun) = tunnel {
@@ -725,7 +725,7 @@ pub async fn run_gateway(
     }
     println!("  Press Ctrl+C to stop.\n");
 
-    crate::health::mark_component_ok("gateway");
+    crate::fork_adapters::health::mark_component_ok("gateway");
 
     // Fire gateway start hook
     if let Some(ref hooks) = hooks {
@@ -1958,7 +1958,7 @@ async fn handle_health(State(state): State<AppState>) -> impl IntoResponse {
         "status": "ok",
         "paired": state.pairing.is_paired(),
         "require_pairing": state.pairing.require_pairing(),
-        "runtime": crate::health::snapshot_json(),
+        "runtime": crate::fork_adapters::health::snapshot_json(),
     });
     Json(body)
 }

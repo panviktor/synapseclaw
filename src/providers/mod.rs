@@ -40,7 +40,7 @@ pub use traits::{
     ToolCall, ToolResultMessage,
 };
 
-use crate::auth::AuthService;
+use crate::fork_adapters::auth::AuthService;
 use compatible::{AuthStyle, OpenAiCompatibleProvider};
 use reliable::ReliableProvider;
 use serde::Deserialize;

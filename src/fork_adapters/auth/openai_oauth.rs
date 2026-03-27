@@ -1,6 +1,6 @@
-use crate::auth::oauth_common::{parse_query_params, url_encode};
+use crate::fork_adapters::auth::oauth_common::{parse_query_params, url_encode};
 
-use crate::auth::profiles::TokenSet;
+use crate::fork_adapters::auth::profiles::TokenSet;
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::Utc;
@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 
 // Re-export for external use (used by main.rs)
 #[allow(unused_imports)]
-pub use crate::auth::oauth_common::{generate_pkce_state, PkceState};
+pub use crate::fork_adapters::auth::oauth_common::{generate_pkce_state, PkceState};
 
 pub const OPENAI_OAUTH_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub const OPENAI_OAUTH_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";

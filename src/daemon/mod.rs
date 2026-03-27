@@ -53,12 +53,13 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
         .channel_max_backoff_secs
         .max(initial_backoff);
 
-    crate::health::mark_component_ok("daemon");
+    crate::fork_adapters::health::mark_component_ok("daemon");
 
     if config.heartbeat.enabled {
-        let _ =
-            crate::heartbeat::engine::HeartbeatEngine::ensure_heartbeat_file(&config.workspace_dir)
-                .await;
+        let _ = crate::fork_adapters::heartbeat::engine::HeartbeatEngine::ensure_heartbeat_file(
+            &config.workspace_dir,
+        )
+        .await;
     }
 
     let mut handles: Vec<JoinHandle<()>> = vec![spawn_state_writer(config.clone())];
@@ -182,7 +183,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 },
             ));
         } else {
-            crate::health::mark_component_ok("channels");
+            crate::fork_adapters::health::mark_component_ok("channels");
             tracing::info!("No real-time channels configured; channel supervisor disabled");
         }
     }
@@ -216,7 +217,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
             },
         ));
     } else {
-        crate::health::mark_component_ok("scheduler");
+        crate::fork_adapters::health::mark_component_ok("scheduler");
         tracing::info!("Cron disabled; scheduler supervisor not started");
     }
 
@@ -242,7 +243,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
 
     // Wait for shutdown signal (SIGINT or SIGTERM)
     wait_for_shutdown_signal().await?;
-    crate::health::mark_component_error("daemon", "shutdown requested");
+    crate::fork_adapters::health::mark_component_error("daemon", "shutdown requested");
 
     for handle in &handles {
         handle.abort();
@@ -272,7 +273,7 @@ fn spawn_state_writer(config: Config) -> JoinHandle<()> {
         let mut interval = tokio::time::interval(Duration::from_secs(STATUS_FLUSH_SECONDS));
         loop {
             interval.tick().await;
-            let mut json = crate::health::snapshot_json();
+            let mut json = crate::fork_adapters::health::snapshot_json();
             if let Some(obj) = json.as_object_mut() {
                 obj.insert(
                     "written_at".into(),
@@ -300,21 +301,24 @@ where
         let max_backoff = max_backoff_secs.max(backoff);
 
         loop {
-            crate::health::mark_component_ok(name);
+            crate::fork_adapters::health::mark_component_ok(name);
             match run_component().await {
                 Ok(()) => {
-                    crate::health::mark_component_error(name, "component exited unexpectedly");
+                    crate::fork_adapters::health::mark_component_error(
+                        name,
+                        "component exited unexpectedly",
+                    );
                     tracing::warn!("Daemon component '{name}' exited unexpectedly");
                     // Clean exit — reset backoff since the component ran successfully
                     backoff = initial_backoff_secs.max(1);
                 }
                 Err(e) => {
-                    crate::health::mark_component_error(name, e.to_string());
+                    crate::fork_adapters::health::mark_component_error(name, e.to_string());
                     tracing::error!("Daemon component '{name}' failed: {e}");
                 }
             }
 
-            crate::health::bump_component_restart(name);
+            crate::fork_adapters::health::bump_component_restart(name);
             tokio::time::sleep(Duration::from_secs(backoff)).await;
             // Double backoff AFTER sleeping so first error uses initial_backoff
             backoff = backoff.saturating_mul(2).min(max_backoff);
@@ -374,7 +378,7 @@ async fn run_heartbeat_worker(
         crate::fork_core::application::services::delivery_service::DeliveryService,
     >,
 ) -> Result<()> {
-    use crate::heartbeat::engine::{
+    use crate::fork_adapters::heartbeat::engine::{
         compute_adaptive_interval, HeartbeatEngine, HeartbeatTask, TaskPriority, TaskStatus,
     };
     use std::sync::Arc;
@@ -479,7 +483,7 @@ async fn run_heartbeat_worker(
                     let indices = HeartbeatEngine::parse_decision_response(&response, tasks.len());
                     if indices.is_empty() {
                         tracing::info!("💓 Heartbeat Phase 1: skip (nothing to do)");
-                        crate::health::mark_component_ok("heartbeat");
+                        crate::fork_adapters::health::mark_component_ok("heartbeat");
                         #[allow(clippy::cast_precision_loss)]
                         let elapsed = tick_start.elapsed().as_millis() as f64;
                         metrics.lock().record_success(elapsed);
@@ -524,11 +528,11 @@ async fn run_heartbeat_worker(
             .await
             {
                 Ok(output) => {
-                    crate::health::mark_component_ok("heartbeat");
+                    crate::fork_adapters::health::mark_component_ok("heartbeat");
                     #[allow(clippy::cast_possible_truncation)]
                     let duration_ms = task_start.elapsed().as_millis() as i64;
                     let now = chrono::Utc::now();
-                    let _ = crate::heartbeat::store::record_run(
+                    let _ = crate::fork_adapters::heartbeat::store::record_run(
                         &config.workspace_dir,
                         &task.text,
                         &task.priority.to_string(),
@@ -546,7 +550,7 @@ async fn run_heartbeat_worker(
                     };
                     if let Some(target) = &delivery {
                         if let Err(e) = delivery_service.deliver(target, &announcement).await {
-                            crate::health::mark_component_error(
+                            crate::fork_adapters::health::mark_component_error(
                                 "heartbeat",
                                 format!("delivery failed: {e}"),
                             );
@@ -559,7 +563,7 @@ async fn run_heartbeat_worker(
                     #[allow(clippy::cast_possible_truncation)]
                     let duration_ms = task_start.elapsed().as_millis() as i64;
                     let now = chrono::Utc::now();
-                    let _ = crate::heartbeat::store::record_run(
+                    let _ = crate::fork_adapters::heartbeat::store::record_run(
                         &config.workspace_dir,
                         &task.text,
                         &task.priority.to_string(),
@@ -570,7 +574,7 @@ async fn run_heartbeat_worker(
                         duration_ms,
                         config.heartbeat.max_run_history,
                     );
-                    crate::health::mark_component_error("heartbeat", e.to_string());
+                    crate::fork_adapters::health::mark_component_error("heartbeat", e.to_string());
                     tracing::warn!("Heartbeat task failed: {e}");
                 }
             }
@@ -810,7 +814,7 @@ mod tests {
         handle.abort();
         let _ = handle.await;
 
-        let snapshot = crate::health::snapshot_json();
+        let snapshot = crate::fork_adapters::health::snapshot_json();
         let component = &snapshot["components"]["daemon-test-fail"];
         assert_eq!(component["status"], "error");
         assert!(component["restart_count"].as_u64().unwrap_or(0) >= 1);
@@ -828,7 +832,7 @@ mod tests {
         handle.abort();
         let _ = handle.await;
 
-        let snapshot = crate::health::snapshot_json();
+        let snapshot = crate::fork_adapters::health::snapshot_json();
         let component = &snapshot["components"]["daemon-test-exit"];
         assert_eq!(component["status"], "error");
         assert!(component["restart_count"].as_u64().unwrap_or(0) >= 1);

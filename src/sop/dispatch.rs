@@ -76,7 +76,7 @@ pub async fn dispatch_sop_event(
             .map(|s| s.name.clone())
             .collect(),
         Err(e) => {
-            crate::health::mark_component_error("sop_dispatch", format!("lock poisoned: {e}"));
+            crate::fork_adapters::health::mark_component_error("sop_dispatch", format!("lock poisoned: {e}"));
             warn!("SOP dispatch: engine lock poisoned during match phase: {e}");
             return vec![];
         }
@@ -101,7 +101,7 @@ pub async fn dispatch_sop_event(
         let mut eng = match engine.lock() {
             Ok(e) => e,
             Err(e) => {
-                crate::health::mark_component_error("sop_dispatch", format!("lock poisoned: {e}"));
+                crate::fork_adapters::health::mark_component_error("sop_dispatch", format!("lock poisoned: {e}"));
                 warn!("SOP dispatch: engine lock poisoned during start phase: {e}");
                 return vec![];
             }
@@ -145,7 +145,7 @@ pub async fn dispatch_sop_event(
         }
     }
 
-    crate::health::mark_component_ok("sop_dispatch");
+    crate::fork_adapters::health::mark_component_ok("sop_dispatch");
     results
 }
 

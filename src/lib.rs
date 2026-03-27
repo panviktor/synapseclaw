@@ -40,10 +40,8 @@ use serde::{Deserialize, Serialize};
 
 pub mod agent;
 pub(crate) mod approval;
-pub(crate) mod auth;
 pub mod channels;
 pub mod config;
-pub(crate) mod cost;
 pub(crate) mod cron;
 pub(crate) mod daemon;
 pub(crate) mod doctor;
@@ -51,11 +49,8 @@ pub(crate) mod fork_adapters;
 /// Re-export fork_core workspace crate so `crate::fork_core::` paths keep working.
 pub use fork_core;
 pub mod gateway;
-pub(crate) mod health;
-pub(crate) mod heartbeat;
 pub mod hooks;
 pub(crate) mod identity;
-pub(crate) mod integrations;
 pub mod memory;
 pub(crate) mod multimodal;
 pub mod nodes;
@@ -68,7 +63,6 @@ pub(crate) mod security;
 pub(crate) mod service;
 pub(crate) mod skills;
 pub mod tools;
-pub(crate) mod tunnel;
 pub(crate) mod util;
 
 pub use config::Config;

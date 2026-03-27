@@ -4,11 +4,11 @@ pub mod oauth_common;
 pub mod openai_oauth;
 pub mod profiles;
 
-use crate::auth::openai_oauth::refresh_access_token;
-use crate::auth::profiles::{
+use crate::config::Config;
+use crate::fork_adapters::auth::openai_oauth::refresh_access_token;
+use crate::fork_adapters::auth::profiles::{
     profile_id, AuthProfile, AuthProfileKind, AuthProfilesData, AuthProfilesStore, TokenSet,
 };
-use crate::config::Config;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -51,7 +51,7 @@ impl AuthService {
     pub async fn store_openai_tokens(
         &self,
         profile_name: &str,
-        token_set: crate::auth::profiles::TokenSet,
+        token_set: crate::fork_adapters::auth::profiles::TokenSet,
         account_id: Option<String>,
         set_active: bool,
     ) -> Result<AuthProfile> {
@@ -66,7 +66,7 @@ impl AuthService {
     pub async fn store_gemini_tokens(
         &self,
         profile_name: &str,
-        token_set: crate::auth::profiles::TokenSet,
+        token_set: crate::fork_adapters::auth::profiles::TokenSet,
         account_id: Option<String>,
         set_active: bool,
     ) -> Result<AuthProfile> {
@@ -511,7 +511,7 @@ fn clear_refresh_backoff(profile_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::profiles::{AuthProfile, AuthProfileKind};
+    use crate::fork_adapters::auth::profiles::{AuthProfile, AuthProfileKind};
 
     #[test]
     fn normalize_provider_aliases() {

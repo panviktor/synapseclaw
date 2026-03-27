@@ -2,6 +2,7 @@
 //!
 //! Design rule: `fork_core` owns *what* happens; `fork_adapters` owns *how*.
 
+// ── Port implementations (fork_core ports → concrete adapters) ──
 pub mod channels;
 pub mod inbound;
 pub mod ipc;
@@ -11,6 +12,14 @@ pub mod pipeline;
 pub mod routing;
 pub mod runtime;
 pub mod storage;
+
+// ── Infrastructure adapters (moved from src/ top-level) ──
+pub mod auth;
+pub mod cost;
+pub mod health;
+pub mod heartbeat;
+pub mod integrations;
+pub mod tunnel;
 
 // ── ChatMessage conversion helpers ──────────────────────────────────────────
 //

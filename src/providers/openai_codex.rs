@@ -1,5 +1,5 @@
-use crate::auth::openai_oauth::extract_account_id_from_jwt;
-use crate::auth::AuthService;
+use crate::fork_adapters::auth::openai_oauth::extract_account_id_from_jwt;
+use crate::fork_adapters::auth::AuthService;
 use crate::multimodal;
 use crate::providers::traits::{ChatMessage, Provider, ProviderCapabilities};
 use crate::providers::ProviderRuntimeOptions;

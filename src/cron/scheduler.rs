@@ -30,16 +30,19 @@ pub async fn run(
         &config.workspace_dir,
     ));
 
-    crate::health::mark_component_ok(SCHEDULER_COMPONENT);
+    crate::fork_adapters::health::mark_component_ok(SCHEDULER_COMPONENT);
 
     loop {
         interval.tick().await;
-        crate::health::mark_component_ok(SCHEDULER_COMPONENT);
+        crate::fork_adapters::health::mark_component_ok(SCHEDULER_COMPONENT);
 
         let jobs = match due_jobs(&config, Utc::now()) {
             Ok(jobs) => jobs,
             Err(e) => {
-                crate::health::mark_component_error(SCHEDULER_COMPONENT, e.to_string());
+                crate::fork_adapters::health::mark_component_error(
+                    SCHEDULER_COMPONENT,
+                    e.to_string(),
+                );
                 tracing::warn!("Scheduler query failed: {e}");
                 continue;
             }
@@ -106,7 +109,7 @@ async fn process_due_jobs(
     >,
 ) {
     // Refresh scheduler health on every successful poll cycle, including idle cycles.
-    crate::health::mark_component_ok(component);
+    crate::fork_adapters::health::mark_component_ok(component);
 
     let max_concurrent = config.scheduler.max_concurrent.max(1);
     let mut in_flight = stream::iter(jobs.into_iter().map(|job| {
@@ -143,7 +146,7 @@ async fn execute_and_persist_job(
         crate::fork_core::application::services::delivery_service::DeliveryService,
     >,
 ) -> (String, bool, String) {
-    crate::health::mark_component_ok(component);
+    crate::fork_adapters::health::mark_component_ok(component);
     warn_if_high_frequency_agent_job(job);
 
     let started_at = Utc::now();
@@ -829,7 +832,7 @@ mod tests {
         ));
         let component = unique_component("scheduler-idle");
 
-        crate::health::mark_component_error(&component, "pre-existing error");
+        crate::fork_adapters::health::mark_component_error(&component, "pre-existing error");
         process_due_jobs(
             &config,
             &security,
@@ -839,7 +842,7 @@ mod tests {
         )
         .await;
 
-        let snapshot = crate::health::snapshot_json();
+        let snapshot = crate::fork_adapters::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
         assert_eq!(entry["status"], "ok");
         assert!(entry["last_ok"].as_str().is_some());
@@ -857,7 +860,7 @@ mod tests {
         ));
         let component = unique_component("scheduler-fail");
 
-        crate::health::mark_component_ok(&component);
+        crate::fork_adapters::health::mark_component_ok(&component);
         process_due_jobs(
             &config,
             &security,
@@ -867,7 +870,7 @@ mod tests {
         )
         .await;
 
-        let snapshot = crate::health::snapshot_json();
+        let snapshot = crate::fork_adapters::health::snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
         assert_eq!(entry["status"], "ok");
     }
