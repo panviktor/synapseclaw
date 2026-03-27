@@ -5,11 +5,11 @@
 //! at entry and exit using helpers from `fork_adapters`.
 
 use crate::fork_adapters::approval::ApprovalManager;
+use crate::fork_adapters::providers::{ChatMessage, Provider};
+use crate::fork_adapters::tools::Tool;
 use crate::fork_adapters::{from_core_message, to_core_message};
 use crate::fork_core::domain::message::ChatMessage as CoreChatMessage;
 use crate::fork_core::ports::agent_runtime::{AgentRuntimePort, AgentTurnResult};
-use crate::providers::{ChatMessage, Provider};
-use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -25,7 +25,8 @@ pub struct ChannelAgentRuntime {
     pub excluded_tools: Arc<Vec<String>>,
     pub dedup_exempt_tools: Arc<Vec<String>>,
     pub hooks: Option<Arc<crate::fork_adapters::hooks::HookRunner>>,
-    pub activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
+    pub activated_tools:
+        Option<Arc<std::sync::Mutex<crate::fork_adapters::tools::ActivatedToolSet>>>,
     pub message_timeout_secs: u64,
     pub max_tool_iterations: usize,
 }

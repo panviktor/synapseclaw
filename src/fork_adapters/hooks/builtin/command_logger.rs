@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::fork_adapters::hooks::traits::HookHandler;
-use crate::tools::traits::ToolResult;
+use crate::fork_adapters::tools::traits::ToolResult;
 
 /// Logs tool calls for auditing.
 pub struct CommandLoggerHook {

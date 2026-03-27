@@ -5,9 +5,9 @@ use serde_json::Value;
 use std::panic::AssertUnwindSafe;
 use tracing::info;
 
-use crate::channels::traits::ChannelMessage;
-use crate::providers::traits::{ChatMessage, ChatResponse};
-use crate::tools::traits::ToolResult;
+use crate::fork_adapters::channels::traits::ChannelMessage;
+use crate::fork_adapters::providers::traits::{ChatMessage, ChatResponse};
+use crate::fork_adapters::tools::traits::ToolResult;
 
 use super::traits::{HookHandler, HookResult};
 

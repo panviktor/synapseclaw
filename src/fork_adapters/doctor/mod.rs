@@ -184,7 +184,7 @@ fn doctor_model_targets(provider_override: Option<&str>) -> Vec<String> {
         return vec![provider.to_string()];
     }
 
-    crate::providers::list_providers()
+    crate::fork_adapters::providers::list_providers()
         .into_iter()
         .map(|provider| provider.name.to_string())
         .collect()
@@ -627,7 +627,7 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
 }
 
 fn provider_validation_error(name: &str) -> Option<String> {
-    match crate::providers::create_provider(name, None) {
+    match crate::fork_adapters::providers::create_provider(name, None) {
         Ok(_) => None,
         Err(err) => Some(
             err.to_string()
@@ -944,7 +944,7 @@ fn check_environment(items: &mut Vec<DiagItem>) {
 fn check_cli_tools(items: &mut Vec<DiagItem>) {
     let cat = "cli-tools";
 
-    let discovered = crate::tools::cli_discovery::discover_cli_tools(&[], &[]);
+    let discovered = crate::fork_adapters::tools::cli_discovery::discover_cli_tools(&[], &[]);
 
     if discovered.is_empty() {
         items.push(DiagItem::warn(cat, "No CLI tools found in PATH"));

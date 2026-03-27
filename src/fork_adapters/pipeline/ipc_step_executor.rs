@@ -17,14 +17,14 @@ use tracing::debug;
 /// Adapter: executes pipeline steps via the existing IpcClient.
 pub struct IpcStepExecutor {
     /// Shared IPC client (same instance the broker uses for its own IPC).
-    ipc_client: Arc<crate::tools::agents_ipc::IpcClient>,
+    ipc_client: Arc<crate::fork_adapters::tools::agents_ipc::IpcClient>,
     /// Poll interval for checking agent responses (milliseconds).
     poll_interval_ms: u64,
 }
 
 impl IpcStepExecutor {
     /// Create a new executor wrapping an existing IpcClient.
-    pub fn new(ipc_client: Arc<crate::tools::agents_ipc::IpcClient>) -> Self {
+    pub fn new(ipc_client: Arc<crate::fork_adapters::tools::agents_ipc::IpcClient>) -> Self {
         Self {
             ipc_client,
             poll_interval_ms: 2000,

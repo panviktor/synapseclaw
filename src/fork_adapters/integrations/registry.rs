@@ -1,5 +1,5 @@
 use super::{IntegrationCategory, IntegrationEntry, IntegrationStatus};
-use crate::providers::{
+use crate::fork_adapters::providers::{
     is_glm_alias, is_minimax_alias, is_moonshot_alias, is_qianfan_alias, is_qwen_alias,
     is_zai_alias,
 };

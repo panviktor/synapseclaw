@@ -68,52 +68,53 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     // One Arc<IpcClient> with a single AtomicI64 seq counter shared across
     // gateway, channels, and tools. Prevents replay_rejected from duplicate
     // seq numbers when multiple components send signed IPC messages.
-    let shared_ipc_client: Option<std::sync::Arc<crate::tools::agents_ipc::IpcClient>> =
-        if config.agents_ipc.enabled {
-            if let Some(ref token) = config.agents_ipc.broker_token {
-                let mut client = crate::tools::agents_ipc::IpcClient::new(
-                    &config.agents_ipc.broker_url,
-                    token,
-                    config.agents_ipc.request_timeout_secs,
-                );
-                let key_path = config
-                    .config_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .join("agent.key");
-                match crate::security::identity::AgentIdentity::load_or_generate(&key_path) {
-                    Ok(identity) => {
-                        let agent_id = config
-                            .agents_ipc
-                            .agent_id
-                            .clone()
-                            .unwrap_or_else(|| config.agents_ipc.role.clone());
-                        tracing::info!(
-                            agent_id = %agent_id,
-                            "daemon: shared IpcClient with Ed25519 identity"
-                        );
-                        client = client.with_identity(identity, agent_id);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "daemon: Ed25519 identity unavailable");
-                    }
+    let shared_ipc_client: Option<
+        std::sync::Arc<crate::fork_adapters::tools::agents_ipc::IpcClient>,
+    > = if config.agents_ipc.enabled {
+        if let Some(ref token) = config.agents_ipc.broker_token {
+            let mut client = crate::fork_adapters::tools::agents_ipc::IpcClient::new(
+                &config.agents_ipc.broker_url,
+                token,
+                config.agents_ipc.request_timeout_secs,
+            );
+            let key_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("agent.key");
+            match crate::security::identity::AgentIdentity::load_or_generate(&key_path) {
+                Ok(identity) => {
+                    let agent_id = config
+                        .agents_ipc
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| config.agents_ipc.role.clone());
+                    tracing::info!(
+                        agent_id = %agent_id,
+                        "daemon: shared IpcClient with Ed25519 identity"
+                    );
+                    client = client.with_identity(identity, agent_id);
                 }
-                let client = std::sync::Arc::new(client);
-                // Fire-and-forget key registration with background retry.
-                // Gateway listener may not be up yet — retries handle that.
-                {
-                    let c = client.clone();
-                    tokio::spawn(async move {
-                        c.register_public_key_with_background_retry().await;
-                    });
+                Err(e) => {
+                    tracing::warn!(error = %e, "daemon: Ed25519 identity unavailable");
                 }
-                Some(client)
-            } else {
-                None
             }
+            let client = std::sync::Arc::new(client);
+            // Fire-and-forget key registration with background retry.
+            // Gateway listener may not be up yet — retries handle that.
+            {
+                let c = client.clone();
+                tokio::spawn(async move {
+                    c.register_public_key_with_background_retry().await;
+                });
+            }
+            Some(client)
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
     // ── Phase 4.0: ChannelRegistryPort ─────────────────────────────
     // Always available in daemon mode.  Shared between relay, heartbeat,
@@ -162,7 +163,10 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 let reg = gw_registry.clone();
                 let ipc = gw_ipc.clone();
                 async move {
-                    Box::pin(crate::gateway::run_gateway(&host, port, cfg, otx, reg, ipc)).await
+                    Box::pin(crate::fork_adapters::gateway::run_gateway(
+                        &host, port, cfg, otx, reg, ipc,
+                    ))
+                    .await
                 }
             },
         ));
@@ -179,7 +183,9 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 move || {
                     let cfg = channels_cfg.clone();
                     let ipc = ch_ipc.clone();
-                    async move { Box::pin(crate::channels::start_channels(cfg, ipc)).await }
+                    async move {
+                        Box::pin(crate::fork_adapters::channels::start_channels(cfg, ipc)).await
+                    }
                 },
             ));
         } else {

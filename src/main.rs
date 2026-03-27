@@ -72,20 +72,16 @@ fn pause_after_no_command_help() {
 }
 
 mod agent;
-mod channels;
 mod config;
 mod fork_adapters;
 /// Re-export workspace crate so `crate::fork_core::` paths work in the binary.
 pub use fork_core;
-mod gateway;
 mod identity;
 mod memory;
 mod multimodal;
-mod providers;
 mod runtime;
 mod security;
 mod skills;
-mod tools;
 mod util;
 
 use config::Config;
@@ -816,7 +812,7 @@ async fn main() -> Result<()> {
 
         // Auto-start channels if user said yes during wizard
         if std::env::var("SYNAPSECLAW_AUTOSTART_CHANNELS").as_deref() == Ok("1") {
-            Box::pin(channels::start_channels(config, None)).await?;
+            Box::pin(fork_adapters::channels::start_channels(config, None)).await?;
         }
         return Ok(());
     }
@@ -824,7 +820,10 @@ async fn main() -> Result<()> {
     // All other commands need config loaded first
     let mut config = Box::pin(Config::load_or_init()).await?;
     config.apply_env_overrides();
-    crate::fork_adapters::observability::runtime_trace::init_from_config(&config.observability, &config.workspace_dir);
+    crate::fork_adapters::observability::runtime_trace::init_from_config(
+        &config.observability,
+        &config.workspace_dir,
+    );
     if config.security.otp.enabled {
         let config_dir = config
             .config_path
@@ -902,7 +901,7 @@ async fn main() -> Result<()> {
                     }
 
                     log_gateway_start(&host, port);
-                    Box::pin(gateway::run_gateway(&host, port, config, None, None, None)).await
+                    Box::pin(fork_adapters::gateway::run_gateway(&host, port, config, None, None, None)).await
                 }
                 Some(synapseclaw::GatewayCommands::GetPaircode { new }) => {
                     let port = config.gateway.port;
@@ -951,13 +950,13 @@ async fn main() -> Result<()> {
                 Some(synapseclaw::GatewayCommands::Start { port, host }) => {
                     let (port, host) = resolve_gateway_addr(&config, port, host);
                     log_gateway_start(&host, port);
-                    Box::pin(gateway::run_gateway(&host, port, config, None, None, None)).await
+                    Box::pin(fork_adapters::gateway::run_gateway(&host, port, config, None, None, None)).await
                 }
                 None => {
                     let port = config.gateway.port;
                     let host = config.gateway.host.clone();
                     log_gateway_start(&host, port);
-                    Box::pin(gateway::run_gateway(&host, port, config, None, None, None)).await
+                    Box::pin(fork_adapters::gateway::run_gateway(&host, port, config, None, None, None)).await
                 }
             }
         }
@@ -1111,7 +1110,9 @@ async fn main() -> Result<()> {
             tools,
         } => handle_estop_command(&config, estop_command, level, domains, tools),
 
-        Commands::Cron { cron_command } => crate::fork_adapters::cron::handle_command(cron_command, &config),
+        Commands::Cron { cron_command } => {
+            crate::fork_adapters::cron::handle_command(cron_command, &config)
+        }
 
         Commands::Models { model_command } => match model_command {
             ModelCommands::Refresh {
@@ -1148,7 +1149,7 @@ async fn main() -> Result<()> {
         },
 
         Commands::Providers => {
-            let providers = providers::list_providers();
+            let providers = fork_adapters::providers::list_providers();
             let current = config
                 .default_provider
                 .as_deref()
@@ -1218,9 +1219,9 @@ async fn main() -> Result<()> {
         },
 
         Commands::Channel { channel_command } => match channel_command {
-            ChannelCommands::Start => Box::pin(channels::start_channels(config, None)).await,
-            ChannelCommands::Doctor => Box::pin(channels::doctor_channels(config)).await,
-            other => Box::pin(channels::handle_command(other, &config)).await,
+            ChannelCommands::Start => Box::pin(fork_adapters::channels::start_channels(config, None)).await,
+            ChannelCommands::Doctor => Box::pin(fork_adapters::channels::doctor_channels(config)).await,
+            other => Box::pin(fork_adapters::channels::handle_command(other, &config)).await,
         },
 
         Commands::Integrations {

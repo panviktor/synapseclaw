@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::time::Duration;
 
-use crate::channels::traits::ChannelMessage;
-use crate::providers::traits::{ChatMessage, ChatResponse};
-use crate::tools::traits::ToolResult;
+use crate::fork_adapters::channels::traits::ChannelMessage;
+use crate::fork_adapters::providers::traits::{ChatMessage, ChatResponse};
+use crate::fork_adapters::tools::traits::ToolResult;
 
 /// Result of a modifying hook — continue with (possibly modified) data, or cancel.
 #[derive(Debug, Clone)]

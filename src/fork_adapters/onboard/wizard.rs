@@ -9,13 +9,13 @@ use crate::config::{
     HeartbeatConfig, IMessageConfig, LarkConfig, MatrixConfig, MemoryConfig, ObservabilityConfig,
     RuntimeConfig, SecretsConfig, SlackConfig, StorageConfig, TelegramConfig, WebhookConfig,
 };
-use crate::memory::{
-    default_memory_backend_key, memory_backend_profile, selectable_memory_backends,
-};
-use crate::providers::{
+use crate::fork_adapters::providers::{
     canonical_china_provider_name, is_glm_alias, is_glm_cn_alias, is_minimax_alias,
     is_moonshot_alias, is_qianfan_alias, is_qwen_alias, is_qwen_oauth_alias, is_zai_alias,
     is_zai_cn_alias,
+};
+use crate::memory::{
+    default_memory_backend_key, memory_backend_profile, selectable_memory_backends,
 };
 use anyhow::{bail, Context, Result};
 use console::style;
@@ -163,7 +163,8 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         microsoft365: crate::config::Microsoft365Config::default(),
         secrets: secrets_config,
         browser: BrowserConfig::default(),
-        browser_delegate: crate::tools::browser_delegate::BrowserDelegateConfig::default(),
+        browser_delegate:
+            crate::fork_adapters::tools::browser_delegate::BrowserDelegateConfig::default(),
         http_request: crate::config::HttpRequestConfig::default(),
         multimodal: crate::config::MultimodalConfig::default(),
         web_fetch: crate::config::WebFetchConfig::default(),
@@ -538,7 +539,8 @@ async fn run_quick_setup_with_home(
         microsoft365: crate::config::Microsoft365Config::default(),
         secrets: SecretsConfig::default(),
         browser: BrowserConfig::default(),
-        browser_delegate: crate::tools::browser_delegate::BrowserDelegateConfig::default(),
+        browser_delegate:
+            crate::fork_adapters::tools::browser_delegate::BrowserDelegateConfig::default(),
         http_request: crate::config::HttpRequestConfig::default(),
         multimodal: crate::config::MultimodalConfig::default(),
         web_fetch: crate::config::WebFetchConfig::default(),
@@ -1955,7 +1957,7 @@ pub async fn cached_model_catalog_stats(
 }
 
 pub async fn run_models_refresh_all(config: &Config, force: bool) -> Result<()> {
-    let mut targets: Vec<String> = crate::providers::list_providers()
+    let mut targets: Vec<String> = crate::fork_adapters::providers::list_providers()
         .into_iter()
         .map(|provider| provider.name.to_string())
         .filter(|name| supports_live_model_fetch(name))
@@ -2494,7 +2496,7 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
         key
     } else if canonical_provider_name(provider_name) == "gemini" {
         // Special handling for Gemini: check for CLI auth first
-        if crate::providers::gemini::GeminiProvider::has_cli_credentials() {
+        if crate::fork_adapters::providers::gemini::GeminiProvider::has_cli_credentials() {
             print_bullet(&format!(
                 "{} Gemini CLI credentials detected! You can skip the API key.",
                 style("✓").green().bold()

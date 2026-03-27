@@ -22,7 +22,7 @@ impl HooksPort for HookRunnerAdapter {
         sender: &str,
         content: String,
     ) -> HookOutcome<String> {
-        let msg = crate::channels::traits::ChannelMessage {
+        let msg = crate::fork_adapters::channels::traits::ChannelMessage {
             id: uuid::Uuid::new_v4().to_string(),
             sender: sender.to_string(),
             reply_target: sender.to_string(),
