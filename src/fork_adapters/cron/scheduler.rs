@@ -19,6 +19,7 @@ const SCHEDULER_COMPONENT: &str = "scheduler";
 pub async fn run(
     config: Config,
     delivery_service: Arc<fork_core::application::services::delivery_service::DeliveryService>,
+    agent_runner: std::sync::Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
 ) -> Result<()> {
     let poll_secs = config.reliability.scheduler_poll_secs.max(MIN_POLL_SECONDS);
     let mut interval = time::interval(Duration::from_secs(poll_secs));
@@ -52,20 +53,26 @@ pub async fn run(
             jobs,
             SCHEDULER_COMPONENT,
             delivery_service.clone(),
+            agent_runner.clone(),
         )
         .await;
     }
 }
 
-pub async fn execute_job_now(config: &Config, job: &CronJob) -> (bool, String) {
+pub async fn execute_job_now(
+    config: &Config,
+    job: &CronJob,
+    agent_runner: &dyn fork_core::ports::agent_runner::AgentRunnerPort,
+) -> (bool, String) {
     let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
-    Box::pin(execute_job_with_retry(config, &security, job)).await
+    Box::pin(execute_job_with_retry(config, &security, job, agent_runner)).await
 }
 
 async fn execute_job_with_retry(
     config: &Config,
     security: &SecurityPolicy,
     job: &CronJob,
+    agent_runner: &dyn fork_core::ports::agent_runner::AgentRunnerPort,
 ) -> (bool, String) {
     let mut last_output = String::new();
     let retries = config.reliability.scheduler_retries;
@@ -74,7 +81,7 @@ async fn execute_job_with_retry(
     for attempt in 0..=retries {
         let (success, output) = match job.job_type {
             JobType::Shell => run_job_command(config, security, job).await,
-            JobType::Agent => Box::pin(run_agent_job(config, security, job)).await,
+            JobType::Agent => Box::pin(run_agent_job(config, security, job, agent_runner)).await,
         };
         last_output = output;
 
@@ -103,6 +110,7 @@ async fn process_due_jobs(
     jobs: Vec<CronJob>,
     component: &str,
     delivery_service: Arc<fork_core::application::services::delivery_service::DeliveryService>,
+    agent_runner: std::sync::Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
 ) {
     // Refresh scheduler health on every successful poll cycle, including idle cycles.
     crate::fork_adapters::health::mark_component_ok(component);
@@ -113,6 +121,7 @@ async fn process_due_jobs(
         let security = Arc::clone(security);
         let component = component.to_owned();
         let ds = delivery_service.clone();
+        let ar = agent_runner.clone();
         async move {
             Box::pin(execute_and_persist_job(
                 &config,
@@ -120,6 +129,7 @@ async fn process_due_jobs(
                 &job,
                 &component,
                 ds,
+                ar,
             ))
             .await
         }
@@ -139,12 +149,19 @@ async fn execute_and_persist_job(
     job: &CronJob,
     component: &str,
     delivery_service: Arc<fork_core::application::services::delivery_service::DeliveryService>,
+    agent_runner: std::sync::Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
 ) -> (String, bool, String) {
     crate::fork_adapters::health::mark_component_ok(component);
     warn_if_high_frequency_agent_job(job);
 
     let started_at = Utc::now();
-    let (success, output) = Box::pin(execute_job_with_retry(config, security, job)).await;
+    let (success, output) = Box::pin(execute_job_with_retry(
+        config,
+        security,
+        job,
+        agent_runner.as_ref(),
+    ))
+    .await;
     let finished_at = Utc::now();
     let success = Box::pin(persist_job_result(
         config,
@@ -164,6 +181,7 @@ async fn run_agent_job(
     config: &Config,
     security: &SecurityPolicy,
     job: &CronJob,
+    agent_runner: &dyn fork_core::ports::agent_runner::AgentRunnerPort,
 ) -> (bool, String) {
     if !security.can_act() {
         return (
@@ -187,12 +205,18 @@ async fn run_agent_job(
     }
 
     match job.execution_mode {
-        ExecutionMode::InProcess => Box::pin(run_agent_job_in_process(config, job)).await,
+        ExecutionMode::InProcess => {
+            Box::pin(run_agent_job_in_process(config, job, agent_runner)).await
+        }
         ExecutionMode::Subprocess => run_agent_job_subprocess(config, job).await,
     }
 }
 
-async fn run_agent_job_in_process(config: &Config, job: &CronJob) -> (bool, String) {
+async fn run_agent_job_in_process(
+    config: &Config,
+    job: &CronJob,
+    agent_runner: &dyn fork_core::ports::agent_runner::AgentRunnerPort,
+) -> (bool, String) {
     let name = job.name.clone().unwrap_or_else(|| "cron-job".to_string());
     let prompt = job.prompt.clone().unwrap_or_default();
     let prefixed_prompt = format!("[cron:{} {name}] {prompt}", job.id);
@@ -200,18 +224,18 @@ async fn run_agent_job_in_process(config: &Config, job: &CronJob) -> (bool, Stri
 
     let run_result = match job.session_target {
         SessionTarget::Main | SessionTarget::Isolated => {
-            Box::pin(crate::agent::run(
-                config.clone(),
-                Some(prefixed_prompt),
-                None,
-                model_override,
-                config.default_temperature,
-                false,
-                None,
-                job.allowed_tools.clone(),
-                None,
-            ))
-            .await
+            agent_runner
+                .run(
+                    Some(prefixed_prompt),
+                    None,
+                    model_override,
+                    config.default_temperature,
+                    false,
+                    None,
+                    job.allowed_tools.clone(),
+                    None,
+                )
+                .await
         }
     };
 
@@ -515,6 +539,57 @@ mod tests {
     use chrono::{Duration as ChronoDuration, Utc};
     use tempfile::TempDir;
 
+    struct NoopRunner;
+    #[async_trait::async_trait]
+    impl fork_core::ports::agent_runner::AgentRunnerPort for NoopRunner {
+        async fn run(
+            &self,
+            _: Option<String>,
+            _: Option<String>,
+            _: Option<String>,
+            _: f64,
+            _: bool,
+            _: Option<std::path::PathBuf>,
+            _: Option<Vec<String>>,
+            _: Option<Arc<fork_core::domain::tool_audit::RunContext>>,
+        ) -> anyhow::Result<String> {
+            Ok("noop".into())
+        }
+        async fn process_message(&self, _: &str, _: Option<&str>) -> anyhow::Result<String> {
+            Ok("noop".into())
+        }
+    }
+
+    fn noop_runner() -> &'static dyn fork_core::ports::agent_runner::AgentRunnerPort {
+        &NoopRunner
+    }
+
+    /// Runner that always fails — for tests that expect agent errors.
+    struct FailRunner;
+    #[async_trait::async_trait]
+    impl fork_core::ports::agent_runner::AgentRunnerPort for FailRunner {
+        async fn run(
+            &self,
+            _: Option<String>,
+            _: Option<String>,
+            _: Option<String>,
+            _: f64,
+            _: bool,
+            _: Option<std::path::PathBuf>,
+            _: Option<Vec<String>>,
+            _: Option<Arc<fork_core::domain::tool_audit::RunContext>>,
+        ) -> anyhow::Result<String> {
+            anyhow::bail!("no provider API key configured")
+        }
+        async fn process_message(&self, _: &str, _: Option<&str>) -> anyhow::Result<String> {
+            anyhow::bail!("no provider API key configured")
+        }
+    }
+
+    fn fail_runner() -> &'static dyn fork_core::ports::agent_runner::AgentRunnerPort {
+        &FailRunner
+    }
+
     /// No-op delivery service for tests that don't exercise delivery.
     /// Uses a mock registry that has no channels — delivery attempts will
     /// fail, which is fine because test jobs don't configure announce mode.
@@ -743,7 +818,13 @@ mod tests {
         .unwrap();
         let job = test_job("sh ./retry-once.sh");
 
-        let (success, output) = Box::pin(execute_job_with_retry(&config, &security, &job)).await;
+        let (success, output) = Box::pin(execute_job_with_retry(
+            &config,
+            &security,
+            &job,
+            noop_runner(),
+        ))
+        .await;
         assert!(success);
         assert!(output.contains("recovered"));
     }
@@ -758,7 +839,13 @@ mod tests {
 
         let job = test_job("ls always_missing_for_retry_test");
 
-        let (success, output) = Box::pin(execute_job_with_retry(&config, &security, &job)).await;
+        let (success, output) = Box::pin(execute_job_with_retry(
+            &config,
+            &security,
+            &job,
+            noop_runner(),
+        ))
+        .await;
         assert!(!success);
         assert!(output.contains("always_missing_for_retry_test"));
     }
@@ -772,7 +859,8 @@ mod tests {
         job.prompt = Some("Say hello".into());
         let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
 
-        let (success, output) = Box::pin(run_agent_job(&config, &security, &job)).await;
+        let (success, output) =
+            Box::pin(run_agent_job(&config, &security, &job, fail_runner())).await;
         assert!(!success);
         assert!(output.contains("agent job failed:"));
     }
@@ -787,7 +875,8 @@ mod tests {
         job.prompt = Some("Say hello".into());
         let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
 
-        let (success, output) = Box::pin(run_agent_job(&config, &security, &job)).await;
+        let (success, output) =
+            Box::pin(run_agent_job(&config, &security, &job, noop_runner())).await;
         assert!(!success);
         assert!(output.contains("blocked by security policy"));
         assert!(output.contains("read-only"));
@@ -803,7 +892,8 @@ mod tests {
         job.prompt = Some("Say hello".into());
         let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
 
-        let (success, output) = Box::pin(run_agent_job(&config, &security, &job)).await;
+        let (success, output) =
+            Box::pin(run_agent_job(&config, &security, &job, noop_runner())).await;
         assert!(!success);
         assert!(output.contains("blocked by security policy"));
         assert!(output.contains("rate limit exceeded"));
@@ -826,6 +916,7 @@ mod tests {
             Vec::new(),
             &component,
             noop_delivery_service(),
+            Arc::new(NoopRunner),
         )
         .await;
 
@@ -854,6 +945,7 @@ mod tests {
             vec![job],
             &component,
             noop_delivery_service(),
+            Arc::new(NoopRunner),
         )
         .await;
 
@@ -1179,7 +1271,7 @@ mod tests {
         job.env_overlay
             .insert("SYNAPSECLAW_TIMEOUT_SECS".into(), "5".into());
 
-        let (_, output) = Box::pin(run_agent_job(&config, &security, &job)).await;
+        let (_, output) = Box::pin(run_agent_job(&config, &security, &job, noop_runner())).await;
 
         // Should either launch a process (status=) or report a spawn error.
         // In test context, current_exe() returns the test binary which doesn't
@@ -1198,7 +1290,8 @@ mod tests {
         let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
         let job = subprocess_agent_job("should not run");
 
-        let (success, output) = Box::pin(run_agent_job(&config, &security, &job)).await;
+        let (success, output) =
+            Box::pin(run_agent_job(&config, &security, &job, noop_runner())).await;
         assert!(!success);
         assert!(output.contains("blocked by security policy"));
         assert!(output.contains("read-only"));
@@ -1215,7 +1308,8 @@ mod tests {
         let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
 
         // InProcess mode should still work (will fail without provider key, same as before)
-        let (success, output) = Box::pin(run_agent_job(&config, &security, &job)).await;
+        let (success, output) =
+            Box::pin(run_agent_job(&config, &security, &job, fail_runner())).await;
         assert!(!success);
         assert!(output.contains("agent job failed:"));
     }

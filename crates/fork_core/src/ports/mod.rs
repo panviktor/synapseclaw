@@ -3,6 +3,7 @@
 //! Ports define capabilities the core needs from the outside world.
 //! Adapters (in `fork_adapters`) implement these ports.
 
+pub mod agent_runner;
 pub mod agent_runtime;
 pub mod approval;
 pub mod channel_output;

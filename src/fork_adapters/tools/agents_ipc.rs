@@ -1611,6 +1611,33 @@ mod tests {
             agent_registry: std::sync::Arc::new(
                 crate::fork_adapters::gateway::agent_registry::AgentRegistry::new(),
             ),
+            agent_runner: {
+                struct NR;
+                #[async_trait::async_trait]
+                impl fork_core::ports::agent_runner::AgentRunnerPort for NR {
+                    async fn run(
+                        &self,
+                        _: Option<String>,
+                        _: Option<String>,
+                        _: Option<String>,
+                        _: f64,
+                        _: bool,
+                        _: Option<std::path::PathBuf>,
+                        _: Option<Vec<String>>,
+                        _: Option<std::sync::Arc<fork_core::domain::tool_audit::RunContext>>,
+                    ) -> anyhow::Result<String> {
+                        Ok(String::new())
+                    }
+                    async fn process_message(
+                        &self,
+                        _: &str,
+                        _: Option<&str>,
+                    ) -> anyhow::Result<String> {
+                        Ok(String::new())
+                    }
+                }
+                std::sync::Arc::new(NR)
+            },
             provisioning_state: std::sync::Arc::new(
                 crate::fork_adapters::gateway::provisioning::ProvisioningState::new(),
             ),

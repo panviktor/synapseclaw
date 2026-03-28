@@ -3038,6 +3038,7 @@ pub async fn start_channels(
             config.api_key.as_deref(),
             &config,
             shared_ipc_client.clone(),
+            None,
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────

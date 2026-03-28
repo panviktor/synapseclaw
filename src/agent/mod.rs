@@ -6,6 +6,7 @@ pub mod loop_;
 pub mod memory_loader;
 pub mod prompt;
 pub mod run_context;
+pub mod runner_adapter;
 
 #[cfg(test)]
 mod tests;
