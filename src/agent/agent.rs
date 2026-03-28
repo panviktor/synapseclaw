@@ -11,7 +11,7 @@ use crate::fork_adapters::providers::{
 use crate::fork_adapters::tools::{self, Tool, ToolSpec};
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::runtime;
-use crate::security::{security_policy_from_config, SecurityPolicy};
+use crate::security::security_policy_from_config;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::io::Write as IoWrite;

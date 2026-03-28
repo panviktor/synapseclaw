@@ -45,6 +45,12 @@ impl ActionTracker {
     }
 }
 
+impl Default for ActionTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Clone for ActionTracker {
     fn clone(&self) -> Self {
         let actions = self.actions.lock();

@@ -101,7 +101,7 @@ use crate::fork_adapters::tools::{self, Tool};
 use crate::identity;
 use crate::memory::{self, Memory};
 use crate::runtime;
-use crate::security::{security_policy_from_config, SecurityPolicy};
+use crate::security::security_policy_from_config;
 use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
 use portable_atomic::{AtomicU64, Ordering};

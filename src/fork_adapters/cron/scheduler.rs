@@ -519,7 +519,7 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::fork_adapters::cron::{self, DeliveryConfig};
-    use crate::security::{security_policy_from_config, SecurityPolicy};
+    use crate::security::security_policy_from_config;
     use chrono::{Duration as ChronoDuration, Utc};
     use tempfile::TempDir;
 

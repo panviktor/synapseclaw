@@ -1,7 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // Re-export everything from fork_core — single source of truth.
-pub use fork_core::domain::config::{AutonomyLevel, CommandRiskLevel, ToolOperation};
+pub use fork_core::domain::config::{AutonomyLevel, ToolOperation};
 pub use fork_core::domain::security_policy::*;
 
 /// Build SecurityPolicy from config sections.
@@ -42,6 +42,8 @@ pub fn security_policy_from_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fork_core::domain::config::CommandRiskLevel;
+    use std::path::PathBuf;
 
     fn default_policy() -> SecurityPolicy {
         SecurityPolicy::default()

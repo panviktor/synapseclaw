@@ -28,7 +28,7 @@ use crate::fork_adapters::tools::traits::ToolSpec;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::runtime;
 use crate::security::pairing::{constant_time_eq, is_public_bind, PairingGuard};
-use crate::security::{security_policy_from_config, SecurityPolicy};
+use crate::security::security_policy_from_config;
 use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
 use axum::{

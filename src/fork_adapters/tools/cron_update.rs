@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
 use crate::config::Config;
 use crate::fork_adapters::cron::{self, CronJobPatch};
-use crate::security::{security_policy_from_config, SecurityPolicy};
+use crate::security::SecurityPolicy;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -240,7 +240,7 @@ impl Tool for CronUpdateTool {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::security::AutonomyLevel;
+    use crate::security::{security_policy_from_config, AutonomyLevel};
     use tempfile::TempDir;
 
     async fn test_config(tmp: &TempDir) -> Arc<Config> {
