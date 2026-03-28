@@ -101,7 +101,7 @@ use crate::fork_adapters::tools::{self, Tool};
 use crate::identity;
 use crate::memory::{self, Memory};
 use crate::runtime;
-use crate::security::SecurityPolicy;
+use crate::security::{security_policy_from_config, SecurityPolicy};
 use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
 use portable_atomic::{AtomicU64, Ordering};
@@ -3010,7 +3010,7 @@ pub async fn start_channels(
         Arc::from(observability::create_observer(&config.observability));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
-    let security = Arc::new(SecurityPolicy::from_config(
+    let security = Arc::new(security_policy_from_config(
         &config.autonomy,
         &config.workspace_dir,
     ));

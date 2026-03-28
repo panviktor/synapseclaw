@@ -28,7 +28,7 @@ use crate::fork_adapters::tools::traits::ToolSpec;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::runtime;
 use crate::security::pairing::{constant_time_eq, is_public_bind, PairingGuard};
-use crate::security::SecurityPolicy;
+use crate::security::{security_policy_from_config, SecurityPolicy};
 use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
 use axum::{
@@ -484,7 +484,7 @@ pub async fn run_gateway(
     )?);
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
-    let security = Arc::new(SecurityPolicy::from_config(
+    let security = Arc::new(security_policy_from_config(
         &config.autonomy,
         &config.workspace_dir,
     ));

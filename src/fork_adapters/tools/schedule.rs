@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
 use crate::config::Config;
 use crate::fork_adapters::cron;
-use crate::security::SecurityPolicy;
+use crate::security::{security_policy_from_config, SecurityPolicy};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -447,7 +447,7 @@ mod tests {
         tokio::fs::create_dir_all(&config.workspace_dir)
             .await
             .unwrap();
-        let security = Arc::new(SecurityPolicy::from_config(
+        let security = Arc::new(security_policy_from_config(
             &config.autonomy,
             &config.workspace_dir,
         ));
@@ -563,7 +563,7 @@ mod tests {
         tokio::fs::create_dir_all(&config.workspace_dir)
             .await
             .unwrap();
-        let security = Arc::new(SecurityPolicy::from_config(
+        let security = Arc::new(security_policy_from_config(
             &config.autonomy,
             &config.workspace_dir,
         ));
@@ -601,7 +601,7 @@ mod tests {
         tokio::fs::create_dir_all(&config.workspace_dir)
             .await
             .unwrap();
-        let security = Arc::new(SecurityPolicy::from_config(
+        let security = Arc::new(security_policy_from_config(
             &config.autonomy,
             &config.workspace_dir,
         ));
@@ -643,7 +643,7 @@ mod tests {
         tokio::fs::create_dir_all(&config.workspace_dir)
             .await
             .unwrap();
-        let security = Arc::new(SecurityPolicy::from_config(
+        let security = Arc::new(security_policy_from_config(
             &config.autonomy,
             &config.workspace_dir,
         ));
@@ -699,7 +699,7 @@ mod tests {
         };
         config.cron.enabled = false;
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let security = Arc::new(SecurityPolicy::from_config(
+        let security = Arc::new(security_policy_from_config(
             &config.autonomy,
             &config.workspace_dir,
         ));
@@ -733,7 +733,7 @@ mod tests {
         config.autonomy.level = AutonomyLevel::Supervised;
         config.autonomy.allowed_commands = vec!["echo".into()];
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let security = Arc::new(SecurityPolicy::from_config(
+        let security = Arc::new(security_policy_from_config(
             &config.autonomy,
             &config.workspace_dir,
         ));
@@ -767,7 +767,7 @@ mod tests {
         config.autonomy.level = AutonomyLevel::Supervised;
         config.autonomy.allowed_commands = vec!["touch".into()];
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let security = Arc::new(SecurityPolicy::from_config(
+        let security = Arc::new(security_policy_from_config(
             &config.autonomy,
             &config.workspace_dir,
         ));

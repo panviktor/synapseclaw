@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
 use crate::config::Config;
 use crate::fork_adapters::cron;
-use crate::security::SecurityPolicy;
+use crate::security::{security_policy_from_config, SecurityPolicy};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -126,7 +126,7 @@ mod tests {
     }
 
     fn test_security(cfg: &Config) -> Arc<SecurityPolicy> {
-        Arc::new(SecurityPolicy::from_config(
+        Arc::new(security_policy_from_config(
             &cfg.autonomy,
             &cfg.workspace_dir,
         ))
