@@ -11,7 +11,7 @@ use crate::fork_adapters::providers::{
 use crate::fork_adapters::tools::{self, Tool, ToolSpec};
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::runtime;
-use crate::security::SecurityPolicy;
+use crate::security::security_policy_from_config;
 use anyhow::Result;
 use std::collections::HashMap;
 use std::io::Write as IoWrite;
@@ -298,7 +298,7 @@ impl Agent {
             Arc::from(observability::create_observer(&config.observability));
         let runtime: Arc<dyn runtime::RuntimeAdapter> =
             Arc::from(runtime::create_runtime(&config.runtime)?);
-        let security = Arc::new(SecurityPolicy::from_config(
+        let security = Arc::new(security_policy_from_config(
             &config.autonomy,
             &config.workspace_dir,
         ));

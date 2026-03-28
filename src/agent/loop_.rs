@@ -9,7 +9,7 @@ use crate::fork_core::ports::approval::ApprovalPort;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::multimodal;
 use crate::runtime;
-use crate::security::SecurityPolicy;
+use crate::security::security_policy_from_config;
 use crate::util::truncate_with_ellipsis;
 use anyhow::Result;
 use regex::{Regex, RegexSet};
@@ -3116,7 +3116,7 @@ pub async fn run(
     let observer: Arc<dyn Observer> = Arc::from(base_observer);
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
-    let security = Arc::new(SecurityPolicy::from_config(
+    let security = Arc::new(security_policy_from_config(
         &config.autonomy,
         &config.workspace_dir,
     ));
@@ -3748,7 +3748,7 @@ pub async fn process_message(
         Arc::from(observability::create_observer(&config.observability));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
-    let security = Arc::new(SecurityPolicy::from_config(
+    let security = Arc::new(security_policy_from_config(
         &config.autonomy,
         &config.workspace_dir,
     ));
@@ -5621,8 +5621,8 @@ Tail"#;
 
     #[test]
     fn build_tool_instructions_includes_all_tools() {
-        use crate::security::SecurityPolicy;
-        let security = Arc::new(SecurityPolicy::from_config(
+        use crate::security::security_policy_from_config;
+        let security = Arc::new(security_policy_from_config(
             &crate::config::AutonomyConfig::default(),
             std::path::Path::new("/tmp"),
         ));
@@ -5638,8 +5638,8 @@ Tail"#;
 
     #[test]
     fn tools_to_openai_format_produces_valid_schema() {
-        use crate::security::SecurityPolicy;
-        let security = Arc::new(SecurityPolicy::from_config(
+        use crate::security::security_policy_from_config;
+        let security = Arc::new(security_policy_from_config(
             &crate::config::AutonomyConfig::default(),
             std::path::Path::new("/tmp"),
         ));

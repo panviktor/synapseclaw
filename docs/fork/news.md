@@ -1,5 +1,16 @@
 # SynapseClaw News & Changelog
 
+## 2026-03-28
+
+### Phase 4.1H: Hexagonal Architecture Migration
+- **Slice 0** — audit + dead code removal: −15K lines (#176)
+- **Slices 1-7** — moved 26 adapter modules → `src/fork_adapters/` (#177): auth, cost, tunnel, heartbeat, health, integrations, channels, providers, tools, gateway, observability, hooks, cron, approval, daemon, doctor, onboard, service, middleware, pipeline, routing, storage, inbound, ipc, memory
+- **Slice 8** — extracted `AutonomyLevel`/`ToolOperation`/`CommandRiskLevel` to `fork_core::domain::config` (#178)
+- **Slice 9** — extracted `MemoryCategory`/`MemoryEntry` to `fork_core::domain::memory` (#178)
+- **Slices 10-11** — extracted `RunContext`/`ToolEvent` to `fork_core::domain::tool_audit`, `QueryClassificationConfig`/`ClassificationRule`/`classify()` to `fork_core::domain::query_classification` (#179)
+- **Slice 12** — extracted SecurityPolicy (2.7K LOC + 113 tests), Memory/Runtime/Sandbox traits, util → fork_core; crate promotion deferred (Config struct too large to move)
+- **Slice 13** — documentation update (this entry)
+
 ## 2026-03-27
 
 ### Phase 4.1: Shared IpcClient + routing cleanup

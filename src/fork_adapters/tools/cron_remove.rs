@@ -110,7 +110,7 @@ impl Tool for CronRemoveTool {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::security::AutonomyLevel;
+    use crate::security::{security_policy_from_config, AutonomyLevel};
     use tempfile::TempDir;
 
     async fn test_config(tmp: &TempDir) -> Arc<Config> {
@@ -126,7 +126,7 @@ mod tests {
     }
 
     fn test_security(cfg: &Config) -> Arc<SecurityPolicy> {
-        Arc::new(SecurityPolicy::from_config(
+        Arc::new(security_policy_from_config(
             &cfg.autonomy,
             &cfg.workspace_dir,
         ))
