@@ -1,10 +1,10 @@
 use super::traits::{Tool, ToolResult};
 use crate::config::Config;
 use crate::fork_adapters::cron;
-use crate::security::SecurityPolicy;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use fork_core::domain::security_policy::SecurityPolicy;
 use serde_json::json;
 use std::sync::Arc;
 

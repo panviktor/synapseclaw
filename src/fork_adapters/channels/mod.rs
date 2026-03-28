@@ -102,8 +102,8 @@ use crate::identity;
 use crate::memory::{self, Memory};
 use crate::runtime;
 use crate::security::security_policy_from_config;
-use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
+use fork_core::domain::util::truncate_with_ellipsis;
 use portable_atomic::{AtomicU64, Ordering};
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
@@ -194,7 +194,7 @@ const CHANNEL_SUMMARY_INTERVAL: usize = 20;
 
 type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
 /// Phase 4.0: RouteSelection from fork_core replaces the old ChannelRouteSelection.
-type ChannelRouteSelection = crate::fork_core::ports::route_selection::RouteSelection;
+type ChannelRouteSelection = fork_core::ports::route_selection::RouteSelection;
 type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
 
 fn effective_channel_message_timeout_secs(configured: u64) -> u64 {
@@ -202,7 +202,7 @@ fn effective_channel_message_timeout_secs(configured: u64) -> u64 {
 }
 
 /// Re-export from fork_core — runtime commands are domain logic.
-use crate::fork_core::application::services::inbound_message_service::RuntimeCommand as ChannelRuntimeCommand;
+use fork_core::application::services::inbound_message_service::RuntimeCommand as ChannelRuntimeCommand;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ModelCacheState {
@@ -255,11 +255,8 @@ struct InterruptOnNewMessageConfig {
 
 impl InterruptOnNewMessageConfig {
     /// Phase 4.0: delegates to fork_core decision logic.
-    fn enabled_for_channel(
-        self,
-        caps: &[crate::fork_core::domain::channel::ChannelCapability],
-    ) -> bool {
-        crate::fork_core::application::services::inbound_message_service::should_interrupt_previous(
+    fn enabled_for_channel(self, caps: &[fork_core::domain::channel::ChannelCapability]) -> bool {
+        fork_core::application::services::inbound_message_service::should_interrupt_previous(
             self.enabled,
             caps,
         )
@@ -309,13 +306,11 @@ struct ChannelRuntimeContext {
     activated_tools:
         Option<std::sync::Arc<std::sync::Mutex<crate::fork_adapters::tools::ActivatedToolSet>>>,
     /// Phase 4.0: channel registry for capability queries (None in standalone CLI mode).
-    channel_registry:
-        Option<Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>>,
+    channel_registry: Option<Arc<dyn fork_core::ports::channel_registry::ChannelRegistryPort>>,
     /// Phase 4.1: pipeline engine ports (None if pipelines disabled).
-    pipeline_store: Option<Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort>>,
-    pipeline_executor:
-        Option<Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>>,
-    message_router: Option<Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort>>,
+    pipeline_store: Option<Arc<dyn fork_core::ports::pipeline_store::PipelineStorePort>>,
+    pipeline_executor: Option<Arc<dyn fork_core::ports::pipeline_executor::PipelineExecutorPort>>,
+    message_router: Option<Arc<dyn fork_core::ports::message_router::MessageRouterPort>>,
 }
 
 #[derive(Clone)]
@@ -355,7 +350,7 @@ impl InFlightTaskCompletion {
 /// TODO(phase4): remove when callers switch to InboundEnvelope directly.
 fn conversation_history_key(msg: &traits::ChannelMessage) -> String {
     let envelope = crate::fork_adapters::envelope_from_channel_message(msg);
-    crate::fork_core::application::services::inbound_message_service::conversation_key(&envelope)
+    fork_core::application::services::inbound_message_service::conversation_key(&envelope)
 }
 
 fn followup_thread_id(msg: &traits::ChannelMessage) -> Option<String> {
@@ -485,7 +480,7 @@ fn strip_tool_call_tags(message: &str) -> String {
 /// Phase 4.0: delivery instructions resolved from registry (adapter metadata).
 fn channel_delivery_instructions(
     channel_name: &str,
-    registry: Option<&dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
+    registry: Option<&dyn fork_core::ports::channel_registry::ChannelRegistryPort>,
 ) -> Option<String> {
     if let Some(reg) = registry {
         return reg.delivery_hints(channel_name);
@@ -550,11 +545,9 @@ fn strip_tool_result_content(text: &str) -> String {
 /// Delegate to fork_core — command parsing is domain logic.
 fn parse_runtime_command(
     content: &str,
-    caps: &[crate::fork_core::domain::channel::ChannelCapability],
+    caps: &[fork_core::domain::channel::ChannelCapability],
 ) -> Option<ChannelRuntimeCommand> {
-    crate::fork_core::application::services::inbound_message_service::parse_runtime_command(
-        content, caps,
-    )
+    fork_core::application::services::inbound_message_service::parse_runtime_command(content, caps)
 }
 
 fn resolve_provider_alias(name: &str) -> Option<String> {
@@ -1405,8 +1398,8 @@ fn spawn_scoped_typing_task(
 /// and delivers the result to the channel.
 async fn handle_message_via_orchestrator(
     ctx: &Arc<ChannelRuntimeContext>,
-    envelope: &crate::fork_core::domain::channel::InboundEnvelope,
-    caps: &[crate::fork_core::domain::channel::ChannelCapability],
+    envelope: &fork_core::domain::channel::InboundEnvelope,
+    caps: &[fork_core::domain::channel::ChannelCapability],
     original_msg: &traits::ChannelMessage,
 ) {
     use crate::fork_adapters::inbound::{
@@ -1415,27 +1408,26 @@ async fn handle_message_via_orchestrator(
     };
     use crate::fork_adapters::memory::memory_adapter;
     use crate::fork_adapters::runtime::{agent_runtime_adapter, hooks_adapter};
-    use crate::fork_core::application::use_cases::handle_inbound_message as uc;
-    use crate::fork_core::ports::hooks::NoOpHooks;
+    use fork_core::application::use_cases::handle_inbound_message as uc;
+    use fork_core::ports::hooks::NoOpHooks;
 
     // ── Build ports from ChannelRuntimeContext ────────────────────
-    let history_port: Arc<
-        dyn crate::fork_core::ports::conversation_history::ConversationHistoryPort,
-    > = Arc::new(
-        conversation_history_adapter::MutexMapConversationHistory::new(
-            ctx.conversation_histories.clone(),
-            ctx.session_store.clone(),
-        ),
-    );
+    let history_port: Arc<dyn fork_core::ports::conversation_history::ConversationHistoryPort> =
+        Arc::new(
+            conversation_history_adapter::MutexMapConversationHistory::new(
+                ctx.conversation_histories.clone(),
+                ctx.session_store.clone(),
+            ),
+        );
 
-    let route_port: Arc<dyn crate::fork_core::ports::route_selection::RouteSelectionPort> =
+    let route_port: Arc<dyn fork_core::ports::route_selection::RouteSelectionPort> =
         Arc::new(route_selection_adapter::MutexMapRouteSelection::new(
             ctx.route_overrides.clone(),
             ctx.default_provider.to_string(),
             ctx.model.to_string(),
         ));
 
-    let hooks_port: Arc<dyn crate::fork_core::ports::hooks::HooksPort> =
+    let hooks_port: Arc<dyn fork_core::ports::hooks::HooksPort> =
         if let Some(ref runner) = ctx.hooks {
             Arc::new(hooks_adapter::HookRunnerAdapter::new(Arc::clone(runner)))
         } else {
@@ -1453,7 +1445,7 @@ async fn handle_message_via_orchestrator(
         })
         .cloned();
 
-    let channel_output: Arc<dyn crate::fork_core::ports::channel_output::ChannelOutputPort> =
+    let channel_output: Arc<dyn fork_core::ports::channel_output::ChannelOutputPort> =
         if let Some(ref ch) = target_channel {
             Arc::new(channel_output_adapter::ChannelOutputAdapter::new(
                 Arc::clone(ch),
@@ -1463,7 +1455,7 @@ async fn handle_message_via_orchestrator(
             Arc::new(NullChannelOutput)
         };
 
-    let agent_runtime: Arc<dyn crate::fork_core::ports::agent_runtime::AgentRuntimePort> =
+    let agent_runtime: Arc<dyn fork_core::ports::agent_runtime::AgentRuntimePort> =
         Arc::new(agent_runtime_adapter::ChannelAgentRuntime {
             provider: Arc::clone(&ctx.provider),
             tools_registry: Arc::clone(&ctx.tools_registry),
@@ -1479,7 +1471,7 @@ async fn handle_message_via_orchestrator(
             max_tool_iterations: ctx.max_tool_iterations,
         });
 
-    let registry: Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort> =
+    let registry: Arc<dyn fork_core::ports::channel_registry::ChannelRegistryPort> =
         ctx.channel_registry.clone().unwrap_or_else(|| {
             Arc::new(
                 crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
@@ -1488,13 +1480,12 @@ async fn handle_message_via_orchestrator(
             )
         });
 
-    let session_summary: Option<
-        Arc<dyn crate::fork_core::ports::session_summary::SessionSummaryPort>,
-    > = ctx.session_store.as_ref().map(|store| {
-        Arc::new(session_summary_adapter::SessionStoreAdapter::new(
-            Arc::clone(store),
-        )) as Arc<dyn crate::fork_core::ports::session_summary::SessionSummaryPort>
-    });
+    let session_summary: Option<Arc<dyn fork_core::ports::session_summary::SessionSummaryPort>> =
+        ctx.session_store.as_ref().map(|store| {
+            Arc::new(session_summary_adapter::SessionStoreAdapter::new(
+                Arc::clone(store),
+            )) as Arc<dyn fork_core::ports::session_summary::SessionSummaryPort>
+        });
 
     let model_routes: Vec<(String, String, String)> = ctx
         .model_routes
@@ -1529,7 +1520,7 @@ async fn handle_message_via_orchestrator(
         ack_reactions: ctx.ack_reactions,
     };
 
-    let memory_port: Option<Arc<dyn crate::fork_core::ports::memory::MemoryTiersPort>> =
+    let memory_port: Option<Arc<dyn fork_core::ports::memory::MemoryTiersPort>> =
         Some(Arc::new(memory_adapter::MemoryTiersAdapter::new(
             Arc::clone(&ctx.memory),
             None, // conversation_store not available in channel context
@@ -1561,7 +1552,7 @@ async fn handle_message_via_orchestrator(
         &ctx.pipeline_store,
         &ctx.pipeline_executor,
     ) {
-        let routing_input = crate::fork_core::domain::routing::RoutingInput {
+        let routing_input = fork_core::domain::routing::RoutingInput {
             content: envelope.content.clone(),
             source_kind: format!("{:?}", envelope.source_kind),
             metadata: std::collections::HashMap::new(),
@@ -1590,33 +1581,33 @@ async fn handle_message_via_orchestrator(
                     "sender": envelope.actor_id,
                 });
                 // Build minimal ports for pipeline run
-                let run_store: Arc<dyn crate::fork_core::ports::run_store::RunStorePort> =
-                    Arc::new(crate::fork_core::ports::run_store::NoOpRunStore);
+                let run_store: Arc<dyn fork_core::ports::run_store::RunStorePort> =
+                    Arc::new(fork_core::ports::run_store::NoOpRunStore);
                 let pipeline_ports =
-                        crate::fork_core::application::services::pipeline_service::PipelineRunnerPorts {
-                            pipeline_store: Arc::clone(store),
-                            executor: Arc::clone(executor),
-                            run_store,
-                        };
-                let params = crate::fork_core::application::services::pipeline_service::StartPipelineParams {
+                    fork_core::application::services::pipeline_service::PipelineRunnerPorts {
+                        pipeline_store: Arc::clone(store),
+                        executor: Arc::clone(executor),
+                        run_store,
+                    };
+                let params =
+                    fork_core::application::services::pipeline_service::StartPipelineParams {
                         pipeline_name: pipeline_name.clone(),
                         input,
                         triggered_by: envelope.actor_id.clone(),
                         depth: 0,
                         parent_run_id: None,
                     };
-                let result =
-                    crate::fork_core::application::services::pipeline_service::run_pipeline(
-                        &pipeline_ports,
-                        params,
-                    )
-                    .await;
+                let result = fork_core::application::services::pipeline_service::run_pipeline(
+                    &pipeline_ports,
+                    params,
+                )
+                .await;
                 // Report result back to channel.
                 // Show the last step's "summary" or "status" field as a human-readable
                 // one-liner. The pipeline is generic — each step decides what to return.
                 // If no summary field, fall back to step name + "done".
                 let reply = match &result.state {
-                    crate::fork_core::domain::pipeline_context::PipelineState::Completed => {
+                    fork_core::domain::pipeline_context::PipelineState::Completed => {
                         result
                             .data
                             .as_object()
@@ -1637,7 +1628,7 @@ async fn handle_message_via_orchestrator(
                             })
                             .unwrap_or_else(|| format!("Pipeline `{pipeline_name}` completed."))
                     }
-                    crate::fork_core::domain::pipeline_context::PipelineState::Failed => {
+                    fork_core::domain::pipeline_context::PipelineState::Failed => {
                         let err = result.error.as_deref().unwrap_or("unknown error");
                         format!("Pipeline `{pipeline_name}` failed: {err}")
                     }
@@ -1691,9 +1682,7 @@ async fn handle_message_via_orchestrator(
     // Persist session store turn if available
     if let Some(ref _store) = ctx.session_store {
         let key =
-            crate::fork_core::application::services::inbound_message_service::conversation_key(
-                envelope,
-            );
+            fork_core::application::services::inbound_message_service::conversation_key(envelope);
         let _history = ports.history.get_history(&key);
         // Session store is already updated through the history port's append_turn
         // Just trigger summary generation if needed
@@ -1709,7 +1698,7 @@ async fn handle_message_via_orchestrator(
 struct NullChannelOutput;
 
 #[async_trait::async_trait]
-impl crate::fork_core::ports::channel_output::ChannelOutputPort for NullChannelOutput {
+impl fork_core::ports::channel_output::ChannelOutputPort for NullChannelOutput {
     async fn send_message(&self, _r: &str, _t: &str, _th: Option<&str>) -> anyhow::Result<()> {
         Ok(())
     }
@@ -1735,11 +1724,11 @@ impl crate::fork_core::ports::channel_output::ChannelOutputPort for NullChannelO
 
 /// Format a command effect into a user-facing response string.
 async fn format_command_effect(
-    effect: &crate::fork_core::application::services::inbound_message_service::CommandEffect,
+    effect: &fork_core::application::services::inbound_message_service::CommandEffect,
     ctx: &ChannelRuntimeContext,
     conversation_key: &str,
 ) -> String {
-    use crate::fork_core::application::services::inbound_message_service::CommandEffect;
+    use fork_core::application::services::inbound_message_service::CommandEffect;
 
     match effect {
         CommandEffect::ShowProviders => {
@@ -3368,7 +3357,7 @@ pub async fn start_channels(
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| config.workspace_dir.join("pipelines"));
 
-        let store: Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort> = Arc::new(
+        let store: Arc<dyn fork_core::ports::pipeline_store::PipelineStorePort> = Arc::new(
             crate::fork_adapters::pipeline::toml_loader::TomlPipelineLoader::new(&pipeline_dir),
         );
         if let Err(e) = store.reload().await {
@@ -3383,51 +3372,50 @@ pub async fn start_channels(
         // IPC step executor for pipeline dispatch.
         // In daemon mode, reuses the shared IpcClient (single seq counter).
         // In standalone mode, creates a local IpcClient.
-        let executor: Option<
-            Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
-        > = if config.agents_ipc.enabled {
-            if let Some(ref broker_token) = config.agents_ipc.broker_token {
-                let ipc_client = if let Some(ref shared) = shared_ipc_client {
-                    Arc::clone(shared)
-                } else {
-                    let runner_id = config
-                        .pipelines
-                        .runner_agent_id
-                        .clone()
-                        .or_else(|| config.agents_ipc.agent_id.clone())
-                        .unwrap_or_else(|| config.agents_ipc.role.clone());
-                    let key_path = config
-                        .config_path
-                        .parent()
-                        .unwrap_or(std::path::Path::new("."))
-                        .join("agent.key");
+        let executor: Option<Arc<dyn fork_core::ports::pipeline_executor::PipelineExecutorPort>> =
+            if config.agents_ipc.enabled {
+                if let Some(ref broker_token) = config.agents_ipc.broker_token {
+                    let ipc_client = if let Some(ref shared) = shared_ipc_client {
+                        Arc::clone(shared)
+                    } else {
+                        let runner_id = config
+                            .pipelines
+                            .runner_agent_id
+                            .clone()
+                            .or_else(|| config.agents_ipc.agent_id.clone())
+                            .unwrap_or_else(|| config.agents_ipc.role.clone());
+                        let key_path = config
+                            .config_path
+                            .parent()
+                            .unwrap_or(std::path::Path::new("."))
+                            .join("agent.key");
 
-                    let mut client = crate::fork_adapters::tools::agents_ipc::IpcClient::new(
-                        &config.agents_ipc.broker_url,
-                        broker_token,
-                        config.agents_ipc.request_timeout_secs,
-                    );
-                    if let Ok(identity) =
-                        crate::security::identity::AgentIdentity::load_or_generate(&key_path)
-                    {
-                        client = client.with_identity(identity, runner_id);
-                    }
-                    Arc::new(client)
-                };
-                Some(Arc::new(
-                    crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
-                        ipc_client,
-                    ),
-                )
-                    as Arc<
-                        dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort,
-                    >)
+                        let mut client = crate::fork_adapters::tools::agents_ipc::IpcClient::new(
+                            &config.agents_ipc.broker_url,
+                            broker_token,
+                            config.agents_ipc.request_timeout_secs,
+                        );
+                        if let Ok(identity) =
+                            crate::security::identity::AgentIdentity::load_or_generate(&key_path)
+                        {
+                            client = client.with_identity(identity, runner_id);
+                        }
+                        Arc::new(client)
+                    };
+                    Some(Arc::new(
+                        crate::fork_adapters::pipeline::ipc_step_executor::IpcStepExecutor::new(
+                            ipc_client,
+                        ),
+                    )
+                        as Arc<
+                            dyn fork_core::ports::pipeline_executor::PipelineExecutorPort,
+                        >)
+                } else {
+                    None
+                }
             } else {
                 None
-            }
-        } else {
-            None
-        };
+            };
 
         // Message router
         let fallback_agent = config
@@ -3436,7 +3424,7 @@ pub async fn start_channels(
             .clone()
             .or_else(|| config.agents_ipc.agent_id.clone())
             .unwrap_or_else(|| config.agents_ipc.role.clone());
-        let router: Option<Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort>> = {
+        let router: Option<Arc<dyn fork_core::ports::message_router::MessageRouterPort>> = {
             let routing_file = config
                 .pipelines
                 .routing_file
@@ -3450,7 +3438,7 @@ pub async fn start_channels(
             tracing::info!("message router loaded from {}", routing_file.display());
             Some(Arc::new(router)
                 as Arc<
-                    dyn crate::fork_core::ports::message_router::MessageRouterPort,
+                    dyn fork_core::ports::message_router::MessageRouterPort,
                 >)
         };
 
@@ -3570,7 +3558,7 @@ mod tests {
     use super::*;
     use crate::fork_adapters::observability::NoopObserver;
     use crate::fork_adapters::providers::{ChatMessage, Provider};
-    use crate::memory::Memory;
+    use fork_core::ports::memory_backend::Memory;
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -3971,7 +3959,7 @@ mod tests {
             &self,
             _key: &str,
             _content: &str,
-            _category: crate::memory::MemoryCategory,
+            _category: fork_core::domain::memory::MemoryCategory,
             _session_id: Option<&str>,
         ) -> anyhow::Result<()> {
             Ok(())
@@ -3982,19 +3970,22 @@ mod tests {
             _query: &str,
             _limit: usize,
             _session_id: Option<&str>,
-        ) -> anyhow::Result<Vec<crate::memory::MemoryEntry>> {
+        ) -> anyhow::Result<Vec<fork_core::domain::memory::MemoryEntry>> {
             Ok(Vec::new())
         }
 
-        async fn get(&self, _key: &str) -> anyhow::Result<Option<crate::memory::MemoryEntry>> {
+        async fn get(
+            &self,
+            _key: &str,
+        ) -> anyhow::Result<Option<fork_core::domain::memory::MemoryEntry>> {
             Ok(None)
         }
 
         async fn list(
             &self,
-            _category: Option<&crate::memory::MemoryCategory>,
+            _category: Option<&fork_core::domain::memory::MemoryCategory>,
             _session_id: Option<&str>,
-        ) -> anyhow::Result<Vec<crate::memory::MemoryEntry>> {
+        ) -> anyhow::Result<Vec<fork_core::domain::memory::MemoryEntry>> {
             Ok(Vec::new())
         }
 
@@ -4737,7 +4728,8 @@ mod tests {
         let msg = "Hello from SynapseClaw 🌍. Current status is healthy, and café-style UTF-8 text stays safe in logs.";
 
         // Reproduces the production crash path where channel logs truncate at 80 chars.
-        let result = std::panic::catch_unwind(|| crate::util::truncate_with_ellipsis(msg, 80));
+        let result =
+            std::panic::catch_unwind(|| fork_core::domain::util::truncate_with_ellipsis(msg, 80));
         assert!(
             result.is_ok(),
             "truncate_with_ellipsis should never panic on UTF-8"

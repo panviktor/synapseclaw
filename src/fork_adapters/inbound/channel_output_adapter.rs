@@ -1,9 +1,9 @@
 //! Adapter: wraps `Arc<dyn Channel>` as ChannelOutputPort.
 
 use crate::fork_adapters::channels::traits::{Channel, SendMessage};
-use crate::fork_core::ports::channel_output::ChannelOutputPort;
 use anyhow::Result;
 use async_trait::async_trait;
+use fork_core::ports::channel_output::ChannelOutputPort;
 use std::sync::Arc;
 
 pub struct ChannelOutputAdapter {

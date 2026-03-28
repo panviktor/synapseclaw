@@ -11,8 +11,8 @@
 //! invocations.
 
 use crate::fork_adapters::tools::traits::{Tool, ToolResult};
-use crate::security::SecurityPolicy;
 use async_trait::async_trait;
+use fork_core::domain::security_policy::SecurityPolicy;
 use regex::Regex;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};

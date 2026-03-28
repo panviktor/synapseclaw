@@ -114,8 +114,10 @@ impl NotionChannel {
                     // Only retry on 429 (rate limit) or 5xx (server errors)
                     if status_code != 429 && (400..500).contains(&status_code) {
                         let body_text = resp.text().await.unwrap_or_default();
-                        let truncated =
-                            crate::util::truncate_with_ellipsis(&body_text, MAX_ERROR_BODY_CHARS);
+                        let truncated = fork_core::domain::util::truncate_with_ellipsis(
+                            &body_text,
+                            MAX_ERROR_BODY_CHARS,
+                        );
                         bail!("Notion API error {status_code}: {truncated}");
                     }
                     last_err = Some(anyhow::anyhow!("Notion API error: {status_code}"));

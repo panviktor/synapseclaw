@@ -569,7 +569,7 @@ impl Tool for GitOperationsTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::SecurityPolicy;
+    use fork_core::domain::security_policy::SecurityPolicy;
     use tempfile::TempDir;
 
     fn test_tool(dir: &std::path::Path) -> GitOperationsTool {

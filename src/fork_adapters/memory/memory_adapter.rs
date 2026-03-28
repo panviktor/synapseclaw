@@ -1,12 +1,12 @@
 //! Adapter: wraps existing `dyn Memory` + `ConversationStorePort` as MemoryTiersPort.
 
 use crate::fork_adapters::providers::Provider;
-use crate::fork_core::domain::memory::{MemoryCategory, MemoryEntry, SessionMemory};
-use crate::fork_core::ports::conversation_store::ConversationStorePort;
-use crate::fork_core::ports::memory::MemoryTiersPort;
-use crate::memory::Memory;
 use anyhow::Result;
 use async_trait::async_trait;
+use fork_core::domain::memory::{MemoryCategory, MemoryEntry, SessionMemory};
+use fork_core::ports::conversation_store::ConversationStorePort;
+use fork_core::ports::memory::MemoryTiersPort;
+use fork_core::ports::memory_backend::Memory;
 use std::sync::Arc;
 
 pub struct MemoryTiersAdapter {
@@ -46,7 +46,7 @@ fn to_upstream_category(cat: &MemoryCategory) -> MemoryCategory {
 }
 
 /// Alias for readability — identity function since types are unified.
-fn to_domain_entry(e: crate::memory::MemoryEntry) -> MemoryEntry {
+fn to_domain_entry(e: fork_core::domain::memory::MemoryEntry) -> MemoryEntry {
     e
 }
 

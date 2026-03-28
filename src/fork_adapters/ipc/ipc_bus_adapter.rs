@@ -4,10 +4,10 @@
 //! a clean port implementation.
 
 use crate::fork_adapters::gateway::ipc::IpcDb;
-use crate::fork_core::domain::ipc::IpcMessage;
-use crate::fork_core::ports::ipc_bus::IpcBusPort;
 use anyhow::Result;
 use async_trait::async_trait;
+use fork_core::domain::ipc::IpcMessage;
+use fork_core::ports::ipc_bus::IpcBusPort;
 use std::sync::Arc;
 
 /// Adapter that wraps `IpcDb` to implement `IpcBusPort`.

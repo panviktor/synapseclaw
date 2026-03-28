@@ -4,8 +4,8 @@
 //! with pattern matching against workload descriptions.
 
 use super::traits::{Tool, ToolResult};
-use crate::util::truncate_with_ellipsis;
 use async_trait::async_trait;
+use fork_core::domain::util::truncate_with_ellipsis;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 

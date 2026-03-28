@@ -1,9 +1,9 @@
 //! Adapter: wraps provider for summary generation as SummaryGeneratorPort.
 
 use crate::fork_adapters::providers::Provider;
-use crate::fork_core::ports::summary::SummaryGeneratorPort;
 use anyhow::Result;
 use async_trait::async_trait;
+use fork_core::ports::summary::SummaryGeneratorPort;
 use std::sync::Arc;
 
 /// Wraps a Provider for summary generation.

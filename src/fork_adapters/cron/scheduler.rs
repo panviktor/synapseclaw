@@ -18,9 +18,7 @@ const SCHEDULER_COMPONENT: &str = "scheduler";
 
 pub async fn run(
     config: Config,
-    delivery_service: Arc<
-        crate::fork_core::application::services::delivery_service::DeliveryService,
-    >,
+    delivery_service: Arc<fork_core::application::services::delivery_service::DeliveryService>,
 ) -> Result<()> {
     let poll_secs = config.reliability.scheduler_poll_secs.max(MIN_POLL_SECONDS);
     let mut interval = time::interval(Duration::from_secs(poll_secs));
@@ -104,9 +102,7 @@ async fn process_due_jobs(
     security: &Arc<SecurityPolicy>,
     jobs: Vec<CronJob>,
     component: &str,
-    delivery_service: Arc<
-        crate::fork_core::application::services::delivery_service::DeliveryService,
-    >,
+    delivery_service: Arc<fork_core::application::services::delivery_service::DeliveryService>,
 ) {
     // Refresh scheduler health on every successful poll cycle, including idle cycles.
     crate::fork_adapters::health::mark_component_ok(component);
@@ -142,9 +138,7 @@ async fn execute_and_persist_job(
     security: &SecurityPolicy,
     job: &CronJob,
     component: &str,
-    delivery_service: Arc<
-        crate::fork_core::application::services::delivery_service::DeliveryService,
-    >,
+    delivery_service: Arc<fork_core::application::services::delivery_service::DeliveryService>,
 ) -> (String, bool, String) {
     crate::fork_adapters::health::mark_component_ok(component);
     warn_if_high_frequency_agent_job(job);
@@ -330,9 +324,7 @@ async fn persist_job_result(
     output: &str,
     started_at: DateTime<Utc>,
     finished_at: DateTime<Utc>,
-    delivery_service: Arc<
-        crate::fork_core::application::services::delivery_service::DeliveryService,
-    >,
+    delivery_service: Arc<fork_core::application::services::delivery_service::DeliveryService>,
 ) -> bool {
     let duration_ms = (finished_at - started_at).num_milliseconds();
 
@@ -527,18 +519,11 @@ mod tests {
     /// Uses a mock registry that has no channels — delivery attempts will
     /// fail, which is fine because test jobs don't configure announce mode.
     fn noop_delivery_service(
-    ) -> Arc<crate::fork_core::application::services::delivery_service::DeliveryService> {
-        let registry: Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort> =
-            Arc::new(
-                crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
-                    Config::default(),
-                ),
-            );
-        Arc::new(
-            crate::fork_core::application::services::delivery_service::DeliveryService::new(
-                registry,
-            ),
-        )
+    ) -> Arc<fork_core::application::services::delivery_service::DeliveryService> {
+        let registry: Arc<dyn fork_core::ports::channel_registry::ChannelRegistryPort> = Arc::new(
+            crate::fork_adapters::channels::registry::CachedChannelRegistry::new(Config::default()),
+        );
+        Arc::new(fork_core::application::services::delivery_service::DeliveryService::new(registry))
     }
 
     async fn test_config(tmp: &TempDir) -> Config {
@@ -717,7 +702,7 @@ mod tests {
     async fn run_job_command_blocks_readonly_mode() {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp).await;
-        config.autonomy.level = crate::security::AutonomyLevel::ReadOnly;
+        config.autonomy.level = fork_core::domain::config::AutonomyLevel::ReadOnly;
         let job = test_job("echo should-not-run");
         let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
 
@@ -796,7 +781,7 @@ mod tests {
     async fn run_agent_job_blocks_readonly_mode() {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp).await;
-        config.autonomy.level = crate::security::AutonomyLevel::ReadOnly;
+        config.autonomy.level = fork_core::domain::config::AutonomyLevel::ReadOnly;
         let mut job = test_job("");
         job.job_type = JobType::Agent;
         job.prompt = Some("Say hello".into());
@@ -1209,7 +1194,7 @@ mod tests {
     async fn run_agent_job_subprocess_blocks_readonly_mode() {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp).await;
-        config.autonomy.level = crate::security::AutonomyLevel::ReadOnly;
+        config.autonomy.level = fork_core::domain::config::AutonomyLevel::ReadOnly;
         let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
         let job = subprocess_agent_job("should not run");
 

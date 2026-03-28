@@ -878,7 +878,7 @@ impl Tool for StateSetTool {
 /// Trust propagation: child trust_level >= parent trust_level (cannot escalate).
 pub struct AgentsSpawnTool {
     config: Arc<crate::config::Config>,
-    security: Arc<crate::security::SecurityPolicy>,
+    security: Arc<fork_core::domain::security_policy::SecurityPolicy>,
     parent_trust_level: u8,
     ipc_client: Option<Arc<IpcClient>>,
 }
@@ -886,7 +886,7 @@ pub struct AgentsSpawnTool {
 impl AgentsSpawnTool {
     pub fn new(
         config: Arc<crate::config::Config>,
-        security: Arc<crate::security::SecurityPolicy>,
+        security: Arc<fork_core::domain::security_policy::SecurityPolicy>,
         parent_trust_level: u8,
     ) -> Self {
         Self {
@@ -900,7 +900,7 @@ impl AgentsSpawnTool {
     /// Create with an IPC client for broker-backed spawn (Phase 3A).
     pub fn with_broker(
         config: Arc<crate::config::Config>,
-        security: Arc<crate::security::SecurityPolicy>,
+        security: Arc<fork_core::domain::security_policy::SecurityPolicy>,
         parent_trust_level: u8,
         ipc_client: Arc<IpcClient>,
     ) -> Self {
@@ -1427,7 +1427,7 @@ mod tests {
     #[test]
     fn agents_spawn_tool_spec() {
         let config = Arc::new(crate::config::Config::default());
-        let security = Arc::new(crate::security::SecurityPolicy::default());
+        let security = Arc::new(fork_core::domain::security_policy::SecurityPolicy::default());
         let tool = AgentsSpawnTool::new(config, security, 2);
         let spec = tool.spec();
         assert_eq!(spec.name, "agents_spawn");
@@ -1443,7 +1443,7 @@ mod tests {
     #[test]
     fn agents_spawn_with_broker_has_ipc_client() {
         let config = Arc::new(crate::config::Config::default());
-        let security = Arc::new(crate::security::SecurityPolicy::default());
+        let security = Arc::new(fork_core::domain::security_policy::SecurityPolicy::default());
         let client = Arc::new(IpcClient::new("http://localhost:42617", "t", 10));
         let tool = AgentsSpawnTool::with_broker(config, security, 1, client);
         assert!(tool.ipc_client.is_some());
@@ -1452,7 +1452,7 @@ mod tests {
     #[test]
     fn agents_spawn_without_broker_has_no_ipc_client() {
         let config = Arc::new(crate::config::Config::default());
-        let security = Arc::new(crate::security::SecurityPolicy::default());
+        let security = Arc::new(fork_core::domain::security_policy::SecurityPolicy::default());
         let tool = AgentsSpawnTool::new(config, security, 2);
         assert!(tool.ipc_client.is_none());
     }
@@ -1500,7 +1500,7 @@ mod tests {
     // Mock memory for test AppState
     struct TestMemory;
     #[async_trait]
-    impl crate::memory::traits::Memory for TestMemory {
+    impl fork_core::ports::memory_backend::Memory for TestMemory {
         fn name(&self) -> &str {
             "test"
         }
@@ -1508,7 +1508,7 @@ mod tests {
             &self,
             _key: &str,
             _content: &str,
-            _category: crate::memory::traits::MemoryCategory,
+            _category: fork_core::domain::memory::MemoryCategory,
             _session_id: Option<&str>,
         ) -> anyhow::Result<()> {
             Ok(())
@@ -1518,20 +1518,20 @@ mod tests {
             _query: &str,
             _limit: usize,
             _session_id: Option<&str>,
-        ) -> anyhow::Result<Vec<crate::memory::traits::MemoryEntry>> {
+        ) -> anyhow::Result<Vec<fork_core::domain::memory::MemoryEntry>> {
             Ok(Vec::new())
         }
         async fn get(
             &self,
             _key: &str,
-        ) -> anyhow::Result<Option<crate::memory::traits::MemoryEntry>> {
+        ) -> anyhow::Result<Option<fork_core::domain::memory::MemoryEntry>> {
             Ok(None)
         }
         async fn list(
             &self,
-            _category: Option<&crate::memory::traits::MemoryCategory>,
+            _category: Option<&fork_core::domain::memory::MemoryCategory>,
             _session_id: Option<&str>,
-        ) -> anyhow::Result<Vec<crate::memory::traits::MemoryEntry>> {
+        ) -> anyhow::Result<Vec<fork_core::domain::memory::MemoryEntry>> {
             Ok(Vec::new())
         }
         async fn forget(&self, _key: &str) -> anyhow::Result<bool> {

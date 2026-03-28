@@ -6,8 +6,8 @@
 
 use super::traits::{Tool, ToolResult};
 use crate::config::CloudOpsConfig;
-use crate::util::truncate_with_ellipsis;
 use async_trait::async_trait;
+use fork_core::domain::util::truncate_with_ellipsis;
 use serde_json::json;
 
 /// Read-only cloud operations advisory tool.

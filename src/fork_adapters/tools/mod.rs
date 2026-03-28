@@ -8,7 +8,7 @@
 //! Tools are assembled into registries by [`default_tools`] (shell, file read/write)
 //! and [`all_tools`] (full set including memory, browser, cron, HTTP, delegation,
 //! and optional integrations). Security policy enforcement is injected via
-//! [`SecurityPolicy`](crate::security::SecurityPolicy) at construction time.
+//! [`SecurityPolicy`](fork_core::domain::security_policy::SecurityPolicy) at construction time.
 //!
 //! # Extension
 //!
@@ -137,10 +137,10 @@ pub use web_search_tool::WebSearchTool;
 pub use workspace_tool::WorkspaceTool;
 
 use crate::config::{Config, DelegateAgentConfig};
-use crate::memory::Memory;
 use crate::runtime::{NativeRuntime, RuntimeAdapter};
-use crate::security::SecurityPolicy;
 use async_trait::async_trait;
+use fork_core::domain::security_policy::SecurityPolicy;
+use fork_core::ports::memory_backend::Memory;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;

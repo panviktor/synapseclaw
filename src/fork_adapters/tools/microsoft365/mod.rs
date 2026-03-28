@@ -9,9 +9,9 @@ pub mod graph_client;
 pub mod types;
 
 use crate::fork_adapters::tools::traits::{Tool, ToolResult};
-use crate::security::policy::ToolOperation;
-use crate::security::SecurityPolicy;
 use async_trait::async_trait;
+use fork_core::domain::config::ToolOperation;
+use fork_core::domain::security_policy::SecurityPolicy;
 use serde_json::json;
 use std::sync::Arc;
 

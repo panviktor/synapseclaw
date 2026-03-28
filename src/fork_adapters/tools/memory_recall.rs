@@ -1,6 +1,6 @@
 use super::traits::{Tool, ToolResult};
-use crate::memory::Memory;
 use async_trait::async_trait;
+use fork_core::ports::memory_backend::Memory;
 use serde_json::json;
 use std::fmt::Write;
 use std::sync::Arc;

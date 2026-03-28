@@ -10,8 +10,8 @@
 use crate::fork_adapters::channels::session_store::SessionStore;
 use crate::fork_adapters::providers::ChatMessage;
 use crate::fork_adapters::{from_core_message, to_core_message};
-use crate::fork_core::domain::message::ChatMessage as CoreChatMessage;
-use crate::fork_core::ports::conversation_history::ConversationHistoryPort;
+use fork_core::domain::message::ChatMessage as CoreChatMessage;
+use fork_core::ports::conversation_history::ConversationHistoryPort;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
