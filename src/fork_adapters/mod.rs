@@ -32,6 +32,11 @@ pub mod service;
 pub mod tools;
 pub mod tunnel;
 
+// ── Deferred modules (moved from src/ in Phase 4.1H2) ──
+pub mod identity;
+pub mod multimodal;
+pub mod skills;
+
 // ── ChatMessage conversion helpers ──────────────────────────────────────────
 //
 // The upstream `providers::ChatMessage` and fork_core's
