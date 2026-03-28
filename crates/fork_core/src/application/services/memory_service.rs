@@ -166,6 +166,7 @@ mod tests {
     #[test]
     fn format_recall_basic() {
         let entries = vec![MemoryEntry {
+            id: String::new(),
             key: "fact1".into(),
             content: "The user likes rust".into(),
             category: MemoryCategory::Core,
@@ -183,6 +184,7 @@ mod tests {
     #[test]
     fn format_recall_filters_low_relevance() {
         let entries = vec![MemoryEntry {
+            id: String::new(),
             key: "noise".into(),
             content: "irrelevant".into(),
             category: MemoryCategory::Core,
@@ -201,6 +203,7 @@ mod tests {
     fn format_recall_truncates_long_entry() {
         let long_content = "a".repeat(1000);
         let entries = vec![MemoryEntry {
+            id: String::new(),
             key: "long".into(),
             content: long_content,
             category: MemoryCategory::Core,
@@ -222,6 +225,7 @@ mod tests {
     fn format_recall_respects_max_entries() {
         let entries: Vec<MemoryEntry> = (0..10)
             .map(|i| MemoryEntry {
+                id: String::new(),
                 key: format!("fact{i}"),
                 content: format!("content {i}"),
                 category: MemoryCategory::Core,
