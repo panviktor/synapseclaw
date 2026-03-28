@@ -1,4 +1,4 @@
-use super::traits::RuntimeAdapter;
+use fork_core::ports::runtime::RuntimeAdapter;
 use std::path::{Path, PathBuf};
 
 /// Native runtime — full access, runs on Mac/Linux/Windows/Docker/Raspberry Pi

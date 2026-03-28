@@ -1,4 +1,4 @@
-use super::traits::RuntimeAdapter;
+use fork_core::ports::runtime::RuntimeAdapter;
 use crate::config::DockerRuntimeConfig;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
