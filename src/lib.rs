@@ -55,6 +55,10 @@ pub mod runtime;
 pub(crate) mod security;
 pub(crate) mod skills;
 pub use crate::fork_adapters::tools;
+/// Re-export hooks for integration tests.
+pub use crate::fork_adapters::hooks;
+/// Re-export observability for tests/benches.
+pub use crate::fork_adapters::observability;
 pub(crate) mod util;
 
 pub use config::Config;

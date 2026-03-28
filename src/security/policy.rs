@@ -1,36 +1,9 @@
 use parking_lot::Mutex;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// How much autonomy the agent has
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum AutonomyLevel {
-    /// Read-only: can observe but not act
-    ReadOnly,
-    /// Supervised: acts but requires approval for risky operations
-    #[default]
-    Supervised,
-    /// Full: autonomous execution within policy bounds
-    Full,
-}
-
-/// Risk score for shell command execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandRiskLevel {
-    Low,
-    Medium,
-    High,
-}
-
-/// Classifies whether a tool operation is read-only or side-effecting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolOperation {
-    Read,
-    Act,
-}
+// Re-export domain types from fork_core — single source of truth.
+pub use fork_core::domain::config::{AutonomyLevel, CommandRiskLevel, ToolOperation};
 
 /// Sliding-window action tracker for rate limiting.
 #[derive(Debug)]
