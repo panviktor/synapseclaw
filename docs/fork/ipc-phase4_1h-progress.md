@@ -18,13 +18,13 @@ See [ipc-phase4_1h-plan.md](ipc-phase4_1h-plan.md) for full plan.
 | 9 | Memory split → fork_core | **done** | #178 | ~130 lines |
 | 10 | Agent orchestration → fork_core | **done** | #179 | ~490 lines |
 | 11 | Config types → fork_core | **done** | #179 | (QueryClassificationConfig included in Slice 10) |
-| 12 | Promote `src/fork_adapters/` → `crates/fork_adapters/` | **deferred** | — | blocked: 55+ `crate::security`, 46+ `crate::config` refs |
-| 13 | Documentation update | **done** | #180 | — |
+| 12 | Extract traits/types to fork_core for crate boundary | **done** | #181 | ~3K lines (SecurityPolicy, Memory, Runtime, Sandbox, util) |
+| 13 | Documentation update | **done** | #180, #181 | — |
 
 ## Notes
 
 - `channel-matrix` is now a default feature (Slice 0).
 - Skills/SOP/RAG deferred to Phase 4.2.
 - Phase 4.1H+ (granular adapter crates) deferred until compilation times warrant it.
-- Crate promotion (Slice 12) blocked: fork_adapters has 55+ `crate::security` and 46+ `crate::config` refs — requires extracting full config/security/memory/runtime to fork_core first. Deferred to Phase 4.2.
+- Crate promotion deferred: fork_adapters still has 78 `crate::config::Config` refs (massive 12K struct). SecurityPolicy (2.7K LOC), Memory/Runtime/Sandbox traits, and util extracted to fork_core. Full crate split deferred to Phase 4.2 when Config projection or trait is designed.
 - Slices 1-7 collapsed into single PR #177 — all adapter modules now live in `src/fork_adapters/`.

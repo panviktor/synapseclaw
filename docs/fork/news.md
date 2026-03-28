@@ -8,7 +8,7 @@
 - **Slice 8** — extracted `AutonomyLevel`/`ToolOperation`/`CommandRiskLevel` to `fork_core::domain::config` (#178)
 - **Slice 9** — extracted `MemoryCategory`/`MemoryEntry` to `fork_core::domain::memory` (#178)
 - **Slices 10-11** — extracted `RunContext`/`ToolEvent` to `fork_core::domain::tool_audit`, `QueryClassificationConfig`/`ClassificationRule`/`classify()` to `fork_core::domain::query_classification` (#179)
-- **Slice 12** — deferred: crate promotion blocked by 100+ cross-module refs
+- **Slice 12** — extracted SecurityPolicy (2.7K LOC + 113 tests), Memory/Runtime/Sandbox traits, util → fork_core; crate promotion deferred (Config struct too large to move)
 - **Slice 13** — documentation update (this entry)
 
 ## 2026-03-27
