@@ -10,11 +10,20 @@ use std::sync::Arc;
 pub struct CronRunTool {
     config: Arc<Config>,
     security: Arc<SecurityPolicy>,
+    agent_runner: Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
 }
 
 impl CronRunTool {
-    pub fn new(config: Arc<Config>, security: Arc<SecurityPolicy>) -> Self {
-        Self { config, security }
+    pub fn new(
+        config: Arc<Config>,
+        security: Arc<SecurityPolicy>,
+        agent_runner: Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
+    ) -> Self {
+        Self {
+            config,
+            security,
+            agent_runner,
+        }
     }
 }
 
@@ -116,8 +125,12 @@ impl Tool for CronRunTool {
         }
 
         let started_at = Utc::now();
-        let (success, output) =
-            Box::pin(cron::scheduler::execute_job_now(&self.config, &job)).await;
+        let (success, output) = Box::pin(cron::scheduler::execute_job_now(
+            &self.config,
+            &job,
+            self.agent_runner.as_ref(),
+        ))
+        .await;
         let finished_at = Utc::now();
         let duration_ms = (finished_at - started_at).num_milliseconds();
         let status = if success { "ok" } else { "error" };
@@ -181,7 +194,33 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
         let job = cron::add_job(&cfg, "*/5 * * * *", "echo run-now").unwrap();
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
+            struct NR;
+            #[async_trait::async_trait]
+            impl fork_core::ports::agent_runner::AgentRunnerPort for NR {
+                async fn run(
+                    &self,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: f64,
+                    _: bool,
+                    _: Option<std::path::PathBuf>,
+                    _: Option<Vec<String>>,
+                    _: Option<std::sync::Arc<fork_core::domain::tool_audit::RunContext>>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+                async fn process_message(
+                    &self,
+                    _: &str,
+                    _: Option<&str>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+            }
+            std::sync::Arc::new(NR)
+        });
 
         let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
         assert!(result.success, "{:?}", result.error);
@@ -194,7 +233,33 @@ mod tests {
     async fn errors_for_missing_job() {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
+            struct NR;
+            #[async_trait::async_trait]
+            impl fork_core::ports::agent_runner::AgentRunnerPort for NR {
+                async fn run(
+                    &self,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: f64,
+                    _: bool,
+                    _: Option<std::path::PathBuf>,
+                    _: Option<Vec<String>>,
+                    _: Option<std::sync::Arc<fork_core::domain::tool_audit::RunContext>>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+                async fn process_message(
+                    &self,
+                    _: &str,
+                    _: Option<&str>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+            }
+            std::sync::Arc::new(NR)
+        });
 
         let result = tool
             .execute(json!({ "job_id": "missing-job-id" }))
@@ -216,7 +281,33 @@ mod tests {
         let job = cron::add_job(&config, "*/5 * * * *", "echo run-now").unwrap();
         config.autonomy.level = AutonomyLevel::ReadOnly;
         let cfg = Arc::new(config);
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
+            struct NR;
+            #[async_trait::async_trait]
+            impl fork_core::ports::agent_runner::AgentRunnerPort for NR {
+                async fn run(
+                    &self,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: f64,
+                    _: bool,
+                    _: Option<std::path::PathBuf>,
+                    _: Option<Vec<String>>,
+                    _: Option<std::sync::Arc<fork_core::domain::tool_audit::RunContext>>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+                async fn process_message(
+                    &self,
+                    _: &str,
+                    _: Option<&str>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+            }
+            std::sync::Arc::new(NR)
+        });
 
         let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
         assert!(!result.success);
@@ -247,7 +338,33 @@ mod tests {
             true,
         )
         .unwrap();
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
+            struct NR;
+            #[async_trait::async_trait]
+            impl fork_core::ports::agent_runner::AgentRunnerPort for NR {
+                async fn run(
+                    &self,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: f64,
+                    _: bool,
+                    _: Option<std::path::PathBuf>,
+                    _: Option<Vec<String>>,
+                    _: Option<std::sync::Arc<fork_core::domain::tool_audit::RunContext>>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+                async fn process_message(
+                    &self,
+                    _: &str,
+                    _: Option<&str>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+            }
+            std::sync::Arc::new(NR)
+        });
 
         // Without approval, the tool-level policy check blocks medium-risk commands.
         let denied = tool.execute(json!({ "job_id": job.id })).await.unwrap();
@@ -271,7 +388,33 @@ mod tests {
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
         let cfg = Arc::new(config);
         let job = cron::add_job(&cfg, "*/5 * * * *", "echo run-now").unwrap();
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg));
+        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
+            struct NR;
+            #[async_trait::async_trait]
+            impl fork_core::ports::agent_runner::AgentRunnerPort for NR {
+                async fn run(
+                    &self,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: Option<String>,
+                    _: f64,
+                    _: bool,
+                    _: Option<std::path::PathBuf>,
+                    _: Option<Vec<String>>,
+                    _: Option<std::sync::Arc<fork_core::domain::tool_audit::RunContext>>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+                async fn process_message(
+                    &self,
+                    _: &str,
+                    _: Option<&str>,
+                ) -> anyhow::Result<String> {
+                    Ok(String::new())
+                }
+            }
+            std::sync::Arc::new(NR)
+        });
 
         let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
         assert!(!result.success);

@@ -820,6 +820,13 @@ async fn main() -> Result<()> {
     // All other commands need config loaded first
     let mut config = Box::pin(Config::load_or_init()).await?;
     config.apply_env_overrides();
+
+    // Build agent runner port — shared by gateway, daemon, cron
+    let config_for_runner = std::sync::Arc::new(std::sync::Mutex::new(config.clone()));
+    let agent_runner: std::sync::Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort> =
+        std::sync::Arc::new(crate::agent::runner_adapter::AgentRunner::new(
+            config_for_runner,
+        ));
     crate::fork_adapters::observability::runtime_trace::init_from_config(
         &config.observability,
         &config.workspace_dir,
@@ -902,7 +909,13 @@ async fn main() -> Result<()> {
 
                     log_gateway_start(&host, port);
                     Box::pin(fork_adapters::gateway::run_gateway(
-                        &host, port, config, None, None, None,
+                        &host,
+                        port,
+                        config,
+                        None,
+                        None,
+                        None,
+                        agent_runner.clone(),
                     ))
                     .await
                 }
@@ -954,7 +967,13 @@ async fn main() -> Result<()> {
                     let (port, host) = resolve_gateway_addr(&config, port, host);
                     log_gateway_start(&host, port);
                     Box::pin(fork_adapters::gateway::run_gateway(
-                        &host, port, config, None, None, None,
+                        &host,
+                        port,
+                        config,
+                        None,
+                        None,
+                        None,
+                        agent_runner.clone(),
                     ))
                     .await
                 }
@@ -963,7 +982,13 @@ async fn main() -> Result<()> {
                     let host = config.gateway.host.clone();
                     log_gateway_start(&host, port);
                     Box::pin(fork_adapters::gateway::run_gateway(
-                        &host, port, config, None, None, None,
+                        &host,
+                        port,
+                        config,
+                        None,
+                        None,
+                        None,
+                        agent_runner.clone(),
                     ))
                     .await
                 }
@@ -1026,7 +1051,13 @@ async fn main() -> Result<()> {
             } else {
                 info!("🧠 Starting SynapseClaw Daemon on {host}:{port}");
             }
-            Box::pin(crate::fork_adapters::daemon::run(config, host, port)).await
+            Box::pin(crate::fork_adapters::daemon::run(
+                config,
+                host,
+                port,
+                agent_runner.clone(),
+            ))
+            .await
         }
 
         Commands::Status => {

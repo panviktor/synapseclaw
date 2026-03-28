@@ -276,7 +276,3 @@ path = "tests/test_system.rs"
 [[test]]
 name = "live"
 path = "tests/test_live.rs"
-
-[[bench]]
-name = "agent_benchmarks"
-harness = false

@@ -145,6 +145,34 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// No-op agent runner for contexts where the runner is not available (e.g., tests).
+struct NoopAgentRunner;
+
+#[async_trait]
+impl fork_core::ports::agent_runner::AgentRunnerPort for NoopAgentRunner {
+    async fn run(
+        &self,
+        _message: Option<String>,
+        _provider_override: Option<String>,
+        _model_override: Option<String>,
+        _temperature: f64,
+        _interactive: bool,
+        _session_state_file: Option<std::path::PathBuf>,
+        _allowed_tools: Option<Vec<String>>,
+        _run_ctx: Option<Arc<fork_core::domain::tool_audit::RunContext>>,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!("AgentRunner not available in this context")
+    }
+
+    async fn process_message(
+        &self,
+        _message: &str,
+        _session_id: Option<&str>,
+    ) -> anyhow::Result<String> {
+        anyhow::bail!("AgentRunner not available in this context")
+    }
+}
+
 /// Shared handle to the delegate tool's parent-tools list.
 /// Callers can push additional tools (e.g. MCP wrappers) after construction.
 pub type DelegateParentToolsHandle = Arc<RwLock<Vec<Arc<dyn Tool>>>>;
@@ -265,6 +293,7 @@ pub fn all_tools(
         fallback_api_key,
         root_config,
         shared_ipc_client,
+        None,
     )
 }
 
@@ -289,6 +318,7 @@ pub fn all_tools_with_runtime(
     fallback_api_key: Option<&str>,
     root_config: &crate::config::Config,
     shared_ipc_client: Option<Arc<IpcClient>>,
+    agent_runner: Option<Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
@@ -306,7 +336,13 @@ pub fn all_tools_with_runtime(
         Arc::new(CronListTool::new(config.clone())),
         Arc::new(CronRemoveTool::new(config.clone(), security.clone())),
         Arc::new(CronUpdateTool::new(config.clone(), security.clone())),
-        Arc::new(CronRunTool::new(config.clone(), security.clone())),
+        Arc::new(CronRunTool::new(
+            config.clone(),
+            security.clone(),
+            agent_runner
+                .clone()
+                .unwrap_or_else(|| Arc::from(NoopAgentRunner)),
+        )),
         Arc::new(CronRunsTool::new(config.clone())),
         Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())),
         Arc::new(MemoryRecallTool::new(memory.clone())),

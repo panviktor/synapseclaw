@@ -46,7 +46,12 @@ async fn wait_for_shutdown_signal() -> Result<()> {
     Ok(())
 }
 
-pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
+pub async fn run(
+    config: Config,
+    host: String,
+    port: u16,
+    agent_runner: std::sync::Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
+) -> Result<()> {
     let initial_backoff = config.reliability.channel_initial_backoff_secs.max(1);
     let max_backoff = config
         .reliability
@@ -152,6 +157,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
         let gw_outbound_tx = outbound_tx.clone();
         let gw_registry = Some(channel_registry.clone());
         let gw_ipc = shared_ipc_client.clone();
+        let gw_runner = agent_runner.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -162,9 +168,10 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 let otx = gw_outbound_tx.clone();
                 let reg = gw_registry.clone();
                 let ipc = gw_ipc.clone();
+                let ar = gw_runner.clone();
                 async move {
                     Box::pin(crate::fork_adapters::gateway::run_gateway(
-                        &host, port, cfg, otx, reg, ipc,
+                        &host, port, cfg, otx, reg, ipc, ar,
                     ))
                     .await
                 }
@@ -197,6 +204,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     if config.heartbeat.enabled {
         let heartbeat_cfg = config.clone();
         let hb_delivery = delivery_service.clone();
+        let heartbeat_runner = agent_runner.clone();
         handles.push(spawn_component_supervisor(
             "heartbeat",
             initial_backoff,
@@ -204,7 +212,8 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
             move || {
                 let cfg = heartbeat_cfg.clone();
                 let ds = hb_delivery.clone();
-                async move { Box::pin(run_heartbeat_worker(cfg, ds)).await }
+                let ar = heartbeat_runner.clone();
+                async move { Box::pin(run_heartbeat_worker(cfg, ds, ar)).await }
             },
         ));
     }
@@ -219,7 +228,8 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
             move || {
                 let cfg = scheduler_cfg.clone();
                 let ds = sched_delivery.clone();
-                async move { Box::pin(crate::fork_adapters::cron::scheduler::run(cfg, ds)).await }
+                let ar = agent_runner.clone();
+                async move { Box::pin(crate::fork_adapters::cron::scheduler::run(cfg, ds, ar)).await }
             },
         ));
     } else {
@@ -383,6 +393,7 @@ async fn run_heartbeat_worker(
     delivery_service: std::sync::Arc<
         fork_core::application::services::delivery_service::DeliveryService,
     >,
+    agent_runner: std::sync::Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
 ) -> Result<()> {
     use crate::fork_adapters::heartbeat::engine::{
         compute_adaptive_interval, HeartbeatEngine, HeartbeatTask, TaskPriority, TaskStatus,
@@ -474,18 +485,18 @@ async fn run_heartbeat_worker(
         // ── Phase 1: LLM decision (two-phase mode) ──────────────
         let tasks_to_run = if two_phase {
             let decision_prompt = HeartbeatEngine::build_decision_prompt(&tasks);
-            match Box::pin(crate::agent::run(
-                config.clone(),
-                Some(decision_prompt),
-                None,
-                None,
-                0.0,
-                false,
-                None,
-                None,
-                None,
-            ))
-            .await
+            match agent_runner
+                .run(
+                    Some(decision_prompt),
+                    None,
+                    None,
+                    0.0,
+                    false,
+                    None,
+                    None,
+                    None,
+                )
+                .await
             {
                 Ok(response) => {
                     let indices = HeartbeatEngine::parse_decision_response(&response, tasks.len());
@@ -522,18 +533,9 @@ async fn run_heartbeat_worker(
             let task_start = std::time::Instant::now();
             let prompt = format!("[Heartbeat Task | {}] {}", task.priority, task.text);
             let temp = config.default_temperature;
-            match Box::pin(crate::agent::run(
-                config.clone(),
-                Some(prompt),
-                None,
-                None,
-                temp,
-                false,
-                None,
-                None,
-                None,
-            ))
-            .await
+            match agent_runner
+                .run(Some(prompt), None, None, temp, false, None, None, None)
+                .await
             {
                 Ok(output) => {
                     crate::fork_adapters::health::mark_component_ok("heartbeat");

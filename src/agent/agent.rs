@@ -337,6 +337,7 @@ impl Agent {
             config.api_key.as_deref(),
             config,
             None,
+            None,
         );
 
         let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");

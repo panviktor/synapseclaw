@@ -375,6 +375,8 @@ pub struct AppState {
     pub node_registry: Arc<nodes::NodeRegistry>,
     /// Registry of agent daemons for broker proxy (Phase 3.8)
     pub agent_registry: Arc<agent_registry::AgentRegistry>,
+    /// Port for invoking agent runs without depending on `crate::agent` directly.
+    pub agent_runner: Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
     /// Runtime provisioning state (Phase 3.8 Step 11)
     pub provisioning_state: Arc<provisioning::ProvisioningState>,
     /// In-memory chat sessions keyed by session key (e.g. `web:<hash>:<id>`)
@@ -420,6 +422,7 @@ pub async fn run_gateway(
     outbound_tx: Option<fork_core::bus::OutboundIntentSender>,
     channel_registry: Option<Arc<dyn fork_core::ports::channel_registry::ChannelRegistryPort>>,
     shared_ipc_client: Option<Arc<crate::fork_adapters::tools::agents_ipc::IpcClient>>,
+    agent_runner: Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -509,6 +512,7 @@ pub async fn run_gateway(
         config.api_key.as_deref(),
         &config,
         shared_ipc_client.clone(),
+        Some(agent_runner.clone()),
     );
     let tools_registry: Arc<Vec<ToolSpec>> =
         Arc::new(tools_registry_raw.iter().map(|t| t.spec()).collect());
@@ -902,6 +906,7 @@ pub async fn run_gateway(
         },
         node_registry,
         agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+        agent_runner,
         provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
         admin_cidrs: Arc::new(admin_cidrs),
         chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -1193,12 +1198,14 @@ pub async fn run_gateway(
         let inbox_config = config.clone();
         let inbox_outbound_tx = outbound_tx.clone();
         let inbox_run_store = state.run_store.clone();
+        let inbox_agent_runner = state.agent_runner.clone();
         tokio::spawn(async move {
             Box::pin(agent_inbox_processor(
                 inbox_config,
                 push_rx,
                 inbox_outbound_tx,
                 inbox_run_store,
+                inbox_agent_runner,
             ))
             .await;
         });
@@ -1528,6 +1535,7 @@ async fn agent_inbox_processor(
     mut push_rx: tokio::sync::mpsc::UnboundedReceiver<ipc::PushMeta>,
     outbound_tx: Option<fork_core::bus::OutboundIntentSender>,
     run_store: Option<Arc<dyn fork_core::ports::run_store::RunStorePort>>,
+    agent_runner: Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>,
 ) {
     let max_auto = config.agents_ipc.push_max_auto_processes;
     let cooldown = Duration::from_secs(config.agents_ipc.push_peer_cooldown_secs);
@@ -1749,7 +1757,7 @@ async fn agent_inbox_processor(
 
             // Create RunContext to track tool calls during this push-triggered run.
             // Used by auto-reply safety net to detect if agents_reply was called.
-            let run_ctx = std::sync::Arc::new(crate::agent::run_context::RunContext::new());
+            let run_ctx = std::sync::Arc::new(fork_core::domain::tool_audit::RunContext::new());
 
             // Phase 4.0: Track IPC run in RunStore
             let ipc_run_id = uuid::Uuid::new_v4().to_string();
@@ -1768,18 +1776,18 @@ async fn agent_inbox_processor(
                 }
             }
 
-            match Box::pin(crate::agent::run(
-                config.clone(),
-                Some(prompt),
-                None,
-                None,
-                config.default_temperature,
-                false,
-                None,
-                None,
-                Some(run_ctx.clone()),
-            ))
-            .await
+            match agent_runner
+                .run(
+                    Some(prompt),
+                    None,
+                    None,
+                    config.default_temperature,
+                    false,
+                    None,
+                    None,
+                    Some(run_ctx.clone()),
+                )
+                .await
             {
                 Ok(last_text) => {
                     // Mark IPC run completed
@@ -2176,8 +2184,10 @@ async fn run_gateway_chat_with_tools(
     message: &str,
     session_id: Option<&str>,
 ) -> anyhow::Result<String> {
-    let config = state.config.lock().clone();
-    Box::pin(crate::agent::process_message(config, message, session_id)).await
+    state
+        .agent_runner
+        .process_message(message, session_id)
+        .await
 }
 
 /// Webhook request body
@@ -3127,6 +3137,31 @@ mod tests {
     use parking_lot::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    struct NoopRunner;
+    #[async_trait]
+    impl fork_core::ports::agent_runner::AgentRunnerPort for NoopRunner {
+        async fn run(
+            &self,
+            _: Option<String>,
+            _: Option<String>,
+            _: Option<String>,
+            _: f64,
+            _: bool,
+            _: Option<std::path::PathBuf>,
+            _: Option<Vec<String>>,
+            _: Option<Arc<fork_core::domain::tool_audit::RunContext>>,
+        ) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+        async fn process_message(&self, _: &str, _: Option<&str>) -> anyhow::Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    fn test_agent_runner() -> Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort> {
+        Arc::new(NoopRunner)
+    }
+
     /// Generate a random hex secret at runtime to avoid hard-coded cryptographic values.
     fn generate_test_secret() -> String {
         let bytes: [u8; 32] = rand::random();
@@ -3206,6 +3241,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            agent_runner: test_agent_runner(),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -3281,6 +3317,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            agent_runner: test_agent_runner(),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -3680,6 +3717,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            agent_runner: test_agent_runner(),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -3769,6 +3807,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            agent_runner: test_agent_runner(),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -3870,6 +3909,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            agent_runner: test_agent_runner(),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -3943,6 +3983,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            agent_runner: test_agent_runner(),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -4021,6 +4062,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            agent_runner: test_agent_runner(),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -4104,6 +4146,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            agent_runner: test_agent_runner(),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -4183,6 +4226,7 @@ mod tests {
             ipc_read_rate_limiter: None,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             agent_registry: Arc::new(agent_registry::AgentRegistry::new()),
+            agent_runner: test_agent_runner(),
             provisioning_state: Arc::new(provisioning::ProvisioningState::new()),
             admin_cidrs: Arc::new(vec![]),
             chat_sessions: Arc::new(std::sync::Mutex::new(HashMap::new())),

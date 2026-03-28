@@ -3156,6 +3156,7 @@ pub async fn run(
             config.api_key.as_deref(),
             &config,
             None, // Agents create their own IpcClient (no shared daemon client)
+            None,
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -3782,6 +3783,7 @@ pub async fn process_message(
         &config.agents,
         config.api_key.as_deref(),
         &config,
+        None,
         None,
     );
     // ── Wire MCP tools (non-fatal) — process_message path ────────
