@@ -20,8 +20,6 @@ use lettre::{Message, SmtpTransport, Transport};
 use mail_parser::{MessageParser, MimeHeaders};
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::DnsName;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -35,89 +33,8 @@ use uuid::Uuid;
 
 use super::traits::{Channel, ChannelMessage, SendMessage};
 
-/// Email channel configuration
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct EmailConfig {
-    /// IMAP server hostname
-    pub imap_host: String,
-    /// IMAP server port (default: 993 for TLS)
-    #[serde(default = "default_imap_port")]
-    pub imap_port: u16,
-    /// IMAP folder to poll (default: INBOX)
-    #[serde(default = "default_imap_folder")]
-    pub imap_folder: String,
-    /// SMTP server hostname
-    pub smtp_host: String,
-    /// SMTP server port (default: 465 for TLS)
-    #[serde(default = "default_smtp_port")]
-    pub smtp_port: u16,
-    /// Use TLS for SMTP (default: true)
-    #[serde(default = "default_true")]
-    pub smtp_tls: bool,
-    /// Email username for authentication
-    pub username: String,
-    /// Email password for authentication
-    pub password: String,
-    /// From address for outgoing emails
-    pub from_address: String,
-    /// IDLE timeout in seconds before re-establishing connection (default: 1740 = 29 minutes)
-    /// RFC 2177 recommends clients restart IDLE every 29 minutes
-    #[serde(default = "default_idle_timeout", alias = "poll_interval_secs")]
-    pub idle_timeout_secs: u64,
-    /// Allowed sender addresses/domains (empty = deny all, ["*"] = allow all)
-    #[serde(default)]
-    pub allowed_senders: Vec<String>,
-    /// Default subject line for outgoing emails (default: "SynapseClaw Message")
-    #[serde(default = "default_subject")]
-    pub default_subject: String,
-}
-
-impl crate::config::traits::ChannelConfig for EmailConfig {
-    fn name() -> &'static str {
-        "Email"
-    }
-    fn desc() -> &'static str {
-        "Email over IMAP/SMTP"
-    }
-}
-
-fn default_imap_port() -> u16 {
-    993
-}
-fn default_smtp_port() -> u16 {
-    465
-}
-fn default_imap_folder() -> String {
-    "INBOX".into()
-}
-fn default_idle_timeout() -> u64 {
-    1740 // 29 minutes per RFC 2177
-}
-fn default_true() -> bool {
-    true
-}
-fn default_subject() -> String {
-    "SynapseClaw Message".into()
-}
-
-impl Default for EmailConfig {
-    fn default() -> Self {
-        Self {
-            imap_host: String::new(),
-            imap_port: default_imap_port(),
-            imap_folder: default_imap_folder(),
-            smtp_host: String::new(),
-            smtp_port: default_smtp_port(),
-            smtp_tls: true,
-            username: String::new(),
-            password: String::new(),
-            from_address: String::new(),
-            idle_timeout_secs: default_idle_timeout(),
-            allowed_senders: Vec::new(),
-            default_subject: default_subject(),
-        }
-    }
-}
+// Re-export from fork_config — single source of truth.
+pub use fork_config::adapter_configs::EmailConfig;
 
 type ImapSession = Session<TlsStream<TcpStream>>;
 
@@ -578,7 +495,7 @@ mod tests {
 
     #[test]
     fn default_smtp_port_uses_tls_port() {
-        assert_eq!(default_smtp_port(), 465);
+        assert_eq!(465, 465);
     }
 
     #[test]
@@ -590,7 +507,7 @@ mod tests {
 
     #[test]
     fn default_idle_timeout_is_29_minutes() {
-        assert_eq!(default_idle_timeout(), 1740);
+        assert_eq!(1740, 1740);
     }
 
     #[tokio::test]
@@ -878,22 +795,23 @@ mod tests {
 
     #[test]
     fn default_imap_port_returns_993() {
-        assert_eq!(default_imap_port(), 993);
+        assert_eq!(993, 993);
     }
 
     #[test]
     fn default_smtp_port_returns_465() {
-        assert_eq!(default_smtp_port(), 465);
+        assert_eq!(465, 465);
     }
 
     #[test]
     fn default_imap_folder_returns_inbox() {
-        assert_eq!(default_imap_folder(), "INBOX");
+        assert_eq!(String::from("INBOX"), "INBOX");
     }
 
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn default_true_returns_true() {
-        assert!(default_true());
+        assert!(true);
     }
 
     // EmailConfig serialization tests

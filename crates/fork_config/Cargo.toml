@@ -1,0 +1,11 @@
+[package]
+name = "fork_config"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+fork_core = { path = "../fork_core" }
+schemars = "1.2"
+serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
