@@ -14,9 +14,9 @@ See [ipc-phase4_1h-plan.md](ipc-phase4_1h-plan.md) for full plan.
 | 5 | Tools | **done** | #177 | (included in Slice 1) |
 | 6 | Channels | **done** | #177 | (included in Slice 1) |
 | 7 | Gateway | **done** | #177 | (included in Slice 1) |
-| 8 | Security domain → fork_core | in progress | — | — |
-| 9 | Memory split | pending | — | — |
-| 10 | Agent orchestration | pending | — | — |
+| 8 | Security domain → fork_core | **done** | #178 | ~60 lines |
+| 9 | Memory split → fork_core | **done** | #178 | ~130 lines |
+| 10 | Agent orchestration | in progress | — | — |
 | 11 | Config types → fork_core | pending | — | — |
 | 12 | Promote `src/fork_adapters/` → `crates/fork_adapters/` | pending | — | — |
 | 13 | Documentation update | pending | — | — |
