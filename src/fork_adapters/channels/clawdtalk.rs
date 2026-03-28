@@ -3,12 +3,9 @@
 //! ClawdTalk (https://clawdtalk.com) provides AI-powered voice conversations
 //! using Telnyx's global SIP network for low-latency, high-quality calls.
 
-use crate::config::traits::ChannelConfig;
-
 use super::traits::{Channel, ChannelMessage, SendMessage};
 use async_trait::async_trait;
 use reqwest::Client;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
@@ -28,31 +25,8 @@ pub struct ClawdTalkChannel {
     webhook_secret: Option<String>,
 }
 
-/// Configuration for ClawdTalk channel from config.toml
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ClawdTalkConfig {
-    /// Telnyx API key
-    pub api_key: String,
-    /// Telnyx connection ID for SIP
-    pub connection_id: String,
-    /// Phone number to call from (E.164 format)
-    pub from_number: String,
-    /// Allowed destination numbers or patterns
-    #[serde(default)]
-    pub allowed_destinations: Vec<String>,
-    /// Webhook secret for signature verification
-    #[serde(default)]
-    pub webhook_secret: Option<String>,
-}
-
-impl ChannelConfig for ClawdTalkConfig {
-    fn name() -> &'static str {
-        "ClawdTalk"
-    }
-    fn desc() -> &'static str {
-        "ClawdTalk Channel"
-    }
-}
+// Re-export from fork_config — single source of truth.
+pub use fork_config::adapter_configs::ClawdTalkConfig;
 
 impl ClawdTalkChannel {
     /// Create a new ClawdTalk channel

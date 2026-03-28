@@ -56,7 +56,7 @@ pub mod whatsapp_storage;
 pub mod whatsapp_web;
 
 pub use bluesky::BlueskyChannel;
-pub use clawdtalk::{ClawdTalkChannel, ClawdTalkConfig};
+pub use clawdtalk::ClawdTalkChannel;
 pub use cli::CliChannel;
 pub use dingtalk::DingTalkChannel;
 pub use discord::DiscordChannel;

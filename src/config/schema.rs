@@ -1,5 +1,5 @@
 use crate::config::traits::ChannelConfig;
-use crate::fork_adapters::providers::{is_glm_alias, is_zai_alias};
+use fork_config::provider_aliases::{is_glm_alias, is_zai_alias};
 use crate::security::{AutonomyLevel, DomainMatcher};
 use anyhow::{Context, Result};
 use directories::UserDirs;
@@ -258,7 +258,7 @@ pub struct Config {
     /// Compatibility: additive and disabled by default; existing configs remain valid when omitted.
     /// Rollback/migration: remove `[browser_delegate]` or keep `enabled = false` to disable.
     #[serde(default)]
-    pub browser_delegate: crate::fork_adapters::tools::browser_delegate::BrowserDelegateConfig,
+    pub browser_delegate: fork_config::adapter_configs::BrowserDelegateConfig,
 
     /// HTTP request tool configuration (`[http_request]`).
     #[serde(default)]
@@ -4514,7 +4514,7 @@ pub struct ChannelsConfig {
     /// Nextcloud Talk bot channel configuration.
     pub nextcloud_talk: Option<NextcloudTalkConfig>,
     /// Email channel configuration.
-    pub email: Option<crate::fork_adapters::channels::email_channel::EmailConfig>,
+    pub email: Option<fork_config::adapter_configs::EmailConfig>,
     /// IRC channel configuration.
     pub irc: Option<IrcConfig>,
     /// Lark channel configuration.
@@ -4534,7 +4534,7 @@ pub struct ChannelsConfig {
     #[cfg(feature = "channel-nostr")]
     pub nostr: Option<NostrConfig>,
     /// ClawdTalk voice channel configuration.
-    pub clawdtalk: Option<crate::fork_adapters::channels::ClawdTalkConfig>,
+    pub clawdtalk: Option<fork_config::adapter_configs::ClawdTalkConfig>,
     /// Reddit channel configuration (OAuth2 bot).
     pub reddit: Option<RedditConfig>,
     /// Bluesky channel configuration (AT Protocol).
@@ -6227,7 +6227,7 @@ impl Default for Config {
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
             browser_delegate:
-                crate::fork_adapters::tools::browser_delegate::BrowserDelegateConfig::default(),
+                fork_config::adapter_configs::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),
@@ -8804,7 +8804,7 @@ default_temperature = 0.7
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
             browser_delegate:
-                crate::fork_adapters::tools::browser_delegate::BrowserDelegateConfig::default(),
+                fork_config::adapter_configs::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),
@@ -9150,7 +9150,7 @@ tool_dispatcher = "xml"
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
             browser_delegate:
-                crate::fork_adapters::tools::browser_delegate::BrowserDelegateConfig::default(),
+                fork_config::adapter_configs::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),
