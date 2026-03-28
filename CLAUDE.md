@@ -24,11 +24,11 @@ Core architecture is trait-driven and modular. Extend by implementing traits and
 
 Key extension points:
 
-- `src/providers/traits.rs` (`Provider`)
-- `src/channels/traits.rs` (`Channel`)
-- `src/tools/traits.rs` (`Tool`)
+- `src/fork_adapters/providers/traits.rs` (`Provider`)
+- `src/fork_adapters/channels/traits.rs` (`Channel`)
+- `src/fork_adapters/tools/traits.rs` (`Tool`)
 - `src/memory/traits.rs` (`Memory`)
-- `src/observability/traits.rs` (`Observer`)
+- `src/fork_adapters/observability/traits.rs` (`Observer`)
 - `src/runtime/traits.rs` (`RuntimeAdapter`)
 
 ## Repository Map
@@ -36,14 +36,21 @@ Key extension points:
 - `src/main.rs` — CLI entrypoint and command routing
 - `src/lib.rs` — module exports and shared command enums
 - `src/config/` — schema + config loading/merging
-- `src/agent/` — orchestration loop
-- `src/gateway/` — webhook/gateway server
-- `src/security/` — policy, pairing, secret store
-- `src/memory/` — markdown/sqlite memory backends + embeddings/vector merge
-- `src/providers/` — model providers and resilient wrapper
-- `src/channels/` — Telegram/Discord/Slack/etc channels
-- `src/tools/` — tool execution surface (shell, file, memory, browser)
+- `src/agent/` — orchestration loop (classifier, dispatcher, run_context re-export from fork_core)
+- `src/security/` — policy, pairing, secret store (AutonomyLevel/ToolOperation re-export from fork_core)
+- `src/memory/` — memory trait + backends (MemoryCategory/MemoryEntry re-export from fork_core)
 - `src/runtime/` — runtime adapters (currently native)
+- `crates/fork_core/` — hexagonal domain core: domain types, ports, application services
+- `src/fork_adapters/` — fork-specific adapter implementations (26 modules):
+  - `channels/` — Telegram/Discord/Slack/Matrix/IRC/Lark/Nostr/etc
+  - `providers/` — model providers and resilient wrapper
+  - `tools/` — tool execution surface (shell, file, memory, browser, IPC)
+  - `gateway/` — webhook/gateway server
+  - `observability/` — logging, tracing, metrics
+  - `hooks/` — lifecycle hooks
+  - `pipeline/` — deterministic pipeline engine
+  - `ipc/` — inter-agent IPC broker
+  - `daemon/`, `service/`, `cron/`, `approval/`, `auth/`, `cost/`, `health/`, `heartbeat/`, `tunnel/`, etc.
 - `docs/` — topic-based documentation (setup-guides, reference, ops, security, contributing, maintainers)
 - `.github/` — CI, templates, automation workflows
 
