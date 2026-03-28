@@ -1,8 +1,8 @@
 use crate::config::traits::ChannelConfig;
-use fork_config::provider_aliases::{is_glm_alias, is_zai_alias};
 use crate::security::{AutonomyLevel, DomainMatcher};
 use anyhow::{Context, Result};
 use directories::UserDirs;
+use fork_config::provider_aliases::{is_glm_alias, is_zai_alias};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -6226,8 +6226,7 @@ impl Default for Config {
             microsoft365: Microsoft365Config::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
-            browser_delegate:
-                fork_config::adapter_configs::BrowserDelegateConfig::default(),
+            browser_delegate: fork_config::adapter_configs::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),
@@ -8803,8 +8802,7 @@ default_temperature = 0.7
             microsoft365: Microsoft365Config::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
-            browser_delegate:
-                fork_config::adapter_configs::BrowserDelegateConfig::default(),
+            browser_delegate: fork_config::adapter_configs::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),
@@ -9149,8 +9147,7 @@ tool_dispatcher = "xml"
             microsoft365: Microsoft365Config::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
-            browser_delegate:
-                fork_config::adapter_configs::BrowserDelegateConfig::default(),
+            browser_delegate: fork_config::adapter_configs::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),

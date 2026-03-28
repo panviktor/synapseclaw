@@ -1261,7 +1261,6 @@ impl SecurityPolicy {
             expanded.starts_with(&canonical) || expanded.starts_with(root)
         })
     }
-
 }
 
 #[cfg(test)]

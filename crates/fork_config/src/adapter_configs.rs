@@ -61,7 +61,7 @@ fn default_true() -> bool {
 }
 
 /// Email channel configuration (IMAP/SMTP).
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EmailConfig {
     /// IMAP server hostname
     pub imap_host: String,
@@ -114,6 +114,25 @@ fn default_idle_timeout() -> u64 {
 
 fn default_subject() -> String {
     "SynapseClaw Message".into()
+}
+
+impl Default for EmailConfig {
+    fn default() -> Self {
+        Self {
+            imap_host: String::new(),
+            imap_port: default_imap_port(),
+            imap_folder: default_imap_folder(),
+            smtp_host: String::new(),
+            smtp_port: default_smtp_port(),
+            smtp_tls: true,
+            username: String::new(),
+            password: String::new(),
+            from_address: String::new(),
+            idle_timeout_secs: default_idle_timeout(),
+            allowed_senders: Vec::new(),
+            default_subject: default_subject(),
+        }
+    }
 }
 
 impl ChannelConfig for EmailConfig {
