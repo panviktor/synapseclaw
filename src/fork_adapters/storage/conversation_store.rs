@@ -4,11 +4,11 @@
 //! and maps between fork_core domain types and ChatDb row types.
 
 use crate::fork_adapters::gateway::chat_db::{ChatDb, ChatMessageRow, ChatSessionRow};
-use crate::fork_core::domain::conversation::{
+use async_trait::async_trait;
+use fork_core::domain::conversation::{
     ConversationEvent, ConversationKind, ConversationSession, EventType,
 };
-use crate::fork_core::ports::conversation_store::ConversationStorePort;
-use async_trait::async_trait;
+use fork_core::ports::conversation_store::ConversationStorePort;
 use std::sync::Arc;
 
 /// Wraps `ChatDb` to implement `ConversationStorePort`.

@@ -2107,7 +2107,7 @@ pub fn validate_send(
         false
     };
 
-    crate::fork_core::domain::ipc::validate_send(
+    fork_core::domain::ipc::validate_send(
         from_agent,
         to_agent,
         kind,
@@ -2141,8 +2141,8 @@ pub fn validate_send(
 ///
 /// Phase 4.0 Slice 5: delegates state write validation to fork_core domain.
 pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<(), IpcError> {
-    crate::fork_core::domain::ipc::validate_state_write(i32::from(trust_level), agent_id, key)
-        .map_err(|acl_err| {
+    fork_core::domain::ipc::validate_state_write(i32::from(trust_level), agent_id, key).map_err(
+        |acl_err| {
             let status = match acl_err.code.as_str() {
                 "invalid_key_format" | "unknown_scope" => StatusCode::BAD_REQUEST,
                 _ => StatusCode::FORBIDDEN,
@@ -2153,19 +2153,20 @@ pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<
                 code: acl_err.code,
                 retryable: acl_err.retryable,
             }
-        })
+        },
+    )
 }
 
 /// Phase 4.0 Slice 5: delegates state read validation to fork_core domain.
 pub fn validate_state_get(trust_level: u8, key: &str) -> Result<(), IpcError> {
-    crate::fork_core::domain::ipc::validate_state_read(i32::from(trust_level), key).map_err(
-        |acl_err| IpcError {
+    fork_core::domain::ipc::validate_state_read(i32::from(trust_level), key).map_err(|acl_err| {
+        IpcError {
             status: StatusCode::FORBIDDEN,
             error: acl_err.message,
             code: acl_err.code,
             retryable: acl_err.retryable,
-        },
-    )
+        }
+    })
 }
 
 // ── Auth helper ─────────────────────────────────────────────────
@@ -2308,7 +2309,7 @@ pub async fn handle_ipc_send(
 
     // Phase 4.0: recipient resolution via ipc_service
     let config = state.config.lock();
-    let resolved_to = crate::fork_core::application::services::ipc_service::resolve_recipient(
+    let resolved_to = fork_core::application::services::ipc_service::resolve_recipient(
         &body.to,
         i32::from(meta.trust_level),
         &config.agents_ipc.l4_destinations,
@@ -2443,7 +2444,7 @@ pub async fn handle_ipc_send(
     } // end skip_leak_scan
 
     // Phase 4.0: session limit check via ipc_service
-    if crate::fork_core::application::services::ipc_service::session_limit_applies(
+    if fork_core::application::services::ipc_service::session_limit_applies(
         i32::from(meta.trust_level),
         i32::from(to_level),
     ) {
@@ -2458,13 +2459,13 @@ pub async fn handle_ipc_send(
             #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
             let count_usize = count.max(0) as usize;
             let max_usize = max as usize;
-            if crate::fork_core::application::services::ipc_service::check_session_limit(
+            if fork_core::application::services::ipc_service::check_session_limit(
                 count_usize,
                 max_usize,
             ) {
                 // Phase 4.0: escalation payload built by ipc_service
                 let escalation_payload =
-                    crate::fork_core::application::services::ipc_service::build_escalation_payload(
+                    fork_core::application::services::ipc_service::build_escalation_payload(
                         sid,
                         &meta.agent_id,
                         &resolved_to,
@@ -2474,7 +2475,7 @@ pub async fn handle_ipc_send(
                 let _ = db.insert_message(
                     &meta.agent_id,
                     &coordinator,
-                    crate::fork_core::domain::ipc::ESCALATION_KIND,
+                    fork_core::domain::ipc::ESCALATION_KIND,
                     &escalation_payload,
                     meta.trust_level,
                     Some(sid),
@@ -2686,7 +2687,7 @@ pub async fn handle_ipc_send(
 
     // ── Phase 4.0: Spawn result completion via ipc_service ──
     // Business rule: check is owned by fork_core; DB ops stay in gateway.
-    if crate::fork_core::application::services::ipc_service::should_complete_spawn(
+    if fork_core::application::services::ipc_service::should_complete_spawn(
         &body.kind,
         body.session_id.as_deref(),
     ) {

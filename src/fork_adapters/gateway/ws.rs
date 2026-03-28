@@ -12,7 +12,7 @@
 
 use super::chat_db::ChatMessageRow;
 use super::{AppState, ChatSession};
-use crate::fork_core::domain::conversation::{
+use fork_core::domain::conversation::{
     ConversationEvent, ConversationKind, ConversationSession, EventType,
 };
 // Run types no longer needed directly — lifecycle managed by conversation_service
@@ -481,7 +481,7 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
     let (label, msg_count, input_tok, output_tok, current_goal, session_summary) =
         if let Some(store) = state.conversation_store.as_ref() {
             // Phase 4.0 path: use ResumeConversation use case
-            match crate::fork_core::application::use_cases::resume_conversation::execute(
+            match fork_core::application::use_cases::resume_conversation::execute(
                 store.as_ref(),
                 session_key,
             )
@@ -595,11 +595,10 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
     // Phase 4.0 Slice 3: persist new session via conversation_service
     if need_persist {
         if let Some(store) = state.conversation_store.as_ref() {
-            let session =
-                crate::fork_core::application::services::conversation_service::new_web_session(
-                    session_key,
-                    None,
-                );
+            let session = fork_core::application::services::conversation_service::new_web_session(
+                session_key,
+                None,
+            );
             let _ = store.upsert_session(&session).await;
         }
     }
@@ -800,11 +799,16 @@ async fn handle_chat_send_rpc(
 
     // Phase 4.0 Slice 3: run lifecycle via conversation_service
     let run_id = if let Some(store) = state.run_store.as_ref() {
-        match crate::fork_core::application::use_cases::start_conversation_run::create_and_track_run(
-            state.conversation_store.as_deref().expect("conversation_store required"),
+        match fork_core::application::use_cases::start_conversation_run::create_and_track_run(
+            state
+                .conversation_store
+                .as_deref()
+                .expect("conversation_store required"),
             store.as_ref(),
             &session_key,
-        ).await {
+        )
+        .await
+        {
             Ok(id) => id,
             Err(e) => {
                 tracing::warn!("run_store: failed to create run: {e}");
@@ -903,7 +907,7 @@ async fn handle_chat_send_rpc(
                 if let (Some(cs), Some(rs)) =
                     (state.conversation_store.as_ref(), state.run_store.as_ref())
                 {
-                    let _ = crate::fork_core::application::use_cases::start_conversation_run::finalize_success(
+                    let _ = fork_core::application::use_cases::start_conversation_run::finalize_success(
                         cs.as_ref(), rs.as_ref(), &session_key, &run_id, input, output,
                     ).await;
                 }
@@ -943,7 +947,7 @@ async fn handle_chat_send_rpc(
                 if let (Some(cs), Some(rs)) =
                     (state.conversation_store.as_ref(), state.run_store.as_ref())
                 {
-                    let _ = crate::fork_core::application::use_cases::start_conversation_run::finalize_interrupted(
+                    let _ = fork_core::application::use_cases::start_conversation_run::finalize_interrupted(
                         rs.as_ref(), cs.as_ref(), &session_key, &run_id,
                     ).await;
                 }
@@ -960,9 +964,14 @@ async fn handle_chat_send_rpc(
             if let (Some(cs), Some(rs)) =
                 (state.conversation_store.as_ref(), state.run_store.as_ref())
             {
-                let _ = crate::fork_core::application::use_cases::start_conversation_run::finalize_failure(
-                    rs.as_ref(), cs.as_ref(), &session_key, &run_id,
-                ).await;
+                let _ =
+                    fork_core::application::use_cases::start_conversation_run::finalize_failure(
+                        rs.as_ref(),
+                        cs.as_ref(),
+                        &session_key,
+                        &run_id,
+                    )
+                    .await;
             }
             sync_memory_count(state, &session_key, 2);
             emit_run_event(state, "session.run_finished", &session_key, &run_id);
@@ -1143,9 +1152,7 @@ async fn handle_sessions_new(
     let label = params["label"].as_str().map(String::from);
     // Phase 4.0 Slice 3: session key from conversation_service
     let session_key =
-        crate::fork_core::application::services::conversation_service::new_web_session_key(
-            token_prefix,
-        );
+        fork_core::application::services::conversation_service::new_web_session_key(token_prefix);
 
     ensure_session(state, &session_key).await?;
 
@@ -1225,7 +1232,7 @@ async fn handle_sessions_delete(
 
     // Phase 4.0 Slice 3: delete via conversation_service
     if let Some(store) = state.conversation_store.as_ref() {
-        let _ = crate::fork_core::application::services::conversation_service::delete_session(
+        let _ = fork_core::application::services::conversation_service::delete_session(
             store.as_ref(),
             key,
         )
@@ -1265,7 +1272,7 @@ async fn handle_sessions_reset(
 
     // Phase 4.0 Slice 3: reset via conversation_service
     if let Some(store) = state.conversation_store.as_ref() {
-        let _ = crate::fork_core::application::services::conversation_service::reset_session(
+        let _ = fork_core::application::services::conversation_service::reset_session(
             store.as_ref(),
             key,
         )
@@ -1496,7 +1503,7 @@ fn push_tool_events(
 ///
 /// Phase 4.0 Slice 3: delegates to conversation_service::generate_session_summary.
 pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &str) {
-    use crate::fork_core::application::services::conversation_service::WEB_SUMMARY_INTERVAL;
+    use fork_core::application::services::conversation_service::WEB_SUMMARY_INTERVAL;
 
     let Some(store) = state.conversation_store.as_ref() else {
         return;
@@ -1565,7 +1572,7 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
             temperature,
         );
 
-    match crate::fork_core::application::services::conversation_service::generate_session_summary(
+    match fork_core::application::services::conversation_service::generate_session_summary(
         store.as_ref(),
         &generator,
         session_key,

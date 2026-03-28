@@ -4,8 +4,8 @@
 //! with session-scoped "Always" allowlists and audit logging.
 
 use crate::config::AutonomyConfig;
-use crate::security::AutonomyLevel;
 use chrono::Utc;
+use fork_core::domain::config::AutonomyLevel;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -117,7 +117,7 @@ impl ApprovalManager {
             self.session_allowlist.lock().iter().cloned().collect();
 
         // AutonomyLevel is now a single type from fork_core — no conversion needed.
-        crate::fork_core::application::services::approval_service::check_needs_approval(
+        fork_core::application::services::approval_service::check_needs_approval(
             tool_name,
             self.autonomy_level,
             &auto_approve,
@@ -137,8 +137,8 @@ impl ApprovalManager {
         decision: ApprovalResponse,
         channel: &str,
     ) {
-        use crate::fork_core::application::services::approval_service;
-        use crate::fork_core::domain::approval::ApprovalResponse as DomainResponse;
+        use fork_core::application::services::approval_service;
+        use fork_core::domain::approval::ApprovalResponse as DomainResponse;
 
         // Map to domain type for policy check
         let domain_resp = match decision {
@@ -186,7 +186,7 @@ impl ApprovalManager {
 // ── Phase 4.0: ApprovalPort implementation ──────────────────────
 
 #[async_trait::async_trait]
-impl crate::fork_core::ports::approval::ApprovalPort for ApprovalManager {
+impl fork_core::ports::approval::ApprovalPort for ApprovalManager {
     fn needs_approval(&self, tool_name: &str) -> bool {
         ApprovalManager::needs_approval(self, tool_name)
     }
@@ -195,9 +195,9 @@ impl crate::fork_core::ports::approval::ApprovalPort for ApprovalManager {
         &self,
         tool_name: &str,
         arguments: &str,
-    ) -> anyhow::Result<crate::fork_core::domain::approval::ApprovalResponse> {
+    ) -> anyhow::Result<fork_core::domain::approval::ApprovalResponse> {
         if self.non_interactive {
-            return Ok(crate::fork_core::domain::approval::ApprovalResponse::No);
+            return Ok(fork_core::domain::approval::ApprovalResponse::No);
         }
 
         // CLI interactive: prompt
@@ -209,21 +209,17 @@ impl crate::fork_core::ports::approval::ApprovalPort for ApprovalManager {
         };
         let cli_response = self.prompt_cli(&request);
         Ok(match cli_response {
-            ApprovalResponse::Yes => crate::fork_core::domain::approval::ApprovalResponse::Yes,
-            ApprovalResponse::No => crate::fork_core::domain::approval::ApprovalResponse::No,
-            ApprovalResponse::Always => {
-                crate::fork_core::domain::approval::ApprovalResponse::Always
-            }
+            ApprovalResponse::Yes => fork_core::domain::approval::ApprovalResponse::Yes,
+            ApprovalResponse::No => fork_core::domain::approval::ApprovalResponse::No,
+            ApprovalResponse::Always => fork_core::domain::approval::ApprovalResponse::Always,
         })
     }
 
-    fn record_decision(&self, decision: &crate::fork_core::domain::approval::ApprovalDecision) {
+    fn record_decision(&self, decision: &fork_core::domain::approval::ApprovalDecision) {
         let cli_response = match decision.response {
-            crate::fork_core::domain::approval::ApprovalResponse::Yes => ApprovalResponse::Yes,
-            crate::fork_core::domain::approval::ApprovalResponse::No => ApprovalResponse::No,
-            crate::fork_core::domain::approval::ApprovalResponse::Always => {
-                ApprovalResponse::Always
-            }
+            fork_core::domain::approval::ApprovalResponse::Yes => ApprovalResponse::Yes,
+            fork_core::domain::approval::ApprovalResponse::No => ApprovalResponse::No,
+            fork_core::domain::approval::ApprovalResponse::Always => ApprovalResponse::Always,
         };
         let args = serde_json::json!({"summary": &decision.request_id});
         ApprovalManager::record_decision(

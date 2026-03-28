@@ -46,8 +46,8 @@ pub mod skills;
 /// Convert an upstream `providers::ChatMessage` to a `fork_core` `ChatMessage`.
 pub(crate) fn to_core_message(
     msg: &crate::fork_adapters::providers::ChatMessage,
-) -> crate::fork_core::domain::message::ChatMessage {
-    crate::fork_core::domain::message::ChatMessage {
+) -> fork_core::domain::message::ChatMessage {
+    fork_core::domain::message::ChatMessage {
         role: msg.role.clone(),
         content: msg.content.clone(),
     }
@@ -55,7 +55,7 @@ pub(crate) fn to_core_message(
 
 /// Convert a `fork_core` `ChatMessage` to an upstream `providers::ChatMessage`.
 pub(crate) fn from_core_message(
-    msg: &crate::fork_core::domain::message::ChatMessage,
+    msg: &fork_core::domain::message::ChatMessage,
 ) -> crate::fork_adapters::providers::ChatMessage {
     crate::fork_adapters::providers::ChatMessage {
         role: msg.role.clone(),
@@ -69,8 +69,8 @@ pub(crate) fn from_core_message(
 /// Now it's adapter logic — fork_core must not depend on upstream channel types.
 pub(crate) fn envelope_from_channel_message(
     msg: &crate::fork_adapters::channels::traits::ChannelMessage,
-) -> crate::fork_core::domain::channel::InboundEnvelope {
-    use crate::fork_core::domain::channel::{InboundEnvelope, SourceKind};
+) -> fork_core::domain::channel::InboundEnvelope {
+    use fork_core::domain::channel::{InboundEnvelope, SourceKind};
     InboundEnvelope {
         source_kind: SourceKind::Channel,
         source_adapter: msg.channel.clone(),

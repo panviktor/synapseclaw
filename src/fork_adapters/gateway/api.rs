@@ -651,10 +651,10 @@ pub async fn handle_api_memory_list(
     } else {
         // List mode
         let category = params.category.as_deref().map(|cat| match cat {
-            "core" => crate::memory::MemoryCategory::Core,
-            "daily" => crate::memory::MemoryCategory::Daily,
-            "conversation" => crate::memory::MemoryCategory::Conversation,
-            other => crate::memory::MemoryCategory::Custom(other.to_string()),
+            "core" => fork_core::domain::memory::MemoryCategory::Core,
+            "daily" => fork_core::domain::memory::MemoryCategory::Daily,
+            "conversation" => fork_core::domain::memory::MemoryCategory::Conversation,
+            other => fork_core::domain::memory::MemoryCategory::Custom(other.to_string()),
         });
 
         match state.mem.list(category.as_ref(), None).await {
@@ -682,12 +682,12 @@ pub async fn handle_api_memory_store(
         .category
         .as_deref()
         .map(|cat| match cat {
-            "core" => crate::memory::MemoryCategory::Core,
-            "daily" => crate::memory::MemoryCategory::Daily,
-            "conversation" => crate::memory::MemoryCategory::Conversation,
-            other => crate::memory::MemoryCategory::Custom(other.to_string()),
+            "core" => fork_core::domain::memory::MemoryCategory::Core,
+            "daily" => fork_core::domain::memory::MemoryCategory::Daily,
+            "conversation" => fork_core::domain::memory::MemoryCategory::Conversation,
+            other => fork_core::domain::memory::MemoryCategory::Custom(other.to_string()),
         })
-        .unwrap_or(crate::memory::MemoryCategory::Core);
+        .unwrap_or(fork_core::domain::memory::MemoryCategory::Core);
 
     match state
         .mem
@@ -984,29 +984,23 @@ pub async fn handle_api_channel_capabilities(
             let cap_names: Vec<&str> = caps
                 .iter()
                 .map(|c| match c {
-                    crate::fork_core::domain::channel::ChannelCapability::SendText => "SendText",
-                    crate::fork_core::domain::channel::ChannelCapability::ReceiveText => {
-                        "ReceiveText"
-                    }
-                    crate::fork_core::domain::channel::ChannelCapability::Threads => "Threads",
-                    crate::fork_core::domain::channel::ChannelCapability::Reactions => "Reactions",
-                    crate::fork_core::domain::channel::ChannelCapability::Typing => "Typing",
-                    crate::fork_core::domain::channel::ChannelCapability::Attachments => {
-                        "Attachments"
-                    }
-                    crate::fork_core::domain::channel::ChannelCapability::RichFormatting => {
+                    fork_core::domain::channel::ChannelCapability::SendText => "SendText",
+                    fork_core::domain::channel::ChannelCapability::ReceiveText => "ReceiveText",
+                    fork_core::domain::channel::ChannelCapability::Threads => "Threads",
+                    fork_core::domain::channel::ChannelCapability::Reactions => "Reactions",
+                    fork_core::domain::channel::ChannelCapability::Typing => "Typing",
+                    fork_core::domain::channel::ChannelCapability::Attachments => "Attachments",
+                    fork_core::domain::channel::ChannelCapability::RichFormatting => {
                         "RichFormatting"
                     }
-                    crate::fork_core::domain::channel::ChannelCapability::EditMessage => {
-                        "EditMessage"
-                    }
-                    crate::fork_core::domain::channel::ChannelCapability::RuntimeCommands => {
+                    fork_core::domain::channel::ChannelCapability::EditMessage => "EditMessage",
+                    fork_core::domain::channel::ChannelCapability::RuntimeCommands => {
                         "RuntimeCommands"
                     }
-                    crate::fork_core::domain::channel::ChannelCapability::InterruptOnNewMessage => {
+                    fork_core::domain::channel::ChannelCapability::InterruptOnNewMessage => {
                         "InterruptOnNewMessage"
                     }
-                    crate::fork_core::domain::channel::ChannelCapability::ToolContextDisplay => {
+                    fork_core::domain::channel::ChannelCapability::ToolContextDisplay => {
                         "ToolContextDisplay"
                     }
                 })
@@ -1070,11 +1064,8 @@ pub async fn handle_api_channel_deliver(
     };
     let thread_ref = body["thread_ref"].as_str().map(String::from);
 
-    let mut intent = crate::fork_core::domain::channel::OutboundIntent::notify(
-        channel,
-        recipient,
-        content.to_string(),
-    );
+    let mut intent =
+        fork_core::domain::channel::OutboundIntent::notify(channel, recipient, content.to_string());
     intent.thread_ref = thread_ref;
 
     match registry.deliver(&intent).await {

@@ -29,7 +29,6 @@ use crate::memory::{self, Memory, MemoryCategory};
 use crate::runtime;
 use crate::security::pairing::{constant_time_eq, is_public_bind, PairingGuard};
 use crate::security::security_policy_from_config;
-use crate::util::truncate_with_ellipsis;
 use anyhow::{Context, Result};
 use axum::{
     body::Bytes,
@@ -39,6 +38,7 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+use fork_core::domain::util::truncate_with_ellipsis;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -393,24 +393,22 @@ pub struct AppState {
     pub channel_session_backend:
         Option<Arc<dyn crate::fork_adapters::channels::session_backend::SessionBackend>>,
     /// Phase 4.0: Channel adapter registry with long-lived cached instances
-    pub channel_registry:
-        Option<Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>>,
+    pub channel_registry: Option<Arc<dyn fork_core::ports::channel_registry::ChannelRegistryPort>>,
     /// Phase 4.0: Unified conversation/session store
     pub conversation_store:
-        Option<Arc<dyn crate::fork_core::ports::conversation_store::ConversationStorePort>>,
+        Option<Arc<dyn fork_core::ports::conversation_store::ConversationStorePort>>,
     /// Phase 4.0: Unified run execution store
-    pub run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>>,
+    pub run_store: Option<Arc<dyn fork_core::ports::run_store::RunStorePort>>,
     /// Phase 4.1: Pipeline definition store (TOML loader)
-    pub pipeline_store: Option<Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort>>,
+    pub pipeline_store: Option<Arc<dyn fork_core::ports::pipeline_store::PipelineStorePort>>,
     /// Phase 4.1: Pipeline step executor (IPC bridge)
     pub pipeline_executor:
-        Option<Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>>,
+        Option<Arc<dyn fork_core::ports::pipeline_executor::PipelineExecutorPort>>,
     /// Phase 4.1: Message router for deterministic inbound routing
-    pub message_router: Option<Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort>>,
+    pub message_router: Option<Arc<dyn fork_core::ports::message_router::MessageRouterPort>>,
     /// Phase 4.1: Tool middleware chain
-    pub tool_middleware: Option<
-        Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>,
-    >,
+    pub tool_middleware:
+        Option<Arc<fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -419,10 +417,8 @@ pub async fn run_gateway(
     host: &str,
     port: u16,
     config: Config,
-    outbound_tx: Option<crate::fork_core::bus::OutboundIntentSender>,
-    channel_registry: Option<
-        Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
-    >,
+    outbound_tx: Option<fork_core::bus::OutboundIntentSender>,
+    channel_registry: Option<Arc<dyn fork_core::ports::channel_registry::ChannelRegistryPort>>,
     shared_ipc_client: Option<Arc<crate::fork_adapters::tools::agents_ipc::IpcClient>>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
@@ -801,20 +797,20 @@ pub async fn run_gateway(
 
     // ── Phase 4.0: ConversationStorePort (wraps ChatDb) ──
     let conversation_store: Option<
-        Arc<dyn crate::fork_core::ports::conversation_store::ConversationStorePort>,
+        Arc<dyn fork_core::ports::conversation_store::ConversationStorePort>,
     > = chat_db.as_ref().map(|db| {
         Arc::new(
             crate::fork_adapters::storage::conversation_store::ChatDbConversationStore::new(
                 Arc::clone(db),
             ),
-        ) as Arc<dyn crate::fork_core::ports::conversation_store::ConversationStorePort>
+        ) as Arc<dyn fork_core::ports::conversation_store::ConversationStorePort>
     });
 
     // ── Phase 4.0: RunStorePort (wraps ChatDb) ──
-    let run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>> =
+    let run_store: Option<Arc<dyn fork_core::ports::run_store::RunStorePort>> =
         chat_db.as_ref().map(|db| {
             Arc::new(crate::fork_adapters::storage::run_store::ChatDbRunStore::new(Arc::clone(db)))
-                as Arc<dyn crate::fork_core::ports::run_store::RunStorePort>
+                as Arc<dyn fork_core::ports::run_store::RunStorePort>
         });
 
     // Parse admin CIDR allowlist — fail at boot on invalid entries
@@ -954,10 +950,9 @@ pub async fn run_gateway(
         }
 
         // Load pipeline TOML definitions
-        let pipeline_store: Arc<dyn crate::fork_core::ports::pipeline_store::PipelineStorePort> =
-            Arc::new(
-                crate::fork_adapters::pipeline::toml_loader::TomlPipelineLoader::new(&pipeline_dir),
-            );
+        let pipeline_store: Arc<dyn fork_core::ports::pipeline_store::PipelineStorePort> = Arc::new(
+            crate::fork_adapters::pipeline::toml_loader::TomlPipelineLoader::new(&pipeline_dir),
+        );
         if let Err(e) = pipeline_store.reload().await {
             tracing::error!(error = %e, "failed to load pipeline definitions");
         } else {
@@ -970,7 +965,7 @@ pub async fn run_gateway(
         // duplicate AtomicI64 seq counters → replay_rejected.
         // In standalone gateway mode, create a local IpcClient.
         let pipeline_executor: Option<
-            Arc<dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort>,
+            Arc<dyn fork_core::ports::pipeline_executor::PipelineExecutorPort>,
         > = if config.agents_ipc.enabled {
             if let Some(ref broker_token) = config.agents_ipc.broker_token {
                 let ipc_client = if let Some(ref shared) = shared_ipc_client {
@@ -1041,7 +1036,7 @@ pub async fn run_gateway(
                     ),
                 )
                     as Arc<
-                        dyn crate::fork_core::ports::pipeline_executor::PipelineExecutorPort,
+                        dyn fork_core::ports::pipeline_executor::PipelineExecutorPort,
                     >)
             } else {
                 tracing::warn!("Pipeline engine disabled: agents_ipc.broker_token not configured");
@@ -1063,17 +1058,16 @@ pub async fn run_gateway(
             .routing_fallback
             .clone()
             .unwrap_or_else(|| "default".into());
-        let message_router: Arc<dyn crate::fork_core::ports::message_router::MessageRouterPort> =
-            Arc::new(
-                crate::fork_adapters::routing::rule_chain::TomlMessageRouter::load(
-                    &routing_path,
-                    &routing_fallback,
-                ),
-            );
+        let message_router: Arc<dyn fork_core::ports::message_router::MessageRouterPort> = Arc::new(
+            crate::fork_adapters::routing::rule_chain::TomlMessageRouter::load(
+                &routing_path,
+                &routing_fallback,
+            ),
+        );
 
         // Build tool middleware chain
         let mut middleware_chain =
-            crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain::new();
+            fork_core::application::services::tool_middleware_service::ToolMiddlewareChain::new();
 
         if config.pipelines.default_tool_rate_limit > 0 {
             middleware_chain.push(Box::new(
@@ -1125,15 +1119,13 @@ pub async fn run_gateway(
             &state.pipeline_executor,
             &state.run_store,
         ) {
-            let ports =
-                crate::fork_core::application::services::pipeline_service::PipelineRunnerPorts {
-                    pipeline_store: ps.clone(),
-                    run_store: rs.clone(),
-                    executor: pe.clone(),
-                };
+            let ports = fork_core::application::services::pipeline_service::PipelineRunnerPorts {
+                pipeline_store: ps.clone(),
+                run_store: rs.clone(),
+                executor: pe.clone(),
+            };
             let report =
-                crate::fork_core::application::use_cases::resume_pipeline::recover_all(&ports)
-                    .await;
+                fork_core::application::use_cases::resume_pipeline::recover_all(&ports).await;
             if report.found > 0 {
                 tracing::info!(
                     found = report.found,
@@ -1534,8 +1526,8 @@ struct PeerState {
 async fn agent_inbox_processor(
     config: Config,
     mut push_rx: tokio::sync::mpsc::UnboundedReceiver<ipc::PushMeta>,
-    outbound_tx: Option<crate::fork_core::bus::OutboundIntentSender>,
-    run_store: Option<Arc<dyn crate::fork_core::ports::run_store::RunStorePort>>,
+    outbound_tx: Option<fork_core::bus::OutboundIntentSender>,
+    run_store: Option<Arc<dyn fork_core::ports::run_store::RunStorePort>>,
 ) {
     let max_auto = config.agents_ipc.push_max_auto_processes;
     let cooldown = Duration::from_secs(config.agents_ipc.push_peer_cooldown_secs);
@@ -1762,11 +1754,11 @@ async fn agent_inbox_processor(
             // Phase 4.0: Track IPC run in RunStore
             let ipc_run_id = uuid::Uuid::new_v4().to_string();
             if let Some(ref store) = run_store {
-                let run = crate::fork_core::domain::run::Run {
+                let run = fork_core::domain::run::Run {
                     run_id: ipc_run_id.clone(),
                     conversation_key: Some(format!("ipc:{peer}")),
-                    origin: crate::fork_core::domain::run::RunOrigin::Ipc,
-                    state: crate::fork_core::domain::run::RunState::Running,
+                    origin: fork_core::domain::run::RunOrigin::Ipc,
+                    state: fork_core::domain::run::RunState::Running,
                     #[allow(clippy::cast_sign_loss)]
                     started_at: chrono::Utc::now().timestamp() as u64,
                     finished_at: None,
@@ -1796,7 +1788,7 @@ async fn agent_inbox_processor(
                         let _ = store
                             .update_state(
                                 &ipc_run_id,
-                                crate::fork_core::domain::run::RunState::Completed,
+                                fork_core::domain::run::RunState::Completed,
                                 Some(chrono::Utc::now().timestamp() as u64),
                             )
                             .await;
@@ -1911,10 +1903,9 @@ async fn agent_inbox_processor(
                                     } else {
                                         relay_text.to_string()
                                     };
-                                    let intent =
-                                        crate::fork_core::domain::channel::OutboundIntent::notify(
-                                            relay_ch, relay_rcpt, content,
-                                        );
+                                    let intent = fork_core::domain::channel::OutboundIntent::notify(
+                                        relay_ch, relay_rcpt, content,
+                                    );
                                     if tx.send(intent) {
                                         tracing::info!(
                                             peer = %peer,
@@ -1948,7 +1939,7 @@ async fn agent_inbox_processor(
                         let _ = store
                             .update_state(
                                 &ipc_run_id,
-                                crate::fork_core::domain::run::RunState::Failed,
+                                fork_core::domain::run::RunState::Failed,
                                 Some(chrono::Utc::now().timestamp() as u64),
                             )
                             .await;

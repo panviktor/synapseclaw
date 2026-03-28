@@ -3,9 +3,9 @@
 //! Uses the `runs` + `run_events` tables added to ChatDb in Phase 4.0.
 
 use crate::fork_adapters::gateway::chat_db::ChatDb;
-use crate::fork_core::domain::run::{Run, RunEvent, RunEventType, RunOrigin, RunState};
-use crate::fork_core::ports::run_store::RunStorePort;
 use async_trait::async_trait;
+use fork_core::domain::run::{Run, RunEvent, RunEventType, RunOrigin, RunState};
+use fork_core::ports::run_store::RunStorePort;
 use std::sync::Arc;
 
 /// Wraps `ChatDb` to implement `RunStorePort`.

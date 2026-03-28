@@ -1,6 +1,6 @@
 use super::traits::{Tool, ToolResult};
-use crate::security::SecurityPolicy;
 use async_trait::async_trait;
+use fork_core::domain::security_policy::SecurityPolicy;
 use futures_util::StreamExt;
 use serde_json::json;
 use std::sync::Arc;

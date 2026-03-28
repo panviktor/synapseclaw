@@ -1,7 +1,7 @@
 //! Adapter: wraps existing `SessionStore` (via SessionBackend trait) as SessionSummaryPort.
 
 use crate::fork_adapters::channels::session_backend::{ChannelSummary, SessionBackend};
-use crate::fork_core::ports::session_summary::SessionSummaryPort;
+use fork_core::ports::session_summary::SessionSummaryPort;
 use std::sync::Arc;
 
 pub struct SessionStoreAdapter {

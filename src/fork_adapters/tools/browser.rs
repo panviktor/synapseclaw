@@ -6,9 +6,9 @@
 //! Computer-use (OS-level) actions are supported via an optional sidecar endpoint.
 
 use super::traits::{Tool, ToolResult};
-use crate::security::SecurityPolicy;
 use anyhow::Context;
 use async_trait::async_trait;
+use fork_core::domain::security_policy::SecurityPolicy;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::net::ToSocketAddrs;

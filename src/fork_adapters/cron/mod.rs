@@ -685,7 +685,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp);
         config.autonomy.allowed_commands = vec!["echo".into()];
-        config.autonomy.level = crate::security::AutonomyLevel::Supervised;
+        config.autonomy.level = fork_core::domain::config::AutonomyLevel::Supervised;
 
         let result = add_once_validated(&config, "1h", "curl https://example.com", false);
         assert!(result.is_err());
@@ -729,7 +729,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp);
         config.autonomy.allowed_commands = vec!["echo".into()];
-        config.autonomy.level = crate::security::AutonomyLevel::Supervised;
+        config.autonomy.level = fork_core::domain::config::AutonomyLevel::Supervised;
 
         // Simulate gateway API path: add_shell_job_with_approval(approved=false)
         let result = add_shell_job_with_approval(
@@ -754,7 +754,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp);
         config.autonomy.allowed_commands = vec!["echo".into()];
-        config.autonomy.level = crate::security::AutonomyLevel::Supervised;
+        config.autonomy.level = fork_core::domain::config::AutonomyLevel::Supervised;
 
         let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
         // Simulate scheduler validation path
@@ -797,7 +797,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp);
         config.autonomy.allowed_commands = vec!["echo".into()];
-        config.autonomy.level = crate::security::AutonomyLevel::Supervised;
+        config.autonomy.level = fork_core::domain::config::AutonomyLevel::Supervised;
 
         // Without --agent, a natural language string would be blocked by shell
         // security policy. With --agent, it routes to agent job and skips

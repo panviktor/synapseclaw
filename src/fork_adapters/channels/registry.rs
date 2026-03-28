@@ -6,9 +6,9 @@
 
 use crate::config::Config;
 use crate::fork_adapters::channels::{build_channel_by_id, Channel, SendMessage};
-use crate::fork_core::domain::channel::{ChannelCapability, DegradationPolicy, OutboundIntent};
-use crate::fork_core::ports::channel_registry::ChannelRegistryPort;
 use async_trait::async_trait;
+use fork_core::domain::channel::{ChannelCapability, DegradationPolicy, OutboundIntent};
+use fork_core::ports::channel_registry::ChannelRegistryPort;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;

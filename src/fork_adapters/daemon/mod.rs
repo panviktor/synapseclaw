@@ -1,7 +1,7 @@
 use crate::config::Config;
-use crate::fork_core::domain::config::{AutoDetectCandidate, CronDeliveryConfig, HeartbeatConfig};
 use anyhow::Result;
 use chrono::Utc;
+use fork_core::domain::config::{AutoDetectCandidate, CronDeliveryConfig, HeartbeatConfig};
 use std::future::Future;
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
@@ -120,14 +120,14 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     // Always available in daemon mode.  Shared between relay, heartbeat,
     // scheduler, delivery service, and gateway REST API.
     let channel_registry: std::sync::Arc<
-        dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort,
+        dyn fork_core::ports::channel_registry::ChannelRegistryPort,
     > = std::sync::Arc::new(
         crate::fork_adapters::channels::registry::CachedChannelRegistry::new(config.clone()),
     );
 
     // Phase 4.0 Slice 1: DeliveryService owns delivery policy.
     let delivery_service = std::sync::Arc::new(
-        crate::fork_core::application::services::delivery_service::DeliveryService::new(
+        fork_core::application::services::delivery_service::DeliveryService::new(
             channel_registry.clone(),
         ),
     );
@@ -136,7 +136,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
     let outbound_tx = if config.agents_ipc.push_relay_channel.is_some()
         && config.agents_ipc.push_relay_recipient.is_some()
     {
-        let (tx, rx) = crate::fork_core::bus::outbound_intent_bus();
+        let (tx, rx) = fork_core::bus::outbound_intent_bus();
         let relay_registry = channel_registry.clone();
         handles.push(tokio::spawn(async move {
             Box::pin(outbound_intent_relay(relay_registry, rx)).await;
@@ -381,7 +381,7 @@ pub(crate) fn cron_delivery_config_from(
 async fn run_heartbeat_worker(
     config: Config,
     delivery_service: std::sync::Arc<
-        crate::fork_core::application::services::delivery_service::DeliveryService,
+        fork_core::application::services::delivery_service::DeliveryService,
     >,
 ) -> Result<()> {
     use crate::fork_adapters::heartbeat::engine::{
@@ -623,8 +623,8 @@ async fn run_heartbeat_worker(
 // Long-lived adapters: stateful channels (Matrix) keep their authenticated
 // SDK client alive across deliveries.
 async fn outbound_intent_relay(
-    registry: std::sync::Arc<dyn crate::fork_core::ports::channel_registry::ChannelRegistryPort>,
-    mut rx: crate::fork_core::bus::OutboundIntentReceiver,
+    registry: std::sync::Arc<dyn fork_core::ports::channel_registry::ChannelRegistryPort>,
+    mut rx: fork_core::bus::OutboundIntentReceiver,
 ) {
     tracing::info!("OutboundIntent relay started (CachedChannelRegistry)");
     while let Some(intent) = rx.recv().await {

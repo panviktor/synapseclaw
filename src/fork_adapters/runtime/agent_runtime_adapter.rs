@@ -8,10 +8,10 @@ use crate::fork_adapters::approval::ApprovalManager;
 use crate::fork_adapters::providers::{ChatMessage, Provider};
 use crate::fork_adapters::tools::Tool;
 use crate::fork_adapters::{from_core_message, to_core_message};
-use crate::fork_core::domain::message::ChatMessage as CoreChatMessage;
-use crate::fork_core::ports::agent_runtime::{AgentRuntimePort, AgentTurnResult};
 use anyhow::Result;
 use async_trait::async_trait;
+use fork_core::domain::message::ChatMessage as CoreChatMessage;
+use fork_core::ports::agent_runtime::{AgentRuntimePort, AgentTurnResult};
 use std::sync::Arc;
 
 /// Wraps the existing agent loop infrastructure behind `AgentRuntimePort`.
@@ -66,7 +66,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             model,
             temperature,
             true, // silent (channel mode)
-            Some(&*self.approval_manager as &dyn crate::fork_core::ports::approval::ApprovalPort),
+            Some(&*self.approval_manager as &dyn fork_core::ports::approval::ApprovalPort),
             &self.channel_name,
             &self.multimodal,
             max_iterations,

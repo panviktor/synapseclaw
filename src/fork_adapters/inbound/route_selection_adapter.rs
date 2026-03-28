@@ -1,6 +1,6 @@
 //! Adapter: wraps existing `Mutex<HashMap<String, ChannelRouteSelection>>` as RouteSelectionPort.
 
-use crate::fork_core::ports::route_selection::{RouteSelection, RouteSelectionPort};
+use fork_core::ports::route_selection::{RouteSelection, RouteSelectionPort};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 

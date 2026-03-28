@@ -1,8 +1,8 @@
 use super::linkedin_client::{ImageGenerator, LinkedInClient};
 use super::traits::{Tool, ToolResult};
 use crate::config::{LinkedInContentConfig, LinkedInImageConfig};
-use crate::security::SecurityPolicy;
 use async_trait::async_trait;
+use fork_core::domain::security_policy::SecurityPolicy;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -444,7 +444,7 @@ impl Tool for LinkedInTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::AutonomyLevel;
+    use fork_core::domain::config::AutonomyLevel;
 
     fn test_security(level: AutonomyLevel, max_actions_per_hour: u32) -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy {

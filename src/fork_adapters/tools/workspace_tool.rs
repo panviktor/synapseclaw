@@ -4,9 +4,9 @@
 
 use super::traits::{Tool, ToolResult};
 use crate::config::workspace::WorkspaceManager;
-use crate::security::policy::ToolOperation;
-use crate::security::SecurityPolicy;
 use async_trait::async_trait;
+use fork_core::domain::config::ToolOperation;
+use fork_core::domain::security_policy::SecurityPolicy;
 use serde_json::json;
 use std::fmt::Write;
 use std::sync::Arc;
@@ -257,7 +257,7 @@ impl Tool for WorkspaceTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::SecurityPolicy;
+    use fork_core::domain::security_policy::SecurityPolicy;
     use tempfile::TempDir;
 
     fn test_tool(tmp: &TempDir) -> WorkspaceTool {

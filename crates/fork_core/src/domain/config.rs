@@ -41,7 +41,15 @@ pub struct AutoDetectCandidate {
 ///
 /// Single source of truth — used by both fork_core and security::policy.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum AutonomyLevel {

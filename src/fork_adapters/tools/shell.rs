@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
 use crate::runtime::RuntimeAdapter;
-use crate::security::SecurityPolicy;
 use async_trait::async_trait;
+use fork_core::domain::security_policy::SecurityPolicy;
 use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;

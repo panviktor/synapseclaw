@@ -1,7 +1,7 @@
 //! Adapter: wraps existing `HookRunner` as HooksPort.
 
-use crate::fork_core::ports::hooks::{HookOutcome, HooksPort};
 use async_trait::async_trait;
+use fork_core::ports::hooks::{HookOutcome, HooksPort};
 use std::sync::Arc;
 
 pub struct HookRunnerAdapter {

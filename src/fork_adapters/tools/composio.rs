@@ -7,10 +7,10 @@
 // The Composio API key is stored in the encrypted secret store.
 
 use super::traits::{Tool, ToolResult};
-use crate::security::policy::ToolOperation;
-use crate::security::SecurityPolicy;
 use anyhow::Context;
 use async_trait::async_trait;
+use fork_core::domain::config::ToolOperation;
+use fork_core::domain::security_policy::SecurityPolicy;
 use parking_lot::RwLock;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
