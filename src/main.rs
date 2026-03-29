@@ -71,26 +71,16 @@ fn pause_after_no_command_help() {
     let _ = std::io::stdin().read_line(&mut line);
 }
 
-mod adapters;
-mod agent;
-mod commands;
-mod config;
-/// Re-export workspace crate so `crate::synapse_core::` paths work in the binary.
+// Use lib.rs exports instead of declaring modules — eliminates double compilation.
 pub use synapse_core;
-mod identity;
-mod memory;
-mod multimodal;
-mod runtime;
-mod security;
-mod skills;
-mod util;
-
-use config::{Config, ConfigIO};
+use synapseclaw::config::{self, Config, ConfigIO};
+#[allow(unused_imports)]
+use synapseclaw::{adapters, agent, commands, memory, runtime, security, skills};
 
 #[allow(unused_imports)]
-use commands::{
-    ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, ServiceCommands,
-    SkillCommands,
+use synapseclaw::{
+    ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MemoryCommands,
+    ServiceCommands, SkillCommands,
 };
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
@@ -602,35 +592,7 @@ enum DoctorCommands {
     },
 }
 
-#[derive(Subcommand, Debug)]
-enum MemoryCommands {
-    /// List memory entries with optional filters
-    List {
-        #[arg(long)]
-        category: Option<String>,
-        #[arg(long)]
-        session: Option<String>,
-        #[arg(long, default_value = "50")]
-        limit: usize,
-        #[arg(long, default_value = "0")]
-        offset: usize,
-    },
-    /// Get a specific memory entry by key
-    Get { key: String },
-    /// Show memory backend statistics and health
-    Stats,
-    /// Clear memories by category, by key, or clear all
-    Clear {
-        /// Delete a single entry by key (supports prefix match)
-        #[arg(long)]
-        key: Option<String>,
-        #[arg(long)]
-        category: Option<String>,
-        /// Skip confirmation prompt
-        #[arg(long)]
-        yes: bool,
-    },
-}
+// MemoryCommands imported from synapseclaw::commands (defined in src/commands.rs)
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
@@ -1265,7 +1227,9 @@ async fn main() -> Result<()> {
             integration_command,
         } => crate::adapters::integrations::handle_command(integration_command, &config),
 
-        Commands::Skills { skill_command } => skills::handle_command(skill_command, &config),
+        Commands::Skills { skill_command } => {
+            synapseclaw::skills::handle_command(skill_command, &config)
+        }
 
         Commands::Memory { memory_command } => {
             memory::cli::handle_command(memory_command, &config).await

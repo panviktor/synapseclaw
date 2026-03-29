@@ -2285,7 +2285,7 @@ fn maybe_restart_managed_daemon_service() -> Result<bool> {
     Ok(false)
 }
 
-pub(crate) async fn handle_command(
+pub async fn handle_command(
     command: crate::commands::ChannelCommands,
     config: &Config,
 ) -> Result<()> {
