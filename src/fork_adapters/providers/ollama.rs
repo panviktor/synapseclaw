@@ -1,7 +1,7 @@
+use crate::fork_adapters::multimodal;
 use crate::fork_adapters::providers::traits::{
     ChatMessage, ChatResponse, Provider, ProviderCapabilities, TokenUsage, ToolCall,
 };
-use crate::multimodal;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};

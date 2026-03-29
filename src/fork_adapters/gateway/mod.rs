@@ -28,7 +28,6 @@ use crate::fork_adapters::tools::traits::ToolSpec;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::runtime;
 use crate::security::pairing::{constant_time_eq, is_public_bind, PairingGuard};
-use crate::security::security_policy_from_config;
 use anyhow::{Context, Result};
 use axum::{
     body::Bytes,
@@ -39,6 +38,7 @@ use axum::{
     Router,
 };
 use fork_config::schema::Config;
+use fork_config::security_factory::security_policy_from_config;
 use fork_core::domain::util::truncate_with_ellipsis;
 use parking_lot::Mutex;
 use std::collections::HashMap;

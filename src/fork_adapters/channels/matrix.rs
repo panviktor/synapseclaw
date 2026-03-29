@@ -690,7 +690,7 @@ impl MatrixChannel {
                     if config_has_credentials && !saved_matches_config {
                         tracing::warn!(
                             "Matrix: session.json user_id ({}) does not match configured owner hint — ignoring saved session and using config credentials",
-                            crate::security::redact(&saved.user_id)
+                            fork_core::domain::util::redact(&saved.user_id)
                         );
                         false
                     } else {
@@ -723,7 +723,7 @@ impl MatrixChannel {
                     resolved_user_id = saved.user_id.clone();
                     tracing::info!(
                         "Matrix: restored session from session.json (device_id={})",
-                        crate::security::redact(&saved.device_id)
+                        fork_core::domain::util::redact(&saved.device_id)
                     );
                 } else if self.access_token.is_some() {
                     // Path 2: Restore from config access_token + device_id (legacy flow).
@@ -810,7 +810,7 @@ impl MatrixChannel {
                     resolved_user_id = response.user_id.to_string();
                     tracing::info!(
                         "Matrix: logged in with password (device_id={})",
-                        crate::security::redact(response.device_id.as_str())
+                        fork_core::domain::util::redact(response.device_id.as_str())
                     );
 
                     // Persist session.json so future runs use Path 1 (no password needed).

@@ -14,6 +14,29 @@ pub fn truncate_with_ellipsis(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Redact a sensitive value, keeping the first 4 characters.
+pub fn redact(value: &str) -> String {
+    let char_count = value.chars().count();
+    if char_count <= 4 {
+        "***".to_string()
+    } else {
+        let prefix: String = value.chars().take(4).collect();
+        format!("{prefix}***")
+    }
+}
+
+/// Check if content should be skipped for autosave (cron prefixes, distillation markers).
+pub fn should_skip_autosave_content(content: &str) -> bool {
+    let normalized = content.trim();
+    if normalized.is_empty() {
+        return true;
+    }
+    let lowered = normalized.to_ascii_lowercase();
+    lowered.starts_with("[cron:")
+        || lowered.starts_with("[distilled_")
+        || lowered.contains("distilled_index_sig:")
+}
+
 /// Utility enum for handling optional values with three states.
 pub enum MaybeSet<T> {
     Set(T),

@@ -142,7 +142,7 @@ impl MemoryTiersPort for MemoryTiersAdapter {
     // ── Utility ──────────────────────────────────────────────────
 
     fn should_skip_autosave(&self, content: &str) -> bool {
-        crate::memory::should_skip_autosave_content(content)
+        fork_core::domain::util::should_skip_autosave_content(content)
     }
 
     async fn count(&self) -> Result<usize> {
