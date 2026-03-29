@@ -5,7 +5,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use synapse_config::schema::{DelegateAgentConfig, SwarmConfig, SwarmStrategy};
+use synapse_core::config::schema::{DelegateAgentConfig, SwarmConfig, SwarmStrategy};
 use synapse_core::domain::config::ToolOperation;
 use synapse_core::domain::security_policy::SecurityPolicy;
 

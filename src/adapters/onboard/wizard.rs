@@ -17,13 +17,13 @@ use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use synapse_config::schema::{default_nostr_relays, NostrConfig};
-use synapse_config::schema::{
+use synapse_core::config::schema::{default_nostr_relays, NostrConfig};
+use synapse_core::config::schema::{
     AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config, DiscordConfig,
     HeartbeatConfig, IMessageConfig, LarkConfig, MatrixConfig, MemoryConfig, ObservabilityConfig,
     RuntimeConfig, SecretsConfig, SlackConfig, StorageConfig, TelegramConfig, WebhookConfig,
 };
-use synapse_config::schema::{
+use synapse_core::config::schema::{
     DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig, NextcloudTalkConfig, QQConfig,
     SignalConfig, StreamMode, WhatsAppConfig,
 };
@@ -140,58 +140,58 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         extra_headers: std::collections::HashMap::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
-        backup: synapse_config::schema::BackupConfig::default(),
-        data_retention: synapse_config::schema::DataRetentionConfig::default(),
-        cloud_ops: synapse_config::schema::CloudOpsConfig::default(),
-        conversational_ai: synapse_config::schema::ConversationalAiConfig::default(),
-        security: synapse_config::schema::SecurityConfig::default(),
-        security_ops: synapse_config::schema::SecurityOpsConfig::default(),
+        backup: synapse_core::config::schema::BackupConfig::default(),
+        data_retention: synapse_core::config::schema::DataRetentionConfig::default(),
+        cloud_ops: synapse_core::config::schema::CloudOpsConfig::default(),
+        conversational_ai: synapse_core::config::schema::ConversationalAiConfig::default(),
+        security: synapse_core::config::schema::SecurityConfig::default(),
+        security_ops: synapse_core::config::schema::SecurityOpsConfig::default(),
         runtime: RuntimeConfig::default(),
-        reliability: synapse_config::schema::ReliabilityConfig::default(),
-        scheduler: synapse_config::schema::SchedulerConfig::default(),
-        agent: synapse_config::schema::AgentConfig::default(),
-        skills: synapse_config::schema::SkillsConfig::default(),
+        reliability: synapse_core::config::schema::ReliabilityConfig::default(),
+        scheduler: synapse_core::config::schema::SchedulerConfig::default(),
+        agent: synapse_core::config::schema::AgentConfig::default(),
+        skills: synapse_core::config::schema::SkillsConfig::default(),
         model_routes: Vec::new(),
         embedding_routes: Vec::new(),
         heartbeat: HeartbeatConfig::default(),
-        cron: synapse_config::schema::CronConfig::default(),
+        cron: synapse_core::config::schema::CronConfig::default(),
         channels_config,
         memory: memory_config, // User-selected memory backend
         storage: StorageConfig::default(),
         tunnel: tunnel_config,
-        gateway: synapse_config::schema::GatewayConfig::default(),
+        gateway: synapse_core::config::schema::GatewayConfig::default(),
         composio: composio_config,
-        microsoft365: synapse_config::schema::Microsoft365Config::default(),
+        microsoft365: synapse_core::config::schema::Microsoft365Config::default(),
         secrets: secrets_config,
         browser: BrowserConfig::default(),
         browser_delegate: crate::adapters::tools::browser_delegate::BrowserDelegateConfig::default(
         ),
-        http_request: synapse_config::schema::HttpRequestConfig::default(),
-        multimodal: synapse_config::schema::MultimodalConfig::default(),
-        web_fetch: synapse_config::schema::WebFetchConfig::default(),
-        web_search: synapse_config::schema::WebSearchConfig::default(),
-        project_intel: synapse_config::schema::ProjectIntelConfig::default(),
-        google_workspace: synapse_config::schema::GoogleWorkspaceConfig::default(),
-        proxy: synapse_config::schema::ProxyConfig::default(),
-        identity: synapse_config::schema::IdentityConfig::default(),
-        cost: synapse_config::schema::CostConfig::default(),
+        http_request: synapse_core::config::schema::HttpRequestConfig::default(),
+        multimodal: synapse_core::config::schema::MultimodalConfig::default(),
+        web_fetch: synapse_core::config::schema::WebFetchConfig::default(),
+        web_search: synapse_core::config::schema::WebSearchConfig::default(),
+        project_intel: synapse_core::config::schema::ProjectIntelConfig::default(),
+        google_workspace: synapse_core::config::schema::GoogleWorkspaceConfig::default(),
+        proxy: synapse_core::config::schema::ProxyConfig::default(),
+        identity: synapse_core::config::schema::IdentityConfig::default(),
+        cost: synapse_core::config::schema::CostConfig::default(),
         agents: std::collections::HashMap::new(),
         swarms: std::collections::HashMap::new(),
-        hooks: synapse_config::schema::HooksConfig::default(),
-        query_classification: synapse_config::schema::QueryClassificationConfig::default(),
-        transcription: synapse_config::schema::TranscriptionConfig::default(),
-        tts: synapse_config::schema::TtsConfig::default(),
-        mcp: synapse_config::schema::McpConfig::default(),
-        nodes: synapse_config::schema::NodesConfig::default(),
-        workspace: synapse_config::schema::WorkspaceConfig::default(),
-        notion: synapse_config::schema::NotionConfig::default(),
-        node_transport: synapse_config::schema::NodeTransportConfig::default(),
-        knowledge: synapse_config::schema::KnowledgeConfig::default(),
-        linkedin: synapse_config::schema::LinkedInConfig::default(),
-        agents_ipc: synapse_config::schema::AgentsIpcConfig::default(),
-        pipelines: synapse_config::schema::PipelineEngineConfig::default(),
+        hooks: synapse_core::config::schema::HooksConfig::default(),
+        query_classification: synapse_core::config::schema::QueryClassificationConfig::default(),
+        transcription: synapse_core::config::schema::TranscriptionConfig::default(),
+        tts: synapse_core::config::schema::TtsConfig::default(),
+        mcp: synapse_core::config::schema::McpConfig::default(),
+        nodes: synapse_core::config::schema::NodesConfig::default(),
+        workspace: synapse_core::config::schema::WorkspaceConfig::default(),
+        notion: synapse_core::config::schema::NotionConfig::default(),
+        node_transport: synapse_core::config::schema::NodeTransportConfig::default(),
+        knowledge: synapse_core::config::schema::KnowledgeConfig::default(),
+        linkedin: synapse_core::config::schema::LinkedInConfig::default(),
+        agents_ipc: synapse_core::config::schema::AgentsIpcConfig::default(),
+        pipelines: synapse_core::config::schema::PipelineEngineConfig::default(),
         summary_model: None,
-        summary: synapse_config::schema::SummaryConfig::default(),
+        summary: synapse_core::config::schema::SummaryConfig::default(),
     };
 
     println!(
@@ -411,7 +411,7 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
         snapshot_on_hygiene: false,
         auto_hydrate: true,
         sqlite_open_timeout_secs: None,
-        qdrant: synapse_config::schema::QdrantConfig::default(),
+        qdrant: synapse_core::config::schema::QdrantConfig::default(),
     }
 }
 
@@ -516,58 +516,58 @@ async fn run_quick_setup_with_home(
         extra_headers: std::collections::HashMap::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
-        backup: synapse_config::schema::BackupConfig::default(),
-        data_retention: synapse_config::schema::DataRetentionConfig::default(),
-        cloud_ops: synapse_config::schema::CloudOpsConfig::default(),
-        conversational_ai: synapse_config::schema::ConversationalAiConfig::default(),
-        security: synapse_config::schema::SecurityConfig::default(),
-        security_ops: synapse_config::schema::SecurityOpsConfig::default(),
+        backup: synapse_core::config::schema::BackupConfig::default(),
+        data_retention: synapse_core::config::schema::DataRetentionConfig::default(),
+        cloud_ops: synapse_core::config::schema::CloudOpsConfig::default(),
+        conversational_ai: synapse_core::config::schema::ConversationalAiConfig::default(),
+        security: synapse_core::config::schema::SecurityConfig::default(),
+        security_ops: synapse_core::config::schema::SecurityOpsConfig::default(),
         runtime: RuntimeConfig::default(),
-        reliability: synapse_config::schema::ReliabilityConfig::default(),
-        scheduler: synapse_config::schema::SchedulerConfig::default(),
-        agent: synapse_config::schema::AgentConfig::default(),
-        skills: synapse_config::schema::SkillsConfig::default(),
+        reliability: synapse_core::config::schema::ReliabilityConfig::default(),
+        scheduler: synapse_core::config::schema::SchedulerConfig::default(),
+        agent: synapse_core::config::schema::AgentConfig::default(),
+        skills: synapse_core::config::schema::SkillsConfig::default(),
         model_routes: Vec::new(),
         embedding_routes: Vec::new(),
         heartbeat: HeartbeatConfig::default(),
-        cron: synapse_config::schema::CronConfig::default(),
+        cron: synapse_core::config::schema::CronConfig::default(),
         channels_config: ChannelsConfig::default(),
         memory: memory_config,
         storage: StorageConfig::default(),
-        tunnel: synapse_config::schema::TunnelConfig::default(),
-        gateway: synapse_config::schema::GatewayConfig::default(),
+        tunnel: synapse_core::config::schema::TunnelConfig::default(),
+        gateway: synapse_core::config::schema::GatewayConfig::default(),
         composio: ComposioConfig::default(),
-        microsoft365: synapse_config::schema::Microsoft365Config::default(),
+        microsoft365: synapse_core::config::schema::Microsoft365Config::default(),
         secrets: SecretsConfig::default(),
         browser: BrowserConfig::default(),
         browser_delegate: crate::adapters::tools::browser_delegate::BrowserDelegateConfig::default(
         ),
-        http_request: synapse_config::schema::HttpRequestConfig::default(),
-        multimodal: synapse_config::schema::MultimodalConfig::default(),
-        web_fetch: synapse_config::schema::WebFetchConfig::default(),
-        web_search: synapse_config::schema::WebSearchConfig::default(),
-        project_intel: synapse_config::schema::ProjectIntelConfig::default(),
-        google_workspace: synapse_config::schema::GoogleWorkspaceConfig::default(),
-        proxy: synapse_config::schema::ProxyConfig::default(),
-        identity: synapse_config::schema::IdentityConfig::default(),
-        cost: synapse_config::schema::CostConfig::default(),
+        http_request: synapse_core::config::schema::HttpRequestConfig::default(),
+        multimodal: synapse_core::config::schema::MultimodalConfig::default(),
+        web_fetch: synapse_core::config::schema::WebFetchConfig::default(),
+        web_search: synapse_core::config::schema::WebSearchConfig::default(),
+        project_intel: synapse_core::config::schema::ProjectIntelConfig::default(),
+        google_workspace: synapse_core::config::schema::GoogleWorkspaceConfig::default(),
+        proxy: synapse_core::config::schema::ProxyConfig::default(),
+        identity: synapse_core::config::schema::IdentityConfig::default(),
+        cost: synapse_core::config::schema::CostConfig::default(),
         agents: std::collections::HashMap::new(),
         swarms: std::collections::HashMap::new(),
-        hooks: synapse_config::schema::HooksConfig::default(),
-        query_classification: synapse_config::schema::QueryClassificationConfig::default(),
-        transcription: synapse_config::schema::TranscriptionConfig::default(),
-        tts: synapse_config::schema::TtsConfig::default(),
-        mcp: synapse_config::schema::McpConfig::default(),
-        nodes: synapse_config::schema::NodesConfig::default(),
-        workspace: synapse_config::schema::WorkspaceConfig::default(),
-        notion: synapse_config::schema::NotionConfig::default(),
-        node_transport: synapse_config::schema::NodeTransportConfig::default(),
-        knowledge: synapse_config::schema::KnowledgeConfig::default(),
-        linkedin: synapse_config::schema::LinkedInConfig::default(),
-        agents_ipc: synapse_config::schema::AgentsIpcConfig::default(),
-        pipelines: synapse_config::schema::PipelineEngineConfig::default(),
+        hooks: synapse_core::config::schema::HooksConfig::default(),
+        query_classification: synapse_core::config::schema::QueryClassificationConfig::default(),
+        transcription: synapse_core::config::schema::TranscriptionConfig::default(),
+        tts: synapse_core::config::schema::TtsConfig::default(),
+        mcp: synapse_core::config::schema::McpConfig::default(),
+        nodes: synapse_core::config::schema::NodesConfig::default(),
+        workspace: synapse_core::config::schema::WorkspaceConfig::default(),
+        notion: synapse_core::config::schema::NotionConfig::default(),
+        node_transport: synapse_core::config::schema::NodeTransportConfig::default(),
+        knowledge: synapse_core::config::schema::KnowledgeConfig::default(),
+        linkedin: synapse_core::config::schema::LinkedInConfig::default(),
+        agents_ipc: synapse_core::config::schema::AgentsIpcConfig::default(),
+        pipelines: synapse_core::config::schema::PipelineEngineConfig::default(),
         summary_model: None,
-        summary: synapse_config::schema::SummaryConfig::default(),
+        summary: synapse_core::config::schema::SummaryConfig::default(),
     };
 
     config.save().await?;
@@ -4964,8 +4964,8 @@ fn setup_channels() -> Result<ChannelsConfig> {
 // ── Step 4: Tunnel ──────────────────────────────────────────────
 
 #[allow(clippy::too_many_lines)]
-fn setup_tunnel() -> Result<synapse_config::schema::TunnelConfig> {
-    use synapse_config::schema::{
+fn setup_tunnel() -> Result<synapse_core::config::schema::TunnelConfig> {
+    use synapse_core::config::schema::{
         CloudflareTunnelConfig, CustomTunnelConfig, NgrokTunnelConfig, TailscaleTunnelConfig,
         TunnelConfig,
     };
@@ -7022,7 +7022,7 @@ mod tests {
         let mut channels = ChannelsConfig::default();
         assert!(!has_launchable_channels(&channels));
 
-        channels.signal = Some(synapse_config::schema::SignalConfig {
+        channels.signal = Some(synapse_core::config::schema::SignalConfig {
             http_url: "http://127.0.0.1:8686".into(),
             account: "+1234567890".into(),
             group_id: None,
@@ -7033,7 +7033,7 @@ mod tests {
         assert!(has_launchable_channels(&channels));
 
         channels.signal = None;
-        channels.mattermost = Some(synapse_config::schema::MattermostConfig {
+        channels.mattermost = Some(synapse_core::config::schema::MattermostConfig {
             url: "https://mattermost.example.com".into(),
             bot_token: "token".into(),
             channel_id: Some("channel".into()),
@@ -7044,7 +7044,7 @@ mod tests {
         assert!(has_launchable_channels(&channels));
 
         channels.mattermost = None;
-        channels.qq = Some(synapse_config::schema::QQConfig {
+        channels.qq = Some(synapse_core::config::schema::QQConfig {
             app_id: "app-id".into(),
             app_secret: "app-secret".into(),
             allowed_users: vec!["*".into()],
@@ -7052,7 +7052,7 @@ mod tests {
         assert!(has_launchable_channels(&channels));
 
         channels.qq = None;
-        channels.nextcloud_talk = Some(synapse_config::schema::NextcloudTalkConfig {
+        channels.nextcloud_talk = Some(synapse_core::config::schema::NextcloudTalkConfig {
             base_url: "https://cloud.example.com".into(),
             app_token: "token".into(),
             webhook_secret: Some("secret".into()),
@@ -7061,13 +7061,13 @@ mod tests {
         assert!(has_launchable_channels(&channels));
 
         channels.nextcloud_talk = None;
-        channels.feishu = Some(synapse_config::schema::FeishuConfig {
+        channels.feishu = Some(synapse_core::config::schema::FeishuConfig {
             app_id: "cli_123".into(),
             app_secret: "secret".into(),
             encrypt_key: None,
             verification_token: None,
             allowed_users: vec!["*".into()],
-            receive_mode: synapse_config::schema::LarkReceiveMode::Websocket,
+            receive_mode: synapse_core::config::schema::LarkReceiveMode::Websocket,
             port: None,
         });
         assert!(has_launchable_channels(&channels));

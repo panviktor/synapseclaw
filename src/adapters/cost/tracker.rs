@@ -7,7 +7,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use synapse_config::schema::CostConfig;
+use synapse_core::config::schema::CostConfig;
 
 /// Cost tracker for API usage monitoring and budget enforcement.
 pub struct CostTracker {

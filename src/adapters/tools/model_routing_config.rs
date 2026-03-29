@@ -5,7 +5,9 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::Arc;
-use synapse_config::schema::{ClassificationRule, Config, DelegateAgentConfig, ModelRouteConfig};
+use synapse_core::config::schema::{
+    ClassificationRule, Config, DelegateAgentConfig, ModelRouteConfig,
+};
 use synapse_core::domain::security_policy::SecurityPolicy;
 use synapse_core::domain::util::MaybeSet;
 

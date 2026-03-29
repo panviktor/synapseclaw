@@ -141,7 +141,7 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use synapse_config::schema::{Config, DelegateAgentConfig};
+use synapse_core::config::schema::{Config, DelegateAgentConfig};
 use synapse_core::domain::security_policy::SecurityPolicy;
 use synapse_core::ports::memory_backend::Memory;
 use synapse_core::ports::runtime::RuntimeAdapter;
@@ -266,13 +266,13 @@ pub fn all_tools(
     memory: Arc<dyn Memory>,
     composio_key: Option<&str>,
     composio_entity_id: Option<&str>,
-    browser_config: &synapse_config::schema::BrowserConfig,
-    http_config: &synapse_config::schema::HttpRequestConfig,
-    web_fetch_config: &synapse_config::schema::WebFetchConfig,
+    browser_config: &synapse_core::config::schema::BrowserConfig,
+    http_config: &synapse_core::config::schema::HttpRequestConfig,
+    web_fetch_config: &synapse_core::config::schema::WebFetchConfig,
     workspace_dir: &std::path::Path,
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
-    root_config: &synapse_config::schema::Config,
+    root_config: &synapse_core::config::schema::Config,
     shared_ipc_client: Option<Arc<IpcClient>>,
 ) -> (
     Vec<Box<dyn Tool>>,
@@ -311,13 +311,13 @@ pub fn all_tools_with_runtime(
     memory: Arc<dyn Memory>,
     composio_key: Option<&str>,
     composio_entity_id: Option<&str>,
-    browser_config: &synapse_config::schema::BrowserConfig,
-    http_config: &synapse_config::schema::HttpRequestConfig,
-    web_fetch_config: &synapse_config::schema::WebFetchConfig,
+    browser_config: &synapse_core::config::schema::BrowserConfig,
+    http_config: &synapse_core::config::schema::HttpRequestConfig,
+    web_fetch_config: &synapse_core::config::schema::WebFetchConfig,
     workspace_dir: &std::path::Path,
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
-    root_config: &synapse_config::schema::Config,
+    root_config: &synapse_core::config::schema::Config,
     shared_ipc_client: Option<Arc<IpcClient>>,
     agent_runner: Option<Arc<dyn synapse_core::ports::agent_runner::AgentRunnerPort>>,
 ) -> (
@@ -787,7 +787,7 @@ pub fn all_tools_with_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_config::schema::{BrowserConfig, Config, MemoryConfig};
+    use synapse_core::config::schema::{BrowserConfig, Config, MemoryConfig};
     use tempfile::TempDir;
 
     fn test_config(tmp: &TempDir) -> Config {
@@ -822,7 +822,7 @@ mod tests {
             session_name: None,
             ..BrowserConfig::default()
         };
-        let http = synapse_config::schema::HttpRequestConfig::default();
+        let http = synapse_core::config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
         let (tools, _, _) = all_tools(
@@ -833,7 +833,7 @@ mod tests {
             None,
             &browser,
             &http,
-            &synapse_config::schema::WebFetchConfig::default(),
+            &synapse_core::config::schema::WebFetchConfig::default(),
             tmp.path(),
             &HashMap::new(),
             None,
@@ -865,7 +865,7 @@ mod tests {
             session_name: None,
             ..BrowserConfig::default()
         };
-        let http = synapse_config::schema::HttpRequestConfig::default();
+        let http = synapse_core::config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
         let (tools, _, _) = all_tools(
@@ -876,7 +876,7 @@ mod tests {
             None,
             &browser,
             &http,
-            &synapse_config::schema::WebFetchConfig::default(),
+            &synapse_core::config::schema::WebFetchConfig::default(),
             tmp.path(),
             &HashMap::new(),
             None,
@@ -1000,7 +1000,7 @@ mod tests {
             Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
 
         let browser = BrowserConfig::default();
-        let http = synapse_config::schema::HttpRequestConfig::default();
+        let http = synapse_core::config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
         let mut agents = HashMap::new();
@@ -1027,7 +1027,7 @@ mod tests {
             None,
             &browser,
             &http,
-            &synapse_config::schema::WebFetchConfig::default(),
+            &synapse_core::config::schema::WebFetchConfig::default(),
             tmp.path(),
             &agents,
             Some("delegate-test-credential"),
@@ -1050,7 +1050,7 @@ mod tests {
             Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
 
         let browser = BrowserConfig::default();
-        let http = synapse_config::schema::HttpRequestConfig::default();
+        let http = synapse_core::config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
         let (tools, _, _) = all_tools(
@@ -1061,7 +1061,7 @@ mod tests {
             None,
             &browser,
             &http,
-            &synapse_config::schema::WebFetchConfig::default(),
+            &synapse_core::config::schema::WebFetchConfig::default(),
             tmp.path(),
             &HashMap::new(),
             None,

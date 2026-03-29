@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
-use synapse_config::schema::{LinkedInContentConfig, LinkedInImageConfig};
+use synapse_core::config::schema::{LinkedInContentConfig, LinkedInImageConfig};
 use synapse_core::domain::security_policy::SecurityPolicy;
 
 pub struct LinkedInTool {

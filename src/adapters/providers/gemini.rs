@@ -796,7 +796,11 @@ impl GeminiProvider {
     }
 
     fn http_client(&self) -> Client {
-        synapse_config::schema::build_runtime_proxy_client_with_timeouts("provider.gemini", 120, 10)
+        synapse_core::config::schema::build_runtime_proxy_client_with_timeouts(
+            "provider.gemini",
+            120,
+            10,
+        )
     }
 
     /// Resolve the GCP project ID for OAuth by calling the loadCodeAssist endpoint.

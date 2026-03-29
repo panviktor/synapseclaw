@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use std::sync::Arc;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 use synapse_core::domain::security_policy::SecurityPolicy;
 
 /// Tool that lets the agent manage recurring and one-shot scheduled tasks.
@@ -555,7 +555,7 @@ mod tests {
         let config = Config {
             workspace_dir: tmp.path().join("workspace"),
             config_path: tmp.path().join("config.toml"),
-            autonomy: synapse_config::schema::AutonomyConfig {
+            autonomy: synapse_core::config::schema::AutonomyConfig {
                 level: AutonomyLevel::ReadOnly,
                 ..Default::default()
             },
@@ -592,7 +592,7 @@ mod tests {
         let config = Config {
             workspace_dir: tmp.path().join("workspace"),
             config_path: tmp.path().join("config.toml"),
-            autonomy: synapse_config::schema::AutonomyConfig {
+            autonomy: synapse_core::config::schema::AutonomyConfig {
                 level: AutonomyLevel::Full,
                 max_actions_per_hour: 0,
                 ..Default::default()
@@ -634,7 +634,7 @@ mod tests {
         let config = Config {
             workspace_dir: tmp.path().join("workspace"),
             config_path: tmp.path().join("config.toml"),
-            autonomy: synapse_config::schema::AutonomyConfig {
+            autonomy: synapse_core::config::schema::AutonomyConfig {
                 level: AutonomyLevel::Full,
                 max_actions_per_hour: 1,
                 ..Default::default()

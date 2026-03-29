@@ -87,6 +87,7 @@ mod util;
 
 use config::{Config, ConfigIO};
 
+#[allow(unused_imports)]
 use commands::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, ServiceCommands,
     SkillCommands,

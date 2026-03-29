@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use synapse_config::schema::EstopConfig;
+use synapse_core::config::schema::EstopConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EstopLevel {
@@ -302,7 +302,7 @@ mod tests {
     use super::*;
     use crate::otp::OtpValidator;
     use crate::SecretStore;
-    use synapse_config::schema::OtpConfig;
+    use synapse_core::config::schema::OtpConfig;
     use tempfile::tempdir;
 
     fn estop_config(path: &Path) -> EstopConfig {

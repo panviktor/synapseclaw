@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 use synapse_core::domain::security_policy::SecurityPolicy;
 
 pub struct CronRunTool {
@@ -166,7 +166,7 @@ impl Tool for CronRunTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_config::schema::Config;
+    use synapse_core::config::schema::Config;
     use synapse_core::domain::config::AutonomyLevel;
     use synapse_security::security_factory::security_policy_from_config;
     use tempfile::TempDir;

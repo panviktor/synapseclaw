@@ -3,7 +3,7 @@ use crate::adapters::cron;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 
 pub struct CronListTool {
     config: Arc<Config>,
@@ -60,7 +60,7 @@ impl Tool for CronListTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_config::schema::Config;
+    use synapse_core::config::schema::Config;
     use tempfile::TempDir;
 
     async fn test_config(tmp: &TempDir) -> Arc<Config> {

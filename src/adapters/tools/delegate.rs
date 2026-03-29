@@ -8,7 +8,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use synapse_config::schema::DelegateAgentConfig;
+use synapse_core::config::schema::DelegateAgentConfig;
 use synapse_core::domain::config::ToolOperation;
 use synapse_core::domain::security_policy::SecurityPolicy;
 
@@ -33,7 +33,7 @@ pub struct DelegateTool {
     /// Parent tool registry for agentic sub-agents.
     parent_tools: Arc<RwLock<Vec<Arc<dyn Tool>>>>,
     /// Inherited multimodal handling config for sub-agent loops.
-    multimodal_config: synapse_config::schema::MultimodalConfig,
+    multimodal_config: synapse_core::config::schema::MultimodalConfig,
 }
 
 impl DelegateTool {
@@ -63,7 +63,7 @@ impl DelegateTool {
             provider_runtime_options,
             depth: 0,
             parent_tools: Arc::new(RwLock::new(Vec::new())),
-            multimodal_config: synapse_config::schema::MultimodalConfig::default(),
+            multimodal_config: synapse_core::config::schema::MultimodalConfig::default(),
         }
     }
 
@@ -99,7 +99,7 @@ impl DelegateTool {
             provider_runtime_options,
             depth,
             parent_tools: Arc::new(RwLock::new(Vec::new())),
-            multimodal_config: synapse_config::schema::MultimodalConfig::default(),
+            multimodal_config: synapse_core::config::schema::MultimodalConfig::default(),
         }
     }
 
@@ -112,7 +112,7 @@ impl DelegateTool {
     /// Attach multimodal configuration for sub-agent tool loops.
     pub fn with_multimodal_config(
         mut self,
-        config: synapse_config::schema::MultimodalConfig,
+        config: synapse_core::config::schema::MultimodalConfig,
     ) -> Self {
         self.multimodal_config = config;
         self

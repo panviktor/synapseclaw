@@ -42,7 +42,7 @@ impl TavilyExtractTool {
         }
         let contents = std::fs::read_to_string(&self.config_path)
             .map_err(|e| anyhow::anyhow!("Failed to read config for Tavily API key: {e}"))?;
-        let config: synapse_config::schema::Config = toml::from_str(&contents)
+        let config: synapse_core::config::schema::Config = toml::from_str(&contents)
             .map_err(|e| anyhow::anyhow!("Failed to parse config for Tavily API key: {e}"))?;
         let raw_key = config
             .web_search

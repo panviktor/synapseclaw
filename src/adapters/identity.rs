@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use synapse_config::schema::IdentityConfig;
+use synapse_core::config::schema::IdentityConfig;
 
 /// AIEOS v1.1 identity structure.
 ///

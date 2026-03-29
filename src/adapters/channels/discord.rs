@@ -39,7 +39,7 @@ impl DiscordChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_config::schema::build_runtime_proxy_client("channel.discord")
+        synapse_core::config::schema::build_runtime_proxy_client("channel.discord")
     }
 
     /// Check if a Discord user ID is in the allowlist.

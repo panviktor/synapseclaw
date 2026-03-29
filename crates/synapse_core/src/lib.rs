@@ -7,5 +7,6 @@
 
 pub mod application;
 pub mod bus;
+pub mod config;
 pub mod domain;
 pub mod ports;

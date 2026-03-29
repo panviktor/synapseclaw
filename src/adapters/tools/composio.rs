@@ -57,7 +57,11 @@ impl ComposioTool {
     }
 
     fn client(&self) -> Client {
-        synapse_config::schema::build_runtime_proxy_client_with_timeouts("tool.composio", 60, 10)
+        synapse_core::config::schema::build_runtime_proxy_client_with_timeouts(
+            "tool.composio",
+            60,
+            10,
+        )
     }
 
     /// List available Composio apps/actions for the authenticated user.

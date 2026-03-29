@@ -30,7 +30,7 @@ impl TwitterChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_config::schema::build_runtime_proxy_client("channel.twitter")
+        synapse_core::config::schema::build_runtime_proxy_client("channel.twitter")
     }
 
     fn is_user_allowed(&self, user_id: &str) -> bool {
@@ -469,7 +469,7 @@ mod tests {
 bearer_token = "AAAA"
 allowed_users = ["user1"]
 "#;
-        let config: synapse_config::schema::TwitterConfig = toml::from_str(toml_str).unwrap();
+        let config: synapse_core::config::schema::TwitterConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.bearer_token, "AAAA");
         assert_eq!(config.allowed_users, vec!["user1"]);
     }
@@ -479,7 +479,7 @@ allowed_users = ["user1"]
         let toml_str = r#"
 bearer_token = "tok"
 "#;
-        let config: synapse_config::schema::TwitterConfig = toml::from_str(toml_str).unwrap();
+        let config: synapse_core::config::schema::TwitterConfig = toml::from_str(toml_str).unwrap();
         assert!(config.allowed_users.is_empty());
     }
 }

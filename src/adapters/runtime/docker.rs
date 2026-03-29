@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use synapse_config::schema::DockerRuntimeConfig;
+use synapse_core::config::schema::DockerRuntimeConfig;
 use synapse_core::ports::runtime::RuntimeAdapter;
 
 /// Docker runtime with lightweight container isolation.

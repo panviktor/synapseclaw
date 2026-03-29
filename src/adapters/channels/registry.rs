@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 use synapse_core::domain::channel::{ChannelCapability, DegradationPolicy, OutboundIntent};
 use synapse_core::ports::channel_registry::ChannelRegistryPort;
 

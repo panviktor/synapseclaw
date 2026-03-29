@@ -6,7 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::channel_traits::ChannelConfig;
+use super::channel_traits::ChannelConfig;
 
 // ── Browser Delegate ─────────────────────────────────────────────
 

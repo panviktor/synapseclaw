@@ -114,7 +114,7 @@ impl BlueskyChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_config::schema::build_runtime_proxy_client("channel.bluesky")
+        synapse_core::config::schema::build_runtime_proxy_client("channel.bluesky")
     }
 
     /// Create a new session with handle + app password.

@@ -5,7 +5,7 @@
 //! widen — the boundary.
 
 use crate::traits::Sandbox;
-use synapse_config::schema::SandboxBackend;
+use synapse_core::config::schema::SandboxBackend;
 
 /// Execution boundary derived from trust level.
 ///
@@ -58,7 +58,7 @@ impl std::fmt::Display for SpawnSandboxError {
 impl std::error::Error for SpawnSandboxError {}
 
 // Re-export from fork_config — single source of truth.
-pub use synapse_config::workload::WorkloadProfile;
+pub use synapse_core::config::workload::WorkloadProfile;
 
 /// Resolved spawn configuration after applying boundary + workload.
 #[derive(Debug, Clone)]

@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::Utc;
 use std::future::Future;
 use std::path::PathBuf;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 use synapse_core::domain::config::{AutoDetectCandidate, CronDeliveryConfig, HeartbeatConfig};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -860,10 +860,10 @@ mod tests {
     #[test]
     fn detects_supervised_channels_present() {
         let mut config = Config::default();
-        config.channels_config.telegram = Some(synapse_config::schema::TelegramConfig {
+        config.channels_config.telegram = Some(synapse_core::config::schema::TelegramConfig {
             bot_token: "token".into(),
             allowed_users: vec![],
-            stream_mode: synapse_config::schema::StreamMode::default(),
+            stream_mode: synapse_core::config::schema::StreamMode::default(),
             draft_update_interval_ms: 1000,
             interrupt_on_new_message: false,
             mention_only: false,
@@ -874,7 +874,7 @@ mod tests {
     #[test]
     fn detects_dingtalk_as_supervised_channel() {
         let mut config = Config::default();
-        config.channels_config.dingtalk = Some(synapse_config::schema::DingTalkConfig {
+        config.channels_config.dingtalk = Some(synapse_core::config::schema::DingTalkConfig {
             client_id: "client_id".into(),
             client_secret: "client_secret".into(),
             allowed_users: vec!["*".into()],
@@ -885,7 +885,7 @@ mod tests {
     #[test]
     fn detects_mattermost_as_supervised_channel() {
         let mut config = Config::default();
-        config.channels_config.mattermost = Some(synapse_config::schema::MattermostConfig {
+        config.channels_config.mattermost = Some(synapse_core::config::schema::MattermostConfig {
             url: "https://mattermost.example.com".into(),
             bot_token: "token".into(),
             channel_id: Some("channel-id".into()),
@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn detects_qq_as_supervised_channel() {
         let mut config = Config::default();
-        config.channels_config.qq = Some(synapse_config::schema::QQConfig {
+        config.channels_config.qq = Some(synapse_core::config::schema::QQConfig {
             app_id: "app-id".into(),
             app_secret: "app-secret".into(),
             allowed_users: vec!["*".into()],
@@ -910,12 +910,13 @@ mod tests {
     #[test]
     fn detects_nextcloud_talk_as_supervised_channel() {
         let mut config = Config::default();
-        config.channels_config.nextcloud_talk = Some(synapse_config::schema::NextcloudTalkConfig {
-            base_url: "https://cloud.example.com".into(),
-            app_token: "app-token".into(),
-            webhook_secret: None,
-            allowed_users: vec!["*".into()],
-        });
+        config.channels_config.nextcloud_talk =
+            Some(synapse_core::config::schema::NextcloudTalkConfig {
+                base_url: "https://cloud.example.com".into(),
+                app_token: "app-token".into(),
+                webhook_secret: None,
+                allowed_users: vec!["*".into()],
+            });
         assert!(has_supervised_channels(&config));
     }
 

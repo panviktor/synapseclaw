@@ -3,7 +3,7 @@
 //! Prevents cross-workspace data access and enforces per-workspace
 //! domain allowlists and tool restrictions.
 
-use synapse_config::schema::workspace::WorkspaceProfile;
+use synapse_core::config::schema::workspace::WorkspaceProfile;
 use std::path::Path;
 
 /// Outcome of a workspace boundary check.

@@ -6,7 +6,7 @@ mod tests {
     use crate::adapters::heartbeat::engine::HeartbeatEngine;
     use crate::adapters::observability::NoopObserver;
     use std::sync::Arc;
-    use synapse_config::schema::HeartbeatConfig;
+    use synapse_core::config::schema::HeartbeatConfig;
 
     #[test]
     fn heartbeat_engine_is_constructible_via_module_export() {

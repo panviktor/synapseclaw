@@ -740,7 +740,7 @@ impl Provider for OpenAiCodexProvider {
         messages.push(ChatMessage::user(message));
 
         // Normalize images: convert file paths to data URIs
-        let config = synapse_config::schema::MultimodalConfig::default();
+        let config = synapse_core::config::schema::MultimodalConfig::default();
         let prepared =
             crate::adapters::multimodal::prepare_messages_for_provider(&messages, &config).await?;
 
@@ -756,7 +756,7 @@ impl Provider for OpenAiCodexProvider {
         _temperature: f64,
     ) -> anyhow::Result<String> {
         // Normalize image markers: convert file paths to data URIs
-        let config = synapse_config::schema::MultimodalConfig::default();
+        let config = synapse_core::config::schema::MultimodalConfig::default();
         let prepared =
             crate::adapters::multimodal::prepare_messages_for_provider(messages, &config).await?;
 

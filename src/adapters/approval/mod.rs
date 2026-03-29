@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{self, BufRead, Write};
-use synapse_config::schema::AutonomyConfig;
+use synapse_core::config::schema::AutonomyConfig;
 use synapse_core::domain::config::AutonomyLevel;
 
 // ── Types ────────────────────────────────────────────────────────
@@ -305,7 +305,7 @@ fn truncate_for_summary(input: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_config::schema::AutonomyConfig;
+    use synapse_core::config::schema::AutonomyConfig;
 
     fn supervised_config() -> AutonomyConfig {
         AutonomyConfig {

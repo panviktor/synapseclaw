@@ -1,7 +1,7 @@
 //! Factory: build SecurityPolicy from config values.
 
 use std::path::Path;
-use synapse_config::schema::AutonomyConfig;
+use synapse_core::config::schema::AutonomyConfig;
 use synapse_core::domain::security_policy::{expand_user_path, ActionTracker, SecurityPolicy};
 
 /// Build SecurityPolicy from config sections.

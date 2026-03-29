@@ -275,7 +275,7 @@ impl OpenAiCompatibleProvider {
                 .timeout(std::time::Duration::from_secs(timeout))
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .default_headers(headers);
-            let builder = synapse_config::schema::apply_runtime_proxy_to_builder(
+            let builder = synapse_core::config::schema::apply_runtime_proxy_to_builder(
                 builder,
                 "provider.compatible",
             );
@@ -288,7 +288,7 @@ impl OpenAiCompatibleProvider {
             });
         }
 
-        synapse_config::schema::build_runtime_proxy_client_with_timeouts(
+        synapse_core::config::schema::build_runtime_proxy_client_with_timeouts(
             "provider.compatible",
             timeout,
             10,

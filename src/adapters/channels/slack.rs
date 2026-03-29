@@ -101,7 +101,11 @@ impl SlackChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_config::schema::build_runtime_proxy_client_with_timeouts("channel.slack", 30, 10)
+        synapse_core::config::schema::build_runtime_proxy_client_with_timeouts(
+            "channel.slack",
+            30,
+            10,
+        )
     }
 
     /// Check if a Slack user ID is in the allowlist.
@@ -720,7 +724,7 @@ impl SlackChannel {
     }
 
     fn slack_media_http_client_no_redirect(&self) -> anyhow::Result<reqwest::Client> {
-        let builder = synapse_config::schema::apply_runtime_proxy_to_builder(
+        let builder = synapse_core::config::schema::apply_runtime_proxy_to_builder(
             reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(30))

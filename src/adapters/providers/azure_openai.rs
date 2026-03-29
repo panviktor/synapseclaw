@@ -302,7 +302,7 @@ impl AzureOpenAiProvider {
     }
 
     fn http_client(&self) -> Client {
-        synapse_config::schema::build_runtime_proxy_client_with_timeouts(
+        synapse_core::config::schema::build_runtime_proxy_client_with_timeouts(
             "provider.azure_openai",
             120,
             10,

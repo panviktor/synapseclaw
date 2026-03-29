@@ -720,7 +720,7 @@ pub async fn handle_provisioning_patch_broker(
                 if let Some(ipc_val) = val.get("agents_ipc") {
                     if let Ok(ipc) = ipc_val
                         .clone()
-                        .try_into::<synapse_config::schema::AgentsIpcConfig>()
+                        .try_into::<synapse_core::config::schema::AgentsIpcConfig>()
                     {
                         // Preserve runtime fields that aren't in the TOML patch
                         let old = &config.agents_ipc;

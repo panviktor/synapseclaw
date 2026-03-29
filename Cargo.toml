@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/synapse_core", "crates/synapse_config", "crates/synapse_security"]
+members = [".", "crates/synapse_core", "crates/synapse_security"]
 resolver = "2"
 
 [package]
@@ -36,8 +36,6 @@ include = [
 [dependencies]
 # Fork-owned application core (pure business logic)
 synapse_core = { path = "crates/synapse_core" }
-# Fork-owned configuration types (shared across all crates)
-synapse_config = { path = "crates/synapse_config" }
 # Fork-owned security module (shared between adapters and main binary)
 synapse_security = { path = "crates/synapse_security" }
 
@@ -208,7 +206,7 @@ libc = "0.2"
 
 [features]
 default = ["observability-prometheus", "channel-nostr", "channel-matrix"]
-channel-nostr = ["dep:nostr-sdk", "synapse_config/channel-nostr"]
+channel-nostr = ["dep:nostr-sdk", "synapse_core/channel-nostr"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
 channel-feishu = ["channel-lark"]  # Alias for Feishu users (Lark and Feishu are the same platform)

@@ -299,7 +299,7 @@ pub struct LarkChannel {
     /// Platform variant: Lark (international) or Feishu (CN).
     platform: LarkPlatform,
     /// How to receive events: WebSocket long-connection or HTTP webhook.
-    receive_mode: synapse_config::schema::LarkReceiveMode,
+    receive_mode: synapse_core::config::schema::LarkReceiveMode,
     /// Cached tenant access token
     tenant_token: Arc<RwLock<Option<CachedTenantToken>>>,
     /// Dedup set: WS message_ids seen in last ~30 min to prevent double-dispatch
@@ -344,7 +344,7 @@ impl LarkChannel {
             resolved_bot_open_id: Arc::new(StdRwLock::new(None)),
             mention_only,
             platform,
-            receive_mode: synapse_config::schema::LarkReceiveMode::default(),
+            receive_mode: synapse_core::config::schema::LarkReceiveMode::default(),
             tenant_token: Arc::new(RwLock::new(None)),
             ws_seen_ids: Arc::new(RwLock::new(HashMap::new())),
         }
@@ -352,7 +352,7 @@ impl LarkChannel {
 
     /// Build from `LarkConfig` using legacy compatibility:
     /// when `use_feishu=true`, this instance routes to Feishu endpoints.
-    pub fn from_config(config: &synapse_config::schema::LarkConfig) -> Self {
+    pub fn from_config(config: &synapse_core::config::schema::LarkConfig) -> Self {
         let platform = if config.use_feishu {
             LarkPlatform::Feishu
         } else {
@@ -374,7 +374,7 @@ impl LarkChannel {
     /// Build from `LarkConfig` forcing `LarkPlatform::Lark`, ignoring the
     /// legacy `use_feishu` flag.  Used by the channel factory when the config
     /// section is explicitly `[channels_config.lark]`.
-    pub fn from_lark_config(config: &synapse_config::schema::LarkConfig) -> Self {
+    pub fn from_lark_config(config: &synapse_core::config::schema::LarkConfig) -> Self {
         let mut ch = Self::new_with_platform(
             config.app_id.clone(),
             config.app_secret.clone(),
@@ -389,7 +389,7 @@ impl LarkChannel {
     }
 
     /// Build from `FeishuConfig` with `LarkPlatform::Feishu`.
-    pub fn from_feishu_config(config: &synapse_config::schema::FeishuConfig) -> Self {
+    pub fn from_feishu_config(config: &synapse_core::config::schema::FeishuConfig) -> Self {
         let mut ch = Self::new_with_platform(
             config.app_id.clone(),
             config.app_secret.clone(),
@@ -404,7 +404,7 @@ impl LarkChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_config::schema::build_runtime_proxy_client(self.platform.proxy_service_key())
+        synapse_core::config::schema::build_runtime_proxy_client(self.platform.proxy_service_key())
     }
 
     fn channel_name(&self) -> &'static str {
@@ -1167,7 +1167,7 @@ impl Channel for LarkChannel {
     }
 
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
-        use synapse_config::schema::LarkReceiveMode;
+        use synapse_core::config::schema::LarkReceiveMode;
         match self.receive_mode {
             LarkReceiveMode::Websocket => self.listen_ws(tx).await,
             LarkReceiveMode::Webhook => self.listen_http(tx).await,
@@ -2026,7 +2026,7 @@ mod tests {
 
     #[test]
     fn lark_config_serde() {
-        use synapse_config::schema::{LarkConfig, LarkReceiveMode};
+        use synapse_core::config::schema::{LarkConfig, LarkReceiveMode};
         let lc = LarkConfig {
             app_id: "cli_app123".into(),
             app_secret: "secret456".into(),
@@ -2048,7 +2048,7 @@ mod tests {
 
     #[test]
     fn lark_config_toml_roundtrip() {
-        use synapse_config::schema::{LarkConfig, LarkReceiveMode};
+        use synapse_core::config::schema::{LarkConfig, LarkReceiveMode};
         let lc = LarkConfig {
             app_id: "app".into(),
             app_secret: "secret".into(),
@@ -2069,7 +2069,7 @@ mod tests {
 
     #[test]
     fn lark_config_defaults_optional_fields() {
-        use synapse_config::schema::{LarkConfig, LarkReceiveMode};
+        use synapse_core::config::schema::{LarkConfig, LarkReceiveMode};
         let json = r#"{"app_id":"a","app_secret":"s"}"#;
         let parsed: LarkConfig = serde_json::from_str(json).unwrap();
         assert!(parsed.verification_token.is_none());
@@ -2081,7 +2081,7 @@ mod tests {
 
     #[test]
     fn lark_from_config_preserves_mode_and_region() {
-        use synapse_config::schema::{LarkConfig, LarkReceiveMode};
+        use synapse_core::config::schema::{LarkConfig, LarkReceiveMode};
 
         let cfg = LarkConfig {
             app_id: "cli_app123".into(),
@@ -2105,7 +2105,7 @@ mod tests {
 
     #[test]
     fn lark_from_lark_config_ignores_legacy_feishu_flag() {
-        use synapse_config::schema::{LarkConfig, LarkReceiveMode};
+        use synapse_core::config::schema::{LarkConfig, LarkReceiveMode};
 
         let cfg = LarkConfig {
             app_id: "cli_app123".into(),
@@ -2128,7 +2128,7 @@ mod tests {
 
     #[test]
     fn lark_from_feishu_config_sets_feishu_platform() {
-        use synapse_config::schema::{FeishuConfig, LarkReceiveMode};
+        use synapse_core::config::schema::{FeishuConfig, LarkReceiveMode};
 
         let cfg = FeishuConfig {
             app_id: "cli_feishu_app123".into(),
@@ -2302,13 +2302,13 @@ mod tests {
             "https://open.larksuite.com/open-apis/im/v1/messages/om_test_message_id/reactions"
         );
 
-        let feishu_cfg = synapse_config::schema::FeishuConfig {
+        let feishu_cfg = synapse_core::config::schema::FeishuConfig {
             app_id: "cli_app123".into(),
             app_secret: "secret456".into(),
             encrypt_key: None,
             verification_token: Some("vtoken789".into()),
             allowed_users: vec!["*".into()],
-            receive_mode: synapse_config::schema::LarkReceiveMode::Webhook,
+            receive_mode: synapse_core::config::schema::LarkReceiveMode::Webhook,
             port: Some(9898),
         };
         let ch_feishu = LarkChannel::from_feishu_config(&feishu_cfg);

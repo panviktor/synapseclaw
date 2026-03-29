@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Result};
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 use synapse_core::domain::security_policy::SecurityPolicy;
 use synapse_security::security_factory::security_policy_from_config;
 
