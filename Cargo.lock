@@ -1745,6 +1745,7 @@ name = "fork_config"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "directories",
  "fork_core",
  "reqwest",

@@ -117,9 +117,9 @@ pub(crate) fn add_job(config: &Config, expression: &str, command: &str) -> Resul
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<()> {
+pub fn handle_command(command: fork_config::commands::CronCommands, config: &Config) -> Result<()> {
     match command {
-        crate::CronCommands::List => {
+        fork_config::commands::CronCommands::List => {
             let jobs = list_jobs(config)?;
             if jobs.is_empty() {
                 println!("No scheduled tasks yet.");
@@ -151,7 +151,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             }
             Ok(())
         }
-        crate::CronCommands::Add {
+        fork_config::commands::CronCommands::Add {
             expression,
             tz,
             agent,
@@ -185,7 +185,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             }
             Ok(())
         }
-        crate::CronCommands::AddAt { at, agent, command } => {
+        fork_config::commands::CronCommands::AddAt { at, agent, command } => {
             let at = chrono::DateTime::parse_from_rfc3339(&at)
                 .map_err(|e| anyhow::anyhow!("Invalid RFC3339 timestamp for --at: {e}"))?
                 .with_timezone(&chrono::Utc);
@@ -212,7 +212,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             }
             Ok(())
         }
-        crate::CronCommands::AddEvery {
+        fork_config::commands::CronCommands::AddEvery {
             every_ms,
             agent,
             command,
@@ -242,7 +242,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             }
             Ok(())
         }
-        crate::CronCommands::Once {
+        fork_config::commands::CronCommands::Once {
             delay,
             agent,
             command,
@@ -272,7 +272,7 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             }
             Ok(())
         }
-        crate::CronCommands::Update {
+        fork_config::commands::CronCommands::Update {
             id,
             expression,
             tz,
@@ -317,13 +317,13 @@ pub fn handle_command(command: crate::CronCommands, config: &Config) -> Result<(
             println!("  Cmd : {}", job.command);
             Ok(())
         }
-        crate::CronCommands::Remove { id } => remove_job(config, &id),
-        crate::CronCommands::Pause { id } => {
+        fork_config::commands::CronCommands::Remove { id } => remove_job(config, &id),
+        fork_config::commands::CronCommands::Pause { id } => {
             pause_job(config, &id)?;
             println!("⏸️  Paused cron job {id}");
             Ok(())
         }
-        crate::CronCommands::Resume { id } => {
+        fork_config::commands::CronCommands::Resume { id } => {
             resume_job(config, &id)?;
             println!("▶️  Resumed cron job {id}");
             Ok(())
@@ -423,7 +423,7 @@ mod tests {
         name: Option<&str>,
     ) -> Result<()> {
         handle_command(
-            crate::CronCommands::Update {
+            fork_config::commands::CronCommands::Update {
                 id: id.into(),
                 expression: expression.map(Into::into),
                 tz: tz.map(Into::into),
@@ -773,7 +773,7 @@ mod tests {
         let config = test_config(&tmp);
 
         handle_command(
-            crate::CronCommands::Add {
+            fork_config::commands::CronCommands::Add {
                 expression: "*/15 * * * *".into(),
                 tz: None,
                 agent: true,
@@ -803,7 +803,7 @@ mod tests {
         // security policy. With --agent, it routes to agent job and skips
         // shell validation entirely.
         let result = handle_command(
-            crate::CronCommands::Add {
+            fork_config::commands::CronCommands::Add {
                 expression: "*/15 * * * *".into(),
                 tz: None,
                 agent: true,
@@ -824,7 +824,7 @@ mod tests {
         let config = test_config(&tmp);
 
         handle_command(
-            crate::CronCommands::Add {
+            fork_config::commands::CronCommands::Add {
                 expression: "*/5 * * * *".into(),
                 tz: None,
                 agent: false,

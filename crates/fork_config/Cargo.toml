@@ -10,6 +10,7 @@ channel-nostr = []
 [dependencies]
 fork_core = { path = "../fork_core" }
 anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
 directories = "6"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
 schemars = "1.2"

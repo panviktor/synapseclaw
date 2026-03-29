@@ -966,12 +966,12 @@ fn install_git_skill_source(source: &str, skills_path: &Path) -> Result<(PathBuf
 /// Handle the `skills` CLI command
 #[allow(clippy::too_many_lines)]
 pub fn handle_command(
-    command: crate::SkillCommands,
+    command: fork_config::commands::SkillCommands,
     config: &fork_config::schema::Config,
 ) -> Result<()> {
     let workspace_dir = &config.workspace_dir;
     match command {
-        crate::SkillCommands::List => {
+        fork_config::commands::SkillCommands::List => {
             let skills = load_skills_with_config(workspace_dir, config);
             if skills.is_empty() {
                 println!("No skills installed.");
@@ -1009,7 +1009,7 @@ pub fn handle_command(
             println!();
             Ok(())
         }
-        crate::SkillCommands::Audit { source } => {
+        fork_config::commands::SkillCommands::Audit { source } => {
             let source_path = PathBuf::from(&source);
             let target = if source_path.exists() {
                 source_path
@@ -1042,7 +1042,7 @@ pub fn handle_command(
             }
             anyhow::bail!("Skill audit failed.");
         }
-        crate::SkillCommands::Install { source } => {
+        fork_config::commands::SkillCommands::Install { source } => {
             println!("Installing skill from: {source}");
 
             let skills_path = skills_dir(workspace_dir);
@@ -1072,7 +1072,7 @@ pub fn handle_command(
             println!("  Security audit completed successfully.");
             Ok(())
         }
-        crate::SkillCommands::Remove { name } => {
+        fork_config::commands::SkillCommands::Remove { name } => {
             // Reject path traversal attempts
             if name.contains("..") || name.contains('/') || name.contains('\\') {
                 anyhow::bail!("Invalid skill name: {name}");
