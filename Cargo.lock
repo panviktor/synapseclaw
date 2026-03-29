@@ -5678,28 +5678,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "synapse_config"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "directories",
- "reqwest",
- "schemars",
- "serde",
- "serde_json",
- "synapse_core",
- "tracing",
-]
-
-[[package]]
 name = "synapse_core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "directories",
  "jsonschema",
  "parking_lot",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -5728,7 +5716,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "shellexpand",
- "synapse_config",
  "synapse_core",
  "tokio",
  "tracing",
@@ -5799,7 +5786,6 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "shellexpand",
- "synapse_config",
  "synapse_core",
  "synapse_security",
  "tempfile",

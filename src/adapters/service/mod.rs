@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 
 const SERVICE_LABEL_DEFAULT: &str = "com.synapseclaw.daemon";
 const WINDOWS_TASK_DEFAULT: &str = "SynapseClaw Daemon";

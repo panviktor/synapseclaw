@@ -64,7 +64,7 @@ pub struct MatrixChannel {
     http_client: Client,
     reaction_events: Arc<RwLock<HashMap<String, String>>>,
     voice_mode: Arc<AtomicBool>,
-    transcription: Option<synapse_config::schema::TranscriptionConfig>,
+    transcription: Option<synapse_core::config::schema::TranscriptionConfig>,
     voice_transcriptions: Arc<Mutex<std::collections::HashMap<String, String>>>,
     password: Option<String>,
     max_media_bytes: usize,
@@ -452,7 +452,7 @@ impl MatrixChannel {
     /// Enable audio transcription with the given configuration.
     pub fn with_transcription(
         mut self,
-        config: synapse_config::schema::TranscriptionConfig,
+        config: synapse_core::config::schema::TranscriptionConfig,
     ) -> Self {
         if config.enabled {
             self.transcription = Some(config);
@@ -2656,7 +2656,7 @@ mod tests {
 
     #[test]
     fn with_transcription_enabled() {
-        let config = synapse_config::schema::TranscriptionConfig {
+        let config = synapse_core::config::schema::TranscriptionConfig {
             enabled: true,
             ..Default::default()
         };
@@ -2666,7 +2666,7 @@ mod tests {
 
     #[test]
     fn with_transcription_disabled() {
-        let config = synapse_config::schema::TranscriptionConfig {
+        let config = synapse_core::config::schema::TranscriptionConfig {
             enabled: false,
             ..Default::default()
         };

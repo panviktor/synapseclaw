@@ -12,7 +12,7 @@ use tokio_stream::StreamExt;
 use crate::adapters::tools::mcp_protocol::{
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, INTERNAL_ERROR,
 };
-use synapse_config::schema::{McpServerConfig, McpTransport};
+use synapse_core::config::schema::{McpServerConfig, McpTransport};
 
 /// Maximum bytes for a single JSON-RPC response.
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024; // 4 MB

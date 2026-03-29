@@ -695,7 +695,7 @@ mod tests {
         use crate::adapters::providers::{ChatMessage, ChatRequest, ChatResponse, Provider};
         use crate::memory;
         use std::sync::{Arc, Mutex};
-        use synapse_config::schema::MemoryConfig;
+        use synapse_core::config::schema::MemoryConfig;
         use synapse_core::ports::memory_backend::Memory;
 
         pub type SharedRequests = Arc<Mutex<Vec<Vec<ChatMessage>>>>;

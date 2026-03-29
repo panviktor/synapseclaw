@@ -943,7 +943,7 @@ mod tests {
 
     #[test]
     fn irc_config_serde_roundtrip() {
-        use synapse_config::schema::IrcConfig;
+        use synapse_core::config::schema::IrcConfig;
 
         let config = IrcConfig {
             server: "irc.example.com".into(),
@@ -974,7 +974,7 @@ mod tests {
 
     #[test]
     fn irc_config_minimal_toml() {
-        use synapse_config::schema::IrcConfig;
+        use synapse_core::config::schema::IrcConfig;
 
         let toml_str = r#"
 server = "irc.example.com"
@@ -995,7 +995,7 @@ nickname = "bot"
 
     #[test]
     fn irc_config_default_port() {
-        use synapse_config::schema::IrcConfig;
+        use synapse_core::config::schema::IrcConfig;
 
         let json = r#"{"server":"irc.test","nickname":"bot"}"#;
         let parsed: IrcConfig = serde_json::from_str(json).unwrap();

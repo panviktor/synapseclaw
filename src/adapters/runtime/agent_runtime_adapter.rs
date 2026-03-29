@@ -21,7 +21,7 @@ pub struct ChannelAgentRuntime {
     pub observer: Arc<dyn crate::adapters::observability::Observer>,
     pub approval_manager: Arc<ApprovalManager>,
     pub channel_name: String,
-    pub multimodal: synapse_config::schema::MultimodalConfig,
+    pub multimodal: synapse_core::config::schema::MultimodalConfig,
     pub excluded_tools: Arc<Vec<String>>,
     pub dedup_exempt_tools: Arc<Vec<String>>,
     pub hooks: Option<Arc<crate::adapters::hooks::HookRunner>>,

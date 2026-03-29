@@ -6,7 +6,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, RwLock};
-use synapse_config::schema::ObservabilityConfig;
+use synapse_core::config::schema::ObservabilityConfig;
 use uuid::Uuid;
 
 const DEFAULT_TRACE_REL_PATH: &str = "state/runtime-trace.jsonl";

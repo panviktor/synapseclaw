@@ -9,7 +9,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use synapse_config::schema::{Config, StreamMode};
+use synapse_core::config::schema::{Config, StreamMode};
 use synapse_security::pairing::PairingGuard;
 use tokio::fs;
 
@@ -330,7 +330,7 @@ pub struct TelegramChannel {
     /// Base URL for the Telegram Bot API. Defaults to `https://api.telegram.org`.
     /// Override for local Bot API servers or testing.
     api_base: String,
-    transcription: Option<synapse_config::schema::TranscriptionConfig>,
+    transcription: Option<synapse_core::config::schema::TranscriptionConfig>,
     voice_transcriptions: Mutex<std::collections::HashMap<String, String>>,
     workspace_dir: Option<std::path::PathBuf>,
 }
@@ -401,7 +401,7 @@ impl TelegramChannel {
     /// Configure voice transcription.
     pub fn with_transcription(
         mut self,
-        config: synapse_config::schema::TranscriptionConfig,
+        config: synapse_core::config::schema::TranscriptionConfig,
     ) -> Self {
         if config.enabled {
             self.transcription = Some(config);
@@ -459,7 +459,7 @@ impl TelegramChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_config::schema::build_runtime_proxy_client("channel.telegram")
+        synapse_core::config::schema::build_runtime_proxy_client("channel.telegram")
     }
 
     fn normalize_identity(value: &str) -> String {
@@ -4123,7 +4123,7 @@ mod tests {
 
     #[test]
     fn with_transcription_sets_config_when_enabled() {
-        let mut tc = synapse_config::schema::TranscriptionConfig::default();
+        let mut tc = synapse_core::config::schema::TranscriptionConfig::default();
         tc.enabled = true;
 
         let ch =
@@ -4133,7 +4133,7 @@ mod tests {
 
     #[test]
     fn with_transcription_skips_when_disabled() {
-        let tc = synapse_config::schema::TranscriptionConfig::default(); // enabled = false
+        let tc = synapse_core::config::schema::TranscriptionConfig::default(); // enabled = false
         let ch =
             TelegramChannel::new("token".into(), vec!["*".into()], false).with_transcription(tc);
         assert!(ch.transcription.is_none());
@@ -4157,7 +4157,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_parse_voice_message_skips_when_duration_exceeds_limit() {
-        let mut tc = synapse_config::schema::TranscriptionConfig::default();
+        let mut tc = synapse_core::config::schema::TranscriptionConfig::default();
         tc.enabled = true;
         tc.max_duration_secs = 5;
 
@@ -4178,7 +4178,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_parse_voice_message_rejects_unauthorized_sender_before_download() {
-        let mut tc = synapse_config::schema::TranscriptionConfig::default();
+        let mut tc = synapse_core::config::schema::TranscriptionConfig::default();
         tc.enabled = true;
         tc.max_duration_secs = 120;
 
@@ -4231,7 +4231,7 @@ mod tests {
         );
 
         // 2. Call transcribe_audio() — real Groq Whisper API
-        let config = synapse_config::schema::TranscriptionConfig {
+        let config = synapse_core::config::schema::TranscriptionConfig {
             enabled: true,
             ..Default::default()
         };

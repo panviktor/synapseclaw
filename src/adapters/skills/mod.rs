@@ -89,7 +89,7 @@ pub fn load_skills(workspace_dir: &Path) -> Vec<Skill> {
 /// Load skills using runtime config values (preferred at runtime).
 pub fn load_skills_with_config(
     workspace_dir: &Path,
-    config: &synapse_config::schema::Config,
+    config: &synapse_core::config::schema::Config,
 ) -> Vec<Skill> {
     load_skills_with_open_skills_config(
         workspace_dir,
@@ -649,7 +649,7 @@ pub fn skills_to_prompt(skills: &[Skill], workspace_dir: &Path) -> String {
     skills_to_prompt_with_mode(
         skills,
         workspace_dir,
-        synapse_config::schema::SkillsPromptInjectionMode::Full,
+        synapse_core::config::schema::SkillsPromptInjectionMode::Full,
     )
 }
 
@@ -657,7 +657,7 @@ pub fn skills_to_prompt(skills: &[Skill], workspace_dir: &Path) -> String {
 pub fn skills_to_prompt_with_mode(
     skills: &[Skill],
     workspace_dir: &Path,
-    mode: synapse_config::schema::SkillsPromptInjectionMode,
+    mode: synapse_core::config::schema::SkillsPromptInjectionMode,
 ) -> String {
     use std::fmt::Write;
 
@@ -666,13 +666,13 @@ pub fn skills_to_prompt_with_mode(
     }
 
     let mut prompt = match mode {
-        synapse_config::schema::SkillsPromptInjectionMode::Full => String::from(
+        synapse_core::config::schema::SkillsPromptInjectionMode::Full => String::from(
             "## Available Skills\n\n\
              Skill instructions and tool metadata are preloaded below.\n\
              Follow these instructions directly; do not read skill files at runtime unless the user asks.\n\n\
              <available_skills>\n",
         ),
-        synapse_config::schema::SkillsPromptInjectionMode::Compact => String::from(
+        synapse_core::config::schema::SkillsPromptInjectionMode::Compact => String::from(
             "## Available Skills\n\n\
              Skill summaries are preloaded below to keep context compact.\n\
              Skill instructions are loaded on demand: read the skill file in `location` only when needed.\n\n\
@@ -689,14 +689,14 @@ pub fn skills_to_prompt_with_mode(
             workspace_dir,
             matches!(
                 mode,
-                synapse_config::schema::SkillsPromptInjectionMode::Compact
+                synapse_core::config::schema::SkillsPromptInjectionMode::Compact
             ),
         );
         write_xml_text_element(&mut prompt, 4, "location", &location);
 
         if matches!(
             mode,
-            synapse_config::schema::SkillsPromptInjectionMode::Full
+            synapse_core::config::schema::SkillsPromptInjectionMode::Full
         ) {
             if !skill.prompts.is_empty() {
                 let _ = writeln!(prompt, "    <instructions>");
@@ -970,7 +970,7 @@ fn install_git_skill_source(source: &str, skills_path: &Path) -> Result<(PathBuf
 #[allow(clippy::too_many_lines)]
 pub fn handle_command(
     command: crate::commands::SkillCommands,
-    config: &synapse_config::schema::Config,
+    config: &synapse_core::config::schema::Config,
 ) -> Result<()> {
     let workspace_dir = &config.workspace_dir;
     match command {
@@ -1270,7 +1270,7 @@ command = "echo hello"
         let prompt = skills_to_prompt_with_mode(
             &skills,
             Path::new("/tmp/workspace"),
-            synapse_config::schema::SkillsPromptInjectionMode::Compact,
+            synapse_core::config::schema::SkillsPromptInjectionMode::Compact,
         );
 
         assert!(prompt.contains("<available_skills>"));
@@ -1627,7 +1627,7 @@ description = "Bare minimum"
         )
         .unwrap();
 
-        let mut config = synapse_config::schema::Config::default();
+        let mut config = synapse_core::config::schema::Config::default();
         config.workspace_dir = workspace_dir.clone();
         config.skills.open_skills_enabled = true;
         config.skills.open_skills_dir = Some(open_skills_dir.to_string_lossy().to_string());
@@ -1656,7 +1656,7 @@ description = "Bare minimum"
         )
         .unwrap();
 
-        let mut config = synapse_config::schema::Config::default();
+        let mut config = synapse_core::config::schema::Config::default();
         config.workspace_dir = workspace_dir.clone();
         config.skills.open_skills_enabled = true;
         config.skills.open_skills_dir = Some(open_skills_dir.to_string_lossy().to_string());

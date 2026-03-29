@@ -19,7 +19,7 @@ use crate::adapters::tools::mcp_protocol::{
     JsonRpcRequest, McpToolDef, McpToolsListResult, MCP_PROTOCOL_VERSION,
 };
 use crate::adapters::tools::mcp_transport::{create_transport, McpTransportConn};
-use synapse_config::schema::McpServerConfig;
+use synapse_core::config::schema::McpServerConfig;
 
 /// Timeout for receiving a response from an MCP server during init/list.
 /// Prevents a hung server from blocking the daemon indefinitely.
@@ -296,7 +296,7 @@ impl McpRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_config::schema::McpTransport;
+    use synapse_core::config::schema::McpTransport;
 
     #[test]
     fn tool_name_prefix_format() {

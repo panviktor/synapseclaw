@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use synapse_config::schema::TokenMetadata;
+use synapse_core::config::schema::TokenMetadata;
 use synapse_security::audit::{AuditEvent, AuditEventType};
 use synapse_security::{GuardResult, LeakResult};
 use tracing::{info, warn};
@@ -4828,7 +4828,7 @@ mod tests {
 
     #[test]
     fn ipc_prompt_guard_config_defaults() {
-        let cfg = synapse_config::schema::IpcPromptGuardConfig::default();
+        let cfg = synapse_core::config::schema::IpcPromptGuardConfig::default();
         assert!(cfg.enabled);
         assert_eq!(cfg.action, "block");
         assert!((cfg.sensitivity - 0.55).abs() < f64::EPSILON);
@@ -4863,7 +4863,7 @@ mod tests {
     fn prompt_guard_exempt_levels_skip_scan() {
         // This tests the exempt_levels logic in config, not the scan itself.
         // L0 and L1 should be exempt by default.
-        let cfg = synapse_config::schema::IpcPromptGuardConfig::default();
+        let cfg = synapse_core::config::schema::IpcPromptGuardConfig::default();
         assert!(cfg.exempt_levels.contains(&0));
         assert!(cfg.exempt_levels.contains(&1));
         assert!(!cfg.exempt_levels.contains(&2));
@@ -5403,7 +5403,7 @@ mod tests {
         use synapse_security::PairingGuard;
 
         let guard = PairingGuard::new(true, &["zc_existing".into()]);
-        let meta = synapse_config::schema::TokenMetadata {
+        let meta = synapse_core::config::schema::TokenMetadata {
             agent_id: "eph-opus-abc".into(),
             trust_level: 3,
             role: "worker".into(),
@@ -5436,7 +5436,7 @@ mod tests {
         let guard = PairingGuard::new(true, &["zc_existing".into()]);
 
         // Setup: register ephemeral agent
-        let child_meta = synapse_config::schema::TokenMetadata {
+        let child_meta = synapse_core::config::schema::TokenMetadata {
             agent_id: "eph-opus-abc".into(),
             trust_level: 3,
             role: "worker".into(),

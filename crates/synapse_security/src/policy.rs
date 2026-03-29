@@ -9,7 +9,7 @@ pub use synapse_core::domain::security_policy::*;
 /// Free function because SecurityPolicy is defined in fork_core —
 /// Rust does not allow `impl` blocks on types from foreign crates.
 pub fn security_policy_from_config(
-    autonomy_config: &synapse_config::schema::AutonomyConfig,
+    autonomy_config: &synapse_core::config::schema::AutonomyConfig,
     workspace_dir: &Path,
 ) -> SecurityPolicy {
     SecurityPolicy {
@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn from_config_maps_all_fields() {
-        let autonomy_config = synapse_config::schema::AutonomyConfig {
+        let autonomy_config = synapse_core::config::schema::AutonomyConfig {
             level: AutonomyLevel::Full,
             workspace_only: false,
             allowed_commands: vec!["docker".into()],
@@ -527,7 +527,7 @@ mod tests {
             require_approval_for_medium_risk: false,
             block_high_risk_commands: false,
             shell_env_passthrough: vec!["DATABASE_URL".into()],
-            ..synapse_config::schema::AutonomyConfig::default()
+            ..synapse_core::config::schema::AutonomyConfig::default()
         };
         let workspace = PathBuf::from("/tmp/test-workspace");
         let policy = security_policy_from_config(&autonomy_config, &workspace);
@@ -546,9 +546,9 @@ mod tests {
 
     #[test]
     fn from_config_normalizes_allowed_roots() {
-        let autonomy_config = synapse_config::schema::AutonomyConfig {
+        let autonomy_config = synapse_core::config::schema::AutonomyConfig {
             allowed_roots: vec!["~/Desktop".into(), "shared-data".into()],
-            ..synapse_config::schema::AutonomyConfig::default()
+            ..synapse_core::config::schema::AutonomyConfig::default()
         };
         let workspace = PathBuf::from("/tmp/test-workspace");
         let policy = security_policy_from_config(&autonomy_config, &workspace);
@@ -1135,7 +1135,7 @@ mod tests {
 
     #[test]
     fn from_config_creates_fresh_tracker() {
-        let autonomy_config = synapse_config::schema::AutonomyConfig {
+        let autonomy_config = synapse_core::config::schema::AutonomyConfig {
             level: AutonomyLevel::Full,
             workspace_only: false,
             allowed_commands: vec![],
@@ -1144,7 +1144,7 @@ mod tests {
             max_cost_per_day_cents: 100,
             require_approval_for_medium_risk: true,
             block_high_risk_commands: true,
-            ..synapse_config::schema::AutonomyConfig::default()
+            ..synapse_core::config::schema::AutonomyConfig::default()
         };
         let workspace = PathBuf::from("/tmp/test");
         let policy = security_policy_from_config(&autonomy_config, &workspace);

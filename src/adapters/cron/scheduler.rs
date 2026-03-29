@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use futures_util::{stream, StreamExt};
 use std::process::Stdio;
 use std::sync::Arc;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 use synapse_core::domain::security_policy::SecurityPolicy;
 use synapse_security::security_factory::security_policy_from_config;
 use tokio::process::Command;
@@ -533,7 +533,7 @@ mod tests {
     use super::*;
     use crate::adapters::cron::{self, DeliveryConfig};
     use chrono::{Duration as ChronoDuration, Utc};
-    use synapse_config::schema::Config;
+    use synapse_core::config::schema::Config;
     use synapse_security::security_factory::security_policy_from_config;
     use tempfile::TempDir;
 

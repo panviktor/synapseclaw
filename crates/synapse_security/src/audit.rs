@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use synapse_config::schema::AuditConfig;
+use synapse_core::config::schema::AuditConfig;
 use uuid::Uuid;
 
 /// Well-known seed for the genesis entry's `prev_hash`.

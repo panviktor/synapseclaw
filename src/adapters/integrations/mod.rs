@@ -1,7 +1,7 @@
 pub mod registry;
 
 use anyhow::Result;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 
 /// Integration status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

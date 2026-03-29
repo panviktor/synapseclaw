@@ -2,7 +2,7 @@
 
 use crate::traits::Sandbox;
 use std::sync::Arc;
-use synapse_config::schema::{SandboxBackend, SecurityConfig};
+use synapse_core::config::schema::{SandboxBackend, SecurityConfig};
 
 /// Create a sandbox based on auto-detection or explicit config
 pub fn create_sandbox(config: &SecurityConfig) -> Arc<dyn Sandbox> {
@@ -117,7 +117,7 @@ fn detect_best_sandbox() -> Arc<dyn Sandbox> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_config::schema::{SandboxConfig, SecurityConfig};
+    use synapse_core::config::schema::{SandboxConfig, SecurityConfig};
 
     #[test]
     fn detect_best_sandbox_returns_something() {

@@ -26,7 +26,7 @@ pub struct ClawdTalkChannel {
 }
 
 // Re-export from fork_config — single source of truth.
-pub use synapse_config::adapter_configs::ClawdTalkConfig;
+pub use synapse_core::config::adapter_configs::ClawdTalkConfig;
 
 impl ClawdTalkChannel {
     /// Create a new ClawdTalk channel

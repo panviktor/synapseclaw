@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::fs;
 use std::sync::Arc;
-use synapse_config::schema::{
+use synapse_core::config::schema::{
     runtime_proxy_config, set_runtime_proxy_config, Config, ProxyConfig, ProxyScope,
 };
 use synapse_core::domain::security_policy::SecurityPolicy;

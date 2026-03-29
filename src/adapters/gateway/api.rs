@@ -320,7 +320,7 @@ pub async fn handle_api_config_put(
     }
 
     // Parse the incoming TOML
-    let incoming: synapse_config::schema::Config = match toml::from_str(&body) {
+    let incoming: synapse_core::config::schema::Config = match toml::from_str(&body) {
         Ok(c) => c,
         Err(e) => {
             return (
@@ -1863,8 +1863,8 @@ fn normalize_route_field(value: &str) -> String {
 }
 
 fn model_route_identity_matches(
-    incoming: &synapse_config::schema::ModelRouteConfig,
-    current: &synapse_config::schema::ModelRouteConfig,
+    incoming: &synapse_core::config::schema::ModelRouteConfig,
+    current: &synapse_core::config::schema::ModelRouteConfig,
 ) -> bool {
     normalize_route_field(&incoming.hint) == normalize_route_field(&current.hint)
         && normalize_route_field(&incoming.provider) == normalize_route_field(&current.provider)
@@ -1872,16 +1872,16 @@ fn model_route_identity_matches(
 }
 
 fn model_route_provider_model_matches(
-    incoming: &synapse_config::schema::ModelRouteConfig,
-    current: &synapse_config::schema::ModelRouteConfig,
+    incoming: &synapse_core::config::schema::ModelRouteConfig,
+    current: &synapse_core::config::schema::ModelRouteConfig,
 ) -> bool {
     normalize_route_field(&incoming.provider) == normalize_route_field(&current.provider)
         && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
 }
 
 fn embedding_route_identity_matches(
-    incoming: &synapse_config::schema::EmbeddingRouteConfig,
-    current: &synapse_config::schema::EmbeddingRouteConfig,
+    incoming: &synapse_core::config::schema::EmbeddingRouteConfig,
+    current: &synapse_core::config::schema::EmbeddingRouteConfig,
 ) -> bool {
     normalize_route_field(&incoming.hint) == normalize_route_field(&current.hint)
         && normalize_route_field(&incoming.provider) == normalize_route_field(&current.provider)
@@ -1889,16 +1889,16 @@ fn embedding_route_identity_matches(
 }
 
 fn embedding_route_provider_model_matches(
-    incoming: &synapse_config::schema::EmbeddingRouteConfig,
-    current: &synapse_config::schema::EmbeddingRouteConfig,
+    incoming: &synapse_core::config::schema::EmbeddingRouteConfig,
+    current: &synapse_core::config::schema::EmbeddingRouteConfig,
 ) -> bool {
     normalize_route_field(&incoming.provider) == normalize_route_field(&current.provider)
         && normalize_route_field(&incoming.model) == normalize_route_field(&current.model)
 }
 
 fn restore_model_route_api_keys(
-    incoming: &mut [synapse_config::schema::ModelRouteConfig],
-    current: &[synapse_config::schema::ModelRouteConfig],
+    incoming: &mut [synapse_core::config::schema::ModelRouteConfig],
+    current: &[synapse_core::config::schema::ModelRouteConfig],
 ) {
     let mut used_current = vec![false; current.len()];
     for incoming_route in incoming {
@@ -1940,8 +1940,8 @@ fn restore_model_route_api_keys(
 }
 
 fn restore_embedding_route_api_keys(
-    incoming: &mut [synapse_config::schema::EmbeddingRouteConfig],
-    current: &[synapse_config::schema::EmbeddingRouteConfig],
+    incoming: &mut [synapse_core::config::schema::EmbeddingRouteConfig],
+    current: &[synapse_core::config::schema::EmbeddingRouteConfig],
 ) {
     let mut used_current = vec![false; current.len()];
     for incoming_route in incoming {
@@ -1984,8 +1984,8 @@ fn restore_embedding_route_api_keys(
 }
 
 fn mask_sensitive_fields(
-    config: &synapse_config::schema::Config,
-) -> synapse_config::schema::Config {
+    config: &synapse_core::config::schema::Config,
+) -> synapse_core::config::schema::Config {
     let mut masked = config.clone();
 
     mask_optional_secret(&mut masked.api_key);
@@ -2085,8 +2085,8 @@ fn mask_sensitive_fields(
 }
 
 fn restore_masked_sensitive_fields(
-    incoming: &mut synapse_config::schema::Config,
-    current: &synapse_config::schema::Config,
+    incoming: &mut synapse_core::config::schema::Config,
+    current: &synapse_core::config::schema::Config,
 ) {
     restore_optional_secret(&mut incoming.api_key, &current.api_key);
     restore_vec_secrets(
@@ -2275,9 +2275,9 @@ fn restore_masked_sensitive_fields(
 }
 
 fn hydrate_config_for_save(
-    mut incoming: synapse_config::schema::Config,
-    current: &synapse_config::schema::Config,
-) -> synapse_config::schema::Config {
+    mut incoming: synapse_core::config::schema::Config,
+    current: &synapse_core::config::schema::Config,
+) -> synapse_core::config::schema::Config {
     restore_masked_sensitive_fields(&mut incoming, current);
     // These are runtime-computed fields skipped from TOML serialization.
     incoming.config_path = current.config_path.clone();
@@ -2291,27 +2291,27 @@ mod tests {
 
     #[test]
     fn masking_keeps_toml_valid_and_preserves_api_keys_type() {
-        let mut cfg = synapse_config::schema::Config::default();
+        let mut cfg = synapse_core::config::schema::Config::default();
         cfg.api_key = Some("sk-live-123".to_string());
         cfg.reliability.api_keys = vec!["rk-1".to_string(), "rk-2".to_string()];
         cfg.gateway.paired_tokens = vec!["pair-token-1".to_string()];
-        cfg.tunnel.cloudflare = Some(synapse_config::schema::CloudflareTunnelConfig {
+        cfg.tunnel.cloudflare = Some(synapse_core::config::schema::CloudflareTunnelConfig {
             token: "cf-token".to_string(),
         });
         cfg.memory.qdrant.api_key = Some("qdrant-key".to_string());
-        cfg.channels_config.wati = Some(synapse_config::schema::WatiConfig {
+        cfg.channels_config.wati = Some(synapse_core::config::schema::WatiConfig {
             api_token: "wati-token".to_string(),
             api_url: "https://live-mt-server.wati.io".to_string(),
             tenant_id: None,
             allowed_numbers: vec![],
         });
-        cfg.channels_config.feishu = Some(synapse_config::schema::FeishuConfig {
+        cfg.channels_config.feishu = Some(synapse_core::config::schema::FeishuConfig {
             app_id: "cli_aabbcc".to_string(),
             app_secret: "feishu-secret".to_string(),
             encrypt_key: Some("feishu-encrypt".to_string()),
             verification_token: Some("feishu-verify".to_string()),
             allowed_users: vec!["*".to_string()],
-            receive_mode: synapse_config::schema::LarkReceiveMode::Websocket,
+            receive_mode: synapse_core::config::schema::LarkReceiveMode::Websocket,
             port: None,
         });
         cfg.channels_config.email = Some(crate::adapters::channels::email_channel::EmailConfig {
@@ -2328,13 +2328,13 @@ mod tests {
             allowed_senders: vec!["*".to_string()],
             default_subject: "SynapseClaw Message".to_string(),
         });
-        cfg.model_routes = vec![synapse_config::schema::ModelRouteConfig {
+        cfg.model_routes = vec![synapse_core::config::schema::ModelRouteConfig {
             hint: "reasoning".to_string(),
             provider: "openrouter".to_string(),
             model: "anthropic/claude-sonnet-4.6".to_string(),
             api_key: Some("route-model-key".to_string()),
         }];
-        cfg.embedding_routes = vec![synapse_config::schema::EmbeddingRouteConfig {
+        cfg.embedding_routes = vec![synapse_core::config::schema::EmbeddingRouteConfig {
             hint: "semantic".to_string(),
             provider: "openai".to_string(),
             model: "text-embedding-3-small".to_string(),
@@ -2344,7 +2344,7 @@ mod tests {
 
         let masked = mask_sensitive_fields(&cfg);
         let toml = toml::to_string_pretty(&masked).expect("masked config should serialize");
-        let parsed: synapse_config::schema::Config =
+        let parsed: synapse_core::config::schema::Config =
             toml::from_str(&toml).expect("masked config should remain valid TOML for Config");
 
         assert_eq!(parsed.api_key.as_deref(), Some(MASKED_SECRET));
@@ -2419,33 +2419,33 @@ mod tests {
 
     #[test]
     fn hydrate_config_for_save_restores_masked_secrets_and_paths() {
-        let mut current = synapse_config::schema::Config::default();
+        let mut current = synapse_core::config::schema::Config::default();
         current.config_path = std::path::PathBuf::from("/tmp/current/config.toml");
         current.workspace_dir = std::path::PathBuf::from("/tmp/current/workspace");
         current.api_key = Some("real-key".to_string());
         current.reliability.api_keys = vec!["r1".to_string(), "r2".to_string()];
         current.gateway.paired_tokens = vec!["pair-1".to_string(), "pair-2".to_string()];
-        current.tunnel.cloudflare = Some(synapse_config::schema::CloudflareTunnelConfig {
+        current.tunnel.cloudflare = Some(synapse_core::config::schema::CloudflareTunnelConfig {
             token: "cf-token-real".to_string(),
         });
-        current.tunnel.ngrok = Some(synapse_config::schema::NgrokTunnelConfig {
+        current.tunnel.ngrok = Some(synapse_core::config::schema::NgrokTunnelConfig {
             auth_token: "ngrok-token-real".to_string(),
             domain: None,
         });
         current.memory.qdrant.api_key = Some("qdrant-real".to_string());
-        current.channels_config.wati = Some(synapse_config::schema::WatiConfig {
+        current.channels_config.wati = Some(synapse_core::config::schema::WatiConfig {
             api_token: "wati-real".to_string(),
             api_url: "https://live-mt-server.wati.io".to_string(),
             tenant_id: None,
             allowed_numbers: vec![],
         });
-        current.channels_config.feishu = Some(synapse_config::schema::FeishuConfig {
+        current.channels_config.feishu = Some(synapse_core::config::schema::FeishuConfig {
             app_id: "cli_current".to_string(),
             app_secret: "feishu-secret-real".to_string(),
             encrypt_key: Some("feishu-encrypt-real".to_string()),
             verification_token: Some("feishu-verify-real".to_string()),
             allowed_users: vec!["*".to_string()],
-            receive_mode: synapse_config::schema::LarkReceiveMode::Websocket,
+            receive_mode: synapse_core::config::schema::LarkReceiveMode::Websocket,
             port: None,
         });
         current.channels_config.email =
@@ -2464,13 +2464,13 @@ mod tests {
                 default_subject: "SynapseClaw Message".to_string(),
             });
         current.model_routes = vec![
-            synapse_config::schema::ModelRouteConfig {
+            synapse_core::config::schema::ModelRouteConfig {
                 hint: "reasoning".to_string(),
                 provider: "openrouter".to_string(),
                 model: "anthropic/claude-sonnet-4.6".to_string(),
                 api_key: Some("route-model-key-1".to_string()),
             },
-            synapse_config::schema::ModelRouteConfig {
+            synapse_core::config::schema::ModelRouteConfig {
                 hint: "fast".to_string(),
                 provider: "openrouter".to_string(),
                 model: "openai/gpt-4.1-mini".to_string(),
@@ -2478,14 +2478,14 @@ mod tests {
             },
         ];
         current.embedding_routes = vec![
-            synapse_config::schema::EmbeddingRouteConfig {
+            synapse_core::config::schema::EmbeddingRouteConfig {
                 hint: "semantic".to_string(),
                 provider: "openai".to_string(),
                 model: "text-embedding-3-small".to_string(),
                 dimensions: Some(1536),
                 api_key: Some("route-embed-key-1".to_string()),
             },
-            synapse_config::schema::EmbeddingRouteConfig {
+            synapse_core::config::schema::EmbeddingRouteConfig {
                 hint: "archive".to_string(),
                 provider: "custom:https://emb.example.com/v1".to_string(),
                 model: "bge-m3".to_string(),
@@ -2614,15 +2614,15 @@ mod tests {
 
     #[test]
     fn hydrate_config_for_save_restores_route_keys_by_identity_and_clears_unmatched_masks() {
-        let mut current = synapse_config::schema::Config::default();
+        let mut current = synapse_core::config::schema::Config::default();
         current.model_routes = vec![
-            synapse_config::schema::ModelRouteConfig {
+            synapse_core::config::schema::ModelRouteConfig {
                 hint: "reasoning".to_string(),
                 provider: "openrouter".to_string(),
                 model: "anthropic/claude-sonnet-4.6".to_string(),
                 api_key: Some("route-model-key-1".to_string()),
             },
-            synapse_config::schema::ModelRouteConfig {
+            synapse_core::config::schema::ModelRouteConfig {
                 hint: "fast".to_string(),
                 provider: "openrouter".to_string(),
                 model: "openai/gpt-4.1-mini".to_string(),
@@ -2630,14 +2630,14 @@ mod tests {
             },
         ];
         current.embedding_routes = vec![
-            synapse_config::schema::EmbeddingRouteConfig {
+            synapse_core::config::schema::EmbeddingRouteConfig {
                 hint: "semantic".to_string(),
                 provider: "openai".to_string(),
                 model: "text-embedding-3-small".to_string(),
                 dimensions: Some(1536),
                 api_key: Some("route-embed-key-1".to_string()),
             },
-            synapse_config::schema::EmbeddingRouteConfig {
+            synapse_core::config::schema::EmbeddingRouteConfig {
                 hint: "archive".to_string(),
                 provider: "custom:https://emb.example.com/v1".to_string(),
                 model: "bge-m3".to_string(),
@@ -2651,7 +2651,7 @@ mod tests {
         incoming.embedding_routes.swap(0, 1);
         incoming
             .model_routes
-            .push(synapse_config::schema::ModelRouteConfig {
+            .push(synapse_core::config::schema::ModelRouteConfig {
                 hint: "new".to_string(),
                 provider: "openai".to_string(),
                 model: "gpt-4.1".to_string(),
@@ -2659,7 +2659,7 @@ mod tests {
             });
         incoming
             .embedding_routes
-            .push(synapse_config::schema::EmbeddingRouteConfig {
+            .push(synapse_core::config::schema::EmbeddingRouteConfig {
                 hint: "new-embed".to_string(),
                 provider: "custom:https://emb2.example.com/v1".to_string(),
                 model: "bge-small".to_string(),

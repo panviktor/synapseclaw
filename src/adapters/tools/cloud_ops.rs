@@ -7,7 +7,7 @@
 use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
-use synapse_config::schema::CloudOpsConfig;
+use synapse_core::config::schema::CloudOpsConfig;
 use synapse_core::domain::util::truncate_with_ellipsis;
 
 /// Read-only cloud operations advisory tool.

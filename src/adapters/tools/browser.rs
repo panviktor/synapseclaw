@@ -775,7 +775,7 @@ impl BrowserTool {
             }
         });
 
-        let client = synapse_config::schema::build_runtime_proxy_client("tool.browser");
+        let client = synapse_core::config::schema::build_runtime_proxy_client("tool.browser");
         let mut request = client
             .post(endpoint)
             .timeout(Duration::from_millis(self.computer_use.timeout_ms))

@@ -34,7 +34,7 @@ impl Microsoft365Tool {
         security: Arc<SecurityPolicy>,
         synapseclaw_dir: &std::path::Path,
     ) -> anyhow::Result<Self> {
-        let http_client = synapse_config::schema::build_runtime_proxy_client_with_timeouts(
+        let http_client = synapse_core::config::schema::build_runtime_proxy_client_with_timeouts(
             "tool.microsoft365",
             60,
             10,

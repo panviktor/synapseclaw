@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::adapters::hooks::traits::{HookHandler, HookResult};
 use crate::adapters::tools::traits::ToolResult;
-use synapse_config::schema::WebhookAuditConfig;
+use synapse_core::config::schema::WebhookAuditConfig;
 
 /// Validate a webhook URL against SSRF attacks.
 ///

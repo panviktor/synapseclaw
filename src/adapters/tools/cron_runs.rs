@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 
 const MAX_RUN_OUTPUT_CHARS: usize = 500;
 
@@ -118,7 +118,7 @@ fn truncate(input: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use chrono::{Duration as ChronoDuration, Utc};
-    use synapse_config::schema::Config;
+    use synapse_core::config::schema::Config;
     use tempfile::TempDir;
 
     async fn test_config(tmp: &TempDir) -> Arc<Config> {

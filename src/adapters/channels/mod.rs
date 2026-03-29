@@ -111,7 +111,7 @@ use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 use synapse_core::domain::util::truncate_with_ellipsis;
 use synapse_core::ports::memory_backend::Memory;
 use synapse_security::security_factory::security_policy_from_config;
@@ -224,7 +224,7 @@ struct ChannelRuntimeDefaults {
     temperature: f64,
     api_key: Option<String>,
     api_url: Option<String>,
-    reliability: synapse_config::schema::ReliabilityConfig,
+    reliability: synapse_core::config::schema::ReliabilityConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,21 +287,21 @@ struct ChannelRuntimeContext {
     route_overrides: RouteSelectionMap,
     api_key: Option<String>,
     api_url: Option<String>,
-    reliability: Arc<synapse_config::schema::ReliabilityConfig>,
+    reliability: Arc<synapse_core::config::schema::ReliabilityConfig>,
     provider_runtime_options: providers::ProviderRuntimeOptions,
     workspace_dir: Arc<PathBuf>,
     message_timeout_secs: u64,
     interrupt_on_new_message: InterruptOnNewMessageConfig,
-    multimodal: synapse_config::schema::MultimodalConfig,
+    multimodal: synapse_core::config::schema::MultimodalConfig,
     hooks: Option<Arc<crate::adapters::hooks::HookRunner>>,
     non_cli_excluded_tools: Arc<Vec<String>>,
     tool_call_dedup_exempt: Arc<Vec<String>>,
-    model_routes: Arc<Vec<synapse_config::schema::ModelRouteConfig>>,
-    query_classification: synapse_config::schema::QueryClassificationConfig,
+    model_routes: Arc<Vec<synapse_core::config::schema::ModelRouteConfig>>,
+    query_classification: synapse_core::config::schema::QueryClassificationConfig,
     ack_reactions: bool,
     show_tool_calls: bool,
     session_store: Option<Arc<session_store::SessionStore>>,
-    summary_config: Arc<synapse_config::schema::SummaryConfig>,
+    summary_config: Arc<synapse_core::config::schema::SummaryConfig>,
     summary_model: Option<String>,
     /// Non-interactive approval manager for channel-driven runs.
     /// Enforces `auto_approve` / `always_ask` / supervised policy from
@@ -979,7 +979,7 @@ async fn create_resilient_provider_nonblocking(
     provider_name: &str,
     api_key: Option<String>,
     api_url: Option<String>,
-    reliability: synapse_config::schema::ReliabilityConfig,
+    reliability: synapse_core::config::schema::ReliabilityConfig,
     provider_runtime_options: providers::ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
     let provider_name = provider_name.to_string();
@@ -999,7 +999,7 @@ async fn create_resilient_provider_nonblocking(
 fn build_models_help_response(
     current: &ChannelRouteSelection,
     workspace_dir: &Path,
-    model_routes: &[synapse_config::schema::ModelRouteConfig],
+    model_routes: &[synapse_core::config::schema::ModelRouteConfig],
 ) -> String {
     let mut response = String::new();
     let _ = writeln!(
@@ -1483,7 +1483,7 @@ async fn handle_message_via_orchestrator(
         ctx.channel_registry.clone().unwrap_or_else(|| {
             Arc::new(
                 crate::adapters::channels::registry::CachedChannelRegistry::new(
-                    synapse_config::schema::Config::default(),
+                    synapse_core::config::schema::Config::default(),
                 ),
             )
         });
@@ -1920,7 +1920,7 @@ pub fn build_system_prompt(
     model_name: &str,
     tools: &[(&str, &str)],
     skills: &[crate::adapters::skills::Skill],
-    identity_config: Option<&synapse_config::schema::IdentityConfig>,
+    identity_config: Option<&synapse_core::config::schema::IdentityConfig>,
     bootstrap_max_chars: Option<usize>,
 ) -> String {
     build_system_prompt_with_mode(
@@ -1931,7 +1931,7 @@ pub fn build_system_prompt(
         identity_config,
         bootstrap_max_chars,
         false,
-        synapse_config::schema::SkillsPromptInjectionMode::Full,
+        synapse_core::config::schema::SkillsPromptInjectionMode::Full,
     )
 }
 
@@ -1940,10 +1940,10 @@ pub fn build_system_prompt_with_mode(
     model_name: &str,
     tools: &[(&str, &str)],
     skills: &[crate::adapters::skills::Skill],
-    identity_config: Option<&synapse_config::schema::IdentityConfig>,
+    identity_config: Option<&synapse_core::config::schema::IdentityConfig>,
     bootstrap_max_chars: Option<usize>,
     native_tools: bool,
-    skills_prompt_mode: synapse_config::schema::SkillsPromptInjectionMode,
+    skills_prompt_mode: synapse_core::config::schema::SkillsPromptInjectionMode,
 ) -> String {
     use std::fmt::Write;
     let mut prompt = String::with_capacity(8192);
@@ -4039,29 +4039,30 @@ mod tests {
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
-            reliability: Arc::new(synapse_config::schema::ReliabilityConfig::default()),
+            reliability: Arc::new(synapse_core::config::schema::ReliabilityConfig::default()),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
-            multimodal: synapse_config::schema::MultimodalConfig::default(),
+            multimodal: synapse_core::config::schema::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
-            query_classification: synapse_config::schema::QueryClassificationConfig::default(),
+            query_classification: synapse_core::config::schema::QueryClassificationConfig::default(
+            ),
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
-            summary_config: Arc::new(synapse_config::schema::SummaryConfig::default()),
+            summary_config: Arc::new(synapse_core::config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
-                &synapse_config::schema::AutonomyConfig::default(),
+                &synapse_core::config::schema::AutonomyConfig::default(),
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
                 crate::adapters::channels::registry::CachedChannelRegistry::new(
-                    synapse_config::schema::Config::default(),
+                    synapse_core::config::schema::Config::default(),
                 ),
             )),
             pipeline_store: None,
@@ -4139,29 +4140,30 @@ mod tests {
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
-            reliability: Arc::new(synapse_config::schema::ReliabilityConfig::default()),
+            reliability: Arc::new(synapse_core::config::schema::ReliabilityConfig::default()),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
-            multimodal: synapse_config::schema::MultimodalConfig::default(),
+            multimodal: synapse_core::config::schema::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
-            query_classification: synapse_config::schema::QueryClassificationConfig::default(),
+            query_classification: synapse_core::config::schema::QueryClassificationConfig::default(
+            ),
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
-            summary_config: Arc::new(synapse_config::schema::SummaryConfig::default()),
+            summary_config: Arc::new(synapse_core::config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
-                &synapse_config::schema::AutonomyConfig::default(),
+                &synapse_core::config::schema::AutonomyConfig::default(),
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
                 crate::adapters::channels::registry::CachedChannelRegistry::new(
-                    synapse_config::schema::Config::default(),
+                    synapse_core::config::schema::Config::default(),
                 ),
             )),
             pipeline_store: None,
@@ -4254,7 +4256,7 @@ mod tests {
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
-            reliability: Arc::new(synapse_config::schema::ReliabilityConfig::default()),
+            reliability: Arc::new(synapse_core::config::schema::ReliabilityConfig::default()),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
@@ -4262,21 +4264,22 @@ mod tests {
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
-            summary_config: Arc::new(synapse_config::schema::SummaryConfig::default()),
+            summary_config: Arc::new(synapse_core::config::schema::SummaryConfig::default()),
             summary_model: None,
-            multimodal: synapse_config::schema::MultimodalConfig::default(),
+            multimodal: synapse_core::config::schema::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
-                &synapse_config::schema::AutonomyConfig::default(),
+                &synapse_core::config::schema::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            query_classification: synapse_config::schema::QueryClassificationConfig::default(),
+            query_classification: synapse_core::config::schema::QueryClassificationConfig::default(
+            ),
             channel_registry: Some(Arc::new(
                 crate::adapters::channels::registry::CachedChannelRegistry::new(
-                    synapse_config::schema::Config::default(),
+                    synapse_core::config::schema::Config::default(),
                 ),
             )),
             pipeline_store: None,
@@ -4366,29 +4369,30 @@ mod tests {
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
-            reliability: Arc::new(synapse_config::schema::ReliabilityConfig::default()),
+            reliability: Arc::new(synapse_core::config::schema::ReliabilityConfig::default()),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
-            multimodal: synapse_config::schema::MultimodalConfig::default(),
+            multimodal: synapse_core::config::schema::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
-            query_classification: synapse_config::schema::QueryClassificationConfig::default(),
+            query_classification: synapse_core::config::schema::QueryClassificationConfig::default(
+            ),
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
-            summary_config: Arc::new(synapse_config::schema::SummaryConfig::default()),
+            summary_config: Arc::new(synapse_core::config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
-                &synapse_config::schema::AutonomyConfig::default(),
+                &synapse_core::config::schema::AutonomyConfig::default(),
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
                 crate::adapters::channels::registry::CachedChannelRegistry::new(
-                    synapse_config::schema::Config::default(),
+                    synapse_core::config::schema::Config::default(),
                 ),
             )),
             pipeline_store: None,
@@ -4652,7 +4656,7 @@ mod tests {
             None,
             None,
             false,
-            synapse_config::schema::SkillsPromptInjectionMode::Compact,
+            synapse_core::config::schema::SkillsPromptInjectionMode::Compact,
         );
 
         assert!(prompt.contains("<available_skills>"), "missing skills XML");
@@ -4844,7 +4848,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn aieos_identity_from_file() {
-        use synapse_config::schema::IdentityConfig;
+        use synapse_core::config::schema::IdentityConfig;
         use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
@@ -4901,7 +4905,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn aieos_identity_from_inline() {
-        use synapse_config::schema::IdentityConfig;
+        use synapse_core::config::schema::IdentityConfig;
 
         let config = IdentityConfig {
             format: "aieos".into(),
@@ -4924,7 +4928,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn aieos_fallback_to_openclaw_on_parse_error() {
-        use synapse_config::schema::IdentityConfig;
+        use synapse_core::config::schema::IdentityConfig;
 
         let config = IdentityConfig {
             format: "aieos".into(),
@@ -4942,7 +4946,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn aieos_empty_uses_openclaw() {
-        use synapse_config::schema::IdentityConfig;
+        use synapse_core::config::schema::IdentityConfig;
 
         // Format is "aieos" but neither path nor inline is set
         let config = IdentityConfig {
@@ -4961,7 +4965,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn openclaw_format_uses_bootstrap_files() {
-        use synapse_config::schema::IdentityConfig;
+        use synapse_core::config::schema::IdentityConfig;
 
         let config = IdentityConfig {
             format: "openclaw".into(),
@@ -5015,7 +5019,7 @@ This is an example JSON object for profile settings."#;
     #[test]
     fn collect_configured_channels_includes_mattermost_when_configured() {
         let mut config = Config::default();
-        config.channels_config.mattermost = Some(synapse_config::schema::MattermostConfig {
+        config.channels_config.mattermost = Some(synapse_core::config::schema::MattermostConfig {
             url: "https://mattermost.example.com".to_string(),
             bot_token: "test-token".to_string(),
             channel_id: Some("channel-1".to_string()),
@@ -5250,10 +5254,10 @@ This is an example JSON object for profile settings."#;
     #[test]
     fn build_channel_by_id_configured_telegram_succeeds() {
         let mut config = Config::default();
-        config.channels_config.telegram = Some(synapse_config::schema::TelegramConfig {
+        config.channels_config.telegram = Some(synapse_core::config::schema::TelegramConfig {
             bot_token: "test-token".to_string(),
             allowed_users: vec![],
-            stream_mode: synapse_config::schema::StreamMode::Off,
+            stream_mode: synapse_core::config::schema::StreamMode::Off,
             draft_update_interval_ms: 1000,
             interrupt_on_new_message: false,
             mention_only: false,

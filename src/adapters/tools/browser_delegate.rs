@@ -18,7 +18,7 @@ use synapse_core::domain::security_policy::SecurityPolicy;
 use tokio::time::{timeout, Duration};
 
 // Re-export from fork_config — single source of truth.
-pub use synapse_config::adapter_configs::BrowserDelegateConfig;
+pub use synapse_core::config::adapter_configs::BrowserDelegateConfig;
 
 /// Tool that delegates browser-based tasks to a browser-capable CLI subprocess.
 pub struct BrowserDelegateTool {

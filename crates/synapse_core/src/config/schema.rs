@@ -1,5 +1,8 @@
-use crate::channel_traits::ChannelConfig;
-use crate::provider_aliases::{is_glm_alias, is_zai_alias};
+#[allow(unused_imports)]
+use super::channel_traits::ChannelConfig;
+#[allow(unused_imports)]
+use super::provider_aliases::{is_glm_alias, is_zai_alias};
+use crate::domain::config::AutonomyLevel;
 use anyhow::{Context as _, Result};
 use directories::UserDirs;
 use schemars::JsonSchema;
@@ -7,7 +10,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
-use synapse_core::domain::config::AutonomyLevel;
 
 const SUPPORTED_PROXY_SERVICE_KEYS: &[&str] = &[
     "provider.anthropic",
@@ -254,7 +256,7 @@ pub struct Config {
     /// Compatibility: additive and disabled by default; existing configs remain valid when omitted.
     /// Rollback/migration: remove `[browser_delegate]` or keep `enabled = false` to disable.
     #[serde(default)]
-    pub browser_delegate: crate::adapter_configs::BrowserDelegateConfig,
+    pub browser_delegate: super::adapter_configs::BrowserDelegateConfig,
 
     /// HTTP request tool configuration (`[http_request]`).
     #[serde(default)]
@@ -1594,7 +1596,7 @@ pub struct AgentsIpcConfig {
     /// allowed_tools = ["web_search", "web_fetch", "memory_read"]
     /// ```
     #[serde(default)]
-    pub workload_profiles: HashMap<String, crate::workload::WorkloadProfile>,
+    pub workload_profiles: HashMap<String, super::workload::WorkloadProfile>,
 
     /// Enable push notifications for new IPC messages (default: true).
     /// When enabled, the broker pushes lightweight notifications to agent
@@ -1699,6 +1701,7 @@ impl Default for PipelineEngineConfig {
     }
 }
 
+#[allow(dead_code)]
 fn default_pipeline_runner_id() -> Option<String> {
     None // resolved at runtime to broker's own agent_id
 }
@@ -4233,9 +4236,7 @@ pub struct EmbeddingRouteConfig {
 // ── Query Classification ─────────────────────────────────────────
 
 // Canonical definitions live in fork_core; re-exported here for backward compat.
-pub use synapse_core::domain::query_classification::{
-    ClassificationRule, QueryClassificationConfig,
-};
+pub use crate::domain::query_classification::{ClassificationRule, QueryClassificationConfig};
 
 // ── Heartbeat ────────────────────────────────────────────────────
 
@@ -4468,7 +4469,7 @@ impl<T: ChannelConfig> ConfigWrapper<T> {
     }
 }
 
-impl<T: ChannelConfig> crate::channel_traits::ConfigHandle for ConfigWrapper<T> {
+impl<T: ChannelConfig> super::channel_traits::ConfigHandle for ConfigWrapper<T> {
     fn name(&self) -> &'static str {
         T::name()
     }
@@ -4512,7 +4513,7 @@ pub struct ChannelsConfig {
     /// Nextcloud Talk bot channel configuration.
     pub nextcloud_talk: Option<NextcloudTalkConfig>,
     /// Email channel configuration.
-    pub email: Option<crate::adapter_configs::EmailConfig>,
+    pub email: Option<super::adapter_configs::EmailConfig>,
     /// IRC channel configuration.
     pub irc: Option<IrcConfig>,
     /// Lark channel configuration.
@@ -4532,7 +4533,7 @@ pub struct ChannelsConfig {
     #[cfg(feature = "channel-nostr")]
     pub nostr: Option<NostrConfig>,
     /// ClawdTalk voice channel configuration.
-    pub clawdtalk: Option<crate::adapter_configs::ClawdTalkConfig>,
+    pub clawdtalk: Option<super::adapter_configs::ClawdTalkConfig>,
     /// Reddit channel configuration (OAuth2 bot).
     pub reddit: Option<RedditConfig>,
     /// Bluesky channel configuration (AT Protocol).
@@ -4569,7 +4570,7 @@ pub struct ChannelsConfig {
 impl ChannelsConfig {
     /// get channels' metadata and `.is_some()`, except webhook
     #[rustfmt::skip]
-    pub fn channels_except_webhook(&self) -> Vec<(Box<dyn crate::channel_traits::ConfigHandle>, bool)> {
+    pub fn channels_except_webhook(&self) -> Vec<(Box<dyn super::channel_traits::ConfigHandle>, bool)> {
         vec![
             (
                 Box::new(ConfigWrapper::new(self.telegram.as_ref())),
@@ -4663,7 +4664,7 @@ impl ChannelsConfig {
         ]
     }
 
-    pub fn channels(&self) -> Vec<(Box<dyn crate::channel_traits::ConfigHandle>, bool)> {
+    pub fn channels(&self) -> Vec<(Box<dyn super::channel_traits::ConfigHandle>, bool)> {
         let mut ret = self.channels_except_webhook();
         ret.push((
             Box::new(ConfigWrapper::new(self.webhook.as_ref())),
@@ -6224,7 +6225,7 @@ impl Default for Config {
             microsoft365: Microsoft365Config::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
-            browser_delegate: crate::adapter_configs::BrowserDelegateConfig::default(),
+            browser_delegate: super::adapter_configs::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),

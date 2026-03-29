@@ -2,7 +2,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use std::io::Write;
 use std::path::Path;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 
 const DAEMON_STALE_SECONDS: i64 = 30;
 const SCHEDULER_STALE_SECONDS: i64 = 120;
@@ -1165,7 +1165,7 @@ mod tests {
     #[test]
     fn config_validation_warns_empty_model_route() {
         let mut config = Config::default();
-        config.model_routes = vec![synapse_config::schema::ModelRouteConfig {
+        config.model_routes = vec![synapse_core::config::schema::ModelRouteConfig {
             hint: "fast".into(),
             provider: "groq".into(),
             model: String::new(),
@@ -1181,7 +1181,7 @@ mod tests {
     #[test]
     fn config_validation_warns_empty_embedding_route_model() {
         let mut config = Config::default();
-        config.embedding_routes = vec![synapse_config::schema::EmbeddingRouteConfig {
+        config.embedding_routes = vec![synapse_core::config::schema::EmbeddingRouteConfig {
             hint: "semantic".into(),
             provider: "openai".into(),
             model: String::new(),
@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn config_validation_warns_invalid_embedding_route_provider() {
         let mut config = Config::default();
-        config.embedding_routes = vec![synapse_config::schema::EmbeddingRouteConfig {
+        config.embedding_routes = vec![synapse_core::config::schema::EmbeddingRouteConfig {
             hint: "semantic".into(),
             provider: "groq".into(),
             model: "text-embedding-3-small".into(),
@@ -1275,7 +1275,7 @@ mod tests {
         let mut config = Config::default();
         config.agents.insert(
             "zeta".into(),
-            synapse_config::schema::DelegateAgentConfig {
+            synapse_core::config::schema::DelegateAgentConfig {
                 provider: "totally-fake".into(),
                 model: "model-z".into(),
                 system_prompt: None,
@@ -1289,7 +1289,7 @@ mod tests {
         );
         config.agents.insert(
             "alpha".into(),
-            synapse_config::schema::DelegateAgentConfig {
+            synapse_core::config::schema::DelegateAgentConfig {
                 provider: "totally-fake".into(),
                 model: "model-a".into(),
                 system_prompt: None,

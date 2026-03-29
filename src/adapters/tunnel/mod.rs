@@ -15,7 +15,7 @@ pub use tailscale::TailscaleTunnel;
 
 use anyhow::{bail, Result};
 use std::sync::Arc;
-use synapse_config::schema::{TailscaleTunnelConfig, TunnelConfig};
+use synapse_core::config::schema::{TailscaleTunnelConfig, TunnelConfig};
 use tokio::sync::Mutex;
 
 // ── Tunnel trait ─────────────────────────────────────────────────
@@ -141,7 +141,7 @@ pub fn create_tunnel(config: &TunnelConfig) -> Result<Option<Box<dyn Tunnel>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_config::schema::{
+    use synapse_core::config::schema::{
         CloudflareTunnelConfig, CustomTunnelConfig, NgrokTunnelConfig, OpenVpnTunnelConfig,
         TunnelConfig,
     };

@@ -89,12 +89,13 @@ impl WebSearchTool {
             )
         })?;
 
-        let config: synapse_config::schema::Config = toml::from_str(&contents).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to parse config file {} for Brave API key: {e}",
-                self.config_path.display()
-            )
-        })?;
+        let config: synapse_core::config::schema::Config =
+            toml::from_str(&contents).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse config file {} for Brave API key: {e}",
+                    self.config_path.display()
+                )
+            })?;
 
         let raw_key = config
             .web_search
@@ -208,12 +209,13 @@ impl WebSearchTool {
                 self.config_path.display()
             )
         })?;
-        let config: synapse_config::schema::Config = toml::from_str(&contents).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to parse config file {} for Tavily API key: {e}",
-                self.config_path.display()
-            )
-        })?;
+        let config: synapse_core::config::schema::Config =
+            toml::from_str(&contents).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse config file {} for Tavily API key: {e}",
+                    self.config_path.display()
+                )
+            })?;
         let raw_key = config
             .web_search
             .tavily_api_key

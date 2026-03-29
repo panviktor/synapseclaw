@@ -39,7 +39,7 @@ impl MochatChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_config::schema::build_runtime_proxy_client("channel.mochat")
+        synapse_core::config::schema::build_runtime_proxy_client("channel.mochat")
     }
 
     fn is_user_allowed(&self, user_id: &str) -> bool {
@@ -307,7 +307,7 @@ api_url = "https://mochat.example.com"
 api_token = "secret"
 allowed_users = ["user1"]
 "#;
-        let config: synapse_config::schema::MochatConfig = toml::from_str(toml_str).unwrap();
+        let config: synapse_core::config::schema::MochatConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.api_url, "https://mochat.example.com");
         assert_eq!(config.api_token, "secret");
         assert_eq!(config.allowed_users, vec!["user1"]);
@@ -319,7 +319,7 @@ allowed_users = ["user1"]
 api_url = "https://mochat.example.com"
 api_token = "secret"
 "#;
-        let config: synapse_config::schema::MochatConfig = toml::from_str(toml_str).unwrap();
+        let config: synapse_core::config::schema::MochatConfig = toml::from_str(toml_str).unwrap();
         assert!(config.allowed_users.is_empty());
         assert_eq!(config.poll_interval_secs, 5);
     }

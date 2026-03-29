@@ -93,7 +93,7 @@ impl SignalChannel {
     fn http_client(&self) -> Client {
         let builder = Client::builder().connect_timeout(Duration::from_secs(10));
         let builder =
-            synapse_config::schema::apply_runtime_proxy_to_builder(builder, "channel.signal");
+            synapse_core::config::schema::apply_runtime_proxy_to_builder(builder, "channel.signal");
         builder.build().expect("Signal HTTP client should build")
     }
 

@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::types::{FromSqlResult, ValueRef};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 use uuid::Uuid;
 
 const MAX_CRON_OUTPUT_BYTES: usize = 16 * 1024;
@@ -658,7 +658,7 @@ fn with_connection<T>(config: &Config, f: impl FnOnce(&Connection) -> Result<T>)
 mod tests {
     use super::*;
     use chrono::Duration as ChronoDuration;
-    use synapse_config::schema::Config;
+    use synapse_core::config::schema::Config;
     use tempfile::TempDir;
 
     fn test_config(tmp: &TempDir) -> Config {

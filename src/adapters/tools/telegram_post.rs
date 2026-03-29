@@ -172,7 +172,7 @@ impl Tool for TelegramPostTool {
 
         tracing::info!("Telegram post to {}", chat_id);
 
-        let client = synapse_config::schema::build_runtime_proxy_client_with_timeouts(
+        let client = synapse_core::config::schema::build_runtime_proxy_client_with_timeouts(
             "tool.telegram_post",
             TELEGRAM_REQUEST_TIMEOUT_SECS,
             10,

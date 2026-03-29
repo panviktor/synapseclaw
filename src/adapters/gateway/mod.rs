@@ -41,7 +41,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use synapse_config::schema::Config;
+use synapse_core::config::schema::Config;
 use synapse_core::domain::util::truncate_with_ellipsis;
 use synapse_security::pairing::{constant_time_eq, is_public_bind, PairingGuard};
 use synapse_security::security_factory::security_policy_from_config;
@@ -3094,7 +3094,7 @@ async fn handle_admin_paircode_new(
         Some(code) => {
             // If metadata was provided, bind it to the pairing code
             if let Some(Json(meta_body)) = body {
-                let metadata = synapse_config::schema::TokenMetadata {
+                let metadata = synapse_core::config::schema::TokenMetadata {
                     agent_id: meta_body.agent_id,
                     trust_level: meta_body.trust_level,
                     role: meta_body.role,

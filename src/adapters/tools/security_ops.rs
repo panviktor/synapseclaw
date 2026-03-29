@@ -9,7 +9,7 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use super::traits::{Tool, ToolResult};
-use synapse_config::schema::SecurityOpsConfig;
+use synapse_core::config::schema::SecurityOpsConfig;
 use synapse_security::playbook::{
     evaluate_step, load_playbooks, severity_level, Playbook, StepStatus,
 };

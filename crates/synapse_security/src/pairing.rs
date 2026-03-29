@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
-use synapse_config::schema::TokenMetadata;
+use synapse_core::config::schema::TokenMetadata;
 
 /// Maximum failed pairing attempts before lockout.
 const MAX_PAIR_ATTEMPTS: u32 = 5;
@@ -821,7 +821,7 @@ mod tests {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert(
             token_hash,
-            synapse_config::schema::TokenMetadata {
+            synapse_core::config::schema::TokenMetadata {
                 agent_id: "sentinel".into(),
                 trust_level: 2,
                 role: "monitor".into(),
@@ -862,7 +862,7 @@ mod tests {
 
         guard.set_pending_metadata(
             &code,
-            synapse_config::schema::TokenMetadata {
+            synapse_core::config::schema::TokenMetadata {
                 agent_id: "opus".into(),
                 trust_level: 1,
                 role: "coordinator".into(),
@@ -892,7 +892,7 @@ mod tests {
         let mut metadata = std::collections::HashMap::new();
         metadata.insert(
             token_hash.clone(),
-            synapse_config::schema::TokenMetadata {
+            synapse_core::config::schema::TokenMetadata {
                 agent_id: "test".into(),
                 trust_level: 3,
                 role: "worker".into(),

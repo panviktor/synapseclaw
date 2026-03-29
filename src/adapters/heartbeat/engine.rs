@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
-use synapse_config::schema::HeartbeatConfig;
+use synapse_core::config::schema::HeartbeatConfig;
 use tokio::time::{self, Duration};
 use tracing::{info, warn};
 

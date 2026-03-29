@@ -791,8 +791,8 @@ pub fn all_integrations() -> Vec<IntegrationEntry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_config::schema::Config;
-    use synapse_config::schema::{IMessageConfig, MatrixConfig, StreamMode, TelegramConfig};
+    use synapse_core::config::schema::Config;
+    use synapse_core::config::schema::{IMessageConfig, MatrixConfig, StreamMode, TelegramConfig};
 
     #[test]
     fn registry_has_entries() {
