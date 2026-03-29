@@ -8,6 +8,8 @@
 
 pub mod adapter_configs;
 pub mod channel_traits;
+pub mod commands;
 pub mod provider_aliases;
 pub mod schema;
+pub mod security_factory;
 pub mod workload;

@@ -136,11 +136,12 @@ pub use web_fetch::WebFetchTool;
 pub use web_search_tool::WebSearchTool;
 pub use workspace_tool::WorkspaceTool;
 
-use crate::runtime::{NativeRuntime, RuntimeAdapter};
+use crate::fork_adapters::runtime::native::NativeRuntime;
 use async_trait::async_trait;
 use fork_config::schema::{Config, DelegateAgentConfig};
 use fork_core::domain::security_policy::SecurityPolicy;
 use fork_core::ports::memory_backend::Memory;
+use fork_core::ports::runtime::RuntimeAdapter;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;

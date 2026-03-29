@@ -2,12 +2,12 @@
 //! Most LLM APIs follow the same `/v1/chat/completions` format.
 //! This module provides a single implementation that works for all of them.
 
+use crate::fork_adapters::multimodal;
 use crate::fork_adapters::providers::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
     Provider, StreamChunk, StreamError, StreamOptions, StreamResult, TokenUsage,
     ToolCall as ProviderToolCall,
 };
-use crate::multimodal;
 use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
 use reqwest::{

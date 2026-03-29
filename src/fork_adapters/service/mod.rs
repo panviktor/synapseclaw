@@ -110,18 +110,20 @@ fn detect_init_system() -> Result<InitSystem> {
 }
 
 pub fn handle_command(
-    command: &crate::ServiceCommands,
+    command: &fork_config::commands::ServiceCommands,
     config: &Config,
     init_system: InitSystem,
     instance: Option<&str>,
 ) -> Result<()> {
     match command {
-        crate::ServiceCommands::Install => install(config, init_system, instance),
-        crate::ServiceCommands::Start => start(config, init_system, instance),
-        crate::ServiceCommands::Stop => stop(config, init_system, instance),
-        crate::ServiceCommands::Restart => restart(config, init_system, instance),
-        crate::ServiceCommands::Status => status(config, init_system, instance),
-        crate::ServiceCommands::Uninstall => uninstall(config, init_system, instance),
+        fork_config::commands::ServiceCommands::Install => install(config, init_system, instance),
+        fork_config::commands::ServiceCommands::Start => start(config, init_system, instance),
+        fork_config::commands::ServiceCommands::Stop => stop(config, init_system, instance),
+        fork_config::commands::ServiceCommands::Restart => restart(config, init_system, instance),
+        fork_config::commands::ServiceCommands::Status => status(config, init_system, instance),
+        fork_config::commands::ServiceCommands::Uninstall => {
+            uninstall(config, init_system, instance)
+        }
     }
 }
 

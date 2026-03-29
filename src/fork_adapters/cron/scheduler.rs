@@ -534,9 +534,9 @@ async fn run_job_command_with_timeout(
 mod tests {
     use super::*;
     use crate::fork_adapters::cron::{self, DeliveryConfig};
-    use crate::security::security_policy_from_config;
     use chrono::{Duration as ChronoDuration, Utc};
     use fork_config::schema::Config;
+    use fork_config::security_factory::security_policy_from_config;
     use tempfile::TempDir;
 
     struct NoopRunner;

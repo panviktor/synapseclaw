@@ -101,9 +101,9 @@ use crate::fork_adapters::tools::{self, Tool};
 use crate::identity;
 use crate::memory::{self, Memory};
 use crate::runtime;
-use crate::security::security_policy_from_config;
 use anyhow::{Context, Result};
 use fork_config::schema::Config;
+use fork_config::security_factory::security_policy_from_config;
 use fork_core::domain::util::truncate_with_ellipsis;
 use portable_atomic::{AtomicU64, Ordering};
 use serde::Deserialize;
@@ -2277,15 +2277,18 @@ fn maybe_restart_managed_daemon_service() -> Result<bool> {
     Ok(false)
 }
 
-pub(crate) async fn handle_command(command: crate::ChannelCommands, config: &Config) -> Result<()> {
+pub(crate) async fn handle_command(
+    command: fork_config::commands::ChannelCommands,
+    config: &Config,
+) -> Result<()> {
     match command {
-        crate::ChannelCommands::Start => {
+        fork_config::commands::ChannelCommands::Start => {
             anyhow::bail!("Start must be handled in main.rs (requires async runtime)")
         }
-        crate::ChannelCommands::Doctor => {
+        fork_config::commands::ChannelCommands::Doctor => {
             anyhow::bail!("Doctor must be handled in main.rs (requires async runtime)")
         }
-        crate::ChannelCommands::List => {
+        fork_config::commands::ChannelCommands::List => {
             println!("Channels:");
             println!("  ✅ CLI (always available)");
             for (channel, configured) in config.channels_config.channels() {
@@ -2316,7 +2319,7 @@ pub(crate) async fn handle_command(command: crate::ChannelCommands, config: &Con
             println!("To configure:      synapseclaw onboard");
             Ok(())
         }
-        crate::ChannelCommands::Add {
+        fork_config::commands::ChannelCommands::Add {
             channel_type,
             config: _,
         } => {
@@ -2324,13 +2327,13 @@ pub(crate) async fn handle_command(command: crate::ChannelCommands, config: &Con
                 "Channel type '{channel_type}' — use `synapseclaw onboard` to configure channels"
             );
         }
-        crate::ChannelCommands::Remove { name } => {
+        fork_config::commands::ChannelCommands::Remove { name } => {
             anyhow::bail!("Remove channel '{name}' — edit ~/.synapseclaw/config.toml directly");
         }
-        crate::ChannelCommands::BindTelegram { identity } => {
+        fork_config::commands::ChannelCommands::BindTelegram { identity } => {
             Box::pin(bind_telegram_identity(config, &identity)).await
         }
-        crate::ChannelCommands::Send {
+        fork_config::commands::ChannelCommands::Send {
             message,
             channel_id,
             recipient,

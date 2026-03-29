@@ -67,9 +67,14 @@ pub struct IntegrationEntry {
 }
 
 /// Handle the `integrations` CLI command
-pub fn handle_command(command: crate::IntegrationCommands, config: &Config) -> Result<()> {
+pub fn handle_command(
+    command: fork_config::commands::IntegrationCommands,
+    config: &Config,
+) -> Result<()> {
     match command {
-        crate::IntegrationCommands::Info { name } => show_integration_info(config, &name),
+        fork_config::commands::IntegrationCommands::Info { name } => {
+            show_integration_info(config, &name)
+        }
     }
 }
 
@@ -203,7 +208,7 @@ mod tests {
             .to_lowercase();
 
         let result = handle_command(
-            crate::IntegrationCommands::Info { name: first_name },
+            fork_config::commands::IntegrationCommands::Info { name: first_name },
             &config,
         );
 
@@ -214,7 +219,7 @@ mod tests {
     fn handle_command_info_returns_error_for_unknown_integration() {
         let config = Config::default();
         let result = handle_command(
-            crate::IntegrationCommands::Info {
+            fork_config::commands::IntegrationCommands::Info {
                 name: "definitely-not-a-real-integration".into(),
             },
             &config,
