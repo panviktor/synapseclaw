@@ -21,7 +21,7 @@ pub struct ChannelAgentRuntime {
     pub observer: Arc<dyn crate::fork_adapters::observability::Observer>,
     pub approval_manager: Arc<ApprovalManager>,
     pub channel_name: String,
-    pub multimodal: crate::config::MultimodalConfig,
+    pub multimodal: fork_config::schema::MultimodalConfig,
     pub excluded_tools: Arc<Vec<String>>,
     pub dedup_exempt_tools: Arc<Vec<String>>,
     pub hooks: Option<Arc<crate::fork_adapters::hooks::HookRunner>>,

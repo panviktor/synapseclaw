@@ -1,10 +1,10 @@
-use crate::config::Config;
 use crate::fork_adapters::cron::{
     next_run_for_schedule, schedule_cron_expression, validate_schedule, CronJob, CronJobPatch,
     CronRun, DeliveryConfig, ExecutionMode, JobType, Schedule, SessionTarget,
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use fork_config::schema::Config;
 use rusqlite::types::{FromSqlResult, ValueRef};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
@@ -657,8 +657,8 @@ fn with_connection<T>(config: &Config, f: impl FnOnce(&Connection) -> Result<T>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use chrono::Duration as ChronoDuration;
+    use fork_config::schema::Config;
     use tempfile::TempDir;
 
     fn test_config(tmp: &TempDir) -> Config {

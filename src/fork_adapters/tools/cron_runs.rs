@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
-use crate::config::Config;
 use crate::fork_adapters::cron;
 use async_trait::async_trait;
+use fork_config::schema::Config;
 use serde::Serialize;
 use serde_json::json;
 use std::sync::Arc;
@@ -117,8 +117,8 @@ fn truncate(input: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use chrono::{Duration as ChronoDuration, Utc};
+    use fork_config::schema::Config;
     use tempfile::TempDir;
 
     async fn test_config(tmp: &TempDir) -> Arc<Config> {

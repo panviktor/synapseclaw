@@ -64,7 +64,7 @@ impl WebhookChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        crate::config::build_runtime_proxy_client("channel.webhook")
+        fork_config::schema::build_runtime_proxy_client("channel.webhook")
     }
 
     /// Verify an incoming request's signature if a secret is configured.

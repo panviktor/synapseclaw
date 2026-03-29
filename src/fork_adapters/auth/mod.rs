@@ -4,12 +4,12 @@ pub mod oauth_common;
 pub mod openai_oauth;
 pub mod profiles;
 
-use crate::config::Config;
 use crate::fork_adapters::auth::openai_oauth::refresh_access_token;
 use crate::fork_adapters::auth::profiles::{
     profile_id, AuthProfile, AuthProfileKind, AuthProfilesData, AuthProfilesStore, TokenSet,
 };
 use anyhow::Result;
+use fork_config::schema::Config;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};

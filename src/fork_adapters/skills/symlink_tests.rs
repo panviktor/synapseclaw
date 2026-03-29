@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::skills::skills_dir;
+    use crate::fork_adapters::skills::skills_dir;
     use std::path::Path;
     use tempfile::TempDir;
 

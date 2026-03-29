@@ -1,6 +1,6 @@
-use crate::config::Config;
 use anyhow::Result;
 use chrono::Utc;
+use fork_config::schema::Config;
 use fork_core::domain::config::{AutoDetectCandidate, CronDeliveryConfig, HeartbeatConfig};
 use std::future::Future;
 use std::path::PathBuf;
@@ -861,10 +861,10 @@ mod tests {
     #[test]
     fn detects_supervised_channels_present() {
         let mut config = Config::default();
-        config.channels_config.telegram = Some(crate::config::TelegramConfig {
+        config.channels_config.telegram = Some(fork_config::schema::TelegramConfig {
             bot_token: "token".into(),
             allowed_users: vec![],
-            stream_mode: crate::config::StreamMode::default(),
+            stream_mode: fork_config::schema::StreamMode::default(),
             draft_update_interval_ms: 1000,
             interrupt_on_new_message: false,
             mention_only: false,
@@ -875,7 +875,7 @@ mod tests {
     #[test]
     fn detects_dingtalk_as_supervised_channel() {
         let mut config = Config::default();
-        config.channels_config.dingtalk = Some(crate::config::schema::DingTalkConfig {
+        config.channels_config.dingtalk = Some(fork_config::schema::DingTalkConfig {
             client_id: "client_id".into(),
             client_secret: "client_secret".into(),
             allowed_users: vec!["*".into()],
@@ -886,7 +886,7 @@ mod tests {
     #[test]
     fn detects_mattermost_as_supervised_channel() {
         let mut config = Config::default();
-        config.channels_config.mattermost = Some(crate::config::schema::MattermostConfig {
+        config.channels_config.mattermost = Some(fork_config::schema::MattermostConfig {
             url: "https://mattermost.example.com".into(),
             bot_token: "token".into(),
             channel_id: Some("channel-id".into()),
@@ -900,7 +900,7 @@ mod tests {
     #[test]
     fn detects_qq_as_supervised_channel() {
         let mut config = Config::default();
-        config.channels_config.qq = Some(crate::config::schema::QQConfig {
+        config.channels_config.qq = Some(fork_config::schema::QQConfig {
             app_id: "app-id".into(),
             app_secret: "app-secret".into(),
             allowed_users: vec!["*".into()],
@@ -911,7 +911,7 @@ mod tests {
     #[test]
     fn detects_nextcloud_talk_as_supervised_channel() {
         let mut config = Config::default();
-        config.channels_config.nextcloud_talk = Some(crate::config::schema::NextcloudTalkConfig {
+        config.channels_config.nextcloud_talk = Some(fork_config::schema::NextcloudTalkConfig {
             base_url: "https://cloud.example.com".into(),
             app_token: "app-token".into(),
             webhook_secret: None,

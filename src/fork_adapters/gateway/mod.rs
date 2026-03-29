@@ -17,7 +17,6 @@ pub mod sse;
 pub mod static_files;
 pub mod ws;
 
-use crate::config::Config;
 use crate::config::ConfigIO;
 use crate::fork_adapters::channels::{
     Channel, LinqChannel, NextcloudTalkChannel, SendMessage, WatiChannel, WhatsAppChannel,
@@ -39,6 +38,7 @@ use axum::{
     routing::{delete, get, post, put},
     Router,
 };
+use fork_config::schema::Config;
 use fork_core::domain::util::truncate_with_ellipsis;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -2170,8 +2170,11 @@ async fn run_gateway_chat_simple(state: &AppState, message: &str) -> anyhow::Res
     messages.extend(user_messages);
 
     let multimodal_config = state.config.lock().multimodal.clone();
-    let prepared =
-        crate::multimodal::prepare_messages_for_provider(&messages, &multimodal_config).await?;
+    let prepared = crate::fork_adapters::multimodal::prepare_messages_for_provider(
+        &messages,
+        &multimodal_config,
+    )
+    .await?;
 
     state
         .provider
@@ -3095,7 +3098,7 @@ async fn handle_admin_paircode_new(
         Some(code) => {
             // If metadata was provided, bind it to the pairing code
             if let Some(Json(meta_body)) = body {
-                let metadata = crate::config::TokenMetadata {
+                let metadata = fork_config::schema::TokenMetadata {
                     agent_id: meta_body.agent_id,
                     trust_level: meta_body.trust_level,
                     role: meta_body.role,

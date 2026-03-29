@@ -175,7 +175,8 @@ impl Tool for WebFetchTool {
             .connect_timeout(Duration::from_secs(10))
             .redirect(redirect_policy)
             .user_agent("SynapseClaw/0.1 (web_fetch)");
-        let builder = crate::config::apply_runtime_proxy_to_builder(builder, "tool.web_fetch");
+        let builder =
+            fork_config::schema::apply_runtime_proxy_to_builder(builder, "tool.web_fetch");
         let client = match builder.build() {
             Ok(c) => c,
             Err(e) => {

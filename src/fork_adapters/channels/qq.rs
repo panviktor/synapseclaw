@@ -117,7 +117,7 @@ impl QQChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        crate::config::build_runtime_proxy_client("channel.qq")
+        fork_config::schema::build_runtime_proxy_client("channel.qq")
     }
 
     fn is_user_allowed(&self, user_id: &str) -> bool {
@@ -577,7 +577,7 @@ app_id = "12345"
 app_secret = "secret_abc"
 allowed_users = ["user1"]
 "#;
-        let config: crate::config::schema::QQConfig = toml::from_str(toml_str).unwrap();
+        let config: fork_config::schema::QQConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(config.app_id, "12345");
         assert_eq!(config.app_secret, "secret_abc");
         assert_eq!(config.allowed_users, vec!["user1"]);

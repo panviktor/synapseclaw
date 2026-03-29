@@ -41,7 +41,8 @@ impl IpcClient {
         let builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(5));
-        let builder = crate::config::apply_runtime_proxy_to_builder(builder, "tool.agents_ipc");
+        let builder =
+            fork_config::schema::apply_runtime_proxy_to_builder(builder, "tool.agents_ipc");
         let client = builder.build().unwrap_or_else(|err| {
             tracing::warn!("Failed to build IPC client: {err}");
             reqwest::Client::new()
@@ -877,7 +878,7 @@ impl Tool for StateSetTool {
 ///
 /// Trust propagation: child trust_level >= parent trust_level (cannot escalate).
 pub struct AgentsSpawnTool {
-    config: Arc<crate::config::Config>,
+    config: Arc<fork_config::schema::Config>,
     security: Arc<fork_core::domain::security_policy::SecurityPolicy>,
     parent_trust_level: u8,
     ipc_client: Option<Arc<IpcClient>>,
@@ -885,7 +886,7 @@ pub struct AgentsSpawnTool {
 
 impl AgentsSpawnTool {
     pub fn new(
-        config: Arc<crate::config::Config>,
+        config: Arc<fork_config::schema::Config>,
         security: Arc<fork_core::domain::security_policy::SecurityPolicy>,
         parent_trust_level: u8,
     ) -> Self {
@@ -899,7 +900,7 @@ impl AgentsSpawnTool {
 
     /// Create with an IPC client for broker-backed spawn (Phase 3A).
     pub fn with_broker(
-        config: Arc<crate::config::Config>,
+        config: Arc<fork_config::schema::Config>,
         security: Arc<fork_core::domain::security_policy::SecurityPolicy>,
         parent_trust_level: u8,
         ipc_client: Arc<IpcClient>,
@@ -1426,7 +1427,7 @@ mod tests {
 
     #[test]
     fn agents_spawn_tool_spec() {
-        let config = Arc::new(crate::config::Config::default());
+        let config = Arc::new(fork_config::schema::Config::default());
         let security = Arc::new(fork_core::domain::security_policy::SecurityPolicy::default());
         let tool = AgentsSpawnTool::new(config, security, 2);
         let spec = tool.spec();
@@ -1442,7 +1443,7 @@ mod tests {
 
     #[test]
     fn agents_spawn_with_broker_has_ipc_client() {
-        let config = Arc::new(crate::config::Config::default());
+        let config = Arc::new(fork_config::schema::Config::default());
         let security = Arc::new(fork_core::domain::security_policy::SecurityPolicy::default());
         let client = Arc::new(IpcClient::new("http://localhost:42617", "t", 10));
         let tool = AgentsSpawnTool::with_broker(config, security, 1, client);
@@ -1451,7 +1452,7 @@ mod tests {
 
     #[test]
     fn agents_spawn_without_broker_has_no_ipc_client() {
-        let config = Arc::new(crate::config::Config::default());
+        let config = Arc::new(fork_config::schema::Config::default());
         let security = Arc::new(fork_core::domain::security_policy::SecurityPolicy::default());
         let tool = AgentsSpawnTool::new(config, security, 2);
         assert!(tool.ipc_client.is_none());
@@ -1547,14 +1548,14 @@ mod tests {
 
     /// Build a minimal test AppState with IPC enabled and a known token.
     fn test_app_state(db: Arc<IpcDb>, token_hash: &str) -> AppState {
-        let mut config = crate::config::Config::default();
+        let mut config = fork_config::schema::Config::default();
         config.gateway.require_pairing = true;
         config.agents_ipc.enabled = true;
 
         let mut metadata = std::collections::HashMap::new();
         metadata.insert(
             token_hash.to_string(),
-            crate::config::TokenMetadata {
+            fork_config::schema::TokenMetadata {
                 agent_id: "test-agent".into(),
                 trust_level: 1,
                 role: "coordinator".into(),

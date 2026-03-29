@@ -13,8 +13,8 @@ pub use none::NoneTunnel;
 pub use openvpn::OpenVpnTunnel;
 pub use tailscale::TailscaleTunnel;
 
-use crate::config::schema::{TailscaleTunnelConfig, TunnelConfig};
 use anyhow::{bail, Result};
+use fork_config::schema::{TailscaleTunnelConfig, TunnelConfig};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -141,7 +141,7 @@ pub fn create_tunnel(config: &TunnelConfig) -> Result<Option<Box<dyn Tunnel>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{
+    use fork_config::schema::{
         CloudflareTunnelConfig, CustomTunnelConfig, NgrokTunnelConfig, OpenVpnTunnelConfig,
         TunnelConfig,
     };

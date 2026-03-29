@@ -1,9 +1,9 @@
 use super::traits::{Tool, ToolResult};
 use crate::config::ConfigIO;
-use crate::config::{
+use async_trait::async_trait;
+use fork_config::schema::{
     runtime_proxy_config, set_runtime_proxy_config, Config, ProxyConfig, ProxyScope,
 };
-use async_trait::async_trait;
 use fork_core::domain::security_policy::SecurityPolicy;
 use fork_core::domain::util::MaybeSet;
 use serde_json::{json, Value};

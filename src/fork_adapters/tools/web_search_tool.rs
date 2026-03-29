@@ -89,7 +89,7 @@ impl WebSearchTool {
             )
         })?;
 
-        let config: crate::config::Config = toml::from_str(&contents).map_err(|e| {
+        let config: fork_config::schema::Config = toml::from_str(&contents).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse config file {} for Brave API key: {e}",
                 self.config_path.display()
@@ -208,7 +208,7 @@ impl WebSearchTool {
                 self.config_path.display()
             )
         })?;
-        let config: crate::config::Config = toml::from_str(&contents).map_err(|e| {
+        let config: fork_config::schema::Config = toml::from_str(&contents).map_err(|e| {
             anyhow::anyhow!(
                 "Failed to parse config file {} for Tavily API key: {e}",
                 self.config_path.display()

@@ -39,7 +39,7 @@ impl DiscordChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        crate::config::build_runtime_proxy_client("channel.discord")
+        fork_config::schema::build_runtime_proxy_client("channel.discord")
     }
 
     /// Check if a Discord user ID is in the allowlist.

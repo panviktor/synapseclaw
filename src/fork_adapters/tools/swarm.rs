@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
-use crate::config::{DelegateAgentConfig, SwarmConfig, SwarmStrategy};
 use crate::fork_adapters::providers::{self, Provider};
 use async_trait::async_trait;
+use fork_config::schema::{DelegateAgentConfig, SwarmConfig, SwarmStrategy};
 use fork_core::domain::config::ToolOperation;
 use fork_core::domain::security_policy::SecurityPolicy;
 use serde_json::json;

@@ -276,7 +276,7 @@ impl OpenAiCompatibleProvider {
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .default_headers(headers);
             let builder =
-                crate::config::apply_runtime_proxy_to_builder(builder, "provider.compatible");
+                fork_config::schema::apply_runtime_proxy_to_builder(builder, "provider.compatible");
 
             return builder.build().unwrap_or_else(|error| {
                 tracing::warn!(
@@ -286,7 +286,11 @@ impl OpenAiCompatibleProvider {
             });
         }
 
-        crate::config::build_runtime_proxy_client_with_timeouts("provider.compatible", timeout, 10)
+        fork_config::schema::build_runtime_proxy_client_with_timeouts(
+            "provider.compatible",
+            timeout,
+            10,
+        )
     }
 
     /// Build the full URL for chat completions, detecting if base_url already includes the path.

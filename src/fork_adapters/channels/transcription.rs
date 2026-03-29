@@ -4,7 +4,7 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use reqwest::multipart::{Form, Part};
 
-use crate::config::TranscriptionConfig;
+use fork_config::schema::TranscriptionConfig;
 
 /// Maximum upload size accepted by most Whisper-compatible APIs (25 MB).
 const MAX_AUDIO_BYTES: usize = 25 * 1024 * 1024;
@@ -179,7 +179,7 @@ impl TranscriptionProvider for GroqProvider {
     async fn transcribe(&self, audio_data: &[u8], file_name: &str) -> Result<String> {
         let (normalized_name, mime) = validate_audio(audio_data, file_name)?;
 
-        let client = crate::config::build_runtime_proxy_client("transcription.groq");
+        let client = fork_config::schema::build_runtime_proxy_client("transcription.groq");
 
         let file_part = Part::bytes(audio_data.to_vec())
             .file_name(normalized_name)
@@ -216,7 +216,7 @@ pub struct OpenAiWhisperProvider {
 }
 
 impl OpenAiWhisperProvider {
-    pub fn from_config(config: &crate::config::OpenAiSttConfig) -> Result<Self> {
+    pub fn from_config(config: &fork_config::schema::OpenAiSttConfig) -> Result<Self> {
         let api_key = config
             .api_key
             .as_deref()
@@ -241,7 +241,7 @@ impl TranscriptionProvider for OpenAiWhisperProvider {
     async fn transcribe(&self, audio_data: &[u8], file_name: &str) -> Result<String> {
         let (normalized_name, mime) = validate_audio(audio_data, file_name)?;
 
-        let client = crate::config::build_runtime_proxy_client("transcription.openai");
+        let client = fork_config::schema::build_runtime_proxy_client("transcription.openai");
 
         let file_part = Part::bytes(audio_data.to_vec())
             .file_name(normalized_name)
@@ -274,7 +274,7 @@ pub struct DeepgramProvider {
 }
 
 impl DeepgramProvider {
-    pub fn from_config(config: &crate::config::DeepgramSttConfig) -> Result<Self> {
+    pub fn from_config(config: &fork_config::schema::DeepgramSttConfig) -> Result<Self> {
         let api_key = config
             .api_key
             .as_deref()
@@ -299,7 +299,7 @@ impl TranscriptionProvider for DeepgramProvider {
     async fn transcribe(&self, audio_data: &[u8], file_name: &str) -> Result<String> {
         let (_, mime) = validate_audio(audio_data, file_name)?;
 
-        let client = crate::config::build_runtime_proxy_client("transcription.deepgram");
+        let client = fork_config::schema::build_runtime_proxy_client("transcription.deepgram");
 
         let url = format!(
             "https://api.deepgram.com/v1/listen?model={}&punctuate=true",
@@ -347,7 +347,7 @@ pub struct AssemblyAiProvider {
 }
 
 impl AssemblyAiProvider {
-    pub fn from_config(config: &crate::config::AssemblyAiSttConfig) -> Result<Self> {
+    pub fn from_config(config: &fork_config::schema::AssemblyAiSttConfig) -> Result<Self> {
         let api_key = config
             .api_key
             .as_deref()
@@ -369,7 +369,7 @@ impl TranscriptionProvider for AssemblyAiProvider {
     async fn transcribe(&self, audio_data: &[u8], file_name: &str) -> Result<String> {
         let (_, _) = validate_audio(audio_data, file_name)?;
 
-        let client = crate::config::build_runtime_proxy_client("transcription.assemblyai");
+        let client = fork_config::schema::build_runtime_proxy_client("transcription.assemblyai");
 
         // Step 1: Upload the audio file.
         let upload_resp = client
@@ -490,7 +490,7 @@ pub struct GoogleSttProvider {
 }
 
 impl GoogleSttProvider {
-    pub fn from_config(config: &crate::config::GoogleSttConfig) -> Result<Self> {
+    pub fn from_config(config: &fork_config::schema::GoogleSttConfig) -> Result<Self> {
         let api_key = config
             .api_key
             .as_deref()
@@ -523,7 +523,7 @@ impl TranscriptionProvider for GoogleSttProvider {
     async fn transcribe(&self, audio_data: &[u8], file_name: &str) -> Result<String> {
         let (normalized_name, _) = validate_audio(audio_data, file_name)?;
 
-        let client = crate::config::build_runtime_proxy_client("transcription.google");
+        let client = fork_config::schema::build_runtime_proxy_client("transcription.google");
 
         let encoding = match normalized_name
             .rsplit_once('.')
@@ -893,11 +893,11 @@ mod tests {
 
         let mut config = TranscriptionConfig::default();
         config.api_key = Some("test-groq-key".to_string());
-        config.openai = Some(crate::config::OpenAiSttConfig {
+        config.openai = Some(fork_config::schema::OpenAiSttConfig {
             api_key: Some("test-openai-key".to_string()),
             model: "whisper-1".to_string(),
         });
-        config.deepgram = Some(crate::config::DeepgramSttConfig {
+        config.deepgram = Some(fork_config::schema::DeepgramSttConfig {
             api_key: Some("test-deepgram-key".to_string()),
             model: "nova-2".to_string(),
         });
@@ -933,7 +933,7 @@ mod tests {
 
         let mut config = TranscriptionConfig::default();
         config.default_provider = "openai".to_string();
-        config.openai = Some(crate::config::OpenAiSttConfig {
+        config.openai = Some(fork_config::schema::OpenAiSttConfig {
             api_key: Some("test-openai-key".to_string()),
             model: "whisper-1".to_string(),
         });

@@ -4,8 +4,8 @@
 //! portable AI identity. This module handles loading and converting AIEOS v1.1
 //! JSON to SynapseClaw's system prompt format.
 
-use crate::config::IdentityConfig;
 use anyhow::{Context, Result};
+use fork_config::schema::IdentityConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashMap;

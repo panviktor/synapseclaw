@@ -65,9 +65,9 @@ pub struct WhatsAppWebChannel {
     /// Message sender channel
     tx: Arc<Mutex<Option<tokio::sync::mpsc::Sender<ChannelMessage>>>>,
     /// Voice transcription (STT) config
-    transcription: Option<crate::config::TranscriptionConfig>,
+    transcription: Option<fork_config::schema::TranscriptionConfig>,
     /// Text-to-speech config for voice replies
-    tts_config: Option<crate::config::TtsConfig>,
+    tts_config: Option<fork_config::schema::TtsConfig>,
     /// Chats awaiting a voice reply — maps chat JID to the latest substantive
     /// reply text. A background task debounces and sends the voice note after
     /// the agent finishes its turn (no new send() for 3 seconds).
@@ -110,7 +110,7 @@ impl WhatsAppWebChannel {
 
     /// Configure voice transcription (STT) for incoming voice notes.
     #[cfg(feature = "whatsapp-web")]
-    pub fn with_transcription(mut self, config: crate::config::TranscriptionConfig) -> Self {
+    pub fn with_transcription(mut self, config: fork_config::schema::TranscriptionConfig) -> Self {
         if config.enabled {
             self.transcription = Some(config);
         }
@@ -119,7 +119,7 @@ impl WhatsAppWebChannel {
 
     /// Configure text-to-speech for outgoing voice replies.
     #[cfg(feature = "whatsapp-web")]
-    pub fn with_tts(mut self, config: crate::config::TtsConfig) -> Self {
+    pub fn with_tts(mut self, config: fork_config::schema::TtsConfig) -> Self {
         if config.enabled {
             self.tts_config = Some(config);
         }
@@ -317,7 +317,7 @@ impl WhatsAppWebChannel {
     async fn try_transcribe_voice_note(
         client: &wa_rs::Client,
         audio: &wa_rs_proto::whatsapp::message::AudioMessage,
-        transcription_config: Option<&crate::config::TranscriptionConfig>,
+        transcription_config: Option<&fork_config::schema::TranscriptionConfig>,
     ) -> Option<String> {
         let config = transcription_config?;
 
@@ -383,7 +383,7 @@ impl WhatsAppWebChannel {
         client: &wa_rs::Client,
         to: &wa_rs_binary::jid::Jid,
         text: &str,
-        tts_config: &crate::config::TtsConfig,
+        tts_config: &fork_config::schema::TtsConfig,
     ) -> Result<()> {
         let tts_manager = super::tts::TtsManager::new(tts_config)?;
         let audio_bytes = tts_manager.synthesize(text).await?;
@@ -982,11 +982,11 @@ impl WhatsAppWebChannel {
         Self { _private: () }
     }
 
-    pub fn with_transcription(self, _config: crate::config::TranscriptionConfig) -> Self {
+    pub fn with_transcription(self, _config: fork_config::schema::TranscriptionConfig) -> Self {
         self
     }
 
-    pub fn with_tts(self, _config: crate::config::TtsConfig) -> Self {
+    pub fn with_tts(self, _config: fork_config::schema::TtsConfig) -> Self {
         self
     }
 }
@@ -1233,7 +1233,7 @@ mod tests {
     #[test]
     #[cfg(feature = "whatsapp-web")]
     fn with_transcription_sets_config_when_enabled() {
-        let mut tc = crate::config::TranscriptionConfig::default();
+        let mut tc = fork_config::schema::TranscriptionConfig::default();
         tc.enabled = true;
 
         let ch = make_channel().with_transcription(tc);
@@ -1243,7 +1243,7 @@ mod tests {
     #[test]
     #[cfg(feature = "whatsapp-web")]
     fn with_transcription_ignores_when_disabled() {
-        let tc = crate::config::TranscriptionConfig::default(); // enabled = false
+        let tc = fork_config::schema::TranscriptionConfig::default(); // enabled = false
         let ch = make_channel().with_transcription(tc);
         assert!(ch.transcription.is_none());
     }

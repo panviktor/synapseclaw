@@ -1,5 +1,5 @@
-use crate::config::Config;
 use anyhow::{bail, Context, Result};
+use fork_config::schema::Config;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;

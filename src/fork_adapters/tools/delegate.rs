@@ -1,9 +1,9 @@
 use super::traits::{Tool, ToolResult};
 use crate::agent::loop_::run_tool_call_loop;
-use crate::config::DelegateAgentConfig;
 use crate::fork_adapters::observability::traits::{Observer, ObserverEvent, ObserverMetric};
 use crate::fork_adapters::providers::{self, ChatMessage, Provider};
 use async_trait::async_trait;
+use fork_config::schema::DelegateAgentConfig;
 use fork_core::domain::config::ToolOperation;
 use fork_core::domain::security_policy::SecurityPolicy;
 use parking_lot::RwLock;
@@ -33,7 +33,7 @@ pub struct DelegateTool {
     /// Parent tool registry for agentic sub-agents.
     parent_tools: Arc<RwLock<Vec<Arc<dyn Tool>>>>,
     /// Inherited multimodal handling config for sub-agent loops.
-    multimodal_config: crate::config::MultimodalConfig,
+    multimodal_config: fork_config::schema::MultimodalConfig,
 }
 
 impl DelegateTool {
@@ -63,7 +63,7 @@ impl DelegateTool {
             provider_runtime_options,
             depth: 0,
             parent_tools: Arc::new(RwLock::new(Vec::new())),
-            multimodal_config: crate::config::MultimodalConfig::default(),
+            multimodal_config: fork_config::schema::MultimodalConfig::default(),
         }
     }
 
@@ -99,7 +99,7 @@ impl DelegateTool {
             provider_runtime_options,
             depth,
             parent_tools: Arc::new(RwLock::new(Vec::new())),
-            multimodal_config: crate::config::MultimodalConfig::default(),
+            multimodal_config: fork_config::schema::MultimodalConfig::default(),
         }
     }
 
@@ -110,7 +110,7 @@ impl DelegateTool {
     }
 
     /// Attach multimodal configuration for sub-agent tool loops.
-    pub fn with_multimodal_config(mut self, config: crate::config::MultimodalConfig) -> Self {
+    pub fn with_multimodal_config(mut self, config: fork_config::schema::MultimodalConfig) -> Self {
         self.multimodal_config = config;
         self
     }

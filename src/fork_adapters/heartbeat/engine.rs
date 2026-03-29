@@ -1,7 +1,7 @@
-use crate::config::HeartbeatConfig;
 use crate::fork_adapters::observability::{Observer, ObserverEvent};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use fork_config::schema::HeartbeatConfig;
 use parking_lot::Mutex as ParkingMutex;
 use serde::{Deserialize, Serialize};
 use std::fmt;

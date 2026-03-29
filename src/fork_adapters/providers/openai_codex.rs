@@ -740,8 +740,10 @@ impl Provider for OpenAiCodexProvider {
         messages.push(ChatMessage::user(message));
 
         // Normalize images: convert file paths to data URIs
-        let config = crate::config::MultimodalConfig::default();
-        let prepared = crate::multimodal::prepare_messages_for_provider(&messages, &config).await?;
+        let config = fork_config::schema::MultimodalConfig::default();
+        let prepared =
+            crate::fork_adapters::multimodal::prepare_messages_for_provider(&messages, &config)
+                .await?;
 
         let (instructions, input) = build_responses_input(&prepared.messages);
         self.send_responses_request(input, instructions, model)
@@ -755,8 +757,10 @@ impl Provider for OpenAiCodexProvider {
         _temperature: f64,
     ) -> anyhow::Result<String> {
         // Normalize image markers: convert file paths to data URIs
-        let config = crate::config::MultimodalConfig::default();
-        let prepared = crate::multimodal::prepare_messages_for_provider(messages, &config).await?;
+        let config = fork_config::schema::MultimodalConfig::default();
+        let prepared =
+            crate::fork_adapters::multimodal::prepare_messages_for_provider(messages, &config)
+                .await?;
 
         let (instructions, input) = build_responses_input(&prepared.messages);
         self.send_responses_request(input, instructions, model)

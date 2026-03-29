@@ -796,7 +796,7 @@ impl GeminiProvider {
     }
 
     fn http_client(&self) -> Client {
-        crate::config::build_runtime_proxy_client_with_timeouts("provider.gemini", 120, 10)
+        fork_config::schema::build_runtime_proxy_client_with_timeouts("provider.gemini", 120, 10)
     }
 
     /// Resolve the GCP project ID for OAuth by calling the loadCodeAssist endpoint.
