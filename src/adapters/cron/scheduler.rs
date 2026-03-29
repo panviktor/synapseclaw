@@ -8,8 +8,8 @@ use futures_util::{stream, StreamExt};
 use std::process::Stdio;
 use std::sync::Arc;
 use synapse_config::schema::Config;
-use synapse_config::security_factory::security_policy_from_config;
 use synapse_core::domain::security_policy::SecurityPolicy;
+use synapse_security::security_factory::security_policy_from_config;
 use tokio::process::Command;
 use tokio::time::{self, Duration};
 
@@ -534,7 +534,7 @@ mod tests {
     use crate::adapters::cron::{self, DeliveryConfig};
     use chrono::{Duration as ChronoDuration, Utc};
     use synapse_config::schema::Config;
-    use synapse_config::security_factory::security_policy_from_config;
+    use synapse_security::security_factory::security_policy_from_config;
     use tempfile::TempDir;
 
     struct NoopRunner;

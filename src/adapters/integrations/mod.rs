@@ -68,13 +68,11 @@ pub struct IntegrationEntry {
 
 /// Handle the `integrations` CLI command
 pub fn handle_command(
-    command: synapse_config::commands::IntegrationCommands,
+    command: crate::commands::IntegrationCommands,
     config: &Config,
 ) -> Result<()> {
     match command {
-        synapse_config::commands::IntegrationCommands::Info { name } => {
-            show_integration_info(config, &name)
-        }
+        crate::commands::IntegrationCommands::Info { name } => show_integration_info(config, &name),
     }
 }
 
@@ -208,7 +206,7 @@ mod tests {
             .to_lowercase();
 
         let result = handle_command(
-            synapse_config::commands::IntegrationCommands::Info { name: first_name },
+            crate::commands::IntegrationCommands::Info { name: first_name },
             &config,
         );
 
@@ -219,7 +217,7 @@ mod tests {
     fn handle_command_info_returns_error_for_unknown_integration() {
         let config = Config::default();
         let result = handle_command(
-            synapse_config::commands::IntegrationCommands::Info {
+            crate::commands::IntegrationCommands::Info {
                 name: "definitely-not-a-real-integration".into(),
             },
             &config,

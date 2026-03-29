@@ -73,6 +73,7 @@ fn pause_after_no_command_help() {
 
 mod adapters;
 mod agent;
+mod commands;
 mod config;
 /// Re-export workspace crate so `crate::synapse_core::` paths work in the binary.
 pub use synapse_core;
@@ -86,8 +87,7 @@ mod util;
 
 use config::{Config, ConfigIO};
 
-// Re-export so binary modules can use crate::<CommandEnum> while keeping a single source of truth.
-pub use synapseclaw::{
+use commands::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, ServiceCommands,
     SkillCommands,
 };

@@ -434,8 +434,8 @@ impl ScheduleTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_config::security_factory::security_policy_from_config;
     use synapse_core::domain::config::AutonomyLevel;
+    use synapse_security::security_factory::security_policy_from_config;
     use tempfile::TempDir;
 
     async fn test_setup() -> (TempDir, Config, Arc<SecurityPolicy>) {
