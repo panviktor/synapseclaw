@@ -231,7 +231,8 @@ impl Tool for PdfReadTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::{AutonomyLevel, SecurityPolicy};
+    use fork_core::domain::config::AutonomyLevel;
+    use fork_core::domain::security_policy::SecurityPolicy;
     use tempfile::TempDir;
 
     fn test_security(workspace: std::path::PathBuf) -> Arc<SecurityPolicy> {

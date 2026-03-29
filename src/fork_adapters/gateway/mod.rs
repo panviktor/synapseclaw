@@ -27,7 +27,6 @@ use crate::fork_adapters::tools;
 use crate::fork_adapters::tools::traits::ToolSpec;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::runtime;
-use crate::security::pairing::{constant_time_eq, is_public_bind, PairingGuard};
 use anyhow::{Context, Result};
 use axum::{
     body::Bytes,
@@ -40,6 +39,7 @@ use axum::{
 use fork_config::schema::Config;
 use fork_config::security_factory::security_policy_from_config;
 use fork_core::domain::util::truncate_with_ellipsis;
+use fork_security::pairing::{constant_time_eq, is_public_bind, PairingGuard};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -361,11 +361,11 @@ pub struct AppState {
     /// Shutdown signal sender for graceful shutdown
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Audit logger for persistent security event logging
-    pub audit_logger: Option<Arc<crate::security::AuditLogger>>,
+    pub audit_logger: Option<Arc<fork_security::AuditLogger>>,
     /// PromptGuard for IPC payload injection scanning
-    pub ipc_prompt_guard: Option<crate::security::PromptGuard>,
+    pub ipc_prompt_guard: Option<fork_security::PromptGuard>,
     /// LeakDetector for IPC credential leak scanning
-    pub ipc_leak_detector: Option<crate::security::LeakDetector>,
+    pub ipc_leak_detector: Option<fork_security::LeakDetector>,
     /// IPC broker database (None when agents_ipc.enabled = false)
     pub ipc_db: Option<Arc<ipc::IpcDb>>,
     /// IPC per-agent send rate limiter (None when IPC is disabled)
@@ -756,7 +756,7 @@ pub async fn run_gateway(
 
     // Audit logger for persistent security event logging
     let audit_logger = if config.security.audit.enabled {
-        match crate::security::AuditLogger::new(
+        match fork_security::AuditLogger::new(
             config.security.audit.clone(),
             config.workspace_dir.clone(),
         ) {
@@ -772,8 +772,8 @@ pub async fn run_gateway(
 
     // PromptGuard for IPC payload scanning
     let ipc_prompt_guard = if config.agents_ipc.enabled && config.agents_ipc.prompt_guard.enabled {
-        let action = crate::security::GuardAction::from_str(&config.agents_ipc.prompt_guard.action);
-        Some(crate::security::PromptGuard::with_config(
+        let action = fork_security::GuardAction::from_str(&config.agents_ipc.prompt_guard.action);
+        Some(fork_security::PromptGuard::with_config(
             action,
             config.agents_ipc.prompt_guard.sensitivity,
         ))
@@ -783,7 +783,7 @@ pub async fn run_gateway(
 
     // LeakDetector for IPC credential leak scanning
     let ipc_leak_detector = if config.agents_ipc.enabled {
-        Some(crate::security::LeakDetector::with_sensitivity(0.7))
+        Some(fork_security::LeakDetector::with_sensitivity(0.7))
     } else {
         None
     };
@@ -1009,7 +1009,7 @@ pub async fn run_gateway(
                         config.agents_ipc.request_timeout_secs,
                     );
                     if let Ok(identity) =
-                        crate::security::identity::AgentIdentity::load_or_generate(&key_path)
+                        fork_security::identity::AgentIdentity::load_or_generate(&key_path)
                     {
                         client = client.with_identity(identity, runner_id.clone());
                         tracing::info!(
@@ -3518,7 +3518,7 @@ mod tests {
         assert_eq!(raw_parsed.gateway.paired_tokens.len(), 1);
         let on_disk = &raw_parsed.gateway.paired_tokens[0];
         assert!(
-            crate::security::SecretStore::is_encrypted(on_disk),
+            fork_security::SecretStore::is_encrypted(on_disk),
             "paired_token should be encrypted on disk"
         );
     }

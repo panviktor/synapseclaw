@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/fork_core", "crates/fork_config"]
+members = [".", "crates/fork_core", "crates/fork_config", "crates/fork_security"]
 resolver = "2"
 
 [package]
@@ -38,6 +38,8 @@ include = [
 fork_core = { path = "crates/fork_core" }
 # Fork-owned configuration types (shared across all crates)
 fork_config = { path = "crates/fork_config" }
+# Fork-owned security module (shared between adapters and main binary)
+fork_security = { path = "crates/fork_security" }
 
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }

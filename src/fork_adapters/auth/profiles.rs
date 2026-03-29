@@ -1,6 +1,6 @@
-use crate::security::SecretStore;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use fork_security::SecretStore;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Write;

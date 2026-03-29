@@ -239,8 +239,9 @@ impl Tool for CronUpdateTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::{security_policy_from_config, AutonomyLevel};
     use fork_config::schema::Config;
+    use fork_config::security_factory::security_policy_from_config;
+    use fork_core::domain::config::AutonomyLevel;
     use tempfile::TempDir;
 
     async fn test_config(tmp: &TempDir) -> Arc<Config> {

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 // Re-export everything from fork_core — single source of truth.
+#[allow(unused_imports)]
 pub use fork_core::domain::config::{AutonomyLevel, ToolOperation};
 pub use fork_core::domain::security_policy::*;
 

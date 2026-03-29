@@ -36,7 +36,7 @@ impl TavilyExtractTool {
             }
         }
         if let Some(ref key) = self.boot_api_key {
-            if !key.is_empty() && !crate::security::SecretStore::is_encrypted(key) {
+            if !key.is_empty() && !fork_security::SecretStore::is_encrypted(key) {
                 return Ok(key.clone());
             }
         }
@@ -49,9 +49,9 @@ impl TavilyExtractTool {
             .tavily_api_key
             .filter(|k| !k.is_empty())
             .ok_or_else(|| anyhow::anyhow!("Tavily API key not configured"))?;
-        if crate::security::SecretStore::is_encrypted(&raw_key) {
+        if fork_security::SecretStore::is_encrypted(&raw_key) {
             let dir = self.config_path.parent().unwrap_or_else(|| Path::new("."));
-            let store = crate::security::SecretStore::new(dir, self.secrets_encrypt);
+            let store = fork_security::SecretStore::new(dir, self.secrets_encrypt);
             store.decrypt(&raw_key)
         } else {
             Ok(raw_key)

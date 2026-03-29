@@ -87,7 +87,7 @@ pub async fn run(
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("agent.key");
-            match crate::security::identity::AgentIdentity::load_or_generate(&key_path) {
+            match fork_security::identity::AgentIdentity::load_or_generate(&key_path) {
                 Ok(identity) => {
                     let agent_id = config
                         .agents_ipc

@@ -82,7 +82,8 @@ impl Tool for MemoryForgetTool {
 mod tests {
     use super::*;
     use crate::memory::{MemoryCategory, SqliteMemory};
-    use crate::security::{AutonomyLevel, SecurityPolicy};
+    use fork_core::domain::config::AutonomyLevel;
+    use fork_core::domain::security_policy::SecurityPolicy;
     use tempfile::TempDir;
 
     fn test_security() -> Arc<SecurityPolicy> {

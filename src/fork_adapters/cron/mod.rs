@@ -1,6 +1,7 @@
-use crate::security::{security_policy_from_config, SecurityPolicy};
 use anyhow::{anyhow, bail, Result};
 use fork_config::schema::Config;
+use fork_config::security_factory::security_policy_from_config;
+use fork_core::domain::security_policy::SecurityPolicy;
 
 mod schedule;
 mod store;

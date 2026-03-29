@@ -1774,6 +1774,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "fork_security"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chacha20poly1305",
+ "chrono",
+ "fork_config",
+ "fork_core",
+ "hex",
+ "hmac",
+ "landlock",
+ "parking_lot",
+ "rand 0.10.0",
+ "regex",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shellexpand",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "form_urlencoded"
 version = "1.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5732,6 +5758,7 @@ dependencies = [
  "fantoccini",
  "fork_config",
  "fork_core",
+ "fork_security",
  "futures-util",
  "glob",
  "hex",

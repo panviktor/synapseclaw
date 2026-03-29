@@ -359,7 +359,8 @@ fn parse_ipv4(host: &str) -> Option<[u8; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::{AutonomyLevel, SecurityPolicy};
+    use fork_core::domain::config::AutonomyLevel;
+    use fork_core::domain::security_policy::SecurityPolicy;
 
     fn test_tool(allowed_domains: Vec<&str>) -> BrowserOpenTool {
         let security = Arc::new(SecurityPolicy {

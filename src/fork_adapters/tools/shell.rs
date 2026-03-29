@@ -233,7 +233,8 @@ impl Tool for ShellTool {
 mod tests {
     use super::*;
     use crate::fork_adapters::runtime::native::NativeRuntime;
-    use crate::security::{AutonomyLevel, SecurityPolicy};
+    use fork_core::domain::config::AutonomyLevel;
+    use fork_core::domain::security_policy::SecurityPolicy;
     use fork_core::ports::runtime::RuntimeAdapter;
 
     fn test_security(autonomy: AutonomyLevel) -> Arc<SecurityPolicy> {

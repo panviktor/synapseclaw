@@ -425,7 +425,8 @@ impl Tool for GoogleWorkspaceTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::security::{AutonomyLevel, SecurityPolicy};
+    use fork_core::domain::config::AutonomyLevel;
+    use fork_core::domain::security_policy::SecurityPolicy;
 
     fn test_security() -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy {

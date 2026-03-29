@@ -634,12 +634,12 @@ async fn config_file_stamp(path: &Path) -> Option<ConfigFileStamp> {
 }
 
 fn decrypt_optional_secret_for_runtime_reload(
-    store: &crate::security::SecretStore,
+    store: &fork_security::SecretStore,
     value: &mut Option<String>,
     field_name: &str,
 ) -> Result<()> {
     if let Some(raw) = value.clone() {
-        if crate::security::SecretStore::is_encrypted(&raw) {
+        if fork_security::SecretStore::is_encrypted(&raw) {
             *value = Some(
                 store
                     .decrypt(&raw)
@@ -659,7 +659,7 @@ async fn load_runtime_defaults_from_config_file(path: &Path) -> Result<ChannelRu
     parsed.config_path = path.to_path_buf();
 
     if let Some(synapseclaw_dir) = path.parent() {
-        let store = crate::security::SecretStore::new(synapseclaw_dir, parsed.secrets.encrypt);
+        let store = fork_security::SecretStore::new(synapseclaw_dir, parsed.secrets.encrypt);
         decrypt_optional_secret_for_runtime_reload(&store, &mut parsed.api_key, "config.api_key")?;
         // Decrypt TTS provider API keys for runtime reload
         if let Some(ref mut openai) = parsed.tts.openai {
@@ -3401,7 +3401,7 @@ pub async fn start_channels(
                             config.agents_ipc.request_timeout_secs,
                         );
                         if let Ok(identity) =
-                            crate::security::identity::AgentIdentity::load_or_generate(&key_path)
+                            fork_security::identity::AgentIdentity::load_or_generate(&key_path)
                         {
                             client = client.with_identity(identity, runner_id);
                         }
