@@ -510,8 +510,9 @@ impl Observer for NoopObserver {
 mod tests {
     use super::*;
     use crate::fork_adapters::providers::{ChatRequest, ChatResponse, ToolCall};
-    use crate::security::{AutonomyLevel, SecurityPolicy};
     use anyhow::anyhow;
+    use fork_core::domain::config::AutonomyLevel;
+    use fork_core::domain::security_policy::SecurityPolicy;
 
     fn test_security() -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy::default())

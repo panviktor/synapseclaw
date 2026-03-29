@@ -5,13 +5,13 @@
 
 use super::{require_localhost, AppState};
 use crate::fork_adapters::gateway::api::extract_bearer_token;
-use crate::security::audit::{AuditEvent, AuditEventType};
 use axum::{
     extract::{ConnectInfo, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
+use fork_security::audit::{AuditEvent, AuditEventType};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use std::net::SocketAddr;
@@ -77,7 +77,7 @@ fn require_admin_auth(
     }
 
     // Check token metadata — reject agent tokens (L2+)
-    let token_hash = crate::security::pairing::hash_token(token);
+    let token_hash = fork_security::pairing::hash_token(token);
     let config = state.config.lock();
     if let Some(meta) = config.gateway.token_metadata.get(&token_hash) {
         if meta.trust_level > 1 {

@@ -9,11 +9,11 @@ use serde_json::json;
 use std::path::PathBuf;
 
 use super::traits::{Tool, ToolResult};
-use crate::security::playbook::{
+use fork_config::schema::SecurityOpsConfig;
+use fork_security::playbook::{
     evaluate_step, load_playbooks, severity_level, Playbook, StepStatus,
 };
-use crate::security::vulnerability::{generate_summary, parse_vulnerability_json};
-use fork_config::schema::SecurityOpsConfig;
+use fork_security::vulnerability::{generate_summary, parse_vulnerability_json};
 
 /// Security operations tool — triage alerts, run playbooks, parse vulns, generate reports.
 pub struct SecurityOpsTool {

@@ -71,7 +71,7 @@ impl WebSearchTool {
     fn resolve_brave_api_key(&self) -> anyhow::Result<String> {
         // Fast path: boot-time key is present and usable (not an encrypted blob).
         if let Some(ref key) = self.boot_brave_api_key {
-            if !key.is_empty() && !crate::security::SecretStore::is_encrypted(key) {
+            if !key.is_empty() && !fork_security::SecretStore::is_encrypted(key) {
                 return Ok(key.clone());
             }
         }
@@ -103,9 +103,9 @@ impl WebSearchTool {
             .ok_or_else(|| anyhow::anyhow!("Brave API key not configured"))?;
 
         // Decrypt if necessary.
-        if crate::security::SecretStore::is_encrypted(&raw_key) {
+        if fork_security::SecretStore::is_encrypted(&raw_key) {
             let synapseclaw_dir = self.config_path.parent().unwrap_or_else(|| Path::new("."));
-            let store = crate::security::SecretStore::new(synapseclaw_dir, self.secrets_encrypt);
+            let store = fork_security::SecretStore::new(synapseclaw_dir, self.secrets_encrypt);
             let plaintext = store.decrypt(&raw_key)?;
             if plaintext.is_empty() {
                 anyhow::bail!("Brave API key not configured (decrypted value is empty)");
@@ -194,7 +194,7 @@ impl WebSearchTool {
             }
         }
         if let Some(ref key) = self.boot_tavily_api_key {
-            if !key.is_empty() && !crate::security::SecretStore::is_encrypted(key) {
+            if !key.is_empty() && !fork_security::SecretStore::is_encrypted(key) {
                 return Ok(key.clone());
             }
         }
@@ -219,9 +219,9 @@ impl WebSearchTool {
             .tavily_api_key
             .filter(|k| !k.is_empty())
             .ok_or_else(|| anyhow::anyhow!("Tavily API key not configured"))?;
-        if crate::security::SecretStore::is_encrypted(&raw_key) {
+        if fork_security::SecretStore::is_encrypted(&raw_key) {
             let synapseclaw_dir = self.config_path.parent().unwrap_or_else(|| Path::new("."));
-            let store = crate::security::SecretStore::new(synapseclaw_dir, self.secrets_encrypt);
+            let store = fork_security::SecretStore::new(synapseclaw_dir, self.secrets_encrypt);
             let plaintext = store.decrypt(&raw_key)?;
             if plaintext.is_empty() {
                 anyhow::bail!("Tavily API key not configured (decrypted value is empty)");
@@ -579,7 +579,7 @@ mod tests {
     #[test]
     fn test_resolve_brave_api_key_decrypts_encrypted_key() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let store = crate::security::SecretStore::new(tmp.path(), true);
+        let store = fork_security::SecretStore::new(tmp.path(), true);
         let encrypted = store.encrypt("brave-secret-key").unwrap();
 
         let config_path = tmp.path().join("config.toml");

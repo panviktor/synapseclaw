@@ -28,7 +28,7 @@ pub struct IpcClient {
     broker_url: String,
     bearer_token: String,
     /// Optional Ed25519 identity for message signing (Phase 3B).
-    identity: Option<crate::security::identity::AgentIdentity>,
+    identity: Option<fork_security::identity::AgentIdentity>,
     /// Agent ID for signing context.
     agent_id: Option<String>,
     /// Monotonic sender-side sequence counter for replay protection (Phase 3B Step 10).
@@ -62,7 +62,7 @@ impl IpcClient {
     /// Also loads persisted sender_seq from disk (if available) to survive restarts.
     pub fn with_identity(
         mut self,
-        identity: crate::security::identity::AgentIdentity,
+        identity: fork_security::identity::AgentIdentity,
         agent_id: String,
     ) -> Self {
         // Load persisted sender_seq to survive restarts
@@ -1137,10 +1137,10 @@ impl AgentsSpawnTool {
             .ok_or_else(|| anyhow::anyhow!("Missing session_id in provision response"))?;
 
         // 2. Verify sandbox available for trust level (fail-closed)
-        let boundary = crate::security::execution::execution_boundary(child_level);
-        let sandbox = crate::security::detect::create_sandbox(&self.config.security);
+        let boundary = fork_security::execution::execution_boundary(child_level);
+        let sandbox = fork_security::detect::create_sandbox(&self.config.security);
         if let Err(e) =
-            crate::security::execution::require_sandbox(child_level, &boundary, sandbox.as_ref())
+            fork_security::execution::require_sandbox(child_level, &boundary, sandbox.as_ref())
         {
             return Ok(ToolResult {
                 success: false,
@@ -1152,7 +1152,7 @@ impl AgentsSpawnTool {
         // 3. Validate and resolve workload profile if specified
         let resolved_workload = if let Some(ref workload_name) = workload {
             if let Some(profile) = self.config.agents_ipc.workload_profiles.get(workload_name) {
-                match crate::security::execution::apply_workload(&boundary, profile) {
+                match fork_security::execution::apply_workload(&boundary, profile) {
                     Ok(config) => Some(config),
                     Err(e) => {
                         return Ok(ToolResult {
@@ -1186,9 +1186,9 @@ impl AgentsSpawnTool {
 
         // Pass execution boundary autonomy to child
         let autonomy_str = match boundary.autonomy {
-            crate::security::execution::BoundaryAutonomy::Full => "full",
-            crate::security::execution::BoundaryAutonomy::Supervised => "supervised",
-            crate::security::execution::BoundaryAutonomy::ReadOnly => "read_only",
+            fork_security::execution::BoundaryAutonomy::Full => "full",
+            fork_security::execution::BoundaryAutonomy::Supervised => "supervised",
+            fork_security::execution::BoundaryAutonomy::ReadOnly => "read_only",
         };
         env_overlay.insert("SYNAPSECLAW_AUTONOMY".into(), autonomy_str.into());
 
@@ -1562,7 +1562,7 @@ mod tests {
             },
         );
 
-        let pairing = std::sync::Arc::new(crate::security::PairingGuard::with_metadata(
+        let pairing = std::sync::Arc::new(fork_security::PairingGuard::with_metadata(
             true,
             &[token_hash.to_string()],
             &metadata,
@@ -1807,7 +1807,7 @@ mod tests {
         let url = start_test_server(state).await;
 
         // Create client with Ed25519 identity
-        let identity = crate::security::identity::AgentIdentity::generate().unwrap();
+        let identity = fork_security::identity::AgentIdentity::generate().unwrap();
         let client = Arc::new(
             IpcClient::new(&url, TEST_TOKEN_RAW, 5)
                 .with_identity(identity, "test-agent".to_string()),

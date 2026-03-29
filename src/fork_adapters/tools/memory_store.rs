@@ -97,7 +97,8 @@ impl Tool for MemoryStoreTool {
 mod tests {
     use super::*;
     use crate::memory::SqliteMemory;
-    use crate::security::{AutonomyLevel, SecurityPolicy};
+    use fork_core::domain::config::AutonomyLevel;
+    use fork_core::domain::security_policy::SecurityPolicy;
     use tempfile::TempDir;
 
     fn test_security() -> Arc<SecurityPolicy> {

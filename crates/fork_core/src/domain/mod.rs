@@ -16,6 +16,7 @@ pub mod query_classification;
 pub mod routing;
 pub mod run;
 pub mod security_policy;
+pub mod security_types;
 pub mod spawn;
 pub mod tool_audit;
 pub mod tool_middleware;

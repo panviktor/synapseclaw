@@ -6,8 +6,6 @@
 
 use super::{require_localhost, AppState};
 use crate::fork_adapters::gateway::api::extract_bearer_token;
-use crate::security::audit::{AuditEvent, AuditEventType};
-use crate::security::{GuardResult, LeakResult};
 use axum::{
     extract::{ConnectInfo, Query, State},
     http::{HeaderMap, StatusCode},
@@ -15,6 +13,8 @@ use axum::{
     Json,
 };
 use fork_config::schema::TokenMetadata;
+use fork_security::audit::{AuditEvent, AuditEventType};
+use fork_security::{GuardResult, LeakResult};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -2540,11 +2540,9 @@ pub async fn handle_ipc_send(
                 "{}|{}|{}|{}|{}",
                 meta.agent_id, resolved_to, sender_seq, sender_ts, payload_hash
             );
-            if let Err(e) = crate::security::identity::verify_signature(
-                pubkey_hex,
-                signing_data.as_bytes(),
-                &sig,
-            ) {
+            if let Err(e) =
+                fork_security::identity::verify_signature(pubkey_hex, signing_data.as_bytes(), &sig)
+            {
                 emit_blocked_audit(
                     &state,
                     &meta.agent_id,
@@ -3171,11 +3169,11 @@ pub async fn handle_ipc_register_key(
 /// itself — used by the result delivery path and timeout logic.
 pub fn revoke_ephemeral_agent(
     db: &IpcDb,
-    pairing: &crate::security::PairingGuard,
+    pairing: &fork_security::PairingGuard,
     agent_id: &str,
     session_id: &str,
     status: &str,
-    audit_logger: Option<&crate::security::audit::AuditLogger>,
+    audit_logger: Option<&fork_security::audit::AuditLogger>,
 ) {
     // Remove token from runtime state
     let tokens_revoked = pairing.revoke_by_agent_id(agent_id);
@@ -3698,7 +3696,7 @@ pub async fn handle_admin_ipc_audit_verify(
     let key_path = config.workspace_dir.join("audit.key");
     drop(config);
 
-    match crate::security::audit::verify_audit_chain(&log_path, &key_path) {
+    match fork_security::audit::verify_audit_chain(&log_path, &key_path) {
         Ok(count) => Ok(Json(serde_json::json!({
             "ok": true,
             "verified": count,
@@ -4081,8 +4079,7 @@ pub async fn handle_ipc_push_notification(
 
     let config = state.config.lock();
     let expected_token = config.agents_ipc.proxy_token.as_deref().unwrap_or("");
-    if expected_token.is_empty()
-        || !crate::security::pairing::constant_time_eq(token, expected_token)
+    if expected_token.is_empty() || !fork_security::pairing::constant_time_eq(token, expected_token)
     {
         return Err((
             StatusCode::UNAUTHORIZED,
@@ -4837,7 +4834,7 @@ mod tests {
 
     #[test]
     fn prompt_guard_blocks_injection_at_default_sensitivity() {
-        use crate::security::{GuardAction, PromptGuard};
+        use fork_security::{GuardAction, PromptGuard};
         // Default sensitivity 0.55 should block command_injection (score 0.6)
         let guard = PromptGuard::with_config(GuardAction::Block, 0.55);
         // "ignore all previous instructions" → system_override score 1.0 > 0.55
@@ -4850,7 +4847,7 @@ mod tests {
 
     #[test]
     fn prompt_guard_allows_safe_payload() {
-        use crate::security::{GuardAction, PromptGuard};
+        use fork_security::{GuardAction, PromptGuard};
         let guard = PromptGuard::with_config(GuardAction::Block, 0.55);
         let result = guard.scan("Please analyze the quarterly report and summarize findings.");
         assert!(
@@ -4936,28 +4933,28 @@ mod tests {
 
     #[test]
     fn leak_detector_blocks_aws_key() {
-        let detector = crate::security::LeakDetector::with_sensitivity(0.7);
+        let detector = fork_security::LeakDetector::with_sensitivity(0.7);
         let result = detector.scan("here is my key: AKIAIOSFODNN7EXAMPLE");
         assert!(matches!(result, LeakResult::Detected { .. }));
     }
 
     #[test]
     fn leak_detector_blocks_github_token() {
-        let detector = crate::security::LeakDetector::with_sensitivity(0.7);
+        let detector = fork_security::LeakDetector::with_sensitivity(0.7);
         let result = detector.scan("token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn");
         assert!(matches!(result, LeakResult::Detected { .. }));
     }
 
     #[test]
     fn leak_detector_allows_safe_text() {
-        let detector = crate::security::LeakDetector::with_sensitivity(0.7);
+        let detector = fork_security::LeakDetector::with_sensitivity(0.7);
         let result = detector.scan("The quarterly report shows 15% growth in revenue.");
         assert!(matches!(result, LeakResult::Clean));
     }
 
     #[test]
     fn leak_detector_blocks_password_in_state() {
-        let detector = crate::security::LeakDetector::with_sensitivity(0.7);
+        let detector = fork_security::LeakDetector::with_sensitivity(0.7);
         let result = detector.scan("password=SuperSecretLongPassword123!");
         assert!(matches!(result, LeakResult::Detected { .. }));
     }
@@ -5273,7 +5270,7 @@ mod tests {
 
     #[test]
     fn sanitize_guard_action_maps_to_block() {
-        use crate::security::GuardAction;
+        use fork_security::GuardAction;
         let action = GuardAction::from_str("sanitize");
         assert_eq!(
             action,
@@ -5400,7 +5397,7 @@ mod tests {
 
     #[test]
     fn register_ephemeral_token_works_for_auth() {
-        use crate::security::PairingGuard;
+        use fork_security::PairingGuard;
 
         let guard = PairingGuard::new(true, &["zc_existing".into()]);
         let meta = fork_config::schema::TokenMetadata {
@@ -5430,7 +5427,7 @@ mod tests {
 
     #[test]
     fn result_delivery_completes_spawn_run_and_revokes() {
-        use crate::security::PairingGuard;
+        use fork_security::PairingGuard;
 
         let db = IpcDb::open_in_memory().unwrap();
         let guard = PairingGuard::new(true, &["zc_existing".into()]);
@@ -5536,7 +5533,7 @@ mod tests {
 
         assert!(db.get_agent_public_key("opus").is_none());
 
-        let identity = crate::security::identity::AgentIdentity::generate().unwrap();
+        let identity = fork_security::identity::AgentIdentity::generate().unwrap();
         let pubkey = identity.public_key_hex();
 
         assert!(db.set_agent_public_key("opus", &pubkey));
@@ -5551,14 +5548,14 @@ mod tests {
 
     #[test]
     fn signature_verification_valid() {
-        let identity = crate::security::identity::AgentIdentity::generate().unwrap();
+        let identity = fork_security::identity::AgentIdentity::generate().unwrap();
         let payload = "check status";
         use sha2::{Digest, Sha256};
         let payload_hash = hex::encode(Sha256::digest(payload.as_bytes()));
         let signing_data = format!("opus|sentinel|{payload_hash}");
         let sig = identity.sign(signing_data.as_bytes());
 
-        assert!(crate::security::identity::verify_signature(
+        assert!(fork_security::identity::verify_signature(
             &identity.public_key_hex(),
             signing_data.as_bytes(),
             &sig
@@ -5568,7 +5565,7 @@ mod tests {
 
     #[test]
     fn signature_verification_wrong_payload_fails() {
-        let identity = crate::security::identity::AgentIdentity::generate().unwrap();
+        let identity = fork_security::identity::AgentIdentity::generate().unwrap();
         use sha2::{Digest, Sha256};
         let payload_hash = hex::encode(Sha256::digest(b"original"));
         let signing_data = format!("opus|sentinel|{payload_hash}");
@@ -5577,7 +5574,7 @@ mod tests {
         let wrong_hash = hex::encode(Sha256::digest(b"tampered"));
         let wrong_data = format!("opus|sentinel|{wrong_hash}");
 
-        assert!(crate::security::identity::verify_signature(
+        assert!(fork_security::identity::verify_signature(
             &identity.public_key_hex(),
             wrong_data.as_bytes(),
             &sig
@@ -5589,7 +5586,7 @@ mod tests {
     fn ipc_client_sign_send_body_adds_signature() {
         use crate::fork_adapters::tools::agents_ipc::IpcClient;
 
-        let identity = crate::security::identity::AgentIdentity::generate().unwrap();
+        let identity = fork_security::identity::AgentIdentity::generate().unwrap();
         let client = IpcClient::new("http://localhost:42617", "token", 10)
             .with_identity(identity, "opus".into());
 
@@ -5642,7 +5639,7 @@ mod tests {
     fn ipc_client_sign_includes_seq_and_timestamp() {
         use crate::fork_adapters::tools::agents_ipc::IpcClient;
 
-        let identity = crate::security::identity::AgentIdentity::generate().unwrap();
+        let identity = fork_security::identity::AgentIdentity::generate().unwrap();
         let client = IpcClient::new("http://localhost:42617", "token", 10)
             .with_identity(identity, "opus".into());
 

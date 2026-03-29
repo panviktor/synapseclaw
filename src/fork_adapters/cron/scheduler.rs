@@ -2,10 +2,11 @@ use crate::fork_adapters::cron::{
     due_jobs, next_run_for_schedule, record_last_run, record_run, remove_job, reschedule_after_run,
     update_job, CronJob, CronJobPatch, ExecutionMode, JobType, Schedule, SessionTarget,
 };
-use crate::security::{security_policy_from_config, SecurityPolicy};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use fork_config::schema::Config;
+use fork_config::security_factory::security_policy_from_config;
+use fork_core::domain::security_policy::SecurityPolicy;
 use futures_util::{stream, StreamExt};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -290,7 +291,7 @@ async fn run_agent_job_subprocess(config: &Config, job: &CronJob) -> (bool, Stri
     }
 
     // Apply sandbox wrapping (OS-level isolation)
-    let sandbox = crate::security::detect::create_sandbox(&config.security);
+    let sandbox = fork_security::detect::create_sandbox(&config.security);
     if let Err(e) = sandbox.wrap_command(&mut std_cmd) {
         return (
             false,

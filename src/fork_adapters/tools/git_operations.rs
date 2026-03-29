@@ -1,6 +1,7 @@
 use super::traits::{Tool, ToolResult};
-use crate::security::{AutonomyLevel, SecurityPolicy};
 use async_trait::async_trait;
+use fork_core::domain::config::AutonomyLevel;
+use fork_core::domain::security_policy::SecurityPolicy;
 use serde_json::json;
 use std::sync::Arc;
 
