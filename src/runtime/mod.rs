@@ -1,12 +1,12 @@
 //! Runtime module — trait re-export + factory.
 //!
-//! Implementations (native, docker, wasm) now live in fork_adapters::runtime.
-//! The RuntimeAdapter trait lives in fork_core::ports::runtime.
+//! Implementations (native, docker, wasm) now live in adapters::runtime.
+//! The RuntimeAdapter trait lives in synapse_core::ports::runtime.
 
 pub mod traits;
 
-pub use crate::fork_adapters::runtime::docker;
-pub use crate::fork_adapters::runtime::native;
+pub use crate::adapters::runtime::docker;
+pub use crate::adapters::runtime::native;
 pub use docker::DockerRuntime;
 pub use native::NativeRuntime;
 pub use traits::RuntimeAdapter;

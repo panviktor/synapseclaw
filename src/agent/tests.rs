@@ -24,17 +24,17 @@
 //!  19. Builder validation (missing required fields)
 //!  20. Idempotent system prompt insertion
 
+use crate::adapters::observability::{NoopObserver, Observer};
+use crate::adapters::providers::{
+    ChatMessage, ChatRequest, ChatResponse, ConversationMessage, Provider, ToolCall,
+    ToolResultMessage,
+};
+use crate::adapters::tools::{Tool, ToolResult};
 use crate::agent::agent::Agent;
 use crate::agent::dispatcher::{
     NativeToolDispatcher, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
 use crate::config::{AgentConfig, MemoryConfig};
-use crate::fork_adapters::observability::{NoopObserver, Observer};
-use crate::fork_adapters::providers::{
-    ChatMessage, ChatRequest, ChatResponse, ConversationMessage, Provider, ToolCall,
-    ToolResultMessage,
-};
-use crate::fork_adapters::tools::{Tool, ToolResult};
 use crate::memory::{self, Memory};
 use anyhow::Result;
 use async_trait::async_trait;

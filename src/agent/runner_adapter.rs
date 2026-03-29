@@ -3,10 +3,10 @@
 use crate::config::Config;
 use anyhow::Result;
 use async_trait::async_trait;
-use fork_core::domain::tool_audit::RunContext;
-use fork_core::ports::agent_runner::AgentRunnerPort;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use synapse_core::domain::tool_audit::RunContext;
+use synapse_core::ports::agent_runner::AgentRunnerPort;
 
 /// Concrete implementation of `AgentRunnerPort` backed by the real agent loop.
 pub struct AgentRunner {

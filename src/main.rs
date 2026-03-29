@@ -71,11 +71,11 @@ fn pause_after_no_command_help() {
     let _ = std::io::stdin().read_line(&mut line);
 }
 
+mod adapters;
 mod agent;
 mod config;
-mod fork_adapters;
-/// Re-export workspace crate so `crate::fork_core::` paths work in the binary.
-pub use fork_core;
+/// Re-export workspace crate so `crate::synapse_core::` paths work in the binary.
+pub use synapse_core;
 mod identity;
 mod memory;
 mod multimodal;
@@ -788,11 +788,11 @@ async fn main() -> Result<()> {
         let is_tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
 
         let config = if channels_only {
-            Box::pin(crate::fork_adapters::onboard::run_channels_repair_wizard()).await
+            Box::pin(crate::adapters::onboard::run_channels_repair_wizard()).await
         } else if is_tty && !has_provider_flags {
-            Box::pin(crate::fork_adapters::onboard::run_wizard(force)).await
+            Box::pin(crate::adapters::onboard::run_wizard(force)).await
         } else {
-            Box::pin(crate::fork_adapters::onboard::run_quick_setup(
+            Box::pin(crate::adapters::onboard::run_quick_setup(
                 api_key.as_deref(),
                 provider.as_deref(),
                 model.as_deref(),
@@ -812,7 +812,7 @@ async fn main() -> Result<()> {
 
         // Auto-start channels if user said yes during wizard
         if std::env::var("SYNAPSECLAW_AUTOSTART_CHANNELS").as_deref() == Ok("1") {
-            Box::pin(fork_adapters::channels::start_channels(config, None)).await?;
+            Box::pin(adapters::channels::start_channels(config, None)).await?;
         }
         return Ok(());
     }
@@ -823,11 +823,11 @@ async fn main() -> Result<()> {
 
     // Build agent runner port — shared by gateway, daemon, cron
     let config_for_runner = std::sync::Arc::new(std::sync::Mutex::new(config.clone()));
-    let agent_runner: std::sync::Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort> =
+    let agent_runner: std::sync::Arc<dyn synapse_core::ports::agent_runner::AgentRunnerPort> =
         std::sync::Arc::new(crate::agent::runner_adapter::AgentRunner::new(
             config_for_runner,
         ));
-    crate::fork_adapters::observability::runtime_trace::init_from_config(
+    crate::adapters::observability::runtime_trace::init_from_config(
         &config.observability,
         &config.workspace_dir,
     );
@@ -908,7 +908,7 @@ async fn main() -> Result<()> {
                     }
 
                     log_gateway_start(&host, port);
-                    Box::pin(fork_adapters::gateway::run_gateway(
+                    Box::pin(adapters::gateway::run_gateway(
                         &host,
                         port,
                         config,
@@ -966,7 +966,7 @@ async fn main() -> Result<()> {
                 Some(synapseclaw::GatewayCommands::Start { port, host }) => {
                     let (port, host) = resolve_gateway_addr(&config, port, host);
                     log_gateway_start(&host, port);
-                    Box::pin(fork_adapters::gateway::run_gateway(
+                    Box::pin(adapters::gateway::run_gateway(
                         &host,
                         port,
                         config,
@@ -981,7 +981,7 @@ async fn main() -> Result<()> {
                     let port = config.gateway.port;
                     let host = config.gateway.host.clone();
                     log_gateway_start(&host, port);
-                    Box::pin(fork_adapters::gateway::run_gateway(
+                    Box::pin(adapters::gateway::run_gateway(
                         &host,
                         port,
                         config,
@@ -1051,7 +1051,7 @@ async fn main() -> Result<()> {
             } else {
                 info!("🧠 Starting SynapseClaw Daemon on {host}:{port}");
             }
-            Box::pin(crate::fork_adapters::daemon::run(
+            Box::pin(crate::adapters::daemon::run(
                 config,
                 host,
                 port,
@@ -1151,7 +1151,7 @@ async fn main() -> Result<()> {
         } => handle_estop_command(&config, estop_command, level, domains, tools),
 
         Commands::Cron { cron_command } => {
-            crate::fork_adapters::cron::handle_command(cron_command, &config)
+            crate::adapters::cron::handle_command(cron_command, &config)
         }
 
         Commands::Models { model_command } => match model_command {
@@ -1164,9 +1164,9 @@ async fn main() -> Result<()> {
                     if provider.is_some() {
                         bail!("`models refresh --all` cannot be combined with --provider");
                     }
-                    crate::fork_adapters::onboard::run_models_refresh_all(&config, force).await
+                    crate::adapters::onboard::run_models_refresh_all(&config, force).await
                 } else {
-                    crate::fork_adapters::onboard::run_models_refresh(
+                    crate::adapters::onboard::run_models_refresh(
                         &config,
                         provider.as_deref(),
                         force,
@@ -1175,21 +1175,16 @@ async fn main() -> Result<()> {
                 }
             }
             ModelCommands::List { provider } => {
-                crate::fork_adapters::onboard::run_models_list(&config, provider.as_deref()).await
+                crate::adapters::onboard::run_models_list(&config, provider.as_deref()).await
             }
             ModelCommands::Set { model } => {
-                Box::pin(crate::fork_adapters::onboard::run_models_set(
-                    &config, &model,
-                ))
-                .await
+                Box::pin(crate::adapters::onboard::run_models_set(&config, &model)).await
             }
-            ModelCommands::Status => {
-                crate::fork_adapters::onboard::run_models_status(&config).await
-            }
+            ModelCommands::Status => crate::adapters::onboard::run_models_status(&config).await,
         },
 
         Commands::Providers => {
-            let providers = fork_adapters::providers::list_providers();
+            let providers = adapters::providers::list_providers();
             let current = config
                 .default_provider
                 .as_deref()
@@ -1227,7 +1222,7 @@ async fn main() -> Result<()> {
             instance,
         } => {
             let init_system = service_init.parse()?;
-            crate::fork_adapters::service::handle_command(
+            crate::adapters::service::handle_command(
                 &service_command,
                 &config,
                 init_system,
@@ -1240,37 +1235,34 @@ async fn main() -> Result<()> {
                 provider,
                 use_cache,
             }) => {
-                crate::fork_adapters::doctor::run_models(&config, provider.as_deref(), use_cache)
-                    .await
+                crate::adapters::doctor::run_models(&config, provider.as_deref(), use_cache).await
             }
             Some(DoctorCommands::Traces {
                 id,
                 event,
                 contains,
                 limit,
-            }) => crate::fork_adapters::doctor::run_traces(
+            }) => crate::adapters::doctor::run_traces(
                 &config,
                 id.as_deref(),
                 event.as_deref(),
                 contains.as_deref(),
                 limit,
             ),
-            None => crate::fork_adapters::doctor::run(&config),
+            None => crate::adapters::doctor::run(&config),
         },
 
         Commands::Channel { channel_command } => match channel_command {
             ChannelCommands::Start => {
-                Box::pin(fork_adapters::channels::start_channels(config, None)).await
+                Box::pin(adapters::channels::start_channels(config, None)).await
             }
-            ChannelCommands::Doctor => {
-                Box::pin(fork_adapters::channels::doctor_channels(config)).await
-            }
-            other => Box::pin(fork_adapters::channels::handle_command(other, &config)).await,
+            ChannelCommands::Doctor => Box::pin(adapters::channels::doctor_channels(config)).await,
+            other => Box::pin(adapters::channels::handle_command(other, &config)).await,
         },
 
         Commands::Integrations {
             integration_command,
-        } => crate::fork_adapters::integrations::handle_command(integration_command, &config),
+        } => crate::adapters::integrations::handle_command(integration_command, &config),
 
         Commands::Skills { skill_command } => skills::handle_command(skill_command, &config),
 
@@ -1614,12 +1606,12 @@ struct PendingOAuthLoginFile {
 
 fn pending_oauth_login_path(config: &Config, provider: &str) -> std::path::PathBuf {
     let filename = format!("auth-{}-pending.json", provider);
-    crate::fork_adapters::auth::state_dir_from_config(config).join(filename)
+    crate::adapters::auth::state_dir_from_config(config).join(filename)
 }
 
 fn pending_oauth_secret_store(config: &Config) -> security::secrets::SecretStore {
     security::secrets::SecretStore::new(
-        &crate::fork_adapters::auth::state_dir_from_config(config),
+        &crate::adapters::auth::state_dir_from_config(config),
         config.secrets.encrypt,
     )
 }
@@ -1714,8 +1706,7 @@ fn read_plain_input(prompt: &str) -> Result<String> {
 }
 
 fn extract_openai_account_id_for_profile(access_token: &str) -> Option<String> {
-    let account_id =
-        crate::fork_adapters::auth::openai_oauth::extract_account_id_from_jwt(access_token);
+    let account_id = crate::adapters::auth::openai_oauth::extract_account_id_from_jwt(access_token);
     if account_id.is_none() {
         warn!(
             "Could not extract OpenAI account id from OAuth access token; \
@@ -1725,7 +1716,7 @@ fn extract_openai_account_id_for_profile(access_token: &str) -> Option<String> {
     account_id
 }
 
-fn format_expiry(profile: &crate::fork_adapters::auth::profiles::AuthProfile) -> String {
+fn format_expiry(profile: &crate::adapters::auth::profiles::AuthProfile) -> String {
     match profile
         .token_set
         .as_ref()
@@ -1746,7 +1737,7 @@ fn format_expiry(profile: &crate::fork_adapters::auth::profiles::AuthProfile) ->
 
 #[allow(clippy::too_many_lines)]
 async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Result<()> {
-    let auth_service = crate::fork_adapters::auth::AuthService::from_config(config);
+    let auth_service = crate::adapters::auth::AuthService::from_config(config);
 
     match auth_command {
         AuthCommands::Login {
@@ -1754,17 +1745,15 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
             profile,
             device_code,
         } => {
-            let provider = crate::fork_adapters::auth::normalize_provider(&provider)?;
+            let provider = crate::adapters::auth::normalize_provider(&provider)?;
             let client = reqwest::Client::new();
 
             match provider.as_str() {
                 "gemini" => {
                     // Gemini OAuth flow
                     if device_code {
-                        match crate::fork_adapters::auth::gemini_oauth::start_device_code_flow(
-                            &client,
-                        )
-                        .await
+                        match crate::adapters::auth::gemini_oauth::start_device_code_flow(&client)
+                            .await
                         {
                             Ok(device) => {
                                 println!("Google/Gemini device-code login started.");
@@ -1775,10 +1764,12 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                                 }
 
                                 let token_set =
-                                    crate::fork_adapters::auth::gemini_oauth::poll_device_code_tokens(&client, &device)
-                                        .await?;
+                                    crate::adapters::auth::gemini_oauth::poll_device_code_tokens(
+                                        &client, &device,
+                                    )
+                                    .await?;
                                 let account_id = token_set.id_token.as_deref().and_then(
-                                    crate::fork_adapters::auth::gemini_oauth::extract_account_email_from_id_token,
+                                    crate::adapters::auth::gemini_oauth::extract_account_email_from_id_token,
                                 );
 
                                 auth_service
@@ -1797,9 +1788,9 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         }
                     }
 
-                    let pkce = crate::fork_adapters::auth::gemini_oauth::generate_pkce_state();
+                    let pkce = crate::adapters::auth::gemini_oauth::generate_pkce_state();
                     let authorize_url =
-                        crate::fork_adapters::auth::gemini_oauth::build_authorize_url(&pkce)?;
+                        crate::adapters::auth::gemini_oauth::build_authorize_url(&pkce)?;
 
                     // Save pending login for paste-redirect fallback
                     let pending = PendingOAuthLogin {
@@ -1815,35 +1806,32 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                     println!("{authorize_url}");
                     println!();
 
-                    let code =
-                        match crate::fork_adapters::auth::gemini_oauth::receive_loopback_code(
-                            &pkce.state,
-                            std::time::Duration::from_secs(180),
-                        )
-                        .await
-                        {
-                            Ok(code) => {
-                                clear_pending_oauth_login(config, "gemini");
-                                code
-                            }
-                            Err(e) => {
-                                println!("Callback capture failed: {e}");
-                                println!(
+                    let code = match crate::adapters::auth::gemini_oauth::receive_loopback_code(
+                        &pkce.state,
+                        std::time::Duration::from_secs(180),
+                    )
+                    .await
+                    {
+                        Ok(code) => {
+                            clear_pending_oauth_login(config, "gemini");
+                            code
+                        }
+                        Err(e) => {
+                            println!("Callback capture failed: {e}");
+                            println!(
                                 "Run `synapseclaw auth paste-redirect --provider gemini --profile {profile}`"
                             );
-                                return Ok(());
-                            }
-                        };
+                            return Ok(());
+                        }
+                    };
 
-                    let token_set =
-                        crate::fork_adapters::auth::gemini_oauth::exchange_code_for_tokens(
-                            &client, &code, &pkce,
-                        )
-                        .await?;
-                    let account_id = token_set
-                        .id_token
-                        .as_deref()
-                        .and_then(crate::fork_adapters::auth::gemini_oauth::extract_account_email_from_id_token);
+                    let token_set = crate::adapters::auth::gemini_oauth::exchange_code_for_tokens(
+                        &client, &code, &pkce,
+                    )
+                    .await?;
+                    let account_id = token_set.id_token.as_deref().and_then(
+                        crate::adapters::auth::gemini_oauth::extract_account_email_from_id_token,
+                    );
 
                     auth_service
                         .store_gemini_tokens(&profile, token_set, account_id, true)
@@ -1856,10 +1844,8 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                 "openai-codex" => {
                     // OpenAI Codex OAuth flow
                     if device_code {
-                        match crate::fork_adapters::auth::openai_oauth::start_device_code_flow(
-                            &client,
-                        )
-                        .await
+                        match crate::adapters::auth::openai_oauth::start_device_code_flow(&client)
+                            .await
                         {
                             Ok(device) => {
                                 println!("OpenAI device-code login started.");
@@ -1873,8 +1859,10 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                                 }
 
                                 let token_set =
-                                    crate::fork_adapters::auth::openai_oauth::poll_device_code_tokens(&client, &device)
-                                        .await?;
+                                    crate::adapters::auth::openai_oauth::poll_device_code_tokens(
+                                        &client, &device,
+                                    )
+                                    .await?;
                                 let account_id =
                                     extract_openai_account_id_for_profile(&token_set.access_token);
 
@@ -1895,7 +1883,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         }
                     }
 
-                    let pkce = crate::fork_adapters::auth::openai_oauth::generate_pkce_state();
+                    let pkce = crate::adapters::auth::openai_oauth::generate_pkce_state();
                     let pending = PendingOAuthLogin {
                         provider: "openai".to_string(),
                         profile: profile.clone(),
@@ -1906,34 +1894,32 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                     save_pending_oauth_login(config, &pending)?;
 
                     let authorize_url =
-                        crate::fork_adapters::auth::openai_oauth::build_authorize_url(&pkce);
+                        crate::adapters::auth::openai_oauth::build_authorize_url(&pkce);
                     println!("Open this URL in your browser and authorize access:");
                     println!("{authorize_url}");
                     println!();
                     println!("Waiting for callback at http://localhost:1455/auth/callback ...");
 
-                    let code =
-                        match crate::fork_adapters::auth::openai_oauth::receive_loopback_code(
-                            &pkce.state,
-                            std::time::Duration::from_secs(180),
-                        )
-                        .await
-                        {
-                            Ok(code) => code,
-                            Err(e) => {
-                                println!("Callback capture failed: {e}");
-                                println!(
+                    let code = match crate::adapters::auth::openai_oauth::receive_loopback_code(
+                        &pkce.state,
+                        std::time::Duration::from_secs(180),
+                    )
+                    .await
+                    {
+                        Ok(code) => code,
+                        Err(e) => {
+                            println!("Callback capture failed: {e}");
+                            println!(
                                 "Run `synapseclaw auth paste-redirect --provider openai-codex --profile {profile}`"
                             );
-                                return Ok(());
-                            }
-                        };
+                            return Ok(());
+                        }
+                    };
 
-                    let token_set =
-                        crate::fork_adapters::auth::openai_oauth::exchange_code_for_tokens(
-                            &client, &code, &pkce,
-                        )
-                        .await?;
+                    let token_set = crate::adapters::auth::openai_oauth::exchange_code_for_tokens(
+                        &client, &code, &pkce,
+                    )
+                    .await?;
                     let account_id = extract_openai_account_id_for_profile(&token_set.access_token);
 
                     auth_service
@@ -1958,7 +1944,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
             profile,
             input,
         } => {
-            let provider = crate::fork_adapters::auth::normalize_provider(&provider)?;
+            let provider = crate::adapters::auth::normalize_provider(&provider)?;
 
             match provider.as_str() {
                 "openai-codex" => {
@@ -1981,23 +1967,22 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         None => read_plain_input("Paste redirect URL or OAuth code")?,
                     };
 
-                    let code = crate::fork_adapters::auth::openai_oauth::parse_code_from_redirect(
+                    let code = crate::adapters::auth::openai_oauth::parse_code_from_redirect(
                         &redirect_input,
                         Some(&pending.state),
                     )?;
 
-                    let pkce = crate::fork_adapters::auth::openai_oauth::PkceState {
+                    let pkce = crate::adapters::auth::openai_oauth::PkceState {
                         code_verifier: pending.code_verifier.clone(),
                         code_challenge: String::new(),
                         state: pending.state.clone(),
                     };
 
                     let client = reqwest::Client::new();
-                    let token_set =
-                        crate::fork_adapters::auth::openai_oauth::exchange_code_for_tokens(
-                            &client, &code, &pkce,
-                        )
-                        .await?;
+                    let token_set = crate::adapters::auth::openai_oauth::exchange_code_for_tokens(
+                        &client, &code, &pkce,
+                    )
+                    .await?;
                     let account_id = extract_openai_account_id_for_profile(&token_set.access_token);
 
                     auth_service
@@ -2028,27 +2013,25 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         None => read_plain_input("Paste redirect URL or OAuth code")?,
                     };
 
-                    let code = crate::fork_adapters::auth::gemini_oauth::parse_code_from_redirect(
+                    let code = crate::adapters::auth::gemini_oauth::parse_code_from_redirect(
                         &redirect_input,
                         Some(&pending.state),
                     )?;
 
-                    let pkce = crate::fork_adapters::auth::gemini_oauth::PkceState {
+                    let pkce = crate::adapters::auth::gemini_oauth::PkceState {
                         code_verifier: pending.code_verifier.clone(),
                         code_challenge: String::new(),
                         state: pending.state.clone(),
                     };
 
                     let client = reqwest::Client::new();
-                    let token_set =
-                        crate::fork_adapters::auth::gemini_oauth::exchange_code_for_tokens(
-                            &client, &code, &pkce,
-                        )
-                        .await?;
-                    let account_id = token_set
-                        .id_token
-                        .as_deref()
-                        .and_then(crate::fork_adapters::auth::gemini_oauth::extract_account_email_from_id_token);
+                    let token_set = crate::adapters::auth::gemini_oauth::exchange_code_for_tokens(
+                        &client, &code, &pkce,
+                    )
+                    .await?;
+                    let account_id = token_set.id_token.as_deref().and_then(
+                        crate::adapters::auth::gemini_oauth::extract_account_email_from_id_token,
+                    );
 
                     auth_service
                         .store_gemini_tokens(&profile, token_set, account_id, true)
@@ -2071,7 +2054,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
             token,
             auth_kind,
         } => {
-            let provider = crate::fork_adapters::auth::normalize_provider(&provider)?;
+            let provider = crate::adapters::auth::normalize_provider(&provider)?;
             let token = match token {
                 Some(token) => token.trim().to_string(),
                 None => read_auth_input("Paste token")?,
@@ -2080,7 +2063,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                 bail!("Token cannot be empty");
             }
 
-            let kind = crate::fork_adapters::auth::anthropic_token::detect_auth_kind(
+            let kind = crate::adapters::auth::anthropic_token::detect_auth_kind(
                 &token,
                 auth_kind.as_deref(),
             );
@@ -2099,13 +2082,13 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
         }
 
         AuthCommands::SetupToken { provider, profile } => {
-            let provider = crate::fork_adapters::auth::normalize_provider(&provider)?;
+            let provider = crate::adapters::auth::normalize_provider(&provider)?;
             let token = read_auth_input("Paste token")?;
             if token.is_empty() {
                 bail!("Token cannot be empty");
             }
 
-            let kind = crate::fork_adapters::auth::anthropic_token::detect_auth_kind(
+            let kind = crate::adapters::auth::anthropic_token::detect_auth_kind(
                 &token,
                 Some("authorization"),
             );
@@ -2124,7 +2107,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
         }
 
         AuthCommands::Refresh { provider, profile } => {
-            let provider = crate::fork_adapters::auth::normalize_provider(&provider)?;
+            let provider = crate::adapters::auth::normalize_provider(&provider)?;
 
             match provider.as_str() {
                 "openai-codex" => {
@@ -2166,7 +2149,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
         }
 
         AuthCommands::Logout { provider, profile } => {
-            let provider = crate::fork_adapters::auth::normalize_provider(&provider)?;
+            let provider = crate::adapters::auth::normalize_provider(&provider)?;
             let removed = auth_service.remove_profile(&provider, &profile).await?;
             if removed {
                 println!("Removed auth profile {provider}:{profile}");
@@ -2177,7 +2160,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
         }
 
         AuthCommands::Use { provider, profile } => {
-            let provider = crate::fork_adapters::auth::normalize_provider(&provider)?;
+            let provider = crate::adapters::auth::normalize_provider(&provider)?;
             auth_service.set_active_profile(&provider, &profile).await?;
             println!("Active profile for {provider}: {profile}");
             Ok(())

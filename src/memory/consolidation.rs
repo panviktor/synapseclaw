@@ -8,7 +8,7 @@
 //! This two-phase approach replaces the naive raw-message auto-save with
 //! semantic extraction, similar to Nanobot's `save_memory` tool call pattern.
 
-use crate::fork_adapters::providers::traits::Provider;
+use crate::adapters::providers::traits::Provider;
 use crate::memory::traits::{Memory, MemoryCategory};
 
 /// Output of consolidation extraction.
