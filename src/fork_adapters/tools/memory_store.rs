@@ -1,8 +1,9 @@
 use super::traits::{Tool, ToolResult};
-use crate::memory::{Memory, MemoryCategory};
 use async_trait::async_trait;
 use fork_core::domain::config::ToolOperation;
+use fork_core::domain::memory::MemoryCategory;
 use fork_core::domain::security_policy::SecurityPolicy;
+use fork_core::ports::memory_backend::Memory;
 use serde_json::json;
 use std::sync::Arc;
 

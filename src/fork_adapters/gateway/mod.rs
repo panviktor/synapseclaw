@@ -3133,10 +3133,11 @@ mod tests {
     use super::*;
     use crate::fork_adapters::channels::traits::ChannelMessage;
     use crate::fork_adapters::providers::Provider;
-    use crate::memory::{Memory, MemoryCategory, MemoryEntry};
     use async_trait::async_trait;
     use axum::http::HeaderValue;
     use axum::response::IntoResponse;
+    use fork_core::domain::memory::{MemoryCategory, MemoryEntry};
+    use fork_core::ports::memory_backend::Memory;
     use http_body_util::BodyExt;
     use parking_lot::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};

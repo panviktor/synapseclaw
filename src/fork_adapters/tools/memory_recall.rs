@@ -91,7 +91,8 @@ impl Tool for MemoryRecallTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{MemoryCategory, SqliteMemory};
+    use crate::memory::SqliteMemory;
+    use fork_core::domain::memory::MemoryCategory;
     use tempfile::TempDir;
 
     fn seeded_mem() -> (TempDir, Arc<dyn Memory>) {
