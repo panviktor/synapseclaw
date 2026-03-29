@@ -1,4 +1,5 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
+use crate::config::ConfigIO;
 use crate::config::{Config, StreamMode};
 use crate::security::pairing::PairingGuard;
 use anyhow::Context;

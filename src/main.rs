@@ -84,7 +84,7 @@ mod security;
 mod skills;
 mod util;
 
-use config::Config;
+use config::{Config, ConfigIO};
 
 // Re-export so binary modules can use crate::<CommandEnum> while keeping a single source of truth.
 pub use synapseclaw::{

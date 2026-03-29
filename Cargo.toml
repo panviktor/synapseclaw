@@ -206,7 +206,7 @@ libc = "0.2"
 
 [features]
 default = ["observability-prometheus", "channel-nostr", "channel-matrix"]
-channel-nostr = ["dep:nostr-sdk"]
+channel-nostr = ["dep:nostr-sdk", "fork_config/channel-nostr"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
 channel-feishu = ["channel-lark"]  # Alias for Feishu users (Lark and Feishu are the same platform)

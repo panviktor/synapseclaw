@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! Fork-owned configuration types — shared across all workspace crates.
 //!
 //! This crate holds config structs, channel/provider config types, and
@@ -8,3 +9,5 @@
 pub mod adapter_configs;
 pub mod channel_traits;
 pub mod provider_aliases;
+pub mod schema;
+pub mod workload;
