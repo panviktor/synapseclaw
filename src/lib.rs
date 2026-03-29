@@ -35,32 +35,24 @@
     dead_code
 )]
 
+pub mod adapters;
 pub mod agent;
-pub use crate::adapters::channels;
-pub(crate) mod adapters;
-pub mod config;
-pub use crate::adapters::gateway;
-/// Re-export fork_core workspace crate so `crate::synapse_core::` paths keep working.
-pub use synapse_core;
-pub(crate) mod identity;
-pub mod memory;
-pub(crate) mod multimodal;
-pub use crate::adapters::providers;
-pub mod runtime;
-pub(crate) mod security;
-pub(crate) mod skills;
-/// Re-export hooks for integration tests.
-pub use crate::adapters::hooks;
-/// Re-export observability for tests/benches.
-pub use crate::adapters::observability;
-pub use crate::adapters::tools;
-pub(crate) mod util;
-
-pub use config::Config;
-
-// CLI command enums — composition root.
 pub mod commands;
+pub mod config;
+pub mod identity;
+pub mod memory;
+pub mod multimodal;
+pub mod runtime;
+pub mod security;
+pub mod skills;
+pub mod util;
+
+// Convenience re-exports.
+pub use crate::adapters::{channels, gateway, hooks, observability, providers, tools};
+pub use synapse_core;
+
 pub use commands::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MemoryCommands,
     ServiceCommands, SkillCommands,
 };
+pub use config::Config;

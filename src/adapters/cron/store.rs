@@ -98,6 +98,7 @@ pub fn add_agent_job(
 /// - `execution_mode`: `InProcess` (legacy) or `Subprocess` (Phase 3A ephemeral agents).
 /// - `env_overlay`: extra environment variables for the subprocess (e.g. broker token, agent ID).
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::implicit_hasher)]
 pub fn add_agent_job_full(
     config: &Config,
     name: Option<String>,
