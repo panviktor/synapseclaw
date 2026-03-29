@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use synapse_config::schema::Config;
-use synapse_config::security_factory::security_policy_from_config;
 use synapse_core::domain::security_policy::SecurityPolicy;
+use synapse_security::security_factory::security_policy_from_config;
 
 mod schedule;
 mod store;
@@ -118,12 +118,9 @@ pub(crate) fn add_job(config: &Config, expression: &str, command: &str) -> Resul
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub fn handle_command(
-    command: synapse_config::commands::CronCommands,
-    config: &Config,
-) -> Result<()> {
+pub fn handle_command(command: crate::commands::CronCommands, config: &Config) -> Result<()> {
     match command {
-        synapse_config::commands::CronCommands::List => {
+        crate::commands::CronCommands::List => {
             let jobs = list_jobs(config)?;
             if jobs.is_empty() {
                 println!("No scheduled tasks yet.");
@@ -155,7 +152,7 @@ pub fn handle_command(
             }
             Ok(())
         }
-        synapse_config::commands::CronCommands::Add {
+        crate::commands::CronCommands::Add {
             expression,
             tz,
             agent,
@@ -189,7 +186,7 @@ pub fn handle_command(
             }
             Ok(())
         }
-        synapse_config::commands::CronCommands::AddAt { at, agent, command } => {
+        crate::commands::CronCommands::AddAt { at, agent, command } => {
             let at = chrono::DateTime::parse_from_rfc3339(&at)
                 .map_err(|e| anyhow::anyhow!("Invalid RFC3339 timestamp for --at: {e}"))?
                 .with_timezone(&chrono::Utc);
@@ -216,7 +213,7 @@ pub fn handle_command(
             }
             Ok(())
         }
-        synapse_config::commands::CronCommands::AddEvery {
+        crate::commands::CronCommands::AddEvery {
             every_ms,
             agent,
             command,
@@ -246,7 +243,7 @@ pub fn handle_command(
             }
             Ok(())
         }
-        synapse_config::commands::CronCommands::Once {
+        crate::commands::CronCommands::Once {
             delay,
             agent,
             command,
@@ -276,7 +273,7 @@ pub fn handle_command(
             }
             Ok(())
         }
-        synapse_config::commands::CronCommands::Update {
+        crate::commands::CronCommands::Update {
             id,
             expression,
             tz,
@@ -321,13 +318,13 @@ pub fn handle_command(
             println!("  Cmd : {}", job.command);
             Ok(())
         }
-        synapse_config::commands::CronCommands::Remove { id } => remove_job(config, &id),
-        synapse_config::commands::CronCommands::Pause { id } => {
+        crate::commands::CronCommands::Remove { id } => remove_job(config, &id),
+        crate::commands::CronCommands::Pause { id } => {
             pause_job(config, &id)?;
             println!("⏸️  Paused cron job {id}");
             Ok(())
         }
-        synapse_config::commands::CronCommands::Resume { id } => {
+        crate::commands::CronCommands::Resume { id } => {
             resume_job(config, &id)?;
             println!("▶️  Resumed cron job {id}");
             Ok(())
@@ -427,7 +424,7 @@ mod tests {
         name: Option<&str>,
     ) -> Result<()> {
         handle_command(
-            synapse_config::commands::CronCommands::Update {
+            crate::commands::CronCommands::Update {
                 id: id.into(),
                 expression: expression.map(Into::into),
                 tz: tz.map(Into::into),
@@ -777,7 +774,7 @@ mod tests {
         let config = test_config(&tmp);
 
         handle_command(
-            synapse_config::commands::CronCommands::Add {
+            crate::commands::CronCommands::Add {
                 expression: "*/15 * * * *".into(),
                 tz: None,
                 agent: true,
@@ -807,7 +804,7 @@ mod tests {
         // security policy. With --agent, it routes to agent job and skips
         // shell validation entirely.
         let result = handle_command(
-            synapse_config::commands::CronCommands::Add {
+            crate::commands::CronCommands::Add {
                 expression: "*/15 * * * *".into(),
                 tz: None,
                 agent: true,
@@ -828,7 +825,7 @@ mod tests {
         let config = test_config(&tmp);
 
         handle_command(
-            synapse_config::commands::CronCommands::Add {
+            crate::commands::CronCommands::Add {
                 expression: "*/5 * * * *".into(),
                 tz: None,
                 agent: false,

@@ -112,9 +112,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 use synapse_config::schema::Config;
-use synapse_config::security_factory::security_policy_from_config;
 use synapse_core::domain::util::truncate_with_ellipsis;
 use synapse_core::ports::memory_backend::Memory;
+use synapse_security::security_factory::security_policy_from_config;
 use tokio_util::sync::CancellationToken;
 
 /// Observer wrapper that forwards tool-call events to a channel sender
@@ -2286,17 +2286,17 @@ fn maybe_restart_managed_daemon_service() -> Result<bool> {
 }
 
 pub(crate) async fn handle_command(
-    command: synapse_config::commands::ChannelCommands,
+    command: crate::commands::ChannelCommands,
     config: &Config,
 ) -> Result<()> {
     match command {
-        synapse_config::commands::ChannelCommands::Start => {
+        crate::commands::ChannelCommands::Start => {
             anyhow::bail!("Start must be handled in main.rs (requires async runtime)")
         }
-        synapse_config::commands::ChannelCommands::Doctor => {
+        crate::commands::ChannelCommands::Doctor => {
             anyhow::bail!("Doctor must be handled in main.rs (requires async runtime)")
         }
-        synapse_config::commands::ChannelCommands::List => {
+        crate::commands::ChannelCommands::List => {
             println!("Channels:");
             println!("  ✅ CLI (always available)");
             for (channel, configured) in config.channels_config.channels() {
@@ -2327,7 +2327,7 @@ pub(crate) async fn handle_command(
             println!("To configure:      synapseclaw onboard");
             Ok(())
         }
-        synapse_config::commands::ChannelCommands::Add {
+        crate::commands::ChannelCommands::Add {
             channel_type,
             config: _,
         } => {
@@ -2335,13 +2335,13 @@ pub(crate) async fn handle_command(
                 "Channel type '{channel_type}' — use `synapseclaw onboard` to configure channels"
             );
         }
-        synapse_config::commands::ChannelCommands::Remove { name } => {
+        crate::commands::ChannelCommands::Remove { name } => {
             anyhow::bail!("Remove channel '{name}' — edit ~/.synapseclaw/config.toml directly");
         }
-        synapse_config::commands::ChannelCommands::BindTelegram { identity } => {
+        crate::commands::ChannelCommands::BindTelegram { identity } => {
             Box::pin(bind_telegram_identity(config, &identity)).await
         }
-        synapse_config::commands::ChannelCommands::Send {
+        crate::commands::ChannelCommands::Send {
             message,
             channel_id,
             recipient,

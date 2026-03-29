@@ -110,24 +110,18 @@ fn detect_init_system() -> Result<InitSystem> {
 }
 
 pub fn handle_command(
-    command: &synapse_config::commands::ServiceCommands,
+    command: &crate::commands::ServiceCommands,
     config: &Config,
     init_system: InitSystem,
     instance: Option<&str>,
 ) -> Result<()> {
     match command {
-        synapse_config::commands::ServiceCommands::Install => {
-            install(config, init_system, instance)
-        }
-        synapse_config::commands::ServiceCommands::Start => start(config, init_system, instance),
-        synapse_config::commands::ServiceCommands::Stop => stop(config, init_system, instance),
-        synapse_config::commands::ServiceCommands::Restart => {
-            restart(config, init_system, instance)
-        }
-        synapse_config::commands::ServiceCommands::Status => status(config, init_system, instance),
-        synapse_config::commands::ServiceCommands::Uninstall => {
-            uninstall(config, init_system, instance)
-        }
+        crate::commands::ServiceCommands::Install => install(config, init_system, instance),
+        crate::commands::ServiceCommands::Start => start(config, init_system, instance),
+        crate::commands::ServiceCommands::Stop => stop(config, init_system, instance),
+        crate::commands::ServiceCommands::Restart => restart(config, init_system, instance),
+        crate::commands::ServiceCommands::Status => status(config, init_system, instance),
+        crate::commands::ServiceCommands::Uninstall => uninstall(config, init_system, instance),
     }
 }
 

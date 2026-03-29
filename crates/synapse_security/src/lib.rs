@@ -30,6 +30,7 @@ pub mod audit;
 pub mod bubblewrap;
 pub mod detect;
 pub mod docker;
+pub mod security_factory;
 
 // Prompt injection defense (contributed from RustyClaw, MIT licensed)
 pub mod domain_matcher;
@@ -53,6 +54,7 @@ pub mod traits;
 pub mod vulnerability;
 // workspace_boundary excluded — depends on workspace::WorkspaceProfile (stays in synapseclaw).
 
+pub use crate::security_factory::security_policy_from_config;
 #[allow(unused_imports)]
 pub use audit::{AuditEvent, AuditEventType, AuditLogger};
 #[allow(unused_imports)]
@@ -66,7 +68,6 @@ pub use otp::OtpValidator;
 pub use pairing::PairingGuard;
 #[allow(unused_imports)]
 pub use secrets::SecretStore;
-pub use synapse_config::security_factory::security_policy_from_config;
 pub use synapse_core::domain::config::AutonomyLevel;
 pub use synapse_core::domain::security_policy::SecurityPolicy;
 #[allow(unused_imports)]

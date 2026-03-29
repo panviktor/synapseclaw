@@ -58,8 +58,9 @@ pub(crate) mod util;
 
 pub use config::Config;
 
-// CLI command enums — canonical definitions in fork_config.
-pub use synapse_config::commands::{
+// CLI command enums — composition root.
+pub mod commands;
+pub use commands::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MemoryCommands,
     ServiceCommands, SkillCommands,
 };
