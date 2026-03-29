@@ -1,17 +1,17 @@
 //! Configuration schema — types re-exported from fork_config + IO operations.
 //!
-//! All struct/enum definitions now live in `fork_config::schema`.
+//! All struct/enum definitions now live in `synapse_config::schema`.
 //! This module re-exports them and provides load/save/encrypt/decrypt.
 
-pub use fork_config::schema::*;
+pub use synapse_config::schema::*;
 
 use crate::security::DomainMatcher;
 use anyhow::{Context, Result};
 use directories::UserDirs;
-use fork_config::provider_aliases::{is_glm_alias, is_zai_alias};
 #[allow(unused_imports)]
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use synapse_config::provider_aliases::{is_glm_alias, is_zai_alias};
 #[cfg(unix)]
 use tokio::fs::File;
 use tokio::fs::{self, OpenOptions};
@@ -2235,16 +2235,16 @@ async fn sync_directory(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fork_config::schema::{
-        clear_runtime_proxy_client_cache, default_draft_update_interval_ms,
-        default_session_backend, runtime_proxy_cache_key, runtime_proxy_client_cache,
-        MCP_MAX_TOOL_TIMEOUT_SECS,
-    };
-    use fork_core::domain::config::AutonomyLevel;
     use std::collections::HashMap;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
+    use synapse_config::schema::{
+        clear_runtime_proxy_client_cache, default_draft_update_interval_ms,
+        default_session_backend, runtime_proxy_cache_key, runtime_proxy_client_cache,
+        MCP_MAX_TOOL_TIMEOUT_SECS,
+    };
+    use synapse_core::domain::config::AutonomyLevel;
     #[cfg(unix)]
     use tempfile::TempDir;
     use tokio::sync::{Mutex, MutexGuard};
@@ -2580,7 +2580,7 @@ default_temperature = 0.7
             microsoft365: Microsoft365Config::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
-            browser_delegate: fork_config::adapter_configs::BrowserDelegateConfig::default(),
+            browser_delegate: synapse_config::adapter_configs::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),
@@ -2925,7 +2925,7 @@ tool_dispatcher = "xml"
             microsoft365: Microsoft365Config::default(),
             secrets: SecretsConfig::default(),
             browser: BrowserConfig::default(),
-            browser_delegate: fork_config::adapter_configs::BrowserDelegateConfig::default(),
+            browser_delegate: synapse_config::adapter_configs::BrowserDelegateConfig::default(),
             http_request: HttpRequestConfig::default(),
             multimodal: MultimodalConfig::default(),
             web_fetch: WebFetchConfig::default(),

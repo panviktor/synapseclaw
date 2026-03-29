@@ -1,15 +1,15 @@
-use crate::config::Config;
-use crate::fork_adapters::approval::ApprovalManager;
-use crate::fork_adapters::observability::{self, runtime_trace, Observer, ObserverEvent};
-use crate::fork_adapters::providers::{
+use crate::adapters::approval::ApprovalManager;
+use crate::adapters::observability::{self, runtime_trace, Observer, ObserverEvent};
+use crate::adapters::providers::{
     self, ChatMessage, ChatRequest, Provider, ProviderCapabilityError, ToolCall,
 };
-use crate::fork_adapters::tools::{self, Tool};
-use crate::fork_core::ports::approval::ApprovalPort;
+use crate::adapters::tools::{self, Tool};
+use crate::config::Config;
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::multimodal;
 use crate::runtime;
 use crate::security::security_policy_from_config;
+use crate::synapse_core::ports::approval::ApprovalPort;
 use crate::util::truncate_with_ellipsis;
 use anyhow::Result;
 use regex::{Regex, RegexSet};
@@ -57,10 +57,10 @@ fn glob_match(pattern: &str, name: &str) -> bool {
 ///   - `dynamic` group: included if any pattern matches AND the user message contains
 ///     at least one keyword (case-insensitive substring).
 pub(crate) fn filter_tool_specs_for_turn(
-    tool_specs: Vec<crate::fork_adapters::tools::ToolSpec>,
+    tool_specs: Vec<crate::adapters::tools::ToolSpec>,
     groups: &[crate::config::schema::ToolFilterGroup],
     user_message: &str,
-) -> Vec<crate::fork_adapters::tools::ToolSpec> {
+) -> Vec<crate::adapters::tools::ToolSpec> {
     use crate::config::schema::ToolFilterGroupMode;
 
     if groups.is_empty() {
@@ -100,9 +100,9 @@ pub(crate) fn filter_tool_specs_for_turn(
 /// When `allowed` is `Some(list)`, only specs whose name appears in the list
 /// are retained. Unknown names in the allowlist are silently ignored.
 pub(crate) fn filter_by_allowed_tools(
-    specs: Vec<crate::fork_adapters::tools::ToolSpec>,
+    specs: Vec<crate::adapters::tools::ToolSpec>,
     allowed: Option<&[String]>,
-) -> Vec<crate::fork_adapters::tools::ToolSpec> {
+) -> Vec<crate::adapters::tools::ToolSpec> {
     match allowed {
         None => specs,
         Some(list) => specs
@@ -2111,7 +2111,7 @@ pub(crate) async fn agent_turn(
     excluded_tools: &[String],
     dedup_exempt_tools: &[String],
     activated_tools: Option<
-        &std::sync::Arc<std::sync::Mutex<crate::fork_adapters::tools::ActivatedToolSet>>,
+        &std::sync::Arc<std::sync::Mutex<crate::adapters::tools::ActivatedToolSet>>,
     >,
 ) -> Result<String> {
     run_tool_call_loop(
@@ -2143,14 +2143,14 @@ async fn execute_one_tool(
     call_arguments: serde_json::Value,
     tools_registry: &[Box<dyn Tool>],
     activated_tools: Option<
-        &std::sync::Arc<std::sync::Mutex<crate::fork_adapters::tools::ActivatedToolSet>>,
+        &std::sync::Arc<std::sync::Mutex<crate::adapters::tools::ActivatedToolSet>>,
     >,
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
     tool_middleware: Option<
         &std::sync::Arc<
-            crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain,
+            crate::synapse_core::application::services::tool_middleware_service::ToolMiddlewareChain,
         >,
     >,
 ) -> Result<ToolExecutionOutcome> {
@@ -2192,7 +2192,7 @@ async fn execute_one_tool(
 
     // Phase 4.1: Tool middleware before() hook
     if let Some(mw) = tool_middleware {
-        let mw_ctx = crate::fork_core::domain::tool_middleware::ToolCallContext {
+        let mw_ctx = crate::synapse_core::domain::tool_middleware::ToolCallContext {
             run_id: None,
             pipeline_name: None,
             step_id: None,
@@ -2310,14 +2310,14 @@ async fn execute_tools_parallel(
     tool_calls: &[ParsedToolCall],
     tools_registry: &[Box<dyn Tool>],
     activated_tools: Option<
-        &std::sync::Arc<std::sync::Mutex<crate::fork_adapters::tools::ActivatedToolSet>>,
+        &std::sync::Arc<std::sync::Mutex<crate::adapters::tools::ActivatedToolSet>>,
     >,
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
     tool_middleware: Option<
         &std::sync::Arc<
-            crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain,
+            crate::synapse_core::application::services::tool_middleware_service::ToolMiddlewareChain,
         >,
     >,
 ) -> Result<Vec<ToolExecutionOutcome>> {
@@ -2345,14 +2345,14 @@ async fn execute_tools_sequential(
     tool_calls: &[ParsedToolCall],
     tools_registry: &[Box<dyn Tool>],
     activated_tools: Option<
-        &std::sync::Arc<std::sync::Mutex<crate::fork_adapters::tools::ActivatedToolSet>>,
+        &std::sync::Arc<std::sync::Mutex<crate::adapters::tools::ActivatedToolSet>>,
     >,
     observer: &dyn Observer,
     cancellation_token: Option<&CancellationToken>,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
     tool_middleware: Option<
         &std::sync::Arc<
-            crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain,
+            crate::synapse_core::application::services::tool_middleware_service::ToolMiddlewareChain,
         >,
     >,
 ) -> Result<Vec<ToolExecutionOutcome>> {
@@ -2407,11 +2407,11 @@ pub(crate) async fn run_tool_call_loop(
     max_tool_iterations: usize,
     cancellation_token: Option<CancellationToken>,
     on_delta: Option<tokio::sync::mpsc::Sender<String>>,
-    hooks: Option<&crate::fork_adapters::hooks::HookRunner>,
+    hooks: Option<&crate::adapters::hooks::HookRunner>,
     excluded_tools: &[String],
     dedup_exempt_tools: &[String],
     activated_tools: Option<
-        &std::sync::Arc<std::sync::Mutex<crate::fork_adapters::tools::ActivatedToolSet>>,
+        &std::sync::Arc<std::sync::Mutex<crate::adapters::tools::ActivatedToolSet>>,
     >,
     run_ctx: Option<&std::sync::Arc<super::run_context::RunContext>>,
 ) -> Result<String> {
@@ -2433,7 +2433,7 @@ pub(crate) async fn run_tool_call_loop(
         }
 
         // Rebuild tool_specs each iteration so newly activated deferred tools appear.
-        let mut tool_specs: Vec<crate::fork_adapters::tools::ToolSpec> = tools_registry
+        let mut tool_specs: Vec<crate::adapters::tools::ToolSpec> = tools_registry
             .iter()
             .filter(|tool| !excluded_tools.iter().any(|ex| ex == tool.name()))
             .map(|tool| tool.spec())
@@ -2630,8 +2630,7 @@ pub(crate) async fn run_tool_call_loop(
                     )
                 }
                 Err(e) => {
-                    let safe_error =
-                        crate::fork_adapters::providers::sanitize_api_error(&e.to_string());
+                    let safe_error = crate::adapters::providers::sanitize_api_error(&e.to_string());
                     observer.record_event(&ObserverEvent::LlmResponse {
                         provider: provider_name.to_string(),
                         model: model.to_string(),
@@ -2748,7 +2747,7 @@ pub(crate) async fn run_tool_call_loop(
                     .run_before_tool_call(tool_name.clone(), tool_args.clone())
                     .await
                 {
-                    crate::fork_adapters::hooks::HookResult::Cancel(reason) => {
+                    crate::adapters::hooks::HookResult::Cancel(reason) => {
                         tracing::info!(tool = %call.name, %reason, "tool call cancelled by hook");
                         let cancelled = format!("Cancelled by hook: {reason}");
                         runtime_trace::record_event(
@@ -2786,7 +2785,7 @@ pub(crate) async fn run_tool_call_loop(
                         ));
                         continue;
                     }
-                    crate::fork_adapters::hooks::HookResult::Continue((name, args)) => {
+                    crate::adapters::hooks::HookResult::Continue((name, args)) => {
                         tool_name = name;
                         tool_args = args;
                     }
@@ -2799,10 +2798,10 @@ pub(crate) async fn run_tool_call_loop(
                     let args_str = tool_args.to_string();
                     let decision = match port.request_approval(&tool_name, &args_str).await {
                         Ok(resp) => resp,
-                        Err(_) => crate::fork_core::domain::approval::ApprovalResponse::No,
+                        Err(_) => crate::synapse_core::domain::approval::ApprovalResponse::No,
                     };
 
-                    let audit = crate::fork_core::domain::approval::ApprovalDecision {
+                    let audit = crate::synapse_core::domain::approval::ApprovalDecision {
                         request_id: tool_name.clone(),
                         response: decision,
                         decided_by: "system".into(),
@@ -2811,7 +2810,7 @@ pub(crate) async fn run_tool_call_loop(
                     };
                     port.record_decision(&audit);
 
-                    if decision == crate::fork_core::domain::approval::ApprovalResponse::No {
+                    if decision == crate::synapse_core::domain::approval::ApprovalResponse::No {
                         let denied = "Denied by user.".to_string();
                         runtime_trace::record_event(
                             "tool_call_result",
@@ -2924,7 +2923,7 @@ pub(crate) async fn run_tool_call_loop(
         // Phase 4.1: tool_middleware is threaded through but currently None
         // at this call site. Full wiring (from ChannelRuntimeContext) is done
         // when [pipelines] is enabled and middleware is configured.
-        let tool_mw: Option<&std::sync::Arc<crate::fork_core::application::services::tool_middleware_service::ToolMiddlewareChain>> = None;
+        let tool_mw: Option<&std::sync::Arc<crate::synapse_core::application::services::tool_middleware_service::ToolMiddlewareChain>> = None;
 
         let executed_outcomes = if allow_parallel_execution && executable_calls.len() > 1 {
             execute_tools_parallel(
@@ -2973,7 +2972,7 @@ pub(crate) async fn run_tool_call_loop(
 
             // ── Hook: after_tool_call (void) ─────────────────
             if let Some(hooks) = hooks {
-                let tool_result_obj = crate::fork_adapters::tools::ToolResult {
+                let tool_result_obj = crate::adapters::tools::ToolResult {
                     success: outcome.success,
                     output: outcome.output.clone(),
                     error: None,
@@ -3240,57 +3239,56 @@ pub async fn run(
     // fetch schemas on demand. This reduces context window waste.
     let mut deferred_section = String::new();
     let mut activated_handle: Option<
-        std::sync::Arc<std::sync::Mutex<crate::fork_adapters::tools::ActivatedToolSet>>,
+        std::sync::Arc<std::sync::Mutex<crate::adapters::tools::ActivatedToolSet>>,
     > = None;
     if config.mcp.enabled && !config.mcp.servers.is_empty() && ephemeral_allowlist.is_none() {
         tracing::info!(
             "Initializing MCP client — {} server(s) configured",
             config.mcp.servers.len()
         );
-        match crate::fork_adapters::tools::McpRegistry::connect_all(&config.mcp.servers).await {
+        match crate::adapters::tools::McpRegistry::connect_all(&config.mcp.servers).await {
             Ok(registry) => {
                 let registry = std::sync::Arc::new(registry);
                 if config.mcp.deferred_loading {
                     // Deferred path: build stubs and register tool_search
-                    let deferred_set =
-                        crate::fork_adapters::tools::DeferredMcpToolSet::from_registry(
-                            std::sync::Arc::clone(&registry),
-                        )
-                        .await;
+                    let deferred_set = crate::adapters::tools::DeferredMcpToolSet::from_registry(
+                        std::sync::Arc::clone(&registry),
+                    )
+                    .await;
                     tracing::info!(
                         "MCP deferred: {} tool stub(s) from {} server(s)",
                         deferred_set.len(),
                         registry.server_count()
                     );
                     deferred_section =
-                        crate::fork_adapters::tools::mcp_deferred::build_deferred_tools_section(
+                        crate::adapters::tools::mcp_deferred::build_deferred_tools_section(
                             &deferred_set,
                         );
                     let activated = std::sync::Arc::new(std::sync::Mutex::new(
-                        crate::fork_adapters::tools::ActivatedToolSet::new(),
+                        crate::adapters::tools::ActivatedToolSet::new(),
                     ));
                     activated_handle = Some(std::sync::Arc::clone(&activated));
-                    tools_registry.push(Box::new(
-                        crate::fork_adapters::tools::ToolSearchTool::new(deferred_set, activated),
-                    ));
+                    tools_registry.push(Box::new(crate::adapters::tools::ToolSearchTool::new(
+                        deferred_set,
+                        activated,
+                    )));
                 } else {
                     // Eager path: register all MCP tools directly
                     let names = registry.tool_names();
                     let mut registered = 0usize;
                     for name in names {
                         if let Some(def) = registry.get_tool_def(&name).await {
-                            let wrapper: std::sync::Arc<dyn Tool> = std::sync::Arc::new(
-                                crate::fork_adapters::tools::McpToolWrapper::new(
+                            let wrapper: std::sync::Arc<dyn Tool> =
+                                std::sync::Arc::new(crate::adapters::tools::McpToolWrapper::new(
                                     name,
                                     def,
                                     std::sync::Arc::clone(&registry),
-                                ),
-                            );
+                                ));
                             if let Some(ref handle) = delegate_handle {
                                 handle.write().push(std::sync::Arc::clone(&wrapper));
                             }
                             tools_registry
-                                .push(Box::new(crate::fork_adapters::tools::ArcToolRef(wrapper)));
+                                .push(Box::new(crate::adapters::tools::ArcToolRef(wrapper)));
                             registered += 1;
                         }
                     }
@@ -3421,7 +3419,7 @@ pub async fn run(
         None
     };
     let native_tools = provider.supports_native_tools();
-    let mut system_prompt = crate::fork_adapters::channels::build_system_prompt_with_mode(
+    let mut system_prompt = crate::adapters::channels::build_system_prompt_with_mode(
         &config.workspace_dir,
         model_name,
         &tool_descs,
@@ -3529,7 +3527,7 @@ pub async fn run(
     } else {
         println!("🦀 SynapseClaw Interactive Mode");
         println!("Type /help for commands.\n");
-        let cli = crate::fork_adapters::channels::CliChannel::new();
+        let cli = crate::adapters::channels::CliChannel::new();
 
         // Persistent conversation history across turns
         let mut history = if let Some(path) = session_state_file.as_deref() {
@@ -3689,9 +3687,9 @@ pub async fn run(
                 }
             };
             final_output = response.clone();
-            if let Err(e) = crate::fork_adapters::channels::Channel::send(
+            if let Err(e) = crate::adapters::channels::Channel::send(
                 &cli,
-                &crate::fork_adapters::channels::traits::SendMessage::new(
+                &crate::adapters::channels::traits::SendMessage::new(
                     format!("\n{response}\n"),
                     "user",
                 ),
@@ -3792,55 +3790,54 @@ pub async fn process_message(
     // tool allow/deny filtering) to avoid MCP tools being silently dropped.
     let mut deferred_section = String::new();
     let mut activated_handle_pm: Option<
-        std::sync::Arc<std::sync::Mutex<crate::fork_adapters::tools::ActivatedToolSet>>,
+        std::sync::Arc<std::sync::Mutex<crate::adapters::tools::ActivatedToolSet>>,
     > = None;
     if config.mcp.enabled && !config.mcp.servers.is_empty() {
         tracing::info!(
             "Initializing MCP client — {} server(s) configured",
             config.mcp.servers.len()
         );
-        match crate::fork_adapters::tools::McpRegistry::connect_all(&config.mcp.servers).await {
+        match crate::adapters::tools::McpRegistry::connect_all(&config.mcp.servers).await {
             Ok(registry) => {
                 let registry = std::sync::Arc::new(registry);
                 if config.mcp.deferred_loading {
-                    let deferred_set =
-                        crate::fork_adapters::tools::DeferredMcpToolSet::from_registry(
-                            std::sync::Arc::clone(&registry),
-                        )
-                        .await;
+                    let deferred_set = crate::adapters::tools::DeferredMcpToolSet::from_registry(
+                        std::sync::Arc::clone(&registry),
+                    )
+                    .await;
                     tracing::info!(
                         "MCP deferred: {} tool stub(s) from {} server(s)",
                         deferred_set.len(),
                         registry.server_count()
                     );
                     deferred_section =
-                        crate::fork_adapters::tools::mcp_deferred::build_deferred_tools_section(
+                        crate::adapters::tools::mcp_deferred::build_deferred_tools_section(
                             &deferred_set,
                         );
                     let activated = std::sync::Arc::new(std::sync::Mutex::new(
-                        crate::fork_adapters::tools::ActivatedToolSet::new(),
+                        crate::adapters::tools::ActivatedToolSet::new(),
                     ));
                     activated_handle_pm = Some(std::sync::Arc::clone(&activated));
-                    tools_registry.push(Box::new(
-                        crate::fork_adapters::tools::ToolSearchTool::new(deferred_set, activated),
-                    ));
+                    tools_registry.push(Box::new(crate::adapters::tools::ToolSearchTool::new(
+                        deferred_set,
+                        activated,
+                    )));
                 } else {
                     let names = registry.tool_names();
                     let mut registered = 0usize;
                     for name in names {
                         if let Some(def) = registry.get_tool_def(&name).await {
-                            let wrapper: std::sync::Arc<dyn Tool> = std::sync::Arc::new(
-                                crate::fork_adapters::tools::McpToolWrapper::new(
+                            let wrapper: std::sync::Arc<dyn Tool> =
+                                std::sync::Arc::new(crate::adapters::tools::McpToolWrapper::new(
                                     name,
                                     def,
                                     std::sync::Arc::clone(&registry),
-                                ),
-                            );
+                                ));
                             if let Some(ref handle) = delegate_handle_pm {
                                 handle.write().push(std::sync::Arc::clone(&wrapper));
                             }
                             tools_registry
-                                .push(Box::new(crate::fork_adapters::tools::ArcToolRef(wrapper)));
+                                .push(Box::new(crate::adapters::tools::ArcToolRef(wrapper)));
                             registered += 1;
                         }
                     }
@@ -3900,7 +3897,7 @@ pub async fn process_message(
         None
     };
     let native_tools = provider.supports_native_tools();
-    let mut system_prompt = crate::fork_adapters::channels::build_system_prompt_with_mode(
+    let mut system_prompt = crate::adapters::channels::build_system_prompt_with_mode(
         &config.workspace_dir,
         &model_name,
         &tool_descs,
@@ -3965,7 +3962,7 @@ mod tests {
         apply_compaction_summary, build_compaction_transcript, load_interactive_session_history,
         save_interactive_session_history, InteractiveSessionState,
     };
-    use crate::fork_adapters::providers::ChatMessage;
+    use crate::adapters::providers::ChatMessage;
     use tempfile::tempdir;
 
     #[test]
@@ -4066,7 +4063,7 @@ mod tests {
         let observer = NoopObserver;
         let invocations = Arc::new(AtomicUsize::new(0));
         let activated = Arc::new(std::sync::Mutex::new(
-            crate::fork_adapters::tools::ActivatedToolSet::new(),
+            crate::adapters::tools::ActivatedToolSet::new(),
         ));
         let activated_tool: Arc<dyn Tool> = Arc::new(CountingTool::new(
             "docker-mcp__extract_text",
@@ -4095,9 +4092,9 @@ mod tests {
         assert_eq!(invocations.load(Ordering::SeqCst), 1);
     }
 
-    use crate::fork_adapters::observability::NoopObserver;
-    use crate::fork_adapters::providers::traits::ProviderCapabilities;
-    use crate::fork_adapters::providers::ChatResponse;
+    use crate::adapters::observability::NoopObserver;
+    use crate::adapters::providers::traits::ProviderCapabilities;
+    use crate::adapters::providers::ChatResponse;
     use crate::memory::{Memory, MemoryCategory, SqliteMemory};
     use tempfile::TempDir;
 
@@ -4265,13 +4262,13 @@ mod tests {
         async fn execute(
             &self,
             args: serde_json::Value,
-        ) -> anyhow::Result<crate::fork_adapters::tools::ToolResult> {
+        ) -> anyhow::Result<crate::adapters::tools::ToolResult> {
             self.invocations.fetch_add(1, Ordering::SeqCst);
             let value = args
                 .get("value")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
-            Ok(crate::fork_adapters::tools::ToolResult {
+            Ok(crate::adapters::tools::ToolResult {
                 success: true,
                 output: format!("counted:{value}"),
                 error: None,
@@ -4325,7 +4322,7 @@ mod tests {
         async fn execute(
             &self,
             args: serde_json::Value,
-        ) -> anyhow::Result<crate::fork_adapters::tools::ToolResult> {
+        ) -> anyhow::Result<crate::adapters::tools::ToolResult> {
             let now_active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(now_active, Ordering::SeqCst);
 
@@ -4339,7 +4336,7 @@ mod tests {
                 .unwrap_or_default()
                 .to_string();
 
-            Ok(crate::fork_adapters::tools::ToolResult {
+            Ok(crate::adapters::tools::ToolResult {
                 success: true,
                 output: format!("ok:{value}"),
                 error: None,
@@ -4384,8 +4381,8 @@ mod tests {
         async fn execute(
             &self,
             _args: serde_json::Value,
-        ) -> anyhow::Result<crate::fork_adapters::tools::ToolResult> {
-            Ok(crate::fork_adapters::tools::ToolResult {
+        ) -> anyhow::Result<crate::adapters::tools::ToolResult> {
+            Ok(crate::adapters::tools::ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(self.error_reason.clone()),
@@ -4756,7 +4753,7 @@ mod tests {
         let runtime: Arc<dyn crate::runtime::RuntimeAdapter> =
             Arc::new(crate::runtime::NativeRuntime::new());
         let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(
-            crate::fork_adapters::tools::shell::ShellTool::new(security, runtime),
+            crate::adapters::tools::shell::ShellTool::new(security, runtime),
         )];
 
         let mut history = vec![
@@ -5018,7 +5015,7 @@ mod tests {
 
             let invocations = Arc::new(AtomicUsize::new(0));
             let activated = Arc::new(std::sync::Mutex::new(
-                crate::fork_adapters::tools::ActivatedToolSet::new(),
+                crate::adapters::tools::ActivatedToolSet::new(),
             ));
             let activated_tool: Arc<dyn Tool> = Arc::new(CountingTool::new(
                 "pixel__get_api_health",
@@ -6428,14 +6425,14 @@ Let me check the result."#;
 
     #[test]
     fn trim_history_empty_history() {
-        let mut history: Vec<crate::fork_adapters::providers::ChatMessage> = vec![];
+        let mut history: Vec<crate::adapters::providers::ChatMessage> = vec![];
         trim_history(&mut history, 10);
         assert!(history.is_empty());
     }
 
     #[test]
     fn trim_history_system_only() {
-        let mut history = vec![crate::fork_adapters::providers::ChatMessage::system(
+        let mut history = vec![crate::adapters::providers::ChatMessage::system(
             "system prompt",
         )];
         trim_history(&mut history, 10);
@@ -6446,9 +6443,9 @@ Let me check the result."#;
     #[test]
     fn trim_history_exactly_at_limit() {
         let mut history = vec![
-            crate::fork_adapters::providers::ChatMessage::system("system"),
-            crate::fork_adapters::providers::ChatMessage::user("msg 1"),
-            crate::fork_adapters::providers::ChatMessage::assistant("reply 1"),
+            crate::adapters::providers::ChatMessage::system("system"),
+            crate::adapters::providers::ChatMessage::user("msg 1"),
+            crate::adapters::providers::ChatMessage::assistant("reply 1"),
         ];
         trim_history(&mut history, 2); // 2 non-system messages = exactly at limit
         assert_eq!(history.len(), 3, "should not trim when exactly at limit");
@@ -6457,11 +6454,11 @@ Let me check the result."#;
     #[test]
     fn trim_history_removes_oldest_non_system() {
         let mut history = vec![
-            crate::fork_adapters::providers::ChatMessage::system("system"),
-            crate::fork_adapters::providers::ChatMessage::user("old msg"),
-            crate::fork_adapters::providers::ChatMessage::assistant("old reply"),
-            crate::fork_adapters::providers::ChatMessage::user("new msg"),
-            crate::fork_adapters::providers::ChatMessage::assistant("new reply"),
+            crate::adapters::providers::ChatMessage::system("system"),
+            crate::adapters::providers::ChatMessage::user("old msg"),
+            crate::adapters::providers::ChatMessage::assistant("old reply"),
+            crate::adapters::providers::ChatMessage::user("new msg"),
+            crate::adapters::providers::ChatMessage::assistant("new reply"),
         ];
         trim_history(&mut history, 2);
         assert_eq!(history.len(), 3); // system + 2 kept
@@ -6475,7 +6472,7 @@ Let me check the result."#;
     /// must be clean of XML tool-call protocol.
     #[test]
     fn native_tools_system_prompt_contains_zero_xml() {
-        use crate::fork_adapters::channels::build_system_prompt_with_mode;
+        use crate::adapters::channels::build_system_prompt_with_mode;
 
         let tool_summaries: Vec<(&str, &str)> = vec![
             ("shell", "Execute shell commands"),
@@ -6790,8 +6787,8 @@ Let me check the result."#;
 
     // ── filter_tool_specs_for_turn tests ──────────────────────────────────────
 
-    fn make_spec(name: &str) -> crate::fork_adapters::tools::ToolSpec {
-        crate::fork_adapters::tools::ToolSpec {
+    fn make_spec(name: &str) -> crate::adapters::tools::ToolSpec {
+        crate::adapters::tools::ToolSpec {
             name: name.to_string(),
             description: String::new(),
             parameters: serde_json::json!({}),

@@ -5,14 +5,14 @@
 //! workspace_boundary (which depends on config/workspace types).
 
 // Re-export everything from fork_security.
-pub use fork_security::*;
+pub use synapse_security::*;
 
 // workspace_boundary stays here — it depends on crate::config::workspace::WorkspaceProfile.
 pub mod workspace_boundary;
 
 /// Redact sensitive values — re-exported from fork_core.
 #[allow(unused_imports)]
-pub use fork_core::domain::util::redact;
+pub use synapse_core::domain::util::redact;
 
 #[cfg(test)]
 mod tests {

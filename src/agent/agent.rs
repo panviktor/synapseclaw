@@ -1,14 +1,12 @@
+use crate::adapters::observability::{self, Observer, ObserverEvent};
+use crate::adapters::providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
+use crate::adapters::tools::{self, Tool, ToolSpec};
 use crate::agent::dispatcher::{
     NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
 use crate::agent::memory_loader::{DefaultMemoryLoader, MemoryLoader};
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
 use crate::config::Config;
-use crate::fork_adapters::observability::{self, Observer, ObserverEvent};
-use crate::fork_adapters::providers::{
-    self, ChatMessage, ChatRequest, ConversationMessage, Provider,
-};
-use crate::fork_adapters::tools::{self, Tool, ToolSpec};
 use crate::memory::{self, Memory, MemoryCategory};
 use crate::runtime;
 use crate::security::security_policy_from_config;
@@ -41,7 +39,7 @@ pub struct Agent {
     available_hints: Vec<String>,
     route_model_by_hint: HashMap<String, String>,
     /// Cumulative token usage from the last turn (provider-reported).
-    last_turn_usage: Option<crate::fork_adapters::providers::traits::TokenUsage>,
+    last_turn_usage: Option<crate::adapters::providers::traits::TokenUsage>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<crate::memory::response_cache::ResponseCache>>,
 }
@@ -285,7 +283,7 @@ impl Agent {
     }
 
     /// Token usage reported by the provider during the last turn (if any).
-    pub fn last_turn_usage(&self) -> Option<&crate::fork_adapters::providers::traits::TokenUsage> {
+    pub fn last_turn_usage(&self) -> Option<&crate::adapters::providers::traits::TokenUsage> {
         self.last_turn_usage.as_ref()
     }
 
@@ -646,7 +644,7 @@ impl Agent {
             // Accumulate token usage from provider response
             if let Some(ref u) = response.usage {
                 let prev = self.last_turn_usage.get_or_insert(
-                    crate::fork_adapters::providers::traits::TokenUsage {
+                    crate::adapters::providers::traits::TokenUsage {
                         input_tokens: None,
                         output_tokens: None,
                         cached_input_tokens: None,
@@ -722,10 +720,10 @@ impl Agent {
         println!("Type /quit to exit.\n");
 
         let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-        let cli = crate::fork_adapters::channels::CliChannel::new();
+        let cli = crate::adapters::channels::CliChannel::new();
 
         let listen_handle = tokio::spawn(async move {
-            let _ = crate::fork_adapters::channels::Channel::listen(&cli, tx).await;
+            let _ = crate::adapters::channels::Channel::listen(&cli, tx).await;
         });
 
         while let Some(msg) = rx.recv().await {
@@ -806,7 +804,7 @@ mod tests {
     use std::collections::HashMap;
 
     struct MockProvider {
-        responses: Mutex<Vec<crate::fork_adapters::providers::ChatResponse>>,
+        responses: Mutex<Vec<crate::adapters::providers::ChatResponse>>,
     }
 
     #[async_trait]
@@ -826,10 +824,10 @@ mod tests {
             _request: ChatRequest<'_>,
             _model: &str,
             _temperature: f64,
-        ) -> Result<crate::fork_adapters::providers::ChatResponse> {
+        ) -> Result<crate::adapters::providers::ChatResponse> {
             let mut guard = self.responses.lock();
             if guard.is_empty() {
-                return Ok(crate::fork_adapters::providers::ChatResponse {
+                return Ok(crate::adapters::providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
@@ -841,7 +839,7 @@ mod tests {
     }
 
     struct ModelCaptureProvider {
-        responses: Mutex<Vec<crate::fork_adapters::providers::ChatResponse>>,
+        responses: Mutex<Vec<crate::adapters::providers::ChatResponse>>,
         seen_models: Arc<Mutex<Vec<String>>>,
     }
 
@@ -862,11 +860,11 @@ mod tests {
             _request: ChatRequest<'_>,
             model: &str,
             _temperature: f64,
-        ) -> Result<crate::fork_adapters::providers::ChatResponse> {
+        ) -> Result<crate::adapters::providers::ChatResponse> {
             self.seen_models.lock().push(model.to_string());
             let mut guard = self.responses.lock();
             if guard.is_empty() {
-                return Ok(crate::fork_adapters::providers::ChatResponse {
+                return Ok(crate::adapters::providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
@@ -896,8 +894,8 @@ mod tests {
         async fn execute(
             &self,
             _args: serde_json::Value,
-        ) -> Result<crate::fork_adapters::tools::ToolResult> {
-            Ok(crate::fork_adapters::tools::ToolResult {
+        ) -> Result<crate::adapters::tools::ToolResult> {
+            Ok(crate::adapters::tools::ToolResult {
                 success: true,
                 output: "tool-out".into(),
                 error: None,
@@ -908,7 +906,7 @@ mod tests {
     #[tokio::test]
     async fn turn_without_tools_returns_text() {
         let provider = Box::new(MockProvider {
-            responses: Mutex::new(vec![crate::fork_adapters::providers::ChatResponse {
+            responses: Mutex::new(vec![crate::adapters::providers::ChatResponse {
                 text: Some("hello".into()),
                 tool_calls: vec![],
                 usage: None,
@@ -926,7 +924,7 @@ mod tests {
         );
 
         let observer: Arc<dyn Observer> =
-            Arc::from(crate::fork_adapters::observability::NoopObserver {});
+            Arc::from(crate::adapters::observability::NoopObserver {});
         let mut agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -945,9 +943,9 @@ mod tests {
     async fn turn_with_native_dispatcher_handles_tool_results_variant() {
         let provider = Box::new(MockProvider {
             responses: Mutex::new(vec![
-                crate::fork_adapters::providers::ChatResponse {
+                crate::adapters::providers::ChatResponse {
                     text: Some(String::new()),
-                    tool_calls: vec![crate::fork_adapters::providers::ToolCall {
+                    tool_calls: vec![crate::adapters::providers::ToolCall {
                         id: "tc1".into(),
                         name: "echo".into(),
                         arguments: "{}".into(),
@@ -955,7 +953,7 @@ mod tests {
                     usage: None,
                     reasoning_content: None,
                 },
-                crate::fork_adapters::providers::ChatResponse {
+                crate::adapters::providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
@@ -974,7 +972,7 @@ mod tests {
         );
 
         let observer: Arc<dyn Observer> =
-            Arc::from(crate::fork_adapters::observability::NoopObserver {});
+            Arc::from(crate::adapters::observability::NoopObserver {});
         let mut agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -997,7 +995,7 @@ mod tests {
     async fn turn_routes_with_hint_when_query_classification_matches() {
         let seen_models = Arc::new(Mutex::new(Vec::new()));
         let provider = Box::new(ModelCaptureProvider {
-            responses: Mutex::new(vec![crate::fork_adapters::providers::ChatResponse {
+            responses: Mutex::new(vec![crate::adapters::providers::ChatResponse {
                 text: Some("classified".into()),
                 tool_calls: vec![],
                 usage: None,
@@ -1016,7 +1014,7 @@ mod tests {
         );
 
         let observer: Arc<dyn Observer> =
-            Arc::from(crate::fork_adapters::observability::NoopObserver {});
+            Arc::from(crate::adapters::observability::NoopObserver {});
         let mut route_model_by_hint = HashMap::new();
         route_model_by_hint.insert("fast".to_string(), "anthropic/claude-haiku-4-5".to_string());
         let mut agent = Agent::builder()
@@ -1150,7 +1148,7 @@ mod tests {
         );
 
         let observer: Arc<dyn Observer> =
-            Arc::from(crate::fork_adapters::observability::NoopObserver {});
+            Arc::from(crate::adapters::observability::NoopObserver {});
         let agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -1182,7 +1180,7 @@ mod tests {
         );
 
         let observer: Arc<dyn Observer> =
-            Arc::from(crate::fork_adapters::observability::NoopObserver {});
+            Arc::from(crate::adapters::observability::NoopObserver {});
         let agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])

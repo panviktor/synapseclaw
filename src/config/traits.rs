@@ -1,4 +1,4 @@
 //! Config traits — re-exported from fork_config.
-pub use fork_config::channel_traits::ChannelConfig;
+pub use synapse_config::channel_traits::ChannelConfig;
 #[allow(unused_imports)]
-pub use fork_config::channel_traits::ConfigHandle;
+pub use synapse_config::channel_traits::ConfigHandle;
