@@ -81,8 +81,9 @@ impl Tool for MemoryForgetTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{MemoryCategory, SqliteMemory};
+    use crate::memory::SqliteMemory;
     use fork_core::domain::config::AutonomyLevel;
+    use fork_core::domain::memory::MemoryCategory;
     use fork_core::domain::security_policy::SecurityPolicy;
     use tempfile::TempDir;
 

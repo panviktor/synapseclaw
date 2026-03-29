@@ -693,8 +693,9 @@ mod tests {
     mod e2e_helpers {
         use crate::fork_adapters::observability::{NoopObserver, Observer};
         use crate::fork_adapters::providers::{ChatMessage, ChatRequest, ChatResponse, Provider};
-        use crate::memory::{self, Memory};
+        use crate::memory;
         use fork_config::schema::MemoryConfig;
+        use fork_core::ports::memory_backend::Memory;
         use std::sync::{Arc, Mutex};
 
         pub type SharedRequests = Arc<Mutex<Vec<Vec<ChatMessage>>>>;
