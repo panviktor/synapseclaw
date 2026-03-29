@@ -91,7 +91,6 @@ pub use whatsapp::WhatsAppChannel;
 pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::build_tool_instructions;
-use crate::config::Config;
 use crate::config::ConfigIO;
 use crate::fork_adapters::approval::ApprovalManager;
 use crate::fork_adapters::channels::session_backend::SessionBackend;
@@ -104,6 +103,7 @@ use crate::memory::{self, Memory};
 use crate::runtime;
 use crate::security::security_policy_from_config;
 use anyhow::{Context, Result};
+use fork_config::schema::Config;
 use fork_core::domain::util::truncate_with_ellipsis;
 use portable_atomic::{AtomicU64, Ordering};
 use serde::Deserialize;
@@ -223,7 +223,7 @@ struct ChannelRuntimeDefaults {
     temperature: f64,
     api_key: Option<String>,
     api_url: Option<String>,
-    reliability: crate::config::ReliabilityConfig,
+    reliability: fork_config::schema::ReliabilityConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,21 +283,21 @@ struct ChannelRuntimeContext {
     route_overrides: RouteSelectionMap,
     api_key: Option<String>,
     api_url: Option<String>,
-    reliability: Arc<crate::config::ReliabilityConfig>,
+    reliability: Arc<fork_config::schema::ReliabilityConfig>,
     provider_runtime_options: providers::ProviderRuntimeOptions,
     workspace_dir: Arc<PathBuf>,
     message_timeout_secs: u64,
     interrupt_on_new_message: InterruptOnNewMessageConfig,
-    multimodal: crate::config::MultimodalConfig,
+    multimodal: fork_config::schema::MultimodalConfig,
     hooks: Option<Arc<crate::fork_adapters::hooks::HookRunner>>,
     non_cli_excluded_tools: Arc<Vec<String>>,
     tool_call_dedup_exempt: Arc<Vec<String>>,
-    model_routes: Arc<Vec<crate::config::ModelRouteConfig>>,
-    query_classification: crate::config::QueryClassificationConfig,
+    model_routes: Arc<Vec<fork_config::schema::ModelRouteConfig>>,
+    query_classification: fork_config::schema::QueryClassificationConfig,
     ack_reactions: bool,
     show_tool_calls: bool,
     session_store: Option<Arc<session_store::SessionStore>>,
-    summary_config: Arc<crate::config::schema::SummaryConfig>,
+    summary_config: Arc<fork_config::schema::SummaryConfig>,
     summary_model: Option<String>,
     /// Non-interactive approval manager for channel-driven runs.
     /// Enforces `auto_approve` / `always_ask` / supervised policy from
@@ -972,7 +972,7 @@ async fn create_resilient_provider_nonblocking(
     provider_name: &str,
     api_key: Option<String>,
     api_url: Option<String>,
-    reliability: crate::config::ReliabilityConfig,
+    reliability: fork_config::schema::ReliabilityConfig,
     provider_runtime_options: providers::ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
     let provider_name = provider_name.to_string();
@@ -992,7 +992,7 @@ async fn create_resilient_provider_nonblocking(
 fn build_models_help_response(
     current: &ChannelRouteSelection,
     workspace_dir: &Path,
-    model_routes: &[crate::config::ModelRouteConfig],
+    model_routes: &[fork_config::schema::ModelRouteConfig],
 ) -> String {
     let mut response = String::new();
     let _ = writeln!(
@@ -1476,7 +1476,7 @@ async fn handle_message_via_orchestrator(
         ctx.channel_registry.clone().unwrap_or_else(|| {
             Arc::new(
                 crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
-                    crate::config::Config::default(),
+                    fork_config::schema::Config::default(),
                 ),
             )
         });
@@ -1911,8 +1911,8 @@ pub fn build_system_prompt(
     workspace_dir: &std::path::Path,
     model_name: &str,
     tools: &[(&str, &str)],
-    skills: &[crate::skills::Skill],
-    identity_config: Option<&crate::config::IdentityConfig>,
+    skills: &[crate::fork_adapters::skills::Skill],
+    identity_config: Option<&fork_config::schema::IdentityConfig>,
     bootstrap_max_chars: Option<usize>,
 ) -> String {
     build_system_prompt_with_mode(
@@ -1923,7 +1923,7 @@ pub fn build_system_prompt(
         identity_config,
         bootstrap_max_chars,
         false,
-        crate::config::SkillsPromptInjectionMode::Full,
+        fork_config::schema::SkillsPromptInjectionMode::Full,
     )
 }
 
@@ -1931,11 +1931,11 @@ pub fn build_system_prompt_with_mode(
     workspace_dir: &std::path::Path,
     model_name: &str,
     tools: &[(&str, &str)],
-    skills: &[crate::skills::Skill],
-    identity_config: Option<&crate::config::IdentityConfig>,
+    skills: &[crate::fork_adapters::skills::Skill],
+    identity_config: Option<&fork_config::schema::IdentityConfig>,
     bootstrap_max_chars: Option<usize>,
     native_tools: bool,
-    skills_prompt_mode: crate::config::SkillsPromptInjectionMode,
+    skills_prompt_mode: fork_config::schema::SkillsPromptInjectionMode,
 ) -> String {
     use std::fmt::Write;
     let mut prompt = String::with_capacity(8192);
@@ -1990,7 +1990,7 @@ pub fn build_system_prompt_with_mode(
 
     // ── 3. Skills (full or compact, based on config) ─────────────
     if !skills.is_empty() {
-        prompt.push_str(&crate::skills::skills_to_prompt_with_mode(
+        prompt.push_str(&crate::fork_adapters::skills::skills_to_prompt_with_mode(
             skills,
             workspace_dir,
             skills_prompt_mode,
@@ -3146,7 +3146,7 @@ pub async fn start_channels(
 
     let tools_registry = Arc::new(built_tools);
 
-    let skills = crate::skills::load_skills_with_config(&workspace, &config);
+    let skills = crate::fork_adapters::skills::load_skills_with_config(&workspace, &config);
 
     // Collect tool descriptions for the prompt
     let mut tool_descs: Vec<(&str, &str)> = vec![
@@ -4032,29 +4032,29 @@ mod tests {
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
-            reliability: Arc::new(crate::config::ReliabilityConfig::default()),
+            reliability: Arc::new(fork_config::schema::ReliabilityConfig::default()),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
-            multimodal: crate::config::MultimodalConfig::default(),
+            multimodal: fork_config::schema::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
-            query_classification: crate::config::QueryClassificationConfig::default(),
+            query_classification: fork_config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
-            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_config: Arc::new(fork_config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
-                &crate::config::AutonomyConfig::default(),
+                &fork_config::schema::AutonomyConfig::default(),
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
                 crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
-                    crate::config::Config::default(),
+                    fork_config::schema::Config::default(),
                 ),
             )),
             pipeline_store: None,
@@ -4132,29 +4132,29 @@ mod tests {
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
-            reliability: Arc::new(crate::config::ReliabilityConfig::default()),
+            reliability: Arc::new(fork_config::schema::ReliabilityConfig::default()),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
-            multimodal: crate::config::MultimodalConfig::default(),
+            multimodal: fork_config::schema::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
-            query_classification: crate::config::QueryClassificationConfig::default(),
+            query_classification: fork_config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
-            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_config: Arc::new(fork_config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
-                &crate::config::AutonomyConfig::default(),
+                &fork_config::schema::AutonomyConfig::default(),
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
                 crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
-                    crate::config::Config::default(),
+                    fork_config::schema::Config::default(),
                 ),
             )),
             pipeline_store: None,
@@ -4247,7 +4247,7 @@ mod tests {
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
-            reliability: Arc::new(crate::config::ReliabilityConfig::default()),
+            reliability: Arc::new(fork_config::schema::ReliabilityConfig::default()),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
@@ -4255,21 +4255,21 @@ mod tests {
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
-            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_config: Arc::new(fork_config::schema::SummaryConfig::default()),
             summary_model: None,
-            multimodal: crate::config::MultimodalConfig::default(),
+            multimodal: fork_config::schema::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
-                &crate::config::AutonomyConfig::default(),
+                &fork_config::schema::AutonomyConfig::default(),
             )),
             activated_tools: None,
-            query_classification: crate::config::QueryClassificationConfig::default(),
+            query_classification: fork_config::schema::QueryClassificationConfig::default(),
             channel_registry: Some(Arc::new(
                 crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
-                    crate::config::Config::default(),
+                    fork_config::schema::Config::default(),
                 ),
             )),
             pipeline_store: None,
@@ -4359,29 +4359,29 @@ mod tests {
             route_overrides: Arc::new(Mutex::new(HashMap::new())),
             api_key: None,
             api_url: None,
-            reliability: Arc::new(crate::config::ReliabilityConfig::default()),
+            reliability: Arc::new(fork_config::schema::ReliabilityConfig::default()),
             provider_runtime_options: providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
-            multimodal: crate::config::MultimodalConfig::default(),
+            multimodal: fork_config::schema::MultimodalConfig::default(),
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
-            query_classification: crate::config::QueryClassificationConfig::default(),
+            query_classification: fork_config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
             show_tool_calls: true,
             session_store: None,
-            summary_config: Arc::new(crate::config::schema::SummaryConfig::default()),
+            summary_config: Arc::new(fork_config::schema::SummaryConfig::default()),
             summary_model: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
-                &crate::config::AutonomyConfig::default(),
+                &fork_config::schema::AutonomyConfig::default(),
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
                 crate::fork_adapters::channels::registry::CachedChannelRegistry::new(
-                    crate::config::Config::default(),
+                    fork_config::schema::Config::default(),
                 ),
             )),
             pipeline_store: None,
@@ -4585,13 +4585,13 @@ mod tests {
     #[test]
     fn prompt_skills_include_instructions_and_tools() {
         let ws = make_workspace();
-        let skills = vec![crate::skills::Skill {
+        let skills = vec![crate::fork_adapters::skills::Skill {
             name: "code-review".into(),
             description: "Review code for bugs".into(),
             version: "1.0.0".into(),
             author: None,
             tags: vec![],
-            tools: vec![crate::skills::SkillTool {
+            tools: vec![crate::fork_adapters::skills::SkillTool {
                 name: "lint".into(),
                 description: "Run static checks".into(),
                 kind: "shell".into(),
@@ -4620,13 +4620,13 @@ mod tests {
     #[test]
     fn prompt_skills_compact_mode_omits_instructions_and_tools() {
         let ws = make_workspace();
-        let skills = vec![crate::skills::Skill {
+        let skills = vec![crate::fork_adapters::skills::Skill {
             name: "code-review".into(),
             description: "Review code for bugs".into(),
             version: "1.0.0".into(),
             author: None,
             tags: vec![],
-            tools: vec![crate::skills::SkillTool {
+            tools: vec![crate::fork_adapters::skills::SkillTool {
                 name: "lint".into(),
                 description: "Run static checks".into(),
                 kind: "shell".into(),
@@ -4645,7 +4645,7 @@ mod tests {
             None,
             None,
             false,
-            crate::config::SkillsPromptInjectionMode::Compact,
+            fork_config::schema::SkillsPromptInjectionMode::Compact,
         );
 
         assert!(prompt.contains("<available_skills>"), "missing skills XML");
@@ -4661,13 +4661,13 @@ mod tests {
     #[test]
     fn prompt_skills_escape_reserved_xml_chars() {
         let ws = make_workspace();
-        let skills = vec![crate::skills::Skill {
+        let skills = vec![crate::fork_adapters::skills::Skill {
             name: "code<review>&".into(),
             description: "Review \"unsafe\" and 'risky' bits".into(),
             version: "1.0.0".into(),
             author: None,
             tags: vec![],
-            tools: vec![crate::skills::SkillTool {
+            tools: vec![crate::fork_adapters::skills::SkillTool {
                 name: "run\"linter\"".into(),
                 description: "Run <lint> & report".into(),
                 kind: "shell&exec".into(),
@@ -4836,7 +4836,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn aieos_identity_from_file() {
-        use crate::config::IdentityConfig;
+        use fork_config::schema::IdentityConfig;
         use tempfile::TempDir;
 
         let tmp = TempDir::new().unwrap();
@@ -4893,7 +4893,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn aieos_identity_from_inline() {
-        use crate::config::IdentityConfig;
+        use fork_config::schema::IdentityConfig;
 
         let config = IdentityConfig {
             format: "aieos".into(),
@@ -4916,7 +4916,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn aieos_fallback_to_openclaw_on_parse_error() {
-        use crate::config::IdentityConfig;
+        use fork_config::schema::IdentityConfig;
 
         let config = IdentityConfig {
             format: "aieos".into(),
@@ -4934,7 +4934,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn aieos_empty_uses_openclaw() {
-        use crate::config::IdentityConfig;
+        use fork_config::schema::IdentityConfig;
 
         // Format is "aieos" but neither path nor inline is set
         let config = IdentityConfig {
@@ -4953,7 +4953,7 @@ This is an example JSON object for profile settings."#;
 
     #[test]
     fn openclaw_format_uses_bootstrap_files() {
-        use crate::config::IdentityConfig;
+        use fork_config::schema::IdentityConfig;
 
         let config = IdentityConfig {
             format: "openclaw".into(),
@@ -5007,7 +5007,7 @@ This is an example JSON object for profile settings."#;
     #[test]
     fn collect_configured_channels_includes_mattermost_when_configured() {
         let mut config = Config::default();
-        config.channels_config.mattermost = Some(crate::config::schema::MattermostConfig {
+        config.channels_config.mattermost = Some(fork_config::schema::MattermostConfig {
             url: "https://mattermost.example.com".to_string(),
             bot_token: "test-token".to_string(),
             channel_id: Some("channel-1".to_string()),
@@ -5242,10 +5242,10 @@ This is an example JSON object for profile settings."#;
     #[test]
     fn build_channel_by_id_configured_telegram_succeeds() {
         let mut config = Config::default();
-        config.channels_config.telegram = Some(crate::config::schema::TelegramConfig {
+        config.channels_config.telegram = Some(fork_config::schema::TelegramConfig {
             bot_token: "test-token".to_string(),
             allowed_users: vec![],
-            stream_mode: crate::config::StreamMode::Off,
+            stream_mode: fork_config::schema::StreamMode::Off,
             draft_update_interval_ms: 1000,
             interrupt_on_new_message: false,
             mention_only: false,

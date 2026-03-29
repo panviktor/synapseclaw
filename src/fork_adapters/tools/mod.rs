@@ -136,9 +136,9 @@ pub use web_fetch::WebFetchTool;
 pub use web_search_tool::WebSearchTool;
 pub use workspace_tool::WorkspaceTool;
 
-use crate::config::{Config, DelegateAgentConfig};
 use crate::runtime::{NativeRuntime, RuntimeAdapter};
 use async_trait::async_trait;
+use fork_config::schema::{Config, DelegateAgentConfig};
 use fork_core::domain::security_policy::SecurityPolicy;
 use fork_core::ports::memory_backend::Memory;
 use parking_lot::RwLock;
@@ -265,13 +265,13 @@ pub fn all_tools(
     memory: Arc<dyn Memory>,
     composio_key: Option<&str>,
     composio_entity_id: Option<&str>,
-    browser_config: &crate::config::BrowserConfig,
-    http_config: &crate::config::HttpRequestConfig,
-    web_fetch_config: &crate::config::WebFetchConfig,
+    browser_config: &fork_config::schema::BrowserConfig,
+    http_config: &fork_config::schema::HttpRequestConfig,
+    web_fetch_config: &fork_config::schema::WebFetchConfig,
     workspace_dir: &std::path::Path,
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
-    root_config: &crate::config::Config,
+    root_config: &fork_config::schema::Config,
     shared_ipc_client: Option<Arc<IpcClient>>,
 ) -> (
     Vec<Box<dyn Tool>>,
@@ -310,13 +310,13 @@ pub fn all_tools_with_runtime(
     memory: Arc<dyn Memory>,
     composio_key: Option<&str>,
     composio_entity_id: Option<&str>,
-    browser_config: &crate::config::BrowserConfig,
-    http_config: &crate::config::HttpRequestConfig,
-    web_fetch_config: &crate::config::WebFetchConfig,
+    browser_config: &fork_config::schema::BrowserConfig,
+    http_config: &fork_config::schema::HttpRequestConfig,
+    web_fetch_config: &fork_config::schema::WebFetchConfig,
     workspace_dir: &std::path::Path,
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
-    root_config: &crate::config::Config,
+    root_config: &fork_config::schema::Config,
     shared_ipc_client: Option<Arc<IpcClient>>,
     agent_runner: Option<Arc<dyn fork_core::ports::agent_runner::AgentRunnerPort>>,
 ) -> (
@@ -786,7 +786,7 @@ pub fn all_tools_with_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{BrowserConfig, Config, MemoryConfig};
+    use fork_config::schema::{BrowserConfig, Config, MemoryConfig};
     use tempfile::TempDir;
 
     fn test_config(tmp: &TempDir) -> Config {
@@ -821,7 +821,7 @@ mod tests {
             session_name: None,
             ..BrowserConfig::default()
         };
-        let http = crate::config::HttpRequestConfig::default();
+        let http = fork_config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
         let (tools, _, _) = all_tools(
@@ -832,7 +832,7 @@ mod tests {
             None,
             &browser,
             &http,
-            &crate::config::WebFetchConfig::default(),
+            &fork_config::schema::WebFetchConfig::default(),
             tmp.path(),
             &HashMap::new(),
             None,
@@ -864,7 +864,7 @@ mod tests {
             session_name: None,
             ..BrowserConfig::default()
         };
-        let http = crate::config::HttpRequestConfig::default();
+        let http = fork_config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
         let (tools, _, _) = all_tools(
@@ -875,7 +875,7 @@ mod tests {
             None,
             &browser,
             &http,
-            &crate::config::WebFetchConfig::default(),
+            &fork_config::schema::WebFetchConfig::default(),
             tmp.path(),
             &HashMap::new(),
             None,
@@ -999,7 +999,7 @@ mod tests {
             Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
 
         let browser = BrowserConfig::default();
-        let http = crate::config::HttpRequestConfig::default();
+        let http = fork_config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
         let mut agents = HashMap::new();
@@ -1026,7 +1026,7 @@ mod tests {
             None,
             &browser,
             &http,
-            &crate::config::WebFetchConfig::default(),
+            &fork_config::schema::WebFetchConfig::default(),
             tmp.path(),
             &agents,
             Some("delegate-test-credential"),
@@ -1049,7 +1049,7 @@ mod tests {
             Arc::from(crate::memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
 
         let browser = BrowserConfig::default();
-        let http = crate::config::HttpRequestConfig::default();
+        let http = fork_config::schema::HttpRequestConfig::default();
         let cfg = test_config(&tmp);
 
         let (tools, _, _) = all_tools(
@@ -1060,7 +1060,7 @@ mod tests {
             None,
             &browser,
             &http,
-            &crate::config::WebFetchConfig::default(),
+            &fork_config::schema::WebFetchConfig::default(),
             tmp.path(),
             &HashMap::new(),
             None,

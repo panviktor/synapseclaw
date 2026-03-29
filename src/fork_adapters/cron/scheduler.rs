@@ -1,4 +1,3 @@
-use crate::config::Config;
 use crate::fork_adapters::cron::{
     due_jobs, next_run_for_schedule, record_last_run, record_run, remove_job, reschedule_after_run,
     update_job, CronJob, CronJobPatch, ExecutionMode, JobType, Schedule, SessionTarget,
@@ -6,6 +5,7 @@ use crate::fork_adapters::cron::{
 use crate::security::{security_policy_from_config, SecurityPolicy};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use fork_config::schema::Config;
 use futures_util::{stream, StreamExt};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -533,10 +533,10 @@ async fn run_job_command_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
     use crate::fork_adapters::cron::{self, DeliveryConfig};
     use crate::security::security_policy_from_config;
     use chrono::{Duration as ChronoDuration, Utc};
+    use fork_config::schema::Config;
     use tempfile::TempDir;
 
     struct NoopRunner;

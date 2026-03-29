@@ -690,10 +690,10 @@ mod tests {
     // ── E2E: full agent pipeline with real FileReadTool + PDF extraction ──
 
     mod e2e_helpers {
-        use crate::config::MemoryConfig;
         use crate::fork_adapters::observability::{NoopObserver, Observer};
         use crate::fork_adapters::providers::{ChatMessage, ChatRequest, ChatResponse, Provider};
         use crate::memory::{self, Memory};
+        use fork_config::schema::MemoryConfig;
         use std::sync::{Arc, Mutex};
 
         pub type SharedRequests = Arc<Mutex<Vec<Vec<ChatMessage>>>>;

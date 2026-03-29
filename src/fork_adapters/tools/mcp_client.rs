@@ -15,11 +15,11 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
-use crate::config::schema::McpServerConfig;
 use crate::fork_adapters::tools::mcp_protocol::{
     JsonRpcRequest, McpToolDef, McpToolsListResult, MCP_PROTOCOL_VERSION,
 };
 use crate::fork_adapters::tools::mcp_transport::{create_transport, McpTransportConn};
+use fork_config::schema::McpServerConfig;
 
 /// Timeout for receiving a response from an MCP server during init/list.
 /// Prevents a hung server from blocking the daemon indefinitely.
@@ -296,7 +296,7 @@ impl McpRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::McpTransport;
+    use fork_config::schema::McpTransport;
 
     #[test]
     fn tool_name_prefix_format() {

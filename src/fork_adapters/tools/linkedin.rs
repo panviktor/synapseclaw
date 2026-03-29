@@ -1,7 +1,7 @@
 use super::linkedin_client::{ImageGenerator, LinkedInClient};
 use super::traits::{Tool, ToolResult};
-use crate::config::{LinkedInContentConfig, LinkedInImageConfig};
 use async_trait::async_trait;
+use fork_config::schema::{LinkedInContentConfig, LinkedInImageConfig};
 use fork_core::domain::security_policy::SecurityPolicy;
 use serde_json::json;
 use std::path::PathBuf;

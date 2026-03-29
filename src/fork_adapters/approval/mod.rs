@@ -3,8 +3,8 @@
 //! Provides a pre-execution hook that prompts the user before tool calls,
 //! with session-scoped "Always" allowlists and audit logging.
 
-use crate::config::AutonomyConfig;
 use chrono::Utc;
+use fork_config::schema::AutonomyConfig;
 use fork_core::domain::config::AutonomyLevel;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -305,7 +305,7 @@ fn truncate_for_summary(input: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AutonomyConfig;
+    use fork_config::schema::AutonomyConfig;
 
     fn supervised_config() -> AutonomyConfig {
         AutonomyConfig {

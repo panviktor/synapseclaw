@@ -1,9 +1,9 @@
 use super::traits::{Tool, ToolResult};
-use crate::config::Config;
 use crate::fork_adapters::cron;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use fork_config::schema::Config;
 use fork_core::domain::security_policy::SecurityPolicy;
 use serde_json::json;
 use std::sync::Arc;
@@ -554,7 +554,7 @@ mod tests {
         let config = Config {
             workspace_dir: tmp.path().join("workspace"),
             config_path: tmp.path().join("config.toml"),
-            autonomy: crate::config::AutonomyConfig {
+            autonomy: fork_config::schema::AutonomyConfig {
                 level: AutonomyLevel::ReadOnly,
                 ..Default::default()
             },
@@ -591,7 +591,7 @@ mod tests {
         let config = Config {
             workspace_dir: tmp.path().join("workspace"),
             config_path: tmp.path().join("config.toml"),
-            autonomy: crate::config::AutonomyConfig {
+            autonomy: fork_config::schema::AutonomyConfig {
                 level: AutonomyLevel::Full,
                 max_actions_per_hour: 0,
                 ..Default::default()
@@ -633,7 +633,7 @@ mod tests {
         let config = Config {
             workspace_dir: tmp.path().join("workspace"),
             config_path: tmp.path().join("config.toml"),
-            autonomy: crate::config::AutonomyConfig {
+            autonomy: fork_config::schema::AutonomyConfig {
                 level: AutonomyLevel::Full,
                 max_actions_per_hour: 1,
                 ..Default::default()

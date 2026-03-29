@@ -87,7 +87,10 @@ pub fn load_skills(workspace_dir: &Path) -> Vec<Skill> {
 }
 
 /// Load skills using runtime config values (preferred at runtime).
-pub fn load_skills_with_config(workspace_dir: &Path, config: &crate::config::Config) -> Vec<Skill> {
+pub fn load_skills_with_config(
+    workspace_dir: &Path,
+    config: &fork_config::schema::Config,
+) -> Vec<Skill> {
     load_skills_with_open_skills_config(
         workspace_dir,
         Some(config.skills.open_skills_enabled),
@@ -646,7 +649,7 @@ pub fn skills_to_prompt(skills: &[Skill], workspace_dir: &Path) -> String {
     skills_to_prompt_with_mode(
         skills,
         workspace_dir,
-        crate::config::SkillsPromptInjectionMode::Full,
+        fork_config::schema::SkillsPromptInjectionMode::Full,
     )
 }
 
@@ -654,7 +657,7 @@ pub fn skills_to_prompt(skills: &[Skill], workspace_dir: &Path) -> String {
 pub fn skills_to_prompt_with_mode(
     skills: &[Skill],
     workspace_dir: &Path,
-    mode: crate::config::SkillsPromptInjectionMode,
+    mode: fork_config::schema::SkillsPromptInjectionMode,
 ) -> String {
     use std::fmt::Write;
 
@@ -663,13 +666,13 @@ pub fn skills_to_prompt_with_mode(
     }
 
     let mut prompt = match mode {
-        crate::config::SkillsPromptInjectionMode::Full => String::from(
+        fork_config::schema::SkillsPromptInjectionMode::Full => String::from(
             "## Available Skills\n\n\
              Skill instructions and tool metadata are preloaded below.\n\
              Follow these instructions directly; do not read skill files at runtime unless the user asks.\n\n\
              <available_skills>\n",
         ),
-        crate::config::SkillsPromptInjectionMode::Compact => String::from(
+        fork_config::schema::SkillsPromptInjectionMode::Compact => String::from(
             "## Available Skills\n\n\
              Skill summaries are preloaded below to keep context compact.\n\
              Skill instructions are loaded on demand: read the skill file in `location` only when needed.\n\n\
@@ -684,11 +687,14 @@ pub fn skills_to_prompt_with_mode(
         let location = render_skill_location(
             skill,
             workspace_dir,
-            matches!(mode, crate::config::SkillsPromptInjectionMode::Compact),
+            matches!(
+                mode,
+                fork_config::schema::SkillsPromptInjectionMode::Compact
+            ),
         );
         write_xml_text_element(&mut prompt, 4, "location", &location);
 
-        if matches!(mode, crate::config::SkillsPromptInjectionMode::Full) {
+        if matches!(mode, fork_config::schema::SkillsPromptInjectionMode::Full) {
             if !skill.prompts.is_empty() {
                 let _ = writeln!(prompt, "    <instructions>");
                 for instruction in &skill.prompts {
@@ -959,7 +965,10 @@ fn install_git_skill_source(source: &str, skills_path: &Path) -> Result<(PathBuf
 
 /// Handle the `skills` CLI command
 #[allow(clippy::too_many_lines)]
-pub fn handle_command(command: crate::SkillCommands, config: &crate::config::Config) -> Result<()> {
+pub fn handle_command(
+    command: crate::SkillCommands,
+    config: &fork_config::schema::Config,
+) -> Result<()> {
     let workspace_dir = &config.workspace_dir;
     match command {
         crate::SkillCommands::List => {
@@ -1258,7 +1267,7 @@ command = "echo hello"
         let prompt = skills_to_prompt_with_mode(
             &skills,
             Path::new("/tmp/workspace"),
-            crate::config::SkillsPromptInjectionMode::Compact,
+            fork_config::schema::SkillsPromptInjectionMode::Compact,
         );
 
         assert!(prompt.contains("<available_skills>"));
@@ -1615,7 +1624,7 @@ description = "Bare minimum"
         )
         .unwrap();
 
-        let mut config = crate::config::Config::default();
+        let mut config = fork_config::schema::Config::default();
         config.workspace_dir = workspace_dir.clone();
         config.skills.open_skills_enabled = true;
         config.skills.open_skills_dir = Some(open_skills_dir.to_string_lossy().to_string());
@@ -1644,7 +1653,7 @@ description = "Bare minimum"
         )
         .unwrap();
 
-        let mut config = crate::config::Config::default();
+        let mut config = fork_config::schema::Config::default();
         config.workspace_dir = workspace_dir.clone();
         config.skills.open_skills_enabled = true;
         config.skills.open_skills_dir = Some(open_skills_dir.to_string_lossy().to_string());

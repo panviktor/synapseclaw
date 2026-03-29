@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
 use crate::config::ConfigIO;
-use crate::config::{ClassificationRule, Config, DelegateAgentConfig, ModelRouteConfig};
 use async_trait::async_trait;
+use fork_config::schema::{ClassificationRule, Config, DelegateAgentConfig, ModelRouteConfig};
 use fork_core::domain::security_policy::SecurityPolicy;
 use fork_core::domain::util::MaybeSet;
 use serde_json::{json, Value};

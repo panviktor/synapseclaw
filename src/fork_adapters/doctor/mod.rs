@@ -1,6 +1,6 @@
-use crate::config::Config;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use fork_config::schema::Config;
 use std::io::Write;
 use std::path::Path;
 
@@ -1172,7 +1172,7 @@ mod tests {
     #[test]
     fn config_validation_warns_empty_model_route() {
         let mut config = Config::default();
-        config.model_routes = vec![crate::config::ModelRouteConfig {
+        config.model_routes = vec![fork_config::schema::ModelRouteConfig {
             hint: "fast".into(),
             provider: "groq".into(),
             model: String::new(),
@@ -1188,7 +1188,7 @@ mod tests {
     #[test]
     fn config_validation_warns_empty_embedding_route_model() {
         let mut config = Config::default();
-        config.embedding_routes = vec![crate::config::EmbeddingRouteConfig {
+        config.embedding_routes = vec![fork_config::schema::EmbeddingRouteConfig {
             hint: "semantic".into(),
             provider: "openai".into(),
             model: String::new(),
@@ -1209,7 +1209,7 @@ mod tests {
     #[test]
     fn config_validation_warns_invalid_embedding_route_provider() {
         let mut config = Config::default();
-        config.embedding_routes = vec![crate::config::EmbeddingRouteConfig {
+        config.embedding_routes = vec![fork_config::schema::EmbeddingRouteConfig {
             hint: "semantic".into(),
             provider: "groq".into(),
             model: "text-embedding-3-small".into(),
@@ -1282,7 +1282,7 @@ mod tests {
         let mut config = Config::default();
         config.agents.insert(
             "zeta".into(),
-            crate::config::DelegateAgentConfig {
+            fork_config::schema::DelegateAgentConfig {
                 provider: "totally-fake".into(),
                 model: "model-z".into(),
                 system_prompt: None,
@@ -1296,7 +1296,7 @@ mod tests {
         );
         config.agents.insert(
             "alpha".into(),
-            crate::config::DelegateAgentConfig {
+            fork_config::schema::DelegateAgentConfig {
                 provider: "totally-fake".into(),
                 model: "model-a".into(),
                 system_prompt: None,

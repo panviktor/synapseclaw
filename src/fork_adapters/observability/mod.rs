@@ -22,7 +22,7 @@ pub use traits::{Observer, ObserverEvent};
 #[allow(unused_imports)]
 pub use verbose::VerboseObserver;
 
-use crate::config::ObservabilityConfig;
+use fork_config::schema::ObservabilityConfig;
 
 /// Factory: create the right observer from config
 pub fn create_observer(config: &ObservabilityConfig) -> Box<dyn Observer> {

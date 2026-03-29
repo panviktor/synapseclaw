@@ -64,7 +64,7 @@ pub struct MatrixChannel {
     http_client: Client,
     reaction_events: Arc<RwLock<HashMap<String, String>>>,
     voice_mode: Arc<AtomicBool>,
-    transcription: Option<crate::config::TranscriptionConfig>,
+    transcription: Option<fork_config::schema::TranscriptionConfig>,
     voice_transcriptions: Arc<Mutex<std::collections::HashMap<String, String>>>,
     password: Option<String>,
     max_media_bytes: usize,
@@ -450,7 +450,7 @@ impl MatrixChannel {
     }
 
     /// Enable audio transcription with the given configuration.
-    pub fn with_transcription(mut self, config: crate::config::TranscriptionConfig) -> Self {
+    pub fn with_transcription(mut self, config: fork_config::schema::TranscriptionConfig) -> Self {
         if config.enabled {
             self.transcription = Some(config);
         }
@@ -2653,7 +2653,7 @@ mod tests {
 
     #[test]
     fn with_transcription_enabled() {
-        let config = crate::config::TranscriptionConfig {
+        let config = fork_config::schema::TranscriptionConfig {
             enabled: true,
             ..Default::default()
         };
@@ -2663,7 +2663,7 @@ mod tests {
 
     #[test]
     fn with_transcription_disabled() {
-        let config = crate::config::TranscriptionConfig {
+        let config = fork_config::schema::TranscriptionConfig {
             enabled: false,
             ..Default::default()
         };

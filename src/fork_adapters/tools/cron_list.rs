@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
-use crate::config::Config;
 use crate::fork_adapters::cron;
 use async_trait::async_trait;
+use fork_config::schema::Config;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -60,7 +60,7 @@ impl Tool for CronListTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
+    use fork_config::schema::Config;
     use tempfile::TempDir;
 
     async fn test_config(tmp: &TempDir) -> Arc<Config> {

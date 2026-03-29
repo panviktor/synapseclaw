@@ -1,6 +1,6 @@
-use crate::config::{build_runtime_proxy_client_with_timeouts, MultimodalConfig};
 use crate::fork_adapters::providers::ChatMessage;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use fork_config::schema::{build_runtime_proxy_client_with_timeouts, MultimodalConfig};
 use reqwest::Client;
 use std::path::Path;
 

@@ -712,7 +712,7 @@ impl Default for ProviderRuntimeOptions {
 }
 
 pub fn provider_runtime_options_from_config(
-    config: &crate::config::Config,
+    config: &fork_config::schema::Config,
 ) -> ProviderRuntimeOptions {
     ProviderRuntimeOptions {
         auth_profile_override: None,
@@ -1542,7 +1542,7 @@ pub fn create_resilient_provider(
     primary_name: &str,
     api_key: Option<&str>,
     api_url: Option<&str>,
-    reliability: &crate::config::ReliabilityConfig,
+    reliability: &fork_config::schema::ReliabilityConfig,
 ) -> anyhow::Result<Box<dyn Provider>> {
     create_resilient_provider_with_options(
         primary_name,
@@ -1558,7 +1558,7 @@ pub fn create_resilient_provider_with_options(
     primary_name: &str,
     api_key: Option<&str>,
     api_url: Option<&str>,
-    reliability: &crate::config::ReliabilityConfig,
+    reliability: &fork_config::schema::ReliabilityConfig,
     options: &ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
     let mut providers: Vec<(String, Box<dyn Provider>)> = Vec::new();
@@ -1625,8 +1625,8 @@ pub fn create_routed_provider(
     primary_name: &str,
     api_key: Option<&str>,
     api_url: Option<&str>,
-    reliability: &crate::config::ReliabilityConfig,
-    model_routes: &[crate::config::ModelRouteConfig],
+    reliability: &fork_config::schema::ReliabilityConfig,
+    model_routes: &[fork_config::schema::ModelRouteConfig],
     default_model: &str,
 ) -> anyhow::Result<Box<dyn Provider>> {
     create_routed_provider_with_options(
@@ -1645,8 +1645,8 @@ pub fn create_routed_provider_with_options(
     primary_name: &str,
     api_key: Option<&str>,
     api_url: Option<&str>,
-    reliability: &crate::config::ReliabilityConfig,
-    model_routes: &[crate::config::ModelRouteConfig],
+    reliability: &fork_config::schema::ReliabilityConfig,
+    model_routes: &[fork_config::schema::ModelRouteConfig],
     default_model: &str,
     options: &ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
@@ -2957,7 +2957,7 @@ mod tests {
 
     #[test]
     fn resilient_provider_ignores_duplicate_and_invalid_fallbacks() {
-        let reliability = crate::config::ReliabilityConfig {
+        let reliability = fork_config::schema::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
             fallback_providers: vec![
@@ -2985,7 +2985,7 @@ mod tests {
 
     #[test]
     fn resilient_provider_errors_for_invalid_primary() {
-        let reliability = crate::config::ReliabilityConfig::default();
+        let reliability = fork_config::schema::ReliabilityConfig::default();
         let provider = create_resilient_provider(
             "totally-invalid",
             Some("provider-test-credential"),
@@ -3001,7 +3001,7 @@ mod tests {
     /// successfully even when the primary uses a completely different key.
     #[test]
     fn resilient_fallback_resolves_own_credential() {
-        let reliability = crate::config::ReliabilityConfig {
+        let reliability = fork_config::schema::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
             fallback_providers: vec!["lmstudio".into(), "ollama".into()],
@@ -3023,7 +3023,7 @@ mod tests {
     /// OpenAI-compatible endpoints (e.g. local LM Studio on a Docker host).
     #[test]
     fn resilient_fallback_supports_custom_url() {
-        let reliability = crate::config::ReliabilityConfig {
+        let reliability = fork_config::schema::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
             fallback_providers: vec!["custom:http://host.docker.internal:1234/v1".into()],
@@ -3044,7 +3044,7 @@ mod tests {
     /// all coexist.  Invalid entries are silently ignored; valid ones initialize.
     #[test]
     fn resilient_fallback_mixed_chain() {
-        let reliability = crate::config::ReliabilityConfig {
+        let reliability = fork_config::schema::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
             fallback_providers: vec![
@@ -3081,7 +3081,7 @@ mod tests {
     /// Osaurus works as a fallback provider alongside other named providers.
     #[test]
     fn resilient_fallback_includes_osaurus() {
-        let reliability = crate::config::ReliabilityConfig {
+        let reliability = fork_config::schema::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
             fallback_providers: vec!["osaurus".into(), "lmstudio".into()],
@@ -3378,7 +3378,7 @@ mod tests {
     fn resilient_fallback_with_profile_syntax() {
         let _guard = env_lock();
 
-        let reliability = crate::config::ReliabilityConfig {
+        let reliability = fork_config::schema::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
             fallback_providers: vec!["openai-codex:second".into()],
@@ -3402,7 +3402,7 @@ mod tests {
     fn resilient_fallback_mixed_profiles_and_custom() {
         let _guard = env_lock();
 
-        let reliability = crate::config::ReliabilityConfig {
+        let reliability = fork_config::schema::ReliabilityConfig {
             provider_retries: 1,
             provider_backoff_ms: 100,
             fallback_providers: vec![

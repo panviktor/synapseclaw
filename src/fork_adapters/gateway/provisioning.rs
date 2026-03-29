@@ -718,7 +718,10 @@ pub async fn handle_provisioning_patch_broker(
         if let Ok(raw) = std::fs::read_to_string(&config_path) {
             if let Ok(val) = raw.parse::<toml::Value>() {
                 if let Some(ipc_val) = val.get("agents_ipc") {
-                    if let Ok(ipc) = ipc_val.clone().try_into::<crate::config::AgentsIpcConfig>() {
+                    if let Ok(ipc) = ipc_val
+                        .clone()
+                        .try_into::<fork_config::schema::AgentsIpcConfig>()
+                    {
                         // Preserve runtime fields that aren't in the TOML patch
                         let old = &config.agents_ipc;
                         let broker_token = old.broker_token.clone();

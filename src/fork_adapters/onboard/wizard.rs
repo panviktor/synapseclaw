@@ -1,15 +1,5 @@
-use crate::config::schema::{default_nostr_relays, NostrConfig};
-use crate::config::schema::{
-    DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig, NextcloudTalkConfig, QQConfig,
-    SignalConfig, StreamMode, WhatsAppConfig,
-};
 #[cfg(feature = "channel-nostr")]
 use crate::config::ConfigIO;
-use crate::config::{
-    AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config, DiscordConfig,
-    HeartbeatConfig, IMessageConfig, LarkConfig, MatrixConfig, MemoryConfig, ObservabilityConfig,
-    RuntimeConfig, SecretsConfig, SlackConfig, StorageConfig, TelegramConfig, WebhookConfig,
-};
 use crate::fork_adapters::providers::{
     canonical_china_provider_name, is_glm_alias, is_glm_cn_alias, is_minimax_alias,
     is_moonshot_alias, is_qianfan_alias, is_qwen_alias, is_qwen_oauth_alias, is_zai_alias,
@@ -21,6 +11,16 @@ use crate::memory::{
 use anyhow::{bail, Context, Result};
 use console::style;
 use dialoguer::{Confirm, Input, Select};
+use fork_config::schema::{default_nostr_relays, NostrConfig};
+use fork_config::schema::{
+    AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config, DiscordConfig,
+    HeartbeatConfig, IMessageConfig, LarkConfig, MatrixConfig, MemoryConfig, ObservabilityConfig,
+    RuntimeConfig, SecretsConfig, SlackConfig, StorageConfig, TelegramConfig, WebhookConfig,
+};
+use fork_config::schema::{
+    DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig, NextcloudTalkConfig, QQConfig,
+    SignalConfig, StreamMode, WhatsAppConfig,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -140,58 +140,58 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         extra_headers: std::collections::HashMap::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
-        backup: crate::config::BackupConfig::default(),
-        data_retention: crate::config::DataRetentionConfig::default(),
-        cloud_ops: crate::config::CloudOpsConfig::default(),
-        conversational_ai: crate::config::ConversationalAiConfig::default(),
-        security: crate::config::SecurityConfig::default(),
-        security_ops: crate::config::SecurityOpsConfig::default(),
+        backup: fork_config::schema::BackupConfig::default(),
+        data_retention: fork_config::schema::DataRetentionConfig::default(),
+        cloud_ops: fork_config::schema::CloudOpsConfig::default(),
+        conversational_ai: fork_config::schema::ConversationalAiConfig::default(),
+        security: fork_config::schema::SecurityConfig::default(),
+        security_ops: fork_config::schema::SecurityOpsConfig::default(),
         runtime: RuntimeConfig::default(),
-        reliability: crate::config::ReliabilityConfig::default(),
-        scheduler: crate::config::schema::SchedulerConfig::default(),
-        agent: crate::config::schema::AgentConfig::default(),
-        skills: crate::config::SkillsConfig::default(),
+        reliability: fork_config::schema::ReliabilityConfig::default(),
+        scheduler: fork_config::schema::SchedulerConfig::default(),
+        agent: fork_config::schema::AgentConfig::default(),
+        skills: fork_config::schema::SkillsConfig::default(),
         model_routes: Vec::new(),
         embedding_routes: Vec::new(),
         heartbeat: HeartbeatConfig::default(),
-        cron: crate::config::CronConfig::default(),
+        cron: fork_config::schema::CronConfig::default(),
         channels_config,
         memory: memory_config, // User-selected memory backend
         storage: StorageConfig::default(),
         tunnel: tunnel_config,
-        gateway: crate::config::GatewayConfig::default(),
+        gateway: fork_config::schema::GatewayConfig::default(),
         composio: composio_config,
-        microsoft365: crate::config::Microsoft365Config::default(),
+        microsoft365: fork_config::schema::Microsoft365Config::default(),
         secrets: secrets_config,
         browser: BrowserConfig::default(),
         browser_delegate:
             crate::fork_adapters::tools::browser_delegate::BrowserDelegateConfig::default(),
-        http_request: crate::config::HttpRequestConfig::default(),
-        multimodal: crate::config::MultimodalConfig::default(),
-        web_fetch: crate::config::WebFetchConfig::default(),
-        web_search: crate::config::WebSearchConfig::default(),
-        project_intel: crate::config::ProjectIntelConfig::default(),
-        google_workspace: crate::config::GoogleWorkspaceConfig::default(),
-        proxy: crate::config::ProxyConfig::default(),
-        identity: crate::config::IdentityConfig::default(),
-        cost: crate::config::CostConfig::default(),
+        http_request: fork_config::schema::HttpRequestConfig::default(),
+        multimodal: fork_config::schema::MultimodalConfig::default(),
+        web_fetch: fork_config::schema::WebFetchConfig::default(),
+        web_search: fork_config::schema::WebSearchConfig::default(),
+        project_intel: fork_config::schema::ProjectIntelConfig::default(),
+        google_workspace: fork_config::schema::GoogleWorkspaceConfig::default(),
+        proxy: fork_config::schema::ProxyConfig::default(),
+        identity: fork_config::schema::IdentityConfig::default(),
+        cost: fork_config::schema::CostConfig::default(),
         agents: std::collections::HashMap::new(),
         swarms: std::collections::HashMap::new(),
-        hooks: crate::config::HooksConfig::default(),
-        query_classification: crate::config::QueryClassificationConfig::default(),
-        transcription: crate::config::TranscriptionConfig::default(),
-        tts: crate::config::TtsConfig::default(),
-        mcp: crate::config::McpConfig::default(),
-        nodes: crate::config::NodesConfig::default(),
-        workspace: crate::config::WorkspaceConfig::default(),
-        notion: crate::config::NotionConfig::default(),
-        node_transport: crate::config::NodeTransportConfig::default(),
-        knowledge: crate::config::KnowledgeConfig::default(),
-        linkedin: crate::config::LinkedInConfig::default(),
-        agents_ipc: crate::config::AgentsIpcConfig::default(),
-        pipelines: crate::config::PipelineEngineConfig::default(),
+        hooks: fork_config::schema::HooksConfig::default(),
+        query_classification: fork_config::schema::QueryClassificationConfig::default(),
+        transcription: fork_config::schema::TranscriptionConfig::default(),
+        tts: fork_config::schema::TtsConfig::default(),
+        mcp: fork_config::schema::McpConfig::default(),
+        nodes: fork_config::schema::NodesConfig::default(),
+        workspace: fork_config::schema::WorkspaceConfig::default(),
+        notion: fork_config::schema::NotionConfig::default(),
+        node_transport: fork_config::schema::NodeTransportConfig::default(),
+        knowledge: fork_config::schema::KnowledgeConfig::default(),
+        linkedin: fork_config::schema::LinkedInConfig::default(),
+        agents_ipc: fork_config::schema::AgentsIpcConfig::default(),
+        pipelines: fork_config::schema::PipelineEngineConfig::default(),
         summary_model: None,
-        summary: crate::config::schema::SummaryConfig::default(),
+        summary: fork_config::schema::SummaryConfig::default(),
     };
 
     println!(
@@ -411,7 +411,7 @@ fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
         snapshot_on_hygiene: false,
         auto_hydrate: true,
         sqlite_open_timeout_secs: None,
-        qdrant: crate::config::QdrantConfig::default(),
+        qdrant: fork_config::schema::QdrantConfig::default(),
     }
 }
 
@@ -516,58 +516,58 @@ async fn run_quick_setup_with_home(
         extra_headers: std::collections::HashMap::new(),
         observability: ObservabilityConfig::default(),
         autonomy: AutonomyConfig::default(),
-        backup: crate::config::BackupConfig::default(),
-        data_retention: crate::config::DataRetentionConfig::default(),
-        cloud_ops: crate::config::CloudOpsConfig::default(),
-        conversational_ai: crate::config::ConversationalAiConfig::default(),
-        security: crate::config::SecurityConfig::default(),
-        security_ops: crate::config::SecurityOpsConfig::default(),
+        backup: fork_config::schema::BackupConfig::default(),
+        data_retention: fork_config::schema::DataRetentionConfig::default(),
+        cloud_ops: fork_config::schema::CloudOpsConfig::default(),
+        conversational_ai: fork_config::schema::ConversationalAiConfig::default(),
+        security: fork_config::schema::SecurityConfig::default(),
+        security_ops: fork_config::schema::SecurityOpsConfig::default(),
         runtime: RuntimeConfig::default(),
-        reliability: crate::config::ReliabilityConfig::default(),
-        scheduler: crate::config::schema::SchedulerConfig::default(),
-        agent: crate::config::schema::AgentConfig::default(),
-        skills: crate::config::SkillsConfig::default(),
+        reliability: fork_config::schema::ReliabilityConfig::default(),
+        scheduler: fork_config::schema::SchedulerConfig::default(),
+        agent: fork_config::schema::AgentConfig::default(),
+        skills: fork_config::schema::SkillsConfig::default(),
         model_routes: Vec::new(),
         embedding_routes: Vec::new(),
         heartbeat: HeartbeatConfig::default(),
-        cron: crate::config::CronConfig::default(),
+        cron: fork_config::schema::CronConfig::default(),
         channels_config: ChannelsConfig::default(),
         memory: memory_config,
         storage: StorageConfig::default(),
-        tunnel: crate::config::TunnelConfig::default(),
-        gateway: crate::config::GatewayConfig::default(),
+        tunnel: fork_config::schema::TunnelConfig::default(),
+        gateway: fork_config::schema::GatewayConfig::default(),
         composio: ComposioConfig::default(),
-        microsoft365: crate::config::Microsoft365Config::default(),
+        microsoft365: fork_config::schema::Microsoft365Config::default(),
         secrets: SecretsConfig::default(),
         browser: BrowserConfig::default(),
         browser_delegate:
             crate::fork_adapters::tools::browser_delegate::BrowserDelegateConfig::default(),
-        http_request: crate::config::HttpRequestConfig::default(),
-        multimodal: crate::config::MultimodalConfig::default(),
-        web_fetch: crate::config::WebFetchConfig::default(),
-        web_search: crate::config::WebSearchConfig::default(),
-        project_intel: crate::config::ProjectIntelConfig::default(),
-        google_workspace: crate::config::GoogleWorkspaceConfig::default(),
-        proxy: crate::config::ProxyConfig::default(),
-        identity: crate::config::IdentityConfig::default(),
-        cost: crate::config::CostConfig::default(),
+        http_request: fork_config::schema::HttpRequestConfig::default(),
+        multimodal: fork_config::schema::MultimodalConfig::default(),
+        web_fetch: fork_config::schema::WebFetchConfig::default(),
+        web_search: fork_config::schema::WebSearchConfig::default(),
+        project_intel: fork_config::schema::ProjectIntelConfig::default(),
+        google_workspace: fork_config::schema::GoogleWorkspaceConfig::default(),
+        proxy: fork_config::schema::ProxyConfig::default(),
+        identity: fork_config::schema::IdentityConfig::default(),
+        cost: fork_config::schema::CostConfig::default(),
         agents: std::collections::HashMap::new(),
         swarms: std::collections::HashMap::new(),
-        hooks: crate::config::HooksConfig::default(),
-        query_classification: crate::config::QueryClassificationConfig::default(),
-        transcription: crate::config::TranscriptionConfig::default(),
-        tts: crate::config::TtsConfig::default(),
-        mcp: crate::config::McpConfig::default(),
-        nodes: crate::config::NodesConfig::default(),
-        workspace: crate::config::WorkspaceConfig::default(),
-        notion: crate::config::NotionConfig::default(),
-        node_transport: crate::config::NodeTransportConfig::default(),
-        knowledge: crate::config::KnowledgeConfig::default(),
-        linkedin: crate::config::LinkedInConfig::default(),
-        agents_ipc: crate::config::AgentsIpcConfig::default(),
-        pipelines: crate::config::PipelineEngineConfig::default(),
+        hooks: fork_config::schema::HooksConfig::default(),
+        query_classification: fork_config::schema::QueryClassificationConfig::default(),
+        transcription: fork_config::schema::TranscriptionConfig::default(),
+        tts: fork_config::schema::TtsConfig::default(),
+        mcp: fork_config::schema::McpConfig::default(),
+        nodes: fork_config::schema::NodesConfig::default(),
+        workspace: fork_config::schema::WorkspaceConfig::default(),
+        notion: fork_config::schema::NotionConfig::default(),
+        node_transport: fork_config::schema::NodeTransportConfig::default(),
+        knowledge: fork_config::schema::KnowledgeConfig::default(),
+        linkedin: fork_config::schema::LinkedInConfig::default(),
+        agents_ipc: fork_config::schema::AgentsIpcConfig::default(),
+        pipelines: fork_config::schema::PipelineEngineConfig::default(),
         summary_model: None,
-        summary: crate::config::schema::SummaryConfig::default(),
+        summary: fork_config::schema::SummaryConfig::default(),
     };
 
     config.save().await?;
@@ -4964,8 +4964,8 @@ fn setup_channels() -> Result<ChannelsConfig> {
 // ── Step 4: Tunnel ──────────────────────────────────────────────
 
 #[allow(clippy::too_many_lines)]
-fn setup_tunnel() -> Result<crate::config::TunnelConfig> {
-    use crate::config::schema::{
+fn setup_tunnel() -> Result<fork_config::schema::TunnelConfig> {
+    use fork_config::schema::{
         CloudflareTunnelConfig, CustomTunnelConfig, NgrokTunnelConfig, TailscaleTunnelConfig,
         TunnelConfig,
     };
@@ -7022,7 +7022,7 @@ mod tests {
         let mut channels = ChannelsConfig::default();
         assert!(!has_launchable_channels(&channels));
 
-        channels.signal = Some(crate::config::schema::SignalConfig {
+        channels.signal = Some(fork_config::schema::SignalConfig {
             http_url: "http://127.0.0.1:8686".into(),
             account: "+1234567890".into(),
             group_id: None,
@@ -7033,7 +7033,7 @@ mod tests {
         assert!(has_launchable_channels(&channels));
 
         channels.signal = None;
-        channels.mattermost = Some(crate::config::schema::MattermostConfig {
+        channels.mattermost = Some(fork_config::schema::MattermostConfig {
             url: "https://mattermost.example.com".into(),
             bot_token: "token".into(),
             channel_id: Some("channel".into()),
@@ -7044,7 +7044,7 @@ mod tests {
         assert!(has_launchable_channels(&channels));
 
         channels.mattermost = None;
-        channels.qq = Some(crate::config::schema::QQConfig {
+        channels.qq = Some(fork_config::schema::QQConfig {
             app_id: "app-id".into(),
             app_secret: "app-secret".into(),
             allowed_users: vec!["*".into()],
@@ -7052,7 +7052,7 @@ mod tests {
         assert!(has_launchable_channels(&channels));
 
         channels.qq = None;
-        channels.nextcloud_talk = Some(crate::config::schema::NextcloudTalkConfig {
+        channels.nextcloud_talk = Some(fork_config::schema::NextcloudTalkConfig {
             base_url: "https://cloud.example.com".into(),
             app_token: "token".into(),
             webhook_secret: Some("secret".into()),
@@ -7061,13 +7061,13 @@ mod tests {
         assert!(has_launchable_channels(&channels));
 
         channels.nextcloud_talk = None;
-        channels.feishu = Some(crate::config::schema::FeishuConfig {
+        channels.feishu = Some(fork_config::schema::FeishuConfig {
             app_id: "cli_123".into(),
             app_secret: "secret".into(),
             encrypt_key: None,
             verification_token: None,
             allowed_users: vec!["*".into()],
-            receive_mode: crate::config::schema::LarkReceiveMode::Websocket,
+            receive_mode: fork_config::schema::LarkReceiveMode::Websocket,
             port: None,
         });
         assert!(has_launchable_channels(&channels));

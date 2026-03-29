@@ -1,7 +1,7 @@
 pub mod registry;
 
-use crate::config::Config;
 use anyhow::Result;
+use fork_config::schema::Config;
 
 /// Integration status
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

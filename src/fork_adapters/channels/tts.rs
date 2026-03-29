@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
 
-use crate::config::TtsConfig;
+use fork_config::schema::TtsConfig;
 
 /// Maximum text length before synthesis is rejected (default: 4096 chars).
 const DEFAULT_MAX_TEXT_LENGTH: usize = 4096;
@@ -46,7 +46,7 @@ pub struct OpenAiTtsProvider {
 impl OpenAiTtsProvider {
     /// Create a new OpenAI TTS provider from config, resolving the API key
     /// from config or `OPENAI_API_KEY` env var.
-    pub fn new(config: &crate::config::OpenAiTtsConfig) -> Result<Self> {
+    pub fn new(config: &fork_config::schema::OpenAiTtsConfig) -> Result<Self> {
         let api_key = config
             .api_key
             .as_deref()
@@ -145,7 +145,7 @@ pub struct ElevenLabsTtsProvider {
 impl ElevenLabsTtsProvider {
     /// Create a new ElevenLabs TTS provider from config, resolving the API key
     /// from config or `ELEVENLABS_API_KEY` env var.
-    pub fn new(config: &crate::config::ElevenLabsTtsConfig) -> Result<Self> {
+    pub fn new(config: &fork_config::schema::ElevenLabsTtsConfig) -> Result<Self> {
         let api_key = config
             .api_key
             .as_deref()
@@ -252,7 +252,7 @@ pub struct GoogleTtsProvider {
 impl GoogleTtsProvider {
     /// Create a new Google Cloud TTS provider from config, resolving the API key
     /// from config or `GOOGLE_TTS_API_KEY` env var.
-    pub fn new(config: &crate::config::GoogleTtsConfig) -> Result<Self> {
+    pub fn new(config: &fork_config::schema::GoogleTtsConfig) -> Result<Self> {
         let api_key = config
             .api_key
             .as_deref()
@@ -369,7 +369,7 @@ impl EdgeTtsProvider {
     /// `binary_path` must be a bare command name (no path separators) matching
     /// one of [`Self::ALLOWED_BINARIES`]. This prevents arbitrary executable
     /// paths like `/tmp/malicious/edge-tts` from passing the basename check.
-    pub fn new(config: &crate::config::EdgeTtsConfig) -> Result<Self> {
+    pub fn new(config: &fork_config::schema::EdgeTtsConfig) -> Result<Self> {
         let path = &config.binary_path;
         if path.contains('/') || path.contains('\\') {
             bail!(
@@ -590,7 +590,7 @@ mod tests {
     fn tts_manager_with_edge_provider() {
         let mut config = default_tts_config();
         config.default_provider = "edge".to_string();
-        config.edge = Some(crate::config::EdgeTtsConfig {
+        config.edge = Some(fork_config::schema::EdgeTtsConfig {
             binary_path: "edge-tts".into(),
         });
 
@@ -602,7 +602,7 @@ mod tests {
     async fn tts_rejects_empty_text() {
         let mut config = default_tts_config();
         config.default_provider = "edge".to_string();
-        config.edge = Some(crate::config::EdgeTtsConfig {
+        config.edge = Some(fork_config::schema::EdgeTtsConfig {
             binary_path: "edge-tts".into(),
         });
 
@@ -622,7 +622,7 @@ mod tests {
         let mut config = default_tts_config();
         config.default_provider = "edge".to_string();
         config.max_text_length = 10;
-        config.edge = Some(crate::config::EdgeTtsConfig {
+        config.edge = Some(fork_config::schema::EdgeTtsConfig {
             binary_path: "edge-tts".into(),
         });
 

@@ -1,10 +1,10 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
 use crate::config::ConfigIO;
-use crate::config::{Config, StreamMode};
 use crate::security::pairing::PairingGuard;
 use anyhow::Context;
 use async_trait::async_trait;
 use directories::UserDirs;
+use fork_config::schema::{Config, StreamMode};
 use parking_lot::Mutex;
 use reqwest::multipart::{Form, Part};
 use std::fmt::Write as _;
@@ -330,7 +330,7 @@ pub struct TelegramChannel {
     /// Base URL for the Telegram Bot API. Defaults to `https://api.telegram.org`.
     /// Override for local Bot API servers or testing.
     api_base: String,
-    transcription: Option<crate::config::TranscriptionConfig>,
+    transcription: Option<fork_config::schema::TranscriptionConfig>,
     voice_transcriptions: Mutex<std::collections::HashMap<String, String>>,
     workspace_dir: Option<std::path::PathBuf>,
 }
@@ -399,7 +399,7 @@ impl TelegramChannel {
     }
 
     /// Configure voice transcription.
-    pub fn with_transcription(mut self, config: crate::config::TranscriptionConfig) -> Self {
+    pub fn with_transcription(mut self, config: fork_config::schema::TranscriptionConfig) -> Self {
         if config.enabled {
             self.transcription = Some(config);
         }
@@ -456,7 +456,7 @@ impl TelegramChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        crate::config::build_runtime_proxy_client("channel.telegram")
+        fork_config::schema::build_runtime_proxy_client("channel.telegram")
     }
 
     fn normalize_identity(value: &str) -> String {
@@ -4120,7 +4120,7 @@ mod tests {
 
     #[test]
     fn with_transcription_sets_config_when_enabled() {
-        let mut tc = crate::config::TranscriptionConfig::default();
+        let mut tc = fork_config::schema::TranscriptionConfig::default();
         tc.enabled = true;
 
         let ch =
@@ -4130,7 +4130,7 @@ mod tests {
 
     #[test]
     fn with_transcription_skips_when_disabled() {
-        let tc = crate::config::TranscriptionConfig::default(); // enabled = false
+        let tc = fork_config::schema::TranscriptionConfig::default(); // enabled = false
         let ch =
             TelegramChannel::new("token".into(), vec!["*".into()], false).with_transcription(tc);
         assert!(ch.transcription.is_none());
@@ -4154,7 +4154,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_parse_voice_message_skips_when_duration_exceeds_limit() {
-        let mut tc = crate::config::TranscriptionConfig::default();
+        let mut tc = fork_config::schema::TranscriptionConfig::default();
         tc.enabled = true;
         tc.max_duration_secs = 5;
 
@@ -4175,7 +4175,7 @@ mod tests {
 
     #[tokio::test]
     async fn try_parse_voice_message_rejects_unauthorized_sender_before_download() {
-        let mut tc = crate::config::TranscriptionConfig::default();
+        let mut tc = fork_config::schema::TranscriptionConfig::default();
         tc.enabled = true;
         tc.max_duration_secs = 120;
 
@@ -4228,7 +4228,7 @@ mod tests {
         );
 
         // 2. Call transcribe_audio() — real Groq Whisper API
-        let config = crate::config::TranscriptionConfig {
+        let config = fork_config::schema::TranscriptionConfig {
             enabled: true,
             ..Default::default()
         };
@@ -4503,7 +4503,7 @@ mod tests {
         );
         let messages = vec![crate::fork_adapters::providers::ChatMessage::user(content)];
         assert_eq!(
-            crate::multimodal::count_image_markers(&messages),
+            crate::fork_adapters::multimodal::count_image_markers(&messages),
             0,
             "markdown file must not trigger image marker detection"
         );
@@ -4535,7 +4535,7 @@ mod tests {
         let messages = vec![crate::fork_adapters::providers::ChatMessage::user(
             photo_content.to_string(),
         )];
-        let count = crate::multimodal::count_image_markers(&messages);
+        let count = crate::fork_adapters::multimodal::count_image_markers(&messages);
         assert_eq!(
             count, 1,
             "multimodal should detect exactly one image marker"
@@ -4558,7 +4558,10 @@ mod tests {
 
         // Multimodal pipeline still detects the marker.
         let messages = vec![crate::fork_adapters::providers::ChatMessage::user(content)];
-        assert_eq!(crate::multimodal::count_image_markers(&messages), 1);
+        assert_eq!(
+            crate::fork_adapters::multimodal::count_image_markers(&messages),
+            1
+        );
     }
 
     // ── E2E: attachment saves file and formats content ───────────────
@@ -4587,7 +4590,7 @@ mod tests {
             doc_content,
         )];
         assert_eq!(
-            crate::multimodal::count_image_markers(&doc_msgs),
+            crate::fork_adapters::multimodal::count_image_markers(&doc_msgs),
             0,
             "document content must not contain image markers"
         );
@@ -4617,7 +4620,7 @@ mod tests {
             photo_content.clone(),
         )];
         assert_eq!(
-            crate::multimodal::count_image_markers(&photo_msgs),
+            crate::fork_adapters::multimodal::count_image_markers(&photo_msgs),
             1,
             "multimodal must detect exactly one image marker in photo content"
         );
@@ -4630,7 +4633,7 @@ mod tests {
             captioned.clone(),
         )];
         assert_eq!(
-            crate::multimodal::count_image_markers(&cap_msgs),
+            crate::fork_adapters::multimodal::count_image_markers(&cap_msgs),
             1,
             "caption must not break image marker detection"
         );
@@ -4653,7 +4656,7 @@ mod tests {
             md_content,
         )];
         assert_eq!(
-            crate::multimodal::count_image_markers(&md_msgs),
+            crate::fork_adapters::multimodal::count_image_markers(&md_msgs),
             0,
             "markdown file must not trigger image marker detection"
         );
@@ -4686,7 +4689,7 @@ mod tests {
         let messages = vec![crate::fork_adapters::providers::ChatMessage::user(
             "[IMAGE:/tmp/photo.jpg]\n\nDescribe this image".to_string(),
         )];
-        let marker_count = crate::multimodal::count_image_markers(&messages);
+        let marker_count = crate::fork_adapters::multimodal::count_image_markers(&messages);
         assert_eq!(marker_count, 1, "must detect image marker in photo content");
 
         // The combination of marker_count > 0 && !supports_vision() means

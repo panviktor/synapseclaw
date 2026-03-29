@@ -3,9 +3,9 @@ pub mod store;
 
 #[cfg(test)]
 mod tests {
-    use crate::config::HeartbeatConfig;
     use crate::fork_adapters::heartbeat::engine::HeartbeatEngine;
     use crate::fork_adapters::observability::NoopObserver;
+    use fork_config::schema::HeartbeatConfig;
     use std::sync::Arc;
 
     #[test]

@@ -5,7 +5,6 @@
 //! owns the SQLite database — agents never access it directly.
 
 use super::{require_localhost, AppState};
-use crate::config::TokenMetadata;
 use crate::fork_adapters::gateway::api::extract_bearer_token;
 use crate::security::audit::{AuditEvent, AuditEventType};
 use crate::security::{GuardResult, LeakResult};
@@ -15,6 +14,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
+use fork_config::schema::TokenMetadata;
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -4828,7 +4828,7 @@ mod tests {
 
     #[test]
     fn ipc_prompt_guard_config_defaults() {
-        let cfg = crate::config::IpcPromptGuardConfig::default();
+        let cfg = fork_config::schema::IpcPromptGuardConfig::default();
         assert!(cfg.enabled);
         assert_eq!(cfg.action, "block");
         assert!((cfg.sensitivity - 0.55).abs() < f64::EPSILON);
@@ -4863,7 +4863,7 @@ mod tests {
     fn prompt_guard_exempt_levels_skip_scan() {
         // This tests the exempt_levels logic in config, not the scan itself.
         // L0 and L1 should be exempt by default.
-        let cfg = crate::config::IpcPromptGuardConfig::default();
+        let cfg = fork_config::schema::IpcPromptGuardConfig::default();
         assert!(cfg.exempt_levels.contains(&0));
         assert!(cfg.exempt_levels.contains(&1));
         assert!(!cfg.exempt_levels.contains(&2));
@@ -5403,7 +5403,7 @@ mod tests {
         use crate::security::PairingGuard;
 
         let guard = PairingGuard::new(true, &["zc_existing".into()]);
-        let meta = crate::config::TokenMetadata {
+        let meta = fork_config::schema::TokenMetadata {
             agent_id: "eph-opus-abc".into(),
             trust_level: 3,
             role: "worker".into(),
@@ -5436,7 +5436,7 @@ mod tests {
         let guard = PairingGuard::new(true, &["zc_existing".into()]);
 
         // Setup: register ephemeral agent
-        let child_meta = crate::config::TokenMetadata {
+        let child_meta = fork_config::schema::TokenMetadata {
             agent_id: "eph-opus-abc".into(),
             trust_level: 3,
             role: "worker".into(),

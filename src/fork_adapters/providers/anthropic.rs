@@ -383,7 +383,8 @@ impl AnthropicProvider {
                 }
                 _ => {
                     // Parse image markers from user message content
-                    let (text, image_refs) = crate::multimodal::parse_image_markers(&msg.content);
+                    let (text, image_refs) =
+                        crate::fork_adapters::multimodal::parse_image_markers(&msg.content);
                     let mut content_blocks: Vec<NativeContentOut> = Vec::new();
 
                     // Add image content blocks for each image reference
@@ -540,7 +541,7 @@ impl AnthropicProvider {
     }
 
     fn http_client(&self) -> Client {
-        crate::config::build_runtime_proxy_client_with_timeouts("provider.anthropic", 120, 10)
+        fork_config::schema::build_runtime_proxy_client_with_timeouts("provider.anthropic", 120, 10)
     }
 }
 

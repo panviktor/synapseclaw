@@ -9,10 +9,10 @@ use tokio::sync::{oneshot, Mutex, Notify};
 use tokio::time::{timeout, Duration};
 use tokio_stream::StreamExt;
 
-use crate::config::schema::{McpServerConfig, McpTransport};
 use crate::fork_adapters::tools::mcp_protocol::{
     JsonRpcError, JsonRpcRequest, JsonRpcResponse, INTERNAL_ERROR,
 };
+use fork_config::schema::{McpServerConfig, McpTransport};
 
 /// Maximum bytes for a single JSON-RPC response.
 const MAX_LINE_BYTES: usize = 4 * 1024 * 1024; // 4 MB
