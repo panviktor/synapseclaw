@@ -1,9 +1,10 @@
-#[cfg(feature = "channel-nostr")]
 use crate::config::schema::{default_nostr_relays, NostrConfig};
 use crate::config::schema::{
     DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig, NextcloudTalkConfig, QQConfig,
     SignalConfig, StreamMode, WhatsAppConfig,
 };
+#[cfg(feature = "channel-nostr")]
+use crate::config::ConfigIO;
 use crate::config::{
     AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config, DiscordConfig,
     HeartbeatConfig, IMessageConfig, LarkConfig, MatrixConfig, MemoryConfig, ObservabilityConfig,

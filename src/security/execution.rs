@@ -6,7 +6,6 @@
 
 use crate::config::SandboxBackend;
 use crate::security::traits::Sandbox;
-use serde::{Deserialize, Serialize};
 
 /// Execution boundary derived from trust level.
 ///
@@ -58,18 +57,8 @@ impl std::fmt::Display for SpawnSandboxError {
 
 impl std::error::Error for SpawnSandboxError {}
 
-/// Optional workload profile that can only narrow the execution boundary.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct WorkloadProfile {
-    /// LLM model override for the child.
-    pub model: Option<String>,
-    /// System prompt prefix/template.
-    pub prompt_template: Option<String>,
-    /// Tool subset available to the child. Must be ⊆ boundary tools ceiling.
-    pub allowed_tools: Option<Vec<String>>,
-    /// Maximum output tokens for the child.
-    pub max_output_tokens: Option<u32>,
-}
+// Re-export from fork_config — single source of truth.
+pub use fork_config::workload::WorkloadProfile;
 
 /// Resolved spawn configuration after applying boundary + workload.
 #[derive(Debug, Clone)]

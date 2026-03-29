@@ -92,6 +92,7 @@ pub use whatsapp_web::WhatsAppWebChannel;
 
 use crate::agent::loop_::build_tool_instructions;
 use crate::config::Config;
+use crate::config::ConfigIO;
 use crate::fork_adapters::approval::ApprovalManager;
 use crate::fork_adapters::channels::session_backend::SessionBackend;
 use crate::fork_adapters::observability::traits::{ObserverEvent, ObserverMetric};

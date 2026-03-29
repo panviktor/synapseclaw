@@ -1,4 +1,5 @@
 use super::traits::{Tool, ToolResult};
+use crate::config::ConfigIO;
 use crate::config::{
     runtime_proxy_config, set_runtime_proxy_config, Config, ProxyConfig, ProxyScope,
 };

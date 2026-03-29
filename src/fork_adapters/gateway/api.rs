@@ -3,6 +3,7 @@
 //! All `/api/*` routes require bearer token authentication (PairingGuard).
 
 use super::AppState;
+use crate::config::ConfigIO;
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
