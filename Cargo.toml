@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/domain", "crates/infra/security", "crates/infra/memory", "crates/infra/adapters"]
+members = [".", "crates/domain", "crates/infra/adapters", "crates/infra/adapters/security", "crates/infra/adapters/memory"]
 resolver = "2"
 
 [package]
@@ -37,9 +37,9 @@ include = [
 # Fork-owned application core (pure business logic)
 synapse_domain = { path = "crates/domain" }
 # Fork-owned security module (shared between adapters and main binary)
-synapse_security = { path = "crates/infra/security" }
+synapse_security = { path = "crates/infra/adapters/security" }
 # Memory backends (sqlite, postgres, qdrant, embeddings)
-synapse_memory = { path = "crates/infra/memory" }
+synapse_memory = { path = "crates/infra/adapters/memory" }
 # Infrastructure adapters (channels, providers, tools, gateway, agent)
 synapse_adapters = { path = "crates/infra/adapters" }
 
