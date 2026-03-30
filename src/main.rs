@@ -73,18 +73,17 @@ fn pause_after_no_command_help() {
 
 // Use lib.rs exports — all code in workspace crates.
 use synapse_adapters::runtime;
-pub use synapse_core;
+pub use synapse_domain;
 use synapse_security as security;
 use synapseclaw::config::{self, Config, ConfigIO};
 #[allow(unused_imports)]
-use synapseclaw::{adapters, agent, commands, memory};
-
-#[allow(unused_imports)]
+use synapseclaw::{adapters, agent, memory};
 use synapseclaw::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MemoryCommands,
     ServiceCommands, SkillCommands,
 };
 
+#[allow(unused_imports)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 enum CompletionShell {
     #[value(name = "bash")]
@@ -708,7 +707,7 @@ async fn main() -> Result<()> {
         // Handle --reinit: backup and reset configuration
         if reinit {
             let (synapseclaw_dir, _) =
-                crate::config::schema::resolve_runtime_dirs_for_onboarding().await?;
+                synapse_adapters::workspace_io::resolve_runtime_dirs_for_onboarding().await?;
 
             if synapseclaw_dir.exists() {
                 let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S");
@@ -788,7 +787,7 @@ async fn main() -> Result<()> {
 
     // Build agent runner port — shared by gateway, daemon, cron
     let config_for_runner = std::sync::Arc::new(std::sync::Mutex::new(config.clone()));
-    let agent_runner: std::sync::Arc<dyn synapse_core::ports::agent_runner::AgentRunnerPort> =
+    let agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort> =
         std::sync::Arc::new(crate::agent::runner_adapter::AgentRunner::new(
             config_for_runner,
         ));
@@ -1234,7 +1233,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Memory { memory_command } => {
-            memory::cli::handle_command(memory_command, &config).await
+            synapse_adapters::memory::cli::handle_command(memory_command, &config).await
         }
 
         Commands::Auth { auth_command } => handle_auth_command(auth_command, &config).await,
