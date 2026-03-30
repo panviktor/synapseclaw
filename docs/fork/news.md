@@ -1,29 +1,45 @@
 # SynapseClaw News & Changelog
 
+## 2026-03-30
+
+### Phase 5: Complete Hexagonal Architecture (20 PRs: #181-#200)
+
+**Full hexagonal restructuring** — domain is pure, src/ contains only main.rs + lib.rs, all infrastructure in workspace crates.
+
+**Phase 4.2 — Decouple adapters (PRs #181-#190):**
+- AgentRunnerPort breaks agent↔adapters circular dependency (#185)
+- Config types (6.2K LOC) extracted to fork_config (#186)
+- fork_security crate (10K LOC) extracted (#189)
+- `crate::` refs in adapters: 1,255 → 49 (96% reduction)
+
+**Phase 5A — Crate promotion (PRs #191-#196):**
+- Rename: fork_core→synapse_core, fork_security→synapse_security (#191)
+- Dissolve synapse_config into synapse_core (#193)
+- Extract synapse_memory crate (8K LOC) (#195)
+- **THE BIG MOVE**: promote adapters + agent to synapse_adapters crate (170K LOC) (#196)
+- Delete src/adapters/, src/agent/, src/security/, src/runtime/ — src/ = 2 files
+
+**Phase 5B — Purify domain (PRs #197-#200):**
+- Hexagonal directory layout: `crates/domain/` + `crates/infra/adapters/` (#197)
+- Feature flag propagation fix, CLAUDE.md update (#198)
+- Remove reqwest from domain — extract proxy to adapters (#199)
+- Move security + memory sub-crates inside adapters (#200)
+
+**Final architecture:**
+```
+crates/
+  domain/                    ← PURE DOMAIN (zero infra deps, 24K)
+  infra/adapters/            ← ALL INFRASTRUCTURE (170K)
+    security/                ← security sub-crate (10K)
+    memory/                  ← memory sub-crate (8K)
+src/
+  main.rs                    ← composition root
+  lib.rs                     ← thin facade
+```
+
+Domain dependencies: serde, schemars, async-trait, chrono, uuid, url, anyhow, parking_lot — **zero HTTP, zero filesystem, zero CLI framework**.
+
 ## 2026-03-29
-
-### Phase 4.2 + Phase 5: Hexagonal Architecture Completion
-- **#181** — dead code removal: nodes, rag (−633 LOC)
-- **#182** — `fork_config` crate scaffold (adapter config types, channel traits, provider aliases)
-- **#183** — dead SOP engine + MQTT channel removal (−6,891 LOC)
-- **#184** — replace 251 `crate::` paths in fork_adapters with direct `fork_core::` imports
-- **#185** — `AgentRunnerPort` trait in fork_core — breaks agent↔fork_adapters circular dependency
-- **#186** — move 126 Config types (6.2K LOC) to fork_config + `ConfigIO` extension trait
-- **#187** — mass path redirect: fork_adapters imports → fork_config/fork_core (−442 refs)
-- **#188** — CLI enums → fork_config, `security_policy_from_config` → fork_config
-- **#189** — extract `fork_security` crate (10K LOC security module as standalone crate)
-- **#190** — delete old security files from src/security/ (−9,944 LOC), cleanup last refs
-- **#191** — **Phase 5 rename**: fork_core→synapse_core, fork_config→synapse_config, fork_security→synapse_security, fork_adapters→adapters
-- **#192** — dissolve synapse_config: commands→src/, security_factory→synapse_security
-
-**Result**: `crate::` refs in adapters reduced from 1,255 to 49 (96%). Architecture:
-```
-crates/synapse_core/       ← DOMAIN: types + ports (16K)
-crates/synapse_config/     ← SHARED: config types (6K)
-crates/synapse_security/   ← SECURITY: implementations (10K)
-src/adapters/              ← INFRASTRUCTURE: 28 modules (152K)
-src/commands.rs            ← COMPOSITION ROOT: CLI enums
-```
 
 ## 2026-03-28
 

@@ -8,6 +8,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
+Build with required features:
+
+```bash
+cargo build --release --features channel-matrix
+```
+
 Full pre-PR validation (recommended):
 
 ```bash
@@ -20,45 +26,76 @@ Docs-only changes: run markdown lint and link-integrity checks. If touching boot
 
 SynapseClaw is a Rust-first autonomous agent runtime optimized for performance, efficiency, stability, extensibility, sustainability, and security.
 
-Core architecture is trait-driven and modular. Extend by implementing traits and registering in factory modules.
+**Hexagonal architecture** — pure domain core with zero infrastructure dependencies. Extend by implementing port traits and registering in adapter modules.
 
-Key extension points:
+## Architecture
+
+```
+synapseclaw/
+├── src/
+│   ├── main.rs              ← composition root (CLI, DI wiring)
+│   └── lib.rs               ← thin facade (re-exports for tests)
+│
+└── crates/
+    ├── domain/              ← PURE DOMAIN (synapse_domain)
+    │   └── src/               zero infra deps: serde, schemars, async-trait
+    │       ├── application/   use cases, services
+    │       ├── config/        config value objects (schema types, no IO)
+    │       ├── domain/        entities, value objects
+    │       └── ports/         trait interfaces (Provider, Memory, Runtime, etc.)
+    │
+    └── infra/
+        └── adapters/        ← ALL INFRASTRUCTURE (synapse_adapters)
+            ├── Cargo.toml     main adapters crate (170K LOC, 30+ modules)
+            ├── src/
+            │   ├── agent/     agent loop, classifier, dispatcher
+            │   ├── channels/  telegram, discord, slack, matrix, IRC, lark, nostr, ...
+            │   ├── commands.rs  CLI enums (clap derives)
+            │   ├── config_io.rs ConfigIO impl (load/save/encrypt)
+            │   ├── gateway/   HTTP/WS gateway, IPC broker
+            │   ├── providers/ openai, anthropic, gemini, ollama, ...
+            │   ├── proxy.rs   proxy builder functions (reqwest)
+            │   ├── tools/     shell, file_read, browser, memory, IPC, ...
+            │   └── ...        28+ modules total
+            ├── security/      security sub-crate (synapse_security, 10K)
+            │   └── src/         pairing, secrets, audit, sandbox, identity
+            └── memory/        memory sub-crate (synapse_memory, 8K)
+                └── src/         sqlite, qdrant, markdown, embeddings, lucid
+```
+
+### Dependency Rules
+
+```
+domain/           → nothing (PURE)
+infra/security/   → domain/
+infra/memory/     → domain/
+infra/adapters/   → domain/, security/, memory/
+src/main.rs       → all crates (composition root)
+```
+
+### Key Extension Points
 
 - `crates/infra/adapters/src/providers/traits.rs` (`Provider`)
 - `crates/infra/adapters/src/channels/traits.rs` (`Channel`)
 - `crates/infra/adapters/src/tools/traits.rs` (`Tool`)
-- `crates/infra/memory/src/traits.rs` (`Memory`)
+- `crates/infra/adapters/memory/src/traits.rs` (`Memory`)
 - `crates/infra/adapters/src/observability/traits.rs` (`Observer`)
 - `crates/domain/src/ports/runtime.rs` (`RuntimeAdapter`)
 
-## Repository Map
+### Workspace Crates
 
-- `src/main.rs` — CLI entrypoint and command routing
-- `src/lib.rs` — module exports and shared command enums
-- `crates/domain/src/config/` — schema + config loading/merging
-- `crates/infra/adapters/src/agent/` — orchestration loop (classifier, dispatcher, run_context re-export from fork_core)
-- `crates/infra/security/src/` — policy, pairing, secret store (AutonomyLevel/ToolOperation re-export from fork_core)
-- `crates/infra/memory/src/` — memory trait + backends (MemoryCategory/MemoryEntry re-export from fork_core)
-- `crates/infra/adapters/src/runtime/` — runtime adapters (currently native)
-- `crates/domain/` — hexagonal domain core: domain types, ports, application services
-- `crates/infra/adapters/src/` — fork-specific adapter implementations (26 modules):
-  - `channels/` — Telegram/Discord/Slack/Matrix/IRC/Lark/Nostr/etc
-  - `providers/` — model providers and resilient wrapper
-  - `tools/` — tool execution surface (shell, file, memory, browser, IPC)
-  - `gateway/` — webhook/gateway server
-  - `observability/` — logging, tracing, metrics
-  - `hooks/` — lifecycle hooks
-  - `pipeline/` — deterministic pipeline engine
-  - `ipc/` — inter-agent IPC broker
-  - `daemon/`, `service/`, `cron/`, `approval/`, `auth/`, `cost/`, `health/`, `heartbeat/`, `tunnel/`, etc.
-- `docs/` — topic-based documentation (setup-guides, reference, ops, security, contributing, maintainers)
-- `.github/` — CI, templates, automation workflows
+| Crate | Package | LOC | Role |
+|-------|---------|-----|------|
+| `crates/domain/` | `synapse_domain` | 24K | Pure domain: types, ports, config schema |
+| `crates/infra/adapters/` | `synapse_adapters` | 170K | Infrastructure: channels, providers, tools, gateway |
+| `crates/infra/adapters/security/` | `synapse_security` | 10K | Security: pairing, secrets, audit, sandbox |
+| `crates/infra/adapters/memory/` | `synapse_memory` | 8K | Memory: sqlite, qdrant, embeddings, markdown |
 
 ## Risk Tiers
 
 - **Low risk**: docs/chore/tests-only changes
-- **Medium risk**: most `src/**` behavior changes without boundary/security impact
-- **High risk**: `crates/infra/security/src/**`, `crates/infra/adapters/src/runtime/**`, `src/gateway/**`, `src/tools/**`, `.github/workflows/**`, access-control boundaries
+- **Medium risk**: most `crates/infra/**` behavior changes without boundary/security impact
+- **High risk**: `crates/infra/adapters/security/src/**`, `crates/infra/adapters/src/runtime/**`, `crates/infra/adapters/src/gateway/**`, `crates/infra/adapters/src/tools/**`, `.github/workflows/**`, access-control boundaries
 
 When uncertain, classify as higher risk.
 
