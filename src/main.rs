@@ -71,11 +71,13 @@ fn pause_after_no_command_help() {
     let _ = std::io::stdin().read_line(&mut line);
 }
 
-// Use lib.rs exports instead of declaring modules — eliminates double compilation.
+// Use lib.rs exports — all code in workspace crates.
+use synapse_adapters::runtime;
 pub use synapse_core;
+use synapse_security as security;
 use synapseclaw::config::{self, Config, ConfigIO};
 #[allow(unused_imports)]
-use synapseclaw::{adapters, agent, commands, memory, runtime, security, skills};
+use synapseclaw::{adapters, agent, commands, memory};
 
 #[allow(unused_imports)]
 use synapseclaw::{
@@ -1228,7 +1230,7 @@ async fn main() -> Result<()> {
         } => crate::adapters::integrations::handle_command(integration_command, &config),
 
         Commands::Skills { skill_command } => {
-            synapseclaw::skills::handle_command(skill_command, &config)
+            synapse_adapters::skills::handle_command(skill_command, &config)
         }
 
         Commands::Memory { memory_command } => {

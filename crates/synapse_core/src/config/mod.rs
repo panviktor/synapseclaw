@@ -9,3 +9,6 @@ pub mod channel_traits;
 pub mod provider_aliases;
 pub mod schema;
 pub mod workload;
+
+pub mod workspace;
+pub mod workspace_io;
