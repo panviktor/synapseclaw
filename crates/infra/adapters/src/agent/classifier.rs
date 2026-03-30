@@ -1,4 +1,4 @@
-//! Query classifier — re-exported from fork_core.
+//! Query classifier — re-exported from synapse_domain.
 //!
 //! The canonical implementation now lives in
 //! `synapse_domain::domain::query_classification`. This module re-exports

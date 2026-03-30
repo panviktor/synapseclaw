@@ -6,15 +6,16 @@ publish = false
 
 [features]
 channel-nostr = ["dep:nostr-sdk", "synapse_domain/channel-nostr"]
-channel-matrix = []
+channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
 channel-feishu = ["channel-lark"]
 observability-prometheus = ["dep:prometheus"]
 observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
-whatsapp-web = []
-rag-pdf = []
-browser-native = []
+whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost", "dep:qrcode"]
+rag-pdf = ["dep:pdf-extract"]
+browser-native = ["dep:fantoccini"]
 sandbox-landlock = ["synapse_security/sandbox-landlock"]
+memory-postgres = []
 
 [dependencies]
 synapse_domain = { path = "../../domain" }
@@ -118,9 +119,23 @@ opentelemetry-otlp = { version = "0.31", default-features = false, features = ["
 # Portable atomics
 portable-atomic = "1"
 
+# Optional channel/feature deps
+matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite"] }
+fantoccini = { version = "0.22.1", optional = true, default-features = false, features = ["rustls-tls"] }
+pdf-extract = { version = "0.10", optional = true }
+wa-rs = { version = "0.2", optional = true, default-features = false }
+wa-rs-core = { version = "0.2", optional = true, default-features = false }
+wa-rs-binary = { version = "0.2", optional = true, default-features = false }
+wa-rs-proto = { version = "0.2", optional = true, default-features = false }
+wa-rs-ureq-http = { version = "0.2", optional = true }
+wa-rs-tokio-transport = { version = "0.2", optional = true, default-features = false }
+serde-big-array = { version = "0.5", optional = true }
+qrcode = { version = "0.14", optional = true }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3.15"
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "test-util"] }
+

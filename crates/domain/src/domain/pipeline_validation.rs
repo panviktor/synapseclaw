@@ -2,7 +2,7 @@
 //!
 //! Phase 4.1: validates step input/output data against JSON Schema definitions.
 //! This module lives in `domain` so `pipeline_service` can use it without
-//! depending on `fork_adapters`.
+//! depending on `synapse_adapters`.
 
 use serde_json::Value;
 

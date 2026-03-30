@@ -2081,7 +2081,7 @@ const PROMOTED_KIND: &str = "promoted_quarantine";
 /// 5. L3 lateral `text` requires an explicit allowlist entry.
 #[allow(clippy::implicit_hasher)]
 ///
-/// Phase 4.0 Slice 5: delegates ACL validation to fork_core domain.
+/// Phase 4.0 Slice 5: delegates ACL validation to synapse_domain domain.
 pub fn validate_send(
     from_level: u8,
     to_level: u8,
@@ -2093,7 +2093,7 @@ pub fn validate_send(
     l4_destinations: &std::collections::HashMap<String, String>,
     db: &IpcDb,
 ) -> Result<(), IpcError> {
-    // Convert types for fork_core domain function
+    // Convert types for synapse_domain domain function
     let lateral: Vec<(String, String)> = lateral_text_pairs
         .iter()
         .map(|p| (p[0].clone(), p[1].clone()))
@@ -2139,7 +2139,7 @@ pub fn validate_send(
 /// - L1: + `global:*`
 /// - `secret:*` denied for all (reserved for Phase 2)
 ///
-/// Phase 4.0 Slice 5: delegates state write validation to fork_core domain.
+/// Phase 4.0 Slice 5: delegates state write validation to synapse_domain domain.
 pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<(), IpcError> {
     synapse_domain::domain::ipc::validate_state_write(i32::from(trust_level), agent_id, key)
         .map_err(|acl_err| {
@@ -2156,7 +2156,7 @@ pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<
         })
 }
 
-/// Phase 4.0 Slice 5: delegates state read validation to fork_core domain.
+/// Phase 4.0 Slice 5: delegates state read validation to synapse_domain domain.
 pub fn validate_state_get(trust_level: u8, key: &str) -> Result<(), IpcError> {
     synapse_domain::domain::ipc::validate_state_read(i32::from(trust_level), key).map_err(
         |acl_err| IpcError {
@@ -2685,7 +2685,7 @@ pub async fn handle_ipc_send(
     }
 
     // ── Phase 4.0: Spawn result completion via ipc_service ──
-    // Business rule: check is owned by fork_core; DB ops stay in gateway.
+    // Business rule: check is owned by synapse_domain; DB ops stay in gateway.
     if synapse_domain::application::services::ipc_service::should_complete_spawn(
         &body.kind,
         body.session_id.as_deref(),

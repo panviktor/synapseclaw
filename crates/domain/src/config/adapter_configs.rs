@@ -1,7 +1,7 @@
 //! Adapter-owned config types that the Config struct references.
 //!
-//! These types are defined here (not in adapters) so that fork_config
-//! can be compiled independently without depending on fork_adapters.
+//! These types are defined here (not in adapters) so that synapse_domain::config
+//! can be compiled independently without depending on synapse_adapters.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

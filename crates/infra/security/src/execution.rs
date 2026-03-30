@@ -57,7 +57,7 @@ impl std::fmt::Display for SpawnSandboxError {
 
 impl std::error::Error for SpawnSandboxError {}
 
-// Re-export from fork_config — single source of truth.
+// Re-export from synapse_domain::config — single source of truth.
 pub use synapse_domain::config::workload::WorkloadProfile;
 
 /// Resolved spawn configuration after applying boundary + workload.

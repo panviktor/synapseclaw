@@ -33,7 +33,7 @@ use uuid::Uuid;
 
 use super::traits::{Channel, ChannelMessage, SendMessage};
 
-// Re-export from fork_config — single source of truth.
+// Re-export from synapse_domain::config — single source of truth.
 pub use synapse_domain::config::adapter_configs::EmailConfig;
 
 type ImapSession = Session<TlsStream<TcpStream>>;

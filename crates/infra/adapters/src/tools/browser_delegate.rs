@@ -17,7 +17,7 @@ use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use tokio::time::{timeout, Duration};
 
-// Re-export from fork_config — single source of truth.
+// Re-export from synapse_domain::config — single source of truth.
 pub use synapse_domain::config::adapter_configs::BrowserDelegateConfig;
 
 /// Tool that delegates browser-based tasks to a browser-capable CLI subprocess.

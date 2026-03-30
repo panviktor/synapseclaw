@@ -4234,7 +4234,7 @@ pub struct EmbeddingRouteConfig {
 
 // ── Query Classification ─────────────────────────────────────────
 
-// Canonical definitions live in fork_core; re-exported here for backward compat.
+// Canonical definitions live in synapse_domain; re-exported here for backward compat.
 pub use crate::domain::query_classification::{ClassificationRule, QueryClassificationConfig};
 
 // ── Heartbeat ────────────────────────────────────────────────────

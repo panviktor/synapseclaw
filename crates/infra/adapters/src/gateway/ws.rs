@@ -469,7 +469,7 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
         }
     }
 
-    // Try resuming via fork_core use case (ConversationStorePort path)
+    // Try resuming via synapse_domain use case (ConversationStorePort path)
     // or fall back to legacy ChatDb path.
     let db_session;
     let config = state.config.lock().clone();

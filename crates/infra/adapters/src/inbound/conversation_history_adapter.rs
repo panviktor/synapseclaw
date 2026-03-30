@@ -5,7 +5,7 @@
 //!
 //! The internal map and session store use the upstream `providers::ChatMessage`.
 //! The port trait expects `synapse_domain::domain::message::ChatMessage`.
-//! Conversions happen at the trait boundary using helpers from `fork_adapters`.
+//! Conversions happen at the trait boundary using helpers from `synapse_adapters`.
 
 use crate::channels::session_store::SessionStore;
 use crate::providers::ChatMessage;

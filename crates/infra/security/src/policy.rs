@@ -1,12 +1,12 @@
 use std::path::Path;
 
-// Re-export everything from fork_core — single source of truth.
+// Re-export everything from synapse_domain — single source of truth.
 pub use synapse_domain::domain::config::{AutonomyLevel, ToolOperation};
 pub use synapse_domain::domain::security_policy::*;
 
 /// Build SecurityPolicy from config sections.
 ///
-/// Free function because SecurityPolicy is defined in fork_core —
+/// Free function because SecurityPolicy is defined in synapse_domain —
 /// Rust does not allow `impl` blocks on types from foreign crates.
 pub fn security_policy_from_config(
     autonomy_config: &synapse_domain::config::schema::AutonomyConfig,

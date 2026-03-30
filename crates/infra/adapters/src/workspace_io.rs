@@ -213,7 +213,7 @@ pub async fn resolve_runtime_dirs_for_onboarding() -> Result<(PathBuf, PathBuf)>
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConfigResolutionSource {
+pub enum ConfigResolutionSource {
     EnvConfigDir,
     EnvWorkspace,
     ActiveWorkspaceMarker,

@@ -210,27 +210,20 @@ libc = "0.2"
 [features]
 default = ["observability-prometheus", "channel-nostr", "channel-matrix"]
 channel-nostr = ["dep:nostr-sdk", "synapse_domain/channel-nostr", "synapse_adapters/channel-nostr"]
-channel-matrix = ["dep:matrix-sdk"]
-channel-lark = ["dep:prost"]
-channel-feishu = ["channel-lark"]  # Alias for Feishu users (Lark and Feishu are the same platform)
-memory-postgres = ["dep:postgres", "synapse_memory/memory-postgres"]
-observability-prometheus = ["dep:prometheus"]
-observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
-# Browser backend feature alias used by cfg(feature = "browser-native")
-browser-native = ["dep:fantoccini"]
-# Backward-compatible alias for older invocations
+channel-matrix = ["dep:matrix-sdk", "synapse_adapters/channel-matrix"]
+channel-lark = ["dep:prost", "synapse_adapters/channel-lark"]
+channel-feishu = ["channel-lark"]
+memory-postgres = ["dep:postgres", "synapse_memory/memory-postgres", "synapse_adapters/memory-postgres"]
+observability-prometheus = ["dep:prometheus", "synapse_adapters/observability-prometheus"]
+observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "synapse_adapters/observability-otel"]
+browser-native = ["dep:fantoccini", "synapse_adapters/browser-native"]
 fantoccini = ["browser-native"]
-# Sandbox feature aliases used by cfg(feature = "sandbox-*")
-sandbox-landlock = ["dep:landlock"]
+sandbox-landlock = ["dep:landlock", "synapse_adapters/sandbox-landlock"]
 sandbox-bubblewrap = []
-# Backward-compatible alias for older invocations
 landlock = ["sandbox-landlock"]
-# Prometheus metrics observer (requires 64-bit atomics; disable on 32-bit targets)
 metrics = ["observability-prometheus"]
-# rag-pdf = PDF ingestion for datasheet RAG
-rag-pdf = ["dep:pdf-extract"]
-# whatsapp-web = Native WhatsApp Web client with custom rusqlite storage backend
-whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost", "dep:qrcode"]
+rag-pdf = ["dep:pdf-extract", "synapse_adapters/rag-pdf"]
+whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost", "dep:qrcode", "synapse_adapters/whatsapp-web"]
 
 [profile.release]
 opt-level = "z"      # Optimize for size

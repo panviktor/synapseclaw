@@ -37,7 +37,7 @@ impl MemoryTiersAdapter {
 }
 
 // MemoryCategory and MemoryEntry are now the same type in both
-// fork_core and crate::memory (re-exported from fork_core).
+// synapse_domain and crate::memory (re-exported from synapse_domain).
 // No conversion functions needed.
 
 /// Alias for readability — identity function since types are unified.
