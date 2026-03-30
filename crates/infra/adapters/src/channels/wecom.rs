@@ -19,7 +19,7 @@ impl WeComChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_domain::config::schema::build_runtime_proxy_client("channel.wecom")
+        crate::proxy::build_runtime_proxy_client("channel.wecom")
     }
 
     fn webhook_url(&self) -> String {

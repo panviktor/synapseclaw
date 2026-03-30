@@ -40,6 +40,7 @@ pub mod integrations;
 pub mod observability;
 pub mod onboard;
 pub mod providers;
+pub mod proxy;
 pub mod service;
 pub mod tools;
 pub mod tunnel;

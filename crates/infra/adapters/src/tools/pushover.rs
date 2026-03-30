@@ -173,7 +173,7 @@ impl Tool for PushoverTool {
             form = form.text("sound", sound);
         }
 
-        let client = synapse_domain::config::schema::build_runtime_proxy_client_with_timeouts(
+        let client = crate::proxy::build_runtime_proxy_client_with_timeouts(
             "tool.pushover",
             PUSHOVER_REQUEST_TIMEOUT_SECS,
             10,

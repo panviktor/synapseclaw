@@ -41,10 +41,7 @@ impl IpcClient {
         let builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(5));
-        let builder = synapse_domain::config::schema::apply_runtime_proxy_to_builder(
-            builder,
-            "tool.agents_ipc",
-        );
+        let builder = crate::proxy::apply_runtime_proxy_to_builder(builder, "tool.agents_ipc");
         let client = builder.build().unwrap_or_else(|err| {
             tracing::warn!("Failed to build IPC client: {err}");
             reqwest::Client::new()

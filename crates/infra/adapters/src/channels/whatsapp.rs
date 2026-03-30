@@ -45,7 +45,7 @@ impl WhatsAppChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_domain::config::schema::build_runtime_proxy_client("channel.whatsapp")
+        crate::proxy::build_runtime_proxy_client("channel.whatsapp")
     }
 
     /// Check if a phone number is allowed (E.164 format: +1234567890)

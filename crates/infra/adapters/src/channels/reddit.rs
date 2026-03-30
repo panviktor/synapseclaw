@@ -86,7 +86,7 @@ impl RedditChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_domain::config::schema::build_runtime_proxy_client("channel.reddit")
+        crate::proxy::build_runtime_proxy_client("channel.reddit")
     }
 
     /// Refresh the OAuth2 access token using the refresh token.

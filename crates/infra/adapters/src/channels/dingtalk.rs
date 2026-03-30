@@ -38,7 +38,7 @@ impl DingTalkChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_domain::config::schema::build_runtime_proxy_client("channel.dingtalk")
+        crate::proxy::build_runtime_proxy_client("channel.dingtalk")
     }
 
     fn is_user_allowed(&self, user_id: &str) -> bool {

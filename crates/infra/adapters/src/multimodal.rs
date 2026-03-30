@@ -1,8 +1,9 @@
 use crate::providers::ChatMessage;
+use crate::proxy::build_runtime_proxy_client_with_timeouts;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::Client;
 use std::path::Path;
-use synapse_domain::config::schema::{build_runtime_proxy_client_with_timeouts, MultimodalConfig};
+use synapse_domain::config::schema::MultimodalConfig;
 
 const IMAGE_MARKER_PREFIX: &str = "[IMAGE:";
 const ALLOWED_IMAGE_MIME_TYPES: &[&str] = &[
