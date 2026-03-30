@@ -9,7 +9,7 @@
 //! semantic extraction, similar to Nanobot's `save_memory` tool call pattern.
 
 use crate::adapters::providers::traits::Provider;
-use crate::memory::traits::{Memory, MemoryCategory};
+use crate::memory::{Memory, MemoryCategory};
 
 /// Output of consolidation extraction.
 #[derive(Debug, serde::Deserialize)]

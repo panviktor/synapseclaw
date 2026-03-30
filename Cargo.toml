@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/synapse_core", "crates/synapse_security"]
+members = [".", "crates/synapse_core", "crates/synapse_security", "crates/synapse_memory"]
 resolver = "2"
 
 [package]
@@ -38,6 +38,8 @@ include = [
 synapse_core = { path = "crates/synapse_core" }
 # Fork-owned security module (shared between adapters and main binary)
 synapse_security = { path = "crates/synapse_security" }
+# Memory backends (sqlite, postgres, qdrant, embeddings)
+synapse_memory = { path = "crates/synapse_memory" }
 
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }
@@ -210,7 +212,7 @@ channel-nostr = ["dep:nostr-sdk", "synapse_core/channel-nostr"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
 channel-feishu = ["channel-lark"]  # Alias for Feishu users (Lark and Feishu are the same platform)
-memory-postgres = ["dep:postgres"]
+memory-postgres = ["dep:postgres", "synapse_memory/memory-postgres"]
 observability-prometheus = ["dep:prometheus"]
 observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
 # Browser backend feature alias used by cfg(feature = "browser-native")

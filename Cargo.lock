@@ -5698,6 +5698,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "synapse_memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "console",
+ "parking_lot",
+ "postgres",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "synapse_core",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "synapse_security"
 version = "0.1.0"
 dependencies = [
@@ -5787,6 +5809,7 @@ dependencies = [
  "sha2",
  "shellexpand",
  "synapse_core",
+ "synapse_memory",
  "synapse_security",
  "tempfile",
  "thiserror 2.0.18",

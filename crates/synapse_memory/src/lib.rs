@@ -1,16 +1,44 @@
-//! Memory subsystem — backends re-exported from synapse_memory crate,
-//! factory functions and CLI handler here (composition root).
+#![allow(dead_code, unused_imports)]
+//! Memory backends — sqlite, postgres, qdrant, lucid, markdown, none.
 
-pub mod cli;
-pub mod consolidation;
+pub mod backend;
+pub mod chunker;
+pub mod embeddings;
+pub mod hygiene;
+pub mod knowledge_graph;
+pub mod lucid;
+pub mod markdown;
+pub mod none;
+#[cfg(feature = "memory-postgres")]
+pub mod postgres;
+pub mod qdrant;
+pub mod response_cache;
+pub mod snapshot;
+pub mod sqlite;
+pub mod traits;
+pub mod vector;
 
-// Re-export everything from synapse_memory crate.
-pub use synapse_memory::*;
+#[allow(unused_imports)]
+pub use backend::{
+    classify_memory_backend, default_memory_backend_key, memory_backend_profile,
+    selectable_memory_backends, MemoryBackendKind, MemoryBackendProfile,
+};
+pub use lucid::LucidMemory;
+pub use markdown::MarkdownMemory;
+pub use none::NoneMemory;
+#[cfg(feature = "memory-postgres")]
+pub use postgres::PostgresMemory;
+pub use qdrant::QdrantMemory;
+pub use response_cache::ResponseCache;
+pub use sqlite::SqliteMemory;
+pub use traits::Memory;
+#[allow(unused_imports)]
+pub use traits::{MemoryCategory, MemoryEntry};
 
-use crate::config::{EmbeddingRouteConfig, MemoryConfig, StorageProviderConfig};
 use anyhow::Context;
 use std::path::Path;
 use std::sync::Arc;
+use synapse_core::config::schema::{EmbeddingRouteConfig, MemoryConfig, StorageProviderConfig};
 
 fn create_memory_with_builders<F, G>(
     backend_name: &str,
@@ -58,17 +86,20 @@ pub fn effective_memory_backend_name(
 }
 
 /// Legacy auto-save key used for model-authored assistant summaries.
+/// These entries are treated as untrusted context and should not be re-injected.
 pub fn is_assistant_autosave_key(key: &str) -> bool {
     let normalized = key.trim().to_ascii_lowercase();
     normalized == "assistant_resp" || normalized.starts_with("assistant_resp_")
 }
 
-/// Filter known synthetic autosave noise patterns.
+/// Filter known synthetic autosave noise patterns that should not be
+/// persisted as user conversation memories.
 pub fn should_skip_autosave_content(content: &str) -> bool {
     let normalized = content.trim();
     if normalized.is_empty() {
         return true;
     }
+
     let lowered = normalized.to_ascii_lowercase();
     lowered.starts_with("[cron:")
         || lowered.starts_with("[distilled_")
@@ -93,6 +124,9 @@ impl std::fmt::Debug for ResolvedEmbeddingConfig {
     }
 }
 
+/// Look up the provider-specific environment variable for common embedding providers,
+/// so that `OPENAI_API_KEY` (etc.) takes precedence over the default-provider key
+/// that the caller passes in. Returns `None` for unknown providers.
 fn embedding_provider_env_key(provider: &str) -> Option<String> {
     let env_var = match provider.trim() {
         "openai" => "OPENAI_API_KEY",
@@ -115,6 +149,9 @@ fn resolve_embedding_config(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    // Prefer a provider-specific env var over the caller-supplied key, which
+    // may come from the default (chat) provider and differ from the embedding
+    // provider (issue #3083: gemini key leaking to openai embeddings endpoint).
     let fallback_api_key =
         embedding_provider_env_key(config.embedding_provider.trim()).or(caller_api_key);
     let fallback = ResolvedEmbeddingConfig {
@@ -201,10 +238,12 @@ pub fn create_memory_with_storage_and_routes(
     let backend_kind = classify_memory_backend(&backend_name);
     let resolved_embedding = resolve_embedding_config(config, embedding_routes, api_key);
 
+    // Best-effort memory hygiene/retention pass (throttled by state file).
     if let Err(e) = hygiene::run_if_due(config, workspace_dir) {
         tracing::warn!("memory hygiene skipped: {e}");
     }
 
+    // If snapshot_on_hygiene is enabled, export core memories during hygiene.
     if config.snapshot_enabled
         && config.snapshot_on_hygiene
         && matches!(
@@ -217,6 +256,8 @@ pub fn create_memory_with_storage_and_routes(
         }
     }
 
+    // Auto-hydration: if brain.db is missing but MEMORY_SNAPSHOT.md exists,
+    // restore the "soul" from the snapshot before creating the backend.
     if config.auto_hydrate
         && matches!(
             backend_kind,
@@ -402,7 +443,7 @@ pub fn create_response_cache(config: &MemoryConfig, workspace_dir: &Path) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{EmbeddingRouteConfig, StorageProviderConfig};
+    use synapse_core::config::schema::{EmbeddingRouteConfig, StorageProviderConfig};
     use tempfile::TempDir;
 
     #[test]
@@ -631,8 +672,16 @@ mod tests {
         );
     }
 
+    // Regression guard for issue #3083: when default_provider is "gemini"
+    // (api_key = gemini key) but embedding_provider is "cohere", the
+    // embedding provider's own env var (COHERE_API_KEY) must take precedence
+    // over the caller-supplied key (which belongs to the default provider).
+    //
+    // Uses COHERE_API_KEY to avoid accidental collision with OPENAI_API_KEY
+    // that may be set in the developer environment.
     #[test]
     fn resolve_embedding_config_uses_embedding_provider_env_key_not_default_provider_key() {
+        // COHERE_API_KEY is almost certainly unset in normal dev environments.
         let prev = std::env::var("COHERE_API_KEY").ok();
         std::env::set_var("COHERE_API_KEY", "cohere-from-env");
 
@@ -643,8 +692,10 @@ mod tests {
             ..MemoryConfig::default()
         };
 
+        // Simulate: caller passes the Gemini (default_provider) api key.
         let resolved = resolve_embedding_config(&cfg, &[], Some("gemini-key-must-not-be-used"));
 
+        // Restore env.
         match prev {
             Some(v) => std::env::set_var("COHERE_API_KEY", v),
             None => std::env::remove_var("COHERE_API_KEY"),
