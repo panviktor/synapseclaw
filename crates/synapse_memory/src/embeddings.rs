@@ -60,7 +60,7 @@ impl OpenAiEmbedding {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        crate::config::build_runtime_proxy_client("memory.embeddings")
+        synapse_core::config::schema::build_runtime_proxy_client("memory.embeddings")
     }
 
     fn has_explicit_api_path(&self) -> bool {

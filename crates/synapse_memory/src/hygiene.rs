@@ -1,4 +1,3 @@
-use crate::config::MemoryConfig;
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use rusqlite::{params, Connection};
@@ -6,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration as StdDuration, SystemTime};
+use synapse_core::config::schema::MemoryConfig;
 
 const HYGIENE_INTERVAL_HOURS: i64 = 12;
 const STATE_FILE: &str = "memory_hygiene_state.json";
@@ -386,7 +386,7 @@ fn split_name(filename: &str) -> (&str, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{Memory, MemoryCategory, SqliteMemory};
+    use crate::{Memory, MemoryCategory, SqliteMemory};
     use tempfile::TempDir;
 
     fn default_cfg() -> MemoryConfig {

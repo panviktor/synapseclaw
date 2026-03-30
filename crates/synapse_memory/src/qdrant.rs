@@ -56,7 +56,7 @@ impl QdrantMemory {
         embedder: Arc<dyn EmbeddingProvider>,
     ) -> Self {
         let base_url = url.trim_end_matches('/').to_string();
-        let client = crate::config::build_runtime_proxy_client("memory.qdrant");
+        let client = synapse_core::config::schema::build_runtime_proxy_client("memory.qdrant");
 
         Self {
             client,
