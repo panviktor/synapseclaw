@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/synapse_core", "crates/synapse_security", "crates/synapse_memory"]
+members = [".", "crates/synapse_core", "crates/synapse_security", "crates/synapse_memory", "crates/synapse_adapters"]
 resolver = "2"
 
 [package]
@@ -40,6 +40,8 @@ synapse_core = { path = "crates/synapse_core" }
 synapse_security = { path = "crates/synapse_security" }
 # Memory backends (sqlite, postgres, qdrant, embeddings)
 synapse_memory = { path = "crates/synapse_memory" }
+# Infrastructure adapters (channels, providers, tools, gateway, agent)
+synapse_adapters = { path = "crates/synapse_adapters" }
 
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }
@@ -133,7 +135,6 @@ ring = "0.17"
 prost = { version = "0.14", default-features = false, features = ["derive"], optional = true }
 
 # Memory / persistence
-rusqlite = { version = "0.37", features = ["bundled"] }
 postgres = { version = "0.19", features = ["with-chrono-0_4"], optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 chrono-tz = "0.10"
@@ -208,7 +209,7 @@ libc = "0.2"
 
 [features]
 default = ["observability-prometheus", "channel-nostr", "channel-matrix"]
-channel-nostr = ["dep:nostr-sdk", "synapse_core/channel-nostr"]
+channel-nostr = ["dep:nostr-sdk", "synapse_core/channel-nostr", "synapse_adapters/channel-nostr"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
 channel-feishu = ["channel-lark"]  # Alias for Feishu users (Lark and Feishu are the same platform)
@@ -278,3 +279,4 @@ path = "tests/test_system.rs"
 [[test]]
 name = "live"
 path = "tests/test_live.rs"
+

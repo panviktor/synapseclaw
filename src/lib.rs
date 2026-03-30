@@ -1,56 +1,22 @@
-#![warn(clippy::all, clippy::pedantic)]
-#![allow(
-    clippy::assigning_clones,
-    clippy::bool_to_int_with_if,
-    clippy::case_sensitive_file_extension_comparisons,
-    clippy::cast_possible_wrap,
-    clippy::doc_markdown,
-    clippy::field_reassign_with_default,
-    clippy::float_cmp,
-    clippy::implicit_clone,
-    clippy::items_after_statements,
-    clippy::map_unwrap_or,
-    clippy::manual_let_else,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-    clippy::module_name_repetitions,
-    clippy::must_use_candidate,
-    clippy::new_without_default,
-    clippy::needless_pass_by_value,
-    clippy::needless_raw_string_hashes,
-    clippy::redundant_closure_for_method_calls,
-    clippy::return_self_not_must_use,
-    clippy::similar_names,
-    clippy::single_match_else,
-    clippy::struct_field_names,
-    clippy::too_many_lines,
-    clippy::uninlined_format_args,
-    clippy::unnecessary_cast,
-    clippy::unnecessary_lazy_evaluations,
-    clippy::unnecessary_literal_bound,
-    clippy::unnecessary_map_or,
-    clippy::unused_self,
-    clippy::cast_precision_loss,
-    clippy::unnecessary_wraps,
-    dead_code
-)]
+//! SynapseClaw — thin facade crate.
+//!
+//! All real code lives in workspace crates. This lib re-exports
+//! the public API for integration tests and external consumers.
 
-pub mod adapters;
-pub mod agent;
+// Composition root modules (kept locally — config IO + memory factory).
 pub mod commands;
 pub mod config;
-pub mod identity;
 pub mod memory;
-pub mod multimodal;
-pub mod runtime;
-pub mod security;
-pub mod skills;
-pub mod util;
+
+// Re-export workspace crates.
+pub use synapse_adapters as adapters;
+pub use synapse_adapters::agent;
+pub use synapse_adapters::{channels, gateway, hooks, observability, providers, tools};
+pub use synapse_core;
+pub use synapse_memory;
+pub use synapse_security;
 
 // Convenience re-exports.
-pub use crate::adapters::{channels, gateway, hooks, observability, providers, tools};
-pub use synapse_core;
-
 pub use commands::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MemoryCommands,
     ServiceCommands, SkillCommands,

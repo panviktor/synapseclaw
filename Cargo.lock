@@ -439,6 +439,7 @@ dependencies = [
  "matchit",
  "memchr",
  "mime",
+ "multer",
  "percent-encoding",
  "pin-project-lite",
  "serde_core",
@@ -452,6 +453,7 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -470,6 +472,7 @@ dependencies = [
  "sync_wrapper",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -2589,6 +2592,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "inotify"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd5b3eaf1a28b758ac0faa5a4254e8ab2705605496f1b1f3fbbc3988ad73d199"
+dependencies = [
+ "bitflags 2.11.0",
+ "inotify-sys",
+ "libc",
+]
+
+[[package]]
 name = "inotify-sys"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2996,6 +3010,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "mail-parser"
+version = "0.9.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93c3b9e5d8b17faf573330bbc43b37d6e918c0a3bf8a88e7d0a220ebc84af9fc"
+dependencies = [
+ "encoding_rs",
 ]
 
 [[package]]
@@ -3445,6 +3468,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "multer"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83e87776546dc87511aa5ee218730c92b666d7264ab6ed41f9d215af9cd5224b"
+dependencies = [
+ "bytes",
+ "encoding_rs",
+ "futures-util",
+ "http 1.4.0",
+ "httparse",
+ "memchr",
+ "mime",
+ "spin",
+ "version_check",
+]
+
+[[package]]
 name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3585,14 +3625,32 @@ dependencies = [
  "bitflags 2.11.0",
  "filetime",
  "fsevent-sys",
- "inotify",
+ "inotify 0.10.2",
  "kqueue",
  "libc",
  "log",
  "mio",
- "notify-types",
+ "notify-types 1.0.1",
  "walkdir",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "notify"
+version = "8.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4d3d07927151ff8575b7087f245456e549fea62edf0ec4e565a5ee50c8402bc3"
+dependencies = [
+ "bitflags 2.11.0",
+ "fsevent-sys",
+ "inotify 0.11.1",
+ "kqueue",
+ "libc",
+ "log",
+ "mio",
+ "notify-types 2.1.0",
+ "walkdir",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -3602,6 +3660,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "585d3cb5e12e01aed9e8a1f70d5c6b5e86fe2a6e48fc8cd0b3e0b8df6f6eb174"
 dependencies = [
  "instant",
+]
+
+[[package]]
+name = "notify-types"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42b8cfee0e339a0337359f3c88165702ac6e600dc01c0cc9579a92d62b08477a"
+dependencies = [
+ "bitflags 2.11.0",
 ]
 
 [[package]]
@@ -4326,6 +4393,7 @@ dependencies = [
  "lazy_static",
  "memchr",
  "parking_lot",
+ "protobuf",
  "thiserror 2.0.18",
 ]
 
@@ -5051,6 +5119,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rust-embed-utils",
+ "shellexpand",
  "syn 2.0.117",
  "walkdir",
 ]
@@ -5567,6 +5636,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "spin"
+version = "0.9.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+
+[[package]]
 name = "spki"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5678,12 +5753,87 @@ dependencies = [
 ]
 
 [[package]]
+name = "synapse_adapters"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-imap",
+ "async-trait",
+ "axum",
+ "base64",
+ "chacha20poly1305",
+ "chrono",
+ "chrono-tz",
+ "console",
+ "cron",
+ "dialoguer",
+ "directories",
+ "futures-util",
+ "glob",
+ "hex",
+ "hmac",
+ "hostname",
+ "http 1.4.0",
+ "http-body-util",
+ "image",
+ "jsonschema",
+ "lettre",
+ "libc",
+ "mail-parser 0.9.4",
+ "mime_guess",
+ "nanohtml2text",
+ "nostr-sdk",
+ "notify 8.2.0",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "parking_lot",
+ "percent-encoding",
+ "portable-atomic",
+ "prometheus",
+ "prost 0.13.5",
+ "rand 0.10.0",
+ "regex",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "rust-embed",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "serde_yaml",
+ "sha2",
+ "shellexpand",
+ "synapse_core",
+ "synapse_memory",
+ "synapse_security",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-tungstenite 0.26.2",
+ "tokio-util",
+ "toml 1.0.7+spec-1.1.0",
+ "tower-http",
+ "tracing",
+ "url",
+ "urlencoding",
+ "uuid",
+ "webpki-roots 1.0.6",
+ "which",
+]
+
+[[package]]
 name = "synapse_core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "clap",
  "directories",
  "jsonschema",
  "parking_lot",
@@ -5691,6 +5841,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "shellexpand",
  "tokio",
  "toml 0.8.23",
  "tracing",
@@ -5775,12 +5926,12 @@ dependencies = [
  "landlock",
  "lettre",
  "libc",
- "mail-parser",
+ "mail-parser 0.11.2",
  "matrix-sdk",
  "mime_guess",
  "nanohtml2text",
  "nostr-sdk",
- "notify",
+ "notify 7.0.0",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -5795,7 +5946,6 @@ dependencies = [
  "regex",
  "reqwest",
  "ring",
- "rusqlite",
  "rust-embed",
  "rustls",
  "rustls-pki-types",
@@ -5808,6 +5958,7 @@ dependencies = [
  "serde_yaml",
  "sha2",
  "shellexpand",
+ "synapse_adapters",
  "synapse_core",
  "synapse_memory",
  "synapse_security",
@@ -6106,6 +6257,7 @@ dependencies = [
  "futures-util",
  "log",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -6322,6 +6474,7 @@ dependencies = [
  "tokio",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -6365,6 +6518,7 @@ version = "0.1.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
 dependencies = [
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",

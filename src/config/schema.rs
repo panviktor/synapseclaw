@@ -5,13 +5,13 @@
 
 pub use synapse_core::config::schema::*;
 
-use crate::security::DomainMatcher;
 use anyhow::{Context, Result};
 use directories::UserDirs;
 #[allow(unused_imports)]
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use synapse_core::config::provider_aliases::{is_glm_alias, is_zai_alias};
+use synapse_security::DomainMatcher;
 #[cfg(unix)]
 use tokio::fs::File;
 use tokio::fs::{self, OpenOptions};
@@ -286,12 +286,12 @@ async fn resolve_runtime_config_dirs(
 }
 
 fn decrypt_optional_secret(
-    store: &crate::security::SecretStore,
+    store: &synapse_security::SecretStore,
     value: &mut Option<String>,
     field_name: &str,
 ) -> Result<()> {
     if let Some(raw) = value.clone() {
-        if crate::security::SecretStore::is_encrypted(&raw) {
+        if synapse_security::SecretStore::is_encrypted(&raw) {
             *value = Some(
                 store
                     .decrypt(&raw)
@@ -303,11 +303,11 @@ fn decrypt_optional_secret(
 }
 
 fn decrypt_secret(
-    store: &crate::security::SecretStore,
+    store: &synapse_security::SecretStore,
     value: &mut String,
     field_name: &str,
 ) -> Result<()> {
-    if crate::security::SecretStore::is_encrypted(value) {
+    if synapse_security::SecretStore::is_encrypted(value) {
         *value = store
             .decrypt(value)
             .with_context(|| format!("Failed to decrypt {field_name}"))?;
@@ -316,12 +316,12 @@ fn decrypt_secret(
 }
 
 fn encrypt_optional_secret(
-    store: &crate::security::SecretStore,
+    store: &synapse_security::SecretStore,
     value: &mut Option<String>,
     field_name: &str,
 ) -> Result<()> {
     if let Some(raw) = value.clone() {
-        if !crate::security::SecretStore::is_encrypted(&raw) {
+        if !synapse_security::SecretStore::is_encrypted(&raw) {
             *value = Some(
                 store
                     .encrypt(&raw)
@@ -333,11 +333,11 @@ fn encrypt_optional_secret(
 }
 
 fn encrypt_secret(
-    store: &crate::security::SecretStore,
+    store: &synapse_security::SecretStore,
     value: &mut String,
     field_name: &str,
 ) -> Result<()> {
-    if !crate::security::SecretStore::is_encrypted(value) {
+    if !synapse_security::SecretStore::is_encrypted(value) {
         *value = store
             .encrypt(value)
             .with_context(|| format!("Failed to encrypt {field_name}"))?;
@@ -630,7 +630,8 @@ impl ConfigIO for Config {
             // Set computed paths that are skipped during serialization
             config.config_path = config_path.clone();
             config.workspace_dir = workspace_dir;
-            let store = crate::security::SecretStore::new(&synapseclaw_dir, config.secrets.encrypt);
+            let store =
+                synapse_security::SecretStore::new(&synapseclaw_dir, config.secrets.encrypt);
             decrypt_optional_secret(&store, &mut config.api_key, "config.api_key")?;
             decrypt_optional_secret(
                 &store,
@@ -1728,7 +1729,7 @@ impl ConfigIO for Config {
         // Child clamps its autonomy to at most this level (can only restrict,
         // never elevate).
         if let Ok(autonomy_str) = std::env::var("SYNAPSECLAW_AUTONOMY") {
-            use crate::security::AutonomyLevel;
+            use synapse_security::AutonomyLevel;
             let target = match autonomy_str.trim().to_ascii_lowercase().as_str() {
                 "read_only" | "readonly" => Some(AutonomyLevel::ReadOnly),
                 "supervised" => Some(AutonomyLevel::Supervised),
@@ -1781,7 +1782,7 @@ impl ConfigIO for Config {
         let synapseclaw_dir = config_path
             .parent()
             .context("Config path must have a parent directory")?;
-        let store = crate::security::SecretStore::new(synapseclaw_dir, self.secrets.encrypt);
+        let store = synapse_security::SecretStore::new(synapseclaw_dir, self.secrets.encrypt);
 
         encrypt_optional_secret(&store, &mut config_to_save.api_key, "config.api_key")?;
         encrypt_optional_secret(
@@ -2965,8 +2966,8 @@ tool_dispatcher = "xml"
         assert!(loaded
             .api_key
             .as_deref()
-            .is_some_and(crate::security::SecretStore::is_encrypted));
-        let store = crate::security::SecretStore::new(&dir, true);
+            .is_some_and(synapse_security::SecretStore::is_encrypted));
+        let store = synapse_security::SecretStore::new(&dir, true);
         let decrypted = store.decrypt(loaded.api_key.as_deref().unwrap()).unwrap();
         assert_eq!(decrypted, "sk-roundtrip");
         assert_eq!(loaded.default_model.as_deref(), Some("test-model"));
@@ -3022,14 +3023,14 @@ tool_dispatcher = "xml"
             .await
             .unwrap();
         let stored: Config = toml::from_str(&contents).unwrap();
-        let store = crate::security::SecretStore::new(&dir, true);
+        let store = synapse_security::SecretStore::new(&dir, true);
 
         let root_encrypted = stored.api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(root_encrypted));
+        assert!(synapse_security::SecretStore::is_encrypted(root_encrypted));
         assert_eq!(store.decrypt(root_encrypted).unwrap(), "root-credential");
 
         let composio_encrypted = stored.composio.api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(
+        assert!(synapse_security::SecretStore::is_encrypted(
             composio_encrypted
         ));
         assert_eq!(
@@ -3038,7 +3039,7 @@ tool_dispatcher = "xml"
         );
 
         let browser_encrypted = stored.browser.computer_use.api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(
+        assert!(synapse_security::SecretStore::is_encrypted(
             browser_encrypted
         ));
         assert_eq!(
@@ -3047,7 +3048,7 @@ tool_dispatcher = "xml"
         );
 
         let web_search_encrypted = stored.web_search.brave_api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(
+        assert!(synapse_security::SecretStore::is_encrypted(
             web_search_encrypted
         ));
         assert_eq!(
@@ -3057,25 +3058,27 @@ tool_dispatcher = "xml"
 
         let worker = stored.agents.get("worker").unwrap();
         let worker_encrypted = worker.api_key.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(worker_encrypted));
+        assert!(synapse_security::SecretStore::is_encrypted(
+            worker_encrypted
+        ));
         assert_eq!(store.decrypt(worker_encrypted).unwrap(), "agent-credential");
 
         let storage_db_url = stored.storage.provider.config.db_url.as_deref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(storage_db_url));
+        assert!(synapse_security::SecretStore::is_encrypted(storage_db_url));
         assert_eq!(
             store.decrypt(storage_db_url).unwrap(),
             "postgres://user:pw@host/db"
         );
 
         let feishu = stored.channels_config.feishu.as_ref().unwrap();
-        assert!(crate::security::SecretStore::is_encrypted(
+        assert!(synapse_security::SecretStore::is_encrypted(
             &feishu.app_secret
         ));
         assert_eq!(store.decrypt(&feishu.app_secret).unwrap(), "feishu-secret");
         assert!(feishu
             .encrypt_key
             .as_deref()
-            .is_some_and(crate::security::SecretStore::is_encrypted));
+            .is_some_and(synapse_security::SecretStore::is_encrypted));
         assert_eq!(
             store
                 .decrypt(feishu.encrypt_key.as_deref().unwrap())
@@ -3085,7 +3088,7 @@ tool_dispatcher = "xml"
         assert!(feishu
             .verification_token
             .as_deref()
-            .is_some_and(crate::security::SecretStore::is_encrypted));
+            .is_some_and(synapse_security::SecretStore::is_encrypted));
         assert_eq!(
             store
                 .decrypt(feishu.verification_token.as_deref().unwrap())
@@ -5436,18 +5439,18 @@ require_otp_to_resume = true
         let stored: Config = toml::from_str(&raw_toml).unwrap();
         let stored_token = &stored.channels_config.telegram.as_ref().unwrap().bot_token;
         assert!(
-            crate::security::SecretStore::is_encrypted(stored_token),
+            synapse_security::SecretStore::is_encrypted(stored_token),
             "Stored bot_token must be marked as encrypted"
         );
 
         // Decrypt and verify it matches the original plaintext
-        let store = crate::security::SecretStore::new(&dir, true);
+        let store = synapse_security::SecretStore::new(&dir, true);
         assert_eq!(store.decrypt(stored_token).unwrap(), plaintext_token);
 
         // Simulate a full load: deserialize then decrypt (mirrors load_or_init logic)
         let mut loaded: Config = toml::from_str(&raw_toml).unwrap();
         loaded.config_path = dir.join("config.toml");
-        let load_store = crate::security::SecretStore::new(&dir, loaded.secrets.encrypt);
+        let load_store = synapse_security::SecretStore::new(&dir, loaded.secrets.encrypt);
         if let Some(ref mut tg) = loaded.channels_config.telegram {
             decrypt_secret(
                 &load_store,
@@ -5891,18 +5894,18 @@ require_otp_to_resume = true
         let stored: Config = toml::from_str(&raw_toml).unwrap();
         let stored_secret = stored.security.nevis.client_secret.as_ref().unwrap();
         assert!(
-            crate::security::SecretStore::is_encrypted(stored_secret),
+            synapse_security::SecretStore::is_encrypted(stored_secret),
             "Stored client_secret must be marked as encrypted"
         );
 
         // Decrypt and verify it matches the original plaintext
-        let store = crate::security::SecretStore::new(&dir, true);
+        let store = synapse_security::SecretStore::new(&dir, true);
         assert_eq!(store.decrypt(stored_secret).unwrap(), plaintext_secret);
 
         // Simulate a full load: deserialize then decrypt (mirrors load_or_init logic)
         let mut loaded: Config = toml::from_str(&raw_toml).unwrap();
         loaded.config_path = dir.join("config.toml");
-        let load_store = crate::security::SecretStore::new(&dir, loaded.secrets.encrypt);
+        let load_store = synapse_security::SecretStore::new(&dir, loaded.secrets.encrypt);
         decrypt_optional_secret(
             &load_store,
             &mut loaded.security.nevis.client_secret,
