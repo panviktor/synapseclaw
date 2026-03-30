@@ -3,22 +3,28 @@
 //! All real code lives in workspace crates. This lib re-exports
 //! the public API for integration tests and external consumers.
 
-// Composition root modules (kept locally — config IO + memory factory).
-pub mod commands;
-pub mod config;
-pub mod memory;
-
 // Re-export workspace crates.
 pub use synapse_adapters as adapters;
 pub use synapse_adapters::agent;
 pub use synapse_adapters::{channels, gateway, hooks, observability, providers, tools};
-pub use synapse_core;
+pub use synapse_domain;
 pub use synapse_memory;
 pub use synapse_security;
 
-// Convenience re-exports.
-pub use commands::{
+// Config facade.
+pub mod config {
+    pub use synapse_adapters::config_io::ConfigIO;
+    pub use synapse_adapters::workspace;
+    pub use synapse_adapters::workspace_io;
+    pub use synapse_domain::config::schema;
+    pub use synapse_domain::config::schema::Config;
+}
+
+// CLI command enums.
+pub use synapse_adapters::commands::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MemoryCommands,
     ServiceCommands, SkillCommands,
 };
-pub use config::Config;
+
+// Memory.
+pub use synapse_memory as memory;

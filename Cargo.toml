@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/synapse_core", "crates/synapse_security", "crates/synapse_memory", "crates/synapse_adapters"]
+members = [".", "crates/domain", "crates/infra/security", "crates/infra/memory", "crates/infra/adapters"]
 resolver = "2"
 
 [package]
@@ -35,13 +35,13 @@ include = [
 
 [dependencies]
 # Fork-owned application core (pure business logic)
-synapse_core = { path = "crates/synapse_core" }
+synapse_domain = { path = "crates/domain" }
 # Fork-owned security module (shared between adapters and main binary)
-synapse_security = { path = "crates/synapse_security" }
+synapse_security = { path = "crates/infra/security" }
 # Memory backends (sqlite, postgres, qdrant, embeddings)
-synapse_memory = { path = "crates/synapse_memory" }
+synapse_memory = { path = "crates/infra/memory" }
 # Infrastructure adapters (channels, providers, tools, gateway, agent)
-synapse_adapters = { path = "crates/synapse_adapters" }
+synapse_adapters = { path = "crates/infra/adapters" }
 
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }
@@ -209,7 +209,7 @@ libc = "0.2"
 
 [features]
 default = ["observability-prometheus", "channel-nostr", "channel-matrix"]
-channel-nostr = ["dep:nostr-sdk", "synapse_core/channel-nostr", "synapse_adapters/channel-nostr"]
+channel-nostr = ["dep:nostr-sdk", "synapse_domain/channel-nostr", "synapse_adapters/channel-nostr"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
 channel-feishu = ["channel-lark"]  # Alias for Feishu users (Lark and Feishu are the same platform)
