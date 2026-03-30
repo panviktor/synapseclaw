@@ -19,8 +19,8 @@ memory-postgres = []
 
 [dependencies]
 synapse_domain = { path = "../../domain" }
-synapse_security = { path = "../security" }
-synapse_memory = { path = "../memory" }
+synapse_security = { path = "security" }
+synapse_memory = { path = "memory" }
 
 # Major frameworks
 axum = { version = "0.8", features = ["multipart", "ws", "macros"] }
