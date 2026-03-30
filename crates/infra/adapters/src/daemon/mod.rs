@@ -335,10 +335,10 @@ where
     })
 }
 
-// ── Config projection helpers for fork_core types ───────────────
+// ── Config projection helpers for synapse_domain types ───────────────
 //
 // These convert from the upstream `Config` to the lean domain types
-// that `DeliveryService` expects, keeping fork_core free from
+// that `DeliveryService` expects, keeping synapse_domain free from
 // upstream config dependencies.
 
 fn heartbeat_config_from(config: &Config) -> HeartbeatConfig {

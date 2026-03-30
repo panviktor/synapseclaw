@@ -1,6 +1,6 @@
 //! Memory service — owns memory tier policy and recall formatting.
 //!
-//! Phase 4.0 Slice 6: extracts memory business logic into fork_core.
+//! Phase 4.0 Slice 6: extracts memory business logic into synapse_domain.
 //!
 //! Business rules this service owns:
 //! - autosave policy (when to persist inbound messages)

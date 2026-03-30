@@ -1,7 +1,7 @@
 //! Use case: HandleInboundMessage — full orchestration of an inbound message.
 //!
 //! Phase 4.0 Slice 2: replaces the monolithic `process_channel_message` in
-//! channels/mod.rs with a port-driven orchestrator in fork_core.
+//! channels/mod.rs with a port-driven orchestrator in synapse_domain.
 //!
 //! All 24 behaviors from the original function are accounted for here.
 

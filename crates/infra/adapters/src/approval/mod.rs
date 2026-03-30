@@ -109,14 +109,14 @@ impl ApprovalManager {
 
     /// Check whether a tool call requires interactive approval.
     ///
-    /// Phase 4.0: delegates to fork_core approval_service for the business rule.
+    /// Phase 4.0: delegates to synapse_domain approval_service for the business rule.
     pub fn needs_approval(&self, tool_name: &str) -> bool {
         let auto_approve: Vec<String> = self.auto_approve.iter().cloned().collect();
         let always_ask: Vec<String> = self.always_ask.iter().cloned().collect();
         let session_allowlist: Vec<String> =
             self.session_allowlist.lock().iter().cloned().collect();
 
-        // AutonomyLevel is now a single type from fork_core — no conversion needed.
+        // AutonomyLevel is now a single type from synapse_domain — no conversion needed.
         synapse_domain::application::services::approval_service::check_needs_approval(
             tool_name,
             self.autonomy_level,

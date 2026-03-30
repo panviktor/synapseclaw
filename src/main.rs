@@ -72,12 +72,14 @@ fn pause_after_no_command_help() {
 }
 
 // Use lib.rs exports — all code in workspace crates.
+#[allow(unused_imports)]
 use synapse_adapters::runtime;
 pub use synapse_domain;
 use synapse_security as security;
 use synapseclaw::config::{self, Config, ConfigIO};
 #[allow(unused_imports)]
 use synapseclaw::{adapters, agent, memory};
+#[allow(unused_imports)]
 use synapseclaw::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MemoryCommands,
     ServiceCommands, SkillCommands,

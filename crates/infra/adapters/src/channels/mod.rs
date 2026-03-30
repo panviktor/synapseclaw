@@ -95,7 +95,7 @@ use crate::approval::ApprovalManager;
 use crate::channels::session_backend::SessionBackend;
 use crate::config_io::ConfigIO;
 use crate::identity;
-use crate::memory;
+// memory module used indirectly via synapse_memory
 use crate::observability::traits::{ObserverEvent, ObserverMetric};
 use crate::observability::{self, Observer};
 use crate::providers::{self, ChatMessage, Provider};
@@ -195,7 +195,7 @@ const MODEL_CACHE_PREVIEW_LIMIT: usize = 10;
 const CHANNEL_SUMMARY_INTERVAL: usize = 20;
 
 type ProviderCacheMap = Arc<Mutex<HashMap<String, Arc<dyn Provider>>>>;
-/// Phase 4.0: RouteSelection from fork_core replaces the old ChannelRouteSelection.
+/// Phase 4.0: RouteSelection from synapse_domain replaces the old ChannelRouteSelection.
 type ChannelRouteSelection = synapse_domain::ports::route_selection::RouteSelection;
 type RouteSelectionMap = Arc<Mutex<HashMap<String, ChannelRouteSelection>>>;
 
@@ -203,7 +203,7 @@ fn effective_channel_message_timeout_secs(configured: u64) -> u64 {
     configured.max(MIN_CHANNEL_MESSAGE_TIMEOUT_SECS)
 }
 
-/// Re-export from fork_core — runtime commands are domain logic.
+/// Re-export from synapse_domain — runtime commands are domain logic.
 use synapse_domain::application::services::inbound_message_service::RuntimeCommand as ChannelRuntimeCommand;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -256,7 +256,7 @@ struct InterruptOnNewMessageConfig {
 }
 
 impl InterruptOnNewMessageConfig {
-    /// Phase 4.0: delegates to fork_core decision logic.
+    /// Phase 4.0: delegates to synapse_domain decision logic.
     fn enabled_for_channel(
         self,
         caps: &[synapse_domain::domain::channel::ChannelCapability],
@@ -547,7 +547,7 @@ fn strip_tool_result_content(text: &str) -> String {
 
 /// Check if this channel supports runtime commands (/models, /model, /new).
 /// Phase 4.0: capability-driven via ChannelCapability::RuntimeCommands.
-/// Delegate to fork_core — command parsing is domain logic.
+/// Delegate to synapse_domain — command parsing is domain logic.
 fn parse_runtime_command(
     content: &str,
     caps: &[synapse_domain::domain::channel::ChannelCapability],
@@ -1396,7 +1396,7 @@ fn spawn_scoped_typing_task(
     handle
 }
 
-/// Phase 4.0 Slice 2: process an inbound message through the fork_core orchestrator.
+/// Phase 4.0 Slice 2: process an inbound message through the synapse_domain orchestrator.
 ///
 /// Builds ports from ChannelRuntimeContext, calls HandleInboundMessage,
 /// and delivers the result to the channel.

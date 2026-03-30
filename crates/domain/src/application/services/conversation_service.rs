@@ -1,6 +1,6 @@
 //! Conversation service — owns session lifecycle and summary policy.
 //!
-//! Phase 4.0 Slice 3: extracts business logic from ws.rs into fork_core.
+//! Phase 4.0 Slice 3: extracts business logic from ws.rs into synapse_domain.
 //!
 //! Business rules this service owns:
 //! - session key format and creation

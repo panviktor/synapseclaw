@@ -1,7 +1,7 @@
 //! Core-owned config types — minimal projections of upstream Config.
 //!
 //! Adapters convert from the full `Config` struct to these lean types.
-//! This keeps fork_core free from upstream config dependencies.
+//! This keeps synapse_domain free from upstream config dependencies.
 
 /// Heartbeat delivery configuration — fields needed by DeliveryService.
 #[derive(Debug, Clone, Default)]
@@ -39,7 +39,7 @@ pub struct AutoDetectCandidate {
 
 /// Autonomy level for tool approval decisions.
 ///
-/// Single source of truth — used by both fork_core and security::policy.
+/// Single source of truth — used by both synapse_domain and security::policy.
 #[derive(
     Debug,
     Clone,

@@ -2,7 +2,7 @@
 //!
 //! Phase 4.0 Slice 2: upgrades the `inbound_message` bridge module into a
 //! real application service.  Extracts pure business logic from
-//! `channels/mod.rs` into fork_core.
+//! `channels/mod.rs` into synapse_domain.
 //!
 //! Business rules this service owns:
 //! - runtime command parsing (/models, /model, /new)

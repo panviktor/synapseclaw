@@ -24,24 +24,24 @@ Core architecture is trait-driven and modular. Extend by implementing traits and
 
 Key extension points:
 
-- `src/fork_adapters/providers/traits.rs` (`Provider`)
-- `src/fork_adapters/channels/traits.rs` (`Channel`)
-- `src/fork_adapters/tools/traits.rs` (`Tool`)
-- `src/memory/traits.rs` (`Memory`)
-- `src/fork_adapters/observability/traits.rs` (`Observer`)
-- `src/runtime/traits.rs` (`RuntimeAdapter`)
+- `crates/infra/adapters/src/providers/traits.rs` (`Provider`)
+- `crates/infra/adapters/src/channels/traits.rs` (`Channel`)
+- `crates/infra/adapters/src/tools/traits.rs` (`Tool`)
+- `crates/infra/memory/src/traits.rs` (`Memory`)
+- `crates/infra/adapters/src/observability/traits.rs` (`Observer`)
+- `crates/domain/src/ports/runtime.rs` (`RuntimeAdapter`)
 
 ## Repository Map
 
 - `src/main.rs` — CLI entrypoint and command routing
 - `src/lib.rs` — module exports and shared command enums
-- `src/config/` — schema + config loading/merging
-- `src/agent/` — orchestration loop (classifier, dispatcher, run_context re-export from fork_core)
-- `src/security/` — policy, pairing, secret store (AutonomyLevel/ToolOperation re-export from fork_core)
-- `src/memory/` — memory trait + backends (MemoryCategory/MemoryEntry re-export from fork_core)
-- `src/runtime/` — runtime adapters (currently native)
-- `crates/fork_core/` — hexagonal domain core: domain types, ports, application services
-- `src/fork_adapters/` — fork-specific adapter implementations (26 modules):
+- `crates/domain/src/config/` — schema + config loading/merging
+- `crates/infra/adapters/src/agent/` — orchestration loop (classifier, dispatcher, run_context re-export from fork_core)
+- `crates/infra/security/src/` — policy, pairing, secret store (AutonomyLevel/ToolOperation re-export from fork_core)
+- `crates/infra/memory/src/` — memory trait + backends (MemoryCategory/MemoryEntry re-export from fork_core)
+- `crates/infra/adapters/src/runtime/` — runtime adapters (currently native)
+- `crates/domain/` — hexagonal domain core: domain types, ports, application services
+- `crates/infra/adapters/src/` — fork-specific adapter implementations (26 modules):
   - `channels/` — Telegram/Discord/Slack/Matrix/IRC/Lark/Nostr/etc
   - `providers/` — model providers and resilient wrapper
   - `tools/` — tool execution surface (shell, file, memory, browser, IPC)
@@ -58,7 +58,7 @@ Key extension points:
 
 - **Low risk**: docs/chore/tests-only changes
 - **Medium risk**: most `src/**` behavior changes without boundary/security impact
-- **High risk**: `src/security/**`, `src/runtime/**`, `src/gateway/**`, `src/tools/**`, `.github/workflows/**`, access-control boundaries
+- **High risk**: `crates/infra/security/src/**`, `crates/infra/adapters/src/runtime/**`, `src/gateway/**`, `src/tools/**`, `.github/workflows/**`, access-control boundaries
 
 When uncertain, classify as higher risk.
 
@@ -79,7 +79,7 @@ Branch/commit/PR rules:
 
 ## Security Invariants
 
-- **Tool allowlist boundary** (`src/agent/loop_.rs`): When `SYNAPSECLAW_ALLOWED_TOOLS` is set (ephemeral agents), the allowlist filter is a **hard security boundary**. Any new tool injection path must either register tools **before** the filter, or be explicitly suppressed/filtered when the allowlist is active. Current correct order: built-ins → **allowlist filter + delegate filter** → MCP (suppressed if allowlist active). Violating this invariant creates a sandbox escape. See PRs #48-#49 for context.
+- **Tool allowlist boundary** (`crates/infra/adapters/src/agent/loop_.rs`): When `SYNAPSECLAW_ALLOWED_TOOLS` is set (ephemeral agents), the allowlist filter is a **hard security boundary**. Any new tool injection path must either register tools **before** the filter, or be explicitly suppressed/filtered when the allowlist is active. Current correct order: built-ins → **allowlist filter + delegate filter** → MCP (suppressed if allowlist active). Violating this invariant creates a sandbox escape. See PRs #48-#49 for context.
 
 ## Anti-Patterns
 

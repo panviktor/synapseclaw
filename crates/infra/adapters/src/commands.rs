@@ -1,4 +1,4 @@
-//! CLI command enums — shared between fork_adapters and the binary.
+//! CLI command enums — shared between synapse_adapters and the binary.
 
 use clap::Subcommand;
 use serde::{Deserialize, Serialize};

@@ -1,7 +1,7 @@
 //! Adapter: wraps existing `ChatDb` behind `ConversationStorePort`.
 //!
 //! This is NOT a rewrite — it delegates to the existing SQLite backend
-//! and maps between fork_core domain types and ChatDb row types.
+//! and maps between synapse_domain domain types and ChatDb row types.
 
 use crate::gateway::chat_db::{ChatDb, ChatMessageRow, ChatSessionRow};
 use async_trait::async_trait;

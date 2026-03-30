@@ -25,7 +25,7 @@ pub struct ClawdTalkChannel {
     webhook_secret: Option<String>,
 }
 
-// Re-export from fork_config — single source of truth.
+// Re-export from synapse_domain::config — single source of truth.
 pub use synapse_domain::config::adapter_configs::ClawdTalkConfig;
 
 impl ClawdTalkChannel {

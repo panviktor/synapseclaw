@@ -1,7 +1,7 @@
 //! Adapters for inbound message handling ports.
 //!
 //! These wrap existing channels/mod.rs infrastructure to implement
-//! fork_core ports, enabling the HandleInboundMessage orchestrator.
+//! synapse_domain ports, enabling the HandleInboundMessage orchestrator.
 
 pub mod channel_output_adapter;
 pub mod conversation_history_adapter;

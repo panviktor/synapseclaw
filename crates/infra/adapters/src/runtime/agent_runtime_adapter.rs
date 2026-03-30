@@ -2,7 +2,7 @@
 //!
 //! The port trait uses `synapse_domain::domain::message::ChatMessage`, while
 //! `run_tool_call_loop` uses `providers::ChatMessage`. Conversions happen
-//! at entry and exit using helpers from `fork_adapters`.
+//! at entry and exit using helpers from `synapse_adapters`.
 
 use crate::approval::ApprovalManager;
 use crate::providers::{ChatMessage, Provider};

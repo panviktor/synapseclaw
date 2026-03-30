@@ -3,7 +3,7 @@
 //! This is a pure business-logic crate — no dependencies on upstream
 //! transport, provider, or infrastructure modules.
 //!
-//! Design rule: `fork_core` owns *what* happens; adapters own *how*.
+//! Design rule: `synapse_domain` owns *what* happens; adapters own *how*.
 
 pub mod application;
 pub mod bus;

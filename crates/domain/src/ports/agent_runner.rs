@@ -1,7 +1,7 @@
 //! Port: agent runner — high-level agent execution.
 //!
 //! Abstracts `agent::run()` and `agent::process_message()` so that
-//! fork_adapters modules (gateway, daemon, cron) can invoke the agent
+//! synapse_adapters modules (gateway, daemon, cron) can invoke the agent
 //! without depending on the concrete agent implementation.
 
 use crate::domain::tool_audit::RunContext;
@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Port for running the agent — decouples fork_adapters from `crate::agent`.
+/// Port for running the agent — decouples synapse_adapters from `crate::agent`.
 #[async_trait]
 pub trait AgentRunnerPort: Send + Sync {
     /// Run the agent with a message (equivalent to `agent::run`).

@@ -1,7 +1,7 @@
 //! Port definitions for the fork-owned application core.
 //!
 //! Ports define capabilities the core needs from the outside world.
-//! Adapters (in `fork_adapters`) implement these ports.
+//! Adapters (in `synapse_adapters`) implement these ports.
 
 pub mod agent_runner;
 pub mod agent_runtime;

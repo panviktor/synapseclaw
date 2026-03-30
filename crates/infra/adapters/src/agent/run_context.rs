@@ -1,4 +1,4 @@
-//! Run context — re-exported from fork_core.
+//! Run context — re-exported from synapse_domain.
 //!
 //! The canonical implementation now lives in
 //! `synapse_domain::domain::tool_audit`. This module re-exports the public

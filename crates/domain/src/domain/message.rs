@@ -1,6 +1,6 @@
 //! Core-owned chat message type.
 //!
-//! Replaces `providers::ChatMessage` inside the fork_core boundary.
+//! Replaces `providers::ChatMessage` inside the synapse_domain boundary.
 //! Adapters convert between this and the upstream `ChatMessage`.
 
 /// A single turn in a conversation history.
