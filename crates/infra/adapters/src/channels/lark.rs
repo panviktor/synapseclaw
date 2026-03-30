@@ -404,9 +404,7 @@ impl LarkChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_domain::config::schema::build_runtime_proxy_client(
-            self.platform.proxy_service_key(),
-        )
+        crate::proxy::build_runtime_proxy_client(self.platform.proxy_service_key())
     }
 
     fn channel_name(&self) -> &'static str {

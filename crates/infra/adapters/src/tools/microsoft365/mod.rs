@@ -34,11 +34,8 @@ impl Microsoft365Tool {
         security: Arc<SecurityPolicy>,
         synapseclaw_dir: &std::path::Path,
     ) -> anyhow::Result<Self> {
-        let http_client = synapse_domain::config::schema::build_runtime_proxy_client_with_timeouts(
-            "tool.microsoft365",
-            60,
-            10,
-        );
+        let http_client =
+            crate::proxy::build_runtime_proxy_client_with_timeouts("tool.microsoft365", 60, 10);
         let token_cache = Arc::new(auth::TokenCache::new(config.clone(), synapseclaw_dir)?);
         Ok(Self {
             config,

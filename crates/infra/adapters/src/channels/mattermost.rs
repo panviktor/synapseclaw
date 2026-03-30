@@ -42,7 +42,7 @@ impl MattermostChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_domain::config::schema::build_runtime_proxy_client("channel.mattermost")
+        crate::proxy::build_runtime_proxy_client("channel.mattermost")
     }
 
     /// Check if a user ID is in the allowlist.

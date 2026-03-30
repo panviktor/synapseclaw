@@ -459,7 +459,7 @@ impl TelegramChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_domain::config::schema::build_runtime_proxy_client("channel.telegram")
+        crate::proxy::build_runtime_proxy_client("channel.telegram")
     }
 
     fn normalize_identity(value: &str) -> String {

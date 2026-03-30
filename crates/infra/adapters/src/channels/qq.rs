@@ -117,7 +117,7 @@ impl QQChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_domain::config::schema::build_runtime_proxy_client("channel.qq")
+        crate::proxy::build_runtime_proxy_client("channel.qq")
     }
 
     fn is_user_allowed(&self, user_id: &str) -> bool {

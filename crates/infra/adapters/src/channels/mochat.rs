@@ -39,7 +39,7 @@ impl MochatChannel {
     }
 
     fn http_client(&self) -> reqwest::Client {
-        synapse_domain::config::schema::build_runtime_proxy_client("channel.mochat")
+        crate::proxy::build_runtime_proxy_client("channel.mochat")
     }
 
     fn is_user_allowed(&self, user_id: &str) -> bool {
