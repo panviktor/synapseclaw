@@ -6,6 +6,7 @@
 pub mod agent_runner;
 pub mod agent_runtime;
 pub mod approval;
+pub mod channel;
 pub mod channel_output;
 pub mod channel_registry;
 pub mod coding_worker;
