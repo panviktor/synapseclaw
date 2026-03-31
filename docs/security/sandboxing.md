@@ -14,7 +14,7 @@ SynapseClaw currently has application-layer security (allowlists, path blocking,
 Firejail provides user-space sandboxing with minimal overhead.
 
 ```rust
-// src/security/firejail.rs
+// crates/adapters/security/src/firejail.rs
 use std::process::Command;
 
 pub struct FirejailSandbox {

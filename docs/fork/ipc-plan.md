@@ -216,7 +216,7 @@ The IPC DB belongs to the broker (gateway process), not to any specific agent.
 
 ## New files
 
-### `src/gateway/ipc.rs` — Broker handlers (~500 lines)
+### `crates/adapters/core/src/gateway/ipc.rs` — Broker handlers (~500 lines)
 
 Follows the `api.rs` pattern: gateway sub-module, handlers take `State(state): State<AppState>`, auth through a helper.
 

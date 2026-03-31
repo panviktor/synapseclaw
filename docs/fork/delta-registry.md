@@ -32,46 +32,46 @@ Related documents:
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
-| IPC-001 | Broker-mediated IPC endpoints + SQLite store | `candidate-upstream` | `high` | `src/gateway/ipc.rs`, `src/gateway/mod.rs` | Base substrate can be split into neutral PRs |
-| IPC-002 | Token metadata, IPC eligibility, revoke/disable/downgrade hooks | `candidate-upstream` | `high` | `src/security/pairing.rs`, `src/config/schema.rs`, `src/gateway/ipc.rs` | Strong upstream candidate as primitives |
-| IPC-003 | Correlated `result` only + session validation | `candidate-upstream` | `medium` | `src/gateway/ipc.rs` | Useful as generic safety rule |
-| IPC-004 | L0-L4 trust hierarchy and directional ACL matrix | `fork-only` | `high` | `src/gateway/ipc.rs`, `src/config/schema.rs` | Tightly coupled to product model |
-| IPC-005 | L4 quarantine lane (read-only for execution) | `fork-only` | `high` | `src/gateway/ipc.rs`, tools/inbox, audit events | Unlikely to go upstream as-is |
-| IPC-006 | Sparse mesh lateral policy (`L2↔L2`, `L3↔L3`, allowlisted FYI text) | `fork-only` | `medium` | `src/gateway/ipc.rs`, config allowlists | Policy-specific |
-| IPC-007 | Logical destinations for L4 (`supervisor`, `escalation`) | `fork-only` | `medium` | `src/gateway/ipc.rs`, config schema | Routing tied to low-trust model |
+| IPC-001 | Broker-mediated IPC endpoints + SQLite store | `candidate-upstream` | `high` | `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/core/src/gateway/mod.rs` | Base substrate can be split into neutral PRs |
+| IPC-002 | Token metadata, IPC eligibility, revoke/disable/downgrade hooks | `candidate-upstream` | `high` | `crates/adapters/security/src/pairing.rs`, `crates/domain/src/config/schema.rs`, `crates/adapters/core/src/gateway/ipc.rs` | Strong upstream candidate as primitives |
+| IPC-003 | Correlated `result` only + session validation | `candidate-upstream` | `medium` | `crates/adapters/core/src/gateway/ipc.rs` | Useful as generic safety rule |
+| IPC-004 | L0-L4 trust hierarchy and directional ACL matrix | `fork-only` | `high` | `crates/adapters/core/src/gateway/ipc.rs`, `crates/domain/src/config/schema.rs` | Tightly coupled to product model |
+| IPC-005 | L4 quarantine lane (read-only for execution) | `fork-only` | `high` | `crates/adapters/core/src/gateway/ipc.rs`, tools/inbox, audit events | Unlikely to go upstream as-is |
+| IPC-006 | Sparse mesh lateral policy (`L2↔L2`, `L3↔L3`, allowlisted FYI text) | `fork-only` | `medium` | `crates/adapters/core/src/gateway/ipc.rs`, config allowlists | Policy-specific |
+| IPC-007 | Logical destinations for L4 (`supervisor`, `escalation`) | `fork-only` | `medium` | `crates/adapters/core/src/gateway/ipc.rs`, config schema | Routing tied to low-trust model |
 | IPC-008 | Approval broker via Opus / control plane / `#approvals` | `fork-only` | `high` | orchestration policy, channel integrations, audit | Authority boundary |
-| IPC-009 | Structured IPC tracing events | `candidate-upstream` | `medium` | `src/gateway/ipc.rs`, tracing | Neutral observability layer |
-| IPC-010 | Agent IPC tools (`agents_list/send/inbox/reply/state/spawn`) | `candidate-upstream` | `medium` | `src/tools/agents_ipc.rs`, `src/tools/mod.rs` | Policy surface is not upstreamable |
-| IPC-011 | Subprocess spawn with broker-backed identity | `fork-only` | `high` | `src/tools/agents_ipc.rs`, `src/cron/*` | Phase 3A: subprocess execution, ephemeral identity |
-| IPC-012 | Config masking/encryption for IPC secrets | `candidate-upstream` | `medium` | `src/gateway/api.rs`, `src/config/schema.rs` | Good generic hardening |
-| IPC-013 | Ephemeral identity provisioning + spawn_runs table | `fork-only` | `high` | `src/gateway/ipc.rs`, `src/security/pairing.rs` | Phase 3A: runtime-only tokens, auto-revoke |
-| IPC-014 | Child process IPC bootstrap via env vars | `candidate-upstream` | `low` | `src/config/schema.rs`, `src/agent/prompt.rs` | Env-based IPC auto-config |
-| IPC-015 | Fail-closed execution profiles + workload profiles | `fork-only` | `high` | `src/security/execution.rs`, `src/config/schema.rs` | Phase 3A: trust-derived sandbox enforcement |
+| IPC-009 | Structured IPC tracing events | `candidate-upstream` | `medium` | `crates/adapters/core/src/gateway/ipc.rs`, tracing | Neutral observability layer |
+| IPC-010 | Agent IPC tools (`agents_list/send/inbox/reply/state/spawn`) | `candidate-upstream` | `medium` | `crates/adapters/tools/src/agents_ipc.rs`, `crates/adapters/tools/src/mod.rs` | Policy surface is not upstreamable |
+| IPC-011 | Subprocess spawn with broker-backed identity | `fork-only` | `high` | `crates/adapters/tools/src/agents_ipc.rs`, `src/cron/*` | Phase 3A: subprocess execution, ephemeral identity |
+| IPC-012 | Config masking/encryption for IPC secrets | `candidate-upstream` | `medium` | `crates/adapters/core/src/gateway/api.rs`, `crates/domain/src/config/schema.rs` | Good generic hardening |
+| IPC-013 | Ephemeral identity provisioning + spawn_runs table | `fork-only` | `high` | `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/security/src/pairing.rs` | Phase 3A: runtime-only tokens, auto-revoke |
+| IPC-014 | Child process IPC bootstrap via env vars | `candidate-upstream` | `low` | `crates/domain/src/config/schema.rs`, `crates/adapters/core/src/agent/prompt.rs` | Env-based IPC auto-config |
+| IPC-015 | Fail-closed execution profiles + workload profiles | `fork-only` | `high` | `crates/adapters/security/src/execution.rs`, `crates/domain/src/config/schema.rs` | Phase 3A: trust-derived sandbox enforcement |
 
 ## Security (SEC-001 .. SEC-003)
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
-| SEC-001 | Ed25519 agent identity + register-key endpoint | `candidate-upstream` | `medium` | `src/security/identity.rs`, `src/security/mod.rs` | Signed messages, broker verifies keys |
-| SEC-002 | PromptGuard integration for IPC payloads | `fork-only` | `medium` | `src/security/prompt_guard.rs`, `src/gateway/ipc.rs` | Scans payloads before insert; exempt levels configurable |
-| SEC-003 | Execution profiles (fail-closed sandbox, workload profiles) | `fork-only` | `high` | `src/security/execution.rs`, `src/config/schema.rs` | L2+ refuse to start without sandbox; same as IPC-015 |
+| SEC-001 | Ed25519 agent identity + register-key endpoint | `candidate-upstream` | `medium` | `crates/adapters/security/src/identity.rs`, `crates/adapters/security/src/mod.rs` | Signed messages, broker verifies keys |
+| SEC-002 | PromptGuard integration for IPC payloads | `fork-only` | `medium` | `crates/adapters/security/src/prompt_guard.rs`, `crates/adapters/core/src/gateway/ipc.rs` | Scans payloads before insert; exempt levels configurable |
+| SEC-003 | Execution profiles (fail-closed sandbox, workload profiles) | `fork-only` | `high` | `crates/adapters/security/src/execution.rs`, `crates/domain/src/config/schema.rs` | L2+ refuse to start without sandbox; same as IPC-015 |
 
 ## Gateway (GW-001 .. GW-005)
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
-| GW-001 | IPC route registration + AppState extensions | `candidate-upstream` | `high` | `src/gateway/mod.rs`, `src/gateway/api.rs` | All IPC endpoints mounted here |
-| GW-002 | Agent registry + broker health polling | `fork-only` | `medium` | `src/gateway/agent_registry.rs` | New file, fork-owned |
-| GW-003 | Chat session SQLite persistence | `candidate-upstream` | `medium` | `src/gateway/chat_db.rs` | New file; neutral session store |
-| GW-004 | Agent provisioning (add from UI, presets, config gen) | `fork-only` | `medium` | `src/gateway/provisioning.rs` | New file, fork-owned |
-| GW-005 | WS chat proxy + HTTP API proxy for multi-agent dashboard | `fork-only` | `high` | `src/gateway/ws.rs`, `src/gateway/mod.rs` | Phase 3.8: broker proxies to per-agent gateways |
+| GW-001 | IPC route registration + AppState extensions | `candidate-upstream` | `high` | `crates/adapters/core/src/gateway/mod.rs`, `crates/adapters/core/src/gateway/api.rs` | All IPC endpoints mounted here |
+| GW-002 | Agent registry + broker health polling | `fork-only` | `medium` | `crates/adapters/core/src/gateway/agent_registry.rs` | New file, fork-owned |
+| GW-003 | Chat session SQLite persistence | `candidate-upstream` | `medium` | `crates/adapters/core/src/gateway/chat_db.rs` | New file; neutral session store |
+| GW-004 | Agent provisioning (add from UI, presets, config gen) | `fork-only` | `medium` | `crates/adapters/core/src/gateway/provisioning.rs` | New file, fork-owned |
+| GW-005 | WS chat proxy + HTTP API proxy for multi-agent dashboard | `fork-only` | `high` | `crates/adapters/core/src/gateway/ws.rs`, `crates/adapters/core/src/gateway/mod.rs` | Phase 3.8: broker proxies to per-agent gateways |
 
 ## Agent / Loop (AGT-001 .. AGT-002)
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
-| AGT-001 | IPC bootstrap prompt injection via env vars | `candidate-upstream` | `low` | `src/agent/prompt.rs` | Appends IPC instructions when `SYNAPSECLAW_IPC_*` env vars set |
-| AGT-002 | `agent::run()` + `process_message()` signature extensions | `fork-only` | `high` | `src/agent/agent.rs`, `src/agent/loop_.rs` | Added IPC-related params; conflicts on every upstream signature change |
+| AGT-001 | IPC bootstrap prompt injection via env vars | `candidate-upstream` | `low` | `crates/adapters/core/src/agent/prompt.rs` | Appends IPC instructions when `SYNAPSECLAW_IPC_*` env vars set |
+| AGT-002 | `agent::run()` + `process_message()` signature extensions | `fork-only` | `high` | `crates/adapters/core/src/agent/agent.rs`, `crates/adapters/core/src/agent/loop_.rs` | Added IPC-related params; conflicts on every upstream signature change |
 
 ## Cron / Scheduler (CRON-001 .. CRON-002)
 
@@ -84,8 +84,8 @@ Related documents:
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
-| CFG-001 | `AgentsIpcConfig`, `IpcPromptGuardConfig`, `TokenMetadata` structs | `fork-only` | `high` | `src/config/schema.rs`, `src/config/mod.rs` | Added to Config struct; conflicts when upstream adds adjacent fields |
-| CFG-002 | Execution profile + workload config fields | `fork-only` | `medium` | `src/config/schema.rs` | `SandboxConfig` extensions, `ExecutionProfileConfig` |
+| CFG-001 | `AgentsIpcConfig`, `IpcPromptGuardConfig`, `TokenMetadata` structs | `fork-only` | `high` | `crates/domain/src/config/schema.rs`, `src/config/mod.rs` | Added to Config struct; conflicts when upstream adds adjacent fields |
+| CFG-002 | Execution profile + workload config fields | `fork-only` | `medium` | `crates/domain/src/config/schema.rs` | `SandboxConfig` extensions, `ExecutionProfileConfig` |
 
 ## Web UI (UI-001 .. UI-006)
 
@@ -110,7 +110,7 @@ Related documents:
 
 | ID | Change | Status | Merge risk | Main files | Notes |
 |----|--------|--------|------------|------------|-------|
-| CH-001 | Matrix channel fixes (media, E2EE, dedup) | `temporary-backport` | `medium` | `src/channels/matrix.rs` | May be resolved by upstream; review on every sync |
+| CH-001 | Matrix channel fixes (media, E2EE, dedup) | `temporary-backport` | `medium` | `crates/adapters/channels/src/matrix.rs` | May be resolved by upstream; review on every sync |
 
 ## Fork Core (CORE-001 .. CORE-012)
 
@@ -118,16 +118,16 @@ Related documents:
 |----|--------|--------|------------|------------|-------|
 | CORE-001 | Fork-owned application core skeleton: OutboundIntent, ChannelRegistryPort, CachedChannelRegistry, bus, push relay | `fork-only` | `low` | `src/fork_core/*`, `src/fork_adapters/*`, `src/daemon/mod.rs` | Phase 4.0 Steps 1-2; new files, fork-owned |
 | CORE-002 | DeliveryService: heartbeat/cron delivery policy, capability-driven target resolution | `fork-only` | `low` | `src/fork_core/application/services/delivery_service.rs`, `src/daemon/mod.rs`, `src/cron/scheduler.rs` | Slice 1; daemon/cron delegate to service |
-| CORE-003 | InboundMessageService + HandleInboundMessage: 24-behavior orchestrator, 7 ports, 8 adapters | `fork-only` | `medium` | `src/fork_core/application/services/inbound_message_service.rs`, `src/fork_core/application/use_cases/handle_inbound_message.rs`, `src/fork_adapters/inbound/*`, `src/channels/mod.rs` | Slice 2; channels/mod.rs reduced by 4287 lines |
-| CORE-004 | ConversationService + StartConversationRun + AbortConversationRun: session lifecycle, summary policy, run state machine | `fork-only` | `low` | `src/fork_core/application/services/conversation_service.rs`, `src/fork_core/application/use_cases/start_conversation_run.rs`, `src/fork_core/application/use_cases/abort_conversation_run.rs`, `src/gateway/ws.rs` | Slice 3; ws.rs delegates to service |
-| CORE-005 | ApprovalService + RequestApproval + ReviewQuarantineItem: domain types, ports, policy | `fork-only` | `low` | `src/fork_core/application/services/approval_service.rs`, `src/fork_core/domain/approval.rs`, `src/fork_core/ports/approval.rs`, `src/approval/mod.rs`, `src/agent/loop_.rs` | Slice 4; ApprovalManager implements ApprovalPort |
-| CORE-006 | IpcService + DispatchIpcMessage: ACL validation, routing, session limits, bus port | `fork-only` | `medium` | `src/fork_core/application/services/ipc_service.rs`, `src/fork_core/domain/ipc.rs`, `src/fork_core/ports/ipc_bus.rs`, `src/gateway/ipc.rs` | Slice 5; gateway/ipc.rs delegates to domain |
+| CORE-003 | InboundMessageService + HandleInboundMessage: 24-behavior orchestrator, 7 ports, 8 adapters | `fork-only` | `medium` | `src/fork_core/application/services/inbound_message_service.rs`, `src/fork_core/application/use_cases/handle_inbound_message.rs`, `src/fork_adapters/inbound/*`, `crates/adapters/channels/src/mod.rs` | Slice 2; channels/mod.rs reduced by 4287 lines |
+| CORE-004 | ConversationService + StartConversationRun + AbortConversationRun: session lifecycle, summary policy, run state machine | `fork-only` | `low` | `src/fork_core/application/services/conversation_service.rs`, `src/fork_core/application/use_cases/start_conversation_run.rs`, `src/fork_core/application/use_cases/abort_conversation_run.rs`, `crates/adapters/core/src/gateway/ws.rs` | Slice 3; ws.rs delegates to service |
+| CORE-005 | ApprovalService + RequestApproval + ReviewQuarantineItem: domain types, ports, policy | `fork-only` | `low` | `src/fork_core/application/services/approval_service.rs`, `src/fork_core/domain/approval.rs`, `src/fork_core/ports/approval.rs`, `src/approval/mod.rs`, `crates/adapters/core/src/agent/loop_.rs` | Slice 4; ApprovalManager implements ApprovalPort |
+| CORE-006 | IpcService + DispatchIpcMessage: ACL validation, routing, session limits, bus port | `fork-only` | `medium` | `src/fork_core/application/services/ipc_service.rs`, `src/fork_core/domain/ipc.rs`, `src/fork_core/ports/ipc_bus.rs`, `crates/adapters/core/src/gateway/ipc.rs` | Slice 5; gateway/ipc.rs delegates to domain |
 | CORE-007 | MemoryService + MemoryTiersPort: tier types, recall formatting, consolidation policy, adapter | `fork-only` | `low` | `src/fork_core/application/services/memory_service.rs`, `src/fork_core/domain/memory.rs`, `src/fork_core/ports/memory.rs`, `src/fork_adapters/inbound/memory_adapter.rs` | Slice 6; tier-aware abstraction over existing backends |
 | CORE-008 | CodingWorkerPort + DelegateImplementationTask: external coding worker seam | `fork-only` | `low` | `src/fork_core/ports/coding_worker.rs`, `src/fork_core/domain/implementation.rs`, `src/fork_core/application/use_cases/delegate_implementation_task.rs` | Slice 7; narrow port, IPC-backed adapter deferred |
 | CORE-009 | Pipeline engine: domain types, TOML loader, schema validation | `fork-only` | `low` | `crates/fork_core/src/domain/pipeline.rs`, `crates/fork_core/src/domain/pipeline_context.rs`, `crates/fork_core/src/ports/pipeline_store.rs`, `src/fork_adapters/pipeline/toml_loader.rs`, `src/fork_adapters/pipeline/schema_validator.rs` | Phase 4.1 Slice 1; new files only |
 | CORE-010 | PipelineRunner + IPC bridge + checkpointing | `fork-only` | `low` | `crates/fork_core/src/application/services/pipeline_service.rs`, `crates/fork_core/src/application/use_cases/start_pipeline.rs`, `crates/fork_core/src/ports/pipeline_executor.rs`, `src/fork_adapters/pipeline/ipc_step_executor.rs` | Phase 4.1 Slice 2; new files only |
 | CORE-011 | ToolMiddleware: chain, rate limit, validation, approval gate | `fork-only` | `low` | `crates/fork_core/src/domain/tool_middleware.rs`, `crates/fork_core/src/ports/tool_middleware.rs`, `crates/fork_core/src/application/services/tool_middleware_service.rs`, `src/fork_adapters/middleware/*` | Phase 4.1 Slice 3; hook in loop_.rs wired |
-| CORE-012 | Pipeline wiring: config, gateway, IPC endpoints, agent inbox | `fork-only` | `medium` | `src/config/schema.rs`, `src/gateway/mod.rs`, `src/gateway/ipc.rs`, `src/agent/loop_.rs` | Phase 4.1 wiring; shared hotspots |
+| CORE-012 | Pipeline wiring: config, gateway, IPC endpoints, agent inbox | `fork-only` | `medium` | `crates/domain/src/config/schema.rs`, `crates/adapters/core/src/gateway/mod.rs`, `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/core/src/agent/loop_.rs` | Phase 4.1 wiring; shared hotspots |
 
 ## Other (MISC-001 .. MISC-003)
 
@@ -151,24 +151,24 @@ Related documents:
 These files should automatically go onto the manual review list for every sync PR:
 
 **Config:**
-- `src/config/schema.rs`
+- `crates/domain/src/config/schema.rs`
 - `src/config/mod.rs`
 
 **Gateway:**
-- `src/gateway/mod.rs`
-- `src/gateway/api.rs`
-- `src/gateway/ws.rs`
+- `crates/adapters/core/src/gateway/mod.rs`
+- `crates/adapters/core/src/gateway/api.rs`
+- `crates/adapters/core/src/gateway/ws.rs`
 
 **Security:**
-- `src/security/pairing.rs`
-- `src/security/audit.rs`
+- `crates/adapters/security/src/pairing.rs`
+- `crates/adapters/security/src/audit.rs`
 
 **Agent:**
-- `src/agent/agent.rs`
-- `src/agent/loop_.rs`
+- `crates/adapters/core/src/agent/agent.rs`
+- `crates/adapters/core/src/agent/loop_.rs`
 
 **Other:**
-- `src/tools/mod.rs`
+- `crates/adapters/tools/src/mod.rs`
 - `src/onboard/wizard.rs`
 - `src/cron/scheduler.rs`
 - `src/daemon/mod.rs`
@@ -184,14 +184,14 @@ These files should automatically go onto the manual review list for every sync P
 ## Fork-Owned Paths (ours-first on merge)
 
 These are new files created by the fork. Accept fork version on conflict:
-- `src/gateway/ipc.rs`
-- `src/gateway/agent_registry.rs`
-- `src/gateway/chat_db.rs`
-- `src/gateway/provisioning.rs`
-- `src/security/execution.rs`
-- `src/security/identity.rs`
-- `src/security/prompt_guard.rs`
-- `src/tools/agents_ipc.rs`
+- `crates/adapters/core/src/gateway/ipc.rs`
+- `crates/adapters/core/src/gateway/agent_registry.rs`
+- `crates/adapters/core/src/gateway/chat_db.rs`
+- `crates/adapters/core/src/gateway/provisioning.rs`
+- `crates/adapters/security/src/execution.rs`
+- `crates/adapters/security/src/identity.rs`
+- `crates/adapters/security/src/prompt_guard.rs`
+- `crates/adapters/tools/src/agents_ipc.rs`
 - `web/src/pages/ipc/*`
 - `web/src/components/ipc/*`
 - `web/src/lib/ipc-*.ts`
@@ -256,4 +256,4 @@ Update this registry when:
 The main maintenance task is not just “merge more often,” but **systematically reduce the volume of intentional delta**.
 Everything neutral should gradually be extracted into upstream primitives. Everything policy-specific should be tightly isolated and explicitly marked as fork-only.
 
-The Web UI delta (UI-001..006, WEB-001..003) is low-conflict because most files are fork-owned additions. The highest-risk areas remain `src/config/schema.rs`, `src/agent/loop_.rs`, and `src/gateway/mod.rs` — these are shared hotspots where both fork and upstream actively add code.
+The Web UI delta (UI-001..006, WEB-001..003) is low-conflict because most files are fork-owned additions. The highest-risk areas remain `crates/domain/src/config/schema.rs`, `crates/adapters/core/src/agent/loop_.rs`, and `crates/adapters/core/src/gateway/mod.rs` — these are shared hotspots where both fork and upstream actively add code.

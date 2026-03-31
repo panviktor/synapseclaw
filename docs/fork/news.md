@@ -1,5 +1,29 @@
 # SynapseClaw News & Changelog
 
+## 2026-03-31
+
+### Phases 8-12: Full Crate Extraction (PRs #209-#211)
+
+**12 workspace crates** — bottleneck 146K → 55K LOC (2.7x), 4 crates compile in parallel on Wave 5.
+
+- **Phase 8**: Rename `crates/infra/` → `crates/adapters/`, `adapters/` → `adapters/core/`
+- **Phase 9a-9c**: Extract `synapse_mcp` (3K), `synapse_infra` (5K), promote Channel/Tool ports to domain
+- **Phase 10**: Extract `synapse_channels` (34K) — 30+ channel implementations
+- **Phase 11**: Extract `synapse_tools` (37K) — 49 tools, NO crate aliases
+- **Phase 12**: Extract `synapse_onboard` (7K), remove ALL `pub use X as Y` re-exports
+- **IpcClientPort**: Full trait migration — `broker_get`/`broker_post` in domain, all 7 IPC tools on port
+- **Bug fix**: Channel interrupt cancellation token was created but never checked — added `tokio::select!`
+- **Test fixes**: 4417 tests pass, 0 failures across all 12 crates
+
+```
+Wave 1: domain (24K)
+Wave 2: security (10K) | observability (5K) | memory (8K)
+Wave 3: providers (20K) | cron (3K)
+Wave 4: infra (5K) | mcp (3K)
+Wave 5: channels (34K) | tools (37K) | onboard (7K) | core (55K)
+Wave 6: synapseclaw binary
+```
+
 ## 2026-03-30
 
 ### Phase 5: Complete Hexagonal Architecture (20 PRs: #181-#200)
@@ -16,25 +40,30 @@
 - Rename: fork_core→synapse_core, fork_security→synapse_security (#191)
 - Dissolve synapse_config into synapse_core (#193)
 - Extract synapse_memory crate (8K LOC) (#195)
-- **THE BIG MOVE**: promote adapters + agent to synapse_adapters crate (170K LOC) (#196)
-- Delete src/adapters/, src/agent/, src/security/, src/runtime/ — src/ = 2 files
+- **THE BIG MOVE**: promote adapters + agent to synapse_adapters crate (55K LOC (core) + 155K total across 12 crates) (#196)
+- Delete src/adapters/, crates/adapters/core/src/agent/, crates/adapters/security/src/, crates/adapters/core/src/runtime/ — src/ = 2 files
 
 **Phase 5B — Purify domain (PRs #197-#200):**
-- Hexagonal directory layout: `crates/domain/` + `crates/infra/adapters/` (#197)
+- Hexagonal directory layout: `crates/domain/` + `crates/adapters/core/` (#197)
 - Feature flag propagation fix, CLAUDE.md update (#198)
 - Remove reqwest from domain — extract proxy to adapters (#199)
 - Move security + memory sub-crates inside adapters (#200)
 
-**Final architecture:**
+**Phase 5 architecture (before Phase 8-12 extraction):**
 ```
 crates/
   domain/                    ← PURE DOMAIN (zero infra deps, 24K)
-  infra/adapters/            ← ALL INFRASTRUCTURE (170K)
-    security/                ← security sub-crate (10K)
-    memory/                  ← memory sub-crate (8K)
-src/
-  main.rs                    ← composition root
-  lib.rs                     ← thin facade
+  adapters/core/             ← composition root (55K)
+  adapters/channels/         ← 30+ platforms (34K)
+  adapters/tools/            ← 49 tools (37K)
+  adapters/security/         ← pairing, secrets, audit (10K)
+  adapters/memory/           ← sqlite, qdrant (8K)
+  adapters/providers/        ← LLM providers (20K)
+  adapters/observability/    ← prometheus, otel (5K)
+  adapters/cron-store/       ← scheduler (3K)
+  adapters/mcp/              ← MCP protocol (3K)
+  adapters/infra/            ← config_io, identity (5K)
+  adapters/onboard/          ← setup wizard (7K)
 ```
 
 Domain dependencies: serde, schemars, async-trait, chrono, uuid, url, anyhow, parking_lot — **zero HTTP, zero filesystem, zero CLI framework**.

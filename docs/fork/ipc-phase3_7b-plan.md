@@ -40,13 +40,13 @@ Key insight: different from OpenClaw's approach (summarize when nearing context 
 
 | File | Changes |
 |------|---------|
-| `src/config/schema.rs` | `summary_model: Option<String>` at top-level Config (next to `default_model`) |
-| `src/gateway/chat_db.rs` | `update_session_summary(key, summary)` method |
-| `src/gateway/ws.rs` | `summarize_session_if_needed()` — rolling LLM summary every 10 msgs |
-| `src/gateway/ws.rs` | `push_tool_events()` — WS push tool_call/tool_result before rpc_response |
-| `src/gateway/ws.rs` | `emit_run_event()` — session.run_started/finished/interrupted with run_id |
-| `src/gateway/ws.rs` | `out_tx` passed to spawned chat.send task for live push |
-| `src/gateway/mod.rs` | `summary_model: Option<String>` in AppState |
+| `crates/domain/src/config/schema.rs` | `summary_model: Option<String>` at top-level Config (next to `default_model`) |
+| `crates/adapters/core/src/gateway/chat_db.rs` | `update_session_summary(key, summary)` method |
+| `crates/adapters/core/src/gateway/ws.rs` | `summarize_session_if_needed()` — rolling LLM summary every 10 msgs |
+| `crates/adapters/core/src/gateway/ws.rs` | `push_tool_events()` — WS push tool_call/tool_result before rpc_response |
+| `crates/adapters/core/src/gateway/ws.rs` | `emit_run_event()` — session.run_started/finished/interrupted with run_id |
+| `crates/adapters/core/src/gateway/ws.rs` | `out_tx` passed to spawned chat.send task for live push |
+| `crates/adapters/core/src/gateway/mod.rs` | `summary_model: Option<String>` in AppState |
 | `src/onboard/wizard.rs` | `summary_model: None` in new config constructors |
 | `web/src/pages/AgentChat.tsx` | Handle tool_call/tool_result/lifecycle push events in onMessage |
 | `web/src/pages/AgentChat.tsx` | Tool event rendering with muted mono styling |
@@ -56,9 +56,9 @@ Key insight: different from OpenClaw's approach (summarize when nearing context 
 
 | File | Changes |
 |------|---------|
-| `src/gateway/api.rs` | `PUT /api/summary-model` endpoint for runtime switch |
-| `src/gateway/api.rs` | `/api/status` now includes `summary_model` field |
-| `src/gateway/ws.rs` | `summarize_session_if_needed` reads from live config (not cached AppState) |
+| `crates/adapters/core/src/gateway/api.rs` | `PUT /api/summary-model` endpoint for runtime switch |
+| `crates/adapters/core/src/gateway/api.rs` | `/api/status` now includes `summary_model` field |
+| `crates/adapters/core/src/gateway/ws.rs` | `summarize_session_if_needed` reads from live config (not cached AppState) |
 | `web/src/components/chat/SessionSidebar.tsx` | Info panel: primary model, summary model (editable), uptime |
 | `web/src/lib/api.ts` | `putSummaryModel()` API function |
 | `web/src/pages/AgentChat.tsx` | Fetch status on connect, pass to sidebar, handle model switch |

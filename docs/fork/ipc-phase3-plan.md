@@ -301,10 +301,10 @@ effective_trust_level (from token_metadata)
 ```
 
 Implementation reuses existing infrastructure:
-- `src/security/detect.rs::create_sandbox()` — backend selection
-- `src/security/traits.rs::Sandbox` trait — command wrapping
-- `src/security/policy.rs::SecurityPolicy` — autonomy level, command classification, path validation
-- `src/runtime/traits.rs::RuntimeAdapter` — native vs docker command building
+- `crates/adapters/security/src/detect.rs::create_sandbox()` — backend selection
+- `crates/adapters/security/src/traits.rs::Sandbox` trait — command wrapping
+- `crates/adapters/security/src/policy.rs::SecurityPolicy` — autonomy level, command classification, path validation
+- `crates/adapters/core/src/runtime/traits.rs::RuntimeAdapter` — native vs docker command building
 
 What's new:
 - `execution_boundary(trust_level) → (SandboxConfig, AutonomyConfig, Vec<String>)` — hard-coded per trust level, not configurable
@@ -435,7 +435,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 ### Step 1: Ephemeral identity provisioning
 
-**Files**: `src/gateway/ipc.rs`, `src/security/pairing.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/security/src/pairing.rs`
 
 - Add `POST /api/ipc/provision-ephemeral` endpoint (bearer auth, parent must be L0-L3):
   - Generate agent_id, token, session_id
@@ -452,7 +452,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 ### Step 2: `agents_spawn` upgrade — session binding + wait
 
-**Files**: `src/tools/agents_ipc.rs`, `src/cron/store.rs`
+**Files**: `crates/adapters/tools/src/agents_ipc.rs`, `src/cron/store.rs`
 
 - Extend `agents_spawn` tool schema:
   - `wait: bool` (default: false, backward compat)
@@ -473,7 +473,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 ### Step 3: Child process IPC bootstrap
 
-**Files**: `src/agent/agent.rs` or `src/main.rs`
+**Files**: `crates/adapters/core/src/agent/agent.rs` or `src/main.rs`
 
 - On startup, if `SYNAPSECLAW_BROKER_TOKEN` env var is set:
   - Override `agents_ipc` config with env values
@@ -485,7 +485,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 ### Step 4: Result delivery path
 
-**Files**: `src/gateway/ipc.rs`, `src/tools/agents_ipc.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/tools/src/agents_ipc.rs`
 
 - Child sends `agents_reply(payload=...)` → broker validates → inserts into parent inbox
 - Broker simultaneously updates `spawn_runs`: `status = "completed"`, `result = payload`, `completed_at = now`
@@ -503,7 +503,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 ### Step 5: Execution profiles — fail-closed sandbox enforcement
 
-**Files**: `src/config/schema.rs`, `src/security/detect.rs`, `src/tools/agents_ipc.rs`
+**Files**: `crates/domain/src/config/schema.rs`, `crates/adapters/security/src/detect.rs`, `crates/adapters/tools/src/agents_ipc.rs`
 
 - Add `execution_boundary(trust_level: u8) -> ExecutionBoundary`:
   - Hard-coded mapping, not configurable
@@ -541,7 +541,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 ### Step 7: Ed25519 agent identity
 
-**Files**: `src/security/identity.rs` (new), `src/gateway/ipc.rs`, `src/config/schema.rs`
+**Files**: `crates/adapters/security/src/identity.rs` (new), `crates/adapters/core/src/gateway/ipc.rs`, `crates/domain/src/config/schema.rs`
 
 - Persistent agents generate Ed25519 keypair **locally** on first pairing
 - Agent sends public key to broker during pairing; broker stores it in `agents` table
@@ -552,7 +552,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 ### Step 8: Signed messages
 
-**Files**: `src/gateway/ipc.rs`, `src/tools/agents_ipc.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/tools/src/agents_ipc.rs`
 
 - Agent signs `{from_agent}|{to_agent}|{seq}|{payload_hash}` with its own Ed25519 private key
 - Signature sent as header or JSON field in `POST /api/ipc/send`
@@ -562,7 +562,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 ### Step 9: HMAC audit chain
 
-**Files**: `src/security/audit.rs`
+**Files**: `crates/adapters/security/src/audit.rs`
 
 - Each audit event includes HMAC-SHA256 over `{prev_hmac}|{event_json}`
 - Per-instance HMAC key (generated on first run, stored in `~/.synapseclaw/audit.key`)
@@ -571,7 +571,7 @@ This is the foundation that makes "child = separate actor" a real OS-level guara
 
 ### Step 10: Sender-side replay protection
 
-**Files**: `src/tools/agents_ipc.rs`, `src/gateway/ipc.rs`
+**Files**: `crates/adapters/tools/src/agents_ipc.rs`, `crates/adapters/core/src/gateway/ipc.rs`
 
 - Agent maintains local sequence counter (persisted in agent's config dir)
 - Agent signs `{agent_id}|{seq}|{timestamp}` with Ed25519 key

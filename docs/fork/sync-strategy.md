@@ -184,21 +184,21 @@ A clean merge guarantees nothing without these checks.
 ### Fork-Owned Paths
 
 Here an “ours-first” mode is usually acceptable because these are our overlay modules:
-- `src/gateway/ipc.rs`
-- `src/tools/agents_ipc.rs`
+- `crates/adapters/core/src/gateway/ipc.rs`
+- `crates/adapters/tools/src/agents_ipc.rs`
 - fork-specific docs in `docs/fork/`
 
 ### Shared Hotspots
 
 These always require manual review:
-- `src/config/schema.rs`
+- `crates/domain/src/config/schema.rs`
 - `src/config/mod.rs`
-- `src/gateway/mod.rs`
-- `src/gateway/api.rs`
-- `src/security/pairing.rs`
-- `src/tools/mod.rs`
+- `crates/adapters/core/src/gateway/mod.rs`
+- `crates/adapters/core/src/gateway/api.rs`
+- `crates/adapters/security/src/pairing.rs`
+- `crates/adapters/tools/src/mod.rs`
 - `src/onboard/wizard.rs`
-- potentially later: `src/cron/*`, `src/agent/*`, `src/channels/*`
+- potentially later: `src/cron/*`, `crates/adapters/core/src/agent/*`, `crates/adapters/channels/src/*`
 
 ### Upstream-Owned
 

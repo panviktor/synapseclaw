@@ -53,11 +53,11 @@ SynapseClaw already has **excellent application-layer security**:
 
 | Task | File | Effort | Impact |
 |------|------|--------|-------|
-| Landlock filesystem sandbox | `src/security/landlock.rs` | 2 days | High |
+| Landlock filesystem sandbox | `crates/adapters/security/src/landlock.rs` | 2 days | High |
 | Memory monitoring + OOM kill | `src/resources/memory.rs` | 1 day | High |
-| CPU timeout per command | `src/tools/shell.rs` | 1 day | High |
-| Basic audit logging | `src/security/audit.rs` | 2 days | Medium |
-| Config schema updates | `src/config/schema.rs` | 1 day | - |
+| CPU timeout per command | `crates/adapters/tools/src/shell.rs` | 1 day | High |
+| Basic audit logging | `crates/adapters/security/src/audit.rs` | 2 days | Medium |
+| Config schema updates | `crates/domain/src/config/schema.rs` | 1 day | - |
 
 **Deliverables**:
 - Linux: Filesystem access restricted to workspace

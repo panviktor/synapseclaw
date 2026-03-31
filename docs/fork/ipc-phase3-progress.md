@@ -68,16 +68,16 @@ All implementation steps completed and merged, including runtime gap fixes and s
 | `src/cron/store.rs` | 0 |
 | `src/cron/scheduler.rs` | 0, 5 |
 | `src/cron/mod.rs` | 0 |
-| `src/gateway/ipc.rs` | 1, 4 |
-| `src/gateway/mod.rs` | 1 |
-| `src/security/pairing.rs` | 1 |
-| `src/tools/agents_ipc.rs` | 2, 6 |
-| `src/tools/mod.rs` | 2 |
-| `src/config/schema.rs` | 3, 5 |
-| `src/agent/prompt.rs` | 3 |
-| `src/security/execution.rs` | 5 |
-| `src/security/mod.rs` | 5 |
-| `src/agent/loop_.rs` | #48, #49 |
+| `crates/adapters/core/src/gateway/ipc.rs` | 1, 4 |
+| `crates/adapters/core/src/gateway/mod.rs` | 1 |
+| `crates/adapters/security/src/pairing.rs` | 1 |
+| `crates/adapters/tools/src/agents_ipc.rs` | 2, 6 |
+| `crates/adapters/tools/src/mod.rs` | 2 |
+| `crates/domain/src/config/schema.rs` | 3, 5 |
+| `crates/adapters/core/src/agent/prompt.rs` | 3 |
+| `crates/adapters/security/src/execution.rs` | 5 |
+| `crates/adapters/security/src/mod.rs` | 5 |
+| `crates/adapters/core/src/agent/loop_.rs` | #48, #49 |
 
 ## Security review findings (PRs #47-#49)
 

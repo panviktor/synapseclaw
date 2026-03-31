@@ -56,7 +56,7 @@ Search-preview models do not accept temperature parameter:
 
 ## Implementation
 
-The `adjust_temperature_for_model()` function in `src/providers/openai.rs` automatically adjusts temperature to 1.0 for reasoning models while preserving user-specified values for standard models.
+The `adjust_temperature_for_model()` function in `crates/adapters/providers/src/openai.rs` automatically adjusts temperature to 1.0 for reasoning models while preserving user-specified values for standard models.
 
 ## Testing Methodology
 

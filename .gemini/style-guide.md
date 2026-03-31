@@ -71,7 +71,7 @@ SynapseClaw is a Rust-based security-focused project that handles encryption, se
 
 When reviewing PRs, pay special attention to:
 
-1. Changes in `src/security/` - highest security scrutiny
+1. Changes in `crates/adapters/security/src/` - highest security scrutiny
 2. Configuration migration code - ensure data integrity
 3. Error handling paths - verify all edge cases
 4. Public API changes - check for breaking changes

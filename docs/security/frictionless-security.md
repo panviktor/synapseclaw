@@ -34,7 +34,7 @@ pub fn run_wizard() -> Result<Config> {
 ### 2. Auto-Detection Logic (Runs Once at First Start)
 
 ```rust
-// src/security/detect.rs
+// crates/adapters/security/src/detect.rs
 
 impl SecurityConfig {
     /// Detect available sandboxing and enable automatically
@@ -200,7 +200,7 @@ $ synapseclaw config set security.resources.max_memory_mb 2048
 ## Config Schema Extension
 
 ```rust
-// src/config/schema.rs
+// crates/domain/src/config/schema.rs
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityConfig {

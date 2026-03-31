@@ -166,8 +166,8 @@ Solution: Check user allowlist
 
 ```
 Solution: Verify code changes
-  grep -n "split_message_for_telegram" src/channels/telegram.rs
-  grep -n "TELEGRAM_MAX_MESSAGE_LENGTH" src/channels/telegram.rs
+  grep -n "split_message_for_telegram" crates/adapters/channels/src/telegram.rs
+  grep -n "TELEGRAM_MAX_MESSAGE_LENGTH" crates/adapters/channels/src/telegram.rs
 ```
 
 ## 🧪 Test Scenarios
@@ -329,7 +329,7 @@ If tests fail in production:
 
 ```bash
 # 1. Check git history
-git log --oneline src/channels/telegram.rs
+git log --oneline crates/adapters/channels/src/telegram.rs
 
 # 2. Rollback to previous version
 git revert <commit-hash>

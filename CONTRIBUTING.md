@@ -209,7 +209,7 @@ To keep review throughput high without lowering quality, every PR should map to 
 |---|---|---|
 | **Track A (Low risk)** | docs/tests/chore, isolated refactors, no security/runtime/CI impact | 1 maintainer review + green `CI Required Gate` |
 | **Track B (Medium risk)** | providers/channels/memory/tools behavior changes | 1 subsystem-aware review + explicit validation evidence |
-| **Track C (High risk)** | `src/security/**`, `src/runtime/**`, `src/gateway/**`, `.github/workflows/**`, access-control boundaries | 2-pass review (fast triage + deep risk review), rollback plan required |
+| **Track C (High risk)** | `crates/adapters/security/src/**`, `crates/adapters/core/src/runtime/**`, `crates/adapters/core/src/gateway/**`, `.github/workflows/**`, access-control boundaries | 2-pass review (fast triage + deep risk review), rollback plan required |
 
 When in doubt, choose the higher track.
 
@@ -272,7 +272,7 @@ When PR traffic is high (especially with AI-assisted contributions), these rules
 - **Small PRs first**: prefer PR size `XS/S/M`; split large work into stacked PRs.
 - **Template is mandatory**: complete every section in `.github/pull_request_template.md`.
 - **Explicit rollback**: every PR must include a fast rollback path.
-- **Security-first review**: changes in `src/security/`, runtime, gateway, and CI need stricter validation.
+- **Security-first review**: changes in `crates/adapters/security/src/`, runtime, gateway, and CI need stricter validation.
 - **Risk-first triage**: use labels (`risk: high`, `risk: medium`, `risk: low`) to route review depth.
 - **Privacy-first hygiene**: redact/anonymize sensitive payloads and keep tests/examples neutral and project-scoped.
 - **Identity normalization**: when identity traits are unavoidable, use SynapseClaw/project-native roles instead of personal or real-world identities.
@@ -333,7 +333,7 @@ Keep architecture extensible and auditable by following these boundaries.
 - Avoid cross-subsystem coupling (provider ↔ channel internals, tools mutating security/gateway internals directly, etc.).
 - Keep responsibilities single-purpose by module (`agent` orchestration, `channels` transport, `providers` model I/O, `security` policy, `tools` execution, `memory` persistence).
 - Introduce shared abstractions only after repeated stable use (rule-of-three) and at least one current caller.
-- Treat `src/config/schema.rs` keys as public contract; document compatibility impact, migration steps, and rollback path for changes.
+- Treat `crates/domain/src/config/schema.rs` keys as public contract; document compatibility impact, migration steps, and rollback path for changes.
 
 ## Naming and Architecture Examples (Bad vs Good)
 
@@ -366,7 +366,7 @@ Use these quick examples to align implementation choices before opening a PR.
 
 ## How to Add a New Provider
 
-Create `src/providers/your_provider.rs`:
+Create `crates/adapters/providers/src/your_provider.rs`:
 
 ```rust
 use async_trait::async_trait;
@@ -396,7 +396,7 @@ impl Provider for YourProvider {
 }
 ```
 
-Then register it in `src/providers/mod.rs`:
+Then register it in `crates/adapters/providers/src/mod.rs`:
 
 ```rust
 "your_provider" => Ok(Box::new(your_provider::YourProvider::new(api_key))),
@@ -404,7 +404,7 @@ Then register it in `src/providers/mod.rs`:
 
 ## How to Add a New Channel
 
-Create `src/channels/your_channel.rs`:
+Create `crates/adapters/channels/src/your_channel.rs`:
 
 ```rust
 use async_trait::async_trait;
@@ -434,7 +434,7 @@ impl Channel for YourChannel {
 
 ## How to Add a New Observer
 
-Create `src/observability/your_observer.rs`:
+Create `crates/adapters/observability/src/your_observer.rs`:
 
 ```rust
 use crate::observability::traits::{Observer, ObserverEvent, ObserverMetric};
@@ -456,7 +456,7 @@ impl Observer for YourObserver {
 
 ## How to Add a New Tool
 
-Create `src/tools/your_tool.rs`:
+Create `crates/adapters/tools/src/your_tool.rs`:
 
 ```rust
 use async_trait::async_trait;

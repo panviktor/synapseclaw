@@ -441,7 +441,7 @@ Sees success toast                │
 
 ### Step 0: Backend — admin read endpoints
 
-**Files**: `src/gateway/ipc.rs`, `src/gateway/mod.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/core/src/gateway/mod.rs`
 
 **What**:
 - Add `IpcDb::list_messages_admin()` — paginated, filterable query:
@@ -701,7 +701,7 @@ These components are shared across all IPC pages for consistent rendering.
 ## File Structure
 
 ```
-src/gateway/
+crates/adapters/core/src/gateway/
 ├── ipc.rs              # Add: 6 new handlers, 5 new IpcDb query methods
 └── mod.rs              # Add: 6 new routes
 

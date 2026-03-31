@@ -11,14 +11,14 @@ For step-by-step integration checklists, see [change-playbooks.md](./change-play
 
 ---
 
-## Tool (`src/tools/traits.rs`)
+## Tool (`crates/domain/src/ports/tool.rs`)
 
 Tools are the agent's hands — they let it interact with the world.
 
 **Required methods**: `name()`, `description()`, `parameters_schema()`, `execute()`.
 The `spec()` method has a default implementation that composes the others.
 
-Register your tool in `src/tools/mod.rs` via `default_tools()`.
+Register your tool in `crates/adapters/tools/src/mod.rs` via `default_tools()`.
 
 ```rust
 // In your crate: use synapseclaw::tools::traits::{Tool, ToolResult};
@@ -77,7 +77,7 @@ impl Tool for HttpGetTool {
 
 ---
 
-## Channel (`src/channels/traits.rs`)
+## Channel (`crates/domain/src/ports/channel.rs`)
 
 Channels let SynapseClaw communicate through any messaging platform.
 
@@ -86,7 +86,7 @@ Default implementations exist for `health_check()`, `start_typing()`, `stop_typi
 draft methods (`send_draft`, `update_draft`, `finalize_draft`, `cancel_draft`),
 and reaction methods (`add_reaction`, `remove_reaction`).
 
-Register your channel in `src/channels/mod.rs` and add config to `ChannelsConfig` in `src/config/schema.rs`.
+Register your channel in `crates/adapters/channels/src/mod.rs` and add config to `ChannelsConfig` in `crates/domain/src/config/schema.rs`.
 
 ```rust
 // In your crate: use synapseclaw::channels::traits::{Channel, ChannelMessage, SendMessage};
@@ -197,7 +197,7 @@ impl Channel for TelegramChannel {
 
 ---
 
-## Provider (`src/providers/traits.rs`)
+## Provider (`crates/domain/src/ports/provider.rs`)
 
 Providers are LLM backend adapters. Each provider connects SynapseClaw to a different model API.
 
@@ -207,7 +207,7 @@ Everything else has default implementations:
 `capabilities()` returns no native tool calling by default;
 streaming methods return empty/error streams by default.
 
-Register your provider in `src/providers/mod.rs`.
+Register your provider in `crates/adapters/providers/src/mod.rs`.
 
 ```rust
 // In your crate: use synapseclaw::providers::traits::Provider;
@@ -271,14 +271,14 @@ impl Provider for OllamaProvider {
 
 ---
 
-## Memory (`src/memory/traits.rs`)
+## Memory (`crates/adapters/memory/src/traits.rs`)
 
 Memory backends provide pluggable persistence for the agent's knowledge.
 
 **Required methods**: `name()`, `store()`, `recall()`, `get()`, `list()`, `forget()`, `count()`, `health_check()`.
 Both `store()` and `recall()` accept an optional `session_id` for scoping.
 
-Register your backend in `src/memory/mod.rs`.
+Register your backend in `crates/adapters/memory/src/mod.rs`.
 
 ```rust
 // In your crate: use synapseclaw::memory::traits::{Memory, MemoryEntry, MemoryCategory};
@@ -401,7 +401,7 @@ All extension traits follow the same wiring pattern:
 
 1. Create your implementation file in the relevant `src/*/` directory.
 2. Register it in the module's factory function (e.g., `default_tools()`, provider match arm).
-3. Add any needed config keys to `src/config/schema.rs`.
+3. Add any needed config keys to `crates/domain/src/config/schema.rs`.
 4. Write focused tests for factory wiring and error paths.
 
 See [change-playbooks.md](./change-playbooks.md) for full checklists per extension type.

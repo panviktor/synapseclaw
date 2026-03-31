@@ -27,7 +27,7 @@ Execution owner: `Opus`
 
 ## Step Details
 
-### Step 1: Config — `src/config/schema.rs`, `src/config/mod.rs`
+### Step 1: Config — `crates/domain/src/config/schema.rs`, `src/config/mod.rs`
 
 **What**:
 - Add `AgentsIpcConfig` struct with `#[serde(default)]` + `Default` + `JsonSchema`
@@ -43,7 +43,7 @@ Execution owner: `Opus`
 
 ---
 
-### Step 2: Pairing — `src/security/pairing.rs`
+### Step 2: Pairing — `crates/adapters/security/src/pairing.rs`
 
 **What**:
 - Add `TokenMetadata` struct (agent_id, trust_level, role) + `effective_trust_level()` + `is_ipc_eligible()`
@@ -61,7 +61,7 @@ Execution owner: `Opus`
 
 ---
 
-### Step 3: Gateway plumbing — `src/gateway/mod.rs`, `src/gateway/api.rs`
+### Step 3: Gateway plumbing — `crates/adapters/core/src/gateway/mod.rs`, `crates/adapters/core/src/gateway/api.rs`
 
 **What**:
 - AppState new fields: `ipc_db: Option<Arc<IpcDb>>`, `ipc_rate_limiter: Option<Arc<SlidingWindowRateLimiter>>`, `ipc_read_rate_limiter: Option<Arc<SlidingWindowRateLimiter>>`
@@ -77,7 +77,7 @@ Execution owner: `Opus`
 
 ---
 
-### Step 4: Broker core — `src/gateway/ipc.rs` (new file, part 1)
+### Step 4: Broker core — `crates/adapters/core/src/gateway/ipc.rs` (new file, part 1)
 
 **What**:
 - `IpcDb` struct: `Arc<parking_lot::Mutex<Connection>>`, WAL, init_schema()

@@ -81,8 +81,8 @@ Build a deterministic pipeline engine that orchestrates multi-agent workflows wi
 
 | Item | Status | PRs |
 |------|--------|-----|
-| `src/agent/loop_.rs` → `execute_one_tool` middleware hook | **DONE** | Wiring step 4 |
-| `src/gateway/mod.rs` → pipeline-aware inbox processing | **DONE** | Wiring step 6 |
+| `crates/adapters/core/src/agent/loop_.rs` → `execute_one_tool` middleware hook | **DONE** | Wiring step 4 |
+| `crates/adapters/core/src/gateway/mod.rs` → pipeline-aware inbox processing | **DONE** | Wiring step 6 |
 | Daemon startup → pipeline recovery from RunStorePort | **DONE** | Wiring step 2 |
 | Daemon startup → hot-reload watcher | **DONE** | Wiring step 2 |
 | Pipeline TOML directory in workspace config | **DONE** | Wiring step 1 |

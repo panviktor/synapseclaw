@@ -42,13 +42,13 @@ No competitor has fully solved these problems. OpenClaw proposed thread context 
 
 ### Part A: Rolling Summary for Channels
 
-**Summary storage**: Extend `SessionBackend` trait (`src/channels/session_backend.rs`, lines 35-79) with two new default methods:
+**Summary storage**: Extend `SessionBackend` trait (`crates/adapters/channels/src/session_backend.rs`, lines 35-79) with two new default methods:
 - `load_summary(key) -> Option<ChannelSummary>` → default `None`
 - `save_summary(key, summary) -> Result<()>` → default `Ok(())`
 
 New `ChannelSummary` struct: `{ summary: String, message_count_at_summary: usize, updated_at: DateTime<Utc> }`
 
-JSONL backend (`src/channels/session_store.rs`) stores as `{sessions_dir}/{safe_key}.summary.json` (atomic write via tmp+rename). Path sanitization reuses existing `session_path()` logic (line 27) which keeps `[a-zA-Z0-9_-]`.
+JSONL backend (`crates/adapters/channels/src/session_store.rs`) stores as `{sessions_dir}/{safe_key}.summary.json` (atomic write via tmp+rename). Path sanitization reuses existing `session_path()` logic (line 27) which keeps `[a-zA-Z0-9_-]`.
 
 **Important**: `ChannelRuntimeContext` (lines 301-339) uses concrete `session_store::SessionStore` at field `session_store: Option<Arc<session_store::SessionStore>>` (line 4162), not the trait. New methods must be implemented on `SessionStore` directly. The `SessionBackend` trait gets default no-op methods for compatibility.
 
@@ -67,7 +67,7 @@ JSONL backend (`src/channels/session_store.rs`) stores as `{sessions_dir}/{safe_
 
 **Context overflow**: When `compact_sender_history` fires (line 2468, triggered by `is_context_window_overflow_error` at line 1104), inject stored summary as first history entry: `[Previous conversation summary: {summary}]`.
 
-**Files**: `src/channels/session_backend.rs`, `src/channels/session_store.rs`, `src/channels/mod.rs`
+**Files**: `crates/adapters/channels/src/session_backend.rs`, `crates/adapters/channels/src/session_store.rs`, `crates/adapters/channels/src/mod.rs`
 
 ### Part B: Thread Context Seeding
 
@@ -79,13 +79,13 @@ When first message arrives in a new thread (`!had_prior_history && thread_ts.is_
 
 For threaded first messages, thread seeding replaces regular memory context (parent summary already captures relevant memory).
 
-**Channel trait**: Add `async fn fetch_message(&self, message_id: &str) -> Result<Option<String>>` with default `Ok(None)` to the `Channel` trait (`src/channels/traits.rs`, lines 61-155). The trait currently has 15 methods (name, send, listen, health_check, typing, drafts, reactions, pins) — `fetch_message` becomes the 16th. Implement for Matrix first — reuse `room.event()` + JSON body extraction pattern from reaction handler (matrix.rs lines 1778-1801).
+**Channel trait**: Add `async fn fetch_message(&self, message_id: &str) -> Result<Option<String>>` with default `Ok(None)` to the `Channel` trait (`crates/domain/src/ports/channel.rs`, lines 61-155). The trait currently has 15 methods (name, send, listen, health_check, typing, drafts, reactions, pins) — `fetch_message` becomes the 16th. Implement for Matrix first — reuse `room.event()` + JSON body extraction pattern from reaction handler (matrix.rs lines 1778-1801).
 
-**Files**: `src/channels/traits.rs`, `src/channels/matrix.rs`, `src/channels/mod.rs`
+**Files**: `crates/domain/src/ports/channel.rs`, `crates/adapters/channels/src/matrix.rs`, `crates/adapters/channels/src/mod.rs`
 
 ### Part C: Channel Sessions in Web UI
 
-**Backend**: Add `channel_session_backend: Option<Arc<dyn SessionBackend>>` to `AppState` (`src/gateway/mod.rs`, lines 322-396, currently 39 fields). Initialize in `run_gateway()` by constructing a `SessionStore` from workspace dir (same logic as channel runtime at mod.rs:4162). `AppState` already has `chat_db: Option<Arc<chat_db::ChatDb>>` (line 378) for web sessions — channel sessions are separate storage.
+**Backend**: Add `channel_session_backend: Option<Arc<dyn SessionBackend>>` to `AppState` (`crates/adapters/core/src/gateway/mod.rs`, lines 322-396, currently 39 fields). Initialize in `run_gateway()` by constructing a `SessionStore` from workspace dir (same logic as channel runtime at mod.rs:4162). `AppState` already has `chat_db: Option<Arc<chat_db::ChatDb>>` (line 378) for web sessions — channel sessions are separate storage.
 
 New REST endpoints (NOT WebSocket RPC — channel sessions are read-only, no real-time needed). Register via `.route()` chaining before `.with_state(state)` (line 1110). Existing chat routes at lines 1075-1077 for reference:
 - `GET /api/channel/sessions` — list with metadata + summary
@@ -110,7 +110,7 @@ New API functions in `web/src/lib/api.ts` (currently has NO session-related func
 
 New types in `web/src/types/api.ts` (existing `ChatSessionInfo` at lines 137-148 for reference).
 
-**Files**: `src/gateway/mod.rs`, `src/gateway/api.rs`, `src/channels/session_backend.rs`, `src/channels/session_store.rs`, `web/src/components/chat/SessionSidebar.tsx`, `web/src/pages/AgentChat.tsx`, `web/src/types/api.ts`, `web/src/lib/api.ts`
+**Files**: `crates/adapters/core/src/gateway/mod.rs`, `crates/adapters/core/src/gateway/api.rs`, `crates/adapters/channels/src/session_backend.rs`, `crates/adapters/channels/src/session_store.rs`, `web/src/components/chat/SessionSidebar.tsx`, `web/src/pages/AgentChat.tsx`, `web/src/types/api.ts`, `web/src/lib/api.ts`
 
 ### Part D: Reaction Thread Fix
 
@@ -118,7 +118,7 @@ When processing a reaction (`OriginalSyncReactionEvent`, handler at matrix.rs:17
 
 **Status**: Code already drafted in current working tree. The reaction handler (lines 1778-1837) now extracts `thread_ts` from the target message's `m.relates_to` field and passes it through to `ChannelMessage`. Previously `thread_ts` was hardcoded to `None`. Needs to be included in PR A.
 
-**Files**: `src/channels/matrix.rs`
+**Files**: `crates/adapters/channels/src/matrix.rs`
 
 ---
 

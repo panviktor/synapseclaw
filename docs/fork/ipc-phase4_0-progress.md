@@ -138,7 +138,7 @@ Refactor the fork toward a pragmatic ports-and-adapters architecture with:
 
 ### Pre-checkpoint: RunContext (PR #157)
 
-`RunContext` (`src/agent/run_context.rs`) is the first concrete artifact toward
+`RunContext` (`crates/adapters/core/src/agent/run_context.rs`) is the first concrete artifact toward
 Phase 4.0's unified `Run` object.  It was introduced to solve the IPC auto-reply
 safety net problem, but its design is intentionally Phase 4.0-aligned:
 
@@ -171,11 +171,11 @@ marketing-lead) never reached the user's channel.
 | `ChannelRegistryPort` trait | `src/fork_core/ports/channel_registry.rs` |
 | `CachedChannelRegistry` (long-lived adapters) | `src/fork_adapters/channels/registry.rs` |
 | `OutboundIntentBus` (mpsc sender/receiver) | `src/fork_core/bus.rs` |
-| Push relay with `scrub_credentials` + `pending_replies` guard | `src/gateway/mod.rs` |
-| Auto-reply IPC payload scrubbed | `src/gateway/mod.rs` |
+| Push relay with `scrub_credentials` + `pending_replies` guard | `crates/adapters/core/src/gateway/mod.rs` |
+| Auto-reply IPC payload scrubbed | `crates/adapters/core/src/gateway/mod.rs` |
 | `outbound_intent_relay` via ChannelRegistryPort | `src/daemon/mod.rs` |
-| Config: `push_relay_channel`, `push_relay_recipient` | `src/config/schema.rs` |
-| Matrix added to `build_channel_by_id` | `src/channels/mod.rs` |
+| Config: `push_relay_channel`, `push_relay_recipient` | `crates/domain/src/config/schema.rs` |
+| Matrix added to `build_channel_by_id` | `crates/adapters/channels/src/mod.rs` |
 
 ### Checkpoint A — foundation ✅
 

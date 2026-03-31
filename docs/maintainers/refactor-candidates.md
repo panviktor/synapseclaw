@@ -20,7 +20,7 @@ Largest source files in `src/`, ranked by severity. Each does multiple jobs in a
 
 ### Misplaced module: `channels/tts.rs` → `tools/`
 
-`channels/tts.rs` (642 lines, merged in PR #2994) is a multi-provider TTS synthesis system. It is not a channel — it does not implement `Channel` or provide a bidirectional messaging interface. TTS is a capability the agent invokes to produce audio output, which fits the `Tool` trait (`src/tools/traits.rs`). It should be moved to `src/tools/tts.rs` with a corresponding `Tool` implementation, and its config types extracted from the `channels` section of `schema.rs` into a `[tools.tts]` config namespace. As of merge, the module is not integrated into any calling code (re-exports are `#[allow(unused_imports)]`), so this move has zero runtime impact.
+`channels/tts.rs` (642 lines, merged in PR #2994) is a multi-provider TTS synthesis system. It is not a channel — it does not implement `Channel` or provide a bidirectional messaging interface. TTS is a capability the agent invokes to produce audio output, which fits the `Tool` trait (`crates/domain/src/ports/tool.rs`). It should be moved to `crates/adapters/tools/src/tts.rs` with a corresponding `Tool` implementation, and its config types extracted from the `channels` section of `schema.rs` into a `[tools.tts]` config namespace. As of merge, the module is not integrated into any calling code (re-exports are `#[allow(unused_imports)]`), so this move has zero runtime impact.
 
 ---
 
@@ -200,10 +200,10 @@ Either write tests that exercise this infrastructure or remove it to avoid dead 
 
 **4. Security component tests are config-only — no behavioral coverage**
 
-The 10 security tests validate config defaults and TOML serialization only (`AutonomyConfig::default()`, `SecretsConfig`, round-trips). They don't test security *behavior* (policy enforcement, credential scrubbing, action rate limiting) because `src/security/` is `pub(crate)`. The `security_config_debug_does_not_leak_api_key` test is a no-op — it checks for a leak but has no assertion on failure (just a comment). To get real behavioral coverage, either:
+The 10 security tests validate config defaults and TOML serialization only (`AutonomyConfig::default()`, `SecretsConfig`, round-trips). They don't test security *behavior* (policy enforcement, credential scrubbing, action rate limiting) because `crates/adapters/security/src/` is `pub(crate)`. The `security_config_debug_does_not_leak_api_key` test is a no-op — it checks for a leak but has no assertion on failure (just a comment). To get real behavioral coverage, either:
 - Make targeted security functions `pub` for testing (e.g. `scrub_credentials`, `SecurityPolicy::evaluate`)
-- Add `#[cfg(test)] pub` escape hatches in `src/security/`
-- Write in-crate unit tests in `src/security/tests.rs` instead
+- Add `#[cfg(test)] pub` escape hatches in `crates/adapters/security/src/`
+- Write in-crate unit tests in `crates/adapters/security/src/tests.rs` instead
 
 **5. `pub(crate)` visibility blocks integration testing of critical subsystems**
 

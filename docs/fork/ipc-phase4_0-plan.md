@@ -21,10 +21,10 @@ Six promises to the fork:
 
 The current codebase already has real subsystems, but the application core is spread across too many places:
 
-- `src/channels/mod.rs` wires transports, conversation flow, runtime commands, history, and channel-specific behavior.
+- `crates/adapters/channels/src/mod.rs` wires transports, conversation flow, runtime commands, history, and channel-specific behavior.
 - `src/daemon/mod.rs` handles heartbeat delivery via hardcoded channel-name whitelists.
 - `src/cron/scheduler.rs` delivers announcements via manual `match` on channel names.
-- `src/gateway/ipc.rs`, `src/gateway/ws.rs`, and `src/tools/*` each own their own pieces of session/run logic.
+- `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/core/src/gateway/ws.rs`, and `crates/adapters/tools/src/*` each own their own pieces of session/run logic.
 - memory backends exist, but memory is still not modeled as a first-class multi-tier architecture shared by chat, agents, and IPC.
 
 This breaks down as the fork grows:

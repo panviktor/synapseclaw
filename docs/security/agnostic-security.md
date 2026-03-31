@@ -71,7 +71,7 @@ cargo build --release --features sandbox-docker    # All platforms
 ### Conditional Compilation: Zero Overhead When Disabled
 
 ```rust
-// src/security/mod.rs
+// crates/adapters/security/src/mod.rs
 
 #[cfg(feature = "sandbox-landlock")]
 mod landlock;
@@ -96,7 +96,7 @@ pub mod policy;  // allowlist, path blocking, injection protection
 ### Security Backend Trait (Swappable Like Everything Else)
 
 ```rust
-// src/security/traits.rs
+// crates/adapters/security/src/traits.rs
 
 #[async_trait]
 pub trait Sandbox: Send + Sync {
@@ -126,7 +126,7 @@ impl Sandbox for NoopSandbox {
 ### Factory Pattern: Auto-Select Based on Features
 
 ```rust
-// src/security/factory.rs
+// crates/adapters/security/src/factory.rs
 
 pub fn create_sandbox() -> Box<dyn Sandbox> {
     #[cfg(feature = "sandbox-landlock")]
@@ -183,7 +183,7 @@ pub fn create_sandbox() -> Box<dyn Sandbox> {
 ### How It Works: Runtime Detection
 
 ```rust
-// src/security/detect.rs
+// crates/adapters/security/src/detect.rs
 
 impl SandboxingStrategy {
     /// Choose best available sandbox AT RUNTIME

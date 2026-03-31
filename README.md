@@ -277,11 +277,11 @@ The **SynapseClaw** name and logo are trademarks of SynapseClaw Labs. See [TRADE
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Implement a trait, submit a PR:
 
-- New `Provider` → `src/providers/`
-- New `Channel` → `src/channels/`
-- New `Tool` → `src/tools/`
-- New `Memory` → `src/memory/`
-- New `Observer` → `src/observability/`
+- New `Provider` → `crates/adapters/providers/src/`
+- New `Channel` → `crates/adapters/channels/src/`
+- New `Tool` → `crates/adapters/tools/src/`
+- New `Memory` → `crates/adapters/memory/src/`
+- New `Observer` → `crates/adapters/observability/src/`
 
 ---
 

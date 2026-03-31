@@ -35,10 +35,10 @@ must be requested in the LinkedIn Developer App dashboard (both auto-approve).
 
 | File | Role |
 |---|---|
-| `src/tools/linkedin.rs` | `Tool` trait impl, action dispatch, parameter validation |
-| `src/tools/linkedin_client.rs` | OAuth2 token management, LinkedIn REST API wrappers |
-| `src/tools/mod.rs` | Module declaration, pub use, registration in `all_tools_with_runtime` |
-| `src/config/schema.rs` | `[linkedin]` config section (`LinkedInConfig`) |
+| `crates/adapters/tools/src/linkedin.rs` | `Tool` trait impl, action dispatch, parameter validation |
+| `crates/adapters/tools/src/linkedin_client.rs` | OAuth2 token management, LinkedIn REST API wrappers |
+| `crates/adapters/tools/src/mod.rs` | Module declaration, pub use, registration in `all_tools_with_runtime` |
+| `crates/domain/src/config/schema.rs` | `[linkedin]` config section (`LinkedInConfig`) |
 | `src/config/mod.rs` | Add `LinkedInConfig` to pub use exports |
 
 ### No new dependencies
@@ -226,7 +226,7 @@ pub struct EngagementSummary {
 
 ## Registration
 
-In `src/tools/mod.rs` (follows `security_ops` config-gated pattern):
+In `crates/adapters/tools/src/mod.rs` (follows `security_ops` config-gated pattern):
 
 ```rust
 // Module declarations
@@ -247,7 +247,7 @@ if root_config.linkedin.enabled {
 
 ## Config schema
 
-In `src/config/schema.rs`:
+In `crates/domain/src/config/schema.rs`:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

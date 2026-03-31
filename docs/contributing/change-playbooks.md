@@ -6,20 +6,20 @@ For complete code examples of each extension trait, see [extension-examples.md](
 
 ## Adding a Provider
 
-- Implement `Provider` in `src/providers/`.
-- Register in `src/providers/mod.rs` factory.
+- Implement `Provider` in `crates/adapters/providers/src/`.
+- Register in `crates/adapters/providers/src/mod.rs` factory.
 - Add focused tests for factory wiring and error paths.
 - Avoid provider-specific behavior leaks into shared orchestration code.
 
 ## Adding a Channel
 
-- Implement `Channel` in `src/channels/`.
+- Implement `Channel` in `crates/adapters/channels/src/`.
 - Keep `send`, `listen`, `health_check`, typing semantics consistent.
 - Cover auth/allowlist/health behavior with tests.
 
 ## Adding a Tool
 
-- Implement `Tool` in `src/tools/` with strict parameter schema.
+- Implement `Tool` in `crates/adapters/tools/src/` with strict parameter schema.
 - Validate and sanitize all inputs.
 - Return structured `ToolResult`; avoid panics in runtime path.
 

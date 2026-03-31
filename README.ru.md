@@ -173,10 +173,10 @@ SynapseClaw под двойной лицензией:
 
 См. [CONTRIBUTING.md](CONTRIBUTING.md). Реализуй трейт, отправь PR:
 
-- Новый `Provider` → `src/providers/`
-- Новый `Channel` → `src/channels/`
-- Новый `Tool` → `src/tools/`
-- Новый `Memory` → `src/memory/`
+- Новый `Provider` → `crates/adapters/providers/src/`
+- Новый `Channel` → `crates/adapters/channels/src/`
+- Новый `Tool` → `crates/adapters/tools/src/`
+- Новый `Memory` → `crates/adapters/memory/src/`
 
 ---
 
