@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/domain", "crates/infra/adapters", "crates/infra/security", "crates/infra/memory", "crates/infra/observability", "crates/infra/cron-store", "crates/infra/providers"]
+members = [".", "crates/domain", "crates/adapters/core", "crates/adapters/security", "crates/adapters/memory", "crates/adapters/observability", "crates/adapters/cron-store", "crates/adapters/providers"]
 resolver = "2"
 
 [package]
@@ -37,12 +37,12 @@ include = [
 # Fork-owned application core (pure business logic)
 synapse_domain = { path = "crates/domain" }
 # Fork-owned security module (shared between adapters and main binary)
-synapse_security = { path = "crates/infra/security" }
+synapse_security = { path = "crates/adapters/security" }
 # Memory backends (sqlite, postgres, qdrant, embeddings)
-synapse_memory = { path = "crates/infra/memory" }
+synapse_memory = { path = "crates/adapters/memory" }
 # Infrastructure adapters (channels, providers, tools, gateway, agent)
-synapse_adapters = { path = "crates/infra/adapters" }
-synapse_cron = { path = "crates/infra/cron-store" }
+synapse_adapters = { path = "crates/adapters/core" }
+synapse_cron = { path = "crates/adapters/cron-store" }
 
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }
