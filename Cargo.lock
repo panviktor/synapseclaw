@@ -5910,6 +5910,7 @@ dependencies = [
  "serde",
  "serde_json",
  "synapse_domain",
+ "tempfile",
  "tracing",
  "uuid",
 ]

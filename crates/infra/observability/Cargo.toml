@@ -25,3 +25,4 @@ prometheus = { version = "0.14", optional = true }
 opentelemetry = { version = "0.31", default-features = false, features = ["trace", "metrics"], optional = true }
 opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "metrics"], optional = true }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots"], optional = true }
+tempfile = "3.27.0"
