@@ -106,7 +106,7 @@ pub async fn run(
     // One Arc<IpcClient> with a single AtomicI64 seq counter shared across
     // gateway, channels, and tools. Prevents replay_rejected from duplicate
     // seq numbers when multiple components send signed IPC messages.
-    let shared_ipc_client: Option<std::sync::Arc<crate::tools::agents_ipc::IpcClient>> =
+    let shared_ipc_client: Option<std::sync::Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>> =
         if config.agents_ipc.enabled {
             if let Some(ref token) = config.agents_ipc.broker_token {
                 let mut client = crate::tools::agents_ipc::IpcClient::new(
@@ -142,7 +142,7 @@ pub async fn run(
                 {
                     let c = client.clone();
                     tokio::spawn(async move {
-                        c.register_public_key_with_background_retry().await;
+                        { let _ = c.register_public_key().await; }
                     });
                 }
                 Some(client)

@@ -418,7 +418,7 @@ pub async fn run_gateway(
     config: Config,
     outbound_tx: Option<synapse_domain::bus::OutboundIntentSender>,
     channel_registry: Option<Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort>>,
-    shared_ipc_client: Option<Arc<crate::tools::agents_ipc::IpcClient>>,
+    shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     agent_runner: Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
@@ -505,7 +505,7 @@ pub async fn run_gateway(
         &config.agents,
         config.api_key.as_deref(),
         &config,
-        shared_ipc_client.clone(),
+        None, // IPC tools get their own client from config
         Some(agent_runner.clone()),
     );
     let tools_registry: Arc<Vec<ToolSpec>> =
@@ -1013,7 +1013,8 @@ pub async fn run_gateway(
                         client.sync_sender_seq(db_seq);
                     }
 
-                    let client = Arc::new(client);
+                    let client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort> =
+                        Arc::new(client);
 
                     // Register public key with broker
                     {
@@ -1539,11 +1540,12 @@ async fn agent_inbox_processor(
             return;
         }
     };
-    let ipc_client = crate::tools::agents_ipc::IpcClient::new(
-        &config.agents_ipc.broker_url,
-        &broker_token,
-        config.agents_ipc.request_timeout_secs,
-    );
+    let ipc_client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort> =
+        Arc::new(crate::tools::agents_ipc::IpcClient::new(
+            &config.agents_ipc.broker_url,
+            &broker_token,
+            config.agents_ipc.request_timeout_secs,
+        ));
 
     let mut peers: std::collections::HashMap<String, PeerState> = std::collections::HashMap::new();
 
@@ -1847,7 +1849,7 @@ async fn agent_inbox_processor(
                         });
 
                         match ipc_client.send_message(&body).await {
-                            Ok(resp) if resp.status().is_success() => {
+                            Ok(result) if result.success => {
                                 tracing::info!(
                                     peer = %peer,
                                     to = %to_agent,
@@ -1855,11 +1857,11 @@ async fn agent_inbox_processor(
                                     "Auto-reply safety net: sent unsigned result to originator"
                                 );
                             }
-                            Ok(resp) => {
+                            Ok(result) => {
                                 tracing::warn!(
                                     peer = %peer,
                                     to = %to_agent,
-                                    status = %resp.status(),
+                                    status = result.status_code,
                                     "Auto-reply safety net: broker rejected auto-reply"
                                 );
                             }

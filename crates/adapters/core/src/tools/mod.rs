@@ -155,11 +155,11 @@ pub fn all_tools(
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
     root_config: &synapse_domain::config::schema::Config,
-    shared_ipc_client: Option<Arc<IpcClient>>,
+    shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
-    Option<Arc<IpcClient>>,
+    Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
 ) {
     all_tools_with_runtime(
         config,
@@ -200,12 +200,12 @@ pub fn all_tools_with_runtime(
     agents: &HashMap<String, DelegateAgentConfig>,
     fallback_api_key: Option<&str>,
     root_config: &synapse_domain::config::schema::Config,
-    shared_ipc_client: Option<Arc<IpcClient>>,
+    shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     agent_runner: Option<Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
-    Option<Arc<IpcClient>>,
+    Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
 ) {
     let has_shell_access = runtime.has_shell_access();
     let mut tool_arcs: Vec<Arc<dyn Tool>> = vec![
@@ -439,7 +439,7 @@ pub fn all_tools_with_runtime(
 
     // IPC tools (inter-agent communication via broker).
     // In daemon mode, a shared IpcClient is injected to avoid duplicate seq counters.
-    let mut ipc_client_for_registration: Option<Arc<IpcClient>> = None;
+    let mut ipc_client_for_registration: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>> = None;
     if root_config.agents_ipc.enabled {
         if let Some(ref token) = root_config.agents_ipc.broker_token {
             let ipc_client = if let Some(shared) = shared_ipc_client {
@@ -482,7 +482,7 @@ pub fn all_tools_with_runtime(
                         );
                     }
                 }
-                Arc::new(client)
+                Arc::new(client) as Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>
             };
 
             if ipc_client.has_identity() {

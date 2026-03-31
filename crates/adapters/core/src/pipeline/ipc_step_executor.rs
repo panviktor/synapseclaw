@@ -14,17 +14,17 @@ use synapse_domain::ports::pipeline_executor::{
 };
 use tracing::debug;
 
-/// Adapter: executes pipeline steps via the existing IpcClient.
+/// Adapter: executes pipeline steps via the IPC client port.
 pub struct IpcStepExecutor {
-    /// Shared IPC client (same instance the broker uses for its own IPC).
-    ipc_client: Arc<crate::tools::agents_ipc::IpcClient>,
+    /// IPC client port for broker communication.
+    ipc_client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
     /// Poll interval for checking agent responses (milliseconds).
     poll_interval_ms: u64,
 }
 
 impl IpcStepExecutor {
-    /// Create a new executor wrapping an existing IpcClient.
-    pub fn new(ipc_client: Arc<crate::tools::agents_ipc::IpcClient>) -> Self {
+    /// Create a new executor wrapping an IPC client port.
+    pub fn new(ipc_client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>) -> Self {
         Self {
             ipc_client,
             poll_interval_ms: 2000,
@@ -84,7 +84,7 @@ impl PipelineExecutorPort for IpcStepExecutor {
         // Sign the message (adds signature, sender_seq, sender_timestamp)
         self.ipc_client.sign_send_body(&mut body);
 
-        let resp = self
+        let result = self
             .ipc_client
             .send_message(&body)
             .await
@@ -94,18 +94,15 @@ impl PipelineExecutorPort for IpcStepExecutor {
                 retryable: true,
             })?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+        if !result.success {
             return Err(StepExecutionError {
-                code: format!("broker_{}", status.as_u16()),
-                message: format!("broker returned {status}: {text}"),
-                retryable: status.is_server_error(),
+                code: format!("broker_{}", result.status_code),
+                message: format!("broker returned {}: {}", result.status_code, result.body),
+                retryable: result.status_code >= 500,
             });
         }
 
-        let json: Value = resp.json().await.unwrap_or(Value::Null);
-        let seq = json["seq"].as_i64().unwrap_or(0);
+        let seq = result.body["seq"].as_i64().unwrap_or(0);
 
         debug!(
             run_id = %run_id,

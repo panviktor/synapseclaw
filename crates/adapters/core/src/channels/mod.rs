@@ -2882,7 +2882,7 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 #[allow(clippy::too_many_lines)]
 pub async fn start_channels(
     config: Config,
-    shared_ipc_client: Option<std::sync::Arc<crate::tools::agents_ipc::IpcClient>>,
+    shared_ipc_client: Option<std::sync::Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
 ) -> Result<()> {
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
@@ -2970,7 +2970,7 @@ pub async fn start_channels(
             &config.agents,
             config.api_key.as_deref(),
             &config,
-            shared_ipc_client.clone(),
+            None, // IPC tools get their own client from config
             None,
         );
 
@@ -2978,7 +2978,7 @@ pub async fn start_channels(
     // Tries 3 times with backoff; if all fail, spawns a background task
     // that retries every 30s until the broker becomes available.
     if let Some(ref ipc_client) = ipc_client_for_key_reg {
-        ipc_client.register_public_key_with_background_retry().await;
+        { let _ = ipc_client.register_public_key().await; }
     }
 
     // Wire MCP tools into the registry before freezing — non-fatal.
@@ -3330,7 +3330,7 @@ pub async fn start_channels(
                     {
                         client = client.with_identity(identity, runner_id);
                     }
-                    Arc::new(client)
+                    Arc::new(client) as Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>
                 };
                 Some(
                     Arc::new(crate::pipeline::ipc_step_executor::IpcStepExecutor::new(

@@ -330,15 +330,67 @@ impl IpcClient {
     }
 }
 
+// ── IpcClientPort implementation ────────────────────────────────
+
+#[async_trait::async_trait]
+impl synapse_domain::ports::ipc_client::IpcClientPort for IpcClient {
+    async fn broker_get(
+        &self,
+        path: &str,
+    ) -> anyhow::Result<synapse_domain::ports::ipc_client::IpcSendResult> {
+        let resp = self.get(path).await.map_err(|e| anyhow::anyhow!(e))?;
+        let status = resp.status();
+        let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        Ok(synapse_domain::ports::ipc_client::IpcSendResult {
+            success: status.is_success(),
+            status_code: status.as_u16(),
+            body: json,
+        })
+    }
+
+    async fn broker_post(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+    ) -> anyhow::Result<synapse_domain::ports::ipc_client::IpcSendResult> {
+        let resp = self.post(path, body).await.map_err(|e| anyhow::anyhow!(e))?;
+        let status = resp.status();
+        let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+        Ok(synapse_domain::ports::ipc_client::IpcSendResult {
+            success: status.is_success(),
+            status_code: status.as_u16(),
+            body: json,
+        })
+    }
+
+    async fn register_public_key(&self) -> anyhow::Result<()> {
+        self.register_public_key()
+            .await
+            .map_err(|e| anyhow::anyhow!(e))
+    }
+
+    fn has_identity(&self) -> bool {
+        self.has_identity()
+    }
+
+    fn sign_send_body(&self, body: &mut serde_json::Value) {
+        self.sign_send_body(body);
+    }
+
+    fn sync_sender_seq(&self, db_seq: i64) {
+        self.sync_sender_seq(db_seq);
+    }
+}
+
 // ── AgentsListTool ──────────────────────────────────────────────
 
 /// Tool for listing known agents and their status.
 pub struct AgentsListTool {
-    client: Arc<IpcClient>,
+    client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
 }
 
 impl AgentsListTool {
-    pub fn new(client: Arc<IpcClient>) -> Self {
+    pub fn new(client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>) -> Self {
         Self { client }
     }
 }
@@ -363,30 +415,24 @@ impl Tool for AgentsListTool {
     }
 
     async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        let resp = self
+        let result = self
             .client
-            .get("/api/ipc/agents")
+            .broker_get("/api/ipc/agents")
             .await
             .map_err(|e| anyhow::anyhow!("Failed to connect to IPC broker: {e}"))?;
 
-        let status = resp.status();
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse broker response: {e}"))?;
-
-        if status.is_success() {
+        if result.success {
             Ok(ToolResult {
                 success: true,
-                output: serde_json::to_string_pretty(&body)?,
+                output: serde_json::to_string_pretty(&result.body)?,
                 error: None,
             })
         } else {
-            let error_msg = body["error"].as_str().unwrap_or("Unknown error");
+            let error_msg = result.body["error"].as_str().unwrap_or("Unknown error");
             Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Broker returned {status}: {error_msg}")),
+                error: Some(format!("Broker returned {}: {error_msg}", result.status_code)),
             })
         }
     }
@@ -396,11 +442,11 @@ impl Tool for AgentsListTool {
 
 /// Tool for sending a message to another agent via the IPC broker.
 pub struct AgentsSendTool {
-    client: Arc<IpcClient>,
+    client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
 }
 
 impl AgentsSendTool {
-    pub fn new(client: Arc<IpcClient>) -> Self {
+    pub fn new(client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>) -> Self {
         Self { client }
     }
 }
@@ -480,27 +526,21 @@ impl Tool for AgentsSendTool {
         // Sign the message if identity is available (Phase 3B)
         self.client.sign_send_body(&mut body);
 
-        let resp = self
+        let result = self
             .client
-            .post("/api/ipc/send", &body)
+            .broker_post("/api/ipc/send", &body)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to connect to IPC broker: {e}"))?;
 
-        let status = resp.status();
-        let resp_body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse broker response: {e}"))?;
-
-        if status.is_success() {
+        if result.success {
             Ok(ToolResult {
                 success: true,
-                output: serde_json::to_string_pretty(&resp_body)?,
+                output: serde_json::to_string_pretty(&result.body)?,
                 error: None,
             })
         } else {
-            let error_msg = resp_body["error"].as_str().unwrap_or("Unknown error");
-            let code = resp_body["code"].as_str().unwrap_or("unknown");
+            let error_msg = result.body["error"].as_str().unwrap_or("Unknown error");
+            let code = result.body["code"].as_str().unwrap_or("unknown");
             Ok(ToolResult {
                 success: false,
                 output: String::new(),
@@ -517,11 +557,11 @@ const INBOX_PAYLOAD_TRUNCATE: usize = 4000;
 
 /// Tool for retrieving messages from the agent's inbox.
 pub struct AgentsInboxTool {
-    client: Arc<IpcClient>,
+    client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
 }
 
 impl AgentsInboxTool {
-    pub fn new(client: Arc<IpcClient>) -> Self {
+    pub fn new(client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>) -> Self {
         Self { client }
     }
 }
@@ -561,19 +601,14 @@ impl Tool for AgentsInboxTool {
         let limit = args["limit"].as_u64().unwrap_or(50);
 
         let path = format!("/api/ipc/inbox?quarantine={quarantine}&limit={limit}");
-        let resp = self
+        let result = self
             .client
-            .get(&path)
+            .broker_get(&path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to connect to IPC broker: {e}"))?;
 
-        let status = resp.status();
-        let mut body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse broker response: {e}"))?;
-
-        if status.is_success() {
+        if result.success {
+            let mut body = result.body;
             // Truncate long payloads to avoid flooding the LLM context
             if let Some(messages) = body["messages"].as_array_mut() {
                 for msg in messages.iter_mut() {
@@ -596,11 +631,11 @@ impl Tool for AgentsInboxTool {
                 error: None,
             })
         } else {
-            let error_msg = body["error"].as_str().unwrap_or("Unknown error");
+            let error_msg = result.body["error"].as_str().unwrap_or("Unknown error");
             Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Broker returned {status}: {error_msg}")),
+                error: Some(format!("Broker returned {}: {error_msg}", result.status_code)),
             })
         }
     }
@@ -610,11 +645,11 @@ impl Tool for AgentsInboxTool {
 
 /// Tool for replying to a task or query with a result in the same session.
 pub struct AgentsReplyTool {
-    client: Arc<IpcClient>,
+    client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
 }
 
 impl AgentsReplyTool {
-    pub fn new(client: Arc<IpcClient>) -> Self {
+    pub fn new(client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>) -> Self {
         Self { client }
     }
 }
@@ -674,27 +709,21 @@ impl Tool for AgentsReplyTool {
         // Sign the reply if identity is available (Phase 3B)
         self.client.sign_send_body(&mut body);
 
-        let resp = self
+        let result = self
             .client
-            .post("/api/ipc/send", &body)
+            .broker_post("/api/ipc/send", &body)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to connect to IPC broker: {e}"))?;
 
-        let status = resp.status();
-        let resp_body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse broker response: {e}"))?;
-
-        if status.is_success() {
+        if result.success {
             Ok(ToolResult {
                 success: true,
-                output: serde_json::to_string_pretty(&resp_body)?,
+                output: serde_json::to_string_pretty(&result.body)?,
                 error: None,
             })
         } else {
-            let error_msg = resp_body["error"].as_str().unwrap_or("Unknown error");
-            let code = resp_body["code"].as_str().unwrap_or("unknown");
+            let error_msg = result.body["error"].as_str().unwrap_or("Unknown error");
+            let code = result.body["code"].as_str().unwrap_or("unknown");
             Ok(ToolResult {
                 success: false,
                 output: String::new(),
@@ -708,11 +737,11 @@ impl Tool for AgentsReplyTool {
 
 /// Tool for reading a shared state key from the IPC broker.
 pub struct StateGetTool {
-    client: Arc<IpcClient>,
+    client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
 }
 
 impl StateGetTool {
-    pub fn new(client: Arc<IpcClient>) -> Self {
+    pub fn new(client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>) -> Self {
         Self { client }
     }
 }
@@ -748,27 +777,21 @@ impl Tool for StateGetTool {
             .ok_or_else(|| anyhow::anyhow!("Missing 'key' parameter"))?;
 
         let path = format!("/api/ipc/state?key={}", urlencoding::encode(key));
-        let resp = self
+        let result = self
             .client
-            .get(&path)
+            .broker_get(&path)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to connect to IPC broker: {e}"))?;
 
-        let status = resp.status();
-        let body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse broker response: {e}"))?;
-
-        if status.is_success() {
+        if result.success {
             Ok(ToolResult {
                 success: true,
-                output: serde_json::to_string_pretty(&body)?,
+                output: serde_json::to_string_pretty(&result.body)?,
                 error: None,
             })
         } else {
-            let error_msg = body["error"].as_str().unwrap_or("Unknown error");
-            let code = body["code"].as_str().unwrap_or("unknown");
+            let error_msg = result.body["error"].as_str().unwrap_or("Unknown error");
+            let code = result.body["code"].as_str().unwrap_or("unknown");
             Ok(ToolResult {
                 success: false,
                 output: String::new(),
@@ -782,11 +805,11 @@ impl Tool for StateGetTool {
 
 /// Tool for writing a shared state key to the IPC broker.
 pub struct StateSetTool {
-    client: Arc<IpcClient>,
+    client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
 }
 
 impl StateSetTool {
-    pub fn new(client: Arc<IpcClient>) -> Self {
+    pub fn new(client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>) -> Self {
         Self { client }
     }
 }
@@ -834,27 +857,21 @@ impl Tool for StateSetTool {
             "value": value,
         });
 
-        let resp = self
+        let result = self
             .client
-            .post("/api/ipc/state", &body)
+            .broker_post("/api/ipc/state", &body)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to connect to IPC broker: {e}"))?;
 
-        let status = resp.status();
-        let resp_body: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse broker response: {e}"))?;
-
-        if status.is_success() {
+        if result.success {
             Ok(ToolResult {
                 success: true,
-                output: serde_json::to_string_pretty(&resp_body)?,
+                output: serde_json::to_string_pretty(&result.body)?,
                 error: None,
             })
         } else {
-            let error_msg = resp_body["error"].as_str().unwrap_or("Unknown error");
-            let code = resp_body["code"].as_str().unwrap_or("unknown");
+            let error_msg = result.body["error"].as_str().unwrap_or("Unknown error");
+            let code = result.body["code"].as_str().unwrap_or("unknown");
             Ok(ToolResult {
                 success: false,
                 output: String::new(),
@@ -880,7 +897,7 @@ pub struct AgentsSpawnTool {
     config: Arc<synapse_domain::config::schema::Config>,
     security: Arc<synapse_domain::domain::security_policy::SecurityPolicy>,
     parent_trust_level: u8,
-    ipc_client: Option<Arc<IpcClient>>,
+    ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
 }
 
 impl AgentsSpawnTool {
@@ -902,7 +919,7 @@ impl AgentsSpawnTool {
         config: Arc<synapse_domain::config::schema::Config>,
         security: Arc<synapse_domain::domain::security_policy::SecurityPolicy>,
         parent_trust_level: u8,
-        ipc_client: Arc<IpcClient>,
+        ipc_client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
     ) -> Self {
         Self {
             config,
@@ -1012,7 +1029,7 @@ impl Tool for AgentsSpawnTool {
         if let Some(ref client) = self.ipc_client {
             return self
                 .spawn_broker_backed(
-                    client,
+                    client.as_ref(),
                     prompt,
                     name,
                     model,
@@ -1089,7 +1106,7 @@ impl AgentsSpawnTool {
     #[allow(clippy::too_many_arguments)]
     async fn spawn_broker_backed(
         &self,
-        client: &IpcClient,
+        client: &dyn synapse_domain::ports::ipc_client::IpcClientPort,
         prompt: &str,
         name: Option<String>,
         model: Option<String>,
@@ -1105,25 +1122,23 @@ impl AgentsSpawnTool {
             "workload": workload,
         });
 
-        let resp = client
-            .post("/api/ipc/provision-ephemeral", &provision_body)
+        let result = client
+            .broker_post("/api/ipc/provision-ephemeral", &provision_body)
             .await
             .map_err(|e| anyhow::anyhow!("Broker provision request failed: {e}"))?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+        if !result.success {
             return Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Broker provision failed ({status}): {body}")),
+                error: Some(format!(
+                    "Broker provision failed ({}): {}",
+                    result.status_code, result.body
+                )),
             });
         }
 
-        let provision: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to parse provision response: {e}"))?;
+        let provision = result.body;
 
         let child_agent_id = provision["agent_id"]
             .as_str()
@@ -1262,7 +1277,7 @@ impl AgentsSpawnTool {
             if tokio::time::Instant::now() >= deadline {
                 // Attempt to revoke the timed-out child via broker
                 let _ = client
-                    .post(
+                    .broker_post(
                         "/api/ipc/send",
                         &json!({
                             "to": child_agent_id,
@@ -1289,17 +1304,17 @@ impl AgentsSpawnTool {
             }
 
             let status_resp = client
-                .get(&format!("/api/ipc/spawn-status?session_id={session_id}"))
+                .broker_get(&format!("/api/ipc/spawn-status?session_id={session_id}"))
                 .await;
 
             match status_resp {
-                Ok(resp) if resp.status().is_success() => {
-                    let body: serde_json::Value = resp.json().await.unwrap_or_default();
-                    let status = body["status"].as_str().unwrap_or("unknown");
+                Ok(result) if result.success => {
+                    let status = result.body["status"].as_str().unwrap_or("unknown");
 
                     match status {
                         "completed" => {
-                            let result = body["result"].as_str().unwrap_or("").to_string();
+                            let spawn_result =
+                                result.body["result"].as_str().unwrap_or("").to_string();
                             return Ok(ToolResult {
                                 success: true,
                                 output: serde_json::to_string_pretty(&json!({
@@ -1309,7 +1324,7 @@ impl AgentsSpawnTool {
                                     "status": "completed",
                                     "agent_id": child_agent_id,
                                     "session_id": session_id,
-                                    "result": result,
+                                    "result": spawn_result,
                                 }))?,
                                 error: None,
                             });
@@ -1334,11 +1349,10 @@ impl AgentsSpawnTool {
                         }
                     }
                 }
-                Ok(resp) => {
-                    let status = resp.status();
+                Ok(result) => {
                     tracing::warn!(
                         session = session_id,
-                        status = %status,
+                        status = result.status_code,
                         "spawn-status poll returned error, will retry"
                     );
                 }

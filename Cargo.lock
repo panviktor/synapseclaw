@@ -6025,6 +6025,7 @@ dependencies = [
  "console",
  "dialoguer",
  "directories",
+ "nostr-sdk",
  "reqwest",
  "serde",
  "serde_json",

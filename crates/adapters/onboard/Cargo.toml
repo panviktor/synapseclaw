@@ -5,7 +5,7 @@ edition = "2021"
 publish = false
 
 [features]
-channel-nostr = ["synapse_domain/channel-nostr"]
+channel-nostr = ["synapse_domain/channel-nostr", "dep:nostr-sdk"]
 
 [dependencies]
 synapse_domain = { path = "../../domain" }
@@ -24,6 +24,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 shellexpand = "3.1"
 toml = "1.0"
 tracing = "0.1"
+nostr-sdk = { version = "0.44", default-features = false, features = ["nip04", "nip59"], optional = true }
 
 [dev-dependencies]
 tempfile = "3.15"
