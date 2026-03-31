@@ -3,11 +3,45 @@ use chrono::Utc;
 use std::future::Future;
 use std::path::PathBuf;
 use synapse_domain::config::schema::Config;
-use synapse_domain::domain::config::{AutoDetectCandidate, CronDeliveryConfig, HeartbeatConfig};
+use synapse_domain::domain::config::{AutoDetectCandidate, HeartbeatConfig};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 const STATUS_FLUSH_SECONDS: u64 = 5;
+
+/// Bridges the adapters `health` module to `synapse_cron::scheduler::HealthReporter`.
+pub struct CronHealthReporter;
+
+impl synapse_cron::scheduler::HealthReporter for CronHealthReporter {
+    fn mark_ok(&self, component: &str) {
+        crate::health::mark_component_ok(component);
+    }
+    fn mark_error(&self, component: &str, error: String) {
+        crate::health::mark_component_error(component, error);
+    }
+    fn snapshot_json(&self) -> serde_json::Value {
+        crate::health::snapshot_json()
+    }
+}
+
+/// Bridges `DeliveryService` to `synapse_cron::scheduler::CronDeliveryPort`.
+pub struct CronDeliveryAdapter {
+    pub delivery_service:
+        std::sync::Arc<synapse_domain::application::services::delivery_service::DeliveryService>,
+}
+
+#[async_trait::async_trait]
+impl synapse_cron::scheduler::CronDeliveryPort for CronDeliveryAdapter {
+    async fn deliver_cron_output(
+        &self,
+        delivery: &synapse_domain::domain::config::CronDeliveryConfig,
+        output: &str,
+    ) -> anyhow::Result<()> {
+        self.delivery_service
+            .deliver_cron_output(delivery, output)
+            .await
+    }
+}
 
 /// Wait for shutdown signal (SIGINT or SIGTERM).
 /// SIGHUP is explicitly ignored so the daemon survives terminal/SSH disconnects.
@@ -223,9 +257,15 @@ pub async fn run(
             max_backoff,
             move || {
                 let cfg = scheduler_cfg.clone();
-                let ds = sched_delivery.clone();
+                let ds: std::sync::Arc<dyn synapse_cron::scheduler::CronDeliveryPort> =
+                    std::sync::Arc::new(CronDeliveryAdapter {
+                        delivery_service: sched_delivery.clone(),
+                    });
                 let ar = agent_runner.clone();
-                async move { Box::pin(crate::cron::scheduler::run(cfg, ds, ar)).await }
+                async move {
+                    let health = std::sync::Arc::new(CronHealthReporter);
+                    Box::pin(synapse_cron::scheduler::run(cfg, ds, ar, health)).await
+                }
             },
         ));
     } else {
@@ -369,16 +409,6 @@ fn auto_detect_candidates(config: &Config) -> Vec<AutoDetectCandidate> {
     }
 
     candidates
-}
-
-pub(crate) fn cron_delivery_config_from(
-    delivery: &crate::cron::DeliveryConfig,
-) -> CronDeliveryConfig {
-    CronDeliveryConfig {
-        mode: delivery.mode.clone(),
-        channel: delivery.channel.clone(),
-        to: delivery.to.clone(),
-    }
 }
 
 async fn run_heartbeat_worker(
