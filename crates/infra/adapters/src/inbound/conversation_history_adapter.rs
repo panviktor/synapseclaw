@@ -3,16 +3,13 @@
 //! Also persists turns to the optional SessionStore (JSONL) so history
 //! survives restarts.
 //!
-//! The internal map and session store use the upstream `providers::ChatMessage`.
-//! The port trait expects `synapse_domain::domain::message::ChatMessage`.
-//! Conversions happen at the trait boundary using helpers from `synapse_adapters`.
+//! Since `providers::ChatMessage` is now a re-export of
+//! `synapse_domain::domain::message::ChatMessage`, no conversions are needed.
 
 use crate::channels::session_store::SessionStore;
 use crate::providers::ChatMessage;
-use crate::{from_core_message, to_core_message};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use synapse_domain::domain::message::ChatMessage as CoreChatMessage;
 use synapse_domain::ports::conversation_history::ConversationHistoryPort;
 
 /// Max history turns per sender (same as old MAX_CHANNEL_HISTORY).
@@ -41,27 +38,25 @@ impl ConversationHistoryPort for MutexMapConversationHistory {
             .is_some_and(|v| !v.is_empty())
     }
 
-    fn get_history(&self, key: &str) -> Vec<CoreChatMessage> {
+    fn get_history(&self, key: &str) -> Vec<ChatMessage> {
         self.map
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(key)
-            .map(|v| v.iter().map(to_core_message).collect())
+            .cloned()
             .unwrap_or_default()
     }
 
-    fn append_turn(&self, key: &str, turn: CoreChatMessage) {
-        let provider_msg = from_core_message(&turn);
-
+    fn append_turn(&self, key: &str, turn: ChatMessage) {
         // Persist to JSONL session store (survives restart)
         if let Some(ref store) = self.session_store {
-            let _ = store.append(key, &provider_msg);
+            let _ = store.append(key, &turn);
         }
 
         // Append to in-memory map
         let mut guard = self.map.lock().unwrap_or_else(|e| e.into_inner());
         let history = guard.entry(key.to_string()).or_default();
-        history.push(provider_msg);
+        history.push(turn);
         if history.len() > MAX_HISTORY {
             history.remove(0);
         }
@@ -106,12 +101,8 @@ impl ConversationHistoryPort for MutexMapConversationHistory {
         false
     }
 
-    fn prepend_turn(&self, key: &str, turn: CoreChatMessage) {
-        let provider_msg = from_core_message(&turn);
+    fn prepend_turn(&self, key: &str, turn: ChatMessage) {
         let mut guard = self.map.lock().unwrap_or_else(|e| e.into_inner());
-        guard
-            .entry(key.to_string())
-            .or_default()
-            .insert(0, provider_msg);
+        guard.entry(key.to_string()).or_default().insert(0, turn);
     }
 }

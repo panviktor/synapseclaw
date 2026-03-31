@@ -1,50 +1,15 @@
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+//! Re-export the canonical tool types from the domain crate.
+//!
+//! `Tool`, `ToolSpec`, and `ToolResult` are now domain-owned ports.
+//! This module re-exports them so existing `crate::tools::traits::*` and
+//! `crate::tools::{Tool, ToolSpec, ToolResult}` imports continue to work.
 
-/// Result of a tool execution
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolResult {
-    pub success: bool,
-    pub output: String,
-    pub error: Option<String>,
-}
-
-/// Description of a tool for the LLM
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSpec {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
-
-/// Core tool trait — implement for any capability
-#[async_trait]
-pub trait Tool: Send + Sync {
-    /// Tool name (used in LLM function calling)
-    fn name(&self) -> &str;
-
-    /// Human-readable description
-    fn description(&self) -> &str;
-
-    /// JSON schema for parameters
-    fn parameters_schema(&self) -> serde_json::Value;
-
-    /// Execute the tool with given arguments
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult>;
-
-    /// Get the full spec for LLM registration
-    fn spec(&self) -> ToolSpec {
-        ToolSpec {
-            name: self.name().to_string(),
-            description: self.description().to_string(),
-            parameters: self.parameters_schema(),
-        }
-    }
-}
+pub use synapse_domain::ports::tool::{Tool, ToolResult, ToolSpec};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
 
     struct DummyTool;
 

@@ -1,17 +1,14 @@
 //! Adapter: wraps `run_tool_call_loop` as AgentRuntimePort.
 //!
-//! The port trait uses `synapse_domain::domain::message::ChatMessage`, while
-//! `run_tool_call_loop` uses `providers::ChatMessage`. Conversions happen
-//! at entry and exit using helpers from `synapse_adapters`.
+//! Since `providers::ChatMessage` is now a re-export of
+//! `synapse_domain::domain::message::ChatMessage`, no conversions are needed.
 
 use crate::approval::ApprovalManager;
 use crate::providers::{ChatMessage, Provider};
 use crate::tools::Tool;
-use crate::{from_core_message, to_core_message};
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
-use synapse_domain::domain::message::ChatMessage as CoreChatMessage;
 use synapse_domain::ports::agent_runtime::{AgentRuntimePort, AgentTurnResult};
 
 /// Wraps the existing agent loop infrastructure behind `AgentRuntimePort`.
@@ -34,7 +31,7 @@ pub struct ChannelAgentRuntime {
 impl AgentRuntimePort for ChannelAgentRuntime {
     async fn execute_turn(
         &self,
-        history: Vec<CoreChatMessage>,
+        mut history: Vec<ChatMessage>,
         provider_name: &str,
         model: &str,
         temperature: f64,
@@ -42,10 +39,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         timeout_secs: u64,
         on_delta: Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Result<AgentTurnResult> {
-        // Convert core messages → provider messages for run_tool_call_loop
-        let mut provider_history: Vec<ChatMessage> =
-            history.iter().map(from_core_message).collect();
-        let history_before = provider_history.len();
+        let history_before = history.len();
 
         // Compute timeout budget (scale by max iterations)
         let iterations = max_iterations.max(1) as u64;
@@ -58,7 +52,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
 
         let fut = Box::pin(crate::agent::loop_::run_tool_call_loop(
             self.provider.as_ref(),
-            &mut provider_history,
+            &mut history,
             &self.tools_registry,
             self.observer.as_ref(),
             provider_name,
@@ -90,18 +84,14 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             fut.await?
         };
 
-        let tools_used = provider_history.len() > history_before + 1;
+        let tools_used = history.len() > history_before + 1;
 
         // Extract tool context summary from history
-        let tool_summary = extract_tool_summary(&provider_history, history_before);
-
-        // Convert provider messages back → core messages for the result
-        let core_history: Vec<CoreChatMessage> =
-            provider_history.iter().map(to_core_message).collect();
+        let tool_summary = extract_tool_summary(&history, history_before);
 
         Ok(AgentTurnResult {
             response,
-            history: core_history,
+            history,
             tools_used,
             tool_summary,
         })

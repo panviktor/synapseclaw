@@ -52,31 +52,10 @@ pub mod identity;
 pub mod multimodal;
 pub mod skills;
 
-// ── ChatMessage conversion helpers ──────────────────────────────────────────
+// ── ChatMessage ────────────────────────────────────────────────────────────
 //
-// The upstream `providers::ChatMessage` and synapse_domain's
-// `domain::message::ChatMessage` share the same shape (role + content).
-// These helpers live here so every adapter can use them without duplication.
-
-/// Convert an upstream `providers::ChatMessage` to a `synapse_domain` `ChatMessage`.
-pub(crate) fn to_core_message(
-    msg: &crate::providers::ChatMessage,
-) -> synapse_domain::domain::message::ChatMessage {
-    synapse_domain::domain::message::ChatMessage {
-        role: msg.role.clone(),
-        content: msg.content.clone(),
-    }
-}
-
-/// Convert a `synapse_domain` `ChatMessage` to an upstream `providers::ChatMessage`.
-pub(crate) fn from_core_message(
-    msg: &synapse_domain::domain::message::ChatMessage,
-) -> crate::providers::ChatMessage {
-    crate::providers::ChatMessage {
-        role: msg.role.clone(),
-        content: msg.content.clone(),
-    }
-}
+// `providers::ChatMessage` is now a re-export of `synapse_domain::domain::message::ChatMessage`.
+// No conversion helpers needed — the types are identical.
 
 /// Build an `InboundEnvelope` from an upstream `ChannelMessage`.
 ///

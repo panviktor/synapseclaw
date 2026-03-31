@@ -6,9 +6,7 @@
 use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
-use synapse_domain::config::schema::{
-    normalize_no_proxy_list, normalize_proxy_url_option, ProxyConfig, ProxyScope,
-};
+use synapse_domain::config::schema::{normalize_proxy_url_option, ProxyConfig};
 
 static RUNTIME_PROXY_CONFIG: OnceLock<RwLock<ProxyConfig>> = OnceLock::new();
 static RUNTIME_PROXY_CLIENT_CACHE: OnceLock<RwLock<HashMap<String, reqwest::Client>>> =

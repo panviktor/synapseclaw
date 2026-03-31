@@ -7,7 +7,7 @@ use crate::providers::{
 use crate::runtime;
 use crate::tools::{self, Tool};
 use anyhow::Result;
-use regex::{Regex, RegexSet};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Write;
@@ -34,197 +34,31 @@ const DEFAULT_MAX_TOOL_ITERATIONS: usize = 10;
 /// Matches the channel-side constant in `channels/mod.rs`.
 const AUTOSAVE_MIN_MESSAGE_CHARS: usize = 20;
 
-fn glob_match(pattern: &str, name: &str) -> bool {
-    match pattern.find('*') {
-        None => pattern == name,
-        Some(star) => {
-            let prefix = &pattern[..star];
-            let suffix = &pattern[star + 1..];
-            name.starts_with(prefix)
-                && name.ends_with(suffix)
-                && name.len() >= prefix.len() + suffix.len()
-        }
-    }
-}
+// ── Tool filtering — delegated to domain services ───────────────────
+//
+// The actual filtering logic lives in `synapse_domain::application::services::tool_filtering`.
+// These re-exports preserve the `crate::agent::loop_::*` import paths for callers
+// that haven't migrated yet.
 
-/// Returns the subset of `tool_specs` that should be sent to the LLM for this turn.
-///
-/// Rules (mirrors NullClaw `filterToolSpecsForTurn`):
-/// - Built-in tools (names that do not start with `"mcp_"`) always pass through.
-/// - When `groups` is empty, all tools pass through (backward compatible default).
-/// - An MCP tool is included if at least one group matches it:
-///   - `always` group: included unconditionally if any pattern matches the tool name.
-///   - `dynamic` group: included if any pattern matches AND the user message contains
-///     at least one keyword (case-insensitive substring).
-pub(crate) fn filter_tool_specs_for_turn(
-    tool_specs: Vec<crate::tools::ToolSpec>,
-    groups: &[synapse_domain::config::schema::ToolFilterGroup],
-    user_message: &str,
-) -> Vec<crate::tools::ToolSpec> {
-    use synapse_domain::config::schema::ToolFilterGroupMode;
+pub(crate) use synapse_domain::application::services::tool_filtering::compute_excluded_mcp_tools;
+#[cfg(test)]
+pub(crate) use synapse_domain::application::services::tool_filtering::{
+    filter_by_allowed_tools, filter_tool_specs_for_turn,
+};
 
-    if groups.is_empty() {
-        return tool_specs;
-    }
+/// Scrub credentials from tool output — delegated to `synapse_security`.
+pub(crate) use synapse_security::scrub_credentials;
 
-    let msg_lower = user_message.to_ascii_lowercase();
+// ── History compaction — delegated to domain services ────────────────
+//
+// Constants and pure functions for history management live in
+// `synapse_domain::application::services::history_compaction`.
 
-    tool_specs
-        .into_iter()
-        .filter(|spec| {
-            // Built-in tools always pass through.
-            if !spec.name.starts_with("mcp_") {
-                return true;
-            }
-            // MCP tool: include if any active group matches.
-            groups.iter().any(|group| {
-                let pattern_matches = group.tools.iter().any(|pat| glob_match(pat, &spec.name));
-                if !pattern_matches {
-                    return false;
-                }
-                match group.mode {
-                    ToolFilterGroupMode::Always => true,
-                    ToolFilterGroupMode::Dynamic => group
-                        .keywords
-                        .iter()
-                        .any(|kw| msg_lower.contains(&kw.to_ascii_lowercase())),
-                }
-            })
-        })
-        .collect()
-}
-
-/// Filters a tool spec list by an optional capability allowlist.
-///
-/// When `allowed` is `None`, all specs pass through unchanged.
-/// When `allowed` is `Some(list)`, only specs whose name appears in the list
-/// are retained. Unknown names in the allowlist are silently ignored.
-pub(crate) fn filter_by_allowed_tools(
-    specs: Vec<crate::tools::ToolSpec>,
-    allowed: Option<&[String]>,
-) -> Vec<crate::tools::ToolSpec> {
-    match allowed {
-        None => specs,
-        Some(list) => specs
-            .into_iter()
-            .filter(|spec| list.iter().any(|name| name == &spec.name))
-            .collect(),
-    }
-}
-
-/// Computes the list of MCP tool names that should be excluded for a given turn
-/// based on `tool_filter_groups` and the user message.
-///
-/// Returns an empty `Vec` when `groups` is empty (no filtering).
-fn compute_excluded_mcp_tools(
-    tools_registry: &[Box<dyn Tool>],
-    groups: &[synapse_domain::config::schema::ToolFilterGroup],
-    user_message: &str,
-) -> Vec<String> {
-    if groups.is_empty() {
-        return Vec::new();
-    }
-    let filtered_specs = filter_tool_specs_for_turn(
-        tools_registry.iter().map(|t| t.spec()).collect(),
-        groups,
-        user_message,
-    );
-    let included: HashSet<&str> = filtered_specs.iter().map(|s| s.name.as_str()).collect();
-    tools_registry
-        .iter()
-        .filter(|t| t.name().starts_with("mcp_") && !included.contains(t.name()))
-        .map(|t| t.name().to_string())
-        .collect()
-}
-
-static SENSITIVE_KEY_PATTERNS: LazyLock<RegexSet> = LazyLock::new(|| {
-    RegexSet::new([
-        r"(?i)token",
-        r"(?i)api[_-]?key",
-        r"(?i)password",
-        r"(?i)secret",
-        r"(?i)user[_-]?key",
-        r"(?i)bearer",
-        r"(?i)credential",
-    ])
-    .unwrap()
-});
-
-static SENSITIVE_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)(token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)["']?\s*[:=]\s*(?:"([^"]{8,})"|'([^']{8,})'|([a-zA-Z0-9_\-\.]{8,}))"#).unwrap()
-});
-
-/// Scrub credentials from tool output to prevent accidental exfiltration.
-/// Replaces known credential patterns with a redacted placeholder while preserving
-/// a small prefix for context.
-pub(crate) fn scrub_credentials(input: &str) -> String {
-    SENSITIVE_KV_REGEX
-        .replace_all(input, |caps: &regex::Captures| {
-            let full_match = &caps[0];
-            let key = &caps[1];
-            let val = caps
-                .get(2)
-                .or(caps.get(3))
-                .or(caps.get(4))
-                .map(|m| m.as_str())
-                .unwrap_or("");
-
-            // Preserve first 4 chars for context, then redact.
-            // Use char_indices to find the byte offset of the 4th character
-            // so we never slice in the middle of a multi-byte UTF-8 sequence.
-            let prefix = if val.len() > 4 {
-                val.char_indices()
-                    .nth(4)
-                    .map(|(byte_idx, _)| &val[..byte_idx])
-                    .unwrap_or(val)
-            } else {
-                ""
-            };
-
-            if full_match.contains(':') {
-                if full_match.contains('"') {
-                    format!("\"{}\": \"{}*[REDACTED]\"", key, prefix)
-                } else {
-                    format!("{}: {}*[REDACTED]", key, prefix)
-                }
-            } else if full_match.contains('=') {
-                if full_match.contains('"') {
-                    format!("{}=\"{}*[REDACTED]\"", key, prefix)
-                } else {
-                    format!("{}={}*[REDACTED]", key, prefix)
-                }
-            } else {
-                format!("{}: {}*[REDACTED]", key, prefix)
-            }
-        })
-        .to_string()
-}
-
-/// Default trigger for auto-compaction when non-system message count exceeds this threshold.
-/// Prefer passing the config-driven value via `run_tool_call_loop`; this constant is only
-/// used when callers omit the parameter.
-const DEFAULT_MAX_HISTORY_MESSAGES: usize = 50;
-
-/// Keep this many most-recent non-system messages after compaction.
-const COMPACTION_KEEP_RECENT_MESSAGES: usize = 20;
-
-/// Safety cap for compaction source transcript passed to the summarizer.
-const COMPACTION_MAX_SOURCE_CHARS: usize = 12_000;
-
-/// Max characters retained in stored compaction summary.
-const COMPACTION_MAX_SUMMARY_CHARS: usize = 2_000;
-
-/// Estimate token count for a message history using ~4 chars/token heuristic.
-/// Includes a small overhead per message for role/framing tokens.
-fn estimate_history_tokens(history: &[ChatMessage]) -> usize {
-    history
-        .iter()
-        .map(|m| {
-            // ~4 chars per token + ~4 framing tokens per message (role, delimiters)
-            m.content.len().div_ceil(4) + 4
-        })
-        .sum()
-}
+use synapse_domain::application::services::history_compaction as compaction;
+#[cfg(test)]
+use synapse_domain::application::services::history_compaction::{
+    estimate_history_tokens, DEFAULT_MAX_HISTORY_MESSAGES,
+};
 
 /// Minimum interval between progress sends to avoid flooding the draft channel.
 pub(crate) const PROGRESS_MIN_INTERVAL_MS: u64 = 500;
@@ -279,63 +113,12 @@ fn memory_session_id_from_state_file(path: &Path) -> Option<String> {
     Some(format!("cli:{raw}"))
 }
 
-/// Trim conversation history to prevent unbounded growth.
-/// Preserves the system prompt (first message if role=system) and the most recent messages.
+/// Thin wrapper: delegates to domain `trim_history`.
 fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
-    // Nothing to trim if within limit
-    let has_system = history.first().map_or(false, |m| m.role == "system");
-    let non_system_count = if has_system {
-        history.len() - 1
-    } else {
-        history.len()
-    };
-
-    if non_system_count <= max_history {
-        return;
-    }
-
-    let start = if has_system { 1 } else { 0 };
-    let to_remove = non_system_count - max_history;
-    history.drain(start..start + to_remove);
-
-    // Safety: remove orphan tool_result messages left after trim.
-    // OpenAI-compatible APIs reject tool_result without preceding tool_call.
-    while history.len() > start {
-        let is_orphan_tool = history[start].role == "tool"
-            || (history[start].role == "assistant"
-                && history[start].content.contains("<tool_result>"));
-        if is_orphan_tool {
-            history.remove(start);
-        } else {
-            break;
-        }
-    }
+    compaction::trim_history(history, max_history);
 }
 
-fn build_compaction_transcript(messages: &[ChatMessage]) -> String {
-    let mut transcript = String::new();
-    for msg in messages {
-        let role = msg.role.to_uppercase();
-        let _ = writeln!(transcript, "{role}: {}", msg.content.trim());
-    }
-
-    if transcript.chars().count() > COMPACTION_MAX_SOURCE_CHARS {
-        truncate_with_ellipsis(&transcript, COMPACTION_MAX_SOURCE_CHARS)
-    } else {
-        transcript
-    }
-}
-
-fn apply_compaction_summary(
-    history: &mut Vec<ChatMessage>,
-    start: usize,
-    compact_end: usize,
-    summary: &str,
-) {
-    let summary_msg = ChatMessage::assistant(format!("[Compaction summary]\n{}", summary.trim()));
-    history.splice(start..compact_end, std::iter::once(summary_msg));
-}
-
+/// Auto-compact conversation history using domain policy + provider summarization.
 async fn auto_compact_history(
     history: &mut Vec<ChatMessage>,
     provider: &dyn Provider,
@@ -343,57 +126,25 @@ async fn auto_compact_history(
     max_history: usize,
     max_context_tokens: usize,
 ) -> Result<bool> {
-    let has_system = history.first().map_or(false, |m| m.role == "system");
-    let non_system_count = if has_system {
-        history.len().saturating_sub(1)
-    } else {
-        history.len()
+    let Some((start, compact_end, transcript)) =
+        compaction::prepare_compaction(history, max_history, max_context_tokens)
+    else {
+        return Ok(false);
     };
 
-    let estimated_tokens = estimate_history_tokens(history);
-
-    // Trigger compaction when either token budget OR message count is exceeded.
-    if estimated_tokens <= max_context_tokens && non_system_count <= max_history {
-        return Ok(false);
-    }
-
-    let start = if has_system { 1 } else { 0 };
-    let keep_recent = COMPACTION_KEEP_RECENT_MESSAGES.min(non_system_count);
-    let compact_count = non_system_count.saturating_sub(keep_recent);
-    if compact_count == 0 {
-        return Ok(false);
-    }
-
-    let mut compact_end = start + compact_count;
-
-    // Snap compact_end to a user-turn boundary so we don't split mid-conversation.
-    while compact_end > start && history.get(compact_end).map_or(false, |m| m.role != "user") {
-        compact_end -= 1;
-    }
-    if compact_end <= start {
-        return Ok(false);
-    }
-
-    let to_compact: Vec<ChatMessage> = history[start..compact_end].to_vec();
-    let transcript = build_compaction_transcript(&to_compact);
-
-    let summarizer_system = "You are a conversation compaction engine. Summarize older chat history into concise context for future turns. Preserve: user preferences, commitments, decisions, unresolved tasks, key facts. Omit: filler, repeated chit-chat, verbose tool logs. Output plain text bullet points only.";
-
-    let summarizer_user = format!(
-        "Summarize the following conversation history for context preservation. Keep it short (max 12 bullet points).\n\n{}",
-        transcript
-    );
+    let summarizer_user = compaction::compaction_summarizer_prompt(&transcript);
 
     let summary_raw = provider
-        .chat_with_system(Some(summarizer_system), &summarizer_user, model, 0.2)
+        .chat_with_system(
+            Some(compaction::COMPACTION_SUMMARIZER_SYSTEM),
+            &summarizer_user,
+            model,
+            0.2,
+        )
         .await
-        .unwrap_or_else(|_| {
-            // Fallback to deterministic local truncation when summarization fails.
-            truncate_with_ellipsis(&transcript, COMPACTION_MAX_SUMMARY_CHARS)
-        });
+        .unwrap_or_default();
 
-    let summary = truncate_with_ellipsis(&summary_raw, COMPACTION_MAX_SUMMARY_CHARS);
-    apply_compaction_summary(history, start, compact_end, &summary);
+    compaction::apply_compaction(history, start, compact_end, &summary_raw, &transcript);
 
     Ok(true)
 }
@@ -3056,35 +2807,9 @@ pub(crate) async fn run_tool_call_loop(
     anyhow::bail!("Agent exceeded maximum tool iterations ({max_iterations})")
 }
 
-/// Build the tool instruction block for the system prompt so the LLM knows
-/// how to invoke tools.
-pub(crate) fn build_tool_instructions(tools_registry: &[Box<dyn Tool>]) -> String {
-    let mut instructions = String::new();
-    instructions.push_str("\n## Tool Use Protocol\n\n");
-    instructions.push_str("To use a tool, wrap a JSON object in <tool_call></tool_call> tags:\n\n");
-    instructions.push_str("```\n<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n```\n\n");
-    instructions.push_str(
-        "CRITICAL: Output actual <tool_call> tags—never describe steps or give examples.\n\n",
-    );
-    instructions.push_str("Example: User says \"what's the date?\". You MUST respond with:\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"date\"}}\n</tool_call>\n\n");
-    instructions.push_str("You may use multiple tool calls in a single response. ");
-    instructions.push_str("After tool execution, results appear in <tool_result> tags. ");
-    instructions
-        .push_str("Continue reasoning with the results until you can give a final answer.\n\n");
-    instructions.push_str("### Available Tools\n\n");
-
-    for tool in tools_registry {
-        let _ = writeln!(
-            instructions,
-            "**{}**: {}\nParameters: `{}`\n",
-            tool.name(),
-            tool.description(),
-            tool.parameters_schema()
-        );
-    }
-
-    instructions
-}
+/// Build the tool instruction block for the system prompt.
+/// Delegated to `synapse_domain::application::services::tool_filtering::build_tool_instructions`.
+pub(crate) use synapse_domain::application::services::tool_filtering::build_tool_instructions;
 
 // ── CLI Entrypoint ───────────────────────────────────────────────────────
 // Wires up all subsystems (observer, runtime, security, memory, tools,

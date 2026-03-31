@@ -8,7 +8,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{OnceLock, RwLock};
 
 const SUPPORTED_PROXY_SERVICE_KEYS: &[&str] = &[
     "provider.anthropic",

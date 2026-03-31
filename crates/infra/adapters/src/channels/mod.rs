@@ -90,11 +90,11 @@ pub use whatsapp::WhatsAppChannel;
 #[cfg(feature = "whatsapp-web")]
 pub use whatsapp_web::WhatsAppWebChannel;
 
-use crate::agent::loop_::build_tool_instructions;
 use crate::approval::ApprovalManager;
 use crate::channels::session_backend::SessionBackend;
 use crate::config_io::ConfigIO;
 use crate::identity;
+use synapse_domain::application::services::tool_filtering::build_tool_instructions;
 // memory module used indirectly via synapse_memory
 use crate::observability::traits::{ObserverEvent, ObserverMetric};
 use crate::observability::{self, Observer};
