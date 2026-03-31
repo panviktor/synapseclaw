@@ -3082,7 +3082,7 @@ pub async fn start_channels(
                         registry.server_count()
                     );
                     deferred_section =
-                        crate::tools::mcp_deferred::build_deferred_tools_section(&deferred_set);
+                        synapse_mcp::mcp_deferred::build_deferred_tools_section(&deferred_set);
                     let activated = std::sync::Arc::new(std::sync::Mutex::new(
                         crate::tools::ActivatedToolSet::new(),
                     ));

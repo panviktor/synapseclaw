@@ -5,9 +5,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::tools::mcp_client::McpRegistry;
-use crate::tools::mcp_protocol::McpToolDef;
-use crate::tools::traits::{Tool, ToolResult};
+use crate::mcp_client::McpRegistry;
+use crate::mcp_protocol::McpToolDef;
+use synapse_domain::ports::tool::{Tool, ToolResult};
 
 /// A synapseclaw [`Tool`] backed by an MCP server tool.
 ///

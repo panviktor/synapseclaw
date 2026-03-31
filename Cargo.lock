@@ -5807,6 +5807,7 @@ dependencies = [
  "shellexpand",
  "synapse_cron",
  "synapse_domain",
+ "synapse_mcp",
  "synapse_memory",
  "synapse_observability",
  "synapse_providers",
@@ -5873,6 +5874,22 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "synapse_mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "synapse_domain",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

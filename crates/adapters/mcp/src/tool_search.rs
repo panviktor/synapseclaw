@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
-use crate::tools::mcp_deferred::{ActivatedToolSet, DeferredMcpToolSet};
-use crate::tools::traits::{Tool, ToolResult};
+use crate::mcp_deferred::{ActivatedToolSet, DeferredMcpToolSet};
+use synapse_domain::ports::tool::{Tool, ToolResult};
 
 /// Default maximum number of search results.
 const DEFAULT_MAX_RESULTS: usize = 5;
@@ -194,9 +194,9 @@ impl ToolSearchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::mcp_client::McpRegistry;
-    use crate::tools::mcp_deferred::DeferredMcpToolStub;
-    use crate::tools::mcp_protocol::McpToolDef;
+    use crate::mcp_client::McpRegistry;
+    use crate::mcp_deferred::DeferredMcpToolStub;
+    use crate::mcp_protocol::McpToolDef;
 
     async fn make_deferred_set(stubs: Vec<DeferredMcpToolStub>) -> DeferredMcpToolSet {
         let registry = Arc::new(McpRegistry::connect_all(&[]).await.unwrap());

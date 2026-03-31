@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::tools::mcp_client::McpRegistry;
-use crate::tools::mcp_protocol::McpToolDef;
-use crate::tools::mcp_tool::McpToolWrapper;
-use crate::tools::traits::{Tool, ToolSpec};
+use crate::mcp_client::McpRegistry;
+use crate::mcp_protocol::McpToolDef;
+use crate::mcp_tool::McpToolWrapper;
+use synapse_domain::ports::tool::{Tool, ToolSpec};
 
 // ── DeferredMcpToolStub ──────────────────────────────────────────────────
 
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn activated_set_tracks_activation() {
-        use crate::tools::traits::ToolResult;
+        use synapse_domain::ports::tool::ToolResult;
         use async_trait::async_trait;
 
         struct FakeTool;
@@ -313,7 +313,7 @@ mod tests {
 
     #[test]
     fn activated_set_resolves_unique_suffix() {
-        use crate::tools::traits::ToolResult;
+        use synapse_domain::ports::tool::ToolResult;
         use async_trait::async_trait;
 
         struct FakeTool;
@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn activated_set_rejects_ambiguous_suffix() {
-        use crate::tools::traits::ToolResult;
+        use synapse_domain::ports::tool::ToolResult;
         use async_trait::async_trait;
 
         struct FakeTool(&'static str);

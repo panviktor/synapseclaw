@@ -9,7 +9,7 @@ use tokio::sync::{oneshot, Mutex, Notify};
 use tokio::time::{timeout, Duration};
 use tokio_stream::StreamExt;
 
-use crate::tools::mcp_protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, INTERNAL_ERROR};
+use crate::mcp_protocol::{JsonRpcError, JsonRpcRequest, JsonRpcResponse, INTERNAL_ERROR};
 use synapse_domain::config::schema::{McpServerConfig, McpTransport};
 
 /// Maximum bytes for a single JSON-RPC response.
@@ -109,7 +109,7 @@ impl McpTransportConn for StdioTransport {
         self.send_raw(&line).await?;
         if request.id.is_none() {
             return Ok(JsonRpcResponse {
-                jsonrpc: crate::tools::mcp_protocol::JSONRPC_VERSION.to_string(),
+                jsonrpc: crate::mcp_protocol::JSONRPC_VERSION.to_string(),
                 id: None,
                 result: None,
                 error: None,
@@ -234,7 +234,7 @@ impl McpTransportConn for HttpTransport {
 
         if request.id.is_none() {
             return Ok(JsonRpcResponse {
-                jsonrpc: crate::tools::mcp_protocol::JSONRPC_VERSION.to_string(),
+                jsonrpc: crate::mcp_protocol::JSONRPC_VERSION.to_string(),
                 id: None,
                 result: None,
                 error: None,
@@ -426,7 +426,7 @@ impl SseTransport {
             };
             for (_, tx) in pending {
                 let _ = tx.send(JsonRpcResponse {
-                    jsonrpc: crate::tools::mcp_protocol::JSONRPC_VERSION.to_string(),
+                    jsonrpc: crate::mcp_protocol::JSONRPC_VERSION.to_string(),
                     id: None,
                     result: None,
                     error: Some(JsonRpcError {
@@ -804,7 +804,7 @@ impl McpTransportConn for SseTransport {
 
             if request.id.is_none() {
                 got_direct = Some(JsonRpcResponse {
-                    jsonrpc: crate::tools::mcp_protocol::JSONRPC_VERSION.to_string(),
+                    jsonrpc: crate::mcp_protocol::JSONRPC_VERSION.to_string(),
                     id: None,
                     result: None,
                     error: None,
