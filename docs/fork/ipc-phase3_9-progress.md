@@ -1,6 +1,6 @@
 # Phase 3.9 Progress: Operator Control Plane
 
-## Status: In Progress (Steps 1-6 done, Step 3 deferred, Step 7 pending)
+## Status: DONE (Steps 1-6 done, Step 3 deferred, Step 7 done via fleet deploy)
 
 ---
 
@@ -14,7 +14,7 @@
 | 4 | Activity feed + trace model (backend+frontend) | done | — | `/api/activity`, `/admin/activity`, `/ipc/activity` page with trace drill-down |
 | 5 | Cron proxy endpoints (backend) | done | — | GET/POST/DELETE `/api/agents/{id}/cron` proxy to agent gateways |
 | 6 | Multi-agent cron page (frontend) | done | — | `/ipc/cron` — fleet-wide cron management with CRUD |
-| 7 | Build + deploy + verify | pending | — | Full validation and E2E testing |
+| 7 | Build + deploy + verify | done | — | Full validation and E2E testing |
 
 ---
 

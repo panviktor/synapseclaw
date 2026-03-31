@@ -7,7 +7,29 @@ Base branch: `main`
 Working branch: feature branch off `main` (e.g. `feat/ipc-*`)
 Execution owner: `Opus`
 
-## Steps Overview
+## Phase Map (as of 2026-03-31)
+
+| Phase | Name | Status | Notes |
+|-------|------|--------|-------|
+| 1 | Core IPC | **DONE** | Broker, tools, pairing |
+| 2 | Hardened Security | **DONE** | Audit, e-stop, Ed25519 |
+| 3 | Trusted Execution | **DONE** | L0-L4, ACL, spawn |
+| 3.5 | Human Control Plane | **DONE** | Subsumed into 3.8 |
+| 3.6 | Agent Provisioning UI | **DONE** | Subsumed into 3.8 |
+| 3.7 | Chat Sessions | **DONE** | Subsumed into 3.8 |
+| 3.7b | Session Intelligence | **DONE** | Summaries + live events |
+| 3.8 | Multi-Agent Dashboard | **DONE** | 11 steps, 2 audit rounds |
+| 3.9 | Operator Control Plane | **DONE** | Push, activity, cron proxy |
+| 3.10 | Push Loop Prevention | **DONE** | |
+| 3.11 | Fleet Topology | **DONE** | Multi-blueprint |
+| 3.12 | Channel Session Intel | **NOT STARTED** | |
+| 4.0 | Modular Core Refactor | **DONE** | Crate extraction |
+| 4.1 | Pipeline Engine | **DONE** | 10 slices |
+| 4.1H | Hex Migration | **DONE** | 12 slices |
+| 4.1H2 | Hex Completion | **SUPERSEDED** | By 4.1H2B |
+| 4.1H2B | Pure Hex Architecture | **DONE** | 12 crates, PRs #209-#212 |
+
+## Phase 1 Steps Overview
 
 | # | Step | Files | Status | Depends on |
 |---|------|-------|--------|------------|
