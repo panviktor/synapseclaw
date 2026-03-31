@@ -1,6 +1,6 @@
 //! ConfigIO implementation — load/save/encrypt/decrypt for Config.
 
-use crate::proxy::{set_runtime_proxy_config, ProxyConfigExt};
+use synapse_providers::proxy::{set_runtime_proxy_config, ProxyConfigExt};
 
 use anyhow::{Context, Result};
 use directories::UserDirs;

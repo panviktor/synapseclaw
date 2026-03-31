@@ -26,7 +26,7 @@ pub mod runtime;
 pub mod storage;
 
 // ── Infrastructure adapters (moved from src/ top-level) ──
-pub mod approval;
+pub use synapse_infra::approval;
 pub use synapse_providers::auth;
 pub mod cost;
 pub use synapse_cron as cron;
@@ -48,7 +48,7 @@ pub mod workspace;
 pub mod workspace_io;
 
 // ── Deferred modules (moved from src/ in Phase 4.1H2) ──
-pub mod identity;
+pub use synapse_infra::identity;
 pub use synapse_providers::multimodal;
 pub mod skills;
 
@@ -81,4 +81,4 @@ pub(crate) fn envelope_from_channel_message(
     }
 }
 pub mod agent;
-pub mod config_io;
+pub use synapse_infra::config_io;

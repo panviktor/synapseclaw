@@ -25,6 +25,7 @@ synapse_observability = { path = "../observability" }
 synapse_cron = { path = "../cron-store" }
 synapse_providers = { path = "../providers" }
 synapse_mcp = { path = "../mcp" }
+synapse_infra = { path = "../infra" }
 
 # Major frameworks
 axum = { version = "0.8", features = ["multipart", "ws", "macros"] }

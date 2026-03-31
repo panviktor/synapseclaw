@@ -5807,6 +5807,7 @@ dependencies = [
  "shellexpand",
  "synapse_cron",
  "synapse_domain",
+ "synapse_infra",
  "synapse_mcp",
  "synapse_memory",
  "synapse_observability",
@@ -5873,6 +5874,31 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "uuid",
+]
+
+[[package]]
+name = "synapse_infra"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "directories",
+ "parking_lot",
+ "reqwest",
+ "serde",
+ "serde_ignored",
+ "serde_json",
+ "serde_yaml",
+ "shellexpand",
+ "synapse_domain",
+ "synapse_providers",
+ "synapse_security",
+ "tempfile",
+ "tokio",
+ "toml 1.0.7+spec-1.1.0",
+ "tracing",
  "uuid",
 ]
 
