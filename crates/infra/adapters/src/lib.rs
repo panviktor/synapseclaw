@@ -37,7 +37,7 @@ pub mod health;
 pub mod heartbeat;
 pub mod hooks;
 pub mod integrations;
-pub mod observability;
+pub use synapse_observability as observability;
 pub mod onboard;
 pub mod providers;
 pub mod proxy;

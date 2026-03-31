@@ -1,0 +1,27 @@
+[package]
+name = "synapse_observability"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+observability-prometheus = ["dep:prometheus"]
+observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+
+[dependencies]
+synapse_domain = { path = "../../domain" }
+
+anyhow = "1.0"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["clock"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+uuid = { version = "1.22", features = ["v4"] }
+
+# Optional observability backends
+prometheus = { version = "0.14", optional = true }
+opentelemetry = { version = "0.31", default-features = false, features = ["trace", "metrics"], optional = true }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "metrics"], optional = true }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots"], optional = true }

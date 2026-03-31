@@ -9,8 +9,8 @@ channel-nostr = ["dep:nostr-sdk", "synapse_domain/channel-nostr"]
 channel-matrix = ["dep:matrix-sdk"]
 channel-lark = ["dep:prost"]
 channel-feishu = ["channel-lark"]
-observability-prometheus = ["dep:prometheus"]
-observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+observability-prometheus = ["synapse_observability/observability-prometheus"]
+observability-otel = ["synapse_observability/observability-otel"]
 whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost", "dep:qrcode"]
 rag-pdf = ["dep:pdf-extract"]
 browser-native = ["dep:fantoccini"]
@@ -21,6 +21,7 @@ memory-postgres = []
 synapse_domain = { path = "../../domain" }
 synapse_security = { path = "security" }
 synapse_memory = { path = "memory" }
+synapse_observability = { path = "../observability" }
 
 # Major frameworks
 axum = { version = "0.8", features = ["multipart", "ws", "macros"] }
@@ -109,12 +110,6 @@ tempfile = "3.15"
 # Platform channels (optional)
 nostr-sdk = { version = "0.44", default-features = false, features = ["nip04", "nip59"], optional = true }
 prost = { version = "0.13", optional = true }
-
-# Observability (optional)
-prometheus = { version = "0.14", optional = true }
-opentelemetry = { version = "0.31", default-features = false, features = ["trace", "metrics"], optional = true }
-opentelemetry_sdk = { version = "0.31", default-features = false, features = ["trace", "metrics"], optional = true }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "metrics", "http-proto", "reqwest-blocking-client", "reqwest-rustls-webpki-roots"], optional = true }
 
 # Portable atomics
 portable-atomic = "1"
