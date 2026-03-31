@@ -490,8 +490,8 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
                 Ok(resumed) => {
                     // Replay transcript into agent
                     for turn in &resumed.transcript {
-                        agent.push_history(crate::providers::ConversationMessage::Chat(
-                            crate::providers::ChatMessage {
+                        agent.push_history(synapse_providers::ConversationMessage::Chat(
+                            synapse_providers::ChatMessage {
                                 role: turn.role.clone(),
                                 content: turn.content.clone(),
                             },
@@ -610,7 +610,7 @@ fn replay_messages_into_agent(
     agent: &mut crate::agent::Agent,
     messages: &[ChatMessageRow],
 ) -> anyhow::Result<()> {
-    use crate::providers::{ChatMessage, ConversationMessage};
+    use synapse_providers::{ChatMessage, ConversationMessage};
 
     for msg in messages {
         let conv_msg = match msg.kind.as_str() {
@@ -629,7 +629,7 @@ fn replay_events_into_agent(
     agent: &mut crate::agent::Agent,
     events: &[ConversationEvent],
 ) -> anyhow::Result<()> {
-    use crate::providers::{ChatMessage, ConversationMessage};
+    use synapse_providers::{ChatMessage, ConversationMessage};
 
     for event in events {
         let conv_msg = match event.event_type {
@@ -957,7 +957,7 @@ async fn handle_chat_send_rpc(
                     "aborted": true,
                 }));
             }
-            let sanitized = crate::providers::sanitize_api_error(&msg);
+            let sanitized = synapse_providers::sanitize_api_error(&msg);
             persist_message(state, &session_key, "error", None, &sanitized, None, None).await;
             // Phase 4.0 Slice 3: finalize failed
             if let (Some(cs), Some(rs)) =
@@ -1329,7 +1329,7 @@ async fn persist_message(
 fn persist_usage_memory(
     state: &AppState,
     session_key: &str,
-    usage: Option<&crate::providers::traits::TokenUsage>,
+    usage: Option<&synapse_providers::traits::TokenUsage>,
 ) {
     if let Some(u) = usage {
         if let Ok(mut sessions) = state.chat_sessions.lock() {
@@ -1403,9 +1403,9 @@ async fn update_session_goal(state: &AppState, session_key: &str, user_message: 
 async fn persist_tool_events(
     state: &AppState,
     session_key: &str,
-    history: &[crate::providers::ConversationMessage],
+    history: &[synapse_providers::ConversationMessage],
 ) {
-    use crate::providers::ConversationMessage;
+    use synapse_providers::ConversationMessage;
 
     for msg in history {
         match msg {
@@ -1465,10 +1465,10 @@ fn emit_run_event(state: &AppState, event_type: &str, session_key: &str, run_id:
 fn push_tool_events(
     out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
     session_key: &str,
-    history: &[crate::providers::ConversationMessage],
+    history: &[synapse_providers::ConversationMessage],
     start_idx: usize,
 ) {
-    use crate::providers::ConversationMessage;
+    use synapse_providers::ConversationMessage;
 
     for msg in history.iter().skip(start_idx) {
         match msg {
@@ -1540,14 +1540,14 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
             .or_else(|| config_guard.summary_model.clone())
             .unwrap_or_else(|| state.model.clone());
         let temp = sc.temperature;
-        let prov: std::sync::Arc<dyn crate::providers::Provider> =
+        let prov: std::sync::Arc<dyn synapse_providers::Provider> =
             if let Some(ref provider_name) = sc.provider {
-                let opts = crate::providers::provider_runtime_options_from_config(&config_guard);
+                let opts = synapse_providers::provider_runtime_options_from_config(&config_guard);
                 let api_key = sc
                     .api_key_env
                     .as_deref()
                     .and_then(|env| std::env::var(env).ok());
-                match crate::providers::create_provider_with_options(
+                match synapse_providers::create_provider_with_options(
                     provider_name,
                     api_key.as_deref(),
                     &opts,

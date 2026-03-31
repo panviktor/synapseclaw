@@ -13,10 +13,8 @@ synapse_domain = { path = "../../domain" }
 synapse_security = { path = "../security" }
 synapse_memory = { path = "../memory" }
 synapse_providers = { path = "../providers" }
-synapse_observability = { path = "../observability" }
 synapse_cron = { path = "../cron-store" }
 synapse_infra = { path = "../infra" }
-synapse_mcp = { path = "../mcp" }
 
 # Major frameworks
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync", "process", "io-std", "fs", "signal"] }
@@ -25,7 +23,6 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
 toml = "1.0"
 
 # Async
@@ -38,34 +35,18 @@ tracing = "0.1"
 # Common utilities
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-chrono-tz = "0.10"
-uuid = { version = "1.22", default-features = false, features = ["v4", "std"] }
 regex = "1.10"
 parking_lot = "0.12"
 directories = "6"
-shellexpand = "3.1"
 base64 = "0.22"
-url = "2.5"
 urlencoding = "2.1"
 glob = "0.3"
 which = "8.0"
 nanohtml2text = "0.2"
-console = "0.16"
 
 # Crypto
 sha2 = "0.10"
-hmac = "0.12"
 hex = "0.4"
-rand = "0.10"
-
-# Image
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-
-# Database
-rusqlite = { version = "0.37", features = ["bundled"] }
-
-# Schema validation
-jsonschema = "0.29"
 
 # PDF (optional)
 pdf-extract = { version = "0.10", optional = true }
@@ -73,8 +54,6 @@ pdf-extract = { version = "0.10", optional = true }
 # Browser automation (optional)
 fantoccini = { version = "0.22.1", optional = true, default-features = false, features = ["rustls-tls"] }
 
-# Cron
-cron = "0.15"
 
 [dev-dependencies]
 tempfile = "3.15"

@@ -9,6 +9,7 @@ pub mod docker;
 pub mod identity;
 pub mod native;
 pub mod workspace;
+pub mod workspace_io;
 
 pub use synapse_domain::ports::runtime::RuntimeAdapter;
 

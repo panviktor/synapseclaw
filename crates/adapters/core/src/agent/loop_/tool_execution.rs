@@ -546,7 +546,7 @@ pub(crate) async fn run_tool_call_loop(
                     )
                 }
                 Err(e) => {
-                    let safe_error = crate::providers::sanitize_api_error(&e.to_string());
+                    let safe_error = synapse_providers::sanitize_api_error(&e.to_string());
                     observer.record_event(&ObserverEvent::LlmResponse {
                         provider: provider_name.to_string(),
                         model: model.to_string(),

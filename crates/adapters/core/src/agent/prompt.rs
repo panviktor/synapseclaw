@@ -1,4 +1,4 @@
-use crate::identity;
+use synapse_infra::identity;
 use crate::skills::Skill;
 use crate::tools::Tool;
 use anyhow::Result;

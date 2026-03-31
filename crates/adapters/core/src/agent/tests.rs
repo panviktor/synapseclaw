@@ -29,8 +29,8 @@ use crate::agent::dispatcher::{
     NativeToolDispatcher, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
 use synapse_domain::config::schema::{AgentConfig, MemoryConfig};
-use crate::observability::{NoopObserver, Observer};
-use crate::providers::{
+use synapse_observability::{NoopObserver, Observer};
+use synapse_providers::{
     ChatMessage, ChatRequest, ChatResponse, ConversationMessage, Provider, ToolCall,
     ToolResultMessage,
 };

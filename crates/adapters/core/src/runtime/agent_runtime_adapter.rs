@@ -1,10 +1,10 @@
 //! Adapter: wraps `run_tool_call_loop` as AgentRuntimePort.
 //!
-//! Since `providers::ChatMessage` is now a re-export of
+//! Since `synapse_providers::ChatMessage` is now a re-export of
 //! `synapse_domain::domain::message::ChatMessage`, no conversions are needed.
 
-use crate::approval::ApprovalManager;
-use crate::providers::{ChatMessage, Provider};
+use synapse_infra::approval::ApprovalManager;
+use synapse_providers::{ChatMessage, Provider};
 use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -15,7 +15,7 @@ use synapse_domain::ports::agent_runtime::{AgentRuntimePort, AgentTurnResult};
 pub struct ChannelAgentRuntime {
     pub provider: Arc<dyn Provider>,
     pub tools_registry: Arc<Vec<Box<dyn Tool>>>,
-    pub observer: Arc<dyn crate::observability::Observer>,
+    pub observer: Arc<dyn synapse_observability::Observer>,
     pub approval_manager: Arc<ApprovalManager>,
     pub channel_name: String,
     pub multimodal: synapse_domain::config::schema::MultimodalConfig,

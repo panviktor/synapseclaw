@@ -20,9 +20,9 @@ pub mod ws;
 use crate::channels::{
     Channel, LinqChannel, NextcloudTalkChannel, SendMessage, WatiChannel, WhatsAppChannel,
 };
-use crate::config_io::ConfigIO;
+use synapse_infra::config_io::ConfigIO;
 use crate::cost::CostTracker;
-use crate::providers::{self, ChatMessage, Provider};
+use synapse_providers::{self, ChatMessage, Provider};
 use crate::runtime;
 use crate::tools;
 use crate::tools::traits::ToolSpec;
@@ -346,7 +346,7 @@ pub struct AppState {
     pub nextcloud_talk_webhook_secret: Option<Arc<str>>,
     pub wati: Option<Arc<WatiChannel>>,
     /// Observability backend for metrics scraping
-    pub observer: Arc<dyn crate::observability::Observer>,
+    pub observer: Arc<dyn synapse_observability::Observer>,
     /// Registered tool specs (for web dashboard tools page)
     pub tools_registry: Arc<Vec<ToolSpec>>,
     /// Cost tracker (optional, for web dashboard cost page)
@@ -444,12 +444,12 @@ pub async fn run_gateway(
     let actual_port = listener.local_addr()?.port();
     let display_addr = format!("{host}:{actual_port}");
 
-    let provider: Arc<dyn Provider> = Arc::from(providers::create_resilient_provider_with_options(
+    let provider: Arc<dyn Provider> = Arc::from(synapse_providers::create_resilient_provider_with_options(
         config.default_provider.as_deref().unwrap_or("openrouter"),
         config.api_key.as_deref(),
         config.api_url.as_deref(),
         &config.reliability,
-        &providers::ProviderRuntimeOptions {
+        &synapse_providers::ProviderRuntimeOptions {
             auth_profile_override: None,
             provider_api_url: config.api_url.clone(),
             synapseclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
@@ -736,9 +736,9 @@ pub async fn run_gateway(
     }
 
     // Wrap observer with broadcast capability for SSE
-    let broadcast_observer: Arc<dyn crate::observability::Observer> =
+    let broadcast_observer: Arc<dyn synapse_observability::Observer> =
         Arc::new(sse::BroadcastObserver::new(
-            crate::observability::create_observer(&config.observability),
+            synapse_observability::create_observer(&config.observability),
             event_tx.clone(),
         ));
 
@@ -2032,7 +2032,7 @@ async fn handle_metrics(State(state): State<AppState>) -> impl IntoResponse {
                 .observer
                 .as_ref()
                 .as_any()
-                .downcast_ref::<crate::observability::PrometheusObserver>()
+                .downcast_ref::<synapse_observability::PrometheusObserver>()
             {
                 prom.encode()
             } else {
@@ -2160,7 +2160,7 @@ async fn run_gateway_chat_simple(state: &AppState, message: &str) -> anyhow::Res
 
     let multimodal_config = state.config.lock().multimodal.clone();
     let prepared =
-        crate::multimodal::prepare_messages_for_provider(&messages, &multimodal_config).await?;
+        synapse_providers::multimodal::prepare_messages_for_provider(&messages, &multimodal_config).await?;
 
     state
         .provider
@@ -2295,13 +2295,13 @@ async fn handle_webhook(
 
     state
         .observer
-        .record_event(&crate::observability::ObserverEvent::AgentStart {
+        .record_event(&synapse_observability::ObserverEvent::AgentStart {
             provider: provider_label.clone(),
             model: model_label.clone(),
         });
     state
         .observer
-        .record_event(&crate::observability::ObserverEvent::LlmRequest {
+        .record_event(&synapse_observability::ObserverEvent::LlmRequest {
             provider: provider_label.clone(),
             model: model_label.clone(),
             messages_count: 1,
@@ -2312,7 +2312,7 @@ async fn handle_webhook(
             let duration = started_at.elapsed();
             state
                 .observer
-                .record_event(&crate::observability::ObserverEvent::LlmResponse {
+                .record_event(&synapse_observability::ObserverEvent::LlmResponse {
                     provider: provider_label.clone(),
                     model: model_label.clone(),
                     duration,
@@ -2322,11 +2322,11 @@ async fn handle_webhook(
                     output_tokens: None,
                 });
             state.observer.record_metric(
-                &crate::observability::traits::ObserverMetric::RequestLatency(duration),
+                &synapse_observability::traits::ObserverMetric::RequestLatency(duration),
             );
             state
                 .observer
-                .record_event(&crate::observability::ObserverEvent::AgentEnd {
+                .record_event(&synapse_observability::ObserverEvent::AgentEnd {
                     provider: provider_label,
                     model: model_label,
                     duration,
@@ -2339,11 +2339,11 @@ async fn handle_webhook(
         }
         Err(e) => {
             let duration = started_at.elapsed();
-            let sanitized = providers::sanitize_api_error(&e.to_string());
+            let sanitized = synapse_providers::sanitize_api_error(&e.to_string());
 
             state
                 .observer
-                .record_event(&crate::observability::ObserverEvent::LlmResponse {
+                .record_event(&synapse_observability::ObserverEvent::LlmResponse {
                     provider: provider_label.clone(),
                     model: model_label.clone(),
                     duration,
@@ -2353,17 +2353,17 @@ async fn handle_webhook(
                     output_tokens: None,
                 });
             state.observer.record_metric(
-                &crate::observability::traits::ObserverMetric::RequestLatency(duration),
+                &synapse_observability::traits::ObserverMetric::RequestLatency(duration),
             );
             state
                 .observer
-                .record_event(&crate::observability::ObserverEvent::Error {
+                .record_event(&synapse_observability::ObserverEvent::Error {
                     component: "gateway".to_string(),
                     message: sanitized.clone(),
                 });
             state
                 .observer
-                .record_event(&crate::observability::ObserverEvent::AgentEnd {
+                .record_event(&synapse_observability::ObserverEvent::AgentEnd {
                     provider: provider_label,
                     model: model_label,
                     duration,

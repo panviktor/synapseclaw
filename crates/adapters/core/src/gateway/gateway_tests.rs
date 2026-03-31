@@ -1,6 +1,6 @@
 use super::*;
 use crate::channels::traits::ChannelMessage;
-use crate::providers::Provider;
+use synapse_providers::Provider;
 use async_trait::async_trait;
 use axum::http::HeaderValue;
 use axum::response::IntoResponse;
@@ -101,7 +101,7 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
         nextcloud_talk: None,
         nextcloud_talk_webhook_secret: None,
         wati: None,
-        observer: Arc::new(crate::observability::NoopObserver),
+        observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
@@ -150,13 +150,13 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
 #[cfg(feature = "observability-prometheus")]
 #[tokio::test]
 async fn metrics_endpoint_renders_prometheus_output() {
-    let prom = Arc::new(crate::observability::PrometheusObserver::new());
-    crate::observability::Observer::record_event(
+    let prom = Arc::new(synapse_observability::PrometheusObserver::new());
+    synapse_observability::Observer::record_event(
         prom.as_ref(),
-        &crate::observability::ObserverEvent::HeartbeatTick,
+        &synapse_observability::ObserverEvent::HeartbeatTick,
     );
 
-    let observer: Arc<dyn crate::observability::Observer> = prom;
+    let observer: Arc<dyn synapse_observability::Observer> = prom;
     let state = AppState {
         config: Arc::new(Mutex::new(Config::default())),
         provider: Arc::new(MockProvider::default()),
@@ -577,7 +577,7 @@ async fn webhook_idempotency_skips_duplicate_provider_calls() {
         nextcloud_talk: None,
         nextcloud_talk_webhook_secret: None,
         wati: None,
-        observer: Arc::new(crate::observability::NoopObserver),
+        observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
@@ -667,7 +667,7 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
         nextcloud_talk: None,
         nextcloud_talk_webhook_secret: None,
         wati: None,
-        observer: Arc::new(crate::observability::NoopObserver),
+        observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
@@ -769,7 +769,7 @@ async fn webhook_secret_hash_rejects_missing_header() {
         nextcloud_talk: None,
         nextcloud_talk_webhook_secret: None,
         wati: None,
-        observer: Arc::new(crate::observability::NoopObserver),
+        observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
@@ -843,7 +843,7 @@ async fn webhook_secret_hash_rejects_invalid_header() {
         nextcloud_talk: None,
         nextcloud_talk_webhook_secret: None,
         wati: None,
-        observer: Arc::new(crate::observability::NoopObserver),
+        observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
@@ -922,7 +922,7 @@ async fn webhook_secret_hash_accepts_valid_header() {
         nextcloud_talk: None,
         nextcloud_talk_webhook_secret: None,
         wati: None,
-        observer: Arc::new(crate::observability::NoopObserver),
+        observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
@@ -1006,7 +1006,7 @@ async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
         nextcloud_talk: None,
         nextcloud_talk_webhook_secret: None,
         wati: None,
-        observer: Arc::new(crate::observability::NoopObserver),
+        observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
@@ -1086,7 +1086,7 @@ async fn nextcloud_talk_webhook_rejects_invalid_signature() {
         nextcloud_talk: Some(channel),
         nextcloud_talk_webhook_secret: Some(Arc::from(secret)),
         wati: None,
-        observer: Arc::new(crate::observability::NoopObserver),
+        observer: Arc::new(synapse_observability::NoopObserver),
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,

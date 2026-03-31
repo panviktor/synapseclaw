@@ -1,5 +1,5 @@
-use crate::config_io::ConfigIO;
-use crate::providers::{
+use synapse_infra::config_io::ConfigIO;
+use synapse_providers::{
     canonical_china_provider_name, is_glm_alias, is_glm_cn_alias, is_minimax_alias,
     is_moonshot_alias, is_qianfan_alias, is_qwen_alias, is_qwen_oauth_alias, is_zai_alias,
     is_zai_cn_alias,
@@ -450,7 +450,7 @@ fn resolve_quick_setup_dirs_with_home(home: &Path) -> (PathBuf, PathBuf) {
         let trimmed = custom_workspace.trim();
         if !trimmed.is_empty() {
             let expanded = shellexpand::tilde(trimmed);
-            return crate::workspace_io::resolve_config_dir_for_workspace(&PathBuf::from(
+            return synapse_infra::workspace_io::resolve_config_dir_for_workspace(&PathBuf::from(
                 expanded.as_ref(),
             ));
         }
@@ -1956,7 +1956,7 @@ pub async fn cached_model_catalog_stats(
 }
 
 pub async fn run_models_refresh_all(config: &Config, force: bool) -> Result<()> {
-    let mut targets: Vec<String> = crate::providers::list_providers()
+    let mut targets: Vec<String> = synapse_providers::list_providers()
         .into_iter()
         .map(|provider| provider.name.to_string())
         .filter(|name| supports_live_model_fetch(name))
@@ -2114,7 +2114,7 @@ async fn persist_workspace_selection(config_path: &Path) -> Result<()> {
     let config_dir = config_path
         .parent()
         .context("Config path must have a parent directory")?;
-    crate::workspace_io::persist_active_workspace_config_dir(config_dir)
+    synapse_infra::workspace_io::persist_active_workspace_config_dir(config_dir)
         .await
         .with_context(|| {
             format!(
@@ -2128,7 +2128,7 @@ async fn persist_workspace_selection(config_path: &Path) -> Result<()> {
 
 async fn setup_workspace() -> Result<(PathBuf, PathBuf)> {
     let (default_config_dir, default_workspace_dir) =
-        crate::workspace_io::resolve_runtime_dirs_for_onboarding().await?;
+        synapse_infra::workspace_io::resolve_runtime_dirs_for_onboarding().await?;
 
     print_bullet(&format!(
         "Default location: {}",
@@ -2147,7 +2147,7 @@ async fn setup_workspace() -> Result<(PathBuf, PathBuf)> {
             .with_prompt("  Enter workspace path")
             .interact_text()?;
         let expanded = shellexpand::tilde(&custom).to_string();
-        crate::workspace_io::resolve_config_dir_for_workspace(&PathBuf::from(expanded))
+        synapse_infra::workspace_io::resolve_config_dir_for_workspace(&PathBuf::from(expanded))
     };
 
     let config_path = config_dir.join("config.toml");
@@ -2495,7 +2495,7 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
         key
     } else if canonical_provider_name(provider_name) == "gemini" {
         // Special handling for Gemini: check for CLI auth first
-        if crate::providers::gemini::GeminiProvider::has_cli_credentials() {
+        if synapse_providers::gemini::GeminiProvider::has_cli_credentials() {
             print_bullet(&format!(
                 "{} Gemini CLI credentials detected! You can skip the API key.",
                 style("✓").green().bold()

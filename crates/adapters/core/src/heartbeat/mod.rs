@@ -4,7 +4,7 @@ pub mod store;
 #[cfg(test)]
 mod tests {
     use crate::heartbeat::engine::HeartbeatEngine;
-    use crate::observability::NoopObserver;
+    use synapse_observability::NoopObserver;
     use std::sync::Arc;
     use synapse_domain::config::schema::HeartbeatConfig;
 

@@ -41,7 +41,7 @@ impl IpcClient {
         let builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(5));
-        let builder = crate::proxy::apply_runtime_proxy_to_builder(builder, "tool.agents_ipc");
+        let builder = synapse_providers::proxy::apply_runtime_proxy_to_builder(builder, "tool.agents_ipc");
         let client = builder.build().unwrap_or_else(|err| {
             tracing::warn!("Failed to build IPC client: {err}");
             reqwest::Client::new()
@@ -1050,17 +1050,17 @@ impl AgentsSpawnTool {
         child_level: u8,
     ) -> anyhow::Result<ToolResult> {
         let run_at = chrono::Utc::now() + chrono::Duration::seconds(1);
-        let schedule = crate::cron::Schedule::At { at: run_at };
+        let schedule = synapse_cron::Schedule::At { at: run_at };
 
         let job_name = name.unwrap_or_else(|| format!("ipc-spawn-L{child_level}"));
         let spawn_prompt = format!("[IPC spawned agent | trust_level={child_level}]\n\n{prompt}");
 
-        match crate::cron::add_agent_job(
+        match synapse_cron::add_agent_job(
             &self.config,
             Some(job_name.clone()),
             schedule,
             &spawn_prompt,
-            crate::cron::SessionTarget::Isolated,
+            synapse_cron::SessionTarget::Isolated,
             model,
             None,
             true,
@@ -1206,7 +1206,7 @@ impl AgentsSpawnTool {
 
         // 6. Create one-shot subprocess cron job
         let run_at = chrono::Utc::now() + chrono::Duration::seconds(1);
-        let schedule = crate::cron::Schedule::At { at: run_at };
+        let schedule = synapse_cron::Schedule::At { at: run_at };
 
         let job_name = name.unwrap_or_else(|| format!("eph-spawn-L{child_level}"));
         let spawn_prompt = format!(
@@ -1219,16 +1219,16 @@ impl AgentsSpawnTool {
             .and_then(|wl| wl.model.clone())
             .or(model);
 
-        let job = crate::cron::add_agent_job_full(
+        let job = synapse_cron::add_agent_job_full(
             &self.config,
             Some(job_name.clone()),
             schedule,
             &spawn_prompt,
-            crate::cron::SessionTarget::Isolated,
+            synapse_cron::SessionTarget::Isolated,
             effective_model,
             None,
             true,
-            crate::cron::ExecutionMode::Subprocess,
+            synapse_cron::ExecutionMode::Subprocess,
             env_overlay,
         )
         .map_err(|e| anyhow::anyhow!("Failed to create subprocess job: {e}"))?;
@@ -1485,7 +1485,7 @@ mod tests {
     // Mock provider for test AppState
     struct TestProvider;
     #[async_trait]
-    impl crate::providers::traits::Provider for TestProvider {
+    impl synapse_providers::traits::Provider for TestProvider {
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,
@@ -1592,7 +1592,7 @@ mod tests {
             nextcloud_talk: None,
             nextcloud_talk_webhook_secret: None,
             wati: None,
-            observer: std::sync::Arc::new(crate::observability::NoopObserver),
+            observer: std::sync::Arc::new(synapse_observability::NoopObserver),
             tools_registry: std::sync::Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,

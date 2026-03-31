@@ -184,7 +184,7 @@ fn doctor_model_targets(provider_override: Option<&str>) -> Vec<String> {
         return vec![provider.to_string()];
     }
 
-    crate::providers::list_providers()
+    synapse_providers::list_providers()
         .into_iter()
         .map(|provider| provider.name.to_string())
         .collect()
@@ -222,12 +222,12 @@ pub async fn run_models(
     for provider_name in &targets {
         println!("  [{}]", provider_name);
 
-        match crate::onboard::run_models_refresh(config, Some(provider_name), !use_cache).await {
+        match synapse_onboard::run_models_refresh(config, Some(provider_name), !use_cache).await {
             Ok(()) => {
                 ok_count += 1;
                 println!("    ✅ model catalog check passed");
                 let models_count =
-                    crate::onboard::wizard::cached_model_catalog_stats(config, provider_name)
+                    synapse_onboard::wizard::cached_model_catalog_stats(config, provider_name)
                         .await?
                         .map(|(count, _)| count);
                 matrix_rows.push((
@@ -339,13 +339,13 @@ pub fn run_traces(
     contains: Option<&str>,
     limit: usize,
 ) -> Result<()> {
-    let path = crate::observability::runtime_trace::resolve_trace_path(
+    let path = synapse_observability::runtime_trace::resolve_trace_path(
         &config.observability,
         &config.workspace_dir,
     );
 
     if let Some(target_id) = id.map(str::trim).filter(|value| !value.is_empty()) {
-        match crate::observability::runtime_trace::find_event_by_id(&path, target_id)? {
+        match synapse_observability::runtime_trace::find_event_by_id(&path, target_id)? {
             Some(event) => {
                 println!("{}", serde_json::to_string_pretty(&event)?);
             }
@@ -370,7 +370,7 @@ pub fn run_traces(
     }
 
     let safe_limit = limit.max(1);
-    let events = crate::observability::runtime_trace::load_events(
+    let events = synapse_observability::runtime_trace::load_events(
         &path,
         safe_limit,
         event_filter,
@@ -616,7 +616,7 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
 }
 
 fn provider_validation_error(name: &str) -> Option<String> {
-    match crate::providers::create_provider(name, None) {
+    match synapse_providers::create_provider(name, None) {
         Ok(_) => None,
         Err(err) => Some(
             err.to_string()

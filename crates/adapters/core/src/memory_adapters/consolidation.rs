@@ -8,7 +8,7 @@
 //! This two-phase approach replaces the naive raw-message auto-save with
 //! semantic extraction, similar to Nanobot's `save_memory` tool call pattern.
 
-use crate::providers::traits::Provider;
+use synapse_providers::traits::Provider;
 use synapse_memory::{Memory, MemoryCategory};
 
 /// Output of consolidation extraction.

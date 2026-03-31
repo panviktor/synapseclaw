@@ -6,16 +6,15 @@
 // Re-export workspace crates.
 pub use synapse_adapters as adapters;
 pub use synapse_adapters::agent;
-pub use synapse_adapters::{channels, gateway, hooks, observability, providers, tools};
 pub use synapse_domain;
 pub use synapse_memory;
 pub use synapse_security;
 
 // Config facade.
 pub mod config {
-    pub use synapse_adapters::config_io::ConfigIO;
-    pub use synapse_adapters::workspace;
-    pub use synapse_adapters::workspace_io;
+    pub use synapse_infra::config_io::ConfigIO;
+    pub use synapse_infra::workspace;
+    pub use synapse_infra::workspace_io;
     pub use synapse_domain::config::schema;
     pub use synapse_domain::config::schema::Config;
 }

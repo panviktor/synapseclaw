@@ -17,7 +17,7 @@ pub async fn run(
     run_ctx: Option<std::sync::Arc<crate::agent::run_context::RunContext>>,
 ) -> Result<String> {
     // ── Wire up agnostic subsystems ──────────────────────────────
-    let base_observer = observability::create_observer(&config.observability);
+    let base_observer = synapse_observability::create_observer(&config.observability);
     let observer: Arc<dyn Observer> = Arc::from(base_observer);
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
@@ -219,9 +219,9 @@ pub async fn run(
         .or(config.default_model.as_deref())
         .unwrap_or("anthropic/claude-sonnet-4");
 
-    let provider_runtime_options = providers::provider_runtime_options_from_config(&config);
+    let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
 
-    let provider: Box<dyn Provider> = providers::create_routed_provider_with_options(
+    let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
         provider_name,
         config.api_key.as_deref(),
         config.api_url.as_deref(),
@@ -644,7 +644,7 @@ pub async fn process_message(
     session_id: Option<&str>,
 ) -> Result<String> {
     let observer: Arc<dyn Observer> =
-        Arc::from(observability::create_observer(&config.observability));
+        Arc::from(synapse_observability::create_observer(&config.observability));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
     let security = Arc::new(security_policy_from_config(
@@ -756,8 +756,8 @@ pub async fn process_message(
         .default_model
         .clone()
         .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514".into());
-    let provider_runtime_options = providers::provider_runtime_options_from_config(&config);
-    let provider: Box<dyn Provider> = providers::create_routed_provider_with_options(
+    let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
+    let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
         provider_name,
         config.api_key.as_deref(),
         config.api_url.as_deref(),

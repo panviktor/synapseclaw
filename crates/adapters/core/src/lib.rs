@@ -13,23 +13,11 @@
 //!
 //! Design rule: `synapse_domain` owns *what* happens; `synapse_adapters` owns *how*.
 
-// ── Port implementations (synapse_domain ports → concrete adapters) ──
+// ── Core modules (remain in synapse_adapters) ──
+pub mod agent;
 pub mod channels;
 pub mod commands;
-pub use synapse_channels::inbound;
-pub mod ipc;
-pub mod memory_adapters;
-pub mod middleware;
-pub mod pipeline;
-pub mod routing;
-pub mod runtime;
-pub mod storage;
-
-// ── Infrastructure adapters (moved from src/ top-level) ──
-pub use synapse_infra::approval;
-pub use synapse_providers::auth;
 pub mod cost;
-pub use synapse_cron as cron;
 pub mod daemon;
 pub mod doctor;
 pub mod gateway;
@@ -37,24 +25,21 @@ pub mod health;
 pub mod heartbeat;
 pub mod hooks;
 pub mod integrations;
-pub use synapse_observability as observability;
-pub mod onboard;
-pub use synapse_providers as providers;
-pub use synapse_providers::proxy;
+pub mod ipc;
+pub mod memory_adapters;
+pub mod middleware;
+pub mod pipeline;
+pub mod routing;
+pub mod runtime;
 pub mod service;
+pub mod skills;
+pub mod storage;
 pub mod tools;
 pub mod tunnel;
-pub use synapse_infra::workspace;
-pub mod workspace_io;
-
-// ── Deferred modules (moved from src/ in Phase 4.1H2) ──
-pub use synapse_infra::identity;
-pub use synapse_providers::multimodal;
-pub mod skills;
 
 // ── ChatMessage ────────────────────────────────────────────────────────────
 //
-// `providers::ChatMessage` is now a re-export of `synapse_domain::domain::message::ChatMessage`.
+// `synapse_providers::ChatMessage` is now a re-export of `synapse_domain::domain::message::ChatMessage`.
 // No conversion helpers needed — the types are identical.
 
 /// Build an `InboundEnvelope` from an upstream `ChannelMessage`.
@@ -80,5 +65,3 @@ pub(crate) fn envelope_from_channel_message(
         received_at: msg.timestamp,
     }
 }
-pub mod agent;
-pub use synapse_infra::config_io;

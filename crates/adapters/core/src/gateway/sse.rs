@@ -59,27 +59,27 @@ pub async fn handle_sse_events(
 
 /// Broadcast observer that forwards events to the SSE broadcast channel.
 pub struct BroadcastObserver {
-    inner: Box<dyn crate::observability::Observer>,
+    inner: Box<dyn synapse_observability::Observer>,
     tx: tokio::sync::broadcast::Sender<serde_json::Value>,
 }
 
 impl BroadcastObserver {
     pub fn new(
-        inner: Box<dyn crate::observability::Observer>,
+        inner: Box<dyn synapse_observability::Observer>,
         tx: tokio::sync::broadcast::Sender<serde_json::Value>,
     ) -> Self {
         Self { inner, tx }
     }
 }
 
-impl crate::observability::Observer for BroadcastObserver {
-    fn record_event(&self, event: &crate::observability::ObserverEvent) {
+impl synapse_observability::Observer for BroadcastObserver {
+    fn record_event(&self, event: &synapse_observability::ObserverEvent) {
         // Forward to inner observer
         self.inner.record_event(event);
 
         // Broadcast to SSE subscribers
         let json = match event {
-            crate::observability::ObserverEvent::LlmRequest {
+            synapse_observability::ObserverEvent::LlmRequest {
                 provider, model, ..
             } => serde_json::json!({
                 "type": "llm_request",
@@ -87,7 +87,7 @@ impl crate::observability::Observer for BroadcastObserver {
                 "model": model,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
-            crate::observability::ObserverEvent::ToolCall {
+            synapse_observability::ObserverEvent::ToolCall {
                 tool,
                 duration,
                 success,
@@ -98,14 +98,14 @@ impl crate::observability::Observer for BroadcastObserver {
                 "success": success,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
-            crate::observability::ObserverEvent::ToolCallStart { tool, .. } => {
+            synapse_observability::ObserverEvent::ToolCallStart { tool, .. } => {
                 serde_json::json!({
                     "type": "tool_call_start",
                     "tool": tool,
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                 })
             }
-            crate::observability::ObserverEvent::Error { component, message } => {
+            synapse_observability::ObserverEvent::Error { component, message } => {
                 serde_json::json!({
                     "type": "error",
                     "component": component,
@@ -113,7 +113,7 @@ impl crate::observability::Observer for BroadcastObserver {
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                 })
             }
-            crate::observability::ObserverEvent::AgentStart { provider, model } => {
+            synapse_observability::ObserverEvent::AgentStart { provider, model } => {
                 serde_json::json!({
                     "type": "agent_start",
                     "provider": provider,
@@ -121,7 +121,7 @@ impl crate::observability::Observer for BroadcastObserver {
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                 })
             }
-            crate::observability::ObserverEvent::AgentEnd {
+            synapse_observability::ObserverEvent::AgentEnd {
                 provider,
                 model,
                 duration,
@@ -142,7 +142,7 @@ impl crate::observability::Observer for BroadcastObserver {
         let _ = self.tx.send(json);
     }
 
-    fn record_metric(&self, metric: &crate::observability::traits::ObserverMetric) {
+    fn record_metric(&self, metric: &synapse_observability::traits::ObserverMetric) {
         self.inner.record_metric(metric);
     }
 

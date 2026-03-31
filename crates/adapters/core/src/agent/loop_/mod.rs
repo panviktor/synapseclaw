@@ -1,7 +1,7 @@
-use crate::approval::ApprovalManager;
-use crate::multimodal;
-use crate::observability::{self, runtime_trace, Observer, ObserverEvent};
-use crate::providers::{
+use synapse_infra::approval::ApprovalManager;
+use synapse_providers::multimodal;
+use synapse_observability::{self, runtime_trace, Observer, ObserverEvent};
+use synapse_providers::{
     self, ChatMessage, ChatRequest, Provider, ProviderCapabilityError, ToolCall,
 };
 use crate::runtime;

@@ -421,8 +421,8 @@ async fn run_heartbeat_worker(
     };
     use std::sync::Arc;
 
-    let observer: std::sync::Arc<dyn crate::observability::Observer> =
-        std::sync::Arc::from(crate::observability::create_observer(&config.observability));
+    let observer: std::sync::Arc<dyn synapse_observability::Observer> =
+        std::sync::Arc::from(synapse_observability::create_observer(&config.observability));
     let engine = HeartbeatEngine::new(
         config.heartbeat.clone(),
         config.workspace_dir.clone(),

@@ -1,0 +1,30 @@
+[package]
+name = "synapse_onboard"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+channel-nostr = ["synapse_domain/channel-nostr"]
+
+[dependencies]
+synapse_domain = { path = "../../domain" }
+synapse_infra = { path = "../infra" }
+synapse_providers = { path = "../providers" }
+synapse_memory = { path = "../memory" }
+
+anyhow = "1.0"
+console = "0.16"
+dialoguer = { version = "0.12", features = ["fuzzy-select"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.50", default-features = false, features = ["fs"] }
+directories = "6"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+shellexpand = "3.1"
+toml = "1.0"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.15"
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }

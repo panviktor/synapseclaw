@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/domain", "crates/adapters/core", "crates/adapters/security", "crates/adapters/memory", "crates/adapters/observability", "crates/adapters/cron-store", "crates/adapters/providers", "crates/adapters/mcp", "crates/adapters/infra", "crates/adapters/channels", "crates/adapters/tools"]
+members = [".", "crates/domain", "crates/adapters/core", "crates/adapters/security", "crates/adapters/memory", "crates/adapters/observability", "crates/adapters/cron-store", "crates/adapters/providers", "crates/adapters/mcp", "crates/adapters/infra", "crates/adapters/channels", "crates/adapters/tools", "crates/adapters/onboard"]
 resolver = "2"
 
 [package]
@@ -43,6 +43,11 @@ synapse_memory = { path = "crates/adapters/memory" }
 # Infrastructure adapters (channels, providers, tools, gateway, agent)
 synapse_adapters = { path = "crates/adapters/core" }
 synapse_cron = { path = "crates/adapters/cron-store" }
+synapse_providers = { path = "crates/adapters/providers" }
+synapse_observability = { path = "crates/adapters/observability" }
+synapse_infra = { path = "crates/adapters/infra" }
+synapse_onboard = { path = "crates/adapters/onboard" }
+synapse_channels = { path = "crates/adapters/channels" }
 
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }
@@ -210,7 +215,7 @@ libc = "0.2"
 
 [features]
 default = ["observability-prometheus", "channel-nostr", "channel-matrix"]
-channel-nostr = ["dep:nostr-sdk", "synapse_domain/channel-nostr", "synapse_adapters/channel-nostr"]
+channel-nostr = ["dep:nostr-sdk", "synapse_domain/channel-nostr", "synapse_adapters/channel-nostr", "synapse_onboard/channel-nostr"]
 channel-matrix = ["dep:matrix-sdk", "synapse_adapters/channel-matrix"]
 channel-lark = ["dep:prost", "synapse_adapters/channel-lark"]
 channel-feishu = ["channel-lark"]

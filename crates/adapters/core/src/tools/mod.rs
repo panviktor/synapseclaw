@@ -593,7 +593,7 @@ pub fn all_tools_with_runtime(
         let trimmed_value = value.trim();
         (!trimmed_value.is_empty()).then(|| trimmed_value.to_owned())
     });
-    let provider_runtime_options = crate::providers::ProviderRuntimeOptions {
+    let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
         auth_profile_override: None,
         provider_api_url: root_config.api_url.clone(),
         synapseclaw_dir: root_config
@@ -654,7 +654,7 @@ pub fn all_tools_with_runtime(
         } else {
             std::path::PathBuf::from(&root_config.workspace.workspaces_dir)
         };
-        let ws_manager = crate::workspace::WorkspaceManager::new(workspaces_dir);
+        let ws_manager = synapse_infra::workspace::WorkspaceManager::new(workspaces_dir);
         tool_arcs.push(Arc::new(WorkspaceTool::new(
             Arc::new(tokio::sync::RwLock::new(ws_manager)),
             security.clone(),

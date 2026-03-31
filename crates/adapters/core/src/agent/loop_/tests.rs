@@ -1,7 +1,7 @@
 use super::{
     load_interactive_session_history, save_interactive_session_history, InteractiveSessionState,
 };
-use crate::providers::ChatMessage;
+use synapse_providers::ChatMessage;
 use tempfile::tempdir;
 
 #[test]
@@ -129,9 +129,9 @@ async fn execute_one_tool_resolves_unique_activated_tool_suffix() {
     assert_eq!(invocations.load(Ordering::SeqCst), 1);
 }
 
-use crate::observability::NoopObserver;
-use crate::providers::traits::ProviderCapabilities;
-use crate::providers::ChatResponse;
+use synapse_observability::NoopObserver;
+use synapse_providers::traits::ProviderCapabilities;
+use synapse_providers::ChatResponse;
 use synapse_memory::{Memory, MemoryCategory, SqliteMemory};
 use tempfile::TempDir;
 
@@ -185,7 +185,7 @@ impl Provider for VisionProvider {
         _temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        let marker_count = crate::multimodal::count_image_markers(request.messages);
+        let marker_count = synapse_providers::multimodal::count_image_markers(request.messages);
         if marker_count == 0 {
             anyhow::bail!("expected image markers in request messages");
         }
@@ -2426,14 +2426,14 @@ fn scrub_credentials_short_values_not_redacted() {
 
 #[test]
 fn trim_history_empty_history() {
-    let mut history: Vec<crate::providers::ChatMessage> = vec![];
+    let mut history: Vec<synapse_providers::ChatMessage> = vec![];
     trim_history(&mut history, 10);
     assert!(history.is_empty());
 }
 
 #[test]
 fn trim_history_system_only() {
-    let mut history = vec![crate::providers::ChatMessage::system("system prompt")];
+    let mut history = vec![synapse_providers::ChatMessage::system("system prompt")];
     trim_history(&mut history, 10);
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].role, "system");
@@ -2442,9 +2442,9 @@ fn trim_history_system_only() {
 #[test]
 fn trim_history_exactly_at_limit() {
     let mut history = vec![
-        crate::providers::ChatMessage::system("system"),
-        crate::providers::ChatMessage::user("msg 1"),
-        crate::providers::ChatMessage::assistant("reply 1"),
+        synapse_providers::ChatMessage::system("system"),
+        synapse_providers::ChatMessage::user("msg 1"),
+        synapse_providers::ChatMessage::assistant("reply 1"),
     ];
     trim_history(&mut history, 2); // 2 non-system messages = exactly at limit
     assert_eq!(history.len(), 3, "should not trim when exactly at limit");
@@ -2453,11 +2453,11 @@ fn trim_history_exactly_at_limit() {
 #[test]
 fn trim_history_removes_oldest_non_system() {
     let mut history = vec![
-        crate::providers::ChatMessage::system("system"),
-        crate::providers::ChatMessage::user("old msg"),
-        crate::providers::ChatMessage::assistant("old reply"),
-        crate::providers::ChatMessage::user("new msg"),
-        crate::providers::ChatMessage::assistant("new reply"),
+        synapse_providers::ChatMessage::system("system"),
+        synapse_providers::ChatMessage::user("old msg"),
+        synapse_providers::ChatMessage::assistant("old reply"),
+        synapse_providers::ChatMessage::user("new msg"),
+        synapse_providers::ChatMessage::assistant("new reply"),
     ];
     trim_history(&mut history, 2);
     assert_eq!(history.len(), 3); // system + 2 kept

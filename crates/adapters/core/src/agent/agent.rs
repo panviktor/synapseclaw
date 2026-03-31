@@ -3,8 +3,8 @@ use crate::agent::dispatcher::{
 };
 use crate::agent::memory_loader::{DefaultMemoryLoader, MemoryLoader};
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
-use crate::observability::{self, Observer, ObserverEvent};
-use crate::providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
+use synapse_observability::{self, Observer, ObserverEvent};
+use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
 use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
 use anyhow::Result;
@@ -39,7 +39,7 @@ pub struct Agent {
     available_hints: Vec<String>,
     route_model_by_hint: HashMap<String, String>,
     /// Cumulative token usage from the last turn (provider-reported).
-    last_turn_usage: Option<crate::providers::traits::TokenUsage>,
+    last_turn_usage: Option<synapse_providers::traits::TokenUsage>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
 }
@@ -286,7 +286,7 @@ impl Agent {
     }
 
     /// Token usage reported by the provider during the last turn (if any).
-    pub fn last_turn_usage(&self) -> Option<&crate::providers::traits::TokenUsage> {
+    pub fn last_turn_usage(&self) -> Option<&synapse_providers::traits::TokenUsage> {
         self.last_turn_usage.as_ref()
     }
 
@@ -296,7 +296,7 @@ impl Agent {
 
     pub fn from_config(config: &Config) -> Result<Self> {
         let observer: Arc<dyn Observer> =
-            Arc::from(observability::create_observer(&config.observability));
+            Arc::from(synapse_observability::create_observer(&config.observability));
         let runtime: Arc<dyn runtime::RuntimeAdapter> =
             Arc::from(runtime::create_runtime(&config.runtime)?);
         let security = Arc::new(security_policy_from_config(
@@ -350,9 +350,9 @@ impl Agent {
             .unwrap_or("anthropic/claude-sonnet-4-20250514")
             .to_string();
 
-        let provider_runtime_options = providers::provider_runtime_options_from_config(config);
+        let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(config);
 
-        let provider: Box<dyn Provider> = providers::create_routed_provider_with_options(
+        let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
             provider_name,
             config.api_key.as_deref(),
             config.api_url.as_deref(),
@@ -649,7 +649,7 @@ impl Agent {
             if let Some(ref u) = response.usage {
                 let prev =
                     self.last_turn_usage
-                        .get_or_insert(crate::providers::traits::TokenUsage {
+                        .get_or_insert(synapse_providers::traits::TokenUsage {
                             input_tokens: None,
                             output_tokens: None,
                             cached_input_tokens: None,
@@ -808,7 +808,7 @@ mod tests {
     use std::collections::HashMap;
 
     struct MockProvider {
-        responses: Mutex<Vec<crate::providers::ChatResponse>>,
+        responses: Mutex<Vec<synapse_providers::ChatResponse>>,
     }
 
     #[async_trait]
@@ -828,10 +828,10 @@ mod tests {
             _request: ChatRequest<'_>,
             _model: &str,
             _temperature: f64,
-        ) -> Result<crate::providers::ChatResponse> {
+        ) -> Result<synapse_providers::ChatResponse> {
             let mut guard = self.responses.lock();
             if guard.is_empty() {
-                return Ok(crate::providers::ChatResponse {
+                return Ok(synapse_providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
@@ -843,7 +843,7 @@ mod tests {
     }
 
     struct ModelCaptureProvider {
-        responses: Mutex<Vec<crate::providers::ChatResponse>>,
+        responses: Mutex<Vec<synapse_providers::ChatResponse>>,
         seen_models: Arc<Mutex<Vec<String>>>,
     }
 
@@ -864,11 +864,11 @@ mod tests {
             _request: ChatRequest<'_>,
             model: &str,
             _temperature: f64,
-        ) -> Result<crate::providers::ChatResponse> {
+        ) -> Result<synapse_providers::ChatResponse> {
             self.seen_models.lock().push(model.to_string());
             let mut guard = self.responses.lock();
             if guard.is_empty() {
-                return Ok(crate::providers::ChatResponse {
+                return Ok(synapse_providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
@@ -907,7 +907,7 @@ mod tests {
     #[tokio::test]
     async fn turn_without_tools_returns_text() {
         let provider = Box::new(MockProvider {
-            responses: Mutex::new(vec![crate::providers::ChatResponse {
+            responses: Mutex::new(vec![synapse_providers::ChatResponse {
                 text: Some("hello".into()),
                 tool_calls: vec![],
                 usage: None,
@@ -924,7 +924,7 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let mut agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -943,9 +943,9 @@ mod tests {
     async fn turn_with_native_dispatcher_handles_tool_results_variant() {
         let provider = Box::new(MockProvider {
             responses: Mutex::new(vec![
-                crate::providers::ChatResponse {
+                synapse_providers::ChatResponse {
                     text: Some(String::new()),
-                    tool_calls: vec![crate::providers::ToolCall {
+                    tool_calls: vec![synapse_providers::ToolCall {
                         id: "tc1".into(),
                         name: "echo".into(),
                         arguments: "{}".into(),
@@ -953,7 +953,7 @@ mod tests {
                     usage: None,
                     reasoning_content: None,
                 },
-                crate::providers::ChatResponse {
+                synapse_providers::ChatResponse {
                     text: Some("done".into()),
                     tool_calls: vec![],
                     usage: None,
@@ -971,7 +971,7 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let mut agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -994,7 +994,7 @@ mod tests {
     async fn turn_routes_with_hint_when_query_classification_matches() {
         let seen_models = Arc::new(Mutex::new(Vec::new()));
         let provider = Box::new(ModelCaptureProvider {
-            responses: Mutex::new(vec![crate::providers::ChatResponse {
+            responses: Mutex::new(vec![synapse_providers::ChatResponse {
                 text: Some("classified".into()),
                 tool_calls: vec![],
                 usage: None,
@@ -1012,7 +1012,7 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let mut route_model_by_hint = HashMap::new();
         route_model_by_hint.insert("fast".to_string(), "anthropic/claude-haiku-4-5".to_string());
         let mut agent = Agent::builder()
@@ -1145,7 +1145,7 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -1176,7 +1176,7 @@ mod tests {
                 .expect("memory creation should succeed with valid config"),
         );
 
-        let observer: Arc<dyn Observer> = Arc::from(crate::observability::NoopObserver {});
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])

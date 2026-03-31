@@ -17,15 +17,15 @@
 // ── Re-exports from synapse_channels crate ──
 pub use synapse_channels::*;
 
-use crate::approval::ApprovalManager;
+use synapse_infra::approval::ApprovalManager;
 use crate::channels::session_backend::SessionBackend;
-use crate::config_io::ConfigIO;
-use crate::identity;
+use synapse_infra::config_io::ConfigIO;
+use synapse_infra::identity;
 use synapse_domain::application::services::tool_filtering::build_tool_instructions;
 // memory module used indirectly via synapse_memory
-use crate::observability::traits::{ObserverEvent, ObserverMetric};
-use crate::observability::{self, Observer};
-use crate::providers::{self, ChatMessage, Provider};
+use synapse_observability::traits::{ObserverEvent, ObserverMetric};
+use synapse_observability::{self, Observer};
+use synapse_providers::{self, ChatMessage, Provider};
 use crate::runtime;
 use crate::tools::{self, Tool};
 use anyhow::{Context, Result};
@@ -215,7 +215,7 @@ struct ChannelRuntimeContext {
     api_key: Option<String>,
     api_url: Option<String>,
     reliability: Arc<synapse_domain::config::schema::ReliabilityConfig>,
-    provider_runtime_options: providers::ProviderRuntimeOptions,
+    provider_runtime_options: synapse_providers::ProviderRuntimeOptions,
     workspace_dir: Arc<PathBuf>,
     message_timeout_secs: u64,
     interrupt_on_new_message: InterruptOnNewMessageConfig,
@@ -490,7 +490,7 @@ fn resolve_provider_alias(name: &str) -> Option<String> {
         return None;
     }
 
-    let providers_list = providers::list_providers();
+    let providers_list = synapse_providers::list_providers();
     for provider in providers_list {
         if provider.name.eq_ignore_ascii_case(candidate)
             || provider
@@ -759,7 +759,7 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
             .api_key_env
             .as_deref()
             .and_then(|env| std::env::var(env).ok());
-        match providers::create_provider_with_options(
+        match synapse_providers::create_provider_with_options(
             provider_name,
             api_key.as_deref(),
             &ctx.provider_runtime_options,
@@ -906,11 +906,11 @@ async fn create_resilient_provider_nonblocking(
     api_key: Option<String>,
     api_url: Option<String>,
     reliability: synapse_domain::config::schema::ReliabilityConfig,
-    provider_runtime_options: providers::ProviderRuntimeOptions,
+    provider_runtime_options: synapse_providers::ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
     let provider_name = provider_name.to_string();
     tokio::task::spawn_blocking(move || {
-        providers::create_resilient_provider_with_options(
+        synapse_providers::create_resilient_provider_with_options(
             &provider_name,
             api_key.as_deref(),
             api_url.as_deref(),
@@ -977,7 +977,7 @@ fn build_providers_help_response(current: &ChannelRouteSelection) -> String {
     response.push_str("\nSwitch provider with `/models <provider>`.\n");
     response.push_str("Switch model with `/model <model-id>`.\n\n");
     response.push_str("Available providers:\n");
-    for provider in providers::list_providers() {
+    for provider in synapse_providers::list_providers() {
         if provider.aliases.is_empty() {
             let _ = writeln!(response, "- {}", provider.name);
         } else {
@@ -1333,7 +1333,7 @@ async fn handle_message_via_orchestrator(
     caps: &[synapse_domain::domain::channel::ChannelCapability],
     original_msg: &traits::ChannelMessage,
 ) {
-    use crate::inbound::{
+    use synapse_channels::inbound::{
         channel_output_adapter, conversation_history_adapter, route_selection_adapter,
         session_summary_adapter,
     };
@@ -1672,7 +1672,7 @@ async fn format_command_effect(
                         "Provider switched to `{provider_name}`. Use `/model <model-id>` to set a model."
                     ),
                     Err(err) => {
-                        let safe_err = providers::sanitize_api_error(&err.to_string());
+                        let safe_err = synapse_providers::sanitize_api_error(&err.to_string());
                         format!("Failed to initialize provider `{provider_name}`: {safe_err}")
                     }
                 },
@@ -2885,7 +2885,7 @@ pub async fn start_channels(
     shared_ipc_client: Option<std::sync::Arc<crate::tools::agents_ipc::IpcClient>>,
 ) -> Result<()> {
     let provider_name = resolved_default_provider(&config);
-    let provider_runtime_options = providers::ProviderRuntimeOptions {
+    let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
         auth_profile_override: None,
         provider_api_url: config.api_url.clone(),
         synapseclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
@@ -2929,7 +2929,7 @@ pub async fn start_channels(
     }
 
     let observer: Arc<dyn Observer> =
-        Arc::from(observability::create_observer(&config.observability));
+        Arc::from(synapse_observability::create_observer(&config.observability));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
     let security = Arc::new(security_policy_from_config(
@@ -3478,8 +3478,8 @@ pub async fn start_channels(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::observability::NoopObserver;
-    use crate::providers::{ChatMessage, Provider};
+    use synapse_observability::NoopObserver;
+    use synapse_providers::{ChatMessage, Provider};
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -3953,7 +3953,7 @@ mod tests {
             api_key: None,
             api_url: None,
             reliability: Arc::new(synapse_domain::config::schema::ReliabilityConfig::default()),
-            provider_runtime_options: providers::ProviderRuntimeOptions::default(),
+            provider_runtime_options: synapse_providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
@@ -4052,7 +4052,7 @@ mod tests {
             api_key: None,
             api_url: None,
             reliability: Arc::new(synapse_domain::config::schema::ReliabilityConfig::default()),
-            provider_runtime_options: providers::ProviderRuntimeOptions::default(),
+            provider_runtime_options: synapse_providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
@@ -4166,7 +4166,7 @@ mod tests {
             api_key: None,
             api_url: None,
             reliability: Arc::new(synapse_domain::config::schema::ReliabilityConfig::default()),
-            provider_runtime_options: providers::ProviderRuntimeOptions::default(),
+            provider_runtime_options: synapse_providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
@@ -4277,7 +4277,7 @@ mod tests {
             api_key: None,
             api_url: None,
             reliability: Arc::new(synapse_domain::config::schema::ReliabilityConfig::default()),
-            provider_runtime_options: providers::ProviderRuntimeOptions::default(),
+            provider_runtime_options: synapse_providers::ProviderRuntimeOptions::default(),
             workspace_dir: Arc::new(std::env::temp_dir()),
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
@@ -4702,7 +4702,7 @@ mod tests {
             .expect("should produce non-char-boundary data at byte index 120");
 
         observer.record_event(
-            &crate::observability::traits::ObserverEvent::ToolCallStart {
+            &synapse_observability::traits::ObserverEvent::ToolCallStart {
                 tool: "file_write".to_string(),
                 arguments: Some(payload),
             },

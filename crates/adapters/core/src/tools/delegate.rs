@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
 use crate::agent::loop_::run_tool_call_loop;
-use crate::observability::traits::{Observer, ObserverEvent, ObserverMetric};
-use crate::providers::{self, ChatMessage, Provider};
+use synapse_observability::traits::{Observer, ObserverEvent, ObserverMetric};
+use synapse_providers::{self, ChatMessage, Provider};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde_json::json;
@@ -27,7 +27,7 @@ pub struct DelegateTool {
     /// Global credential fallback (from config.api_key)
     fallback_credential: Option<String>,
     /// Provider runtime options inherited from root config.
-    provider_runtime_options: providers::ProviderRuntimeOptions,
+    provider_runtime_options: synapse_providers::ProviderRuntimeOptions,
     /// Depth at which this tool instance lives in the delegation chain.
     depth: u32,
     /// Parent tool registry for agentic sub-agents.
@@ -46,7 +46,7 @@ impl DelegateTool {
             agents,
             fallback_credential,
             security,
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         )
     }
 
@@ -54,7 +54,7 @@ impl DelegateTool {
         agents: HashMap<String, DelegateAgentConfig>,
         fallback_credential: Option<String>,
         security: Arc<SecurityPolicy>,
-        provider_runtime_options: providers::ProviderRuntimeOptions,
+        provider_runtime_options: synapse_providers::ProviderRuntimeOptions,
     ) -> Self {
         Self {
             agents: Arc::new(agents),
@@ -81,7 +81,7 @@ impl DelegateTool {
             fallback_credential,
             security,
             depth,
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         )
     }
 
@@ -90,7 +90,7 @@ impl DelegateTool {
         fallback_credential: Option<String>,
         security: Arc<SecurityPolicy>,
         depth: u32,
-        provider_runtime_options: providers::ProviderRuntimeOptions,
+        provider_runtime_options: synapse_providers::ProviderRuntimeOptions,
     ) -> Self {
         Self {
             agents: Arc::new(agents),
@@ -258,7 +258,7 @@ impl Tool for DelegateTool {
         #[allow(clippy::option_as_ref_deref)]
         let provider_credential = provider_credential_owned.as_ref().map(String::as_str);
 
-        let provider: Box<dyn Provider> = match providers::create_provider_with_options(
+        let provider: Box<dyn Provider> = match synapse_providers::create_provider_with_options(
             &agent_config.provider,
             provider_credential,
             &self.provider_runtime_options,
@@ -512,7 +512,7 @@ impl Observer for NoopObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::{ChatRequest, ChatResponse, ToolCall};
+    use synapse_providers::{ChatRequest, ChatResponse, ToolCall};
     use anyhow::anyhow;
     use synapse_domain::domain::config::AutonomyLevel;
     use synapse_domain::domain::security_policy::SecurityPolicy;

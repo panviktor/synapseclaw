@@ -1,6 +1,6 @@
 //! Adapter: wraps existing `dyn Memory` + `ConversationStorePort` as MemoryTiersPort.
 
-use crate::providers::Provider;
+use synapse_providers::Provider;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
