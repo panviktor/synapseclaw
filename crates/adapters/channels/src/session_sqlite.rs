@@ -4,7 +4,7 @@
 //! Provides full-text search via FTS5 and automatic TTL-based cleanup.
 //! Designed as the default backend, replacing JSONL for new installations.
 
-use crate::session_backend::{SessionBackend, SessionMetadata, SessionQuery};
+use crate::session_backend::{ChannelSummary, SessionBackend, SessionMetadata, SessionQuery};
 use synapse_providers::traits::ChatMessage;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
@@ -65,7 +65,14 @@ impl SqliteSessionBackend {
              CREATE TRIGGER IF NOT EXISTS sessions_ad AFTER DELETE ON sessions BEGIN
                 INSERT INTO sessions_fts(sessions_fts, rowid, session_key, content)
                 VALUES ('delete', old.id, old.session_key, old.content);
-             END;",
+             END;
+
+             CREATE TABLE IF NOT EXISTS session_summaries (
+                session_key              TEXT PRIMARY KEY,
+                summary                  TEXT NOT NULL,
+                message_count_at_summary INTEGER NOT NULL,
+                updated_at               TEXT NOT NULL
+             );",
         )
         .context("Failed to initialize session schema")?;
 
@@ -347,6 +354,66 @@ impl SessionBackend for SqliteSessionBackend {
             })
             .collect()
     }
+
+    fn load_summary(&self, session_key: &str) -> Option<ChannelSummary> {
+        let conn = self.conn.lock();
+        conn.query_row(
+            "SELECT summary, message_count_at_summary, updated_at
+             FROM session_summaries WHERE session_key = ?1",
+            rusqlite::params![session_key],
+            |row| {
+                let updated_str: String = row.get(2)?;
+                let updated_at = chrono::DateTime::parse_from_rfc3339(&updated_str)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+                Ok(ChannelSummary {
+                    summary: row.get(0)?,
+                    message_count_at_summary: row.get(1)?,
+                    updated_at,
+                })
+            },
+        )
+        .ok()
+    }
+
+    fn save_summary(&self, session_key: &str, summary: &ChannelSummary) -> std::io::Result<()> {
+        let conn = self.conn.lock();
+        conn.execute(
+            "INSERT INTO session_summaries (session_key, summary, message_count_at_summary, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(session_key) DO UPDATE SET
+                 summary = excluded.summary,
+                 message_count_at_summary = excluded.message_count_at_summary,
+                 updated_at = excluded.updated_at",
+            rusqlite::params![
+                session_key,
+                summary.summary,
+                summary.message_count_at_summary,
+                summary.updated_at.to_rfc3339(),
+            ],
+        )
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        Ok(())
+    }
+
+    fn delete(&self, session_key: &str) -> std::io::Result<bool> {
+        let conn = self.conn.lock();
+        let deleted = conn
+            .execute(
+                "DELETE FROM sessions WHERE session_key = ?1",
+                rusqlite::params![session_key],
+            )
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let _ = conn.execute(
+            "DELETE FROM session_metadata WHERE session_key = ?1",
+            rusqlite::params![session_key],
+        );
+        let _ = conn.execute(
+            "DELETE FROM session_summaries WHERE session_key = ?1",
+            rusqlite::params![session_key],
+        );
+        Ok(deleted > 0)
+    }
 }
 
 #[cfg(test)]
@@ -499,5 +566,66 @@ mod tests {
         let msgs = backend.load("test_user");
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].content, "hello");
+    }
+
+    #[test]
+    fn summary_round_trip() {
+        let tmp = TempDir::new().unwrap();
+        let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
+
+        assert!(backend.load_summary("user1").is_none());
+
+        let summary = ChannelSummary {
+            summary: "User asked about Rust async patterns".to_string(),
+            message_count_at_summary: 10,
+            updated_at: chrono::Utc::now(),
+        };
+        backend.save_summary("user1", &summary).unwrap();
+
+        let loaded = backend.load_summary("user1").unwrap();
+        assert_eq!(loaded.summary, "User asked about Rust async patterns");
+        assert_eq!(loaded.message_count_at_summary, 10);
+    }
+
+    #[test]
+    fn summary_upsert_overwrites() {
+        let tmp = TempDir::new().unwrap();
+        let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
+
+        let s1 = ChannelSummary {
+            summary: "first".to_string(),
+            message_count_at_summary: 5,
+            updated_at: chrono::Utc::now(),
+        };
+        backend.save_summary("k", &s1).unwrap();
+
+        let s2 = ChannelSummary {
+            summary: "updated".to_string(),
+            message_count_at_summary: 15,
+            updated_at: chrono::Utc::now(),
+        };
+        backend.save_summary("k", &s2).unwrap();
+
+        let loaded = backend.load_summary("k").unwrap();
+        assert_eq!(loaded.summary, "updated");
+        assert_eq!(loaded.message_count_at_summary, 15);
+    }
+
+    #[test]
+    fn delete_removes_summary_too() {
+        let tmp = TempDir::new().unwrap();
+        let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
+
+        backend.append("k", &ChatMessage::user("hi")).unwrap();
+        let summary = ChannelSummary {
+            summary: "test".to_string(),
+            message_count_at_summary: 1,
+            updated_at: chrono::Utc::now(),
+        };
+        backend.save_summary("k", &summary).unwrap();
+
+        assert!(backend.delete("k").unwrap());
+        assert!(backend.load_summary("k").is_none());
+        assert!(backend.load("k").is_empty());
     }
 }
