@@ -920,7 +920,7 @@ mod tests {
             ..synapse_domain::config::schema::MemoryConfig::default()
         };
         let mem: Arc<dyn Memory> = Arc::from(
-            synapse_synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
                 .expect("memory creation should succeed with valid config"),
         );
 
@@ -967,7 +967,7 @@ mod tests {
             ..synapse_domain::config::schema::MemoryConfig::default()
         };
         let mem: Arc<dyn Memory> = Arc::from(
-            synapse_synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
                 .expect("memory creation should succeed with valid config"),
         );
 
@@ -1008,7 +1008,7 @@ mod tests {
             ..synapse_domain::config::schema::MemoryConfig::default()
         };
         let mem: Arc<dyn Memory> = Arc::from(
-            synapse_synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
                 .expect("memory creation should succeed with valid config"),
         );
 
@@ -1141,7 +1141,7 @@ mod tests {
             ..synapse_domain::config::schema::MemoryConfig::default()
         };
         let mem: Arc<dyn Memory> = Arc::from(
-            synapse_synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
                 .expect("memory creation should succeed with valid config"),
         );
 
@@ -1172,7 +1172,7 @@ mod tests {
             ..synapse_domain::config::schema::MemoryConfig::default()
         };
         let mem: Arc<dyn Memory> = Arc::from(
-            synapse_synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
+            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
                 .expect("memory creation should succeed with valid config"),
         );
 

@@ -320,6 +320,7 @@ fn truncate_content(s: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use synapse_memory::*;
 
     #[test]

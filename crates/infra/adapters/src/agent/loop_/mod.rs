@@ -43,7 +43,7 @@ const AUTOSAVE_MIN_MESSAGE_CHARS: usize = 20;
 pub(crate) use synapse_domain::application::services::tool_filtering::compute_excluded_mcp_tools;
 #[cfg(test)]
 pub(crate) use synapse_domain::application::services::tool_filtering::{
-    filter_by_allowed_tools, filter_tool_specs_for_turn,
+    filter_by_allowed_tools, filter_tool_specs_for_turn, glob_match,
 };
 
 /// Scrub credentials from tool output — delegated to `synapse_security`.
@@ -240,8 +240,8 @@ async fn build_context(
 }
 
 mod cli_run;
-mod tool_call_parsing;
-mod tool_execution;
+pub(super) mod tool_call_parsing;
+pub(super) mod tool_execution;
 
 // Re-export public API from sub-modules.
 pub use cli_run::{process_message, run};
@@ -252,6 +252,20 @@ pub(crate) use tool_call_parsing::ParsedToolCall;
 pub(crate) use tool_execution::run_tool_call_loop;
 #[allow(unused_imports)]
 pub(crate) use tool_execution::{agent_turn, is_tool_loop_cancelled, ToolLoopCancelled};
+
+#[cfg(test)]
+pub(crate) use tool_call_parsing::{
+    build_native_assistant_history, build_native_assistant_history_from_parsed_calls,
+    default_param_for_tool, detect_tool_call_parse_issue, extract_json_values,
+    map_tool_name_alias, parse_arguments_value, parse_glm_shortened_body,
+    parse_glm_style_tool_calls, parse_perl_style_tool_calls, parse_tool_call_value,
+    parse_tool_calls, parse_tool_calls_from_json_value, resolve_display_text, strip_think_tags,
+    strip_tool_result_blocks,
+};
+#[cfg(test)]
+pub(crate) use tool_execution::{
+    execute_one_tool, should_execute_tools_in_parallel, ToolExecutionOutcome,
+};
 
 #[cfg(test)]
 mod tests;

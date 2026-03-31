@@ -11,7 +11,7 @@ use std::fmt::Write;
 
 // ── Glob matching (single `*` wildcard) ─────────────────────────────
 
-fn glob_match(pattern: &str, name: &str) -> bool {
+pub fn glob_match(pattern: &str, name: &str) -> bool {
     match pattern.find('*') {
         None => pattern == name,
         Some(star) => {

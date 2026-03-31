@@ -28,7 +28,7 @@ use crate::agent::agent::Agent;
 use crate::agent::dispatcher::{
     NativeToolDispatcher, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
-use crate::config::{AgentConfig, MemoryConfig};
+use synapse_domain::config::schema::{AgentConfig, MemoryConfig};
 use crate::observability::{NoopObserver, Observer};
 use crate::providers::{
     ChatMessage, ChatRequest, ChatResponse, ConversationMessage, Provider, ToolCall,
@@ -257,7 +257,7 @@ fn make_memory() -> Arc<dyn Memory> {
         backend: "none".into(),
         ..MemoryConfig::default()
     };
-    Arc::from(memory::create_memory(&cfg, &std::env::temp_dir(), None).unwrap())
+    Arc::from(synapse_memory::create_memory(&cfg, &std::env::temp_dir(), None).unwrap())
 }
 
 fn make_sqlite_memory() -> (Arc<dyn Memory>, tempfile::TempDir) {
@@ -266,7 +266,7 @@ fn make_sqlite_memory() -> (Arc<dyn Memory>, tempfile::TempDir) {
         backend: "sqlite".into(),
         ..MemoryConfig::default()
     };
-    let mem = Arc::from(memory::create_memory(&cfg, tmp.path(), None).unwrap());
+    let mem = Arc::from(synapse_memory::create_memory(&cfg, tmp.path(), None).unwrap());
     (mem, tmp)
 }
 

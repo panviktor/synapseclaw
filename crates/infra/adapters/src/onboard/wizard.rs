@@ -13,6 +13,7 @@ use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+#[cfg(feature = "channel-nostr")]
 use synapse_domain::config::schema::{default_nostr_relays, NostrConfig};
 use synapse_domain::config::schema::{
     AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config, DiscordConfig,
@@ -23,7 +24,6 @@ use synapse_domain::config::schema::{
     DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig, NextcloudTalkConfig, QQConfig,
     SignalConfig, StreamMode, WhatsAppConfig,
 };
-#[cfg(feature = "channel-nostr")]
 use synapse_memory::{
     default_memory_backend_key, memory_backend_profile, selectable_memory_backends,
 };

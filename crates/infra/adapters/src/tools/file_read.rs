@@ -691,7 +691,7 @@ mod tests {
     // ── E2E: full agent pipeline with real FileReadTool + PDF extraction ──
 
     mod e2e_helpers {
-        use crate::memory;
+        use synapse_memory as memory;
         use crate::observability::{NoopObserver, Observer};
         use crate::providers::{ChatMessage, ChatRequest, ChatResponse, Provider};
         use std::sync::{Arc, Mutex};

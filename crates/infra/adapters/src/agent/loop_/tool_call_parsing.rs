@@ -9,7 +9,7 @@ pub(super) fn find_tool<'a>(tools: &'a [Box<dyn Tool>], name: &str) -> Option<&'
     tools.iter().find(|t| t.name() == name).map(|t| t.as_ref())
 }
 
-pub(super) fn parse_arguments_value(raw: Option<&serde_json::Value>) -> serde_json::Value {
+pub(crate) fn parse_arguments_value(raw: Option<&serde_json::Value>) -> serde_json::Value {
     match raw {
         Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(s)
             .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
@@ -18,7 +18,7 @@ pub(super) fn parse_arguments_value(raw: Option<&serde_json::Value>) -> serde_js
     }
 }
 
-pub(super) fn parse_tool_call_id(
+pub(crate) fn parse_tool_call_id(
     root: &serde_json::Value,
     function: Option<&serde_json::Value>,
 ) -> Option<String> {
@@ -33,7 +33,7 @@ pub(super) fn parse_tool_call_id(
         .map(ToString::to_string)
 }
 
-pub(super) fn canonicalize_json_for_tool_signature(value: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn canonicalize_json_for_tool_signature(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
             let mut keys: Vec<String> = map.keys().cloned().collect();
@@ -56,13 +56,13 @@ pub(super) fn canonicalize_json_for_tool_signature(value: &serde_json::Value) ->
     }
 }
 
-pub(super) fn tool_call_signature(name: &str, arguments: &serde_json::Value) -> (String, String) {
+pub(crate) fn tool_call_signature(name: &str, arguments: &serde_json::Value) -> (String, String) {
     let canonical_args = canonicalize_json_for_tool_signature(arguments);
     let args_json = serde_json::to_string(&canonical_args).unwrap_or_else(|_| "{}".to_string());
     (name.trim().to_ascii_lowercase(), args_json)
 }
 
-fn parse_tool_call_value(value: &serde_json::Value) -> Option<ParsedToolCall> {
+pub(crate) fn parse_tool_call_value(value: &serde_json::Value) -> Option<ParsedToolCall> {
     if let Some(function) = value.get("function") {
         let tool_call_id = parse_tool_call_id(value, Some(function));
         let name = function
@@ -106,7 +106,7 @@ fn parse_tool_call_value(value: &serde_json::Value) -> Option<ParsedToolCall> {
     })
 }
 
-fn parse_tool_calls_from_json_value(value: &serde_json::Value) -> Vec<ParsedToolCall> {
+pub(crate) fn parse_tool_calls_from_json_value(value: &serde_json::Value) -> Vec<ParsedToolCall> {
     let mut calls = Vec::new();
 
     if let Some(tool_calls) = value.get("tool_calls").and_then(|v| v.as_array()) {
@@ -437,7 +437,7 @@ fn strip_leading_close_tags(mut input: &str) -> &str {
 /// content inside `<invoke>` tags where the LLM has explicitly indicated intent
 /// to make a tool call. Do NOT use this on raw user input or content that
 /// could contain prompt injection payloads.
-fn extract_json_values(input: &str) -> Vec<serde_json::Value> {
+pub(crate) fn extract_json_values(input: &str) -> Vec<serde_json::Value> {
     let mut values = Vec::new();
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -577,7 +577,7 @@ fn parse_xml_attribute_tool_calls(response: &str) -> Vec<ParsedToolCall> {
 /// }}
 /// /TOOL_CALL
 /// ```
-fn parse_perl_style_tool_calls(response: &str) -> Vec<ParsedToolCall> {
+pub(crate) fn parse_perl_style_tool_calls(response: &str) -> Vec<ParsedToolCall> {
     let mut calls = Vec::new();
 
     // Regex to find TOOL_CALL blocks - handle double closing braces }}
@@ -698,7 +698,7 @@ fn parse_function_call_tool_calls(response: &str) -> Vec<ParsedToolCall> {
 /// Parse GLM-style tool calls from response text.
 /// Map tool name aliases from various LLM providers to SynapseClaw tool names.
 /// This handles variations like "fileread" -> "file_read", "bash" -> "shell", etc.
-pub(super) fn map_tool_name_alias(tool_name: &str) -> &str {
+pub(crate) fn map_tool_name_alias(tool_name: &str) -> &str {
     match tool_name {
         // Shell variations (including GLM aliases that map to shell)
         "shell" | "bash" | "sh" | "exec" | "command" | "cmd" | "browser_open" | "browser"
@@ -732,7 +732,7 @@ fn build_curl_command(url: &str) -> Option<String> {
     Some(format!("curl -s '{}'", escaped))
 }
 
-fn parse_glm_style_tool_calls(text: &str) -> Vec<(String, serde_json::Value, Option<String>)> {
+pub(crate) fn parse_glm_style_tool_calls(text: &str) -> Vec<(String, serde_json::Value, Option<String>)> {
     let mut calls = Vec::new();
 
     for line in text.lines() {
@@ -798,7 +798,7 @@ fn parse_glm_style_tool_calls(text: &str) -> Vec<(String, serde_json::Value, Opt
 /// When a model emits a shortened call like `shell>uname -a` (without an
 /// explicit `/param_name`), we need to infer which parameter the value maps
 /// to. This function encodes the mapping for known SynapseClaw tools.
-fn default_param_for_tool(tool: &str) -> &'static str {
+pub(crate) fn default_param_for_tool(tool: &str) -> &'static str {
     match tool {
         "shell" | "bash" | "sh" | "exec" | "command" | "cmd" => "command",
         // All file tools default to "path"
@@ -827,7 +827,7 @@ fn default_param_for_tool(tool: &str) -> &'static str {
 /// 3. **Attribute-style**: `tool_name key="value" [/]>` — XML-like attributes.
 ///
 /// Returns `None` if the body does not match any of these formats.
-fn parse_glm_shortened_body(body: &str) -> Option<ParsedToolCall> {
+pub(crate) fn parse_glm_shortened_body(body: &str) -> Option<ParsedToolCall> {
     let body = body.trim();
     if body.is_empty() {
         return None;
@@ -995,7 +995,7 @@ fn parse_glm_shortened_body(body: &str) -> Option<ParsedToolCall> {
 /// compatibility.
 ///
 /// Also supports JSON with `tool_calls` array from OpenAI-format responses.
-pub(super) fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
+pub(crate) fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
     // Strip `<think>...</think>` blocks before parsing.  Qwen and other
     // reasoning models embed chain-of-thought inline in the response text;
     // these tags can interfere with `<tool_call>` extraction and must be
@@ -1389,7 +1389,7 @@ pub(super) fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) 
 /// Qwen and other reasoning models embed chain-of-thought inline in the
 /// response text using `<think>` tags.  These must be removed before parsing
 /// tool-call tags or displaying output.
-pub(super) fn strip_think_tags(s: &str) -> String {
+pub(crate) fn strip_think_tags(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut rest = s;
     loop {
@@ -1411,7 +1411,7 @@ pub(super) fn strip_think_tags(s: &str) -> String {
 
 /// Strip prompt-guided tool artifacts from visible output while preserving
 /// raw model text in history for future turns.
-pub(super) fn strip_tool_result_blocks(text: &str) -> String {
+pub(crate) fn strip_tool_result_blocks(text: &str) -> String {
     static TOOL_RESULT_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"(?s)<tool_result[^>]*>.*?</tool_result>").unwrap());
     static THINKING_RE: LazyLock<Regex> =
@@ -1432,7 +1432,7 @@ pub(super) fn strip_tool_result_blocks(text: &str) -> String {
     result.trim().to_string()
 }
 
-pub(super) fn detect_tool_call_parse_issue(
+pub(crate) fn detect_tool_call_parse_issue(
     response: &str,
     parsed_calls: &[ParsedToolCall],
 ) -> Option<String> {
@@ -1467,7 +1467,7 @@ pub(super) fn detect_tool_call_parse_issue(
     }
 }
 
-pub(super) fn parse_structured_tool_calls(tool_calls: &[ToolCall]) -> Vec<ParsedToolCall> {
+pub(crate) fn parse_structured_tool_calls(tool_calls: &[ToolCall]) -> Vec<ParsedToolCall> {
     tool_calls
         .iter()
         .map(|call| ParsedToolCall {
@@ -1482,7 +1482,7 @@ pub(super) fn parse_structured_tool_calls(tool_calls: &[ToolCall]) -> Vec<Parsed
 /// Build assistant history entry in JSON format for native tool-call APIs.
 /// `convert_messages` in the OpenRouter provider parses this JSON to reconstruct
 /// the proper `NativeMessage` with structured `tool_calls`.
-pub(super) fn build_native_assistant_history(
+pub(crate) fn build_native_assistant_history(
     text: &str,
     tool_calls: &[ToolCall],
     reasoning_content: Option<&str>,
@@ -1519,7 +1519,7 @@ pub(super) fn build_native_assistant_history(
     obj.to_string()
 }
 
-pub(super) fn build_native_assistant_history_from_parsed_calls(
+pub(crate) fn build_native_assistant_history_from_parsed_calls(
     text: &str,
     tool_calls: &[ParsedToolCall],
     reasoning_content: Option<&str>,
@@ -1556,7 +1556,7 @@ pub(super) fn build_native_assistant_history_from_parsed_calls(
     Some(obj.to_string())
 }
 
-pub(super) fn build_assistant_history_with_tool_calls(
+pub(crate) fn build_assistant_history_with_tool_calls(
     text: &str,
     tool_calls: &[ToolCall],
 ) -> String {
@@ -1580,7 +1580,7 @@ pub(super) fn build_assistant_history_with_tool_calls(
     parts.join("\n")
 }
 
-pub(super) fn resolve_display_text(
+pub(crate) fn resolve_display_text(
     response_text: &str,
     parsed_text: &str,
     has_tool_calls: bool,

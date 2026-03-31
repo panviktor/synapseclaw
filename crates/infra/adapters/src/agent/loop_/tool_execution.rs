@@ -62,7 +62,7 @@ pub(crate) async fn agent_turn(
     .await
 }
 
-async fn execute_one_tool(
+pub(crate) async fn execute_one_tool(
     call_name: &str,
     call_arguments: serde_json::Value,
     tools_registry: &[Box<dyn Tool>],
@@ -199,14 +199,14 @@ async fn execute_one_tool(
     }
 }
 
-struct ToolExecutionOutcome {
-    output: String,
-    success: bool,
-    error_reason: Option<String>,
-    duration: Duration,
+pub(crate) struct ToolExecutionOutcome {
+    pub(crate) output: String,
+    pub(crate) success: bool,
+    pub(crate) error_reason: Option<String>,
+    pub(crate) duration: Duration,
 }
 
-fn should_execute_tools_in_parallel(
+pub(crate) fn should_execute_tools_in_parallel(
     tool_calls: &[ParsedToolCall],
     approval: Option<&dyn ApprovalPort>,
 ) -> bool {
