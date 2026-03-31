@@ -8,7 +8,7 @@ publish = false
 memory-postgres = ["dep:postgres", "dep:tokio-postgres"]
 
 [dependencies]
-synapse_domain = { path = "../../../domain" }
+synapse_domain = { path = "../../domain" }
 anyhow = "1.0"
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }

@@ -129,7 +129,7 @@ impl MemoryTiersPort for MemoryTiersAdapter {
     // ── Consolidation ────────────────────────────────────────────
 
     async fn consolidate_turn(&self, user_message: &str, assistant_response: &str) -> Result<()> {
-        crate::memory::consolidation::consolidate_turn(
+        crate::memory_adapters::consolidation::consolidate_turn(
             self.provider.as_ref(),
             &self.model,
             self.memory.as_ref(),

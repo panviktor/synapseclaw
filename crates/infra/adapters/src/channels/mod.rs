@@ -1410,7 +1410,7 @@ async fn handle_message_via_orchestrator(
         channel_output_adapter, conversation_history_adapter, route_selection_adapter,
         session_summary_adapter,
     };
-    use crate::memory::memory_adapter;
+    use crate::memory_adapters::memory_adapter;
     use crate::runtime::{agent_runtime_adapter, hooks_adapter};
     use synapse_domain::application::use_cases::handle_inbound_message as uc;
     use synapse_domain::ports::hooks::NoOpHooks;

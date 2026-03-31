@@ -1564,7 +1564,7 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
         (model, temp, prov)
     };
 
-    let generator = crate::memory::summary_generator_adapter::ProviderSummaryGenerator::new(
+    let generator = crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
         provider,
         summary_model,
         temperature,

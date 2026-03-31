@@ -1235,7 +1235,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Memory { memory_command } => {
-            synapse_adapters::memory::cli::handle_command(memory_command, &config).await
+            synapse_adapters::memory_adapters::cli::handle_command(memory_command, &config).await
         }
 
         Commands::Auth { auth_command } => handle_auth_command(auth_command, &config).await,

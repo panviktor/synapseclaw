@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 synapse_domain = { path = "../../domain" }
-synapse_security = { path = "../adapters/security" }
+synapse_security = { path = "../security" }
 
 anyhow = "1.0"
 clap = { version = "4", features = ["derive"] }

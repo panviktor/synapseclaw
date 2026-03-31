@@ -166,8 +166,8 @@ pub trait Observer: Send + Sync + 'static {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
     use super::*;
+    use std::sync::Mutex;
     use std::time::Duration;
 
     #[derive(Default)]

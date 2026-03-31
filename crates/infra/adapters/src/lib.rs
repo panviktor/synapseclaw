@@ -18,7 +18,7 @@ pub mod channels;
 pub mod commands;
 pub mod inbound;
 pub mod ipc;
-pub mod memory;
+pub mod memory_adapters;
 pub mod middleware;
 pub mod pipeline;
 pub mod routing;
