@@ -2,7 +2,7 @@
 //! The GLM API requires JWT tokens generated from the `id.secret` API key format
 //! with a custom `sign_type: "SIGN"` header, and uses `/v4/chat/completions`.
 
-use crate::providers::traits::{ChatMessage, Provider};
+use crate::traits::{ChatMessage, Provider};
 use async_trait::async_trait;
 use reqwest::Client;
 use ring::hmac;

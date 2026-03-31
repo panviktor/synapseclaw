@@ -4,7 +4,7 @@ use futures_util::{stream, StreamExt};
 // ── Re-exports from domain ──────────────────────────────────────────
 //
 // All LLM value objects are domain-owned. Adapters re-export them so
-// existing `crate::providers::*` import paths continue to work.
+// existing `crate::*` import paths continue to work.
 
 pub use synapse_domain::domain::message::ChatMessage;
 pub use synapse_domain::ports::provider::{

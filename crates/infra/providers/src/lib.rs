@@ -1,3 +1,14 @@
+#![allow(
+    dead_code,
+    clippy::cast_possible_truncation,
+    clippy::cast_lossless,
+    clippy::field_reassign_with_default,
+    clippy::map_unwrap_or,
+    clippy::new_without_default,
+    clippy::unnecessary_cast,
+    clippy::unnecessary_map_or,
+    clippy::should_implement_trait
+)]
 //! Provider subsystem for model inference backends.
 //!
 //! This module implements the factory pattern for AI model providers. Each provider
@@ -15,6 +26,10 @@
 //!
 //! To add a new provider, implement [`Provider`] in a new submodule and register it
 //! in [`create_provider_with_url`]. See `AGENTS.md` §7.1 for the full change playbook.
+
+pub mod auth;
+pub mod multimodal;
+pub mod proxy;
 
 pub mod anthropic;
 pub mod azure_openai;
@@ -79,7 +94,7 @@ const ZAI_GLOBAL_BASE_URL: &str = "https://api.z.ai/api/coding/paas/v4";
 const ZAI_CN_BASE_URL: &str = "https://open.bigmodel.cn/api/coding/paas/v4";
 const VERCEL_AI_GATEWAY_BASE_URL: &str = "https://ai-gateway.vercel.sh/v1";
 
-pub(crate) fn is_minimax_intl_alias(name: &str) -> bool {
+pub fn is_minimax_intl_alias(name: &str) -> bool {
     matches!(
         name,
         "minimax"
@@ -93,87 +108,87 @@ pub(crate) fn is_minimax_intl_alias(name: &str) -> bool {
     )
 }
 
-pub(crate) fn is_minimax_cn_alias(name: &str) -> bool {
+pub fn is_minimax_cn_alias(name: &str) -> bool {
     matches!(
         name,
         "minimax-cn" | "minimaxi" | "minimax-oauth-cn" | "minimax-portal-cn"
     )
 }
 
-pub(crate) fn is_minimax_alias(name: &str) -> bool {
+pub fn is_minimax_alias(name: &str) -> bool {
     is_minimax_intl_alias(name) || is_minimax_cn_alias(name)
 }
 
-pub(crate) fn is_glm_global_alias(name: &str) -> bool {
+pub fn is_glm_global_alias(name: &str) -> bool {
     matches!(name, "glm" | "zhipu" | "glm-global" | "zhipu-global")
 }
 
-pub(crate) fn is_glm_cn_alias(name: &str) -> bool {
+pub fn is_glm_cn_alias(name: &str) -> bool {
     matches!(name, "glm-cn" | "zhipu-cn" | "bigmodel")
 }
 
-pub(crate) fn is_glm_alias(name: &str) -> bool {
+pub fn is_glm_alias(name: &str) -> bool {
     is_glm_global_alias(name) || is_glm_cn_alias(name)
 }
 
-pub(crate) fn is_moonshot_intl_alias(name: &str) -> bool {
+pub fn is_moonshot_intl_alias(name: &str) -> bool {
     matches!(
         name,
         "moonshot-intl" | "moonshot-global" | "kimi-intl" | "kimi-global"
     )
 }
 
-pub(crate) fn is_moonshot_cn_alias(name: &str) -> bool {
+pub fn is_moonshot_cn_alias(name: &str) -> bool {
     matches!(name, "moonshot" | "kimi" | "moonshot-cn" | "kimi-cn")
 }
 
-pub(crate) fn is_moonshot_alias(name: &str) -> bool {
+pub fn is_moonshot_alias(name: &str) -> bool {
     is_moonshot_intl_alias(name) || is_moonshot_cn_alias(name)
 }
 
-pub(crate) fn is_qwen_cn_alias(name: &str) -> bool {
+pub fn is_qwen_cn_alias(name: &str) -> bool {
     matches!(name, "qwen" | "dashscope" | "qwen-cn" | "dashscope-cn")
 }
 
-pub(crate) fn is_qwen_intl_alias(name: &str) -> bool {
+pub fn is_qwen_intl_alias(name: &str) -> bool {
     matches!(
         name,
         "qwen-intl" | "dashscope-intl" | "qwen-international" | "dashscope-international"
     )
 }
 
-pub(crate) fn is_qwen_us_alias(name: &str) -> bool {
+pub fn is_qwen_us_alias(name: &str) -> bool {
     matches!(name, "qwen-us" | "dashscope-us")
 }
 
-pub(crate) fn is_qwen_oauth_alias(name: &str) -> bool {
+pub fn is_qwen_oauth_alias(name: &str) -> bool {
     matches!(name, "qwen-code" | "qwen-oauth" | "qwen_oauth")
 }
 
-pub(crate) fn is_qwen_alias(name: &str) -> bool {
+pub fn is_qwen_alias(name: &str) -> bool {
     is_qwen_cn_alias(name)
         || is_qwen_intl_alias(name)
         || is_qwen_us_alias(name)
         || is_qwen_oauth_alias(name)
 }
 
-pub(crate) fn is_zai_global_alias(name: &str) -> bool {
+pub fn is_zai_global_alias(name: &str) -> bool {
     matches!(name, "zai" | "z.ai" | "zai-global" | "z.ai-global")
 }
 
-pub(crate) fn is_zai_cn_alias(name: &str) -> bool {
+pub fn is_zai_cn_alias(name: &str) -> bool {
     matches!(name, "zai-cn" | "z.ai-cn")
 }
 
-pub(crate) fn is_zai_alias(name: &str) -> bool {
+pub fn is_zai_alias(name: &str) -> bool {
     is_zai_global_alias(name) || is_zai_cn_alias(name)
 }
 
-pub(crate) fn is_qianfan_alias(name: &str) -> bool {
+pub fn is_qianfan_alias(name: &str) -> bool {
     matches!(name, "qianfan" | "baidu")
 }
 
-pub(crate) fn is_doubao_alias(name: &str) -> bool {
+pub fn is_doubao_alias(name: &str) -> bool {
     matches!(name, "doubao" | "volcengine" | "ark" | "doubao-cn")
 }
 
@@ -601,7 +616,7 @@ fn resolve_minimax_oauth_refresh_token(name: &str) -> Option<String> {
     }
 }
 
-pub(crate) fn canonical_china_provider_name(name: &str) -> Option<&'static str> {
+pub fn canonical_china_provider_name(name: &str) -> Option<&'static str> {
     if is_qwen_alias(name) {
         Some("qwen")
     } else if is_glm_alias(name) {

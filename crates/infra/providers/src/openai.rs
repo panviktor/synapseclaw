@@ -1,8 +1,8 @@
-use crate::providers::traits::{
+use crate::traits::ToolSpec;
+use crate::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
     Provider, TokenUsage, ToolCall as ProviderToolCall,
 };
-use crate::tools::ToolSpec;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -810,7 +810,7 @@ mod tests {
 
     #[test]
     fn convert_messages_round_trips_reasoning_content() {
-        use crate::providers::ChatMessage;
+        use crate::ChatMessage;
 
         let history_json = serde_json::json!({
             "content": "I will check",
@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn convert_messages_no_reasoning_content_when_absent() {
-        use crate::providers::ChatMessage;
+        use crate::ChatMessage;
 
         let history_json = serde_json::json!({
             "content": "I will check",
