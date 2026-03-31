@@ -2,6 +2,14 @@
 
 ## 2026-03-31
 
+### Phase 3.12: Thread Context Seeding (PR #215)
+
+- SQLite summary persistence (`session_summaries` table)
+- Thread seeding: parent summary + last 3 turns (2000 char budget) + root message (Matrix)
+- Discord thread detection via `message_reference`/`thread` fields
+- `smart_truncate_parent_turns` — domain-pure, per-message char cap
+- All 17 IPC phases now DONE
+
 ### Phases 8-12: Full Crate Extraction (PRs #209-#211)
 
 **12 workspace crates** — bottleneck 146K → 55K LOC (2.7x), 4 crates compile in parallel on Wave 5.

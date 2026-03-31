@@ -22,7 +22,7 @@ Execution owner: `Opus`
 | 3.9 | Operator Control Plane | **DONE** | Push, activity, cron proxy |
 | 3.10 | Push Loop Prevention | **DONE** | |
 | 3.11 | Fleet Topology | **DONE** | Multi-blueprint |
-| 3.12 | Channel Session Intel | **MOSTLY DONE** | 9/11 steps, thread seeding pending |
+| 3.12 | Channel Session Intel | **DONE** | PR #215, thread seeding + summary persistence |
 | 4.0 | Modular Core Refactor | **DONE** | Crate extraction |
 | 4.1 | Pipeline Engine | **DONE** | 10 slices |
 | 4.1H | Hex Migration | **DONE** | 12 slices |
