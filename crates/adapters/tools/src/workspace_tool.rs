@@ -3,7 +3,7 @@
 //! Provides `workspace` subcommands: list, switch, create, info, export.
 
 use super::traits::{Tool, ToolResult};
-use crate::workspace::WorkspaceManager;
+use synapse_infra::workspace::WorkspaceManager;
 use async_trait::async_trait;
 use serde_json::json;
 use std::fmt::Write;

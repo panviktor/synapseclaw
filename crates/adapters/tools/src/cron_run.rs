@@ -1,5 +1,5 @@
 use super::traits::{Tool, ToolResult};
-use crate::cron::{self, JobType};
+use synapse_cron::{ JobType};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
@@ -92,7 +92,7 @@ impl Tool for CronRunTool {
             });
         }
 
-        let job = match cron::get_job(&self.config, job_id) {
+        let job = match synapse_cron::get_job(&self.config, job_id) {
             Ok(job) => job,
             Err(e) => {
                 return Ok(ToolResult {
@@ -125,7 +125,7 @@ impl Tool for CronRunTool {
         }
 
         let started_at = Utc::now();
-        let (success, output) = Box::pin(cron::scheduler::execute_job_now(
+        let (success, output) = Box::pin(synapse_cron::scheduler::execute_job_now(
             &self.config,
             &job,
             self.agent_runner.as_ref(),
@@ -135,7 +135,7 @@ impl Tool for CronRunTool {
         let duration_ms = (finished_at - started_at).num_milliseconds();
         let status = if success { "ok" } else { "error" };
 
-        let _ = cron::record_run(
+        let _ = synapse_cron::record_run(
             &self.config,
             &job.id,
             started_at,
@@ -144,7 +144,7 @@ impl Tool for CronRunTool {
             Some(&output),
             duration_ms,
         );
-        let _ = cron::record_last_run(&self.config, &job.id, finished_at, success, &output);
+        let _ = synapse_cron::record_last_run(&self.config, &job.id, finished_at, success, &output);
 
         Ok(ToolResult {
             success,
@@ -194,7 +194,7 @@ mod tests {
     async fn force_runs_job_and_records_history() {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo run-now").unwrap();
+        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo run-now").unwrap();
         let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
             struct NR;
             #[async_trait::async_trait]
@@ -226,7 +226,7 @@ mod tests {
         let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
         assert!(result.success, "{:?}", result.error);
 
-        let runs = cron::list_runs(&cfg, &job.id, 10).unwrap();
+        let runs = synapse_cron::list_runs(&cfg, &job.id, 10).unwrap();
         assert_eq!(runs.len(), 1);
     }
 
@@ -279,7 +279,7 @@ mod tests {
             ..Config::default()
         };
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let job = cron::add_job(&config, "*/5 * * * *", "echo run-now").unwrap();
+        let job = synapse_cron::add_job(&config, "*/5 * * * *", "echo run-now").unwrap();
         config.autonomy.level = AutonomyLevel::ReadOnly;
         let cfg = Arc::new(config);
         let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
@@ -328,10 +328,10 @@ mod tests {
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
         let cfg = Arc::new(config);
         // Create with explicit approval so the job persists for the run test.
-        let job = cron::add_shell_job_with_approval(
+        let job = synapse_cron::add_shell_job_with_approval(
             &cfg,
             None,
-            cron::Schedule::Cron {
+            synapse_cron::Schedule::Cron {
                 expr: "*/5 * * * *".into(),
                 tz: None,
             },
@@ -388,7 +388,7 @@ mod tests {
         config.autonomy.max_actions_per_hour = 0;
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
         let cfg = Arc::new(config);
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo run-now").unwrap();
+        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo run-now").unwrap();
         let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
             struct NR;
             #[async_trait::async_trait]
@@ -423,6 +423,6 @@ mod tests {
             .error
             .unwrap_or_default()
             .contains("Rate limit exceeded"));
-        assert!(cron::list_runs(&cfg, &job.id, 10).unwrap().is_empty());
+        assert!(synapse_cron::list_runs(&cfg, &job.id, 10).unwrap().is_empty());
     }
 }

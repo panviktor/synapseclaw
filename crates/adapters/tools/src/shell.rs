@@ -232,7 +232,7 @@ impl Tool for ShellTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::native::NativeRuntime;
+    use synapse_infra::native::NativeRuntime;
     use synapse_domain::domain::config::AutonomyLevel;
     use synapse_domain::domain::security_policy::SecurityPolicy;
     use synapse_domain::ports::runtime::RuntimeAdapter;

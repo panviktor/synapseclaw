@@ -1,5 +1,4 @@
 use super::traits::{Tool, ToolResult};
-use crate::cron;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -169,7 +168,7 @@ impl ScheduleTool {
     }
 
     fn handle_list(&self) -> Result<ToolResult> {
-        let jobs = cron::list_jobs(&self.config)?;
+        let jobs = synapse_cron::list_jobs(&self.config)?;
         if jobs.is_empty() {
             return Ok(ToolResult {
                 success: true,
@@ -181,7 +180,7 @@ impl ScheduleTool {
         let mut lines = Vec::with_capacity(jobs.len());
         for job in jobs {
             let paused = !job.enabled;
-            let one_shot = matches!(job.schedule, cron::Schedule::At { .. });
+            let one_shot = matches!(job.schedule, synapse_cron::Schedule::At { .. });
             let flags = match (paused, one_shot) {
                 (true, true) => " [disabled, one-shot]",
                 (true, false) => " [disabled]",
@@ -212,7 +211,7 @@ impl ScheduleTool {
     }
 
     fn handle_get(&self, id: &str) -> Result<ToolResult> {
-        match cron::get_job(&self.config, id) {
+        match synapse_cron::get_job(&self.config, id) {
             Ok(job) => {
                 let detail = json!({
                     "id": job.id,
@@ -222,7 +221,7 @@ impl ScheduleTool {
                     "last_run": job.last_run.map(|value| value.to_rfc3339()),
                     "last_status": job.last_status,
                     "enabled": job.enabled,
-                    "one_shot": matches!(job.schedule, cron::Schedule::At { .. }),
+                    "one_shot": matches!(job.schedule, synapse_cron::Schedule::At { .. }),
                 });
                 Ok(ToolResult {
                     success: true,
@@ -307,10 +306,10 @@ impl ScheduleTool {
         // All job creation routes through validated cron helpers, which enforce
         // the full security policy (allowlist + risk gate) before persistence.
         if let Some(value) = expression {
-            let job = match cron::add_shell_job_with_approval(
+            let job = match synapse_cron::add_shell_job_with_approval(
                 &self.config,
                 None,
-                cron::Schedule::Cron {
+                synapse_cron::Schedule::Cron {
                     expr: value.to_string(),
                     tz: None,
                 },
@@ -340,7 +339,7 @@ impl ScheduleTool {
         }
 
         if let Some(value) = delay {
-            let job = match cron::add_once_validated(&self.config, value, command, approved) {
+            let job = match synapse_cron::add_once_validated(&self.config, value, command, approved) {
                 Ok(job) => job,
                 Err(error) => {
                     return Ok(ToolResult {
@@ -367,7 +366,7 @@ impl ScheduleTool {
             .map_err(|error| anyhow::anyhow!("Invalid run_at timestamp: {error}"))?
             .with_timezone(&Utc);
 
-        let job = match cron::add_once_at_validated(&self.config, run_at_parsed, command, approved)
+        let job = match synapse_cron::add_once_at_validated(&self.config, run_at_parsed, command, approved)
         {
             Ok(job) => job,
             Err(error) => {
@@ -391,7 +390,7 @@ impl ScheduleTool {
     }
 
     fn handle_cancel(&self, id: &str) -> ToolResult {
-        match cron::remove_job(&self.config, id) {
+        match synapse_cron::remove_job(&self.config, id) {
             Ok(()) => ToolResult {
                 success: true,
                 output: format!("Cancelled job {id}"),
@@ -407,9 +406,9 @@ impl ScheduleTool {
 
     fn handle_pause_resume(&self, id: &str, pause: bool) -> ToolResult {
         let operation = if pause {
-            cron::pause_job(&self.config, id)
+            synapse_cron::pause_job(&self.config, id)
         } else {
-            cron::resume_job(&self.config, id)
+            synapse_cron::resume_job(&self.config, id)
         };
 
         match operation {

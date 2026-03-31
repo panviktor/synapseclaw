@@ -1,7 +1,7 @@
 use super::traits::{Tool, ToolResult};
-use crate::config_io::ConfigIO;
-use crate::proxy::ProxyConfigExt;
-use crate::proxy::{runtime_proxy_config, set_runtime_proxy_config};
+use synapse_infra::config_io::ConfigIO;
+use synapse_providers::proxy::ProxyConfigExt;
+use synapse_providers::proxy::{runtime_proxy_config, set_runtime_proxy_config};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::fs;
@@ -252,7 +252,7 @@ impl ProxyConfigTool {
         if proxy.enabled && proxy.scope == ProxyScope::Environment {
             proxy.apply_to_process_env();
         } else if previous_scope == ProxyScope::Environment {
-            crate::proxy::clear_proxy_process_env();
+            synapse_providers::proxy::clear_proxy_process_env();
         }
 
         Ok(ToolResult {
@@ -279,7 +279,7 @@ impl ProxyConfigTool {
             .and_then(Value::as_bool)
             .unwrap_or(clear_env_default);
         if clear_env {
-            crate::proxy::clear_proxy_process_env();
+            synapse_providers::proxy::clear_proxy_process_env();
         }
 
         Ok(ToolResult {
@@ -324,7 +324,7 @@ impl ProxyConfigTool {
     }
 
     fn handle_clear_env(&self) -> anyhow::Result<ToolResult> {
-        crate::proxy::clear_proxy_process_env();
+        synapse_providers::proxy::clear_proxy_process_env();
         Ok(ToolResult {
             success: true,
             output: serde_json::to_string_pretty(&json!({

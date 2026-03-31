@@ -44,7 +44,7 @@ pub use synapse_providers::proxy;
 pub mod service;
 pub mod tools;
 pub mod tunnel;
-pub mod workspace;
+pub use synapse_infra::workspace;
 pub mod workspace_io;
 
 // ── Deferred modules (moved from src/ in Phase 4.1H2) ──

@@ -1,5 +1,4 @@
 use super::traits::{Tool, ToolResult};
-use crate::cron;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -42,7 +41,7 @@ impl Tool for CronListTool {
             });
         }
 
-        match cron::list_jobs(&self.config) {
+        match synapse_cron::list_jobs(&self.config) {
             Ok(jobs) => Ok(ToolResult {
                 success: true,
                 output: serde_json::to_string_pretty(&jobs)?,

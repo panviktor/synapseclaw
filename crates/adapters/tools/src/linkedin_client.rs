@@ -129,7 +129,7 @@ impl LinkedInClient {
     }
 
     fn client() -> reqwest::Client {
-        crate::proxy::build_runtime_proxy_client_with_timeouts(
+        synapse_providers::proxy::build_runtime_proxy_client_with_timeouts(
             "tool.linkedin",
             LINKEDIN_REQUEST_TIMEOUT_SECS,
             LINKEDIN_CONNECT_TIMEOUT_SECS,
@@ -850,7 +850,7 @@ impl ImageGenerator {
     }
 
     fn http_client() -> reqwest::Client {
-        crate::proxy::build_runtime_proxy_client_with_timeouts(
+        synapse_providers::proxy::build_runtime_proxy_client_with_timeouts(
             "tool.linkedin.image",
             60, // image gen can be slow
             10,

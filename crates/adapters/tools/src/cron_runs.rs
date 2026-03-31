@@ -1,5 +1,4 @@
 use super::traits::{Tool, ToolResult};
-use crate::cron;
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::json;
@@ -75,7 +74,7 @@ impl Tool for CronRunsTool {
             .and_then(serde_json::Value::as_u64)
             .map_or(10, |v| usize::try_from(v).unwrap_or(10));
 
-        match cron::list_runs(&self.config, job_id, limit) {
+        match synapse_cron::list_runs(&self.config, job_id, limit) {
             Ok(runs) => {
                 let runs: Vec<RunView> = runs
                     .into_iter()
@@ -137,11 +136,11 @@ mod tests {
     async fn lists_runs_with_truncation() {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
 
         let long_output = "x".repeat(1000);
         let now = Utc::now();
-        cron::record_run(
+        synapse_cron::record_run(
             &cfg,
             &job.id,
             now,

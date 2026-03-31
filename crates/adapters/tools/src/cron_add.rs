@@ -1,5 +1,5 @@
 use super::traits::{Tool, ToolResult};
-use crate::cron::{self, DeliveryConfig, JobType, Schedule, SessionTarget};
+use synapse_cron::{ DeliveryConfig, JobType, Schedule, SessionTarget};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -254,7 +254,7 @@ impl Tool for CronAddTool {
                     return Ok(blocked);
                 }
 
-                cron::add_shell_job_with_approval(&self.config, name, schedule, command, approved)
+                synapse_cron::add_shell_job_with_approval(&self.config, name, schedule, command, approved)
             }
             JobType::Agent => {
                 let prompt = match args.get("prompt").and_then(serde_json::Value::as_str) {
@@ -305,7 +305,7 @@ impl Tool for CronAddTool {
                     return Ok(blocked);
                 }
 
-                cron::add_agent_job(
+                synapse_cron::add_agent_job(
                     &self.config,
                     name,
                     schedule,
@@ -469,7 +469,7 @@ mod tests {
             .error
             .unwrap_or_default()
             .contains("Rate limit exceeded"));
-        assert!(cron::list_jobs(&cfg).unwrap().is_empty());
+        assert!(synapse_cron::list_jobs(&cfg).unwrap().is_empty());
     }
 
     #[tokio::test]

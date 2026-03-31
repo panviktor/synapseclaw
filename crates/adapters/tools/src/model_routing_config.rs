@@ -1,5 +1,5 @@
 use super::traits::{Tool, ToolResult};
-use crate::config_io::ConfigIO;
+use synapse_infra::config_io::ConfigIO;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -430,7 +430,7 @@ impl ModelRoutingConfigTool {
             (cfg.default_provider.clone(), cfg.default_model.clone())
         {
             if let Err(probe_err) = self.probe_model(&provider_name, &model_name).await {
-                if crate::providers::reliable::is_non_retryable(&probe_err) {
+                if synapse_providers::reliable::is_non_retryable(&probe_err) {
                     let reverted_model = previous_model.as_deref().unwrap_or("(none)").to_string();
 
                     // Rollback to previous config.
@@ -471,7 +471,6 @@ impl ModelRoutingConfigTool {
     /// (the probe would fail with an auth error unrelated to model validity).
     /// Provider construction failures are also treated as non-fatal.
     async fn probe_model(&self, provider_name: &str, model: &str) -> anyhow::Result<()> {
-        use crate::providers;
 
         // Use the runtime config's API key (which includes env-sourced keys),
         // not the on-disk config (which may have no key at all).
@@ -480,7 +479,7 @@ impl ModelRoutingConfigTool {
             return Ok(());
         }
 
-        let provider = match providers::create_provider_with_url(
+        let provider = match synapse_providers::create_provider_with_url(
             provider_name,
             api_key,
             self.config.api_url.as_deref(),

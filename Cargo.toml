@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/domain", "crates/adapters/core", "crates/adapters/security", "crates/adapters/memory", "crates/adapters/observability", "crates/adapters/cron-store", "crates/adapters/providers", "crates/adapters/mcp", "crates/adapters/infra", "crates/adapters/channels"]
+members = [".", "crates/domain", "crates/adapters/core", "crates/adapters/security", "crates/adapters/memory", "crates/adapters/observability", "crates/adapters/cron-store", "crates/adapters/providers", "crates/adapters/mcp", "crates/adapters/infra", "crates/adapters/channels", "crates/adapters/tools"]
 resolver = "2"
 
 [package]

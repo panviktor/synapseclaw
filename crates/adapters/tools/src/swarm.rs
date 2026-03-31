@@ -1,5 +1,5 @@
 use super::traits::{Tool, ToolResult};
-use crate::providers::{self, Provider};
+use synapse_providers::{self, Provider};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
@@ -19,7 +19,7 @@ pub struct SwarmTool {
     agents: Arc<HashMap<String, DelegateAgentConfig>>,
     security: Arc<SecurityPolicy>,
     fallback_credential: Option<String>,
-    provider_runtime_options: providers::ProviderRuntimeOptions,
+    provider_runtime_options: synapse_providers::ProviderRuntimeOptions,
 }
 
 impl SwarmTool {
@@ -28,7 +28,7 @@ impl SwarmTool {
         agents: HashMap<String, DelegateAgentConfig>,
         fallback_credential: Option<String>,
         security: Arc<SecurityPolicy>,
-        provider_runtime_options: providers::ProviderRuntimeOptions,
+        provider_runtime_options: synapse_providers::ProviderRuntimeOptions,
     ) -> Self {
         Self {
             swarms: Arc::new(swarms),
@@ -49,7 +49,7 @@ impl SwarmTool {
             .clone()
             .or_else(|| self.fallback_credential.clone());
 
-        providers::create_provider_with_options(
+        synapse_providers::create_provider_with_options(
             &agent_config.provider,
             credential.as_deref(),
             &self.provider_runtime_options,
@@ -199,7 +199,7 @@ impl SwarmTool {
                 .clone()
                 .or_else(|| self.fallback_credential.clone());
 
-            let provider = match providers::create_provider_with_options(
+            let provider = match synapse_providers::create_provider_with_options(
                 &agent_config.provider,
                 credential.as_deref(),
                 &self.provider_runtime_options,
@@ -628,7 +628,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         assert_eq!(tool.name(), "swarm");
         let schema = tool.parameters_schema();
@@ -648,7 +648,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         assert!(!tool.description().is_empty());
     }
@@ -660,7 +660,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let schema = tool.parameters_schema();
         let desc = schema["properties"]["swarm"]["description"]
@@ -676,7 +676,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let schema = tool.parameters_schema();
         let desc = schema["properties"]["swarm"]["description"]
@@ -692,7 +692,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "nonexistent", "prompt": "test"}))
@@ -709,7 +709,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool.execute(json!({"prompt": "test"})).await;
         assert!(result.is_err());
@@ -722,7 +722,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool.execute(json!({"swarm": "pipeline"})).await;
         assert!(result.is_err());
@@ -735,7 +735,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "  ", "prompt": "test"}))
@@ -752,7 +752,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "pipeline", "prompt": "  "}))
@@ -780,7 +780,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "broken", "prompt": "test"}))
@@ -808,7 +808,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "empty", "prompt": "test"}))
@@ -829,7 +829,7 @@ mod tests {
             sample_agents(),
             None,
             readonly,
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "pipeline", "prompt": "test"}))
@@ -854,7 +854,7 @@ mod tests {
             sample_agents(),
             None,
             limited,
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "pipeline", "prompt": "test"}))
@@ -887,7 +887,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "seq", "prompt": "test"}))
@@ -915,7 +915,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "par", "prompt": "test"}))
@@ -943,7 +943,7 @@ mod tests {
             sample_agents(),
             None,
             test_security(),
-            providers::ProviderRuntimeOptions::default(),
+            synapse_providers::ProviderRuntimeOptions::default(),
         );
         let result = tool
             .execute(json!({"swarm": "rout", "prompt": "test"}))

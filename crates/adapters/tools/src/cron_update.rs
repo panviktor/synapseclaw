@@ -1,5 +1,5 @@
 use super::traits::{Tool, ToolResult};
-use crate::cron::{self, CronJobPatch};
+use synapse_cron::{ CronJobPatch};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -221,7 +221,7 @@ impl Tool for CronUpdateTool {
             return Ok(blocked);
         }
 
-        match cron::update_shell_job_with_approval(&self.config, job_id, patch, approved) {
+        match synapse_cron::update_shell_job_with_approval(&self.config, job_id, patch, approved) {
             Ok(job) => Ok(ToolResult {
                 success: true,
                 output: serde_json::to_string_pretty(&job)?,
@@ -267,7 +267,7 @@ mod tests {
     async fn updates_enabled_flag() {
         let tmp = TempDir::new().unwrap();
         let cfg = test_config(&tmp).await;
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
 
         let result = tool
@@ -295,7 +295,7 @@ mod tests {
             .await
             .unwrap();
         let cfg = Arc::new(config);
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
 
         let result = tool
@@ -318,7 +318,7 @@ mod tests {
             ..Config::default()
         };
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let job = cron::add_job(&config, "*/5 * * * *", "echo ok").unwrap();
+        let job = synapse_cron::add_job(&config, "*/5 * * * *", "echo ok").unwrap();
         config.autonomy.level = AutonomyLevel::ReadOnly;
         let cfg = Arc::new(config);
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
@@ -346,7 +346,7 @@ mod tests {
         config.autonomy.allowed_commands = vec!["echo".into(), "touch".into()];
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
         let cfg = Arc::new(config);
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
 
         let denied = tool
@@ -485,7 +485,7 @@ mod tests {
         config.autonomy.max_actions_per_hour = 0;
         std::fs::create_dir_all(&config.workspace_dir).unwrap();
         let cfg = Arc::new(config);
-        let job = cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
+        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
         let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
 
         let result = tool
@@ -500,6 +500,6 @@ mod tests {
             .error
             .unwrap_or_default()
             .contains("Rate limit exceeded"));
-        assert!(cron::get_job(&cfg, &job.id).unwrap().enabled);
+        assert!(synapse_cron::get_job(&cfg, &job.id).unwrap().enabled);
     }
 }

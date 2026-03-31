@@ -10,7 +10,7 @@
 //! persistent Chrome profile can be configured so SSO sessions survive across
 //! invocations.
 
-use crate::tools::traits::{Tool, ToolResult};
+use synapse_domain::ports::tool::{Tool, ToolResult};
 use async_trait::async_trait;
 use regex::Regex;
 use std::sync::Arc;

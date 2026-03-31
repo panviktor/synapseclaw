@@ -57,7 +57,7 @@ impl ComposioTool {
     }
 
     fn client(&self) -> Client {
-        crate::proxy::build_runtime_proxy_client_with_timeouts("tool.composio", 60, 10)
+        synapse_providers::proxy::build_runtime_proxy_client_with_timeouts("tool.composio", 60, 10)
     }
 
     /// List available Composio apps/actions for the authenticated user.

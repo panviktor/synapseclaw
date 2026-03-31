@@ -13,8 +13,8 @@ whatsapp-web-channel = ["synapse_channels/whatsapp-web"]
 observability-prometheus = ["synapse_observability/observability-prometheus"]
 observability-otel = ["synapse_observability/observability-otel"]
 whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost", "dep:qrcode"]
-rag-pdf = ["dep:pdf-extract"]
-browser-native = ["dep:fantoccini"]
+rag-pdf = ["dep:pdf-extract", "synapse_tools/rag-pdf"]
+browser-native = ["dep:fantoccini", "synapse_tools/browser-native"]
 sandbox-landlock = ["synapse_security/sandbox-landlock"]
 memory-postgres = []
 
@@ -28,6 +28,7 @@ synapse_providers = { path = "../providers" }
 synapse_mcp = { path = "../mcp" }
 synapse_infra = { path = "../infra" }
 synapse_channels = { path = "../channels" }
+synapse_tools = { path = "../tools" }
 
 # Major frameworks
 axum = { version = "0.8", features = ["multipart", "ws", "macros"] }

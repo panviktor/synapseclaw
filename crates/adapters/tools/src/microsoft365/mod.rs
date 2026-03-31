@@ -8,7 +8,7 @@ pub mod auth;
 pub mod graph_client;
 pub mod types;
 
-use crate::tools::traits::{Tool, ToolResult};
+use synapse_domain::ports::tool::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -35,7 +35,7 @@ impl Microsoft365Tool {
         synapseclaw_dir: &std::path::Path,
     ) -> anyhow::Result<Self> {
         let http_client =
-            crate::proxy::build_runtime_proxy_client_with_timeouts("tool.microsoft365", 60, 10);
+            synapse_providers::proxy::build_runtime_proxy_client_with_timeouts("tool.microsoft365", 60, 10);
         let token_cache = Arc::new(auth::TokenCache::new(config.clone(), synapseclaw_dir)?);
         Ok(Self {
             config,

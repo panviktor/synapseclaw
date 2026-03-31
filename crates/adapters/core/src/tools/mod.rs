@@ -15,120 +15,28 @@
 //! To add a new tool, implement [`Tool`] in a new submodule and register it in
 //! [`all_tools_with_runtime`]. See `AGENTS.md` §7.3 for the full change playbook.
 
+// ── Re-exports from synapse_tools crate ──
+pub use synapse_tools::*;
+
+// ── Re-exports from synapse_mcp crate ──
+pub use synapse_mcp::McpRegistry;
+pub use synapse_mcp::{ActivatedToolSet, DeferredMcpToolSet};
+pub use synapse_mcp::McpToolWrapper;
+pub use synapse_mcp::tool_search::ToolSearchTool;
+
+// ── Modules that remain in core (agent/gateway dependencies) ──
 pub mod agents_ipc;
-pub mod backup_tool;
-pub mod browser;
-pub mod browser_delegate;
-pub mod browser_open;
-pub mod cli_discovery;
-pub mod cloud_ops;
-pub mod cloud_patterns;
-pub mod composio;
-pub mod content_search;
-pub mod cron_add;
-pub mod cron_list;
-pub mod cron_remove;
-pub mod cron_run;
-pub mod cron_runs;
-pub mod cron_update;
-pub mod data_management;
 pub mod delegate;
-pub mod file_edit;
-pub mod file_read;
-pub mod file_write;
-pub mod git_operations;
-pub mod glob_search;
-pub mod google_workspace;
-pub mod http_request;
-pub mod image_info;
-pub mod knowledge_tool;
-pub mod linkedin;
-pub mod linkedin_client;
-pub mod memory_forget;
-pub mod memory_recall;
-pub mod memory_store;
-pub mod microsoft365;
-pub mod model_routing_config;
 pub mod node_tool;
-pub mod notion_tool;
-pub mod pdf_read;
-pub mod project_intel;
-pub mod proxy_config;
-pub mod pushover;
-pub mod report_templates;
-pub mod schedule;
-pub mod schema;
-pub mod screenshot;
-pub mod security_ops;
-pub mod shell;
-pub mod swarm;
-pub mod tavily_extract;
-pub mod telegram_post;
 pub mod traits;
-pub mod web_fetch;
-pub mod web_search_tool;
-pub mod workspace_tool;
 
 pub use agents_ipc::{
     AgentsInboxTool, AgentsListTool, AgentsReplyTool, AgentsSendTool, AgentsSpawnTool, IpcClient,
     StateGetTool, StateSetTool,
 };
-pub use backup_tool::BackupTool;
-pub use browser::{BrowserTool, ComputerUseConfig};
-#[allow(unused_imports)]
-pub use browser_delegate::{BrowserDelegateConfig, BrowserDelegateTool};
-pub use browser_open::BrowserOpenTool;
-pub use cloud_ops::CloudOpsTool;
-pub use cloud_patterns::CloudPatternsTool;
-pub use composio::ComposioTool;
-pub use content_search::ContentSearchTool;
-pub use cron_add::CronAddTool;
-pub use cron_list::CronListTool;
-pub use cron_remove::CronRemoveTool;
-pub use cron_run::CronRunTool;
-pub use cron_runs::CronRunsTool;
-pub use cron_update::CronUpdateTool;
-pub use data_management::DataManagementTool;
 pub use delegate::DelegateTool;
-pub use file_edit::FileEditTool;
-pub use file_read::FileReadTool;
-pub use file_write::FileWriteTool;
-pub use git_operations::GitOperationsTool;
-pub use glob_search::GlobSearchTool;
-pub use google_workspace::GoogleWorkspaceTool;
-pub use http_request::HttpRequestTool;
-pub use image_info::ImageInfoTool;
-pub use knowledge_tool::KnowledgeTool;
-pub use linkedin::LinkedInTool;
-pub use synapse_mcp::McpRegistry;
-pub use synapse_mcp::{ActivatedToolSet, DeferredMcpToolSet};
-pub use synapse_mcp::McpToolWrapper;
-pub use memory_forget::MemoryForgetTool;
-pub use memory_recall::MemoryRecallTool;
-pub use memory_store::MemoryStoreTool;
-pub use microsoft365::Microsoft365Tool;
-pub use model_routing_config::ModelRoutingConfigTool;
 #[allow(unused_imports)]
 pub use node_tool::NodeTool;
-pub use notion_tool::NotionTool;
-pub use pdf_read::PdfReadTool;
-pub use project_intel::ProjectIntelTool;
-pub use proxy_config::ProxyConfigTool;
-pub use pushover::PushoverTool;
-pub use schedule::ScheduleTool;
-#[allow(unused_imports)]
-pub use schema::{CleaningStrategy, SchemaCleanr};
-pub use screenshot::ScreenshotTool;
-pub use security_ops::SecurityOpsTool;
-pub use shell::ShellTool;
-pub use swarm::SwarmTool;
-pub use synapse_mcp::tool_search::ToolSearchTool;
-pub use traits::Tool;
-#[allow(unused_imports)]
-pub use traits::{ToolResult, ToolSpec};
-pub use web_fetch::WebFetchTool;
-pub use web_search_tool::WebSearchTool;
-pub use workspace_tool::WorkspaceTool;
 
 use crate::runtime::native::NativeRuntime;
 use async_trait::async_trait;
@@ -172,27 +80,7 @@ impl synapse_domain::ports::agent_runner::AgentRunnerPort for NoopAgentRunner {
 /// Callers can push additional tools (e.g. MCP wrappers) after construction.
 pub type DelegateParentToolsHandle = Arc<RwLock<Vec<Arc<dyn Tool>>>>;
 
-/// Thin wrapper that makes an `Arc<dyn Tool>` usable as `Box<dyn Tool>`.
-pub struct ArcToolRef(pub Arc<dyn Tool>);
-
-#[async_trait]
-impl Tool for ArcToolRef {
-    fn name(&self) -> &str {
-        self.0.name()
-    }
-
-    fn description(&self) -> &str {
-        self.0.description()
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        self.0.parameters_schema()
-    }
-
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        self.0.execute(args).await
-    }
-}
+pub use synapse_domain::ports::tool::ArcToolRef;
 
 #[derive(Clone)]
 struct ArcDelegatingTool {
@@ -390,9 +278,10 @@ pub fn all_tools_with_runtime(
     }
 
     // Browser delegation tool (conditionally registered; requires shell access)
+    #[cfg(feature = "browser-native")]
     if root_config.browser_delegate.enabled {
         if has_shell_access {
-            tool_arcs.push(Arc::new(BrowserDelegateTool::new(
+            tool_arcs.push(Arc::new(synapse_tools::BrowserDelegateTool::new(
                 security.clone(),
                 root_config.browser_delegate.clone(),
             )));
@@ -520,7 +409,8 @@ pub fn all_tools_with_runtime(
     }
 
     // PDF extraction (feature-gated at compile time via rag-pdf)
-    tool_arcs.push(Arc::new(PdfReadTool::new(security.clone())));
+    #[cfg(feature = "rag-pdf")]
+    tool_arcs.push(Arc::new(synapse_tools::pdf_read::PdfReadTool::new(security.clone())));
 
     // Vision tools are always available
     tool_arcs.push(Arc::new(ScreenshotTool::new(security.clone())));
