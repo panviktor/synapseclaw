@@ -16,7 +16,7 @@
 // ── Port implementations (synapse_domain ports → concrete adapters) ──
 pub mod channels;
 pub mod commands;
-pub mod inbound;
+pub use synapse_channels::inbound;
 pub mod ipc;
 pub mod memory_adapters;
 pub mod middleware;

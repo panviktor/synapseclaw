@@ -6,6 +6,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Result of a tool execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,5 +46,27 @@ pub trait Tool: Send + Sync {
             description: self.description().to_string(),
             parameters: self.parameters_schema(),
         }
+    }
+}
+
+/// Thin wrapper that makes an `Arc<dyn Tool>` usable as `Box<dyn Tool>`.
+pub struct ArcToolRef(pub Arc<dyn Tool>);
+
+#[async_trait]
+impl Tool for ArcToolRef {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    fn description(&self) -> &str {
+        self.0.description()
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        self.0.parameters_schema()
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        self.0.execute(args).await
     }
 }

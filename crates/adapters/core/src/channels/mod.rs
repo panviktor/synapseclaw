@@ -14,81 +14,8 @@
 //! To add a new channel, implement [`Channel`] in a new submodule and wire it into
 //! [`start_channels`]. See `AGENTS.md` §7.2 for the full change playbook.
 
-pub mod bluesky;
-pub mod clawdtalk;
-pub mod cli;
-pub mod dingtalk;
-pub mod discord;
-pub mod email_channel;
-pub mod imessage;
-pub mod irc;
-#[cfg(feature = "channel-lark")]
-pub mod lark;
-pub mod linq;
-#[cfg(feature = "channel-matrix")]
-pub mod matrix;
-pub mod mattermost;
-pub mod mochat;
-pub mod nextcloud_talk;
-#[cfg(feature = "channel-nostr")]
-pub mod nostr;
-pub mod notion;
-pub mod qq;
-pub mod reddit;
-pub mod registry;
-pub mod session_backend;
-pub mod session_sqlite;
-pub mod session_store;
-pub mod signal;
-pub mod slack;
-pub mod telegram;
-pub mod traits;
-pub mod transcription;
-pub mod tts;
-pub mod twitter;
-pub mod wati;
-pub mod webhook;
-pub mod wecom;
-pub mod whatsapp;
-#[cfg(feature = "whatsapp-web")]
-pub mod whatsapp_storage;
-#[cfg(feature = "whatsapp-web")]
-pub mod whatsapp_web;
-
-pub use bluesky::BlueskyChannel;
-pub use clawdtalk::ClawdTalkChannel;
-pub use cli::CliChannel;
-pub use dingtalk::DingTalkChannel;
-pub use discord::DiscordChannel;
-pub use email_channel::EmailChannel;
-pub use imessage::IMessageChannel;
-pub use irc::IrcChannel;
-#[cfg(feature = "channel-lark")]
-pub use lark::LarkChannel;
-pub use linq::LinqChannel;
-#[cfg(feature = "channel-matrix")]
-pub use matrix::MatrixChannel;
-pub use mattermost::MattermostChannel;
-pub use mochat::MochatChannel;
-pub use nextcloud_talk::NextcloudTalkChannel;
-#[cfg(feature = "channel-nostr")]
-pub use nostr::NostrChannel;
-pub use notion::NotionChannel;
-pub use qq::QQChannel;
-pub use reddit::RedditChannel;
-pub use signal::SignalChannel;
-pub use slack::SlackChannel;
-pub use telegram::TelegramChannel;
-pub use traits::{Channel, SendMessage};
-#[allow(unused_imports)]
-pub use tts::{TtsManager, TtsProvider};
-pub use twitter::TwitterChannel;
-pub use wati::WatiChannel;
-pub use webhook::WebhookChannel;
-pub use wecom::WeComChannel;
-pub use whatsapp::WhatsAppChannel;
-#[cfg(feature = "whatsapp-web")]
-pub use whatsapp_web::WhatsAppWebChannel;
+// ── Re-exports from synapse_channels crate ──
+pub use synapse_channels::*;
 
 use crate::approval::ApprovalManager;
 use crate::channels::session_backend::SessionBackend;
@@ -1478,9 +1405,7 @@ async fn handle_message_via_orchestrator(
 
     let registry: Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort> =
         ctx.channel_registry.clone().unwrap_or_else(|| {
-            Arc::new(crate::channels::registry::CachedChannelRegistry::new(
-                synapse_domain::config::schema::Config::default(),
-            ))
+            Arc::new(crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)))
         });
 
     let session_summary: Option<
@@ -3513,7 +3438,7 @@ pub async fn start_channels(
         approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
         activated_tools: ch_activated_handle,
         channel_registry: Some(Arc::new(
-            crate::channels::registry::CachedChannelRegistry::new(config.clone()),
+            crate::channels::registry::CachedChannelRegistry::new(config.clone(), std::sync::Arc::new(build_channel_by_id)),
         )),
         pipeline_store,
         pipeline_executor,
@@ -4049,9 +3974,7 @@ mod tests {
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
-                crate::channels::registry::CachedChannelRegistry::new(
-                    synapse_domain::config::schema::Config::default(),
-                ),
+                crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)),
             )),
             pipeline_store: None,
             pipeline_executor: None,
@@ -4150,9 +4073,7 @@ mod tests {
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
-                crate::channels::registry::CachedChannelRegistry::new(
-                    synapse_domain::config::schema::Config::default(),
-                ),
+                crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)),
             )),
             pipeline_store: None,
             pipeline_executor: None,
@@ -4266,9 +4187,7 @@ mod tests {
             query_classification:
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             channel_registry: Some(Arc::new(
-                crate::channels::registry::CachedChannelRegistry::new(
-                    synapse_domain::config::schema::Config::default(),
-                ),
+                crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)),
             )),
             pipeline_store: None,
             pipeline_executor: None,
@@ -4379,9 +4298,7 @@ mod tests {
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
-                crate::channels::registry::CachedChannelRegistry::new(
-                    synapse_domain::config::schema::Config::default(),
-                ),
+                crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)),
             )),
             pipeline_store: None,
             pipeline_executor: None,

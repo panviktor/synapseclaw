@@ -158,9 +158,7 @@ pub async fn run(
     // scheduler, delivery service, and gateway REST API.
     let channel_registry: std::sync::Arc<
         dyn synapse_domain::ports::channel_registry::ChannelRegistryPort,
-    > = std::sync::Arc::new(crate::channels::registry::CachedChannelRegistry::new(
-        config.clone(),
-    ));
+    > = std::sync::Arc::new(crate::channels::registry::CachedChannelRegistry::new(config.clone(), std::sync::Arc::new(crate::channels::build_channel_by_id)));
 
     // Phase 4.0 Slice 1: DeliveryService owns delivery policy.
     let delivery_service = std::sync::Arc::new(
