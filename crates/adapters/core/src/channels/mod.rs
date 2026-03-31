@@ -1769,7 +1769,20 @@ async fn run_message_dispatch_loop(
             // Phase 4.0 Slice 2: route through HandleInboundMessage orchestrator.
             let envelope = crate::envelope_from_channel_message(&msg);
 
-            handle_message_via_orchestrator(&worker_ctx, &envelope, &worker_caps, &msg).await;
+            if interrupt_enabled {
+                tokio::select! {
+                    _ = cancellation_token.cancelled() => {
+                        tracing::info!(
+                            channel = %msg.channel,
+                            sender = %msg.sender,
+                            "In-flight request cancelled by newer message"
+                        );
+                    }
+                    _ = handle_message_via_orchestrator(&worker_ctx, &envelope, &worker_caps, &msg) => {}
+                }
+            } else {
+                handle_message_via_orchestrator(&worker_ctx, &envelope, &worker_caps, &msg).await;
+            }
 
             if interrupt_enabled {
                 let mut active = in_flight.lock().await;
@@ -4093,7 +4106,7 @@ mod tests {
             })
             .await
             .unwrap();
-            tokio::time::sleep(Duration::from_millis(40)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
             tx.send(traits::ChannelMessage {
                 id: "msg-2".to_string(),
                 sender: "alice".to_string(),
@@ -4207,7 +4220,7 @@ mod tests {
             })
             .await
             .unwrap();
-            tokio::time::sleep(Duration::from_millis(40)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
             tx.send(traits::ChannelMessage {
                 id: "msg-2".to_string(),
                 sender: "U123".to_string(),

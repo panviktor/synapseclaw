@@ -100,7 +100,7 @@ fn validate_send_result_without_session() {
         &empty_l4(),
         &db,
     );
-    assert_eq!(result.unwrap_err().code, "result_no_task");
+    assert_eq!(result.unwrap_err().code, "result_no_session");
 }
 
 #[test]
