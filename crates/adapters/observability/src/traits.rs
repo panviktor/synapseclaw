@@ -178,12 +178,12 @@ mod tests {
 
     impl Observer for DummyObserver {
         fn record_event(&self, _event: &ObserverEvent) {
-            let mut guard = self.events.lock();
+            let mut guard = self.events.lock().unwrap();
             *guard += 1;
         }
 
         fn record_metric(&self, _metric: &ObserverMetric) {
-            let mut guard = self.metrics.lock();
+            let mut guard = self.metrics.lock().unwrap();
             *guard += 1;
         }
 
@@ -207,8 +207,8 @@ mod tests {
         });
         observer.record_metric(&ObserverMetric::TokensUsed(42));
 
-        assert_eq!(*observer.events.lock(), 2);
-        assert_eq!(*observer.metrics.lock(), 1);
+        assert_eq!(*observer.events.lock().unwrap(), 2);
+        assert_eq!(*observer.metrics.lock().unwrap(), 1);
     }
 
     #[test]
@@ -254,7 +254,7 @@ mod tests {
             duration_ms: 5000,
         });
 
-        assert_eq!(*observer.events.lock(), 3);
+        assert_eq!(*observer.events.lock().unwrap(), 3);
     }
 
     #[test]
@@ -274,7 +274,7 @@ mod tests {
             success: true,
         });
 
-        assert_eq!(*observer.metrics.lock(), 3);
+        assert_eq!(*observer.metrics.lock().unwrap(), 3);
     }
 
     #[test]
