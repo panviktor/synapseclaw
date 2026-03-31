@@ -7,8 +7,10 @@
 pub mod approval_service;
 pub mod conversation_service;
 pub mod delivery_service;
+pub mod history_compaction;
 pub mod inbound_message_service;
 pub mod ipc_service;
 pub mod memory_service;
 pub mod pipeline_service;
+pub mod tool_filtering;
 pub mod tool_middleware_service;

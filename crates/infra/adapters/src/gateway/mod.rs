@@ -1823,7 +1823,7 @@ async fn agent_inbox_processor(
                                     .to_string()
                             }
                         } else {
-                            let scrubbed = crate::agent::loop_::scrub_credentials(last_text.trim());
+                            let scrubbed = synapse_security::scrub_credentials(last_text.trim());
                             let truncated = truncate_at_char_boundary(&scrubbed, 4000);
 
                             if pipeline_task_detected {
@@ -1891,7 +1891,7 @@ async fn agent_inbox_processor(
                                 // channel — last_text is raw LLM output that may
                                 // contain secrets from tool execution.
                                 let scrubbed =
-                                    crate::agent::loop_::scrub_credentials(last_text.trim());
+                                    synapse_security::scrub_credentials(last_text.trim());
                                 let relay_text = scrubbed.as_str();
                                 if !relay_text.is_empty() {
                                     let content = if relay_text.len() > 4000 {

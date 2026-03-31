@@ -361,6 +361,67 @@ fn has_mixed_alpha_digit(s: &str) -> bool {
     has_alpha && has_digit
 }
 
+// ── Inline credential scrubbing ─────────────────────────────────────
+//
+// Lightweight scrubbing for tool output: replaces known key=value credential
+// patterns with a redacted placeholder while preserving a short prefix for
+// context. This is simpler than the full `LeakDetector` scan and is used
+// in the agent loop to sanitize tool results before they go back to the LLM.
+
+static SENSITIVE_KV_REGEX: OnceLock<Regex> = OnceLock::new();
+
+fn sensitive_kv_regex() -> &'static Regex {
+    SENSITIVE_KV_REGEX.get_or_init(|| {
+        Regex::new(r#"(?i)(token|api[_-]?key|password|secret|user[_-]?key|bearer|credential)["']?\s*[:=]\s*(?:"([^"]{8,})"|'([^']{8,})'|([a-zA-Z0-9_\-\.]{8,}))"#).unwrap()
+    })
+}
+
+/// Scrub credentials from tool output to prevent accidental exfiltration.
+/// Replaces known credential patterns with a redacted placeholder while preserving
+/// a small prefix for context.
+pub fn scrub_credentials(input: &str) -> String {
+    sensitive_kv_regex()
+        .replace_all(input, |caps: &regex::Captures| {
+            let full_match = &caps[0];
+            let key = &caps[1];
+            let val = caps
+                .get(2)
+                .or(caps.get(3))
+                .or(caps.get(4))
+                .map(|m| m.as_str())
+                .unwrap_or("");
+
+            // Preserve first 4 chars for context, then redact.
+            // Use char_indices to find the byte offset of the 4th character
+            // so we never slice in the middle of a multi-byte UTF-8 sequence.
+            let prefix = if val.len() > 4 {
+                val.char_indices()
+                    .nth(4)
+                    .map(|(byte_idx, _)| &val[..byte_idx])
+                    .unwrap_or(val)
+            } else {
+                ""
+            };
+
+            if full_match.contains(':') {
+                if full_match.contains('"') {
+                    format!("\"{}\": \"{}*[REDACTED]\"", key, prefix)
+                } else {
+                    format!("{}: {}*[REDACTED]", key, prefix)
+                }
+            } else if full_match.contains('=') {
+                if full_match.contains('"') {
+                    format!("{}=\"{}*[REDACTED]\"", key, prefix)
+                } else {
+                    format!("{}={}*[REDACTED]", key, prefix)
+                }
+            } else {
+                format!("{}: {}*[REDACTED]", key, prefix)
+            }
+        })
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

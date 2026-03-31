@@ -79,7 +79,7 @@ pub use iam_policy::{IamPolicy, PolicyDecision};
 pub use nevis::{NevisAuthProvider, NevisIdentity};
 // Prompt injection defense exports
 #[allow(unused_imports)]
-pub use leak_detector::{LeakDetector, LeakResult};
+pub use leak_detector::{scrub_credentials, LeakDetector, LeakResult};
 #[allow(unused_imports)]
 pub use prompt_guard::{GuardAction, GuardResult, PromptGuard};
 // workspace_boundary re-exports excluded (stays in synapseclaw).
