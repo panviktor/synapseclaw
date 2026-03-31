@@ -159,6 +159,46 @@ pub fn decide_history_enrichment(
     }
 }
 
+// ── Thread context: parent conversation excerpt ─────────────────
+
+/// Extract the last N non-system turns from a parent conversation,
+/// capped by a total character budget.
+///
+/// Each individual message is truncated to `budget / max_turns` characters
+/// to prevent a single huge message from consuming the entire budget.
+/// Returns a formatted string like `user: ...\nassistant: ...\n`.
+pub fn smart_truncate_parent_turns(
+    turns: &[crate::domain::message::ChatMessage],
+    max_turns: usize,
+    max_total_chars: usize,
+) -> String {
+    let non_system: Vec<_> = turns.iter().filter(|t| t.role != "system").collect();
+
+    let per_msg_limit = max_total_chars / max_turns.max(1);
+    let mut result = String::new();
+    let mut budget = max_total_chars;
+
+    for turn in non_system.iter().rev().take(max_turns).rev() {
+        let content = if turn.content.chars().count() > per_msg_limit {
+            format!(
+                "{}...",
+                turn.content.chars().take(per_msg_limit).collect::<String>()
+            )
+        } else {
+            turn.content.clone()
+        };
+
+        let line = format!("{}: {}\n", turn.role, content);
+        if line.len() > budget {
+            break;
+        }
+        budget -= line.len();
+        result.push_str(&line);
+    }
+
+    result
+}
+
 // ── Auto-save policy ─────────────────────────────────────────────
 
 /// Minimum message length (in chars) to trigger auto-save.
@@ -592,5 +632,44 @@ mod tests {
             command_effect(&cmd, &test_routes()),
             CommandEffect::ClearSession
         );
+    }
+
+    #[test]
+    fn smart_truncate_takes_last_n_non_system() {
+        use crate::domain::message::ChatMessage;
+        let turns = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("first"),
+            ChatMessage::assistant("reply1"),
+            ChatMessage::user("second"),
+            ChatMessage::assistant("reply2"),
+            ChatMessage::user("third"),
+        ];
+        let result = smart_truncate_parent_turns(&turns, 3, 5000);
+        assert!(result.contains("reply2"));
+        assert!(result.contains("second"));
+        assert!(result.contains("third"));
+        assert!(!result.contains("first"));
+        assert!(!result.contains("sys"));
+    }
+
+    #[test]
+    fn smart_truncate_respects_budget() {
+        use crate::domain::message::ChatMessage;
+        let turns = vec![
+            ChatMessage::user("a".repeat(1000)),
+            ChatMessage::assistant("b".repeat(1000)),
+            ChatMessage::user("c".repeat(1000)),
+        ];
+        let result = smart_truncate_parent_turns(&turns, 3, 500);
+        // Budget is 500 chars, per-msg limit = 166
+        assert!(result.len() <= 600); // some overhead from "user: " prefix
+        assert!(result.contains("..."));
+    }
+
+    #[test]
+    fn smart_truncate_empty_returns_empty() {
+        let result = smart_truncate_parent_turns(&[], 3, 2000);
+        assert!(result.is_empty());
     }
 }

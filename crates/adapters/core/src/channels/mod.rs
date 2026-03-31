@@ -1431,6 +1431,8 @@ async fn handle_message_via_orchestrator(
         auto_save_memory: ctx.auto_save_memory,
         model_routes,
         thread_root_max_chars: 500,
+        thread_parent_recent_turns: 3,
+        thread_parent_max_chars: 2000,
         query_classifier: {
             let qc = ctx.query_classification.clone();
             if qc.enabled {

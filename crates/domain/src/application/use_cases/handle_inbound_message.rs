@@ -35,6 +35,10 @@ pub struct InboundMessageConfig {
     pub auto_save_memory: bool,
     pub model_routes: Vec<(String, String, String)>,
     pub thread_root_max_chars: usize,
+    /// Max recent parent turns to inject when seeding a thread (default: 3).
+    pub thread_parent_recent_turns: usize,
+    /// Total char budget for parent turns excerpt (default: 2000).
+    pub thread_parent_max_chars: usize,
     /// Query classification config for route override.
     /// Optional query classifier: message -> model hint.
     #[allow(clippy::type_complexity)]
@@ -257,6 +261,21 @@ async fn handle_regular_message(
                 history.push(ChatMessage::system(format!(
                     "[Thread root message]\n{truncated}"
                 )));
+            }
+
+            // Recent parent turns for immediate context
+            let parent_turns = ports.history.get_history(&parent_key);
+            if !parent_turns.is_empty() {
+                let recent = inbound_message_service::smart_truncate_parent_turns(
+                    &parent_turns,
+                    config.thread_parent_recent_turns,
+                    config.thread_parent_max_chars,
+                );
+                if !recent.is_empty() {
+                    history.push(ChatMessage::system(format!(
+                        "[Recent parent conversation]\n{recent}"
+                    )));
+                }
             }
         }
         HistoryEnrichment::MemoryContext {
@@ -788,6 +807,8 @@ mod tests {
             auto_save_memory: false,
             model_routes: vec![],
             thread_root_max_chars: 500,
+            thread_parent_recent_turns: 3,
+            thread_parent_max_chars: 2000,
             query_classifier: None,
             message_timeout_secs: 60,
             min_relevance_score: 0.5,

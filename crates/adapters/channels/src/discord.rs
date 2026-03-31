@@ -788,7 +788,16 @@ impl Channel for DiscordChannel {
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs(),
-                        thread_ts: None,
+                        // Discord thread detection: if the message has a
+                        // message_reference (reply chain) or the payload contains a
+                        // "thread" object, the channel_id IS the thread ID.
+                        thread_ts: if d.get("message_reference").is_some()
+                            || d.get("thread").is_some()
+                        {
+                            Some(channel_id.clone())
+                        } else {
+                            None
+                        },
                     };
 
                     if tx.send(channel_msg).await.is_err() {
