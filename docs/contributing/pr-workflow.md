@@ -246,13 +246,13 @@ We do **not** require contributors to quantify AI-vs-human line ownership.
 
 Changes in these areas require stricter review and stronger test evidence:
 
-- `src/security/**`
+- `crates/adapters/security/src/**`
 - Runtime process management.
-- Gateway ingress/authentication behavior (`src/gateway/**`).
+- Gateway ingress/authentication behavior (`crates/adapters/core/src/gateway/**`).
 - Filesystem access boundaries.
 - Network/authentication behavior.
 - GitHub workflows and release pipeline.
-- Tools with execution capability (`src/tools/**`).
+- Tools with execution capability (`crates/adapters/tools/src/**`).
 
 ### 9.1 Minimum for risky PRs
 

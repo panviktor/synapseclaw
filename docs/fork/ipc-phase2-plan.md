@@ -60,13 +60,13 @@ Step 8: Final validation        ← all
 
 ## Step 1: IPC Audit Trail
 
-**Files**: `src/gateway/ipc.rs`, `src/security/audit.rs`, `src/config/schema.rs`, `src/gateway/mod.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/security/src/audit.rs`, `crates/domain/src/config/schema.rs`, `crates/adapters/core/src/gateway/mod.rs`
 
 ### What
 
 Extend `AuditLogger` with IPC-specific event types and wire it into the broker.
 
-#### 1.1 New event types in `src/security/audit.rs`
+#### 1.1 New event types in `crates/adapters/security/src/audit.rs`
 
 Add variants to `AuditEventType`:
 
@@ -127,7 +127,7 @@ This way `to_agent` is persisted in the audit log via the `action.command` field
 `AppState` currently has no `AuditLogger`. Add:
 
 ```rust
-// src/gateway/mod.rs — AppState
+// crates/adapters/core/src/gateway/mod.rs — AppState
 pub audit_logger: Option<Arc<AuditLogger>>,
 ```
 
@@ -207,7 +207,7 @@ Similarly for: inbox fetch (`IpcReceived`), state changes (`IpcStateChange`), ad
 
 ## Step 2: PromptGuard Integration in Broker
 
-**Files**: `src/gateway/ipc.rs`, `src/config/schema.rs`, `src/gateway/mod.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/domain/src/config/schema.rs`, `crates/adapters/core/src/gateway/mod.rs`
 
 ### What
 
@@ -217,7 +217,7 @@ Scan message payload with `PromptGuard` before INSERT. Block or warn on injectio
 
 #### 2.1 Config: `IpcPromptGuardConfig`
 
-Add to `src/config/schema.rs`:
+Add to `crates/domain/src/config/schema.rs`:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -289,7 +289,7 @@ exempt_levels = [0, 1]
 #### 2.2 PromptGuard instance in AppState
 
 ```rust
-// src/gateway/mod.rs — AppState
+// crates/adapters/core/src/gateway/mod.rs — AppState
 pub ipc_prompt_guard: Option<PromptGuard>,
 ```
 
@@ -370,7 +370,7 @@ if let Some(ref guard) = state.ipc_prompt_guard {
 
 ## Step 3: Structured Output Wrapping
 
-**Files**: `src/gateway/ipc.rs`, `src/tools/agents_ipc.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/tools/src/agents_ipc.rs`
 
 ### What
 
@@ -461,18 +461,18 @@ Update `AgentsInboxTool` description to mention trust warnings:
 
 ## Step 4: Credential Leak Scanning
 
-**Files**: `src/gateway/ipc.rs`, `src/gateway/mod.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/core/src/gateway/mod.rs`
 
 ### What
 
-Use the existing `LeakDetector` (`src/security/leak_detector.rs`) to scan IPC payloads for credentials. Apply to **both** `handle_ipc_send()` and `handle_ipc_state_set()`.
+Use the existing `LeakDetector` (`crates/adapters/security/src/leak_detector.rs`) to scan IPC payloads for credentials. Apply to **both** `handle_ipc_send()` and `handle_ipc_state_set()`.
 
 > **Why not extend PromptGuard?** The codebase already has a specialized `LeakDetector` with 7 detection categories (API keys, AWS credentials, private keys, JWT, DB URLs, generic secrets, high-entropy tokens) and built-in redaction. Adding similar regexes to PromptGuard would create two diverging implementations. Instead, we compose a **payload policy pipeline**: PromptGuard detects injection *intent*, LeakDetector detects credential *leakage*.
 
 #### 4.1 LeakDetector instance in AppState
 
 ```rust
-// src/gateway/mod.rs — AppState
+// crates/adapters/core/src/gateway/mod.rs — AppState
 pub ipc_leak_detector: Option<LeakDetector>,
 ```
 
@@ -558,7 +558,7 @@ if let Some(ref detector) = state.ipc_leak_detector {
 
 ## Step 5: Sequence Integrity Check
 
-**Files**: `src/gateway/ipc.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`
 
 ### What
 
@@ -623,7 +623,7 @@ impl IpcDb {
 
 ## Step 6: Session Length Limits
 
-**Files**: `src/gateway/ipc.rs`, `src/config/schema.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/domain/src/config/schema.rs`
 
 ### What
 
@@ -775,7 +775,7 @@ The coordinator sees `kind=escalation` messages in its normal inbox (not quarant
 
 ## Step 7: Promote-to-Task Workflow
 
-**Files**: `src/gateway/ipc.rs`, `src/gateway/mod.rs`
+**Files**: `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/core/src/gateway/mod.rs`
 
 ### What
 
@@ -928,7 +928,7 @@ async fn handle_admin_ipc_promote(
 
 #### 7.4 Route registration
 
-In `src/gateway/mod.rs`:
+In `crates/adapters/core/src/gateway/mod.rs`:
 
 ```rust
 .route("/admin/ipc/promote", post(ipc::handle_admin_ipc_promote))
@@ -1048,11 +1048,11 @@ Both apply to `handle_ipc_send()`. LeakDetector also applies to `handle_ipc_stat
 
 | File | Changes |
 |------|---------|
-| `src/security/audit.rs` | New IPC event types (`IpcSend`, `IpcBlocked`, `IpcLeakDetected`, etc.), `AuditEvent::ipc()` builder |
-| `src/config/schema.rs` | `IpcPromptGuardConfig`, `session_max_exchanges`, `coordinator_agent` |
-| `src/gateway/mod.rs` | `AppState`: `audit_logger`, `ipc_prompt_guard`, `ipc_leak_detector` fields; `/admin/ipc/promote` route; test AppState updates |
-| `src/gateway/ipc.rs` | PromptGuard scan + LeakDetector scan in send and state_set, structured output in inbox, sequence integrity check, session limits with provenance-preserving escalation, promote handler with `promoted` column + provenance-preserving envelope, `fetch_inbox()` quarantine query update, audit logging throughout |
-| `src/tools/agents_ipc.rs` | Updated tool descriptions (trust warnings) |
+| `crates/adapters/security/src/audit.rs` | New IPC event types (`IpcSend`, `IpcBlocked`, `IpcLeakDetected`, etc.), `AuditEvent::ipc()` builder |
+| `crates/domain/src/config/schema.rs` | `IpcPromptGuardConfig`, `session_max_exchanges`, `coordinator_agent` |
+| `crates/adapters/core/src/gateway/mod.rs` | `AppState`: `audit_logger`, `ipc_prompt_guard`, `ipc_leak_detector` fields; `/admin/ipc/promote` route; test AppState updates |
+| `crates/adapters/core/src/gateway/ipc.rs` | PromptGuard scan + LeakDetector scan in send and state_set, structured output in inbox, sequence integrity check, session limits with provenance-preserving escalation, promote handler with `promoted` column + provenance-preserving envelope, `fetch_inbox()` quarantine query update, audit logging throughout |
+| `crates/adapters/tools/src/agents_ipc.rs` | Updated tool descriptions (trust warnings) |
 | `docs/fork/ipc-phase2-progress.md` | Step statuses |
 | `docs/fork/ipc-quickstart.md` | Phase 2 config examples |
 | `docs/fork/delta-registry.md` | New delta items |

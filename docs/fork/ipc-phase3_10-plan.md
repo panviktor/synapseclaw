@@ -221,7 +221,7 @@ Keeping both local and broker pre-fetch paths alive would make delivery semantic
 
 ### Step 1: `PushMeta` struct and signal channel type
 
-Add `PushMeta` struct to `src/gateway/ipc.rs` (after `PushJob`):
+Add `PushMeta` struct to `crates/adapters/core/src/gateway/ipc.rs` (after `PushJob`):
 
 ```rust
 #[derive(Debug, Clone)]
@@ -232,13 +232,13 @@ pub struct PushMeta {
 }
 ```
 
-Change `AppState.ipc_push_signal` from `UnboundedSender<()>` to `UnboundedSender<PushMeta>` in `src/gateway/mod.rs`. Update channel creation at spawn site.
+Change `AppState.ipc_push_signal` from `UnboundedSender<()>` to `UnboundedSender<PushMeta>` in `crates/adapters/core/src/gateway/mod.rs`. Update channel creation at spawn site.
 
 In `handle_ipc_push_notification`: do **not** resolve trust from local IPC DB. Only enqueue `PushMeta { from_agent, kind, message_id }`.
 
 ### Step 2: Config fields
 
-Add to `AgentsIpcConfig` in `src/config/schema.rs`:
+Add to `AgentsIpcConfig` in `crates/domain/src/config/schema.rs`:
 
 - `push_max_auto_processes: u32` — max consecutive push-triggered runs for same peer (default: 3)
 - `push_peer_cooldown_secs: u64` — cooldown before resetting per-peer counter (default: 300)
@@ -249,7 +249,7 @@ Note: `result` is included in default auto-process kinds because legitimate orch
 
 ### Step 3: Kind-based filtering + one-way check in push receiver
 
-Modify `handle_ipc_push_notification()` in `src/gateway/ipc.rs`:
+Modify `handle_ipc_push_notification()` in `crates/adapters/core/src/gateway/ipc.rs`:
 
 - Read `push_auto_process_kinds` from config
 - Only send `PushMeta` signal if kind is in the auto-process list
@@ -331,7 +331,7 @@ Optionally, `GET /api/ipc/inbox` gains `from` and `kinds` query params for gener
 
 ### Step 5: Per-peer counter and coalescing in inbox processor
 
-Rewrite `agent_inbox_processor()` in `src/gateway/mod.rs`:
+Rewrite `agent_inbox_processor()` in `crates/adapters/core/src/gateway/mod.rs`:
 
 - Accept `UnboundedReceiver<PushMeta>` instead of `UnboundedReceiver<()>`
 - Maintain `HashMap<String, PeerState>` tracking `auto_process_count` and `last_processed` per peer

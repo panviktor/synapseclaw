@@ -9,7 +9,7 @@ User message (Telegram/Discord/Slack/...)
         │
         ▼
    ┌─────────┐     ┌────────────┐
-   │ Channel  │────▶│   Agent    │  (src/agent/)
+   │ Channel  │────▶│   Agent    │  (crates/adapters/core/src/agent/)
    └─────────┘     │  Loop      │
                    │            │◀──── Memory Loader (loads relevant context)
                    │            │◀──── System Prompt Builder

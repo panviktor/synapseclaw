@@ -28,16 +28,16 @@ Read these files to understand the current work:
 
 Read these key files (first 50 lines each is enough for orientation):
 
-- `src/gateway/ipc.rs` — IPC broker (handlers, IpcDb, ACL validation, audit events)
-- `src/gateway/agent_registry.rs` — agent registry + health polling
-- `src/gateway/chat_db.rs` — chat session SQLite persistence
-- `src/gateway/ws.rs` — WS handler with operator isolation (op: prefix folding)
-- `src/tools/agents_ipc.rs` — IPC tools (agents_spawn, send, inbox, reply, state)
-- `src/security/pairing.rs` — token auth, TokenMetadata
-- `src/security/execution.rs` — execution profiles, fail-closed sandbox
-- `src/security/identity.rs` — Ed25519 agent identity
-- `src/security/audit.rs` — dual-chain audit (Merkle + HMAC), IPC event types
-- `src/config/schema.rs` — AgentsIpcConfig, IpcPromptGuardConfig, SandboxConfig
+- `crates/adapters/core/src/gateway/ipc.rs` — IPC broker (handlers, IpcDb, ACL validation, audit events)
+- `crates/adapters/core/src/gateway/agent_registry.rs` — agent registry + health polling
+- `crates/adapters/core/src/gateway/chat_db.rs` — chat session SQLite persistence
+- `crates/adapters/core/src/gateway/ws.rs` — WS handler with operator isolation (op: prefix folding)
+- `crates/adapters/tools/src/agents_ipc.rs` — IPC tools (agents_spawn, send, inbox, reply, state)
+- `crates/adapters/security/src/pairing.rs` — token auth, TokenMetadata
+- `crates/adapters/security/src/execution.rs` — execution profiles, fail-closed sandbox
+- `crates/adapters/security/src/identity.rs` — Ed25519 agent identity
+- `crates/adapters/security/src/audit.rs` — dual-chain audit (Merkle + HMAC), IPC event types
+- `crates/domain/src/config/schema.rs` — AgentsIpcConfig, IpcPromptGuardConfig, SandboxConfig
 
 ## Step 4: Check git state
 

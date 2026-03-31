@@ -38,12 +38,12 @@ In openclaw's UI:
 
 | Component | Location | What it does |
 |-----------|----------|-------------|
-| `Agent::history()` | `src/agent/agent.rs:235` | Returns `&[ConversationMessage]` — full turn history |
-| `Agent::turn()` | `src/agent/agent.rs:467` | Executes one conversation turn, appends to history |
-| `ConversationHistoryMap` | `src/channels/mod.rs:155` | `HashMap<String, Vec<ChatMessage>>` — per-sender history, max 50 messages |
-| `conversation_history_key()` | `src/channels/mod.rs:366` | Key format: `{channel}_{thread}_{sender}` |
-| WS agent | `src/gateway/ws.rs:124` | Creates `Agent` per WS connection — has multi-turn history but dies on disconnect |
-| `session_store.rs` | `src/channels/session_store.rs` | New upstream module — `SessionStore` with persistence, but not wired into web chat yet |
+| `Agent::history()` | `crates/adapters/core/src/agent/agent.rs:235` | Returns `&[ConversationMessage]` — full turn history |
+| `Agent::turn()` | `crates/adapters/core/src/agent/agent.rs:467` | Executes one conversation turn, appends to history |
+| `ConversationHistoryMap` | `crates/adapters/channels/src/mod.rs:155` | `HashMap<String, Vec<ChatMessage>>` — per-sender history, max 50 messages |
+| `conversation_history_key()` | `crates/adapters/channels/src/mod.rs:366` | Key format: `{channel}_{thread}_{sender}` |
+| WS agent | `crates/adapters/core/src/gateway/ws.rs:124` | Creates `Agent` per WS connection — has multi-turn history but dies on disconnect |
+| `session_store.rs` | `crates/adapters/channels/src/session_store.rs` | New upstream module — `SessionStore` with persistence, but not wired into web chat yet |
 
 ### Frontend
 
@@ -262,7 +262,7 @@ Session sidebar:
 
 ### Step 0: Backend — chat session store + SQLite persistence
 
-**Files**: `src/gateway/mod.rs`, `src/gateway/ws.rs`, `src/gateway/chat_db.rs` (new)
+**Files**: `crates/adapters/core/src/gateway/mod.rs`, `crates/adapters/core/src/gateway/ws.rs`, `crates/adapters/core/src/gateway/chat_db.rs` (new)
 
 **What**:
 - `ChatDb` struct: SQLite DB at `workspace/chat/sessions.db`, WAL mode
@@ -284,7 +284,7 @@ Session sidebar:
 
 ### Step 1: Backend — WS RPC dispatcher
 
-**Files**: `src/gateway/ws.rs`
+**Files**: `crates/adapters/core/src/gateway/ws.rs`
 
 **What**:
 - Add RPC message parsing: `{ type: "rpc", id, method, params }`
@@ -316,7 +316,7 @@ async fn handle_rpc(method: &str, params: Value, state: &WsState) -> Result<Valu
 
 ### Step 2: Backend — RPC method implementations
 
-**Files**: `src/gateway/ws.rs`
+**Files**: `crates/adapters/core/src/gateway/ws.rs`
 
 **What**:
 - `chat.history` — read `ChatSession.agent.history()`, serialize, return
@@ -404,7 +404,7 @@ async fn handle_rpc(method: &str, params: Value, state: &WsState) -> Result<Valu
 ## File Structure
 
 ```
-src/gateway/
+crates/adapters/core/src/gateway/
 ├── ws.rs         # EDIT: persist agent in AppState, add RPC dispatcher + all method handlers
 ├── chat_db.rs    # NEW: SQLite persistence for chat sessions + messages
 └── mod.rs        # EDIT: add ChatSession + ChatDb to AppState
@@ -481,7 +481,7 @@ web/src/
 
 **Required (done)**:
 - Phase 3.5: web UI infrastructure (routes, sidebar, glass-card)
-- Gateway WebSocket handler (`src/gateway/ws.rs`)
+- Gateway WebSocket handler (`crates/adapters/core/src/gateway/ws.rs`)
 - `Agent` struct with `history()` and `turn()` methods
 
 **Not required**:

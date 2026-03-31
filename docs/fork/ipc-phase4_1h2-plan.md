@@ -48,11 +48,11 @@ Create `crates/fork_config/Cargo.toml`. Move into it the config types that live 
 - Risk: **medium** | LOC: +400 scaffold
 
 ### Slice 3 — Move config schema types to fork_config
-Move all 123 struct/enum type definitions from `src/config/schema.rs` → `crates/fork_config/src/schema.rs`. What stays in `src/config/`:
+Move all 123 struct/enum type definitions from `crates/domain/src/config/schema.rs` → `crates/fork_config/src/schema.rs`. What stays in `src/config/`:
 - `Config::load()`, `Config::save()` (use SecretStore — infra)
 - `config/workspace.rs` (filesystem ops)
 - `config/traits.rs` (ChannelConfig trait)
-- `src/config/schema.rs` becomes `pub use fork_config::schema::*;` + SecretStore methods
+- `crates/domain/src/config/schema.rs` becomes `pub use fork_config::schema::*;` + SecretStore methods
 
 All existing `crate::config::XxxConfig` paths keep working via re-export.
 - Risk: **high** | LOC: net 0 (12K moved)
@@ -76,7 +76,7 @@ Move `src/sop/` (6,615 LOC) → `src/fork_adapters/sop/`. Investigate `SopConfig
 - Depends on: Slice 3 (config types resolved)
 
 ### Slice 8 — Move runtime/ impls → fork_adapters
-Move `src/runtime/native.rs`, `docker.rs` → `src/fork_adapters/runtime/`. Traits already in fork_core. `src/runtime/` becomes thin re-export.
+Move `crates/adapters/core/src/runtime/native.rs`, `docker.rs` → `src/fork_adapters/runtime/`. Traits already in fork_core. `crates/adapters/core/src/runtime/` becomes thin re-export.
 - Risk: **medium** (runtime is high-risk area per CLAUDE.md, but pure move)
 - LOC: net 0
 
@@ -147,7 +147,7 @@ Slices 1, 2, 4, 5, 6, 8 are independent — can parallelize.
 
 | File | Role | Slice |
 |------|------|-------|
-| `src/config/schema.rs` (12K) | Config types — splits into fork_config | 3 |
+| `crates/domain/src/config/schema.rs` (12K) | Config types — splits into fork_config | 3 |
 | `src/fork_adapters/mod.rs` | Adapter registry → becomes crate lib.rs | 9c |
 | `crates/fork_core/src/ports/` | New agent ports | 9a |
 | `src/lib.rs` | Module wiring, updated every slice | all |

@@ -60,8 +60,8 @@ Go to:
 | Risk label | Typical touched paths | Minimum review depth | Required evidence |
 |---|---|---|---|
 | `risk: low` | docs/tests/chore, isolated non-runtime changes | 1 reviewer + CI gate | coherent local validation + no behavior ambiguity |
-| `risk: medium` | `src/providers/**`, `src/channels/**`, `src/memory/**`, `src/config/**` | 1 subsystem-aware reviewer + behavior verification | focused scenario proof + explicit side effects |
-| `risk: high` | `src/security/**`, `src/runtime/**`, `src/gateway/**`, `src/tools/**`, `.github/workflows/**` | fast triage + deep review + rollback readiness | security/failure-mode checks + rollback clarity |
+| `risk: medium` | `crates/adapters/providers/src/**`, `crates/adapters/channels/src/**`, `crates/adapters/memory/src/**`, `src/config/**` | 1 subsystem-aware reviewer + behavior verification | focused scenario proof + explicit side effects |
+| `risk: high` | `crates/adapters/security/src/**`, `crates/adapters/core/src/runtime/**`, `crates/adapters/core/src/gateway/**`, `crates/adapters/tools/src/**`, `.github/workflows/**` | fast triage + deep review + rollback readiness | security/failure-mode checks + rollback clarity |
 
 When uncertain, treat as `risk: high`.
 

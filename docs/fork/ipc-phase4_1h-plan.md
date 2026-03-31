@@ -20,11 +20,11 @@ Five promises to the fork:
 
 Phase 4.0 created `crates/fork_core/` with domain types, ports, and application services. Phase 4.1 added pipeline engine. But the hexagonal migration stalled at ~15% — 253K LOC still lives in flat `src/` with 33 modules mixing domain, adapters, and infrastructure:
 
-- `src/tools/` (41K LOC) = adapter, but lives outside fork_adapters
-- `src/channels/` (40K LOC) = adapter, mixed with domain
-- `src/providers/` (23K LOC) = adapter, flat in src/
-- `src/security/` (12K LOC) = domain rules + crypto adapters, unsplit
-- `src/agent/` (11K LOC) = orchestration logic tightly coupled to upstream types
+- `crates/adapters/tools/src/` (41K LOC) = adapter, but lives outside fork_adapters
+- `crates/adapters/channels/src/` (40K LOC) = adapter, mixed with domain
+- `crates/adapters/providers/src/` (23K LOC) = adapter, flat in src/
+- `crates/adapters/security/src/` (12K LOC) = domain rules + crypto adapters, unsplit
+- `crates/adapters/core/src/agent/` (11K LOC) = orchestration logic tightly coupled to upstream types
 
 Can't tell what's domain vs infrastructure without reading every file.
 
@@ -118,7 +118,7 @@ None. This is purely organizational.
 - `src/identity/` — unknown size
 - `src/migration/` — unknown size
 - `src/multimodal/` — check usage
-- Unused individual files in `src/tools/` (64 files — are all 64 registered?)
+- Unused individual files in `crates/adapters/tools/src/` (64 files — are all 64 registered?)
 
 **Output:** dead code deleted, category map documented.
 
@@ -146,7 +146,7 @@ None. This is purely organizational.
 ### Slice 2 — Observability + hooks + cron
 
 **Move:**
-- `src/observability/` (3.0K) → `crates/fork_adapters/src/observability/`
+- `crates/adapters/observability/src/` (3.0K) → `crates/fork_adapters/crates/adapters/observability/src/`
 - `src/hooks/` (633) → `crates/fork_adapters/src/hooks/`
 - `src/cron/` (3.4K) → `crates/fork_adapters/src/cron/`
 - `src/approval/` (618) → `crates/fork_adapters/src/approval/`
@@ -166,28 +166,28 @@ None. This is purely organizational.
 ### Slice 4 — Providers
 
 **Move:**
-- `src/providers/` (23.5K) → `crates/fork_adapters/src/providers/`
+- `crates/adapters/providers/src/` (23.5K) → `crates/fork_adapters/crates/adapters/providers/src/`
 
 **Note:** Largest single adapter module. Pure LLM provider implementations (OpenAI, Anthropic, custom). No domain logic.
 
 ### Slice 5 — Tools
 
 **Move:**
-- `src/tools/` (41K) → `crates/fork_adapters/src/tools/`
+- `crates/adapters/tools/src/` (41K) → `crates/fork_adapters/crates/adapters/tools/src/`
 
 **Note:** Largest module. 64 files, each a tool adapter. Tool trait defined in `fork_core`.
 
 ### Slice 6 — Channels
 
 **Move:**
-- `src/channels/` (40K) → `crates/fork_adapters/src/channels/` (merge with existing `fork_adapters/channels/`)
+- `crates/adapters/channels/src/` (40K) → `crates/fork_adapters/crates/adapters/channels/src/` (merge with existing `fork_adapters/channels/`)
 
 **Note:** Contains channel trait impls (Telegram, Discord, Slack, Matrix) + orchestration glue. May need split in Phase D but moved as-is for now.
 
 ### Slice 7 — Gateway
 
 **Move:**
-- `src/gateway/` (18K) → `crates/fork_adapters/src/gateway/`
+- `crates/adapters/core/src/gateway/` (18K) → `crates/fork_adapters/crates/adapters/core/src/gateway/`
 
 **Note:** HTTP/WebSocket server. Pure infrastructure.
 
@@ -195,7 +195,7 @@ None. This is purely organizational.
 
 **Split:**
 - Policy rules (allowlist, ACL evaluation) → `fork_core/src/domain/security/`
-- Crypto implementations (pairing, identity, Ed25519) → `crates/fork_adapters/src/security/`
+- Crypto implementations (pairing, identity, Ed25519) → `crates/fork_adapters/crates/adapters/security/src/`
 
 **Note:** First slice that adds to fork_core. Requires careful boundary definition.
 
@@ -203,7 +203,7 @@ None. This is purely organizational.
 
 **Split:**
 - Memory model/traits → `fork_core/src/domain/memory/` (extend existing)
-- SQLite/markdown/embedding backends → `crates/fork_adapters/src/memory/` (extend existing)
+- SQLite/markdown/embedding backends → `crates/fork_adapters/crates/adapters/memory/src/` (extend existing)
 
 ### Slice 10 — Agent orchestration
 

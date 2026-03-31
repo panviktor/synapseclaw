@@ -61,7 +61,7 @@ Merge-blocking checks should stay small and deterministic. Optional checks are u
     - Additional behavior: managed label colors follow display order to produce a smooth left-to-right gradient when many labels are present
     - Manual governance: supports `workflow_dispatch` with `mode=audit|repair` to inspect/fix managed label metadata drift across the whole repository
     - Additional behavior: risk + size labels are auto-corrected on manual PR label edits (`labeled`/`unlabeled` events); apply `risk: manual` when maintainers intentionally override automated risk selection
-    - High-risk heuristic paths: `src/security/**`, `src/runtime/**`, `src/gateway/**`, `src/tools/**`, `.github/workflows/**`
+    - High-risk heuristic paths: `crates/adapters/security/src/**`, `crates/adapters/core/src/runtime/**`, `crates/adapters/core/src/gateway/**`, `crates/adapters/tools/src/**`, `.github/workflows/**`
     - Guardrail: maintainers can apply `risk: manual` to freeze automated risk recalculation
 - `.github/workflows/pr-auto-response.yml` (`PR Auto Responder`)
     - Purpose: first-time contributor onboarding + label-driven response routing (`r:support`, `r:needs-repro`, etc.)

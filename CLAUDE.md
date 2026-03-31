@@ -26,7 +26,7 @@ Docs-only changes: run markdown lint and link-integrity checks. If touching boot
 
 SynapseClaw is a Rust-first autonomous agent runtime optimized for performance, efficiency, stability, extensibility, sustainability, and security.
 
-**Hexagonal architecture** — pure domain core with zero infrastructure dependencies. Extend by implementing port traits and registering in adapter modules.
+**Hexagonal architecture** — pure domain core with zero infrastructure dependencies. 12 workspace crates compile in parallel waves. Extend by implementing port traits in adapter crates.
 
 ## Architecture
 
@@ -37,67 +37,105 @@ synapseclaw/
 │   └── lib.rs               ← thin facade (re-exports for tests)
 │
 └── crates/
-    ├── domain/              ← PURE DOMAIN (synapse_domain)
+    ├── domain/              ← PURE DOMAIN (synapse_domain, 24K)
     │   └── src/               zero infra deps: serde, schemars, async-trait
     │       ├── application/   use cases, services
     │       ├── config/        config value objects (schema types, no IO)
     │       ├── domain/        entities, value objects
-    │       └── ports/         trait interfaces (Provider, Memory, Runtime, etc.)
+    │       └── ports/         trait interfaces (Channel, Tool, Provider, Memory,
+    │                          IpcClientPort, RuntimeAdapter, etc.)
     │
     └── adapters/
-        ├── core/            ← ALL INFRASTRUCTURE (synapse_adapters)
-        │   ├── Cargo.toml     main adapters crate (80K LOC, 30+ modules)
+        ├── core/            ← COMPOSITION ROOT (synapse_adapters, 55K)
         │   └── src/
         │       ├── agent/     agent loop, classifier, dispatcher
-        │       ├── channels/  telegram, discord, slack, matrix, IRC, lark, nostr, ...
-        │       ├── commands.rs  CLI enums (clap derives)
-        │       ├── config_io.rs ConfigIO impl (load/save/encrypt)
+        │       ├── channels/  re-exports from synapse_channels + orchestration
         │       ├── gateway/   HTTP/WS gateway, IPC broker
-        │       ├── memory_adapters/  LLM-driven memory (consolidation, summary)
-        │       ├── tools/     shell, file_read, browser, memory, IPC, ...
-        │       └── ...        28+ modules total
+        │       ├── tools/     re-exports from synapse_tools + delegate, agents_ipc
+        │       ├── daemon/    multi-agent daemon
+        │       ├── hooks/     lifecycle hooks
+        │       └── ...        pipeline, routing, runtime, storage, tunnel, etc.
+        ├── channels/        ← synapse_channels (34K)
+        │   └── src/           telegram, discord, slack, matrix, IRC, lark, nostr,
+        │                      session management, registry, inbound adapters
+        ├── tools/           ← synapse_tools (37K)
+        │   └── src/           shell, file_read, browser, memory, cron, MCP wrappers,
+        │                      composio, google_workspace, linkedin, http, etc.
         ├── security/        ← synapse_security (10K)
         │   └── src/           pairing, secrets, audit, sandbox, identity
         ├── memory/          ← synapse_memory (8K)
         │   └── src/           sqlite, qdrant, embeddings, markdown, lucid
-        ├── observability/   ← synapse_observability (5K)
         ├── providers/       ← synapse_providers (20K)
         │   └── src/           openai, anthropic, gemini, ollama, auth, proxy
-        └── cron-store/      ← synapse_cron (3K)
+        ├── observability/   ← synapse_observability (5K)
+        │   └── src/           prometheus, opentelemetry, tracing, runtime_trace
+        ├── cron-store/      ← synapse_cron (3K)
+        │   └── src/           scheduler, job persistence, commands
+        ├── mcp/             ← synapse_mcp (3K)
+        │   └── src/           MCP protocol, transport, client, tool wrappers
+        ├── infra/           ← synapse_infra (5K)
+        │   └── src/           config_io, identity, approval, workspace, runtime
+        └── onboard/         ← synapse_onboard (7K)
+            └── src/           setup wizard, model management
+```
+
+### Compilation Waves (parallel build)
+
+```
+Wave 1: domain (24K)
+Wave 2: security (10K) | observability (5K) | memory (8K)
+Wave 3: providers (20K) | cron (3K)
+Wave 4: infra (5K) | mcp (3K)
+Wave 5: channels (34K) | tools (37K) | onboard (7K) | core (55K)  ← 4 parallel
+Wave 6: synapseclaw binary
 ```
 
 ### Dependency Rules
 
 ```
-domain/             → nothing (PURE)
-adapters/security/  → domain/
-adapters/memory/    → domain/
-adapters/providers/ → domain/, security/
-adapters/cron/      → domain/, security/
-adapters/core/      → domain/, security/, memory/, providers/, cron/, observability/
-src/main.rs         → all crates (composition root)
+domain/              → nothing (PURE)
+adapters/security/   → domain/
+adapters/memory/     → domain/
+adapters/observability/ → domain/
+adapters/mcp/        → domain/
+adapters/providers/  → domain/, security/
+adapters/cron/       → domain/, security/
+adapters/infra/      → domain/, security/, providers/
+adapters/channels/   → domain/, security/, providers/, infra/, mcp/, observability/, memory/
+adapters/tools/      → domain/, security/, providers/, infra/, mcp/, cron/, memory/
+adapters/onboard/    → domain/, infra/, providers/, memory/
+adapters/core/       → ALL above crates (composition root)
+src/main.rs          → all crates (binary composition root)
 ```
 
-### Key Extension Points
+### Key Extension Points (Domain Ports)
 
-- `crates/adapters/core/src/providers/traits.rs` (`Provider`)
-- `crates/adapters/core/src/channels/traits.rs` (`Channel`)
-- `crates/adapters/core/src/tools/traits.rs` (`Tool`)
-- `crates/adapters/memory/src/traits.rs` (`Memory`)
-- `crates/adapters/core/src/observability/traits.rs` (`Observer`)
+All cross-crate communication goes through domain port traits:
+
+- `crates/domain/src/ports/channel.rs` (`Channel`)
+- `crates/domain/src/ports/tool.rs` (`Tool`, `ToolSpec`, `ToolResult`, `ArcToolRef`)
+- `crates/domain/src/ports/provider.rs` (`Provider`)
+- `crates/domain/src/ports/memory_backend.rs` (`Memory`)
+- `crates/domain/src/ports/ipc_client.rs` (`IpcClientPort`)
 - `crates/domain/src/ports/runtime.rs` (`RuntimeAdapter`)
+- `crates/adapters/observability/src/traits.rs` (`Observer`)
 
 ### Workspace Crates
 
 | Crate | Package | LOC | Role |
 |-------|---------|-----|------|
 | `crates/domain/` | `synapse_domain` | 24K | Pure domain: types, ports, config schema |
-| `crates/adapters/core/` | `synapse_adapters` | 80K | Infrastructure: channels, agent, tools, gateway |
+| `crates/adapters/core/` | `synapse_adapters` | 55K | Composition root: agent, gateway, daemon, hooks |
+| `crates/adapters/channels/` | `synapse_channels` | 34K | Channel implementations (30+ platforms) |
+| `crates/adapters/tools/` | `synapse_tools` | 37K | Tool implementations (49 tools) |
 | `crates/adapters/security/` | `synapse_security` | 10K | Security: pairing, secrets, audit, sandbox |
 | `crates/adapters/memory/` | `synapse_memory` | 8K | Memory: sqlite, qdrant, embeddings, markdown |
 | `crates/adapters/providers/` | `synapse_providers` | 20K | LLM providers: openai, anthropic, gemini, ollama |
 | `crates/adapters/observability/` | `synapse_observability` | 5K | Prometheus, OpenTelemetry, tracing |
 | `crates/adapters/cron-store/` | `synapse_cron` | 3K | Cron scheduler, job persistence |
+| `crates/adapters/mcp/` | `synapse_mcp` | 3K | MCP protocol client stack |
+| `crates/adapters/infra/` | `synapse_infra` | 5K | Shared infra: config_io, identity, approval |
+| `crates/adapters/onboard/` | `synapse_onboard` | 7K | Onboarding wizard, model management |
 
 ## Risk Tiers
 
@@ -137,6 +175,7 @@ Branch/commit/PR rules:
 - Do not hide behavior-changing side effects in refactor commits.
 - Do not include personal identity or sensitive information in test data, examples, docs, or commits.
 - Do not add tool injection paths after the `SYNAPSECLAW_ALLOWED_TOOLS` filter without explicit allowlist enforcement (see Security Invariants).
+- Do not use `use synapse_X as Y` aliases in extracted crates — always use full crate names.
 
 ## Linked References
 

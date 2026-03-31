@@ -50,7 +50,7 @@ SynapseClaw logs actions but lacks tamper-evident audit trails for:
 ## Implementation
 
 ```rust
-// src/security/audit.rs
+// crates/adapters/security/src/audit.rs
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;

@@ -618,7 +618,7 @@ If the pipeline TOML was modified while a run was in progress:
 
 ### Tool execution (ToolMiddleware)
 
-Single hook point in `src/agent/loop_.rs` → `execute_one_tool`:
+Single hook point in `crates/adapters/core/src/agent/loop_.rs` → `execute_one_tool`:
 
 ```
 Before: tool_name + args → execute → result
@@ -724,7 +724,7 @@ pub enum PipelineEvent {
 - `fork_adapters/middleware/rate_limit.rs`
 - `fork_adapters/middleware/validation.rs`
 - `fork_adapters/middleware/approval_gate.rs`
-- Modification: `src/agent/loop_.rs` → `execute_one_tool`
+- Modification: `crates/adapters/core/src/agent/loop_.rs` → `execute_one_tool`
 
 **Acceptance**: rate-limited tool call returns structured error to LLM. Approval gate pauses execution.
 
