@@ -61,14 +61,14 @@ mod tests {
         async fn get_session(&self, _key: &str) -> Option<ConversationSession> {
             None
         }
+        async fn list_sessions(&self, _prefix: Option<&str>) -> Vec<ConversationSession> {
+            vec![]
+        }
         async fn upsert_session(&self, _session: &ConversationSession) -> Result<()> {
             Ok(())
         }
         async fn delete_session(&self, _key: &str) -> Result<bool> {
             Ok(true)
-        }
-        async fn list_sessions(&self, _prefix: Option<&str>) -> Vec<ConversationSession> {
-            vec![]
         }
         async fn touch_session(&self, _key: &str) -> Result<()> {
             Ok(())
@@ -102,11 +102,11 @@ mod tests {
         async fn add_token_usage(&self, _key: &str, _input: i64, _output: i64) -> Result<()> {
             Ok(())
         }
-        async fn set_summary(&self, _key: &str, _summary: &str) -> Result<()> {
-            Ok(())
-        }
         async fn get_summary(&self, _key: &str) -> Option<String> {
             None
+        }
+        async fn set_summary(&self, _key: &str, _summary: &str) -> Result<()> {
+            Ok(())
         }
     }
 

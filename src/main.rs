@@ -1117,7 +1117,7 @@ async fn main() -> Result<()> {
         } => handle_estop_command(&config, estop_command, level, domains, tools),
 
         Commands::Cron { cron_command } => {
-            crate::adapters::cron::handle_command(cron_command, &config)
+            synapse_cron::commands::handle_command(cron_command, &config)
         }
 
         Commands::Models { model_command } => match model_command {

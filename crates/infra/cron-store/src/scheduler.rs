@@ -1,4 +1,4 @@
-use crate::cron::{
+use crate::{
     due_jobs, next_run_for_schedule, record_last_run, record_run, remove_job, reschedule_after_run,
     update_job, CronJob, CronJobPatch, ExecutionMode, JobType, Schedule, SessionTarget,
 };
@@ -17,10 +17,53 @@ const MIN_POLL_SECONDS: u64 = 5;
 const SHELL_JOB_TIMEOUT_SECS: u64 = 120;
 const SCHEDULER_COMPONENT: &str = "scheduler";
 
+/// Health-check reporter — injected by the caller so the scheduler doesn't
+/// depend on the concrete `health` module in adapters.
+pub trait HealthReporter: Send + Sync {
+    fn mark_ok(&self, component: &str);
+    fn mark_error(&self, component: &str, error: String);
+    /// Snapshot of all component health for diagnostics.
+    fn snapshot_json(&self) -> serde_json::Value {
+        serde_json::json!({})
+    }
+}
+
+/// No-op reporter for tests and contexts where health tracking is irrelevant.
+pub struct NoopHealthReporter;
+impl HealthReporter for NoopHealthReporter {
+    fn mark_ok(&self, _component: &str) {}
+    fn mark_error(&self, _component: &str, _error: String) {}
+}
+
+/// Cron output delivery — the scheduler needs to send job results somewhere.
+/// Adapters implement this with the real `DeliveryService`.
+#[async_trait::async_trait]
+pub trait CronDeliveryPort: Send + Sync {
+    async fn deliver_cron_output(
+        &self,
+        delivery: &synapse_domain::domain::config::CronDeliveryConfig,
+        output: &str,
+    ) -> anyhow::Result<()>;
+}
+
+/// No-op delivery for tests.
+pub struct NoopCronDelivery;
+#[async_trait::async_trait]
+impl CronDeliveryPort for NoopCronDelivery {
+    async fn deliver_cron_output(
+        &self,
+        _delivery: &synapse_domain::domain::config::CronDeliveryConfig,
+        _output: &str,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 pub async fn run(
     config: Config,
-    delivery_service: Arc<synapse_domain::application::services::delivery_service::DeliveryService>,
+    delivery_service: Arc<dyn CronDeliveryPort>,
     agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
+    health: Arc<dyn HealthReporter>,
 ) -> Result<()> {
     let poll_secs = config.reliability.scheduler_poll_secs.max(MIN_POLL_SECONDS);
     let mut interval = time::interval(Duration::from_secs(poll_secs));
@@ -30,16 +73,16 @@ pub async fn run(
         &config.workspace_dir,
     ));
 
-    crate::health::mark_component_ok(SCHEDULER_COMPONENT);
+    health.mark_ok(SCHEDULER_COMPONENT);
 
     loop {
         interval.tick().await;
-        crate::health::mark_component_ok(SCHEDULER_COMPONENT);
+        health.mark_ok(SCHEDULER_COMPONENT);
 
         let jobs = match due_jobs(&config, Utc::now()) {
             Ok(jobs) => jobs,
             Err(e) => {
-                crate::health::mark_component_error(SCHEDULER_COMPONENT, e.to_string());
+                health.mark_error(SCHEDULER_COMPONENT, e.to_string());
                 tracing::warn!("Scheduler query failed: {e}");
                 continue;
             }
@@ -52,6 +95,7 @@ pub async fn run(
             SCHEDULER_COMPONENT,
             delivery_service.clone(),
             agent_runner.clone(),
+            &health,
         )
         .await;
     }
@@ -107,11 +151,12 @@ async fn process_due_jobs(
     security: &Arc<SecurityPolicy>,
     jobs: Vec<CronJob>,
     component: &str,
-    delivery_service: Arc<synapse_domain::application::services::delivery_service::DeliveryService>,
+    delivery_service: Arc<dyn CronDeliveryPort>,
     agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
+    health: &Arc<dyn HealthReporter>,
 ) {
     // Refresh scheduler health on every successful poll cycle, including idle cycles.
-    crate::health::mark_component_ok(component);
+    health.mark_ok(component);
 
     let max_concurrent = config.scheduler.max_concurrent.max(1);
     let mut in_flight = stream::iter(jobs.into_iter().map(|job| {
@@ -120,6 +165,7 @@ async fn process_due_jobs(
         let component = component.to_owned();
         let ds = delivery_service.clone();
         let ar = agent_runner.clone();
+        let h = Arc::clone(health);
         async move {
             Box::pin(execute_and_persist_job(
                 &config,
@@ -128,6 +174,7 @@ async fn process_due_jobs(
                 &component,
                 ds,
                 ar,
+                &h,
             ))
             .await
         }
@@ -146,10 +193,11 @@ async fn execute_and_persist_job(
     security: &SecurityPolicy,
     job: &CronJob,
     component: &str,
-    delivery_service: Arc<synapse_domain::application::services::delivery_service::DeliveryService>,
+    delivery_service: Arc<dyn CronDeliveryPort>,
     agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
+    health: &Arc<dyn HealthReporter>,
 ) -> (String, bool, String) {
-    crate::health::mark_component_ok(component);
+    health.mark_ok(component);
     warn_if_high_frequency_agent_job(job);
 
     let started_at = Utc::now();
@@ -346,11 +394,11 @@ async fn persist_job_result(
     output: &str,
     started_at: DateTime<Utc>,
     finished_at: DateTime<Utc>,
-    delivery_service: Arc<synapse_domain::application::services::delivery_service::DeliveryService>,
+    delivery_service: Arc<dyn CronDeliveryPort>,
 ) -> bool {
     let duration_ms = (finished_at - started_at).num_milliseconds();
 
-    let core_delivery = crate::daemon::cron_delivery_config_from(&job.delivery);
+    let core_delivery = crate::cron_delivery_config_from(&job.delivery);
 
     if let Err(e) = delivery_service
         .deliver_cron_output(&core_delivery, output)
@@ -473,7 +521,7 @@ async fn run_job_command_with_timeout(
     // manually-edited job stores.
     let approved = false; // scheduler runs are never pre-approved
     if let Err(error) =
-        crate::cron::validate_shell_command_with_security(security, &job.command, approved)
+        crate::validate_shell_command_with_security(security, &job.command, approved)
     {
         return (false, error.to_string());
     }
@@ -529,11 +577,56 @@ async fn run_job_command_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cron::{self, DeliveryConfig};
+    use crate::DeliveryConfig;
     use chrono::{Duration as ChronoDuration, Utc};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
     use synapse_domain::config::schema::Config;
     use synapse_security::security_factory::security_policy_from_config;
     use tempfile::TempDir;
+
+    /// Test health reporter that tracks component state in memory.
+    struct MockHealthReporter {
+        state: Mutex<HashMap<String, (String, Option<String>)>>,
+    }
+    impl MockHealthReporter {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                state: Mutex::new(HashMap::new()),
+            })
+        }
+    }
+    impl HealthReporter for MockHealthReporter {
+        fn mark_ok(&self, component: &str) {
+            self.state
+                .lock()
+                .unwrap()
+                .insert(component.to_string(), ("ok".to_string(), None));
+        }
+        fn mark_error(&self, component: &str, error: String) {
+            self.state
+                .lock()
+                .unwrap()
+                .insert(component.to_string(), ("error".to_string(), Some(error)));
+        }
+        fn snapshot_json(&self) -> serde_json::Value {
+            let guard = self.state.lock().unwrap();
+            let mut components = serde_json::Map::new();
+            for (k, (status, _err)) in guard.iter() {
+                let mut entry = serde_json::Map::new();
+                entry.insert("status".to_string(), serde_json::json!(status));
+                if status == "ok" {
+                    entry.insert(
+                        "last_ok".to_string(),
+                        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+                    );
+                    entry.insert("last_error".to_string(), serde_json::Value::Null);
+                }
+                components.insert(k.clone(), serde_json::Value::Object(entry));
+            }
+            serde_json::json!({ "components": components })
+        }
+    }
 
     struct NoopRunner;
     #[async_trait::async_trait]
@@ -586,18 +679,26 @@ mod tests {
         &FailRunner
     }
 
-    /// No-op delivery service for tests that don't exercise delivery.
-    /// Uses a mock registry that has no channels — delivery attempts will
-    /// fail, which is fine because test jobs don't configure announce mode.
-    fn noop_delivery_service(
-    ) -> Arc<synapse_domain::application::services::delivery_service::DeliveryService> {
-        let registry: Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort> =
-            Arc::new(crate::channels::registry::CachedChannelRegistry::new(
-                Config::default(),
-            ));
-        Arc::new(
-            synapse_domain::application::services::delivery_service::DeliveryService::new(registry),
-        )
+    /// No-op delivery for tests that don't exercise delivery.
+    fn noop_delivery_service() -> Arc<dyn CronDeliveryPort> {
+        Arc::new(NoopCronDelivery)
+    }
+
+    /// Always-failing delivery for tests that verify error handling.
+    struct FailingCronDelivery;
+    #[async_trait::async_trait]
+    impl CronDeliveryPort for FailingCronDelivery {
+        async fn deliver_cron_output(
+            &self,
+            _delivery: &synapse_domain::domain::config::CronDeliveryConfig,
+            _output: &str,
+        ) -> anyhow::Result<()> {
+            anyhow::bail!("simulated delivery failure")
+        }
+    }
+
+    fn failing_delivery_service() -> Arc<dyn CronDeliveryPort> {
+        Arc::new(FailingCronDelivery)
     }
 
     async fn test_config(tmp: &TempDir) -> Config {
@@ -616,7 +717,7 @@ mod tests {
         CronJob {
             id: "test-job".into(),
             expression: "* * * * *".into(),
-            schedule: crate::cron::Schedule::Cron {
+            schedule: crate::Schedule::Cron {
                 expr: "* * * * *".into(),
                 tz: None,
             },
@@ -907,8 +1008,9 @@ mod tests {
             &config.workspace_dir,
         ));
         let component = unique_component("scheduler-idle");
+        let health = MockHealthReporter::new();
 
-        crate::health::mark_component_error(&component, "pre-existing error");
+        health.mark_error(&component, "pre-existing error".into());
         process_due_jobs(
             &config,
             &security,
@@ -916,10 +1018,11 @@ mod tests {
             &component,
             noop_delivery_service(),
             Arc::new(NoopRunner),
+            &(health.clone() as Arc<dyn HealthReporter>),
         )
         .await;
 
-        let snapshot = crate::health::snapshot_json();
+        let snapshot = health.snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
         assert_eq!(entry["status"], "ok");
         assert!(entry["last_ok"].as_str().is_some());
@@ -936,8 +1039,9 @@ mod tests {
             &config.workspace_dir,
         ));
         let component = unique_component("scheduler-fail");
+        let health = MockHealthReporter::new();
 
-        crate::health::mark_component_ok(&component);
+        health.mark_ok(&component);
         process_due_jobs(
             &config,
             &security,
@@ -945,10 +1049,11 @@ mod tests {
             &component,
             noop_delivery_service(),
             Arc::new(NoopRunner),
+            &(health.clone() as Arc<dyn HealthReporter>),
         )
         .await;
 
-        let snapshot = crate::health::snapshot_json();
+        let snapshot = health.snapshot_json();
         let entry = &snapshot["components"][component.as_str()];
         assert_eq!(entry["status"], "ok");
     }
@@ -957,7 +1062,7 @@ mod tests {
     async fn persist_job_result_records_run_and_reschedules_shell_job() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
-        let job = cron::add_job(&config, "*/5 * * * *", "echo ok").unwrap();
+        let job = crate::add_job(&config, "*/5 * * * *", "echo ok").unwrap();
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
 
@@ -973,9 +1078,9 @@ mod tests {
         .await;
         assert!(success);
 
-        let runs = cron::list_runs(&config, &job.id, 10).unwrap();
+        let runs = crate::list_runs(&config, &job.id, 10).unwrap();
         assert_eq!(runs.len(), 1);
-        let updated = cron::get_job(&config, &job.id).unwrap();
+        let updated = crate::get_job(&config, &job.id).unwrap();
         assert_eq!(updated.last_status.as_deref(), Some("ok"));
     }
 
@@ -984,10 +1089,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_agent_job(
+        let job = crate::add_agent_job(
             &config,
             Some("one-shot".into()),
-            crate::cron::Schedule::At { at },
+            crate::Schedule::At { at },
             "Hello",
             SessionTarget::Isolated,
             None,
@@ -1009,7 +1114,7 @@ mod tests {
         )
         .await;
         assert!(success);
-        let lookup = cron::get_job(&config, &job.id);
+        let lookup = crate::get_job(&config, &job.id);
         assert!(lookup.is_err());
     }
 
@@ -1018,10 +1123,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_agent_job(
+        let job = crate::add_agent_job(
             &config,
             Some("one-shot".into()),
-            crate::cron::Schedule::At { at },
+            crate::Schedule::At { at },
             "Hello",
             SessionTarget::Isolated,
             None,
@@ -1043,7 +1148,7 @@ mod tests {
         )
         .await;
         assert!(!success);
-        let updated = cron::get_job(&config, &job.id).unwrap();
+        let updated = crate::get_job(&config, &job.id).unwrap();
         assert!(!updated.enabled);
         assert_eq!(updated.last_status.as_deref(), Some("error"));
     }
@@ -1053,7 +1158,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_once_at(&config, at, "echo one-shot-shell").unwrap();
+        let job = crate::commands::add_once_at(&config, at, "echo one-shot-shell").unwrap();
         assert!(job.delete_after_run);
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
@@ -1069,7 +1174,7 @@ mod tests {
         )
         .await;
         assert!(success);
-        let lookup = cron::get_job(&config, &job.id);
+        let lookup = crate::get_job(&config, &job.id);
         assert!(lookup.is_err());
     }
 
@@ -1078,7 +1183,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_once_at(&config, at, "echo one-shot-shell").unwrap();
+        let job = crate::commands::add_once_at(&config, at, "echo one-shot-shell").unwrap();
         assert!(job.delete_after_run);
         let started = Utc::now();
         let finished = started + ChronoDuration::milliseconds(10);
@@ -1094,7 +1199,7 @@ mod tests {
         )
         .await;
         assert!(!success);
-        let updated = cron::get_job(&config, &job.id).unwrap();
+        let updated = crate::get_job(&config, &job.id).unwrap();
         assert!(!updated.enabled);
         assert_eq!(updated.last_status.as_deref(), Some("error"));
     }
@@ -1103,10 +1208,10 @@ mod tests {
     async fn persist_job_result_delivery_failure_non_best_effort_marks_error() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
-        let job = cron::add_agent_job(
+        let job = crate::add_agent_job(
             &config,
             Some("announce-job".into()),
-            crate::cron::Schedule::Cron {
+            crate::Schedule::Cron {
                 expr: "*/5 * * * *".into(),
                 tz: None,
             },
@@ -1132,16 +1237,16 @@ mod tests {
             "ok",
             started,
             finished,
-            noop_delivery_service(),
+            failing_delivery_service(),
         )
         .await;
         assert!(!success);
 
-        let updated = cron::get_job(&config, &job.id).unwrap();
+        let updated = crate::get_job(&config, &job.id).unwrap();
         assert!(updated.enabled);
         assert_eq!(updated.last_status.as_deref(), Some("error"));
 
-        let runs = cron::list_runs(&config, &job.id, 10).unwrap();
+        let runs = crate::list_runs(&config, &job.id, 10).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, "error");
     }
@@ -1150,10 +1255,10 @@ mod tests {
     async fn persist_job_result_delivery_failure_best_effort_keeps_success() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
-        let job = cron::add_agent_job(
+        let job = crate::add_agent_job(
             &config,
             Some("announce-job-best-effort".into()),
-            crate::cron::Schedule::Cron {
+            crate::Schedule::Cron {
                 expr: "*/5 * * * *".into(),
                 tz: None,
             },
@@ -1179,16 +1284,16 @@ mod tests {
             "ok",
             started,
             finished,
-            noop_delivery_service(),
+            failing_delivery_service(),
         )
         .await;
         assert!(success);
 
-        let updated = cron::get_job(&config, &job.id).unwrap();
+        let updated = crate::get_job(&config, &job.id).unwrap();
         assert!(updated.enabled);
         assert_eq!(updated.last_status.as_deref(), Some("ok"));
 
-        let runs = cron::list_runs(&config, &job.id, 10).unwrap();
+        let runs = crate::list_runs(&config, &job.id, 10).unwrap();
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].status, "ok");
     }
@@ -1198,10 +1303,10 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = cron::add_agent_job(
+        let job = crate::add_agent_job(
             &config,
             Some("at-no-autodelete".into()),
-            crate::cron::Schedule::At { at },
+            crate::Schedule::At { at },
             "Hello",
             SessionTarget::Isolated,
             None,
@@ -1225,7 +1330,7 @@ mod tests {
         .await;
         assert!(success);
 
-        let updated = cron::get_job(&config, &job.id).unwrap();
+        let updated = crate::get_job(&config, &job.id).unwrap();
         assert!(updated.enabled);
         assert_eq!(updated.last_status.as_deref(), Some("ok"));
     }
@@ -1236,7 +1341,7 @@ mod tests {
         CronJob {
             id: "test-subprocess".into(),
             expression: String::new(),
-            schedule: crate::cron::Schedule::At {
+            schedule: crate::Schedule::At {
                 at: Utc::now() + ChronoDuration::seconds(1),
             },
             command: String::new(),
@@ -1323,10 +1428,10 @@ mod tests {
         env.insert("SYNAPSECLAW_BROKER_TOKEN".into(), "tok-123".into());
         env.insert("SYNAPSECLAW_AGENT_ID".into(), "eph-test".into());
 
-        let job = cron::add_agent_job_full(
+        let job = crate::add_agent_job_full(
             &config,
             Some("subprocess-test".into()),
-            crate::cron::Schedule::At { at },
+            crate::Schedule::At { at },
             "Do something",
             SessionTarget::Isolated,
             None,
@@ -1352,7 +1457,7 @@ mod tests {
         );
 
         // Verify roundtrip through DB
-        let loaded = cron::get_job(&config, &job.id).unwrap();
+        let loaded = crate::get_job(&config, &job.id).unwrap();
         assert_eq!(loaded.execution_mode, ExecutionMode::Subprocess);
         assert_eq!(loaded.env_overlay.len(), 2);
         assert_eq!(
@@ -1370,10 +1475,10 @@ mod tests {
         let config = test_config(&tmp).await;
         let at = Utc::now() + ChronoDuration::minutes(10);
 
-        let job = cron::add_agent_job(
+        let job = crate::add_agent_job(
             &config,
             Some("legacy-test".into()),
-            crate::cron::Schedule::At { at },
+            crate::Schedule::At { at },
             "Hello",
             SessionTarget::Isolated,
             None,

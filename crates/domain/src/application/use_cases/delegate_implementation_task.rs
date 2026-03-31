@@ -119,7 +119,7 @@ mod tests {
             state: RunState,
             finished_at: Option<u64>,
         ) -> Result<()> {
-            let mut runs = self.runs.lock().unwrap();
+            let mut runs = self.runs.lock()?;
             if let Some(run) = runs.iter_mut().find(|r| r.run_id == run_id) {
                 run.state = state;
                 run.finished_at = finished_at;

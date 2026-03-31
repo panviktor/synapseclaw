@@ -1,126 +1,143 @@
-use anyhow::{anyhow, bail, Result};
+//! CLI command enum and handler for cron subcommands.
+
+use crate::*;
+use anyhow::Result;
+use clap::Subcommand;
+use serde::{Deserialize, Serialize};
 use synapse_domain::config::schema::Config;
-use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_security::security_factory::security_policy_from_config;
 
-mod schedule;
-mod store;
-mod types;
+/// Cron subcommands
+#[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum CronCommands {
+    /// List all scheduled tasks
+    List,
+    /// Add a new scheduled task
+    #[command(long_about = "\
+Add a new recurring scheduled task.
 
-pub mod scheduler;
+Uses standard 5-field cron syntax: 'min hour day month weekday'. \
+Times are evaluated in UTC by default; use --tz with an IANA \
+timezone name to override.
 
-#[allow(unused_imports)]
-pub use schedule::{
-    next_run_for_schedule, normalize_expression, schedule_cron_expression, validate_schedule,
-};
-#[allow(unused_imports)]
-pub use store::{
-    add_agent_job, add_agent_job_full, due_jobs, get_job, list_jobs, list_runs, record_last_run,
-    record_run, remove_job, reschedule_after_run, update_job,
-};
-pub use types::{
-    CronJob, CronJobPatch, CronRun, DeliveryConfig, ExecutionMode, JobType, Schedule, SessionTarget,
-};
+Examples:
+  synapseclaw cron add '0 9 * * 1-5' 'Good morning' --tz America/New_York --agent
+  synapseclaw cron add '*/30 * * * *' 'Check system health' --agent
+  synapseclaw cron add '*/5 * * * *' 'echo ok'")]
+    Add {
+        /// Cron expression
+        expression: String,
+        /// Optional IANA timezone (e.g. America/Los_Angeles)
+        #[arg(long)]
+        tz: Option<String>,
+        /// Treat the argument as an agent prompt instead of a shell command
+        #[arg(long)]
+        agent: bool,
+        /// Command (shell) or prompt (agent) to run
+        command: String,
+    },
+    /// Add a one-shot scheduled task at an RFC3339 timestamp
+    #[command(long_about = "\
+Add a one-shot task that fires at a specific UTC timestamp.
 
-/// Validate a shell command against the full security policy (allowlist + risk gate).
-///
-/// Returns `Ok(())` if the command passes all checks, or an error describing
-/// why it was blocked.
-pub fn validate_shell_command(config: &Config, command: &str, approved: bool) -> Result<()> {
-    let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
-    validate_shell_command_with_security(&security, command, approved)
-}
+The timestamp must be in RFC 3339 format (e.g. 2025-01-15T14:00:00Z).
 
-/// Validate a shell command using an existing `SecurityPolicy` instance.
-///
-/// Preferred when the caller already holds a `SecurityPolicy` (e.g. scheduler).
-pub(crate) fn validate_shell_command_with_security(
-    security: &SecurityPolicy,
-    command: &str,
-    approved: bool,
-) -> Result<()> {
-    security
-        .validate_command_execution(command, approved)
-        .map(|_| ())
-        .map_err(|reason| anyhow!("blocked by security policy: {reason}"))
-}
+Examples:
+  synapseclaw cron add-at 2025-01-15T14:00:00Z 'Send reminder'
+  synapseclaw cron add-at 2025-12-31T23:59:00Z 'Happy New Year!'")]
+    AddAt {
+        /// One-shot timestamp in RFC3339 format
+        at: String,
+        /// Treat the argument as an agent prompt instead of a shell command
+        #[arg(long)]
+        agent: bool,
+        /// Command (shell) or prompt (agent) to run
+        command: String,
+    },
+    /// Add a fixed-interval scheduled task
+    #[command(long_about = "\
+Add a task that repeats at a fixed interval.
 
-/// Create a validated shell job, enforcing security policy before persistence.
-///
-/// All entrypoints that create shell cron jobs should route through this
-/// function to guarantee consistent policy enforcement.
-pub fn add_shell_job_with_approval(
-    config: &Config,
-    name: Option<String>,
-    schedule: Schedule,
-    command: &str,
-    approved: bool,
-) -> Result<CronJob> {
-    validate_shell_command(config, command, approved)?;
-    store::add_shell_job(config, name, schedule, command)
-}
+Interval is specified in milliseconds. For example, 60000 = 1 minute.
 
-/// Update a shell job's command with security validation.
-///
-/// Validates the new command (if changed) before persisting.
-pub fn update_shell_job_with_approval(
-    config: &Config,
-    job_id: &str,
-    patch: CronJobPatch,
-    approved: bool,
-) -> Result<CronJob> {
-    if let Some(command) = patch.command.as_deref() {
-        validate_shell_command(config, command, approved)?;
-    }
-    update_job(config, job_id, patch)
-}
+Examples:
+  synapseclaw cron add-every 60000 'Ping heartbeat'     # every minute
+  synapseclaw cron add-every 3600000 'Hourly report'    # every hour")]
+    AddEvery {
+        /// Interval in milliseconds
+        every_ms: u64,
+        /// Treat the argument as an agent prompt instead of a shell command
+        #[arg(long)]
+        agent: bool,
+        /// Command (shell) or prompt (agent) to run
+        command: String,
+    },
+    /// Add a one-shot delayed task (e.g. "30m", "2h", "1d")
+    #[command(long_about = "\
+Add a one-shot task that fires after a delay from now.
 
-/// Create a one-shot validated shell job from a delay string (e.g. "30m").
-pub fn add_once_validated(
-    config: &Config,
-    delay: &str,
-    command: &str,
-    approved: bool,
-) -> Result<CronJob> {
-    let duration = parse_delay(delay)?;
-    let at = chrono::Utc::now() + duration;
-    add_once_at_validated(config, at, command, approved)
-}
+Accepts human-readable durations: s (seconds), m (minutes), \
+h (hours), d (days).
 
-/// Create a one-shot validated shell job at an absolute timestamp.
-pub fn add_once_at_validated(
-    config: &Config,
-    at: chrono::DateTime<chrono::Utc>,
-    command: &str,
-    approved: bool,
-) -> Result<CronJob> {
-    let schedule = Schedule::At { at };
-    add_shell_job_with_approval(config, None, schedule, command, approved)
-}
+Examples:
+  synapseclaw cron once 30m 'Run backup in 30 minutes'
+  synapseclaw cron once 2h 'Follow up on deployment'
+  synapseclaw cron once 1d 'Daily check'")]
+    Once {
+        /// Delay duration
+        delay: String,
+        /// Treat the argument as an agent prompt instead of a shell command
+        #[arg(long)]
+        agent: bool,
+        /// Command (shell) or prompt (agent) to run
+        command: String,
+    },
+    /// Remove a scheduled task
+    Remove {
+        /// Task ID
+        id: String,
+    },
+    /// Update a scheduled task
+    #[command(long_about = "\
+Update one or more fields of an existing scheduled task.
 
-// Convenience wrappers for CLI paths (default approved=false).
+Only the fields you specify are changed; others remain unchanged.
 
-pub(crate) fn add_shell_job(
-    config: &Config,
-    name: Option<String>,
-    schedule: Schedule,
-    command: &str,
-) -> Result<CronJob> {
-    add_shell_job_with_approval(config, name, schedule, command, false)
-}
-
-pub(crate) fn add_job(config: &Config, expression: &str, command: &str) -> Result<CronJob> {
-    let schedule = Schedule::Cron {
-        expr: expression.to_string(),
-        tz: None,
-    };
-    add_shell_job(config, None, schedule, command)
+Examples:
+  synapseclaw cron update <task-id> --expression '0 8 * * *'
+  synapseclaw cron update <task-id> --tz Europe/London --name 'Morning check'
+  synapseclaw cron update <task-id> --command 'Updated message'")]
+    Update {
+        /// Task ID
+        id: String,
+        /// New cron expression
+        #[arg(long)]
+        expression: Option<String>,
+        /// New IANA timezone
+        #[arg(long)]
+        tz: Option<String>,
+        /// New command to run
+        #[arg(long)]
+        command: Option<String>,
+        /// New job name
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Pause a scheduled task
+    Pause {
+        /// Task ID
+        id: String,
+    },
+    /// Resume a paused task
+    Resume {
+        /// Task ID
+        id: String,
+    },
 }
 
 #[allow(clippy::needless_pass_by_value)]
-pub fn handle_command(command: crate::commands::CronCommands, config: &Config) -> Result<()> {
+pub fn handle_command(command: CronCommands, config: &Config) -> Result<()> {
     match command {
-        crate::commands::CronCommands::List => {
+        CronCommands::List => {
             let jobs = list_jobs(config)?;
             if jobs.is_empty() {
                 println!("No scheduled tasks yet.");
@@ -152,7 +169,7 @@ pub fn handle_command(command: crate::commands::CronCommands, config: &Config) -
             }
             Ok(())
         }
-        crate::commands::CronCommands::Add {
+        CronCommands::Add {
             expression,
             tz,
             agent,
@@ -186,7 +203,7 @@ pub fn handle_command(command: crate::commands::CronCommands, config: &Config) -
             }
             Ok(())
         }
-        crate::commands::CronCommands::AddAt { at, agent, command } => {
+        CronCommands::AddAt { at, agent, command } => {
             let at = chrono::DateTime::parse_from_rfc3339(&at)
                 .map_err(|e| anyhow::anyhow!("Invalid RFC3339 timestamp for --at: {e}"))?
                 .with_timezone(&chrono::Utc);
@@ -213,7 +230,7 @@ pub fn handle_command(command: crate::commands::CronCommands, config: &Config) -
             }
             Ok(())
         }
-        crate::commands::CronCommands::AddEvery {
+        CronCommands::AddEvery {
             every_ms,
             agent,
             command,
@@ -243,7 +260,7 @@ pub fn handle_command(command: crate::commands::CronCommands, config: &Config) -
             }
             Ok(())
         }
-        crate::commands::CronCommands::Once {
+        CronCommands::Once {
             delay,
             agent,
             command,
@@ -273,7 +290,7 @@ pub fn handle_command(command: crate::commands::CronCommands, config: &Config) -
             }
             Ok(())
         }
-        crate::commands::CronCommands::Update {
+        CronCommands::Update {
             id,
             expression,
             tz,
@@ -318,13 +335,13 @@ pub fn handle_command(command: crate::commands::CronCommands, config: &Config) -
             println!("  Cmd : {}", job.command);
             Ok(())
         }
-        crate::commands::CronCommands::Remove { id } => remove_job(config, &id),
-        crate::commands::CronCommands::Pause { id } => {
+        CronCommands::Remove { id } => remove_job(config, &id),
+        CronCommands::Pause { id } => {
             pause_job(config, &id)?;
             println!("⏸️  Paused cron job {id}");
             Ok(())
         }
-        crate::commands::CronCommands::Resume { id } => {
+        CronCommands::Resume { id } => {
             resume_job(config, &id)?;
             println!("▶️  Resumed cron job {id}");
             Ok(())
@@ -366,7 +383,7 @@ pub fn resume_job(config: &Config, id: &str) -> Result<CronJob> {
     )
 }
 
-fn parse_delay(input: &str) -> Result<chrono::Duration> {
+pub(crate) fn parse_delay(input: &str) -> Result<chrono::Duration> {
     let input = input.trim();
     if input.is_empty() {
         anyhow::bail!("delay must not be empty");
@@ -424,7 +441,7 @@ mod tests {
         name: Option<&str>,
     ) -> Result<()> {
         handle_command(
-            crate::commands::CronCommands::Update {
+            CronCommands::Update {
                 id: id.into(),
                 expression: expression.map(Into::into),
                 tz: tz.map(Into::into),
@@ -774,7 +791,7 @@ mod tests {
         let config = test_config(&tmp);
 
         handle_command(
-            crate::commands::CronCommands::Add {
+            CronCommands::Add {
                 expression: "*/15 * * * *".into(),
                 tz: None,
                 agent: true,
@@ -804,7 +821,7 @@ mod tests {
         // security policy. With --agent, it routes to agent job and skips
         // shell validation entirely.
         let result = handle_command(
-            crate::commands::CronCommands::Add {
+            CronCommands::Add {
                 expression: "*/15 * * * *".into(),
                 tz: None,
                 agent: true,
@@ -825,7 +842,7 @@ mod tests {
         let config = test_config(&tmp);
 
         handle_command(
-            crate::commands::CronCommands::Add {
+            CronCommands::Add {
                 expression: "*/5 * * * *".into(),
                 tz: None,
                 agent: false,

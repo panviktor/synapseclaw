@@ -29,7 +29,7 @@ pub mod storage;
 pub mod approval;
 pub mod auth;
 pub mod cost;
-pub mod cron;
+pub use synapse_cron as cron;
 pub mod daemon;
 pub mod doctor;
 pub mod gateway;

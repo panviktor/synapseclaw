@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/domain", "crates/infra/adapters", "crates/infra/adapters/security", "crates/infra/adapters/memory", "crates/infra/observability"]
+members = [".", "crates/domain", "crates/infra/adapters", "crates/infra/adapters/security", "crates/infra/adapters/memory", "crates/infra/observability", "crates/infra/cron-store"]
 resolver = "2"
 
 [package]
@@ -42,6 +42,7 @@ synapse_security = { path = "crates/infra/adapters/security" }
 synapse_memory = { path = "crates/infra/adapters/memory" }
 # Infrastructure adapters (channels, providers, tools, gateway, agent)
 synapse_adapters = { path = "crates/infra/adapters" }
+synapse_cron = { path = "crates/infra/cron-store" }
 
 # CLI - minimal and fast
 clap = { version = "4.5", features = ["derive"] }

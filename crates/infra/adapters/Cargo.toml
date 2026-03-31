@@ -22,6 +22,7 @@ synapse_domain = { path = "../../domain" }
 synapse_security = { path = "security" }
 synapse_memory = { path = "memory" }
 synapse_observability = { path = "../observability" }
+synapse_cron = { path = "../cron-store" }
 
 # Major frameworks
 axum = { version = "0.8", features = ["multipart", "ws", "macros"] }
