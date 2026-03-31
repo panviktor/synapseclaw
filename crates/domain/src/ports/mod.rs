@@ -6,6 +6,7 @@
 pub mod agent_runner;
 pub mod agent_runtime;
 pub mod approval;
+pub mod channel;
 pub mod channel_output;
 pub mod channel_registry;
 pub mod coding_worker;
@@ -13,6 +14,7 @@ pub mod conversation_history;
 pub mod conversation_store;
 pub mod hooks;
 pub mod ipc_bus;
+pub mod ipc_client;
 pub mod memory;
 pub mod memory_backend;
 pub mod message_router;

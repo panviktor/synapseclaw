@@ -709,7 +709,7 @@ async fn main() -> Result<()> {
         // Handle --reinit: backup and reset configuration
         if reinit {
             let (synapseclaw_dir, _) =
-                synapse_adapters::workspace_io::resolve_runtime_dirs_for_onboarding().await?;
+                synapse_infra::workspace_io::resolve_runtime_dirs_for_onboarding().await?;
 
             if synapseclaw_dir.exists() {
                 let timestamp = chrono::Local::now().format("%Y%m%d%H%M%S");
@@ -754,11 +754,11 @@ async fn main() -> Result<()> {
         let is_tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
 
         let config = if channels_only {
-            Box::pin(crate::adapters::onboard::run_channels_repair_wizard()).await
+            Box::pin(synapse_onboard::run_channels_repair_wizard()).await
         } else if is_tty && !has_provider_flags {
-            Box::pin(crate::adapters::onboard::run_wizard(force)).await
+            Box::pin(synapse_onboard::run_wizard(force)).await
         } else {
-            Box::pin(crate::adapters::onboard::run_quick_setup(
+            Box::pin(synapse_onboard::run_quick_setup(
                 api_key.as_deref(),
                 provider.as_deref(),
                 model.as_deref(),
@@ -793,7 +793,7 @@ async fn main() -> Result<()> {
         std::sync::Arc::new(crate::agent::runner_adapter::AgentRunner::new(
             config_for_runner,
         ));
-    crate::adapters::observability::runtime_trace::init_from_config(
+    synapse_observability::runtime_trace::init_from_config(
         &config.observability,
         &config.workspace_dir,
     );
@@ -1130,9 +1130,9 @@ async fn main() -> Result<()> {
                     if provider.is_some() {
                         bail!("`models refresh --all` cannot be combined with --provider");
                     }
-                    crate::adapters::onboard::run_models_refresh_all(&config, force).await
+                    synapse_onboard::run_models_refresh_all(&config, force).await
                 } else {
-                    crate::adapters::onboard::run_models_refresh(
+                    synapse_onboard::run_models_refresh(
                         &config,
                         provider.as_deref(),
                         force,
@@ -1141,16 +1141,16 @@ async fn main() -> Result<()> {
                 }
             }
             ModelCommands::List { provider } => {
-                crate::adapters::onboard::run_models_list(&config, provider.as_deref()).await
+                synapse_onboard::run_models_list(&config, provider.as_deref()).await
             }
             ModelCommands::Set { model } => {
-                Box::pin(crate::adapters::onboard::run_models_set(&config, &model)).await
+                Box::pin(synapse_onboard::run_models_set(&config, &model)).await
             }
-            ModelCommands::Status => crate::adapters::onboard::run_models_status(&config).await,
+            ModelCommands::Status => synapse_onboard::run_models_status(&config).await,
         },
 
         Commands::Providers => {
-            let providers = adapters::providers::list_providers();
+            let providers = synapse_providers::list_providers();
             let current = config
                 .default_provider
                 .as_deref()
@@ -1235,7 +1235,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Memory { memory_command } => {
-            synapse_adapters::memory::cli::handle_command(memory_command, &config).await
+            synapse_adapters::memory_adapters::cli::handle_command(memory_command, &config).await
         }
 
         Commands::Auth { auth_command } => handle_auth_command(auth_command, &config).await,
@@ -1574,12 +1574,12 @@ struct PendingOAuthLoginFile {
 
 fn pending_oauth_login_path(config: &Config, provider: &str) -> std::path::PathBuf {
     let filename = format!("auth-{}-pending.json", provider);
-    crate::adapters::auth::state_dir_from_config(config).join(filename)
+    synapse_providers::auth::state_dir_from_config(config).join(filename)
 }
 
 fn pending_oauth_secret_store(config: &Config) -> security::secrets::SecretStore {
     security::secrets::SecretStore::new(
-        &crate::adapters::auth::state_dir_from_config(config),
+        &synapse_providers::auth::state_dir_from_config(config),
         config.secrets.encrypt,
     )
 }
@@ -1674,7 +1674,7 @@ fn read_plain_input(prompt: &str) -> Result<String> {
 }
 
 fn extract_openai_account_id_for_profile(access_token: &str) -> Option<String> {
-    let account_id = crate::adapters::auth::openai_oauth::extract_account_id_from_jwt(access_token);
+    let account_id = synapse_providers::auth::openai_oauth::extract_account_id_from_jwt(access_token);
     if account_id.is_none() {
         warn!(
             "Could not extract OpenAI account id from OAuth access token; \
@@ -1684,7 +1684,7 @@ fn extract_openai_account_id_for_profile(access_token: &str) -> Option<String> {
     account_id
 }
 
-fn format_expiry(profile: &crate::adapters::auth::profiles::AuthProfile) -> String {
+fn format_expiry(profile: &synapse_providers::auth::profiles::AuthProfile) -> String {
     match profile
         .token_set
         .as_ref()
@@ -1705,7 +1705,7 @@ fn format_expiry(profile: &crate::adapters::auth::profiles::AuthProfile) -> Stri
 
 #[allow(clippy::too_many_lines)]
 async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Result<()> {
-    let auth_service = crate::adapters::auth::AuthService::from_config(config);
+    let auth_service = synapse_providers::auth::AuthService::from_config(config);
 
     match auth_command {
         AuthCommands::Login {
@@ -1713,14 +1713,14 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
             profile,
             device_code,
         } => {
-            let provider = crate::adapters::auth::normalize_provider(&provider)?;
+            let provider = synapse_providers::auth::normalize_provider(&provider)?;
             let client = reqwest::Client::new();
 
             match provider.as_str() {
                 "gemini" => {
                     // Gemini OAuth flow
                     if device_code {
-                        match crate::adapters::auth::gemini_oauth::start_device_code_flow(&client)
+                        match synapse_providers::auth::gemini_oauth::start_device_code_flow(&client)
                             .await
                         {
                             Ok(device) => {
@@ -1732,12 +1732,12 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                                 }
 
                                 let token_set =
-                                    crate::adapters::auth::gemini_oauth::poll_device_code_tokens(
+                                    synapse_providers::auth::gemini_oauth::poll_device_code_tokens(
                                         &client, &device,
                                     )
                                     .await?;
                                 let account_id = token_set.id_token.as_deref().and_then(
-                                    crate::adapters::auth::gemini_oauth::extract_account_email_from_id_token,
+                                    synapse_providers::auth::gemini_oauth::extract_account_email_from_id_token,
                                 );
 
                                 auth_service
@@ -1756,9 +1756,9 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         }
                     }
 
-                    let pkce = crate::adapters::auth::gemini_oauth::generate_pkce_state();
+                    let pkce = synapse_providers::auth::gemini_oauth::generate_pkce_state();
                     let authorize_url =
-                        crate::adapters::auth::gemini_oauth::build_authorize_url(&pkce)?;
+                        synapse_providers::auth::gemini_oauth::build_authorize_url(&pkce)?;
 
                     // Save pending login for paste-redirect fallback
                     let pending = PendingOAuthLogin {
@@ -1774,7 +1774,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                     println!("{authorize_url}");
                     println!();
 
-                    let code = match crate::adapters::auth::gemini_oauth::receive_loopback_code(
+                    let code = match synapse_providers::auth::gemini_oauth::receive_loopback_code(
                         &pkce.state,
                         std::time::Duration::from_secs(180),
                     )
@@ -1793,12 +1793,12 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         }
                     };
 
-                    let token_set = crate::adapters::auth::gemini_oauth::exchange_code_for_tokens(
+                    let token_set = synapse_providers::auth::gemini_oauth::exchange_code_for_tokens(
                         &client, &code, &pkce,
                     )
                     .await?;
                     let account_id = token_set.id_token.as_deref().and_then(
-                        crate::adapters::auth::gemini_oauth::extract_account_email_from_id_token,
+                        synapse_providers::auth::gemini_oauth::extract_account_email_from_id_token,
                     );
 
                     auth_service
@@ -1812,7 +1812,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                 "openai-codex" => {
                     // OpenAI Codex OAuth flow
                     if device_code {
-                        match crate::adapters::auth::openai_oauth::start_device_code_flow(&client)
+                        match synapse_providers::auth::openai_oauth::start_device_code_flow(&client)
                             .await
                         {
                             Ok(device) => {
@@ -1827,7 +1827,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                                 }
 
                                 let token_set =
-                                    crate::adapters::auth::openai_oauth::poll_device_code_tokens(
+                                    synapse_providers::auth::openai_oauth::poll_device_code_tokens(
                                         &client, &device,
                                     )
                                     .await?;
@@ -1851,7 +1851,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         }
                     }
 
-                    let pkce = crate::adapters::auth::openai_oauth::generate_pkce_state();
+                    let pkce = synapse_providers::auth::openai_oauth::generate_pkce_state();
                     let pending = PendingOAuthLogin {
                         provider: "openai".to_string(),
                         profile: profile.clone(),
@@ -1862,13 +1862,13 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                     save_pending_oauth_login(config, &pending)?;
 
                     let authorize_url =
-                        crate::adapters::auth::openai_oauth::build_authorize_url(&pkce);
+                        synapse_providers::auth::openai_oauth::build_authorize_url(&pkce);
                     println!("Open this URL in your browser and authorize access:");
                     println!("{authorize_url}");
                     println!();
                     println!("Waiting for callback at http://localhost:1455/auth/callback ...");
 
-                    let code = match crate::adapters::auth::openai_oauth::receive_loopback_code(
+                    let code = match synapse_providers::auth::openai_oauth::receive_loopback_code(
                         &pkce.state,
                         std::time::Duration::from_secs(180),
                     )
@@ -1884,7 +1884,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         }
                     };
 
-                    let token_set = crate::adapters::auth::openai_oauth::exchange_code_for_tokens(
+                    let token_set = synapse_providers::auth::openai_oauth::exchange_code_for_tokens(
                         &client, &code, &pkce,
                     )
                     .await?;
@@ -1912,7 +1912,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
             profile,
             input,
         } => {
-            let provider = crate::adapters::auth::normalize_provider(&provider)?;
+            let provider = synapse_providers::auth::normalize_provider(&provider)?;
 
             match provider.as_str() {
                 "openai-codex" => {
@@ -1935,19 +1935,19 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         None => read_plain_input("Paste redirect URL or OAuth code")?,
                     };
 
-                    let code = crate::adapters::auth::openai_oauth::parse_code_from_redirect(
+                    let code = synapse_providers::auth::openai_oauth::parse_code_from_redirect(
                         &redirect_input,
                         Some(&pending.state),
                     )?;
 
-                    let pkce = crate::adapters::auth::openai_oauth::PkceState {
+                    let pkce = synapse_providers::auth::openai_oauth::PkceState {
                         code_verifier: pending.code_verifier.clone(),
                         code_challenge: String::new(),
                         state: pending.state.clone(),
                     };
 
                     let client = reqwest::Client::new();
-                    let token_set = crate::adapters::auth::openai_oauth::exchange_code_for_tokens(
+                    let token_set = synapse_providers::auth::openai_oauth::exchange_code_for_tokens(
                         &client, &code, &pkce,
                     )
                     .await?;
@@ -1981,24 +1981,24 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         None => read_plain_input("Paste redirect URL or OAuth code")?,
                     };
 
-                    let code = crate::adapters::auth::gemini_oauth::parse_code_from_redirect(
+                    let code = synapse_providers::auth::gemini_oauth::parse_code_from_redirect(
                         &redirect_input,
                         Some(&pending.state),
                     )?;
 
-                    let pkce = crate::adapters::auth::gemini_oauth::PkceState {
+                    let pkce = synapse_providers::auth::gemini_oauth::PkceState {
                         code_verifier: pending.code_verifier.clone(),
                         code_challenge: String::new(),
                         state: pending.state.clone(),
                     };
 
                     let client = reqwest::Client::new();
-                    let token_set = crate::adapters::auth::gemini_oauth::exchange_code_for_tokens(
+                    let token_set = synapse_providers::auth::gemini_oauth::exchange_code_for_tokens(
                         &client, &code, &pkce,
                     )
                     .await?;
                     let account_id = token_set.id_token.as_deref().and_then(
-                        crate::adapters::auth::gemini_oauth::extract_account_email_from_id_token,
+                        synapse_providers::auth::gemini_oauth::extract_account_email_from_id_token,
                     );
 
                     auth_service
@@ -2022,7 +2022,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
             token,
             auth_kind,
         } => {
-            let provider = crate::adapters::auth::normalize_provider(&provider)?;
+            let provider = synapse_providers::auth::normalize_provider(&provider)?;
             let token = match token {
                 Some(token) => token.trim().to_string(),
                 None => read_auth_input("Paste token")?,
@@ -2031,7 +2031,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                 bail!("Token cannot be empty");
             }
 
-            let kind = crate::adapters::auth::anthropic_token::detect_auth_kind(
+            let kind = synapse_providers::auth::anthropic_token::detect_auth_kind(
                 &token,
                 auth_kind.as_deref(),
             );
@@ -2050,13 +2050,13 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
         }
 
         AuthCommands::SetupToken { provider, profile } => {
-            let provider = crate::adapters::auth::normalize_provider(&provider)?;
+            let provider = synapse_providers::auth::normalize_provider(&provider)?;
             let token = read_auth_input("Paste token")?;
             if token.is_empty() {
                 bail!("Token cannot be empty");
             }
 
-            let kind = crate::adapters::auth::anthropic_token::detect_auth_kind(
+            let kind = synapse_providers::auth::anthropic_token::detect_auth_kind(
                 &token,
                 Some("authorization"),
             );
@@ -2075,7 +2075,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
         }
 
         AuthCommands::Refresh { provider, profile } => {
-            let provider = crate::adapters::auth::normalize_provider(&provider)?;
+            let provider = synapse_providers::auth::normalize_provider(&provider)?;
 
             match provider.as_str() {
                 "openai-codex" => {
@@ -2117,7 +2117,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
         }
 
         AuthCommands::Logout { provider, profile } => {
-            let provider = crate::adapters::auth::normalize_provider(&provider)?;
+            let provider = synapse_providers::auth::normalize_provider(&provider)?;
             let removed = auth_service.remove_profile(&provider, &profile).await?;
             if removed {
                 println!("Removed auth profile {provider}:{profile}");
@@ -2128,7 +2128,7 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
         }
 
         AuthCommands::Use { provider, profile } => {
-            let provider = crate::adapters::auth::normalize_provider(&provider)?;
+            let provider = synapse_providers::auth::normalize_provider(&provider)?;
             auth_service.set_active_profile(&provider, &profile).await?;
             println!("Active profile for {provider}: {profile}");
             Ok(())

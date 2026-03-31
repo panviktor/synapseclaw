@@ -16,10 +16,11 @@ parking_lot = "0.12"
 schemars = "1.2"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
-tokio = { version = "1.50", default-features = false, features = ["sync", "rt", "macros"] }
+tokio = { version = "1.50", default-features = false, features = ["sync", "rt", "macros", "process"] }
 tracing = { version = "0.1", default-features = false }
 url = "2.5"
 uuid = { version = "1.22", default-features = false, features = ["v4", "std"] }
 
 [dev-dependencies]
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
+toml = "1.0"

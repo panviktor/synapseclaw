@@ -1,0 +1,60 @@
+[package]
+name = "synapse_tools"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+rag-pdf = ["dep:pdf-extract"]
+browser-native = ["dep:fantoccini"]
+
+[dependencies]
+synapse_domain = { path = "../../domain" }
+synapse_security = { path = "../security" }
+synapse_memory = { path = "../memory" }
+synapse_providers = { path = "../providers" }
+synapse_cron = { path = "../cron-store" }
+synapse_infra = { path = "../infra" }
+
+# Major frameworks
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync", "process", "io-std", "fs", "signal"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "multipart", "stream", "socks"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.0"
+
+# Async
+async-trait = "0.1"
+futures-util = "0.3"
+
+# Logging
+tracing = "0.1"
+
+# Common utilities
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+regex = "1.10"
+parking_lot = "0.12"
+directories = "6"
+base64 = "0.22"
+urlencoding = "2.1"
+glob = "0.3"
+which = "8.0"
+nanohtml2text = "0.2"
+
+# Crypto
+sha2 = "0.10"
+hex = "0.4"
+
+# PDF (optional)
+pdf-extract = { version = "0.10", optional = true }
+
+# Browser automation (optional)
+fantoccini = { version = "0.22.1", optional = true, default-features = false, features = ["rustls-tls"] }
+
+
+[dev-dependencies]
+tempfile = "3.15"
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "test-util"] }

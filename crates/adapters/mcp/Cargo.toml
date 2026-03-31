@@ -1,0 +1,21 @@
+[package]
+name = "synapse_mcp"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+synapse_domain = { path = "../../domain" }
+
+anyhow = "1.0"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.50", features = ["rt", "process", "sync", "io-util", "time", "macros"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing = "0.1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio-util = { version = "0.7", features = ["io"] }
+
+[dev-dependencies]
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }

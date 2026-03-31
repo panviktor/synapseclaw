@@ -1,0 +1,93 @@
+[package]
+name = "synapse_channels"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+channel-nostr = ["dep:nostr-sdk", "synapse_domain/channel-nostr"]
+channel-matrix = ["dep:matrix-sdk"]
+channel-lark = ["dep:prost"]
+channel-feishu = ["channel-lark"]
+whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-proto", "dep:wa-rs-ureq-http", "dep:wa-rs-tokio-transport", "dep:serde-big-array", "dep:prost", "dep:qrcode"]
+
+[dependencies]
+synapse_domain = { path = "../../domain" }
+synapse_security = { path = "../security" }
+synapse_providers = { path = "../providers" }
+synapse_infra = { path = "../infra" }
+
+# Major frameworks
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync", "process", "io-std", "fs", "signal"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "multipart", "stream", "socks"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Async
+async-trait = "0.1"
+futures-util = "0.3"
+
+# Logging
+tracing = "0.1"
+
+# Common utilities
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+uuid = { version = "1.22", default-features = false, features = ["v4", "std"] }
+parking_lot = "0.12"
+directories = "6"
+base64 = "0.22"
+url = "2.5"
+urlencoding = "2.1"
+hostname = "0.4.2"
+portable-atomic = "1"
+rand = "0.10"
+toml = "1.0"
+hex = "0.4"
+mime_guess = "2"
+axum = { version = "0.8", features = ["ws", "macros"] }
+webpki-roots = "1.0.6"
+shellexpand = "3.1"
+
+# Crypto
+hmac = "0.12"
+sha2 = "0.10"
+
+# HTTP/TLS
+rustls = { version = "0.23", features = ["ring", "std", "logging", "tls12"] }
+rustls-pki-types = "1"
+tokio-rustls = "0.26"
+
+# Email
+async-imap = { version = "0.11", features = ["runtime-tokio"], default-features = false }
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "rustls-tls"] }
+mail-parser = "0.9"
+
+# Database
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+# Image processing
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+# Platform channels (optional)
+nostr-sdk = { version = "0.44", default-features = false, features = ["nip04", "nip59"], optional = true }
+prost = { version = "0.13", optional = true }
+matrix-sdk = { version = "0.16", optional = true, default-features = false, features = ["e2e-encryption", "rustls-tls", "markdown", "sqlite"] }
+wa-rs = { version = "0.2", optional = true, default-features = false }
+wa-rs-core = { version = "0.2", optional = true, default-features = false }
+wa-rs-binary = { version = "0.2", optional = true, default-features = false }
+wa-rs-proto = { version = "0.2", optional = true, default-features = false }
+wa-rs-ureq-http = { version = "0.2", optional = true }
+wa-rs-tokio-transport = { version = "0.2", optional = true, default-features = false }
+serde-big-array = { version = "0.5", optional = true }
+qrcode = { version = "0.14", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.15"
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "test-util"] }
