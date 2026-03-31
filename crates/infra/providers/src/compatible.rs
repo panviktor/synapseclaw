@@ -3,7 +3,7 @@
 //! This module provides a single implementation that works for all of them.
 
 use crate::multimodal;
-use crate::providers::traits::{
+use crate::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
     Provider, StreamChunk, StreamError, StreamOptions, StreamResult, TokenUsage,
     ToolCall as ProviderToolCall,
@@ -357,7 +357,7 @@ impl OpenAiCompatibleProvider {
         }
     }
 
-    fn tool_specs_to_openai_format(tools: &[crate::tools::ToolSpec]) -> Vec<serde_json::Value> {
+    fn tool_specs_to_openai_format(tools: &[crate::traits::ToolSpec]) -> Vec<serde_json::Value> {
         tools
             .iter()
             .map(|tool| {
@@ -982,7 +982,7 @@ impl OpenAiCompatibleProvider {
     }
 
     fn convert_tool_specs(
-        tools: Option<&[crate::tools::ToolSpec]>,
+        tools: Option<&[crate::traits::ToolSpec]>,
     ) -> Option<Vec<serde_json::Value>> {
         tools.map(|items| {
             items
@@ -1124,7 +1124,7 @@ impl OpenAiCompatibleProvider {
 
     fn with_prompt_guided_tool_instructions(
         messages: &[ChatMessage],
-        tools: Option<&[crate::tools::ToolSpec]>,
+        tools: Option<&[crate::traits::ToolSpec]>,
     ) -> Vec<ChatMessage> {
         let Some(tools) = tools else {
             return messages.to_vec();
@@ -1134,7 +1134,7 @@ impl OpenAiCompatibleProvider {
             return messages.to_vec();
         }
 
-        let instructions = crate::providers::traits::build_tool_instructions_text(tools);
+        let instructions = crate::traits::build_tool_instructions_text(tools);
         let mut modified_messages = messages.to_vec();
 
         if let Some(system_message) = modified_messages.iter_mut().find(|m| m.role == "system") {
@@ -1212,8 +1212,8 @@ impl OpenAiCompatibleProvider {
 
 #[async_trait]
 impl Provider for OpenAiCompatibleProvider {
-    fn capabilities(&self) -> crate::providers::traits::ProviderCapabilities {
-        crate::providers::traits::ProviderCapabilities {
+    fn capabilities(&self) -> crate::traits::ProviderCapabilities {
+        crate::traits::ProviderCapabilities {
             native_tool_calling: self.native_tool_calling,
             vision: self.supports_vision,
             prompt_caching: false,
@@ -2458,7 +2458,7 @@ mod tests {
     #[test]
     fn prompt_guided_tool_fallback_injects_system_instruction() {
         let input = vec![ChatMessage::user("check status")];
-        let tools = vec![crate::tools::ToolSpec {
+        let tools = vec![crate::traits::ToolSpec {
             name: "shell_exec".to_string(),
             description: "Execute shell command".to_string(),
             parameters: serde_json::json!({
@@ -2628,7 +2628,7 @@ mod tests {
 
     #[test]
     fn tool_specs_convert_to_openai_format() {
-        let specs = vec![crate::tools::ToolSpec {
+        let specs = vec![crate::traits::ToolSpec {
             name: "shell".to_string(),
             description: "Run shell command".to_string(),
             parameters: serde_json::json!({

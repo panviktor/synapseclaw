@@ -1,17 +1,17 @@
-//! KiloCLI subprocess provider.
+//! Claude Code headless CLI provider.
 //!
-//! Integrates with the KiloCLI tool, spawning the `kilo` binary
-//! as a subprocess for each inference request. This allows using KiloCLI's AI
+//! Integrates with the Claude Code CLI, spawning the `claude` binary
+//! as a subprocess for each inference request. This allows using Claude's AI
 //! models without an interactive UI session.
 //!
 //! # Usage
 //!
-//! The `kilo` binary must be available in `PATH`, or its location must be
-//! set via the `KILO_CLI_PATH` environment variable.
+//! The `claude` binary must be available in `PATH`, or its location must be
+//! set via the `CLAUDE_CODE_PATH` environment variable.
 //!
-//! KiloCLI is invoked as:
+//! Claude Code is invoked as:
 //! ```text
-//! kilo --print -
+//! claude --print -
 //! ```
 //! with prompt content written to stdin.
 //!
@@ -27,56 +27,56 @@
 //!
 //! # Authentication
 //!
-//! Authentication is handled by KiloCLI itself (its own credential store).
+//! Authentication is handled by Claude Code itself (its own credential store).
 //! No explicit API key is required by this provider.
 //!
 //! # Environment variables
 //!
-//! - `KILO_CLI_PATH` — override the path to the `kilo` binary (default: `"kilo"`)
+//! - `CLAUDE_CODE_PATH` — override the path to the `claude` binary (default: `"claude"`)
 
-use crate::providers::traits::{ChatRequest, ChatResponse, Provider, TokenUsage};
+use crate::traits::{ChatRequest, ChatResponse, Provider, TokenUsage};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
-/// Environment variable for overriding the path to the `kilo` binary.
-pub const KILO_CLI_PATH_ENV: &str = "KILO_CLI_PATH";
+/// Environment variable for overriding the path to the `claude` binary.
+pub const CLAUDE_CODE_PATH_ENV: &str = "CLAUDE_CODE_PATH";
 
-/// Default `kilo` binary name (resolved via `PATH`).
-const DEFAULT_KILO_CLI_BINARY: &str = "kilo";
+/// Default `claude` binary name (resolved via `PATH`).
+const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
 
 /// Model name used to signal "use the provider's own default model".
 const DEFAULT_MODEL_MARKER: &str = "default";
-/// KiloCLI requests are bounded to avoid hung subprocesses.
-const KILO_CLI_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Claude Code requests are bounded to avoid hung subprocesses.
+const CLAUDE_CODE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Avoid leaking oversized stderr payloads.
-const MAX_KILO_CLI_STDERR_CHARS: usize = 512;
+const MAX_CLAUDE_CODE_STDERR_CHARS: usize = 512;
 /// The CLI does not support sampling controls; allow only baseline defaults.
-const KILO_CLI_SUPPORTED_TEMPERATURES: [f64; 2] = [0.7, 1.0];
+const CLAUDE_CODE_SUPPORTED_TEMPERATURES: [f64; 2] = [0.7, 1.0];
 const TEMP_EPSILON: f64 = 1e-9;
 
-/// Provider that invokes the KiloCLI as a subprocess.
+/// Provider that invokes the Claude Code CLI as a subprocess.
 ///
-/// Each inference request spawns a fresh `kilo` process. This is the
+/// Each inference request spawns a fresh `claude` process. This is the
 /// non-interactive approach: the process handles the prompt and exits.
-pub struct KiloCliProvider {
-    /// Path to the `kilo` binary.
+pub struct ClaudeCodeProvider {
+    /// Path to the `claude` binary.
     binary_path: PathBuf,
 }
 
-impl KiloCliProvider {
-    /// Create a new `KiloCliProvider`.
+impl ClaudeCodeProvider {
+    /// Create a new `ClaudeCodeProvider`.
     ///
-    /// The binary path is resolved from `KILO_CLI_PATH` env var if set,
-    /// otherwise defaults to `"kilo"` (found via `PATH`).
+    /// The binary path is resolved from `CLAUDE_CODE_PATH` env var if set,
+    /// otherwise defaults to `"claude"` (found via `PATH`).
     pub fn new() -> Self {
-        let binary_path = std::env::var(KILO_CLI_PATH_ENV)
+        let binary_path = std::env::var(CLAUDE_CODE_PATH_ENV)
             .ok()
             .filter(|path| !path.trim().is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_KILO_CLI_BINARY));
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_CLAUDE_CODE_BINARY));
 
         Self { binary_path }
     }
@@ -88,18 +88,18 @@ impl KiloCliProvider {
     }
 
     fn supports_temperature(temperature: f64) -> bool {
-        KILO_CLI_SUPPORTED_TEMPERATURES
+        CLAUDE_CODE_SUPPORTED_TEMPERATURES
             .iter()
             .any(|v| (temperature - v).abs() < TEMP_EPSILON)
     }
 
     fn validate_temperature(temperature: f64) -> anyhow::Result<()> {
         if !temperature.is_finite() {
-            anyhow::bail!("KiloCLI provider received non-finite temperature value");
+            anyhow::bail!("Claude Code provider received non-finite temperature value");
         }
         if !Self::supports_temperature(temperature) {
             anyhow::bail!(
-                "temperature unsupported by KiloCLI: {temperature}. \
+                "temperature unsupported by Claude Code CLI: {temperature}. \
                  Supported values: 0.7 or 1.0"
             );
         }
@@ -112,14 +112,14 @@ impl KiloCliProvider {
         if trimmed.is_empty() {
             return String::new();
         }
-        if trimmed.chars().count() <= MAX_KILO_CLI_STDERR_CHARS {
+        if trimmed.chars().count() <= MAX_CLAUDE_CODE_STDERR_CHARS {
             return trimmed.to_string();
         }
-        let clipped: String = trimmed.chars().take(MAX_KILO_CLI_STDERR_CHARS).collect();
+        let clipped: String = trimmed.chars().take(MAX_CLAUDE_CODE_STDERR_CHARS).collect();
         format!("{clipped}...")
     }
 
-    /// Invoke the kilo binary with the given prompt and optional model.
+    /// Invoke the claude binary with the given prompt and optional model.
     /// Returns the trimmed stdout output as the assistant response.
     async fn invoke_cli(&self, message: &str, model: &str) -> anyhow::Result<String> {
         let mut cmd = Command::new(&self.binary_path);
@@ -138,33 +138,31 @@ impl KiloCliProvider {
 
         let mut child = cmd.spawn().map_err(|err| {
             anyhow::anyhow!(
-                "Failed to spawn KiloCLI binary at {}: {err}. \
-                 Ensure `kilo` is installed and in PATH, or set KILO_CLI_PATH.",
+                "Failed to spawn Claude Code binary at {}: {err}. \
+                 Ensure `claude` is installed and in PATH, or set CLAUDE_CODE_PATH.",
                 self.binary_path.display()
             )
         })?;
 
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(message.as_bytes())
-                .await
-                .map_err(|err| anyhow::anyhow!("Failed to write prompt to KiloCLI stdin: {err}"))?;
-            stdin
-                .shutdown()
-                .await
-                .map_err(|err| anyhow::anyhow!("Failed to finalize KiloCLI stdin stream: {err}"))?;
+            stdin.write_all(message.as_bytes()).await.map_err(|err| {
+                anyhow::anyhow!("Failed to write prompt to Claude Code stdin: {err}")
+            })?;
+            stdin.shutdown().await.map_err(|err| {
+                anyhow::anyhow!("Failed to finalize Claude Code stdin stream: {err}")
+            })?;
         }
 
-        let output = timeout(KILO_CLI_REQUEST_TIMEOUT, child.wait_with_output())
+        let output = timeout(CLAUDE_CODE_REQUEST_TIMEOUT, child.wait_with_output())
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "KiloCLI request timed out after {:?} (binary: {})",
-                    KILO_CLI_REQUEST_TIMEOUT,
+                    "Claude Code request timed out after {:?} (binary: {})",
+                    CLAUDE_CODE_REQUEST_TIMEOUT,
                     self.binary_path.display()
                 )
             })?
-            .map_err(|err| anyhow::anyhow!("KiloCLI process failed: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("Claude Code process failed: {err}"))?;
 
         if !output.status.success() {
             let code = output.status.code().unwrap_or(-1);
@@ -175,26 +173,26 @@ impl KiloCliProvider {
                 format!(" Stderr: {stderr_excerpt}")
             };
             anyhow::bail!(
-                "KiloCLI exited with non-zero status {code}. \
-                 Check that KiloCLI is authenticated and the CLI is supported.{stderr_note}"
+                "Claude Code exited with non-zero status {code}. \
+                 Check that Claude Code is authenticated and the CLI is supported.{stderr_note}"
             );
         }
 
         let text = String::from_utf8(output.stdout)
-            .map_err(|err| anyhow::anyhow!("KiloCLI produced non-UTF-8 output: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("Claude Code produced non-UTF-8 output: {err}"))?;
 
         Ok(text.trim().to_string())
     }
 }
 
-impl Default for KiloCliProvider {
+impl Default for ClaudeCodeProvider {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Provider for KiloCliProvider {
+impl Provider for ClaudeCodeProvider {
     async fn chat_with_system(
         &self,
         system_prompt: Option<&str>,
@@ -248,78 +246,84 @@ mod tests {
     #[test]
     fn new_uses_env_override() {
         let _guard = env_lock();
-        let orig = std::env::var(KILO_CLI_PATH_ENV).ok();
-        std::env::set_var(KILO_CLI_PATH_ENV, "/usr/local/bin/kilo");
-        let provider = KiloCliProvider::new();
-        assert_eq!(provider.binary_path, PathBuf::from("/usr/local/bin/kilo"));
+        let orig = std::env::var(CLAUDE_CODE_PATH_ENV).ok();
+        std::env::set_var(CLAUDE_CODE_PATH_ENV, "/usr/local/bin/claude");
+        let provider = ClaudeCodeProvider::new();
+        assert_eq!(provider.binary_path, PathBuf::from("/usr/local/bin/claude"));
         match orig {
-            Some(v) => std::env::set_var(KILO_CLI_PATH_ENV, v),
-            None => std::env::remove_var(KILO_CLI_PATH_ENV),
+            Some(v) => std::env::set_var(CLAUDE_CODE_PATH_ENV, v),
+            None => std::env::remove_var(CLAUDE_CODE_PATH_ENV),
         }
     }
 
     #[test]
-    fn new_defaults_to_kilo() {
+    fn new_defaults_to_claude() {
         let _guard = env_lock();
-        let orig = std::env::var(KILO_CLI_PATH_ENV).ok();
-        std::env::remove_var(KILO_CLI_PATH_ENV);
-        let provider = KiloCliProvider::new();
-        assert_eq!(provider.binary_path, PathBuf::from("kilo"));
+        let orig = std::env::var(CLAUDE_CODE_PATH_ENV).ok();
+        std::env::remove_var(CLAUDE_CODE_PATH_ENV);
+        let provider = ClaudeCodeProvider::new();
+        assert_eq!(provider.binary_path, PathBuf::from("claude"));
         if let Some(v) = orig {
-            std::env::set_var(KILO_CLI_PATH_ENV, v);
+            std::env::set_var(CLAUDE_CODE_PATH_ENV, v);
         }
     }
 
     #[test]
     fn new_ignores_blank_env_override() {
         let _guard = env_lock();
-        let orig = std::env::var(KILO_CLI_PATH_ENV).ok();
-        std::env::set_var(KILO_CLI_PATH_ENV, "   ");
-        let provider = KiloCliProvider::new();
-        assert_eq!(provider.binary_path, PathBuf::from("kilo"));
+        let orig = std::env::var(CLAUDE_CODE_PATH_ENV).ok();
+        std::env::set_var(CLAUDE_CODE_PATH_ENV, "   ");
+        let provider = ClaudeCodeProvider::new();
+        assert_eq!(provider.binary_path, PathBuf::from("claude"));
         match orig {
-            Some(v) => std::env::set_var(KILO_CLI_PATH_ENV, v),
-            None => std::env::remove_var(KILO_CLI_PATH_ENV),
+            Some(v) => std::env::set_var(CLAUDE_CODE_PATH_ENV, v),
+            None => std::env::remove_var(CLAUDE_CODE_PATH_ENV),
         }
     }
 
     #[test]
     fn should_forward_model_standard() {
-        assert!(KiloCliProvider::should_forward_model("some-model"));
-        assert!(KiloCliProvider::should_forward_model("gpt-4o"));
+        assert!(ClaudeCodeProvider::should_forward_model(
+            "claude-sonnet-4-20250514"
+        ));
+        assert!(ClaudeCodeProvider::should_forward_model(
+            "claude-3.5-sonnet"
+        ));
     }
 
     #[test]
     fn should_not_forward_default_model() {
-        assert!(!KiloCliProvider::should_forward_model(DEFAULT_MODEL_MARKER));
-        assert!(!KiloCliProvider::should_forward_model(""));
-        assert!(!KiloCliProvider::should_forward_model("   "));
+        assert!(!ClaudeCodeProvider::should_forward_model(
+            DEFAULT_MODEL_MARKER
+        ));
+        assert!(!ClaudeCodeProvider::should_forward_model(""));
+        assert!(!ClaudeCodeProvider::should_forward_model("   "));
     }
 
     #[test]
     fn validate_temperature_allows_defaults() {
-        assert!(KiloCliProvider::validate_temperature(0.7).is_ok());
-        assert!(KiloCliProvider::validate_temperature(1.0).is_ok());
+        assert!(ClaudeCodeProvider::validate_temperature(0.7).is_ok());
+        assert!(ClaudeCodeProvider::validate_temperature(1.0).is_ok());
     }
 
     #[test]
     fn validate_temperature_rejects_custom_value() {
-        let err = KiloCliProvider::validate_temperature(0.2).unwrap_err();
+        let err = ClaudeCodeProvider::validate_temperature(0.2).unwrap_err();
         assert!(err
             .to_string()
-            .contains("temperature unsupported by KiloCLI"));
+            .contains("temperature unsupported by Claude Code CLI"));
     }
 
     #[tokio::test]
     async fn invoke_missing_binary_returns_error() {
-        let provider = KiloCliProvider {
-            binary_path: PathBuf::from("/nonexistent/path/to/kilo"),
+        let provider = ClaudeCodeProvider {
+            binary_path: PathBuf::from("/nonexistent/path/to/claude"),
         };
         let result = provider.invoke_cli("hello", "default").await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("Failed to spawn KiloCLI binary"),
+            msg.contains("Failed to spawn Claude Code binary"),
             "unexpected error message: {msg}"
         );
     }

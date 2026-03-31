@@ -1,17 +1,17 @@
-//! Claude Code headless CLI provider.
+//! Gemini CLI subprocess provider.
 //!
-//! Integrates with the Claude Code CLI, spawning the `claude` binary
-//! as a subprocess for each inference request. This allows using Claude's AI
-//! models without an interactive UI session.
+//! Integrates with the Gemini CLI, spawning the `gemini` binary
+//! as a subprocess for each inference request. This allows using Google's
+//! Gemini models via the CLI without an interactive UI session.
 //!
 //! # Usage
 //!
-//! The `claude` binary must be available in `PATH`, or its location must be
-//! set via the `CLAUDE_CODE_PATH` environment variable.
+//! The `gemini` binary must be available in `PATH`, or its location must be
+//! set via the `GEMINI_CLI_PATH` environment variable.
 //!
-//! Claude Code is invoked as:
+//! Gemini CLI is invoked as:
 //! ```text
-//! claude --print -
+//! gemini --print -
 //! ```
 //! with prompt content written to stdin.
 //!
@@ -27,56 +27,56 @@
 //!
 //! # Authentication
 //!
-//! Authentication is handled by Claude Code itself (its own credential store).
+//! Authentication is handled by the Gemini CLI itself (its own credential store).
 //! No explicit API key is required by this provider.
 //!
 //! # Environment variables
 //!
-//! - `CLAUDE_CODE_PATH` — override the path to the `claude` binary (default: `"claude"`)
+//! - `GEMINI_CLI_PATH` — override the path to the `gemini` binary (default: `"gemini"`)
 
-use crate::providers::traits::{ChatRequest, ChatResponse, Provider, TokenUsage};
+use crate::traits::{ChatRequest, ChatResponse, Provider, TokenUsage};
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::time::{timeout, Duration};
 
-/// Environment variable for overriding the path to the `claude` binary.
-pub const CLAUDE_CODE_PATH_ENV: &str = "CLAUDE_CODE_PATH";
+/// Environment variable for overriding the path to the `gemini` binary.
+pub const GEMINI_CLI_PATH_ENV: &str = "GEMINI_CLI_PATH";
 
-/// Default `claude` binary name (resolved via `PATH`).
-const DEFAULT_CLAUDE_CODE_BINARY: &str = "claude";
+/// Default `gemini` binary name (resolved via `PATH`).
+const DEFAULT_GEMINI_CLI_BINARY: &str = "gemini";
 
 /// Model name used to signal "use the provider's own default model".
 const DEFAULT_MODEL_MARKER: &str = "default";
-/// Claude Code requests are bounded to avoid hung subprocesses.
-const CLAUDE_CODE_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// Gemini CLI requests are bounded to avoid hung subprocesses.
+const GEMINI_CLI_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 /// Avoid leaking oversized stderr payloads.
-const MAX_CLAUDE_CODE_STDERR_CHARS: usize = 512;
+const MAX_GEMINI_CLI_STDERR_CHARS: usize = 512;
 /// The CLI does not support sampling controls; allow only baseline defaults.
-const CLAUDE_CODE_SUPPORTED_TEMPERATURES: [f64; 2] = [0.7, 1.0];
+const GEMINI_CLI_SUPPORTED_TEMPERATURES: [f64; 2] = [0.7, 1.0];
 const TEMP_EPSILON: f64 = 1e-9;
 
-/// Provider that invokes the Claude Code CLI as a subprocess.
+/// Provider that invokes the Gemini CLI as a subprocess.
 ///
-/// Each inference request spawns a fresh `claude` process. This is the
+/// Each inference request spawns a fresh `gemini` process. This is the
 /// non-interactive approach: the process handles the prompt and exits.
-pub struct ClaudeCodeProvider {
-    /// Path to the `claude` binary.
+pub struct GeminiCliProvider {
+    /// Path to the `gemini` binary.
     binary_path: PathBuf,
 }
 
-impl ClaudeCodeProvider {
-    /// Create a new `ClaudeCodeProvider`.
+impl GeminiCliProvider {
+    /// Create a new `GeminiCliProvider`.
     ///
-    /// The binary path is resolved from `CLAUDE_CODE_PATH` env var if set,
-    /// otherwise defaults to `"claude"` (found via `PATH`).
+    /// The binary path is resolved from `GEMINI_CLI_PATH` env var if set,
+    /// otherwise defaults to `"gemini"` (found via `PATH`).
     pub fn new() -> Self {
-        let binary_path = std::env::var(CLAUDE_CODE_PATH_ENV)
+        let binary_path = std::env::var(GEMINI_CLI_PATH_ENV)
             .ok()
             .filter(|path| !path.trim().is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(DEFAULT_CLAUDE_CODE_BINARY));
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_GEMINI_CLI_BINARY));
 
         Self { binary_path }
     }
@@ -88,18 +88,18 @@ impl ClaudeCodeProvider {
     }
 
     fn supports_temperature(temperature: f64) -> bool {
-        CLAUDE_CODE_SUPPORTED_TEMPERATURES
+        GEMINI_CLI_SUPPORTED_TEMPERATURES
             .iter()
             .any(|v| (temperature - v).abs() < TEMP_EPSILON)
     }
 
     fn validate_temperature(temperature: f64) -> anyhow::Result<()> {
         if !temperature.is_finite() {
-            anyhow::bail!("Claude Code provider received non-finite temperature value");
+            anyhow::bail!("Gemini CLI provider received non-finite temperature value");
         }
         if !Self::supports_temperature(temperature) {
             anyhow::bail!(
-                "temperature unsupported by Claude Code CLI: {temperature}. \
+                "temperature unsupported by Gemini CLI: {temperature}. \
                  Supported values: 0.7 or 1.0"
             );
         }
@@ -112,14 +112,14 @@ impl ClaudeCodeProvider {
         if trimmed.is_empty() {
             return String::new();
         }
-        if trimmed.chars().count() <= MAX_CLAUDE_CODE_STDERR_CHARS {
+        if trimmed.chars().count() <= MAX_GEMINI_CLI_STDERR_CHARS {
             return trimmed.to_string();
         }
-        let clipped: String = trimmed.chars().take(MAX_CLAUDE_CODE_STDERR_CHARS).collect();
+        let clipped: String = trimmed.chars().take(MAX_GEMINI_CLI_STDERR_CHARS).collect();
         format!("{clipped}...")
     }
 
-    /// Invoke the claude binary with the given prompt and optional model.
+    /// Invoke the gemini binary with the given prompt and optional model.
     /// Returns the trimmed stdout output as the assistant response.
     async fn invoke_cli(&self, message: &str, model: &str) -> anyhow::Result<String> {
         let mut cmd = Command::new(&self.binary_path);
@@ -138,31 +138,31 @@ impl ClaudeCodeProvider {
 
         let mut child = cmd.spawn().map_err(|err| {
             anyhow::anyhow!(
-                "Failed to spawn Claude Code binary at {}: {err}. \
-                 Ensure `claude` is installed and in PATH, or set CLAUDE_CODE_PATH.",
+                "Failed to spawn Gemini CLI binary at {}: {err}. \
+                 Ensure `gemini` is installed and in PATH, or set GEMINI_CLI_PATH.",
                 self.binary_path.display()
             )
         })?;
 
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(message.as_bytes()).await.map_err(|err| {
-                anyhow::anyhow!("Failed to write prompt to Claude Code stdin: {err}")
+                anyhow::anyhow!("Failed to write prompt to Gemini CLI stdin: {err}")
             })?;
             stdin.shutdown().await.map_err(|err| {
-                anyhow::anyhow!("Failed to finalize Claude Code stdin stream: {err}")
+                anyhow::anyhow!("Failed to finalize Gemini CLI stdin stream: {err}")
             })?;
         }
 
-        let output = timeout(CLAUDE_CODE_REQUEST_TIMEOUT, child.wait_with_output())
+        let output = timeout(GEMINI_CLI_REQUEST_TIMEOUT, child.wait_with_output())
             .await
             .map_err(|_| {
                 anyhow::anyhow!(
-                    "Claude Code request timed out after {:?} (binary: {})",
-                    CLAUDE_CODE_REQUEST_TIMEOUT,
+                    "Gemini CLI request timed out after {:?} (binary: {})",
+                    GEMINI_CLI_REQUEST_TIMEOUT,
                     self.binary_path.display()
                 )
             })?
-            .map_err(|err| anyhow::anyhow!("Claude Code process failed: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("Gemini CLI process failed: {err}"))?;
 
         if !output.status.success() {
             let code = output.status.code().unwrap_or(-1);
@@ -173,26 +173,26 @@ impl ClaudeCodeProvider {
                 format!(" Stderr: {stderr_excerpt}")
             };
             anyhow::bail!(
-                "Claude Code exited with non-zero status {code}. \
-                 Check that Claude Code is authenticated and the CLI is supported.{stderr_note}"
+                "Gemini CLI exited with non-zero status {code}. \
+                 Check that Gemini CLI is authenticated and the CLI is supported.{stderr_note}"
             );
         }
 
         let text = String::from_utf8(output.stdout)
-            .map_err(|err| anyhow::anyhow!("Claude Code produced non-UTF-8 output: {err}"))?;
+            .map_err(|err| anyhow::anyhow!("Gemini CLI produced non-UTF-8 output: {err}"))?;
 
         Ok(text.trim().to_string())
     }
 }
 
-impl Default for ClaudeCodeProvider {
+impl Default for GeminiCliProvider {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl Provider for ClaudeCodeProvider {
+impl Provider for GeminiCliProvider {
     async fn chat_with_system(
         &self,
         system_prompt: Option<&str>,
@@ -246,84 +246,80 @@ mod tests {
     #[test]
     fn new_uses_env_override() {
         let _guard = env_lock();
-        let orig = std::env::var(CLAUDE_CODE_PATH_ENV).ok();
-        std::env::set_var(CLAUDE_CODE_PATH_ENV, "/usr/local/bin/claude");
-        let provider = ClaudeCodeProvider::new();
-        assert_eq!(provider.binary_path, PathBuf::from("/usr/local/bin/claude"));
+        let orig = std::env::var(GEMINI_CLI_PATH_ENV).ok();
+        std::env::set_var(GEMINI_CLI_PATH_ENV, "/usr/local/bin/gemini");
+        let provider = GeminiCliProvider::new();
+        assert_eq!(provider.binary_path, PathBuf::from("/usr/local/bin/gemini"));
         match orig {
-            Some(v) => std::env::set_var(CLAUDE_CODE_PATH_ENV, v),
-            None => std::env::remove_var(CLAUDE_CODE_PATH_ENV),
+            Some(v) => std::env::set_var(GEMINI_CLI_PATH_ENV, v),
+            None => std::env::remove_var(GEMINI_CLI_PATH_ENV),
         }
     }
 
     #[test]
-    fn new_defaults_to_claude() {
+    fn new_defaults_to_gemini() {
         let _guard = env_lock();
-        let orig = std::env::var(CLAUDE_CODE_PATH_ENV).ok();
-        std::env::remove_var(CLAUDE_CODE_PATH_ENV);
-        let provider = ClaudeCodeProvider::new();
-        assert_eq!(provider.binary_path, PathBuf::from("claude"));
+        let orig = std::env::var(GEMINI_CLI_PATH_ENV).ok();
+        std::env::remove_var(GEMINI_CLI_PATH_ENV);
+        let provider = GeminiCliProvider::new();
+        assert_eq!(provider.binary_path, PathBuf::from("gemini"));
         if let Some(v) = orig {
-            std::env::set_var(CLAUDE_CODE_PATH_ENV, v);
+            std::env::set_var(GEMINI_CLI_PATH_ENV, v);
         }
     }
 
     #[test]
     fn new_ignores_blank_env_override() {
         let _guard = env_lock();
-        let orig = std::env::var(CLAUDE_CODE_PATH_ENV).ok();
-        std::env::set_var(CLAUDE_CODE_PATH_ENV, "   ");
-        let provider = ClaudeCodeProvider::new();
-        assert_eq!(provider.binary_path, PathBuf::from("claude"));
+        let orig = std::env::var(GEMINI_CLI_PATH_ENV).ok();
+        std::env::set_var(GEMINI_CLI_PATH_ENV, "   ");
+        let provider = GeminiCliProvider::new();
+        assert_eq!(provider.binary_path, PathBuf::from("gemini"));
         match orig {
-            Some(v) => std::env::set_var(CLAUDE_CODE_PATH_ENV, v),
-            None => std::env::remove_var(CLAUDE_CODE_PATH_ENV),
+            Some(v) => std::env::set_var(GEMINI_CLI_PATH_ENV, v),
+            None => std::env::remove_var(GEMINI_CLI_PATH_ENV),
         }
     }
 
     #[test]
     fn should_forward_model_standard() {
-        assert!(ClaudeCodeProvider::should_forward_model(
-            "claude-sonnet-4-20250514"
-        ));
-        assert!(ClaudeCodeProvider::should_forward_model(
-            "claude-3.5-sonnet"
-        ));
+        assert!(GeminiCliProvider::should_forward_model("gemini-2.5-pro"));
+        assert!(GeminiCliProvider::should_forward_model("gemini-2.5-flash"));
     }
 
     #[test]
     fn should_not_forward_default_model() {
-        assert!(!ClaudeCodeProvider::should_forward_model(
+        assert!(!GeminiCliProvider::should_forward_model(
             DEFAULT_MODEL_MARKER
         ));
-        assert!(!ClaudeCodeProvider::should_forward_model(""));
-        assert!(!ClaudeCodeProvider::should_forward_model("   "));
+        assert!(!GeminiCliProvider::should_forward_model(""));
+        assert!(!GeminiCliProvider::should_forward_model("   "));
     }
 
     #[test]
     fn validate_temperature_allows_defaults() {
-        assert!(ClaudeCodeProvider::validate_temperature(0.7).is_ok());
-        assert!(ClaudeCodeProvider::validate_temperature(1.0).is_ok());
+        assert!(GeminiCliProvider::validate_temperature(0.7).is_ok());
+        assert!(GeminiCliProvider::validate_temperature(1.0).is_ok());
     }
 
     #[test]
     fn validate_temperature_rejects_custom_value() {
-        let err = ClaudeCodeProvider::validate_temperature(0.2).unwrap_err();
+        let err = GeminiCliProvider::validate_temperature(0.2).unwrap_err();
         assert!(err
             .to_string()
-            .contains("temperature unsupported by Claude Code CLI"));
+            .contains("temperature unsupported by Gemini CLI"));
     }
 
     #[tokio::test]
     async fn invoke_missing_binary_returns_error() {
-        let provider = ClaudeCodeProvider {
-            binary_path: PathBuf::from("/nonexistent/path/to/claude"),
+        let provider = GeminiCliProvider {
+            binary_path: PathBuf::from("/nonexistent/path/to/gemini"),
         };
         let result = provider.invoke_cli("hello", "default").await;
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("Failed to spawn Claude Code binary"),
+            msg.contains("Failed to spawn Gemini CLI binary"),
             "unexpected error message: {msg}"
         );
     }

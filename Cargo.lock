@@ -5809,6 +5809,7 @@ dependencies = [
  "synapse_domain",
  "synapse_memory",
  "synapse_observability",
+ "synapse_providers",
  "synapse_security",
  "tempfile",
  "thiserror 2.0.18",
@@ -5901,7 +5902,6 @@ name = "synapse_observability"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
  "chrono",
  "opentelemetry",
  "opentelemetry-otlp",
@@ -5911,6 +5911,36 @@ dependencies = [
  "serde_json",
  "synapse_domain",
  "tempfile",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "synapse_providers"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64",
+ "chacha20poly1305",
+ "chrono",
+ "directories",
+ "futures-util",
+ "hex",
+ "hmac",
+ "image",
+ "parking_lot",
+ "reqwest",
+ "ring",
+ "serde",
+ "serde_json",
+ "sha2",
+ "synapse_domain",
+ "synapse_security",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
  "tracing",
  "uuid",
 ]

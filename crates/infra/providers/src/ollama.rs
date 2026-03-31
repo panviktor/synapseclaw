@@ -1,5 +1,5 @@
 use crate::multimodal;
-use crate::providers::traits::{
+use crate::traits::{
     ChatMessage, ChatResponse, Provider, ProviderCapabilities, TokenUsage, ToolCall,
 };
 use async_trait::async_trait;
@@ -695,7 +695,7 @@ impl Provider for OllamaProvider {
 
     async fn chat_with_history(
         &self,
-        messages: &[crate::providers::ChatMessage],
+        messages: &[crate::ChatMessage],
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
@@ -832,7 +832,7 @@ impl Provider for OllamaProvider {
 
     async fn chat(
         &self,
-        request: crate::providers::traits::ChatRequest<'_>,
+        request: crate::traits::ChatRequest<'_>,
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {

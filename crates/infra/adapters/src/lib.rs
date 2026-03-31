@@ -27,7 +27,7 @@ pub mod storage;
 
 // ── Infrastructure adapters (moved from src/ top-level) ──
 pub mod approval;
-pub mod auth;
+pub use synapse_providers::auth;
 pub mod cost;
 pub use synapse_cron as cron;
 pub mod daemon;
@@ -39,8 +39,8 @@ pub mod hooks;
 pub mod integrations;
 pub use synapse_observability as observability;
 pub mod onboard;
-pub mod providers;
-pub mod proxy;
+pub use synapse_providers as providers;
+pub use synapse_providers::proxy;
 pub mod service;
 pub mod tools;
 pub mod tunnel;
@@ -49,7 +49,7 @@ pub mod workspace_io;
 
 // ── Deferred modules (moved from src/ in Phase 4.1H2) ──
 pub mod identity;
-pub mod multimodal;
+pub use synapse_providers::multimodal;
 pub mod skills;
 
 // ── ChatMessage ────────────────────────────────────────────────────────────

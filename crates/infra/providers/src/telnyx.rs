@@ -13,7 +13,7 @@
 //! default_model = "openai/gpt-4o"
 //! ```
 
-use crate::providers::traits::{ChatMessage, Provider};
+use crate::traits::{ChatMessage, Provider};
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::Deserialize;

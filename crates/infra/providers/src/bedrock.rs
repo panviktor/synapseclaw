@@ -4,11 +4,11 @@
 //! via environment variables. SigV4 signing is implemented manually
 //! using hmac/sha2 crates — no AWS SDK dependency.
 
-use crate::providers::traits::{
+use crate::traits::ToolSpec;
+use crate::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
     Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall, ToolsPayload,
 };
-use crate::tools::ToolSpec;
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use reqwest::Client;
@@ -1102,7 +1102,7 @@ impl Provider for BedrockProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::traits::ChatMessage;
+    use crate::traits::ChatMessage;
 
     // ── SigV4 signing tests ─────────────────────────────────────
 

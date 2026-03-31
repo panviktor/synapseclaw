@@ -1,9 +1,9 @@
 use crate::multimodal;
-use crate::providers::traits::{
+use crate::traits::ToolSpec;
+use crate::traits::{
     ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
     Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall,
 };
-use crate::tools::ToolSpec;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -573,7 +573,7 @@ impl Provider for OpenRouterProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::providers::traits::{ChatMessage, Provider};
+    use crate::traits::{ChatMessage, Provider};
 
     #[test]
     fn capabilities_report_vision_support() {

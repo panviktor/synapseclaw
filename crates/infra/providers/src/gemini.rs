@@ -5,7 +5,7 @@
 //! - Google Cloud ADC (`GOOGLE_APPLICATION_CREDENTIALS`)
 
 use crate::auth::AuthService;
-use crate::providers::traits::{ChatMessage, ChatResponse, Provider, TokenUsage};
+use crate::traits::{ChatMessage, ChatResponse, Provider, TokenUsage};
 use async_trait::async_trait;
 use base64::Engine;
 use directories::UserDirs;
@@ -1225,7 +1225,7 @@ impl Provider for GeminiProvider {
 
     async fn chat(
         &self,
-        request: crate::providers::traits::ChatRequest<'_>,
+        request: crate::traits::ChatRequest<'_>,
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {

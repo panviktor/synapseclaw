@@ -1,8 +1,8 @@
 use crate::auth::openai_oauth::extract_account_id_from_jwt;
 use crate::auth::AuthService;
 use crate::multimodal;
-use crate::providers::traits::{ChatMessage, Provider, ProviderCapabilities};
-use crate::providers::ProviderRuntimeOptions;
+use crate::traits::{ChatMessage, Provider, ProviderCapabilities};
+use crate::ProviderRuntimeOptions;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use reqwest::Client;
