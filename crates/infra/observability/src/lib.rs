@@ -1,3 +1,6 @@
+#![allow(clippy::new_without_default)]
+//! Observability subsystem — pluggable observers for agent runtime metrics and events.
+
 pub mod log;
 pub mod multi;
 pub mod noop;
