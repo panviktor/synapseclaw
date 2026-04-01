@@ -136,4 +136,12 @@ impl MemoryLoader for StaticMemoryLoader {
     ) -> Result<String> {
         Ok(self.context.clone())
     }
+
+    async fn load_core_blocks(
+        &self,
+        _memory: &dyn UnifiedMemoryPort,
+        _agent_id: &str,
+    ) -> Result<String> {
+        Ok(String::new())
+    }
 }
