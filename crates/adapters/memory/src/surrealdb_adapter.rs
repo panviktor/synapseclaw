@@ -278,6 +278,13 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             entry.id.clone()
         };
 
+        // Generate embedding if provider is available (best-effort).
+        let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
+            self.embedder.embed_one(&entry.content).await.ok()
+        } else {
+            None
+        };
+
         self.db
             .query(
                 "CREATE episode SET
@@ -288,13 +295,15 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                     session_id = $session_id,
                     importance = 0.5,
                     created_at = time::now(),
-                    visibility = 'private'",
+                    visibility = 'private',
+                    embedding = $embedding",
             )
             .bind(("agent", self.me().to_string()))
             .bind(("key", entry.key))
             .bind(("content", entry.content))
             .bind(("category", entry.category.to_string()))
             .bind(("session_id", entry.session_id))
+            .bind(("embedding", embedding))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
@@ -337,7 +346,8 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
     }
 
     async fn search_episodes(&self, query: &MemoryQuery) -> Result<Vec<SearchResult>, MemoryError> {
-        let mut resp = self
+        // BM25 keyword search
+        let mut bm25_resp = self
             .db
             .query(
                 "SELECT *, search::score(1) AS bm25_score FROM episode
@@ -352,16 +362,97 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
-        let rows = take_json!(resp, 0);
-        Ok(rows
+        let bm25_rows = take_json!(bm25_resp, 0);
+
+        // Vector search (if embedding provider is available)
+        let query_embedding = if self.embedder.dimensions() > 0 {
+            match &query.embedding {
+                Some(emb) => Some(emb.clone()),
+                None => self.embedder.embed_one(&query.text).await.ok(),
+            }
+        } else {
+            None
+        };
+
+        let vec_rows = if let Some(ref emb) = query_embedding {
+            let mut vec_resp = self
+                .db
+                .query(
+                    "SELECT *,
+                        vector::similarity::cosine(embedding, $emb) AS vec_score
+                     FROM episode
+                     WHERE embedding <|$limit,64|> $emb
+                     AND (agent_id = $agent OR visibility = 'global')
+                     ORDER BY vec_score DESC
+                     LIMIT $limit",
+                )
+                .bind(("emb", emb.clone()))
+                .bind(("agent", query.agent_id.clone()))
+                .bind(("limit", query.limit))
+                .await
+                .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+            take_json!(vec_resp, 0)
+        } else {
+            vec![]
+        };
+
+        // Merge results: if we have both BM25 and vector, use RRF fusion.
+        // Otherwise return BM25 results.
+        if vec_rows.is_empty() {
+            // BM25 only
+            return Ok(bm25_rows
+                .iter()
+                .filter_map(|v| {
+                    let entry = row_to_entry(v)?;
+                    let score = v.get("bm25_score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                    Some(SearchResult {
+                        entry,
+                        score: score as f32,
+                        source: synapse_domain::domain::memory::SearchSource::BM25,
+                    })
+                })
+                .collect());
+        }
+
+        // RRF fusion: combine BM25 + vector results.
+        let bm25_list: Vec<(String, f32)> = bm25_rows
             .iter()
             .filter_map(|v| {
-                let entry = row_to_entry(v)?;
-                let score = v.get("bm25_score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                let id = json_str(v, "id");
+                let score = v.get("bm25_score").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
+                Some((id, score))
+            })
+            .collect();
+
+        let vec_list: Vec<(String, f32)> = vec_rows
+            .iter()
+            .filter_map(|v| {
+                let id = json_str(v, "id");
+                let score = v.get("vec_score").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
+                Some((id, score))
+            })
+            .collect();
+
+        let fused = crate::vector::rrf_fusion(&[bm25_list, vec_list], 60.0, query.limit);
+
+        // Build a lookup map for row data.
+        let mut row_map: std::collections::HashMap<String, &serde_json::Value> =
+            std::collections::HashMap::new();
+        for row in bm25_rows.iter().chain(vec_rows.iter()) {
+            let id = json_str(row, "id");
+            row_map.entry(id).or_insert(row);
+        }
+
+        Ok(fused
+            .into_iter()
+            .filter_map(|scored| {
+                let row = row_map.get(&scored.id)?;
+                let entry = row_to_entry(row)?;
                 Some(SearchResult {
                     entry,
-                    score: score as f32,
-                    source: synapse_domain::domain::memory::SearchSource::BM25,
+                    score: scored.final_score,
+                    source: synapse_domain::domain::memory::SearchSource::Hybrid,
                 })
             })
             .collect())

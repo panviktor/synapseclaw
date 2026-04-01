@@ -73,7 +73,10 @@ pub async fn create_memory(
     }
 }
 
-/// Create the embedding provider from config.
+/// Embedding cache size (entries). Avoids redundant API calls.
+const EMBEDDING_CACHE_SIZE: usize = 10_000;
+
+/// Create the embedding provider from config, wrapped in LRU cache.
 fn create_embedding_provider(
     config: &MemoryConfig,
     api_key: Option<&str>,
@@ -82,32 +85,45 @@ fn create_embedding_provider(
         return Arc::new(embeddings::NoopEmbedding);
     }
 
+    let provider_name = config.embedding_provider.as_str();
+
+    // llama.cpp: no API key needed
+    if provider_name == "llama.cpp" || provider_name.starts_with("llama.cpp:") {
+        let url = provider_name
+            .strip_prefix("llama.cpp:")
+            .unwrap_or("http://127.0.0.1:8081");
+        let inner = Box::new(embeddings::LlamaCppEmbedding::new(
+            url,
+            &config.embedding_model,
+            config.embedding_dimensions,
+        ));
+        return Arc::new(embeddings::CachedEmbeddingProvider::new(
+            inner,
+            EMBEDDING_CACHE_SIZE,
+        ));
+    }
+
     // Resolve API key: provider-specific env var > caller-supplied key
-    let resolved_key = embedding_provider_env_key(&config.embedding_provider)
+    let resolved_key = embedding_provider_env_key(provider_name)
         .and_then(|var| std::env::var(var).ok())
         .or_else(|| api_key.map(String::from));
 
     if let Some(key) = resolved_key {
-        let (base_url, _provider_name) = if config.embedding_provider.starts_with("custom:") {
-            (
-                config
-                    .embedding_provider
-                    .trim_start_matches("custom:")
-                    .to_string(),
-                "custom",
-            )
+        let base_url = if provider_name.starts_with("custom:") {
+            provider_name.trim_start_matches("custom:").to_string()
         } else {
-            (
-                embeddings::default_base_url_for_provider(&config.embedding_provider),
-                config.embedding_provider.as_str(),
-            )
+            embeddings::default_base_url_for_provider(provider_name)
         };
 
-        Arc::new(embeddings::OpenAiEmbedding::new(
+        let inner = Box::new(embeddings::OpenAiEmbedding::new(
             &base_url,
             &key,
             &config.embedding_model,
             config.embedding_dimensions,
+        ));
+        Arc::new(embeddings::CachedEmbeddingProvider::new(
+            inner,
+            EMBEDDING_CACHE_SIZE,
         ))
     } else {
         tracing::warn!(
