@@ -201,7 +201,22 @@ async fn build_context(
 ) -> String {
     let mut context = String::new();
 
-    // Pull relevant memories for this message
+    // ── Core memory blocks (MemGPT pattern) ──────────────────────
+    // Always-in-prompt blocks: persona, user_knowledge, task_state, domain.
+    if let Ok(blocks) = mem.get_core_blocks(&"default".to_string()).await {
+        for block in &blocks {
+            if !block.content.trim().is_empty() {
+                let _ = writeln!(context, "<{}>", block.label);
+                let _ = writeln!(context, "{}", block.content.trim());
+                let _ = writeln!(context, "</{}>", block.label);
+            }
+        }
+        if !context.is_empty() {
+            context.push('\n');
+        }
+    }
+
+    // ── Relevant memories for this message ───────────────────────
     if let Ok(entries) = mem.recall(user_msg, 5, session_id).await {
         let relevant: Vec<_> = entries
             .iter()

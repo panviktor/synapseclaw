@@ -289,9 +289,30 @@ pub async fn run(
         }));
     }
 
+    // ── Phase 4.3: Memory consolidation worker ────────────────────
+    {
+        let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
+            synapse_memory::create_memory(
+                &config.memory,
+                &config.workspace_dir,
+                "default",
+                config.api_key.as_deref(),
+            )
+            .await
+            .unwrap_or_else(|_| std::sync::Arc::new(synapse_memory::NoopUnifiedMemory));
+
+        let worker_handle =
+            crate::memory_adapters::consolidation_worker::spawn_consolidation_worker(
+                mem,
+                crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default(),
+                "default".to_string(),
+            );
+        handles.push(worker_handle);
+    }
+
     println!("🧠 SynapseClaw daemon started");
     println!("   Gateway:  http://{host}:{port}");
-    println!("   Components: gateway, channels, heartbeat, scheduler");
+    println!("   Components: gateway, channels, heartbeat, scheduler, memory");
     if config.gateway.require_pairing {
         println!("   Pairing:    enabled (code appears in gateway output above)");
     }
