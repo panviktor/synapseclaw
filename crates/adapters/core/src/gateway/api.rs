@@ -655,7 +655,7 @@ pub async fn handle_api_memory_list(
             other => synapse_domain::domain::memory::MemoryCategory::Custom(other.to_string()),
         });
 
-        // TODO(phase4.3): UnifiedMemoryPort has no `list()` — use recall as workaround.
+        // UnifiedMemoryPort uses recall() for listing — category name as query term.
         let query = category.as_ref().map(|c| c.to_string()).unwrap_or_default();
         match state.mem.recall(&query, 100, None).await {
             Ok(entries) => Json(serde_json::json!({"entries": entries})).into_response(),
@@ -2000,7 +2000,6 @@ fn mask_sensitive_fields(
     mask_optional_secret(&mut masked.browser.computer_use.api_key);
     mask_optional_secret(&mut masked.web_search.brave_api_key);
     mask_optional_secret(&mut masked.storage.provider.config.db_url);
-    mask_optional_secret(&mut masked.memory.qdrant.api_key);
     if let Some(cloudflare) = masked.tunnel.cloudflare.as_mut() {
         mask_required_secret(&mut cloudflare.token);
     }
@@ -2118,10 +2117,6 @@ fn restore_masked_sensitive_fields(
     restore_optional_secret(
         &mut incoming.storage.provider.config.db_url,
         &current.storage.provider.config.db_url,
-    );
-    restore_optional_secret(
-        &mut incoming.memory.qdrant.api_key,
-        &current.memory.qdrant.api_key,
     );
     if let (Some(incoming_tunnel), Some(current_tunnel)) = (
         incoming.tunnel.cloudflare.as_mut(),
@@ -2303,7 +2298,6 @@ mod tests {
         cfg.tunnel.cloudflare = Some(synapse_domain::config::schema::CloudflareTunnelConfig {
             token: "cf-token".to_string(),
         });
-        cfg.memory.qdrant.api_key = Some("qdrant-key".to_string());
         cfg.channels_config.wati = Some(synapse_domain::config::schema::WatiConfig {
             api_token: "wati-token".to_string(),
             api_url: "https://live-mt-server.wati.io".to_string(),
@@ -2373,7 +2367,6 @@ mod tests {
                 .map(|v| v.api_token.as_str()),
             Some(MASKED_SECRET)
         );
-        assert_eq!(parsed.memory.qdrant.api_key.as_deref(), Some(MASKED_SECRET));
         assert_eq!(
             parsed
                 .channels_config
@@ -2437,7 +2430,6 @@ mod tests {
             auth_token: "ngrok-token-real".to_string(),
             domain: None,
         });
-        current.memory.qdrant.api_key = Some("qdrant-real".to_string());
         current.channels_config.wati = Some(synapse_domain::config::schema::WatiConfig {
             api_token: "wati-real".to_string(),
             api_url: "https://live-mt-server.wati.io".to_string(),
@@ -2509,7 +2501,6 @@ mod tests {
         if let Some(ngrok) = incoming.tunnel.ngrok.as_mut() {
             ngrok.auth_token = MASKED_SECRET.to_string();
         }
-        incoming.memory.qdrant.api_key = Some(MASKED_SECRET.to_string());
         if let Some(wati) = incoming.channels_config.wati.as_mut() {
             wati.api_token = MASKED_SECRET.to_string();
         }
@@ -2553,10 +2544,6 @@ mod tests {
                 .as_ref()
                 .map(|v| v.auth_token.as_str()),
             Some("ngrok-token-real")
-        );
-        assert_eq!(
-            hydrated.memory.qdrant.api_key.as_deref(),
-            Some("qdrant-real")
         );
         assert_eq!(
             hydrated

@@ -498,7 +498,14 @@ pub async fn run(
 
                     history.clear();
                     history.push(ChatMessage::system(&system_prompt));
-                    // TODO(phase4.3): clear conversation/daily memory via SurrealDB
+                    // Clear conversation-scoped memories for this session
+                    if let Ok(entries) = mem.recall("", 100, None).await {
+                        for entry in entries {
+                            if entry.category == synapse_memory::MemoryCategory::Conversation {
+                                let _ = mem.forget(&entry.key).await;
+                            }
+                        }
+                    }
                     println!("Conversation cleared.\n");
                     if let Some(path) = session_state_file.as_deref() {
                         save_interactive_session_history(path, &history)?;

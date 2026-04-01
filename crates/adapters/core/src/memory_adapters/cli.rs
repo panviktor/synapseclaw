@@ -4,7 +4,7 @@
 //! etc.) are removed.  CLI memory management will be re-implemented against
 //! `SurrealMemoryAdapter` / `UnifiedMemoryPort`.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use console::style;
 use synapse_domain::config::schema::Config;
 use synapse_memory::{MemoryCategory, UnifiedMemoryPort};
@@ -30,10 +30,14 @@ pub async fn handle_command(
 }
 
 /// Create a memory backend for CLI management operations.
-///
-/// TODO(phase4.3): replace with SurrealMemoryAdapter::new()
-fn create_cli_memory(_config: &Config) -> Result<Box<dyn UnifiedMemoryPort>> {
-    bail!("Phase 4.3: CLI memory commands are being migrated to SurrealDB. Not yet available.");
+async fn create_cli_memory(config: &Config) -> Result<std::sync::Arc<dyn UnifiedMemoryPort>> {
+    synapse_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        "cli",
+        config.api_key.as_deref(),
+    )
+    .await
 }
 
 async fn handle_list(
@@ -43,7 +47,7 @@ async fn handle_list(
     limit: usize,
     offset: usize,
 ) -> Result<()> {
-    let mem = create_cli_memory(config)?;
+    let mem = create_cli_memory(config).await?;
     let cat = category.as_deref().map(parse_category);
     let entries = mem
         .recall(
@@ -92,7 +96,7 @@ async fn handle_list(
 }
 
 async fn handle_get(config: &Config, key: &str) -> Result<()> {
-    let mem = create_cli_memory(config)?;
+    let mem = create_cli_memory(config).await?;
 
     // Use recall with the key as query to find matching entries.
     let entries = mem.recall(key, 10, None).await?;
@@ -128,7 +132,7 @@ fn print_entry(entry: &synapse_memory::MemoryEntry) {
 }
 
 async fn handle_stats(config: &Config) -> Result<()> {
-    let mem = create_cli_memory(config)?;
+    let mem = create_cli_memory(config).await?;
     let healthy = mem.health_check().await;
     let total = mem.count().await.unwrap_or(0);
 
@@ -153,15 +157,19 @@ async fn handle_clear(
     _category: Option<String>,
     yes: bool,
 ) -> Result<()> {
-    let mem = create_cli_memory(config)?;
+    let mem = create_cli_memory(config).await?;
 
     // Single-key deletion (exact or prefix match).
     if let Some(key) = key {
         return handle_clear_key(&*mem, &key, yes).await;
     }
 
-    // TODO(phase4.3): batch deletion by category via SurrealDB
-    println!("Phase 4.3: batch clear not yet migrated to SurrealDB.");
+    // Batch clear: not supported without list() — inform user.
+    println!(
+        "{}",
+        style("Use --key <KEY> to delete individual entries.").yellow()
+    );
+    println!("Batch category clear will be available in a future update.");
     Ok(())
 }
 

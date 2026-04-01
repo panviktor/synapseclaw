@@ -232,7 +232,7 @@ pub fn all_tools_with_runtime(
         Arc::new(MemoryRecallTool::new(memory.clone())),
         Arc::new(MemoryForgetTool::new(memory.clone(), security.clone())),
         Arc::new(CoreMemoryUpdateTool::new(
-            memory,
+            memory.clone(),
             security.clone(),
             "default".to_string(),
         )),
@@ -576,10 +576,11 @@ pub fn all_tools_with_runtime(
         }
     }
 
-    // TODO(phase4.3): Knowledge graph is now part of SemanticMemoryPort in SurrealDB.
-    // The standalone KnowledgeGraph tool is removed.
+    // Phase 4.3: Knowledge graph via SemanticMemoryPort in SurrealDB.
     if root_config.knowledge.enabled {
-        tracing::info!("Knowledge graph enabled — Phase 4.3 uses SemanticMemoryPort via SurrealDB");
+        tool_arcs.push(Arc::new(synapse_tools::knowledge_tool::KnowledgeTool::new(
+            Arc::clone(&memory),
+        )));
     }
 
     // Add delegation tool when agents are configured

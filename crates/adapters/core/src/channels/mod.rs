@@ -3384,11 +3384,20 @@ pub async fn start_channels(
         (None, None, None)
     };
 
+    // Wrap memory with ConsolidatingMemory for real LLM consolidation + entity extraction.
+    let consolidating_mem: Arc<dyn UnifiedMemoryPort> = Arc::new(
+        crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+            Arc::clone(&mem),
+            Arc::clone(&provider),
+            model.clone(),
+        ),
+    );
+
     let runtime_ctx = Arc::new(ChannelRuntimeContext {
         channels_by_name,
         provider: Arc::clone(&provider),
         default_provider: Arc::new(provider_name),
-        memory: Arc::clone(&mem),
+        memory: consolidating_mem,
         tools_registry: Arc::clone(&tools_registry),
         observer,
         system_prompt: Arc::new(system_prompt),
