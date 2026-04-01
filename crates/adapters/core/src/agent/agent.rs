@@ -294,7 +294,7 @@ impl Agent {
         self.memory_session_id = session_id;
     }
 
-    pub fn from_config(config: &Config) -> Result<Self> {
+    pub async fn from_config(config: &Config) -> Result<Self> {
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::create_observer(
             &config.observability,
         ));
@@ -305,8 +305,13 @@ impl Agent {
             &config.workspace_dir,
         ));
 
-        // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
-        let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+        let memory: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
+            &config.memory,
+            &config.workspace_dir,
+            "default",
+            config.api_key.as_deref(),
+        )
+        .await?;
 
         let composio_key = if config.composio.enabled {
             config.composio.api_key.as_deref()
@@ -760,7 +765,7 @@ pub async fn run(
     }
     effective_config.default_temperature = temperature;
 
-    let mut agent = Agent::from_config(&effective_config)?;
+    let mut agent = Agent::from_config(&effective_config).await?;
 
     let provider_name = effective_config
         .default_provider
@@ -1083,7 +1088,9 @@ mod tests {
             .extra_headers
             .insert("X-Title".to_string(), "synapseclaw-web".to_string());
 
-        let mut agent = Agent::from_config(&config).expect("agent from config");
+        let mut agent = Agent::from_config(&config)
+            .await
+            .expect("agent from config");
         let response = agent.turn("hello").await.expect("agent turn");
 
         assert_eq!(response, "hello from mock");

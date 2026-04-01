@@ -29,7 +29,107 @@ pub use synapse_domain::ports::memory::{
 };
 
 use std::path::Path;
+use std::sync::Arc;
 use synapse_domain::config::schema::MemoryConfig;
+
+// ── Memory Factory ───────────────────────────────────────────────
+
+/// Create the memory backend from config.
+///
+/// Returns `Arc<dyn UnifiedMemoryPort>` — either SurrealDB or Noop.
+/// This is async because SurrealDB initialization requires await.
+pub async fn create_memory(
+    config: &MemoryConfig,
+    workspace_dir: &Path,
+    agent_id: &str,
+    api_key: Option<&str>,
+) -> anyhow::Result<Arc<dyn UnifiedMemoryPort>> {
+    // If backend is "none" or memory is explicitly disabled, use noop.
+    if config.backend == "none" {
+        tracing::info!("Memory backend: none (disabled)");
+        return Ok(Arc::new(NoopUnifiedMemory));
+    }
+
+    // Create embedding provider
+    let embedder = create_embedding_provider(config, api_key);
+
+    // SurrealDB data directory: workspace_dir/memory/brain.surreal
+    let data_dir = workspace_dir.join("memory").join("brain.surreal");
+    if let Some(parent) = data_dir.parent() {
+        tokio::fs::create_dir_all(parent).await.ok();
+    }
+
+    let data_dir_str = data_dir.to_string_lossy().to_string();
+
+    match SurrealMemoryAdapter::new(&data_dir_str, embedder, agent_id.to_string()).await {
+        Ok(adapter) => {
+            tracing::info!("Memory backend: surrealdb ({})", data_dir_str);
+            Ok(Arc::new(adapter))
+        }
+        Err(e) => {
+            tracing::error!("SurrealDB init failed: {e}, falling back to noop");
+            Ok(Arc::new(NoopUnifiedMemory))
+        }
+    }
+}
+
+/// Create the embedding provider from config.
+fn create_embedding_provider(
+    config: &MemoryConfig,
+    api_key: Option<&str>,
+) -> Arc<dyn embeddings::EmbeddingProvider> {
+    if config.embedding_provider == "none" || config.embedding_provider.is_empty() {
+        return Arc::new(embeddings::NoopEmbedding);
+    }
+
+    // Resolve API key: provider-specific env var > caller-supplied key
+    let resolved_key = embedding_provider_env_key(&config.embedding_provider)
+        .and_then(|var| std::env::var(var).ok())
+        .or_else(|| api_key.map(String::from));
+
+    if let Some(key) = resolved_key {
+        let (base_url, _provider_name) = if config.embedding_provider.starts_with("custom:") {
+            (
+                config
+                    .embedding_provider
+                    .trim_start_matches("custom:")
+                    .to_string(),
+                "custom",
+            )
+        } else {
+            (
+                embeddings::default_base_url_for_provider(&config.embedding_provider),
+                config.embedding_provider.as_str(),
+            )
+        };
+
+        Arc::new(embeddings::OpenAiEmbedding::new(
+            &base_url,
+            &key,
+            &config.embedding_model,
+            config.embedding_dimensions,
+        ))
+    } else {
+        tracing::warn!(
+            "No API key for embedding provider '{}', using noop embeddings",
+            config.embedding_provider
+        );
+        Arc::new(embeddings::NoopEmbedding)
+    }
+}
+
+/// Look up the provider-specific environment variable for embedding API keys.
+fn embedding_provider_env_key(provider: &str) -> Option<&'static str> {
+    match provider.to_lowercase().as_str() {
+        "openai" => Some("OPENAI_API_KEY"),
+        "openrouter" => Some("OPENROUTER_API_KEY"),
+        "anthropic" => Some("ANTHROPIC_API_KEY"),
+        "cohere" => Some("COHERE_API_KEY"),
+        "voyageai" | "voyage" => Some("VOYAGE_API_KEY"),
+        "gemini" | "google" => Some("GEMINI_API_KEY"),
+        _ => None,
+    }
+}
 
 // ── Utility functions (backend-agnostic) ─────────────────────────
 

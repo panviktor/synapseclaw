@@ -47,6 +47,7 @@ use synapse_domain::config::schema::{Config, DelegateAgentConfig};
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::runtime::RuntimeAdapter;
 use synapse_memory::UnifiedMemoryPort;
+use synapse_tools::core_memory_update::CoreMemoryUpdateTool;
 
 /// No-op agent runner for contexts where the runner is not available (e.g., tests).
 struct NoopAgentRunner;
@@ -229,7 +230,12 @@ pub fn all_tools_with_runtime(
         Arc::new(CronRunsTool::new(config.clone())),
         Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())),
         Arc::new(MemoryRecallTool::new(memory.clone())),
-        Arc::new(MemoryForgetTool::new(memory, security.clone())),
+        Arc::new(MemoryForgetTool::new(memory.clone(), security.clone())),
+        Arc::new(CoreMemoryUpdateTool::new(
+            memory,
+            security.clone(),
+            "default".to_string(),
+        )),
         Arc::new(ScheduleTool::new(security.clone(), root_config.clone())),
         Arc::new(ModelRoutingConfigTool::new(
             config.clone(),

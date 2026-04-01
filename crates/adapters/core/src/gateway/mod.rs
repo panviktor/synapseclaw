@@ -469,8 +469,13 @@ pub async fn run_gateway(
         .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
     let summary_model = config.summary_model.clone();
     let temperature = config.default_temperature;
-    // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
-    let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+    let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        "default",
+        config.api_key.as_deref(),
+    )
+    .await?;
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
     let security = Arc::new(security_policy_from_config(

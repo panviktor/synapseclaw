@@ -2951,8 +2951,13 @@ pub async fn start_channels(
     ));
     let model = resolved_default_model(&config);
     let temperature = config.default_temperature;
-    // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
-    let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+    let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        "default",
+        config.api_key.as_deref(),
+    )
+    .await?;
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
             config.composio.api_key.as_deref(),

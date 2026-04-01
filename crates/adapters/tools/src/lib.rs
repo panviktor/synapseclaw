@@ -15,6 +15,7 @@ pub mod cloud_ops;
 pub mod cloud_patterns;
 pub mod composio;
 pub mod content_search;
+pub mod core_memory_update;
 pub mod cron_add;
 pub mod cron_list;
 pub mod cron_remove;

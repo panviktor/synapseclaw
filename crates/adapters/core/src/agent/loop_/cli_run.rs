@@ -27,10 +27,13 @@ pub async fn run(
     ));
 
     // ── Memory (the brain) ────────────────────────────────────────
-    let mem: Arc<dyn UnifiedMemoryPort> = {
-        // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
-        Arc::new(synapse_memory::NoopUnifiedMemory) as Arc<dyn UnifiedMemoryPort>
-    };
+    let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        "default",
+        config.api_key.as_deref(),
+    )
+    .await?;
     tracing::info!(backend = mem.name(), "Memory initialized");
 
     // ── Tools ────────────────────────────────────────────────────
@@ -638,10 +641,13 @@ pub async fn process_message(
         &config.autonomy,
         &config.workspace_dir,
     ));
-    let mem: Arc<dyn UnifiedMemoryPort> = {
-        // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
-        Arc::new(synapse_memory::NoopUnifiedMemory) as Arc<dyn UnifiedMemoryPort>
-    };
+    let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        "default",
+        config.api_key.as_deref(),
+    )
+    .await?;
 
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
