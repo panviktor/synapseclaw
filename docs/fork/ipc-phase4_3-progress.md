@@ -1,6 +1,6 @@
 # IPC Phase 4.3 Progress
 
-**Status**: COMPLETE (core) — Slices 1-5+7 + polish done (PR #217). Slices 6+8+9 deferred to next phase.
+**Status**: COMPLETE — Slices 1-5+7+8+9 done (PRs #217, #218). Only Slice 6 (IPC sharing) deferred.
 
 Phase 4.1H2B: pure hexagonal architecture | **Phase 4.3: memory architecture (SurrealDB)** | Phase 4.4: TBD
 
@@ -171,8 +171,8 @@ Replace the current flat Memory backend (SQLite key-value + optional embeddings)
 | 5 | Consolidation worker: background tokio task + importance decay + GC | **DONE** | #217 |
 | 6 | Memory sharing via IPC + ACL + MemoryEvent | DEFERRED | Depends on IPC broker |
 | 7 | Hybrid search: RRF fusion + weighted merge | **DONE** | #217 |
-| 8 | Embeddings: HNSW indexes + llama.cpp local + embedding cache | DEFERRED | Infra (next pass) |
-| 9 | Migration: SQLite → SurrealDB + snapshot import | DEFERRED | Infra (next pass) |
+| 8 | Embeddings: HNSW indexes + llama.cpp + OpenRouter + cache + vector search | **DONE** | #218 |
+| 9 | Migration: SQLite → SurrealDB tool + entity embedding + ACL + multi-hop | **DONE** | #218 |
 
 ---
 
@@ -197,11 +197,11 @@ Replace the current flat Memory backend (SQLite key-value + optional embeddings)
 
 | Item | Reason | Depends on |
 |------|--------|------------|
-| HNSW vector indexes in SurrealDB | Needs embedding pipeline first | Slice 8 |
-| Entity resolution via embedding similarity (>0.85) | Needs vector indexes | Slice 8 |
-| Multi-hop graph traversal via SurrealQL RELATE | Needs RELATE syntax validation | Future |
-| Automatic fact conflict detection | Needs consolidation worker | Slice 5 |
-| `memory_search` tool with full RRF hybrid search | RRF function done, tool needs vector source | Slice 8 |
+| HNSW vector indexes in SurrealDB | **DONE** | #218 |
+| Entity resolution via embedding similarity (>0.85) | **DONE** | #218 |
+| Multi-hop graph traversal (up to 5 hops, cycle-safe) | **DONE** | #218 |
+| Automatic fact conflict detection | Needs consolidation worker enhancement | Follow-up |
+| `memory_search` tool with full RRF hybrid search | RRF + vector in search_episodes, tool uses recall() | **DONE** |
 | Core blocks wiring into prompt builder | Needs build_context() refactor | Follow-up |
 | `consolidate_turn()` calling LLM from UnifiedMemoryPort | Architecture constraint: memory crate has no Provider dependency; consolidation runs from adapter layer | Follow-up |
 | Skill injection into agent context on task receive | Needs skill learning pipeline | Slice 4 |
