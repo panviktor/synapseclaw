@@ -502,7 +502,7 @@ pub fn verify_chain(log_path: &Path) -> Result<u64> {
 
 /// Compute HMAC-SHA256 and return hex-encoded result.
 fn compute_hmac_sha256(key: &[u8], data: &[u8]) -> String {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256 as HmacSha2;
 
     type HmacSha256 = Hmac<HmacSha2>;

@@ -1107,7 +1107,7 @@ async fn webhook_secret_hash_accepts_valid_header() {
 }
 
 fn compute_nextcloud_signature_hex(secret: &str, random: &str, body: &str) -> String {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
     let payload = format!("{random}{body}");
@@ -1278,7 +1278,7 @@ async fn nextcloud_talk_webhook_rejects_invalid_signature() {
 // ══════════════════════════════════════════════════════════
 
 fn compute_whatsapp_signature_hex(secret: &str, body: &[u8]) -> String {
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
 
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).unwrap();

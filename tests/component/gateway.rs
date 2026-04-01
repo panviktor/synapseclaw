@@ -19,7 +19,7 @@ fn gateway_whatsapp_valid_signature_accepted() {
     let body = b"test body content";
 
     // Compute expected signature
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
 
@@ -80,7 +80,7 @@ fn gateway_whatsapp_tampered_body_rejected() {
     let original_body = b"original body";
     let tampered_body = b"tampered body";
 
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
 
@@ -101,7 +101,7 @@ fn gateway_whatsapp_tampered_body_rejected() {
 fn gateway_whatsapp_different_secrets_differ() {
     let body = b"same body";
 
-    use hmac::{Hmac, Mac};
+    use hmac::{Hmac, KeyInit, Mac};
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
 
