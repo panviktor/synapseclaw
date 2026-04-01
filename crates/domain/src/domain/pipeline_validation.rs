@@ -18,10 +18,11 @@ pub fn validate_schema(data: &Value, schema: &Value) -> Result<(), String> {
     let errors: Vec<String> = validator
         .iter_errors(data)
         .map(|e| {
-            if e.instance_path.as_str().is_empty() {
+            let path = e.instance_path();
+            if path.as_str().is_empty() {
                 e.to_string()
             } else {
-                format!("{}: {}", e.instance_path, e)
+                format!("{}: {}", path, e)
             }
         })
         .collect();

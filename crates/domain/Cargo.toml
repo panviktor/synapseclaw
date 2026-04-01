@@ -11,7 +11,7 @@ channel-nostr = []
 anyhow = "1.0"
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-jsonschema = "0.29"
+jsonschema = "0.45"
 parking_lot = "0.12"
 schemars = "1.2"
 serde = { version = "1.0", default-features = false, features = ["derive", "std"] }
@@ -19,8 +19,8 @@ serde_json = { version = "1.0", default-features = false, features = ["std"] }
 tokio = { version = "1.50", default-features = false, features = ["sync", "rt", "macros", "process"] }
 tracing = { version = "0.1", default-features = false }
 url = "2.5"
-uuid = { version = "1.22", default-features = false, features = ["v4", "std"] }
+uuid = { version = "1.23", default-features = false, features = ["v4", "std"] }
 
 [dev-dependencies]
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
-toml = "1.0"
+toml = "1.1"

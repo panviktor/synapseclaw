@@ -56,7 +56,7 @@ pub fn validate_against_schema(
     let errors: Vec<ValidationError> = validator
         .iter_errors(data)
         .map(|e| ValidationError {
-            path: e.instance_path.to_string(),
+            path: e.instance_path().to_string(),
             message: e.to_string(),
         })
         .collect();

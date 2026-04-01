@@ -11,20 +11,18 @@ browser-native = ["dep:fantoccini"]
 [dependencies]
 synapse_domain = { path = "../../domain" }
 synapse_security = { path = "../security" }
-synapse_memory = { path = "../memory" }
 synapse_providers = { path = "../providers" }
 synapse_cron = { path = "../cron-store" }
 synapse_infra = { path = "../infra" }
 
 # Major frameworks
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "time", "net", "io-util", "sync", "process", "io-std", "fs", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking", "multipart", "stream", "socks"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "blocking", "multipart", "stream", "socks", "query"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-toml = "1.0"
-
+toml = "1.1"
 # Async
 async-trait = "0.1"
 futures-util = "0.3"
@@ -35,7 +33,7 @@ tracing = "0.1"
 # Common utilities
 anyhow = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
-regex = "1.10"
+regex = "1.12"
 parking_lot = "0.12"
 directories = "6"
 base64 = "0.22"
@@ -45,7 +43,7 @@ which = "8.0"
 nanohtml2text = "0.2"
 
 # Crypto
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 
 # PDF (optional)
@@ -54,7 +52,6 @@ pdf-extract = { version = "0.10", optional = true }
 # Browser automation (optional)
 fantoccini = { version = "0.22.1", optional = true, default-features = false, features = ["rustls-tls"] }
 
-
 [dev-dependencies]
-tempfile = "3.15"
+tempfile = "3.27"
 tokio = { version = "1.50", features = ["rt-multi-thread", "macros", "test-util"] }
