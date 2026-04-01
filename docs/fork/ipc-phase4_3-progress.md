@@ -1,6 +1,6 @@
 # IPC Phase 4.3 Progress
 
-**Status**: IN PROGRESS — Slices 1-3 complete (PR #217), Slices 4-9 pending
+**Status**: IN PROGRESS — Slices 1-5+7 complete (PR #217), Slices 6+8+9 deferred to next pass
 
 Phase 4.1H2B: pure hexagonal architecture | **Phase 4.3: memory architecture (SurrealDB)** | Phase 4.4: TBD
 
@@ -115,20 +115,21 @@ Replace the current flat Memory backend (SQLite key-value + optional embeddings)
 
 | Item | Status | PRs |
 |------|--------|-----|
-| `SkillLearner.reflect_on_run()` — hook into PipelineEngine | TODO | Slice 4 |
-| Reflection prompt: what_worked, what_failed, lesson, should_create_skill | TODO | Slice 4 |
-| Skill creation/update from reflection output | TODO | Slice 4 |
-| Success/fail counter tracking per skill | TODO | Slice 4 |
+| `skill_learner::reflect_on_run()` — LLM-driven post-run analysis | **DONE** | #217 Slice 4 |
+| Reflection prompt: what_worked, what_failed, lesson, should_create_skill | **DONE** | #217 Slice 4 |
+| Skill creation/update from reflection output | **DONE** | #217 Slice 4 |
+| Success/fail counter tracking per skill | **DONE** | #217 Slice 4 |
+| PipelineEngine hook (wire reflect_on_run into pipeline runner) | DEFERRED | Needs pipeline runner access |
 
 ### Consolidation worker
 
 | Item | Status | PRs |
 |------|--------|-----|
-| `ConsolidationWorker` — background tokio task in daemon | TODO | Slice 5 |
-| Entity extraction from unprocessed episodes (batch 50) | TODO | Slice 5 |
-| Importance decay: `importance *= 0.95` for entries >7d old | **DONE** | #217 Slice 1 (in ConsolidationPort) |
-| GC: delete entries with importance <0.05 and age >30d | **DONE** | #217 Slice 1 (in ConsolidationPort) |
-| Consolidation interval configurable (default: 1h) | TODO | Slice 5 |
+| `spawn_consolidation_worker()` — background tokio task | **DONE** | #217 Slice 5 |
+| Entity extraction from unprocessed episodes (batch 50) | DEFERRED | Needs batch processing logic |
+| Importance decay: `importance *= 0.95` for entries >7d old | **DONE** | #217 Slice 1+5 |
+| GC: delete entries with importance <0.05 and age >30d | **DONE** | #217 Slice 1+5 |
+| Consolidation interval configurable (default: 1h) | **DONE** | #217 Slice 5 |
 
 ### Memory sharing via IPC
 
@@ -166,12 +167,12 @@ Replace the current flat Memory backend (SQLite key-value + optional embeddings)
 | 1 | SurrealDB embedded + schema + 7 ports + adapter + 30 consumer migrations | **DONE** | #217 |
 | 2 | SurrealDB wiring + core_memory_update tool + memory_loader core blocks | **DONE** | #217 |
 | 3 | Knowledge graph: EntityExtractor + consolidation pipeline integration | **DONE** | #217 |
-| 4 | Skill learning: SkillLearner + ReflectionPort + PipelineEngine hook | TODO | |
-| 5 | Consolidation worker + background entity extraction + fact conflict detection | TODO | |
-| 6 | Memory sharing via IPC + ACL + MemoryEvent | TODO | |
-| 7 | Hybrid search: RRF fusion across all memory types | TODO | |
-| 8 | Embeddings: HNSW indexes + llama.cpp local + embedding cache | TODO | |
-| 9 | Migration: SQLite → SurrealDB + snapshot import | TODO | |
+| 4 | Skill learning: SkillLearner + reflect_on_run() + skill CRUD | **DONE** | #217 |
+| 5 | Consolidation worker: background tokio task + importance decay + GC | **DONE** | #217 |
+| 6 | Memory sharing via IPC + ACL + MemoryEvent | DEFERRED | Depends on IPC broker |
+| 7 | Hybrid search: RRF fusion + weighted merge | **DONE** | #217 |
+| 8 | Embeddings: HNSW indexes + llama.cpp local + embedding cache | DEFERRED | Infra (next pass) |
+| 9 | Migration: SQLite → SurrealDB + snapshot import | DEFERRED | Infra (next pass) |
 
 ---
 
@@ -183,8 +184,8 @@ Replace the current flat Memory backend (SQLite key-value + optional embeddings)
 | 2 | Hybrid search returns vector + BM25 + graph results with RRF fusion | PARTIAL | BM25 works, vector + RRF deferred to Slice 7-8 |
 | 3 | Entity extraction creates knowledge graph from conversations | **DONE** | Wired into consolidation pipeline |
 | 4 | Bitemporal facts: old facts invalidated when contradicted | PARTIAL | Manual invalidation works, auto-detection deferred |
-| 5 | Skills created from pipeline reflections, success/fail tracked | TODO | Slice 4 |
-| 6 | Consolidation worker runs without blocking agent loops | TODO | Slice 5 |
+| 5 | Skills created from pipeline reflections, success/fail tracked | **DONE** | SkillLearner + reflect_on_run() |
+| 6 | Consolidation worker runs without blocking agent loops | **DONE** | spawn_consolidation_worker() |
 | 7 | Cross-agent memory sharing respects ACL (Private/SharedWith/Global) | TODO | Slice 6 |
 | 8 | Data migration from existing SQLite preserves all memories | TODO | Slice 9 |
 | 9 | 6 concurrent agents read/write without deadlocks | EXPECTED | SurrealKV MVCC, not yet load-tested |
@@ -200,7 +201,7 @@ Replace the current flat Memory backend (SQLite key-value + optional embeddings)
 | Entity resolution via embedding similarity (>0.85) | Needs vector indexes | Slice 8 |
 | Multi-hop graph traversal via SurrealQL RELATE | Needs RELATE syntax validation | Future |
 | Automatic fact conflict detection | Needs consolidation worker | Slice 5 |
-| `memory_search` tool with full RRF hybrid search | Needs RRF fusion | Slice 7 |
+| `memory_search` tool with full RRF hybrid search | RRF function done, tool needs vector source | Slice 8 |
 | Core blocks wiring into prompt builder | Needs build_context() refactor | Follow-up |
 | `consolidate_turn()` calling LLM from UnifiedMemoryPort | Architecture constraint: memory crate has no Provider dependency; consolidation runs from adapter layer | Follow-up |
 | Skill injection into agent context on task receive | Needs skill learning pipeline | Slice 4 |
