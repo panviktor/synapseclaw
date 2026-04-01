@@ -14,13 +14,20 @@ DEFINE FIELD IF NOT EXISTS category    ON episode TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS importance  ON episode TYPE option<float>;
 DEFINE FIELD IF NOT EXISTS created_at  ON episode TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS visibility  ON episode TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS embedding   ON episode TYPE option<array<float>>;
 
 DEFINE INDEX IF NOT EXISTS idx_ep_agent   ON episode FIELDS agent_id;
 DEFINE INDEX IF NOT EXISTS idx_ep_session ON episode FIELDS session_id;
 DEFINE INDEX IF NOT EXISTS idx_ep_time    ON episode FIELDS created_at;
+DEFINE INDEX IF NOT EXISTS idx_ep_key     ON episode FIELDS key;
 DEFINE ANALYZER IF NOT EXISTS simple_analyzer TOKENIZERS blank, class FILTERS lowercase;
 DEFINE INDEX IF NOT EXISTS idx_ep_content ON episode FIELDS content
     SEARCH ANALYZER simple_analyzer BM25;
+
+-- HNSW vector index for semantic search (dimension set at query time via <|K,EF|>)
+-- Uses 768 dims for nomic-embed-text; 1536 for text-embedding-3-small
+DEFINE INDEX IF NOT EXISTS idx_ep_vector ON episode FIELDS embedding
+    HNSW DIMENSION 768 DIST COSINE;
 
 -- ═══════════════════════════════════════════
 -- CORE MEMORY BLOCKS (MemGPT pattern)
@@ -47,9 +54,12 @@ DEFINE FIELD IF NOT EXISTS summary     ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_by  ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at  ON entity TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS updated_at  ON entity TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS embedding   ON entity TYPE option<array<float>>;
 
 DEFINE INDEX IF NOT EXISTS idx_ent_name ON entity FIELDS name;
 DEFINE INDEX IF NOT EXISTS idx_ent_type ON entity FIELDS entity_type;
+DEFINE INDEX IF NOT EXISTS idx_ent_vector ON entity FIELDS embedding
+    HNSW DIMENSION 768 DIST COSINE;
 
 -- ═══════════════════════════════════════════
 -- FACTS (Knowledge Graph edges, bitemporal)
@@ -85,8 +95,11 @@ DEFINE FIELD IF NOT EXISTS version       ON skill TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS created_by    ON skill TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at    ON skill TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS updated_at    ON skill TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS embedding     ON skill TYPE option<array<float>>;
 
 DEFINE INDEX IF NOT EXISTS idx_skill_name ON skill FIELDS name;
+DEFINE INDEX IF NOT EXISTS idx_skill_vector ON skill FIELDS embedding
+    HNSW DIMENSION 768 DIST COSINE;
 
 -- ═══════════════════════════════════════════
 -- REFLECTIONS (self-improvement records)
@@ -101,5 +114,8 @@ DEFINE FIELD IF NOT EXISTS what_worked   ON reflection TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS what_failed   ON reflection TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS lesson        ON reflection TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at    ON reflection TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS embedding     ON reflection TYPE option<array<float>>;
 
 DEFINE INDEX IF NOT EXISTS idx_refl_agent ON reflection FIELDS agent_id;
+DEFINE INDEX IF NOT EXISTS idx_refl_vector ON reflection FIELDS embedding
+    HNSW DIMENSION 768 DIST COSINE;

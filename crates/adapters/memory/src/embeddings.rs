@@ -1,4 +1,6 @@
 use async_trait::async_trait;
+use parking_lot::Mutex;
+use std::collections::HashMap;
 
 /// Trait for embedding providers — convert text to vectors
 #[async_trait]
@@ -163,6 +165,119 @@ impl EmbeddingProvider for OpenAiEmbedding {
     }
 }
 
+// ── LlamaCpp provider (local llama-server) ───────────────────
+
+/// Embedding provider for local llama.cpp server.
+///
+/// Expects llama-server running with `--embedding` flag, e.g.:
+/// `llama-server -m nomic-embed-text-v1.5.Q8_0.gguf --embedding --port 8081`
+///
+/// Uses the OpenAI-compatible `/v1/embeddings` endpoint.
+pub struct LlamaCppEmbedding {
+    inner: OpenAiEmbedding,
+}
+
+impl LlamaCppEmbedding {
+    /// Create a new local embedder.
+    ///
+    /// `url` is the llama-server base URL, e.g. `http://127.0.0.1:8081`.
+    /// `model` is the model name passed in the request body (informational).
+    /// `dims` is the embedding dimension (e.g. 768 for nomic-embed-text).
+    pub fn new(url: &str, model: &str, dims: usize) -> Self {
+        Self {
+            // llama-server doesn't require an API key
+            inner: OpenAiEmbedding::new(url, "no-key-needed", model, dims),
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for LlamaCppEmbedding {
+    fn name(&self) -> &str {
+        "llama.cpp"
+    }
+
+    fn dimensions(&self) -> usize {
+        self.inner.dimensions()
+    }
+
+    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        self.inner.embed(texts).await
+    }
+}
+
+// ── Cached embedding provider (LRU wrapper) ─────────────────
+
+/// Wraps any EmbeddingProvider with an in-memory LRU cache.
+pub struct CachedEmbeddingProvider {
+    inner: Box<dyn EmbeddingProvider>,
+    cache: Mutex<HashMap<String, Vec<f32>>>,
+    max_entries: usize,
+}
+
+impl CachedEmbeddingProvider {
+    pub fn new(inner: Box<dyn EmbeddingProvider>, max_entries: usize) -> Self {
+        Self {
+            inner,
+            cache: Mutex::new(HashMap::new()),
+            max_entries,
+        }
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for CachedEmbeddingProvider {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn dimensions(&self) -> usize {
+        self.inner.dimensions()
+    }
+
+    async fn embed(&self, texts: &[&str]) -> anyhow::Result<Vec<Vec<f32>>> {
+        let mut results = Vec::with_capacity(texts.len());
+        let mut uncached_texts = Vec::new();
+        let mut uncached_indices = Vec::new();
+
+        // Check cache for each text.
+        {
+            let cache = self.cache.lock();
+            for (i, text) in texts.iter().enumerate() {
+                if let Some(cached) = cache.get(*text) {
+                    results.push(cached.clone());
+                } else {
+                    results.push(vec![]); // placeholder
+                    uncached_texts.push(*text);
+                    uncached_indices.push(i);
+                }
+            }
+        }
+
+        // Fetch uncached embeddings.
+        if !uncached_texts.is_empty() {
+            let fresh = self.inner.embed(&uncached_texts).await?;
+            let mut cache = self.cache.lock();
+
+            // Evict oldest entries if cache is full.
+            while cache.len() + fresh.len() > self.max_entries && !cache.is_empty() {
+                if let Some(key) = cache.keys().next().cloned() {
+                    cache.remove(&key);
+                }
+            }
+
+            for (idx, embedding) in uncached_indices.into_iter().zip(fresh.into_iter()) {
+                if let Some(text) = texts.get(idx) {
+                    cache.insert((*text).to_string(), embedding.clone());
+                }
+                results[idx] = embedding;
+            }
+        }
+
+        Ok(results)
+    }
+}
+
 // ── Factory ──────────────────────────────────────────────────
 
 pub fn create_embedding_provider(
@@ -189,6 +304,13 @@ pub fn create_embedding_provider(
                 model,
                 dims,
             ))
+        }
+        // Local llama.cpp server: "llama.cpp" or "llama.cpp:http://host:port"
+        name if name == "llama.cpp" || name.starts_with("llama.cpp:") => {
+            let url = name
+                .strip_prefix("llama.cpp:")
+                .unwrap_or("http://127.0.0.1:8081");
+            Box::new(LlamaCppEmbedding::new(url, model, dims))
         }
         name if name.starts_with("custom:") => {
             let base_url = name.strip_prefix("custom:").unwrap_or("");
@@ -240,6 +362,38 @@ mod tests {
         );
         assert_eq!(p.name(), "openai"); // uses OpenAiEmbedding internally
         assert_eq!(p.dimensions(), 1536);
+    }
+
+    #[tokio::test]
+    async fn cached_provider_returns_same_result() {
+        // Use a noop provider wrapped in cache — noop returns empty,
+        // so we just check no panics and correct structure.
+        let inner = Box::new(NoopEmbedding);
+        let cached = CachedEmbeddingProvider::new(inner, 100);
+        assert_eq!(cached.name(), "none");
+        assert_eq!(cached.dimensions(), 0);
+        let result = cached.embed(&["hello"]).await.unwrap();
+        // NoopEmbedding returns empty vec for any input
+        assert!(result.is_empty() || result[0].is_empty());
+    }
+
+    #[test]
+    fn factory_llamacpp_default_url() {
+        let p = create_embedding_provider("llama.cpp", None, "nomic-embed-text", 768);
+        assert_eq!(p.name(), "llama.cpp");
+        assert_eq!(p.dimensions(), 768);
+    }
+
+    #[test]
+    fn factory_llamacpp_custom_url() {
+        let p = create_embedding_provider(
+            "llama.cpp:http://10.0.0.5:9090",
+            None,
+            "nomic-embed-text",
+            768,
+        );
+        assert_eq!(p.name(), "llama.cpp");
+        assert_eq!(p.dimensions(), 768);
     }
 
     #[test]

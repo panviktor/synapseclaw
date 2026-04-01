@@ -4,6 +4,7 @@
 //! semantic memory (knowledge graph), skill memory, reflections, and consolidation.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use surrealdb::engine::local::{Db, SurrealKv};
@@ -20,6 +21,16 @@ use synapse_domain::ports::memory::{
 };
 
 use crate::embeddings::EmbeddingProvider;
+
+/// Log memory operation latency after an async block completes.
+fn log_latency(op: &str, start: Instant) {
+    let ms = start.elapsed().as_millis() as u64;
+    if ms > 50 {
+        tracing::info!(op, latency_ms = ms, "memory.slow_op");
+    } else {
+        tracing::debug!(op, latency_ms = ms, "memory.op");
+    }
+}
 
 /// SurrealDB-backed memory adapter.
 pub struct SurrealMemoryAdapter {
@@ -278,6 +289,13 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             entry.id.clone()
         };
 
+        // Generate embedding if provider is available (best-effort).
+        let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
+            self.embedder.embed_one(&entry.content).await.ok()
+        } else {
+            None
+        };
+
         self.db
             .query(
                 "CREATE episode SET
@@ -288,13 +306,15 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                     session_id = $session_id,
                     importance = 0.5,
                     created_at = time::now(),
-                    visibility = 'private'",
+                    visibility = 'private',
+                    embedding = $embedding",
             )
             .bind(("agent", self.me().to_string()))
             .bind(("key", entry.key))
             .bind(("content", entry.content))
             .bind(("category", entry.category.to_string()))
             .bind(("session_id", entry.session_id))
+            .bind(("embedding", embedding))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
@@ -337,12 +357,13 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
     }
 
     async fn search_episodes(&self, query: &MemoryQuery) -> Result<Vec<SearchResult>, MemoryError> {
-        let mut resp = self
+        // BM25 keyword search
+        let mut bm25_resp = self
             .db
             .query(
                 "SELECT *, search::score(1) AS bm25_score FROM episode
                  WHERE content @1@ $text
-                 AND (agent_id = $agent OR visibility = 'global')
+                 AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
                  ORDER BY bm25_score DESC
                  LIMIT $limit",
             )
@@ -352,19 +373,114 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
-        let rows = take_json!(resp, 0);
-        Ok(rows
+        let bm25_rows = take_json!(bm25_resp, 0);
+
+        // Vector search (if embedding provider is available)
+        let query_embedding = if self.embedder.dimensions() > 0 {
+            match &query.embedding {
+                Some(emb) => Some(emb.clone()),
+                None => self.embedder.embed_one(&query.text).await.ok(),
+            }
+        } else {
+            None
+        };
+
+        let vec_rows = if let Some(ref emb) = query_embedding {
+            let mut vec_resp = self
+                .db
+                .query(
+                    "SELECT *,
+                        vector::similarity::cosine(embedding, $emb) AS vec_score
+                     FROM episode
+                     WHERE embedding <|$limit,64|> $emb
+                     AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
+                     ORDER BY vec_score DESC
+                     LIMIT $limit",
+                )
+                .bind(("emb", emb.clone()))
+                .bind(("agent", query.agent_id.clone()))
+                .bind(("limit", query.limit))
+                .await
+                .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+            take_json!(vec_resp, 0)
+        } else {
+            vec![]
+        };
+
+        // Merge results: if we have both BM25 and vector, use RRF fusion.
+        // Otherwise return BM25 results.
+        if vec_rows.is_empty() {
+            // BM25 only
+            return Ok(bm25_rows
+                .iter()
+                .filter_map(|v| {
+                    let entry = row_to_entry(v)?;
+                    let score = v.get("bm25_score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                    Some(SearchResult {
+                        entry,
+                        score: score as f32,
+                        source: synapse_domain::domain::memory::SearchSource::BM25,
+                    })
+                })
+                .collect());
+        }
+
+        // RRF fusion: combine BM25 + vector results.
+        let bm25_list: Vec<(String, f32)> = bm25_rows
             .iter()
             .filter_map(|v| {
-                let entry = row_to_entry(v)?;
-                let score = v.get("bm25_score").and_then(|s| s.as_f64()).unwrap_or(0.0);
+                let id = json_str(v, "id");
+                let score = v.get("bm25_score").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
+                Some((id, score))
+            })
+            .collect();
+
+        let vec_list: Vec<(String, f32)> = vec_rows
+            .iter()
+            .filter_map(|v| {
+                let id = json_str(v, "id");
+                let score = v.get("vec_score").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
+                Some((id, score))
+            })
+            .collect();
+
+        let fused = crate::vector::rrf_fusion(&[bm25_list, vec_list], 60.0, query.limit);
+
+        // Build a lookup map for row data.
+        let mut row_map: std::collections::HashMap<String, &serde_json::Value> =
+            std::collections::HashMap::new();
+        for row in bm25_rows.iter().chain(vec_rows.iter()) {
+            let id = json_str(row, "id");
+            row_map.entry(id).or_insert(row);
+        }
+
+        Ok(fused
+            .into_iter()
+            .filter_map(|scored| {
+                let row = row_map.get(&scored.id)?;
+                let entry = row_to_entry(row)?;
                 Some(SearchResult {
                     entry,
-                    score: score as f32,
-                    source: synapse_domain::domain::memory::SearchSource::BM25,
+                    score: scored.final_score,
+                    source: synapse_domain::domain::memory::SearchSource::Hybrid,
                 })
             })
             .collect())
+    }
+}
+
+impl SurrealMemoryAdapter {
+    async fn find_entity_by_id(&self, id: &str) -> Result<Option<Entity>, MemoryError> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM entity WHERE id = $id LIMIT 1")
+            .bind(("id", id.to_string()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(rows.first().and_then(row_to_entity))
     }
 }
 
@@ -379,6 +495,18 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             entity.id.clone()
         };
 
+        // Generate embedding for entity name + summary (best-effort).
+        let embed_text = format!(
+            "{} {}",
+            entity.name,
+            entity.summary.as_deref().unwrap_or("")
+        );
+        let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
+            self.embedder.embed_one(&embed_text).await.ok()
+        } else {
+            None
+        };
+
         self.db
             .query(
                 "IF (SELECT count() FROM entity WHERE string::lowercase(name) = string::lowercase($name) GROUP ALL)[0].count > 0 {
@@ -386,6 +514,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                         entity_type = $etype,
                         properties = $props,
                         summary = $summary,
+                        embedding = $embedding,
                         updated_at = time::now()
                     WHERE string::lowercase(name) = string::lowercase($name);
                 } ELSE {
@@ -394,6 +523,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                         entity_type = $etype,
                         properties = $props,
                         summary = $summary,
+                        embedding = $embedding,
                         created_by = $agent,
                         created_at = time::now(),
                         updated_at = time::now();
@@ -403,6 +533,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             .bind(("etype", entity.entity_type))
             .bind(("props", entity.properties))
             .bind(("summary", entity.summary))
+            .bind(("embedding", embedding))
             .bind(("agent", entity.created_by))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
@@ -411,6 +542,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
     }
 
     async fn find_entity(&self, name: &str) -> Result<Option<Entity>, MemoryError> {
+        // 1. Exact case-insensitive name match
         let mut resp = self
             .db
             .query(
@@ -423,7 +555,38 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
         let rows = take_json!(resp, 0);
-        Ok(rows.first().and_then(row_to_entity))
+        if let Some(entity) = rows.first().and_then(row_to_entity) {
+            return Ok(Some(entity));
+        }
+
+        // 2. Embedding similarity fallback (>0.85 threshold)
+        if self.embedder.dimensions() > 0 {
+            if let Ok(emb) = self.embedder.embed_one(name).await {
+                let mut vec_resp = self
+                    .db
+                    .query(
+                        "SELECT *,
+                            vector::similarity::cosine(embedding, $emb) AS sim
+                         FROM entity
+                         WHERE embedding <|3,32|> $emb
+                         ORDER BY sim DESC
+                         LIMIT 1",
+                    )
+                    .bind(("emb", emb))
+                    .await
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+                let vec_rows = take_json!(vec_resp, 0);
+                if let Some(row) = vec_rows.first() {
+                    let sim = row.get("sim").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    if sim > 0.85 {
+                        return Ok(row_to_entity(row));
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     async fn add_fact(&self, fact: TemporalFact) -> Result<MemoryId, MemoryError> {
@@ -488,15 +651,33 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
     async fn traverse(
         &self,
         entity_id: &MemoryId,
-        _hops: usize,
+        hops: usize,
     ) -> Result<Vec<(Entity, TemporalFact)>, MemoryError> {
-        // 1-hop traversal for MVP
-        let facts = self.get_current_facts(entity_id).await?;
+        let max_hops = hops.min(5); // safety cap
         let mut results = Vec::new();
-        for fact in facts {
-            if let Some(entity) = self.find_entity(&fact.object).await? {
-                results.push((entity, fact));
+        let mut visited = std::collections::HashSet::new();
+        let mut frontier = vec![entity_id.clone()];
+
+        for _depth in 0..max_hops {
+            let mut next_frontier = Vec::new();
+            for eid in &frontier {
+                if !visited.insert(eid.clone()) {
+                    continue;
+                }
+                let facts = self.get_current_facts(eid).await?;
+                for fact in facts {
+                    if let Some(entity) = self.find_entity_by_id(&fact.object).await? {
+                        if !visited.contains(&entity.id) {
+                            next_frontier.push(entity.id.clone());
+                        }
+                        results.push((entity, fact));
+                    }
+                }
             }
+            if next_frontier.is_empty() {
+                break;
+            }
+            frontier = next_frontier;
         }
         Ok(results)
     }
@@ -881,7 +1062,7 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         let q = format!(
             "SELECT *, search::score(1) AS bm25_score FROM episode
              WHERE content @1@ $text
-             AND (agent_id = $agent OR visibility = 'global')
+             AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
              {session_filter}
              ORDER BY bm25_score DESC
              LIMIT $limit"
@@ -940,7 +1121,9 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         session_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
-        let mut conditions = vec!["(agent_id = $agent OR visibility = 'global')".to_string()];
+        let mut conditions = vec![
+            "(agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)".to_string(),
+        ];
         if category.is_some() {
             conditions.push("category = $cat".to_string());
         }
