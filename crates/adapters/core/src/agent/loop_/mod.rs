@@ -190,6 +190,16 @@ fn save_interactive_session_history(path: &Path, history: &[ChatMessage]) -> Res
     Ok(())
 }
 
+/// Resolve the canonical agent ID from config.
+/// Prefers `agents_ipc.agent_id`, falls back to `agents_ipc.role`.
+pub(crate) fn resolve_agent_id(config: &synapse_domain::config::schema::Config) -> String {
+    config
+        .agents_ipc
+        .agent_id
+        .clone()
+        .unwrap_or_else(|| config.agents_ipc.role.clone())
+}
+
 /// Build context preamble by searching memory for relevant entries.
 /// Entries with a hybrid score below `min_relevance_score` are dropped to
 /// prevent unrelated memories from bleeding into the conversation.
@@ -198,12 +208,13 @@ async fn build_context(
     user_msg: &str,
     min_relevance_score: f64,
     session_id: Option<&str>,
+    agent_id: &str,
 ) -> String {
     let mut context = String::new();
 
     // ── Core memory blocks (MemGPT pattern) ──────────────────────
     // Always-in-prompt blocks: persona, user_knowledge, task_state, domain.
-    if let Ok(blocks) = mem.get_core_blocks(&"default".to_string()).await {
+    if let Ok(blocks) = mem.get_core_blocks(&agent_id.to_string()).await {
         for block in &blocks {
             if !block.content.trim().is_empty() {
                 let _ = writeln!(context, "<{}>", block.label);
@@ -255,7 +266,7 @@ async fn build_context(
     let skill_query = synapse_domain::domain::memory::MemoryQuery {
         text: user_msg.to_string(),
         embedding: None,
-        agent_id: "default".to_string(),
+        agent_id: agent_id.to_string(),
         include_shared: false,
         time_range: None,
         limit: 3,
@@ -266,6 +277,31 @@ async fn build_context(
                 let _ = writeln!(context, "<skill name=\"{}\">", skill.name);
                 let _ = writeln!(context, "{}", skill.content.trim());
                 let _ = writeln!(context, "</skill>");
+            }
+        }
+    }
+
+    // ── Related entities (conditional: only if recall found relevant memories) ──
+    if !context.is_empty() {
+        let entity_query = synapse_domain::domain::memory::MemoryQuery {
+            text: user_msg.to_string(),
+            embedding: None,
+            agent_id: agent_id.to_string(),
+            include_shared: false,
+            time_range: None,
+            limit: 3,
+        };
+        if let Ok(entities) = mem.search_entities(&entity_query).await {
+            for entity in &entities {
+                if let Some(ref summary) = entity.summary {
+                    let _ = writeln!(
+                        context,
+                        "<entity name=\"{}\" type=\"{}\">",
+                        entity.name, entity.entity_type
+                    );
+                    let _ = writeln!(context, "{}", summary);
+                    let _ = writeln!(context, "</entity>");
+                }
             }
         }
     }

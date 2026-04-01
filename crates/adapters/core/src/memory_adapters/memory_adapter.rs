@@ -15,6 +15,8 @@ pub struct ConsolidatingMemory {
     inner: Arc<dyn UnifiedMemoryPort>,
     provider: Arc<dyn Provider>,
     model: String,
+    agent_id: String,
+    ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
 }
 
 impl ConsolidatingMemory {
@@ -22,11 +24,15 @@ impl ConsolidatingMemory {
         inner: Arc<dyn UnifiedMemoryPort>,
         provider: Arc<dyn Provider>,
         model: String,
+        agent_id: String,
+        ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     ) -> Self {
         Self {
             inner,
             provider,
             model,
+            agent_id,
+            ipc_client,
         }
     }
 }
@@ -229,14 +235,65 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
         user_message: &str,
         assistant_response: &str,
     ) -> Result<(), MemoryError> {
-        super::consolidation::consolidate_turn(
+        let outcome = super::consolidation::consolidate_turn(
             self.provider.as_ref(),
             &self.model,
             self.inner.as_ref(),
             user_message,
             assistant_response,
+            &self.agent_id,
         )
         .await
-        .map_err(|e| MemoryError::Storage(format!("Consolidation failed: {e}")))
+        .map_err(|e| MemoryError::Storage(format!("Consolidation failed: {e}")))?;
+
+        // IPC broadcast: notify fleet about discovered entities.
+        if let Some(ref ipc) = self.ipc_client {
+            if outcome.entities_extracted > 0 {
+                let event = synapse_domain::domain::memory::MemoryEvent {
+                    event_type: synapse_domain::domain::memory::MemoryEventType::EntityDiscovered,
+                    source_agent: self.agent_id.clone(),
+                    entry_id: String::new(),
+                    summary: format!("{} entities extracted", outcome.entities_extracted),
+                };
+                let payload = serde_json::to_string(&event).unwrap_or_default();
+                let body = serde_json::json!({
+                    "to": "*",
+                    "msg_type": "memory_event",
+                    "payload": payload,
+                });
+                let _ = ipc.send_message(&body).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Skill reflection — analyze tool usage patterns.
+    async fn reflect_on_turn(
+        &self,
+        user_message: &str,
+        _assistant_response: &str,
+        tools_used: &[String],
+    ) -> Result<(), MemoryError> {
+        if tools_used.is_empty() {
+            return Ok(());
+        }
+        let summary = super::skill_learner::PipelineRunSummary {
+            run_id: uuid::Uuid::new_v4().to_string(),
+            task: user_message.chars().take(200).collect(),
+            outcome: synapse_domain::domain::memory::ReflectionOutcome::Success,
+            steps: tools_used.to_vec(),
+            errors: vec![],
+        };
+        super::skill_learner::reflect_on_run(
+            self.provider.as_ref(),
+            &self.model,
+            self.inner.as_ref(),
+            &self.agent_id,
+            &summary,
+        )
+        .await
+        .map_err(|e| MemoryError::Storage(format!("Skill reflection: {e}")))?;
+        Ok(())
     }
 }

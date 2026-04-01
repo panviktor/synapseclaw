@@ -1751,7 +1751,7 @@ async fn autosave_memory_keys_preserve_multiple_turns() {
 async fn build_context_ignores_legacy_assistant_autosave_entries() {
     let mem = synapse_memory::NoopUnifiedMemory;
     // NoopUnifiedMemory returns empty recall, so context should be empty
-    let context = build_context(&mem, "status updates", 0.0, None).await;
+    let context = build_context(&mem, "status updates", 0.0, None, "default").await;
     assert!(context.is_empty());
 }
 

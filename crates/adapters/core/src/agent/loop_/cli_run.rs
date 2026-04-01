@@ -27,10 +27,11 @@ pub async fn run(
     ));
 
     // ── Memory (the brain) ────────────────────────────────────────
+    let resolved_agent_id = resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
         &config.memory,
         &config.workspace_dir,
-        "default",
+        &resolved_agent_id,
         config.api_key.as_deref(),
     )
     .await?;
@@ -385,6 +386,7 @@ pub async fn run(
             &msg,
             config.memory.min_relevance_score,
             memory_session_id.as_deref(),
+            &resolve_agent_id(&config),
         )
         .await;
         let context = mem_context;
@@ -537,6 +539,7 @@ pub async fn run(
                 &user_input,
                 config.memory.min_relevance_score,
                 memory_session_id.as_deref(),
+                &resolve_agent_id(&config),
             )
             .await;
             let context = mem_context;
@@ -648,10 +651,11 @@ pub async fn process_message(
         &config.autonomy,
         &config.workspace_dir,
     ));
+    let resolved_agent_id = resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
         &config.memory,
         &config.workspace_dir,
-        "default",
+        &resolved_agent_id,
         config.api_key.as_deref(),
     )
     .await?;
@@ -814,6 +818,7 @@ pub async fn process_message(
         message,
         config.memory.min_relevance_score,
         session_id,
+        &resolve_agent_id(&config),
     )
     .await;
     let context = mem_context;

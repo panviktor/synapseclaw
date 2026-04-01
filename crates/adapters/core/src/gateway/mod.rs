@@ -469,10 +469,11 @@ pub async fn run_gateway(
         .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
     let summary_model = config.summary_model.clone();
     let temperature = config.default_temperature;
+    let resolved_agent_id = crate::agent::loop_::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
         &config.memory,
         &config.workspace_dir,
-        "default",
+        &resolved_agent_id,
         config.api_key.as_deref(),
     )
     .await?;
@@ -833,11 +834,15 @@ pub async fn run_gateway(
         summary_model: summary_model.clone(),
         temperature,
         mem: Arc::new(
-            crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
-                mem,
-                Arc::clone(&provider),
-                model.clone(),
-            ),
+            crate::memory_adapters::instrumented::InstrumentedMemory::new(Arc::new(
+                crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+                    mem,
+                    Arc::clone(&provider),
+                    model.clone(),
+                    resolved_agent_id.clone(),
+                    None,
+                ),
+            )),
         ),
         auto_save: config.memory.auto_save,
         webhook_secret_hash,

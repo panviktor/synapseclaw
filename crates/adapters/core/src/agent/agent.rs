@@ -305,10 +305,11 @@ impl Agent {
             &config.workspace_dir,
         ));
 
+        let resolved_agent_id = crate::agent::loop_::resolve_agent_id(config);
         let memory: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
             &config.memory,
             &config.workspace_dir,
-            "default",
+            &resolved_agent_id,
             config.api_key.as_deref(),
         )
         .await?;
@@ -376,11 +377,15 @@ impl Agent {
                 &provider_runtime_options,
             )?);
         let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(
-            crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
-                memory,
-                provider_for_consolidation,
-                model_name.clone(),
-            ),
+            crate::memory_adapters::instrumented::InstrumentedMemory::new(Arc::new(
+                crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+                    memory,
+                    provider_for_consolidation,
+                    model_name.clone(),
+                    resolved_agent_id.clone(),
+                    None,
+                ),
+            )),
         );
 
         let dispatcher_choice = config.agent.tool_dispatcher.as_str();

@@ -365,6 +365,14 @@ impl synapse_domain::ports::memory::UnifiedMemoryPort for NoopUnifiedMemory {
     async fn health_check(&self) -> bool {
         true
     }
+    async fn reflect_on_turn(
+        &self,
+        _user_message: &str,
+        _assistant_response: &str,
+        _tools_used: &[String],
+    ) -> Result<(), MemoryError> {
+        Ok(())
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────

@@ -242,4 +242,15 @@ pub trait UnifiedMemoryPort:
 
     /// Health check.
     async fn health_check(&self) -> bool;
+
+    /// Reflect on a conversation turn for skill learning. Fire-and-forget.
+    /// `tools_used`: list of tool names called during this turn.
+    async fn reflect_on_turn(
+        &self,
+        _user_message: &str,
+        _assistant_response: &str,
+        _tools_used: &[String],
+    ) -> Result<(), MemoryError> {
+        Ok(()) // default no-op
+    }
 }
