@@ -4,4 +4,5 @@ pub mod cli;
 pub mod consolidation;
 pub mod entity_extractor;
 pub mod memory_adapter;
+pub mod skill_learner;
 pub mod summary_generator_adapter;
