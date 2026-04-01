@@ -8,6 +8,7 @@
 //! This two-phase approach replaces the naive raw-message auto-save with
 //! semantic extraction, similar to Nanobot's `save_memory` tool call pattern.
 
+use super::entity_extractor;
 use synapse_memory::{MemoryCategory, UnifiedMemoryPort};
 use synapse_providers::traits::Provider;
 
@@ -81,6 +82,28 @@ pub async fn consolidate_turn(
             memory
                 .store(&mem_key, update, &MemoryCategory::Core, None)
                 .await?;
+        }
+    }
+
+    // Phase 3: Entity extraction — populate knowledge graph.
+    // Best-effort: errors logged but don't fail consolidation.
+    match entity_extractor::extract_entities(provider, model, &truncated).await {
+        Ok(extraction) => {
+            if !extraction.entities.is_empty() || !extraction.relationships.is_empty() {
+                tracing::debug!(
+                    "Extracted {} entities, {} relationships",
+                    extraction.entities.len(),
+                    extraction.relationships.len()
+                );
+                if let Err(e) =
+                    entity_extractor::store_extraction(memory, &extraction, "default").await
+                {
+                    tracing::debug!("Entity storage failed: {e}");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::debug!("Entity extraction skipped: {e}");
         }
     }
 
