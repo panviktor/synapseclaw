@@ -334,6 +334,48 @@ pub struct ConsolidationReport {
     pub entries_garbage_collected: u32,
 }
 
+// ── Memory Event (for IPC broadcast) ─────────────────────────
+
+/// Event broadcast to fleet when memory state changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryEvent {
+    pub event_type: MemoryEventType,
+    pub source_agent: AgentId,
+    pub entry_id: MemoryId,
+    /// Human-readable summary for other agents.
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryEventType {
+    /// New entity discovered in knowledge graph.
+    EntityDiscovered,
+    /// New fact established between entities.
+    FactEstablished,
+    /// Existing fact invalidated (contradicted).
+    FactInvalidated,
+    /// New skill learned from pipeline reflection.
+    SkillLearned,
+    /// Existing skill updated (new version).
+    SkillUpdated,
+    /// New insight generated from reflection.
+    InsightGenerated,
+}
+
+impl fmt::Display for MemoryEventType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EntityDiscovered => write!(f, "entity_discovered"),
+            Self::FactEstablished => write!(f, "fact_established"),
+            Self::FactInvalidated => write!(f, "fact_invalidated"),
+            Self::SkillLearned => write!(f, "skill_learned"),
+            Self::SkillUpdated => write!(f, "skill_updated"),
+            Self::InsightGenerated => write!(f, "insight_generated"),
+        }
+    }
+}
+
 // ── Memory Error ─────────────────────────────────────────────────
 
 /// Typed errors for memory operations.

@@ -2061,7 +2061,15 @@ pub struct AdminActivityQuery {
 // ── ACL validation ──────────────────────────────────────────────
 
 /// Allowed message kinds.
-const VALID_KINDS: &[&str] = &["text", "task", "result", "query"];
+const VALID_KINDS: &[&str] = &[
+    "text",
+    "task",
+    "result",
+    "query",
+    "done",
+    "report",
+    "memory_event",
+];
 
 /// Internal-only message kind for system-generated escalation notifications.
 /// Not in VALID_KINDS — cannot be sent by agents, only by broker logic.

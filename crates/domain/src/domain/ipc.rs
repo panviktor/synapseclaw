@@ -7,7 +7,15 @@ use std::fmt;
 // ── Message kinds ────────────────────────────────────────────────
 
 /// Valid message kinds that agents can send.
-pub const VALID_KINDS: &[&str] = &["text", "task", "query", "result", "done", "report"];
+pub const VALID_KINDS: &[&str] = &[
+    "text",
+    "task",
+    "query",
+    "result",
+    "done",
+    "report",
+    "memory_event",
+];
 
 /// System-generated escalation kind (not agent-sendable).
 pub const ESCALATION_KIND: &str = "escalation";
@@ -98,8 +106,8 @@ pub fn validate_send(
         });
     }
 
-    // Rule 2: L4 text-only
-    if from_trust_level >= 4 && kind != "text" {
+    // Rule 2: L4 text-only (memory_event also allowed — informational)
+    if from_trust_level >= 4 && kind != "text" && kind != "memory_event" {
         return Err(AclError {
             code: "l4_text_only".into(),
             message: "Quarantined agents (L4) can only send 'text' messages".into(),

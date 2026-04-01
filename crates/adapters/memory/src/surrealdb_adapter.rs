@@ -4,6 +4,7 @@
 //! semantic memory (knowledge graph), skill memory, reflections, and consolidation.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use surrealdb::engine::local::{Db, SurrealKv};
@@ -20,6 +21,16 @@ use synapse_domain::ports::memory::{
 };
 
 use crate::embeddings::EmbeddingProvider;
+
+/// Log memory operation latency after an async block completes.
+fn log_latency(op: &str, start: Instant) {
+    let ms = start.elapsed().as_millis() as u64;
+    if ms > 50 {
+        tracing::info!(op, latency_ms = ms, "memory.slow_op");
+    } else {
+        tracing::debug!(op, latency_ms = ms, "memory.op");
+    }
+}
 
 /// SurrealDB-backed memory adapter.
 pub struct SurrealMemoryAdapter {
