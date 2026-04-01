@@ -220,6 +220,17 @@ pub trait UnifiedMemoryPort:
     /// Forget (delete) a memory entry by key. Returns true if found.
     async fn forget(&self, key: &str) -> Result<bool, MemoryError>;
 
+    /// Get a single memory entry by exact key.
+    async fn get(&self, key: &str) -> Result<Option<MemoryEntry>, MemoryError>;
+
+    /// List memory entries, optionally filtered by category and/or session.
+    async fn list(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>, MemoryError>;
+
     /// Check if content should be skipped for auto-save (noise filter).
     fn should_skip_autosave(&self, content: &str) -> bool;
 

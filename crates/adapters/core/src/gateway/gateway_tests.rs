@@ -653,6 +653,20 @@ impl UnifiedMemoryPort for TrackingMemory {
     async fn forget(&self, _: &str) -> Result<bool, MemoryError> {
         Ok(false)
     }
+    async fn get(
+        &self,
+        _: &str,
+    ) -> Result<Option<synapse_domain::domain::memory::MemoryEntry>, MemoryError> {
+        Ok(None)
+    }
+    async fn list(
+        &self,
+        _: Option<&synapse_domain::domain::memory::MemoryCategory>,
+        _: Option<&str>,
+        _: usize,
+    ) -> Result<Vec<synapse_domain::domain::memory::MemoryEntry>, MemoryError> {
+        Ok(vec![])
+    }
     fn should_skip_autosave(&self, _: &str) -> bool {
         false
     }

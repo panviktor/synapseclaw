@@ -291,15 +291,48 @@ pub async fn run(
 
     // ── Phase 4.3: Memory consolidation worker ────────────────────
     {
-        let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
-            synapse_memory::create_memory(
-                &config.memory,
-                &config.workspace_dir,
-                "default",
+        let raw_mem = match synapse_memory::create_memory(
+            &config.memory,
+            &config.workspace_dir,
+            "default",
+            config.api_key.as_deref(),
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(
+                    "Memory init failed in daemon: {e} — consolidation worker disabled"
+                );
+                std::sync::Arc::new(synapse_memory::NoopUnifiedMemory)
+            }
+        };
+
+        // Wrap with ConsolidatingMemory if provider available.
+        let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> = {
+            let consolidation_model = config
+                .default_model
+                .clone()
+                .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
+            match synapse_providers::create_resilient_provider(
+                config.default_provider.as_deref().unwrap_or("openrouter"),
                 config.api_key.as_deref(),
-            )
-            .await
-            .unwrap_or_else(|_| std::sync::Arc::new(synapse_memory::NoopUnifiedMemory));
+                config.api_url.as_deref(),
+                &config.reliability,
+            ) {
+                Ok(p) => std::sync::Arc::new(
+                    crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+                        raw_mem,
+                        std::sync::Arc::from(p),
+                        consolidation_model,
+                    ),
+                ),
+                Err(e) => {
+                    tracing::warn!("Consolidation provider unavailable: {e}");
+                    raw_mem
+                }
+            }
+        };
 
         let worker_handle =
             crate::memory_adapters::consolidation_worker::spawn_consolidation_worker(

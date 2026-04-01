@@ -50,14 +50,7 @@ async fn handle_list(
     let mem = create_cli_memory(config).await?;
     let cat = category.as_deref().map(parse_category);
     let entries = mem
-        .recall(
-            cat.as_ref()
-                .map(|c| c.to_string())
-                .unwrap_or_default()
-                .as_str(),
-            limit + offset,
-            session.as_deref(),
-        )
+        .list(cat.as_ref(), session.as_deref(), limit + offset)
         .await?;
 
     if entries.is_empty() {
@@ -98,23 +91,27 @@ async fn handle_list(
 async fn handle_get(config: &Config, key: &str) -> Result<()> {
     let mem = create_cli_memory(config).await?;
 
-    // Use recall with the key as query to find matching entries.
-    let entries = mem.recall(key, 10, None).await?;
-    let matches: Vec<_> = entries.iter().filter(|e| e.key.starts_with(key)).collect();
-
-    match matches.len() {
-        0 => println!("No memory entry found for key: {key}"),
-        1 => print_entry(matches[0]),
-        n => {
-            println!("Prefix '{key}' matched {n} entries:\n");
-            for entry in matches {
-                println!(
-                    "- {} [{}]",
-                    style(&entry.key).white().bold(),
-                    entry.category
-                );
+    // Direct key lookup first, then prefix search fallback.
+    if let Some(entry) = mem.get(key).await? {
+        print_entry(&entry);
+    } else {
+        // Fallback: search for prefix matches
+        let entries = mem.recall(key, 10, None).await?;
+        let matches: Vec<_> = entries.iter().filter(|e| e.key.starts_with(key)).collect();
+        match matches.len() {
+            0 => println!("No memory entry found for key: {key}"),
+            1 => print_entry(matches[0]),
+            n => {
+                println!("Prefix '{key}' matched {n} entries:\n");
+                for entry in matches {
+                    println!(
+                        "- {} [{}]",
+                        style(&entry.key).white().bold(),
+                        entry.category
+                    );
+                }
+                println!("\nSpecify the exact key or a longer prefix.");
             }
-            println!("\nSpecify a longer prefix to narrow the match.");
         }
     }
 

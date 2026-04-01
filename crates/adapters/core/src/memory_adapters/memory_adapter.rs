@@ -199,6 +199,17 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     async fn forget(&self, key: &str) -> Result<bool, MemoryError> {
         self.inner.forget(key).await
     }
+    async fn get(&self, key: &str) -> Result<Option<MemoryEntry>, MemoryError> {
+        self.inner.get(key).await
+    }
+    async fn list(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        self.inner.list(category, session_id, limit).await
+    }
     fn should_skip_autosave(&self, content: &str) -> bool {
         self.inner.should_skip_autosave(content)
     }

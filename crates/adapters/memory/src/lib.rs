@@ -326,6 +326,17 @@ impl synapse_domain::ports::memory::UnifiedMemoryPort for NoopUnifiedMemory {
     async fn forget(&self, _: &str) -> Result<bool, MemoryError> {
         Ok(false)
     }
+    async fn get(&self, _: &str) -> Result<Option<MemoryEntry>, MemoryError> {
+        Ok(None)
+    }
+    async fn list(
+        &self,
+        _: Option<&MemoryCategory>,
+        _: Option<&str>,
+        _: usize,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        Ok(vec![])
+    }
     fn should_skip_autosave(&self, _: &str) -> bool {
         false
     }

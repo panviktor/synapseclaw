@@ -251,6 +251,25 @@ async fn build_context(
         }
     }
 
+    // ── Relevant skills ────────────────────────────────────────────
+    let skill_query = synapse_domain::domain::memory::MemoryQuery {
+        text: user_msg.to_string(),
+        embedding: None,
+        agent_id: "default".to_string(),
+        include_shared: false,
+        time_range: None,
+        limit: 3,
+    };
+    if let Ok(skills) = mem.find_skills(&skill_query).await {
+        for skill in &skills {
+            if !skill.content.trim().is_empty() {
+                let _ = writeln!(context, "<skill name=\"{}\">", skill.name);
+                let _ = writeln!(context, "{}", skill.content.trim());
+                let _ = writeln!(context, "</skill>");
+            }
+        }
+    }
+
     context
 }
 

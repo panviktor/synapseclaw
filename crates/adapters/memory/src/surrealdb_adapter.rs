@@ -705,13 +705,71 @@ impl ReflectionPort for SurrealMemoryAdapter {
 impl ConsolidationPort for SurrealMemoryAdapter {
     async fn run_consolidation(
         &self,
-        _agent_id: &AgentId,
+        agent_id: &AgentId,
     ) -> Result<ConsolidationReport, MemoryError> {
-        // Phase 4.3 MVP: stub — full entity extraction deferred to Slice 5
-        Ok(ConsolidationReport::default())
+        let decayed = self.recalculate_importance(agent_id).await.unwrap_or(0);
+        let gc_count = self.gc_low_importance(0.05, 30).await.unwrap_or(0);
+
+        // Count current totals for the report.
+        let mut resp = self
+            .db
+            .query(
+                "SELECT
+                    (SELECT count() FROM episode GROUP ALL)[0].count AS episodes,
+                    (SELECT count() FROM entity GROUP ALL)[0].count AS entities,
+                    (SELECT count() FROM fact WHERE valid_to IS NONE GROUP ALL)[0].count AS facts,
+                    (SELECT count() FROM skill GROUP ALL)[0].count AS skills",
+            )
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let r = rows.first();
+        Ok(ConsolidationReport {
+            episodes_processed: r
+                .and_then(|v| v.get("episodes"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            entities_extracted: r
+                .and_then(|v| v.get("entities"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            facts_created: r
+                .and_then(|v| v.get("facts"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            facts_invalidated: 0,
+            skills_generated: r
+                .and_then(|v| v.get("skills"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32,
+            entries_garbage_collected: gc_count + decayed,
+        })
     }
 
     async fn recalculate_importance(&self, _agent_id: &AgentId) -> Result<u32, MemoryError> {
+        // Count affected before update.
+        let mut count_resp = self
+            .db
+            .query(
+                "SELECT count() AS total FROM episode
+                 WHERE created_at < time::now() - 7d AND importance > 0.1 GROUP ALL",
+            )
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows: Vec<serde_json::Value> = count_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let affected = rows
+            .first()
+            .and_then(|v| v.get("total"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+
         self.db
             .query(
                 "UPDATE episode SET importance = importance * 0.95
@@ -719,7 +777,8 @@ impl ConsolidationPort for SurrealMemoryAdapter {
             )
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
-        Ok(0)
+
+        Ok(affected)
     }
 
     async fn gc_low_importance(
@@ -727,6 +786,27 @@ impl ConsolidationPort for SurrealMemoryAdapter {
         threshold: f32,
         max_age_days: u32,
     ) -> Result<u32, MemoryError> {
+        // Count before delete.
+        let count_q = format!(
+            "SELECT count() AS total FROM episode
+             WHERE importance < $threshold AND created_at < time::now() - {max_age_days}d GROUP ALL"
+        );
+        let mut count_resp = self
+            .db
+            .query(&count_q)
+            .bind(("threshold", threshold))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows: Vec<serde_json::Value> = count_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let affected = rows
+            .first()
+            .and_then(|v| v.get("total"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as u32;
+
         let q = format!(
             "DELETE FROM episode WHERE importance < $threshold AND created_at < time::now() - {max_age_days}d"
         );
@@ -735,7 +815,8 @@ impl ConsolidationPort for SurrealMemoryAdapter {
             .bind(("threshold", threshold))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
-        Ok(0)
+
+        Ok(affected)
     }
 }
 
@@ -841,12 +922,58 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         Ok(!rows.is_empty())
     }
 
+    async fn get(&self, key: &str) -> Result<Option<MemoryEntry>, MemoryError> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM episode WHERE key = $key LIMIT 1")
+            .bind(("key", key.to_string()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(rows.first().and_then(row_to_entry))
+    }
+
+    async fn list(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let mut conditions = vec!["(agent_id = $agent OR visibility = 'global')".to_string()];
+        if category.is_some() {
+            conditions.push("category = $cat".to_string());
+        }
+        if session_id.is_some() {
+            conditions.push("session_id = $sid".to_string());
+        }
+
+        let q = format!(
+            "SELECT * FROM episode WHERE {} ORDER BY created_at DESC LIMIT $limit",
+            conditions.join(" AND ")
+        );
+
+        let mut resp = self
+            .db
+            .query(&q)
+            .bind(("agent", self.me().to_string()))
+            .bind(("cat", category.map(|c| c.to_string()).unwrap_or_default()))
+            .bind(("sid", session_id.unwrap_or("").to_string()))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(SurrealMemoryAdapter::rows_to_entries(rows))
+    }
+
     async fn consolidate_turn(
         &self,
         _user_message: &str,
         _assistant_response: &str,
     ) -> Result<(), MemoryError> {
-        // Phase 4.3 MVP: stub — LLM consolidation deferred to Slice 5
+        // LLM consolidation runs via ConsolidatingMemory wrapper, not here.
+        // This stub exists for when SurrealMemoryAdapter is used unwrapped.
         Ok(())
     }
 
