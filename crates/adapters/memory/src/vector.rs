@@ -131,6 +131,39 @@ pub fn hybrid_merge(
     results
 }
 
+/// Reciprocal Rank Fusion (RRF) — combines multiple ranked lists.
+///
+/// For each list, score contribution = 1 / (k + rank), where k = 60 (standard).
+/// Results are deduplicated and sorted by fused score descending.
+pub fn rrf_fusion(lists: &[Vec<(String, f32)>], k: f32, limit: usize) -> Vec<ScoredResult> {
+    use std::collections::HashMap;
+
+    let mut scores: HashMap<String, f32> = HashMap::new();
+    for list in lists {
+        for (rank, (id, _original_score)) in list.iter().enumerate() {
+            *scores.entry(id.clone()).or_default() += 1.0 / (k + rank as f32 + 1.0);
+        }
+    }
+
+    let mut results: Vec<ScoredResult> = scores
+        .into_iter()
+        .map(|(id, score)| ScoredResult {
+            id,
+            vector_score: None,
+            keyword_score: None,
+            final_score: score,
+        })
+        .collect();
+
+    results.sort_by(|a, b| {
+        b.final_score
+            .partial_cmp(&a.final_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    results.truncate(limit);
+    results
+}
+
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,
@@ -398,5 +431,43 @@ mod tests {
         let merged = hybrid_merge(&[("only".into(), 0.8)], &[], 0.7, 0.3, 10);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].id, "only");
+    }
+
+    // ── RRF fusion tests ────────────────────────────────────────
+
+    #[test]
+    fn rrf_single_list() {
+        let lists = vec![vec![
+            ("a".into(), 0.9),
+            ("b".into(), 0.5),
+            ("c".into(), 0.1),
+        ]];
+        let fused = rrf_fusion(&lists, 60.0, 10);
+        assert_eq!(fused.len(), 3);
+        // "a" at rank 0 should have highest score
+        assert_eq!(fused[0].id, "a");
+    }
+
+    #[test]
+    fn rrf_two_lists_overlapping() {
+        let list1 = vec![("a".into(), 0.9), ("b".into(), 0.5)];
+        let list2 = vec![("b".into(), 10.0), ("a".into(), 5.0)];
+        let fused = rrf_fusion(&[list1, list2], 60.0, 10);
+        assert_eq!(fused.len(), 2);
+        // Both appear in both lists — "a" is rank 0 in list1, rank 1 in list2
+        // "b" is rank 1 in list1, rank 0 in list2 — symmetric, so scores equal
+    }
+
+    #[test]
+    fn rrf_empty_lists() {
+        let fused = rrf_fusion(&[], 60.0, 10);
+        assert!(fused.is_empty());
+    }
+
+    #[test]
+    fn rrf_respects_limit() {
+        let list: Vec<(String, f32)> = (0..20).map(|i| (format!("item_{i}"), 1.0)).collect();
+        let fused = rrf_fusion(&[list], 60.0, 5);
+        assert_eq!(fused.len(), 5);
     }
 }
