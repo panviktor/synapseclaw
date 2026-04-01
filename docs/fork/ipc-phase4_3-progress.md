@@ -1,6 +1,6 @@
 # IPC Phase 4.3 Progress
 
-**Status**: IN PROGRESS — Slices 1-5+7 complete (PR #217), Slices 6+8+9 deferred to next pass
+**Status**: COMPLETE (core) — Slices 1-5+7 + polish done (PR #217). Slices 6+8+9 deferred to next phase.
 
 Phase 4.1H2B: pure hexagonal architecture | **Phase 4.3: memory architecture (SurrealDB)** | Phase 4.4: TBD
 
