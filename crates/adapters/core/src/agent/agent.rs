@@ -363,6 +363,26 @@ impl Agent {
             &provider_runtime_options,
         )?;
 
+        // Wrap memory with ConsolidatingMemory for LLM-driven consolidation + entity extraction.
+        // Clone provider into Arc for ConsolidatingMemory; keep Box for Agent builder.
+        let provider_for_consolidation: Arc<dyn Provider> =
+            Arc::from(synapse_providers::create_routed_provider_with_options(
+                provider_name,
+                config.api_key.as_deref(),
+                config.api_url.as_deref(),
+                &config.reliability,
+                &config.model_routes,
+                &model_name,
+                &provider_runtime_options,
+            )?);
+        let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(
+            crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+                memory,
+                provider_for_consolidation,
+                model_name.clone(),
+            ),
+        );
+
         let dispatcher_choice = config.agent.tool_dispatcher.as_str();
         let tool_dispatcher: Box<dyn ToolDispatcher> = match dispatcher_choice {
             "native" => Box::new(NativeToolDispatcher),

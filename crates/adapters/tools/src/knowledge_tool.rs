@@ -1,16 +1,16 @@
-//! Knowledge management tool — Phase 4.3 stub.
+//! Knowledge management tool — Phase 4.3.
 //!
-//! The old SQLite-based KnowledgeGraph has been replaced by SemanticMemoryPort
-//! (entities + bitemporal facts in SurrealDB). This tool will be rewritten
-//! to use SemanticMemoryPort in a follow-up slice.
+//! Exposes the knowledge graph (SemanticMemoryPort) to agents:
+//! search entities, add entities, add facts, traverse relationships.
 
 use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_domain::domain::memory::Entity;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 
-/// Tool for managing a knowledge graph (Phase 4.3: uses SemanticMemoryPort).
+/// Tool for managing a knowledge graph via SemanticMemoryPort.
 pub struct KnowledgeTool {
     memory: Arc<dyn UnifiedMemoryPort>,
 }
@@ -28,7 +28,7 @@ impl Tool for KnowledgeTool {
     }
 
     fn description(&self) -> &str {
-        "Manage the knowledge graph: search entities, add facts, explore relationships. (Phase 4.3: being migrated to SurrealDB)"
+        "Manage the knowledge graph: search entities, add entities, add facts, explore relationships."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -37,12 +37,32 @@ impl Tool for KnowledgeTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["search", "add_entity", "add_fact"],
+                    "enum": ["search", "add_entity", "add_fact", "get_facts"],
                     "description": "Action to perform"
                 },
                 "query": {
                     "type": "string",
                     "description": "Search query or entity name"
+                },
+                "entity_type": {
+                    "type": "string",
+                    "description": "Type for add_entity: person, company, concept, tool, place, project"
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Description for add_entity"
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "Subject entity name for add_fact"
+                },
+                "predicate": {
+                    "type": "string",
+                    "description": "Relationship verb for add_fact (e.g. 'works_at', 'prefers')"
+                },
+                "object": {
+                    "type": "string",
+                    "description": "Object entity name for add_fact"
                 }
             },
             "required": ["action"]
@@ -59,16 +79,31 @@ impl Tool for KnowledgeTool {
             "search" => {
                 let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
                 match self.memory.find_entity(query).await {
-                    Ok(Some(entity)) => Ok(ToolResult {
-                        success: true,
-                        output: format!(
-                            "Found entity: {} ({})\nSummary: {}",
-                            entity.name,
-                            entity.entity_type,
-                            entity.summary.as_deref().unwrap_or("none")
-                        ),
-                        error: None,
-                    }),
+                    Ok(Some(entity)) => {
+                        let mut output =
+                            format!("Entity: {} ({})", entity.name, entity.entity_type);
+                        if let Some(ref s) = entity.summary {
+                            output.push_str(&format!("\nSummary: {s}"));
+                        }
+                        // Show facts
+                        if let Ok(facts) = self.memory.get_current_facts(&entity.id).await {
+                            if !facts.is_empty() {
+                                output.push_str("\nFacts:");
+                                for fact in &facts {
+                                    output.push_str(&format!(
+                                        "\n  - {} (confidence: {:.0}%)",
+                                        fact.predicate,
+                                        fact.confidence * 100.0
+                                    ));
+                                }
+                            }
+                        }
+                        Ok(ToolResult {
+                            success: true,
+                            output,
+                            error: None,
+                        })
+                    }
                     Ok(None) => Ok(ToolResult {
                         success: true,
                         output: format!("No entity found matching: {query}"),
@@ -81,11 +116,157 @@ impl Tool for KnowledgeTool {
                     }),
                 }
             }
-            _ => Ok(ToolResult {
+            "add_entity" => {
+                let name = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'query' (entity name)"))?;
+                let entity_type = args
+                    .get("entity_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("concept");
+                let summary = args.get("summary").and_then(|v| v.as_str());
+
+                let entity = Entity {
+                    id: String::new(),
+                    name: name.to_string(),
+                    entity_type: entity_type.to_string(),
+                    properties: serde_json::Value::Object(Default::default()),
+                    summary: summary.map(String::from),
+                    created_by: "default".to_string(),
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                };
+
+                match self.memory.upsert_entity(entity).await {
+                    Ok(id) => Ok(ToolResult {
+                        success: true,
+                        output: format!(
+                            "Entity '{name}' ({entity_type}) created/updated (id: {id})"
+                        ),
+                        error: None,
+                    }),
+                    Err(e) => Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Failed to add entity: {e}")),
+                    }),
+                }
+            }
+            "add_fact" => {
+                let subject = args
+                    .get("subject")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'subject'"))?;
+                let predicate = args
+                    .get("predicate")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'predicate'"))?;
+                let object = args
+                    .get("object")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'object'"))?;
+
+                // Resolve entities
+                let subj = self.memory.find_entity(subject).await.ok().flatten();
+                let obj = self.memory.find_entity(object).await.ok().flatten();
+
+                let (subj_id, obj_id) = match (subj, obj) {
+                    (Some(s), Some(o)) => (s.id, o.id),
+                    (None, _) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(format!(
+                                "Subject entity '{subject}' not found. Add it first."
+                            )),
+                        });
+                    }
+                    (_, None) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(format!(
+                                "Object entity '{object}' not found. Add it first."
+                            )),
+                        });
+                    }
+                };
+
+                let fact = synapse_domain::domain::memory::TemporalFact {
+                    id: String::new(),
+                    subject: subj_id,
+                    predicate: predicate.to_string(),
+                    object: obj_id,
+                    confidence: 0.9,
+                    valid_from: chrono::Utc::now(),
+                    valid_to: None,
+                    recorded_at: chrono::Utc::now(),
+                    source_episode: None,
+                    created_by: "default".to_string(),
+                };
+
+                match self.memory.add_fact(fact).await {
+                    Ok(_) => Ok(ToolResult {
+                        success: true,
+                        output: format!("{subject} —[{predicate}]→ {object}"),
+                        error: None,
+                    }),
+                    Err(e) => Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Failed to add fact: {e}")),
+                    }),
+                }
+            }
+            "get_facts" => {
+                let name = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+                match self.memory.find_entity(name).await {
+                    Ok(Some(entity)) => match self.memory.get_current_facts(&entity.id).await {
+                        Ok(facts) if facts.is_empty() => Ok(ToolResult {
+                            success: true,
+                            output: format!("No facts found for entity '{name}'"),
+                            error: None,
+                        }),
+                        Ok(facts) => {
+                            let mut output = format!("Facts about '{name}':\n");
+                            for fact in &facts {
+                                output.push_str(&format!(
+                                    "- {} → {} (confidence: {:.0}%)\n",
+                                    fact.predicate,
+                                    fact.object,
+                                    fact.confidence * 100.0
+                                ));
+                            }
+                            Ok(ToolResult {
+                                success: true,
+                                output,
+                                error: None,
+                            })
+                        }
+                        Err(e) => Ok(ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(format!("Failed to get facts: {e}")),
+                        }),
+                    },
+                    Ok(None) => Ok(ToolResult {
+                        success: true,
+                        output: format!("Entity '{name}' not found"),
+                        error: None,
+                    }),
+                    Err(e) => Ok(ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Failed: {e}")),
+                    }),
+                }
+            }
+            other => Ok(ToolResult {
                 success: false,
                 output: String::new(),
                 error: Some(format!(
-                    "Action '{action}' not yet implemented in Phase 4.3 stub"
+                    "Unknown action '{other}'. Use: search, add_entity, add_fact, get_facts"
                 )),
             }),
         }

@@ -828,11 +828,17 @@ pub async fn run_gateway(
 
     let mut state = AppState {
         config: config_state,
-        provider,
-        model,
-        summary_model,
+        provider: Arc::clone(&provider),
+        model: model.clone(),
+        summary_model: summary_model.clone(),
         temperature,
-        mem,
+        mem: Arc::new(
+            crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+                mem,
+                Arc::clone(&provider),
+                model.clone(),
+            ),
+        ),
         auto_save: config.memory.auto_save,
         webhook_secret_hash,
         pairing,
