@@ -6,9 +6,9 @@
 //! are loaded from disk to restore conversation context.
 
 use crate::session_backend::{ChannelSummary, SessionBackend};
-use synapse_providers::traits::ChatMessage;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use synapse_providers::traits::ChatMessage;
 
 /// Append-only JSONL session store for channel conversations.
 pub struct SessionStore {

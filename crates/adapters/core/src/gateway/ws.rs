@@ -1564,11 +1564,12 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
         (model, temp, prov)
     };
 
-    let generator = crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
-        provider,
-        summary_model,
-        temperature,
-    );
+    let generator =
+        crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
+            provider,
+            summary_model,
+            temperature,
+        );
 
     match synapse_domain::application::services::conversation_service::generate_session_summary(
         store.as_ref(),

@@ -10,11 +10,11 @@
 //! persistent Chrome profile can be configured so SSO sessions survive across
 //! invocations.
 
-use synapse_domain::ports::tool::{Tool, ToolResult};
 use async_trait::async_trait;
 use regex::Regex;
 use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::tool::{Tool, ToolResult};
 use tokio::time::{timeout, Duration};
 
 // Re-export from synapse_domain::config — single source of truth.

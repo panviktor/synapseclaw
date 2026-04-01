@@ -45,6 +45,8 @@ See [`news.md`](news.md) for the latest updates and release notes.
 | [ipc-phase3_12-progress.md](ipc-phase3_12-progress.md) | Phase 3.12 execution checklist | Opus |
 | [ipc-phase4_0-plan.md](ipc-phase4_0-plan.md) | Phase 4.0: Modular Core Refactor — capability-driven channels, conversation store | Everyone |
 | [ipc-phase4_0-progress.md](ipc-phase4_0-progress.md) | Phase 4.0 execution checklist | Opus |
+| [ipc-phase4_3-plan.md](ipc-phase4_3-plan.md) | Phase 4.3: Memory Architecture — SurrealDB embedded, knowledge graph, skill learning, MemGPT pattern | Everyone |
+| [ipc-phase4_3-progress.md](ipc-phase4_3-progress.md) | Phase 4.3 execution checklist (9 slices — NOT STARTED) | Opus |
 | [channel-triage.md](channel-triage.md) | Channel port priority: 10 Tier 1 (port) + 17 Tier 2 (defer) | Everyone |
 
 ## Reading order
@@ -52,7 +54,7 @@ See [`news.md`](news.md) for the latest updates and release notes.
 **New to the fork?** Start with `delta-registry.md` → `sync-strategy.md` → `ipc-plan.md`.
 
 **Starting IPC work?** Read the phase plans in order:
-`ipc-phase2-plan.md` → `ipc-phase3-plan.md` → `ipc-phase3_5-plan.md` → `ipc-phase3_6-plan.md` → `ipc-phase3_7-plan.md` → `ipc-phase3_7b-plan.md` → `ipc-phase3_8-plan.md` → `ipc-phase3_9-plan.md` → `ipc-phase3_10-plan.md` → `ipc-phase3_11-plan.md` → `ipc-phase3_12-plan.md` → `ipc-phase4_0-plan.md`.
+`ipc-phase2-plan.md` → `ipc-phase3-plan.md` → `ipc-phase3_5-plan.md` → `ipc-phase3_6-plan.md` → `ipc-phase3_7-plan.md` → `ipc-phase3_7b-plan.md` → `ipc-phase3_8-plan.md` → `ipc-phase3_9-plan.md` → `ipc-phase3_10-plan.md` → `ipc-phase3_11-plan.md` → `ipc-phase3_12-plan.md` → `ipc-phase4_0-plan.md` → `ipc-phase4_3-plan.md`.
 
 **Setting up IPC locally?** Follow `ipc-quickstart.md` — configs, pairing, smoke tests.
 

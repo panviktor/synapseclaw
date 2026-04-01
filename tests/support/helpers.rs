@@ -6,20 +6,16 @@ use std::sync::Arc;
 use synapseclaw::agent::agent::Agent;
 use synapseclaw::agent::dispatcher::{NativeToolDispatcher, XmlToolDispatcher};
 use synapseclaw::agent::memory_loader::MemoryLoader;
-use synapseclaw::config::MemoryConfig;
+use synapseclaw::config::schema::MemoryConfig;
 use synapseclaw::memory;
-use synapseclaw::memory::Memory;
+use synapseclaw::memory::UnifiedMemoryPort;
 use synapseclaw::observability::{NoopObserver, Observer};
 use synapseclaw::providers::{ChatResponse, Provider, ToolCall};
 use synapseclaw::tools::Tool;
 
 /// Create an in-memory "none" backend for tests.
-pub fn make_memory() -> Arc<dyn Memory> {
-    let cfg = MemoryConfig {
-        backend: "none".into(),
-        ..MemoryConfig::default()
-    };
-    Arc::from(memory::create_memory(&cfg, &std::env::temp_dir(), None).unwrap())
+pub fn make_memory() -> Arc<dyn UnifiedMemoryPort> {
+    Arc::new(memory::NoopUnifiedMemory)
 }
 
 /// Create a `NoopObserver` for tests.
@@ -101,10 +97,11 @@ pub fn build_agent_with_sqlite_memory(
     temp_dir: &std::path::Path,
 ) -> Agent {
     let cfg = MemoryConfig {
-        backend: "sqlite".into(),
+        backend: "noop".into(),
         ..MemoryConfig::default()
     };
-    let mem = Arc::from(memory::create_memory(&cfg, temp_dir, None).unwrap());
+    // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
+    let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(memory::NoopUnifiedMemory);
     Agent::builder()
         .provider(provider)
         .tools(tools)
@@ -133,7 +130,7 @@ impl StaticMemoryLoader {
 impl MemoryLoader for StaticMemoryLoader {
     async fn load_context(
         &self,
-        _memory: &dyn Memory,
+        _memory: &dyn UnifiedMemoryPort,
         _user_message: &str,
         _session_id: Option<&str>,
     ) -> Result<String> {

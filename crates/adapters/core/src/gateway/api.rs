@@ -3,7 +3,6 @@
 //! All `/api/*` routes require bearer token authentication (PairingGuard).
 
 use super::AppState;
-use synapse_infra::config_io::ConfigIO;
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
@@ -11,6 +10,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use serde::Deserialize;
+use synapse_infra::config_io::ConfigIO;
 
 const MASKED_SECRET: &str = "***MASKED***";
 
@@ -655,7 +655,9 @@ pub async fn handle_api_memory_list(
             other => synapse_domain::domain::memory::MemoryCategory::Custom(other.to_string()),
         });
 
-        match state.mem.list(category.as_ref(), None).await {
+        // TODO(phase4.3): UnifiedMemoryPort has no `list()` — use recall as workaround.
+        let query = category.as_ref().map(|c| c.to_string()).unwrap_or_default();
+        match state.mem.recall(&query, 100, None).await {
             Ok(entries) => Json(serde_json::json!({"entries": entries})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -689,7 +691,7 @@ pub async fn handle_api_memory_store(
 
     match state
         .mem
-        .store(&body.key, &body.content, category, None)
+        .store(&body.key, &body.content, &category, None)
         .await
     {
         Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),

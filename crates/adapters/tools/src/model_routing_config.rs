@@ -1,5 +1,4 @@
 use super::traits::{Tool, ToolResult};
-use synapse_infra::config_io::ConfigIO;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -10,6 +9,7 @@ use synapse_domain::config::schema::{
 };
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::util::MaybeSet;
+use synapse_infra::config_io::ConfigIO;
 
 const DEFAULT_AGENT_MAX_DEPTH: u32 = 3;
 const DEFAULT_AGENT_MAX_ITERATIONS: usize = 10;
@@ -471,7 +471,6 @@ impl ModelRoutingConfigTool {
     /// (the probe would fail with an auth error unrelated to model validity).
     /// Provider construction failures are also treated as non-fatal.
     async fn probe_model(&self, provider_name: &str, model: &str) -> anyhow::Result<()> {
-
         // Use the runtime config's API key (which includes env-sourced keys),
         // not the on-disk config (which may have no key at all).
         let api_key = self.config.api_key.as_deref();

@@ -1,9 +1,9 @@
 use super::traits::{Tool, ToolResult};
-use synapse_cron::{ JobType};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_cron::JobType;
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 
@@ -423,6 +423,8 @@ mod tests {
             .error
             .unwrap_or_default()
             .contains("Rate limit exceeded"));
-        assert!(synapse_cron::list_runs(&cfg, &job.id, 10).unwrap().is_empty());
+        assert!(synapse_cron::list_runs(&cfg, &job.id, 10)
+            .unwrap()
+            .is_empty());
     }
 }

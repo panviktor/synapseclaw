@@ -15,7 +15,7 @@ use crate::ports::channel_output::ChannelOutputPort;
 use crate::ports::channel_registry::ChannelRegistryPort;
 use crate::ports::conversation_history::ConversationHistoryPort;
 use crate::ports::hooks::{HookOutcome, HooksPort};
-use crate::ports::memory::MemoryTiersPort;
+use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::route_selection::RouteSelectionPort;
 use crate::ports::session_summary::SessionSummaryPort;
 use anyhow::Result;
@@ -73,7 +73,7 @@ pub struct InboundMessagePorts {
     pub agent_runtime: Arc<dyn AgentRuntimePort>,
     pub channel_registry: Arc<dyn ChannelRegistryPort>,
     pub session_summary: Option<Arc<dyn SessionSummaryPort>>,
-    pub memory: Option<Arc<dyn MemoryTiersPort>>,
+    pub memory: Option<Arc<dyn UnifiedMemoryPort>>,
 }
 
 /// Result of handling an inbound message.

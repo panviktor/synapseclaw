@@ -4,9 +4,9 @@
 //! minimal — load, append, remove_last, list — so that JSONL and SQLite (and
 //! future backends) share a common interface.
 
-use synapse_providers::traits::ChatMessage;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use synapse_providers::traits::ChatMessage;
 
 /// Metadata about a persisted session.
 #[derive(Debug, Clone)]

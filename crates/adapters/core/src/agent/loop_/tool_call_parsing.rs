@@ -732,7 +732,9 @@ fn build_curl_command(url: &str) -> Option<String> {
     Some(format!("curl -s '{}'", escaped))
 }
 
-pub(crate) fn parse_glm_style_tool_calls(text: &str) -> Vec<(String, serde_json::Value, Option<String>)> {
+pub(crate) fn parse_glm_style_tool_calls(
+    text: &str,
+) -> Vec<(String, serde_json::Value, Option<String>)> {
     let mut calls = Vec::new();
 
     for line in text.lines() {

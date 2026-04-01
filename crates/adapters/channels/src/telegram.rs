@@ -1,5 +1,4 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
-use synapse_infra::config_io::ConfigIO;
 use anyhow::Context;
 use async_trait::async_trait;
 use directories::UserDirs;
@@ -10,6 +9,7 @@ use std::path::Path;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use synapse_domain::config::schema::{Config, StreamMode};
+use synapse_infra::config_io::ConfigIO;
 use synapse_security::pairing::PairingGuard;
 use tokio::fs;
 
@@ -4558,7 +4558,10 @@ mod tests {
 
         // Multimodal pipeline still detects the marker.
         let messages = vec![synapse_providers::ChatMessage::user(content)];
-        assert_eq!(synapse_providers::multimodal::count_image_markers(&messages), 1);
+        assert_eq!(
+            synapse_providers::multimodal::count_image_markers(&messages),
+            1
+        );
     }
 
     // ── E2E: attachment saves file and formats content ───────────────

@@ -27,13 +27,10 @@ pub async fn run(
     ));
 
     // ── Memory (the brain) ────────────────────────────────────────
-    let mem: Arc<dyn Memory> = Arc::from(synapse_memory::create_memory_with_storage_and_routes(
-        &config.memory,
-        &config.embedding_routes,
-        Some(&config.storage.provider.config),
-        &config.workspace_dir,
-        config.api_key.as_deref(),
-    )?);
+    let mem: Arc<dyn UnifiedMemoryPort> = {
+        // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
+        Arc::new(synapse_memory::NoopUnifiedMemory) as Arc<dyn UnifiedMemoryPort>
+    };
     tracing::info!(backend = mem.name(), "Memory initialized");
 
     // ── Tools ────────────────────────────────────────────────────
@@ -68,7 +65,9 @@ pub async fn run(
     // Tries 3 times with backoff; if all fail, spawns a background task
     // that retries every 30s until the broker becomes available.
     if let Some(ref ipc_client) = ipc_client_for_key_reg {
-        { let _ = ipc_client.register_public_key().await; }
+        {
+            let _ = ipc_client.register_public_key().await;
+        }
     }
 
     // ── Phase 3A: Ephemeral agent tool allowlist enforcement ─────
@@ -371,7 +370,7 @@ pub async fn run(
                 .store(
                     &user_key,
                     &msg,
-                    MemoryCategory::Conversation,
+                    &MemoryCategory::Conversation,
                     memory_session_id.as_deref(),
                 )
                 .await;
@@ -496,21 +495,8 @@ pub async fn run(
 
                     history.clear();
                     history.push(ChatMessage::system(&system_prompt));
-                    // Clear conversation and daily memory
-                    let mut cleared = 0;
-                    for category in [MemoryCategory::Conversation, MemoryCategory::Daily] {
-                        let entries = mem.list(Some(&category), None).await.unwrap_or_default();
-                        for entry in entries {
-                            if mem.forget(&entry.key).await.unwrap_or(false) {
-                                cleared += 1;
-                            }
-                        }
-                    }
-                    if cleared > 0 {
-                        println!("Conversation cleared ({cleared} memory entries removed).\n");
-                    } else {
-                        println!("Conversation cleared.\n");
-                    }
+                    // TODO(phase4.3): clear conversation/daily memory via SurrealDB
+                    println!("Conversation cleared.\n");
                     if let Some(path) = session_state_file.as_deref() {
                         save_interactive_session_history(path, &history)?;
                     }
@@ -529,7 +515,7 @@ pub async fn run(
                     .store(
                         &user_key,
                         &user_input,
-                        MemoryCategory::Conversation,
+                        &MemoryCategory::Conversation,
                         memory_session_id.as_deref(),
                     )
                     .await;
@@ -643,21 +629,19 @@ pub async fn process_message(
     message: &str,
     session_id: Option<&str>,
 ) -> Result<String> {
-    let observer: Arc<dyn Observer> =
-        Arc::from(synapse_observability::create_observer(&config.observability));
+    let observer: Arc<dyn Observer> = Arc::from(synapse_observability::create_observer(
+        &config.observability,
+    ));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
     let security = Arc::new(security_policy_from_config(
         &config.autonomy,
         &config.workspace_dir,
     ));
-    let mem: Arc<dyn Memory> = Arc::from(synapse_memory::create_memory_with_storage_and_routes(
-        &config.memory,
-        &config.embedding_routes,
-        Some(&config.storage.provider.config),
-        &config.workspace_dir,
-        config.api_key.as_deref(),
-    )?);
+    let mem: Arc<dyn UnifiedMemoryPort> = {
+        // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
+        Arc::new(synapse_memory::NoopUnifiedMemory) as Arc<dyn UnifiedMemoryPort>
+    };
 
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (

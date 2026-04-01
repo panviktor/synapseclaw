@@ -16,7 +16,6 @@ pub mod hooks;
 pub mod ipc_bus;
 pub mod ipc_client;
 pub mod memory;
-pub mod memory_backend;
 pub mod message_router;
 pub mod pipeline_executor;
 pub mod pipeline_observer;

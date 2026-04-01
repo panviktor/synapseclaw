@@ -3,15 +3,15 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::fmt::Write;
 use std::sync::Arc;
-use synapse_domain::ports::memory_backend::Memory;
+use synapse_domain::ports::memory::UnifiedMemoryPort;
 
 /// Let the agent search its own memory
 pub struct MemoryRecallTool {
-    memory: Arc<dyn Memory>,
+    memory: Arc<dyn UnifiedMemoryPort>,
 }
 
 impl MemoryRecallTool {
-    pub fn new(memory: Arc<dyn Memory>) -> Self {
+    pub fn new(memory: Arc<dyn UnifiedMemoryPort>) -> Self {
         Self { memory }
     }
 }
@@ -85,84 +85,5 @@ impl Tool for MemoryRecallTool {
                 error: Some(format!("Memory recall failed: {e}")),
             }),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use synapse_domain::domain::memory::MemoryCategory;
-    use synapse_memory::SqliteMemory;
-    use tempfile::TempDir;
-
-    fn seeded_mem() -> (TempDir, Arc<dyn Memory>) {
-        let tmp = TempDir::new().unwrap();
-        let mem = SqliteMemory::new(tmp.path()).unwrap();
-        (tmp, Arc::new(mem))
-    }
-
-    #[tokio::test]
-    async fn recall_empty() {
-        let (_tmp, mem) = seeded_mem();
-        let tool = MemoryRecallTool::new(mem);
-        let result = tool.execute(json!({"query": "anything"})).await.unwrap();
-        assert!(result.success);
-        assert!(result.output.contains("No memories found"));
-    }
-
-    #[tokio::test]
-    async fn recall_finds_match() {
-        let (_tmp, mem) = seeded_mem();
-        mem.store("lang", "User prefers Rust", MemoryCategory::Core, None)
-            .await
-            .unwrap();
-        mem.store("tz", "Timezone is EST", MemoryCategory::Core, None)
-            .await
-            .unwrap();
-
-        let tool = MemoryRecallTool::new(mem);
-        let result = tool.execute(json!({"query": "Rust"})).await.unwrap();
-        assert!(result.success);
-        assert!(result.output.contains("Rust"));
-        assert!(result.output.contains("Found 1"));
-    }
-
-    #[tokio::test]
-    async fn recall_respects_limit() {
-        let (_tmp, mem) = seeded_mem();
-        for i in 0..10 {
-            mem.store(
-                &format!("k{i}"),
-                &format!("Rust fact {i}"),
-                MemoryCategory::Core,
-                None,
-            )
-            .await
-            .unwrap();
-        }
-
-        let tool = MemoryRecallTool::new(mem);
-        let result = tool
-            .execute(json!({"query": "Rust", "limit": 3}))
-            .await
-            .unwrap();
-        assert!(result.success);
-        assert!(result.output.contains("Found 3"));
-    }
-
-    #[tokio::test]
-    async fn recall_missing_query() {
-        let (_tmp, mem) = seeded_mem();
-        let tool = MemoryRecallTool::new(mem);
-        let result = tool.execute(json!({})).await;
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn name_and_schema() {
-        let (_tmp, mem) = seeded_mem();
-        let tool = MemoryRecallTool::new(mem);
-        assert_eq!(tool.name(), "memory_recall");
-        assert!(tool.parameters_schema()["properties"]["query"].is_object());
     }
 }

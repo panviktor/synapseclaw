@@ -3,13 +3,13 @@
 //! Since `synapse_providers::ChatMessage` is now a re-export of
 //! `synapse_domain::domain::message::ChatMessage`, no conversions are needed.
 
-use synapse_infra::approval::ApprovalManager;
-use synapse_providers::{ChatMessage, Provider};
 use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 use synapse_domain::ports::agent_runtime::{AgentRuntimePort, AgentTurnResult};
+use synapse_infra::approval::ApprovalManager;
+use synapse_providers::{ChatMessage, Provider};
 
 /// Wraps the existing agent loop infrastructure behind `AgentRuntimePort`.
 pub struct ChannelAgentRuntime {

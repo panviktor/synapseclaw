@@ -20,9 +20,7 @@ pub mod ws;
 use crate::channels::{
     Channel, LinqChannel, NextcloudTalkChannel, SendMessage, WatiChannel, WhatsAppChannel,
 };
-use synapse_infra::config_io::ConfigIO;
 use crate::cost::CostTracker;
-use synapse_providers::{self, ChatMessage, Provider};
 use crate::runtime;
 use crate::tools;
 use crate::tools::traits::ToolSpec;
@@ -42,7 +40,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::util::truncate_with_ellipsis;
-use synapse_memory::{self, Memory, MemoryCategory};
+use synapse_infra::config_io::ConfigIO;
+use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
+use synapse_providers::{self, ChatMessage, Provider};
 use synapse_security::pairing::{constant_time_eq, is_public_bind, PairingGuard};
 use synapse_security::security_factory::security_policy_from_config;
 use tower_http::compression::CompressionLayer;
@@ -327,7 +327,7 @@ pub struct AppState {
     /// Model for session summarization (falls back to `model` if None).
     pub summary_model: Option<String>,
     pub temperature: f64,
-    pub mem: Arc<dyn Memory>,
+    pub mem: Arc<dyn UnifiedMemoryPort>,
     pub auto_save: bool,
     /// SHA-256 hash of `X-Webhook-Secret` (hex-encoded), never plaintext.
     pub webhook_secret_hash: Option<Arc<str>>,
@@ -444,37 +444,33 @@ pub async fn run_gateway(
     let actual_port = listener.local_addr()?.port();
     let display_addr = format!("{host}:{actual_port}");
 
-    let provider: Arc<dyn Provider> = Arc::from(synapse_providers::create_resilient_provider_with_options(
-        config.default_provider.as_deref().unwrap_or("openrouter"),
-        config.api_key.as_deref(),
-        config.api_url.as_deref(),
-        &config.reliability,
-        &synapse_providers::ProviderRuntimeOptions {
-            auth_profile_override: None,
-            provider_api_url: config.api_url.clone(),
-            synapseclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
-            secrets_encrypt: config.secrets.encrypt,
-            reasoning_enabled: config.runtime.reasoning_enabled,
-            reasoning_effort: config.runtime.reasoning_effort.clone(),
-            provider_timeout_secs: Some(config.provider_timeout_secs),
-            extra_headers: config.extra_headers.clone(),
-            api_path: config.api_path.clone(),
-            prompt_caching: config.agent.prompt_caching,
-        },
-    )?);
+    let provider: Arc<dyn Provider> =
+        Arc::from(synapse_providers::create_resilient_provider_with_options(
+            config.default_provider.as_deref().unwrap_or("openrouter"),
+            config.api_key.as_deref(),
+            config.api_url.as_deref(),
+            &config.reliability,
+            &synapse_providers::ProviderRuntimeOptions {
+                auth_profile_override: None,
+                provider_api_url: config.api_url.clone(),
+                synapseclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
+                secrets_encrypt: config.secrets.encrypt,
+                reasoning_enabled: config.runtime.reasoning_enabled,
+                reasoning_effort: config.runtime.reasoning_effort.clone(),
+                provider_timeout_secs: Some(config.provider_timeout_secs),
+                extra_headers: config.extra_headers.clone(),
+                api_path: config.api_path.clone(),
+                prompt_caching: config.agent.prompt_caching,
+            },
+        )?);
     let model = config
         .default_model
         .clone()
         .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
     let summary_model = config.summary_model.clone();
     let temperature = config.default_temperature;
-    let mem: Arc<dyn Memory> = Arc::from(synapse_memory::create_memory_with_storage_and_routes(
-        &config.memory,
-        &config.embedding_routes,
-        Some(&config.storage.provider.config),
-        &config.workspace_dir,
-        config.api_key.as_deref(),
-    )?);
+    // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
+    let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
     let security = Arc::new(security_policy_from_config(
@@ -2162,7 +2158,8 @@ async fn run_gateway_chat_simple(state: &AppState, message: &str) -> anyhow::Res
 
     let multimodal_config = state.config.lock().multimodal.clone();
     let prepared =
-        synapse_providers::multimodal::prepare_messages_for_provider(&messages, &multimodal_config).await?;
+        synapse_providers::multimodal::prepare_messages_for_provider(&messages, &multimodal_config)
+            .await?;
 
     state
         .provider
@@ -2280,7 +2277,7 @@ async fn handle_webhook(
             .store(
                 &key,
                 message,
-                MemoryCategory::Conversation,
+                &MemoryCategory::Conversation,
                 session_id.as_deref(),
             )
             .await;
@@ -2515,7 +2512,7 @@ async fn handle_whatsapp_message(
                 .store(
                     &key,
                     &msg.content,
-                    MemoryCategory::Conversation,
+                    &MemoryCategory::Conversation,
                     Some(&session_id),
                 )
                 .await;
@@ -2642,7 +2639,7 @@ async fn handle_linq_webhook(
                 .store(
                     &key,
                     &msg.content,
-                    MemoryCategory::Conversation,
+                    &MemoryCategory::Conversation,
                     Some(&session_id),
                 )
                 .await;
@@ -2754,7 +2751,7 @@ async fn handle_wati_webhook(State(state): State<AppState>, body: Bytes) -> impl
                 .store(
                     &key,
                     &msg.content,
-                    MemoryCategory::Conversation,
+                    &MemoryCategory::Conversation,
                     Some(&session_id),
                 )
                 .await;
@@ -2879,7 +2876,7 @@ async fn handle_nextcloud_talk_webhook(
                 .store(
                     &key,
                     &msg.content,
-                    MemoryCategory::Conversation,
+                    &MemoryCategory::Conversation,
                     Some(&session_id),
                 )
                 .await;

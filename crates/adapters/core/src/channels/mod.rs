@@ -17,15 +17,12 @@
 // ── Re-exports from synapse_channels crate ──
 pub use synapse_channels::*;
 
-use synapse_infra::approval::ApprovalManager;
 use crate::channels::session_backend::SessionBackend;
+use synapse_domain::application::services::tool_filtering::build_tool_instructions;
+use synapse_infra::approval::ApprovalManager;
 use synapse_infra::config_io::ConfigIO;
 use synapse_infra::identity;
-use synapse_domain::application::services::tool_filtering::build_tool_instructions;
 // memory module used indirectly via synapse_memory
-use synapse_observability::traits::{ObserverEvent, ObserverMetric};
-use synapse_observability::{self, Observer};
-use synapse_providers::{self, ChatMessage, Provider};
 use crate::runtime;
 use crate::tools::{self, Tool};
 use anyhow::{Context, Result};
@@ -40,7 +37,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::util::truncate_with_ellipsis;
-use synapse_domain::ports::memory_backend::Memory;
+use synapse_memory::UnifiedMemoryPort;
+use synapse_observability::traits::{ObserverEvent, ObserverMetric};
+use synapse_observability::{self, Observer};
+use synapse_providers::{self, ChatMessage, Provider};
 use synapse_security::security_factory::security_policy_from_config;
 use tokio_util::sync::CancellationToken;
 
@@ -200,7 +200,7 @@ struct ChannelRuntimeContext {
     channels_by_name: Arc<HashMap<String, Arc<dyn Channel>>>,
     provider: Arc<dyn Provider>,
     default_provider: Arc<String>,
-    memory: Arc<dyn Memory>,
+    memory: Arc<dyn UnifiedMemoryPort>,
     tools_registry: Arc<Vec<Box<dyn Tool>>>,
     observer: Arc<dyn Observer>,
     system_prompt: Arc<String>,
@@ -1333,12 +1333,11 @@ async fn handle_message_via_orchestrator(
     caps: &[synapse_domain::domain::channel::ChannelCapability],
     original_msg: &traits::ChannelMessage,
 ) {
+    use crate::runtime::{agent_runtime_adapter, hooks_adapter};
     use synapse_channels::inbound::{
         channel_output_adapter, conversation_history_adapter, route_selection_adapter,
         session_summary_adapter,
     };
-    use crate::memory_adapters::memory_adapter;
-    use crate::runtime::{agent_runtime_adapter, hooks_adapter};
     use synapse_domain::application::use_cases::handle_inbound_message as uc;
     use synapse_domain::ports::hooks::NoOpHooks;
 
@@ -1405,7 +1404,10 @@ async fn handle_message_via_orchestrator(
 
     let registry: Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort> =
         ctx.channel_registry.clone().unwrap_or_else(|| {
-            Arc::new(crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)))
+            Arc::new(crate::channels::registry::CachedChannelRegistry::new(
+                synapse_domain::config::schema::Config::default(),
+                std::sync::Arc::new(build_channel_by_id),
+            ))
         });
 
     let session_summary: Option<
@@ -1451,13 +1453,8 @@ async fn handle_message_via_orchestrator(
         ack_reactions: ctx.ack_reactions,
     };
 
-    let memory_port: Option<Arc<dyn synapse_domain::ports::memory::MemoryTiersPort>> =
-        Some(Arc::new(memory_adapter::MemoryTiersAdapter::new(
-            Arc::clone(&ctx.memory),
-            None, // conversation_store not available in channel context
-            Arc::clone(&ctx.provider),
-            ctx.model.to_string(),
-        )));
+    let memory_port: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>> =
+        Some(Arc::clone(&ctx.memory));
 
     let ports = uc::InboundMessagePorts {
         history: history_port,
@@ -2943,8 +2940,9 @@ pub async fn start_channels(
         );
     }
 
-    let observer: Arc<dyn Observer> =
-        Arc::from(synapse_observability::create_observer(&config.observability));
+    let observer: Arc<dyn Observer> = Arc::from(synapse_observability::create_observer(
+        &config.observability,
+    ));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
     let security = Arc::new(security_policy_from_config(
@@ -2953,13 +2951,8 @@ pub async fn start_channels(
     ));
     let model = resolved_default_model(&config);
     let temperature = config.default_temperature;
-    let mem: Arc<dyn Memory> = Arc::from(synapse_memory::create_memory_with_storage_and_routes(
-        &config.memory,
-        &config.embedding_routes,
-        Some(&config.storage.provider.config),
-        &config.workspace_dir,
-        config.api_key.as_deref(),
-    )?);
+    // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
+    let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
             config.composio.api_key.as_deref(),
@@ -2993,7 +2986,9 @@ pub async fn start_channels(
     // Tries 3 times with backoff; if all fail, spawns a background task
     // that retries every 30s until the broker becomes available.
     if let Some(ref ipc_client) = ipc_client_for_key_reg {
-        { let _ = ipc_client.register_public_key().await; }
+        {
+            let _ = ipc_client.register_public_key().await;
+        }
     }
 
     // Wire MCP tools into the registry before freezing — non-fatal.
@@ -3220,13 +3215,9 @@ pub async fn start_channels(
 
     println!("🦀 SynapseClaw Channel Server");
     println!("  🤖 Model:    {model}");
-    let effective_backend = synapse_memory::effective_memory_backend_name(
-        &config.memory.backend,
-        Some(&config.storage.provider.config),
-    );
     println!(
         "  🧠 Memory:   {} (auto-save: {})",
-        effective_backend,
+        &config.memory.backend,
         if config.memory.auto_save { "on" } else { "off" }
     );
     println!(
@@ -3453,7 +3444,10 @@ pub async fn start_channels(
         approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
         activated_tools: ch_activated_handle,
         channel_registry: Some(Arc::new(
-            crate::channels::registry::CachedChannelRegistry::new(config.clone(), std::sync::Arc::new(build_channel_by_id)),
+            crate::channels::registry::CachedChannelRegistry::new(
+                config.clone(),
+                std::sync::Arc::new(build_channel_by_id),
+            ),
         )),
         pipeline_store,
         pipeline_executor,
@@ -3493,13 +3487,12 @@ pub async fn start_channels(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_observability::NoopObserver;
-    use synapse_providers::{ChatMessage, Provider};
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Instant;
-    use synapse_domain::ports::memory_backend::Memory;
+    use synapse_observability::NoopObserver;
+    use synapse_providers::{ChatMessage, Provider};
     use tempfile::TempDir;
 
     fn make_workspace() -> TempDir {
@@ -3884,60 +3877,7 @@ mod tests {
         }
     }
 
-    struct NoopMemory;
-
-    #[async_trait::async_trait]
-    impl Memory for NoopMemory {
-        fn name(&self) -> &str {
-            "noop"
-        }
-
-        async fn store(
-            &self,
-            _key: &str,
-            _content: &str,
-            _category: synapse_domain::domain::memory::MemoryCategory,
-            _session_id: Option<&str>,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn recall(
-            &self,
-            _query: &str,
-            _limit: usize,
-            _session_id: Option<&str>,
-        ) -> anyhow::Result<Vec<synapse_domain::domain::memory::MemoryEntry>> {
-            Ok(Vec::new())
-        }
-
-        async fn get(
-            &self,
-            _key: &str,
-        ) -> anyhow::Result<Option<synapse_domain::domain::memory::MemoryEntry>> {
-            Ok(None)
-        }
-
-        async fn list(
-            &self,
-            _category: Option<&synapse_domain::domain::memory::MemoryCategory>,
-            _session_id: Option<&str>,
-        ) -> anyhow::Result<Vec<synapse_domain::domain::memory::MemoryEntry>> {
-            Ok(Vec::new())
-        }
-
-        async fn forget(&self, _key: &str) -> anyhow::Result<bool> {
-            Ok(false)
-        }
-
-        async fn count(&self) -> anyhow::Result<usize> {
-            Ok(0)
-        }
-
-        async fn health_check(&self) -> bool {
-            true
-        }
-    }
+    // NoopMemory replaced by synapse_memory::NoopUnifiedMemory (used inline).
 
     #[tokio::test]
     async fn message_dispatch_processes_messages_in_parallel() {
@@ -3953,7 +3893,7 @@ mod tests {
                 delay: Duration::from_millis(250),
             }),
             default_provider: Arc::new("test-provider".to_string()),
-            memory: Arc::new(NoopMemory),
+            memory: Arc::new(synapse_memory::NoopUnifiedMemory),
             tools_registry: Arc::new(vec![]),
             observer: Arc::new(NoopObserver),
             system_prompt: Arc::new("test-system-prompt".to_string()),
@@ -3989,7 +3929,10 @@ mod tests {
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
-                crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)),
+                crate::channels::registry::CachedChannelRegistry::new(
+                    synapse_domain::config::schema::Config::default(),
+                    std::sync::Arc::new(build_channel_by_id),
+                ),
             )),
             pipeline_store: None,
             pipeline_executor: None,
@@ -4052,7 +3995,7 @@ mod tests {
             channels_by_name: Arc::new(channels_by_name),
             provider: provider_impl.clone(),
             default_provider: Arc::new("test-provider".to_string()),
-            memory: Arc::new(NoopMemory),
+            memory: Arc::new(synapse_memory::NoopUnifiedMemory),
             tools_registry: Arc::new(vec![]),
             observer: Arc::new(NoopObserver),
             system_prompt: Arc::new("test-system-prompt".to_string()),
@@ -4088,7 +4031,10 @@ mod tests {
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
-                crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)),
+                crate::channels::registry::CachedChannelRegistry::new(
+                    synapse_domain::config::schema::Config::default(),
+                    std::sync::Arc::new(build_channel_by_id),
+                ),
             )),
             pipeline_store: None,
             pipeline_executor: None,
@@ -4166,7 +4112,7 @@ mod tests {
             channels_by_name: Arc::new(channels_by_name),
             provider: provider_impl.clone(),
             default_provider: Arc::new("test-provider".to_string()),
-            memory: Arc::new(NoopMemory),
+            memory: Arc::new(synapse_memory::NoopUnifiedMemory),
             tools_registry: Arc::new(vec![]),
             observer: Arc::new(NoopObserver),
             system_prompt: Arc::new("test-system-prompt".to_string()),
@@ -4202,7 +4148,10 @@ mod tests {
             query_classification:
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             channel_registry: Some(Arc::new(
-                crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)),
+                crate::channels::registry::CachedChannelRegistry::new(
+                    synapse_domain::config::schema::Config::default(),
+                    std::sync::Arc::new(build_channel_by_id),
+                ),
             )),
             pipeline_store: None,
             pipeline_executor: None,
@@ -4277,7 +4226,7 @@ mod tests {
                 delay: Duration::from_millis(180),
             }),
             default_provider: Arc::new("test-provider".to_string()),
-            memory: Arc::new(NoopMemory),
+            memory: Arc::new(synapse_memory::NoopUnifiedMemory),
             tools_registry: Arc::new(vec![]),
             observer: Arc::new(NoopObserver),
             system_prompt: Arc::new("test-system-prompt".to_string()),
@@ -4313,7 +4262,10 @@ mod tests {
             )),
             activated_tools: None,
             channel_registry: Some(Arc::new(
-                crate::channels::registry::CachedChannelRegistry::new(synapse_domain::config::schema::Config::default(), std::sync::Arc::new(build_channel_by_id)),
+                crate::channels::registry::CachedChannelRegistry::new(
+                    synapse_domain::config::schema::Config::default(),
+                    std::sync::Arc::new(build_channel_by_id),
+                ),
             )),
             pipeline_store: None,
             pipeline_executor: None,

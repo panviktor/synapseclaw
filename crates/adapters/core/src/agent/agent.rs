@@ -3,8 +3,6 @@ use crate::agent::dispatcher::{
 };
 use crate::agent::memory_loader::{DefaultMemoryLoader, MemoryLoader};
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
-use synapse_observability::{self, Observer, ObserverEvent};
-use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
 use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
 use anyhow::Result;
@@ -13,14 +11,16 @@ use std::io::Write as IoWrite;
 use std::sync::Arc;
 use std::time::Instant;
 use synapse_domain::config::schema::Config;
-use synapse_memory::{self, Memory, MemoryCategory};
+use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
+use synapse_observability::{self, Observer, ObserverEvent};
+use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
 use synapse_security::security_policy_from_config;
 
 pub struct Agent {
     provider: Box<dyn Provider>,
     tools: Vec<Box<dyn Tool>>,
     tool_specs: Vec<ToolSpec>,
-    memory: Arc<dyn Memory>,
+    memory: Arc<dyn UnifiedMemoryPort>,
     observer: Arc<dyn Observer>,
     prompt_builder: SystemPromptBuilder,
     tool_dispatcher: Box<dyn ToolDispatcher>,
@@ -47,7 +47,7 @@ pub struct Agent {
 pub struct AgentBuilder {
     provider: Option<Box<dyn Provider>>,
     tools: Option<Vec<Box<dyn Tool>>>,
-    memory: Option<Arc<dyn Memory>>,
+    memory: Option<Arc<dyn UnifiedMemoryPort>>,
     observer: Option<Arc<dyn Observer>>,
     prompt_builder: Option<SystemPromptBuilder>,
     tool_dispatcher: Option<Box<dyn ToolDispatcher>>,
@@ -105,7 +105,7 @@ impl AgentBuilder {
         self
     }
 
-    pub fn memory(mut self, memory: Arc<dyn Memory>) -> Self {
+    pub fn memory(mut self, memory: Arc<dyn UnifiedMemoryPort>) -> Self {
         self.memory = Some(memory);
         self
     }
@@ -295,8 +295,9 @@ impl Agent {
     }
 
     pub fn from_config(config: &Config) -> Result<Self> {
-        let observer: Arc<dyn Observer> =
-            Arc::from(synapse_observability::create_observer(&config.observability));
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::create_observer(
+            &config.observability,
+        ));
         let runtime: Arc<dyn runtime::RuntimeAdapter> =
             Arc::from(runtime::create_runtime(&config.runtime)?);
         let security = Arc::new(security_policy_from_config(
@@ -304,14 +305,8 @@ impl Agent {
             &config.workspace_dir,
         ));
 
-        let memory: Arc<dyn Memory> =
-            Arc::from(synapse_memory::create_memory_with_storage_and_routes(
-                &config.memory,
-                &config.embedding_routes,
-                Some(&config.storage.provider.config),
-                &config.workspace_dir,
-                config.api_key.as_deref(),
-            )?);
+        // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
+        let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let composio_key = if config.composio.enabled {
             config.composio.api_key.as_deref()
@@ -350,7 +345,8 @@ impl Agent {
             .unwrap_or("anthropic/claude-sonnet-4-20250514")
             .to_string();
 
-        let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(config);
+        let provider_runtime_options =
+            synapse_providers::provider_runtime_options_from_config(config);
 
         let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
             provider_name,
@@ -554,7 +550,7 @@ impl Agent {
                 .store(
                     "user_msg",
                     user_message,
-                    MemoryCategory::Conversation,
+                    &MemoryCategory::Conversation,
                     self.memory_session_id.as_deref(),
                 )
                 .await;
@@ -915,14 +911,7 @@ mod tests {
             }]),
         });
 
-        let memory_cfg = synapse_domain::config::schema::MemoryConfig {
-            backend: "none".into(),
-            ..synapse_domain::config::schema::MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> = Arc::from(
-            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
-                .expect("memory creation should succeed with valid config"),
-        );
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let mut agent = Agent::builder()
@@ -962,14 +951,7 @@ mod tests {
             ]),
         });
 
-        let memory_cfg = synapse_domain::config::schema::MemoryConfig {
-            backend: "none".into(),
-            ..synapse_domain::config::schema::MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> = Arc::from(
-            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
-                .expect("memory creation should succeed with valid config"),
-        );
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let mut agent = Agent::builder()
@@ -1003,14 +985,7 @@ mod tests {
             seen_models: seen_models.clone(),
         });
 
-        let memory_cfg = synapse_domain::config::schema::MemoryConfig {
-            backend: "none".into(),
-            ..synapse_domain::config::schema::MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> = Arc::from(
-            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
-                .expect("memory creation should succeed with valid config"),
-        );
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let mut route_model_by_hint = HashMap::new();
@@ -1136,14 +1111,7 @@ mod tests {
             responses: Mutex::new(vec![]),
         });
 
-        let memory_cfg = synapse_domain::config::schema::MemoryConfig {
-            backend: "none".into(),
-            ..synapse_domain::config::schema::MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> = Arc::from(
-            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
-                .expect("memory creation should succeed with valid config"),
-        );
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let agent = Agent::builder()
@@ -1167,14 +1135,7 @@ mod tests {
             responses: Mutex::new(vec![]),
         });
 
-        let memory_cfg = synapse_domain::config::schema::MemoryConfig {
-            backend: "none".into(),
-            ..synapse_domain::config::schema::MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> = Arc::from(
-            synapse_memory::create_memory(&memory_cfg, std::path::Path::new("/tmp"), None)
-                .expect("memory creation should succeed with valid config"),
-        );
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
         let agent = Agent::builder()

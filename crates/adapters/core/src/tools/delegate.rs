@@ -1,7 +1,5 @@
 use super::traits::{Tool, ToolResult};
 use crate::agent::loop_::run_tool_call_loop;
-use synapse_observability::traits::{Observer, ObserverEvent, ObserverMetric};
-use synapse_providers::{self, ChatMessage, Provider};
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use serde_json::json;
@@ -11,6 +9,8 @@ use std::time::Duration;
 use synapse_domain::config::schema::DelegateAgentConfig;
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_observability::traits::{Observer, ObserverEvent, ObserverMetric};
+use synapse_providers::{self, ChatMessage, Provider};
 
 /// Default timeout for sub-agent provider calls.
 const DELEGATE_TIMEOUT_SECS: u64 = 120;
@@ -512,10 +512,10 @@ impl Observer for NoopObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_providers::{ChatRequest, ChatResponse, ToolCall};
     use anyhow::anyhow;
     use synapse_domain::domain::config::AutonomyLevel;
     use synapse_domain::domain::security_policy::SecurityPolicy;
+    use synapse_providers::{ChatRequest, ChatResponse, ToolCall};
 
     fn test_security() -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy::default())

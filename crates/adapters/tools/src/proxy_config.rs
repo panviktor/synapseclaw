@@ -1,7 +1,4 @@
 use super::traits::{Tool, ToolResult};
-use synapse_infra::config_io::ConfigIO;
-use synapse_providers::proxy::ProxyConfigExt;
-use synapse_providers::proxy::{runtime_proxy_config, set_runtime_proxy_config};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 use std::fs;
@@ -9,6 +6,9 @@ use std::sync::Arc;
 use synapse_domain::config::schema::{Config, ProxyConfig, ProxyScope};
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::util::MaybeSet;
+use synapse_infra::config_io::ConfigIO;
+use synapse_providers::proxy::ProxyConfigExt;
+use synapse_providers::proxy::{runtime_proxy_config, set_runtime_proxy_config};
 
 pub struct ProxyConfigTool {
     config: Arc<Config>,

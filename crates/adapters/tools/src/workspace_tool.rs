@@ -3,13 +3,13 @@
 //! Provides `workspace` subcommands: list, switch, create, info, export.
 
 use super::traits::{Tool, ToolResult};
-use synapse_infra::workspace::WorkspaceManager;
 use async_trait::async_trait;
 use serde_json::json;
 use std::fmt::Write;
 use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_infra::workspace::WorkspaceManager;
 use tokio::sync::RwLock;
 
 /// Agent-callable tool for workspace management operations.

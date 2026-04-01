@@ -41,7 +41,8 @@ impl IpcClient {
         let builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(5));
-        let builder = synapse_providers::proxy::apply_runtime_proxy_to_builder(builder, "tool.agents_ipc");
+        let builder =
+            synapse_providers::proxy::apply_runtime_proxy_to_builder(builder, "tool.agents_ipc");
         let client = builder.build().unwrap_or_else(|err| {
             tracing::warn!("Failed to build IPC client: {err}");
             reqwest::Client::new()
@@ -353,7 +354,10 @@ impl synapse_domain::ports::ipc_client::IpcClientPort for IpcClient {
         path: &str,
         body: &serde_json::Value,
     ) -> anyhow::Result<synapse_domain::ports::ipc_client::IpcSendResult> {
-        let resp = self.post(path, body).await.map_err(|e| anyhow::anyhow!(e))?;
+        let resp = self
+            .post(path, body)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
         let status = resp.status();
         let json: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
         Ok(synapse_domain::ports::ipc_client::IpcSendResult {
@@ -432,7 +436,10 @@ impl Tool for AgentsListTool {
             Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Broker returned {}: {error_msg}", result.status_code)),
+                error: Some(format!(
+                    "Broker returned {}: {error_msg}",
+                    result.status_code
+                )),
             })
         }
     }
@@ -635,7 +642,10 @@ impl Tool for AgentsInboxTool {
             Ok(ToolResult {
                 success: false,
                 output: String::new(),
-                error: Some(format!("Broker returned {}: {error_msg}", result.status_code)),
+                error: Some(format!(
+                    "Broker returned {}: {error_msg}",
+                    result.status_code
+                )),
             })
         }
     }
@@ -1511,53 +1521,7 @@ mod tests {
         }
     }
 
-    // Mock memory for test AppState
-    struct TestMemory;
-    #[async_trait]
-    impl synapse_domain::ports::memory_backend::Memory for TestMemory {
-        fn name(&self) -> &str {
-            "test"
-        }
-        async fn store(
-            &self,
-            _key: &str,
-            _content: &str,
-            _category: synapse_domain::domain::memory::MemoryCategory,
-            _session_id: Option<&str>,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-        async fn recall(
-            &self,
-            _query: &str,
-            _limit: usize,
-            _session_id: Option<&str>,
-        ) -> anyhow::Result<Vec<synapse_domain::domain::memory::MemoryEntry>> {
-            Ok(Vec::new())
-        }
-        async fn get(
-            &self,
-            _key: &str,
-        ) -> anyhow::Result<Option<synapse_domain::domain::memory::MemoryEntry>> {
-            Ok(None)
-        }
-        async fn list(
-            &self,
-            _category: Option<&synapse_domain::domain::memory::MemoryCategory>,
-            _session_id: Option<&str>,
-        ) -> anyhow::Result<Vec<synapse_domain::domain::memory::MemoryEntry>> {
-            Ok(Vec::new())
-        }
-        async fn forget(&self, _key: &str) -> anyhow::Result<bool> {
-            Ok(false)
-        }
-        async fn count(&self) -> anyhow::Result<usize> {
-            Ok(0)
-        }
-        async fn health_check(&self) -> bool {
-            true
-        }
-    }
+    // TestMemory replaced by synapse_memory::NoopUnifiedMemory (used inline).
 
     /// Build a minimal test AppState with IPC enabled and a known token.
     fn test_app_state(db: Arc<IpcDb>, token_hash: &str) -> AppState {
@@ -1587,7 +1551,7 @@ mod tests {
             model: "test".into(),
             summary_model: None,
             temperature: 0.7,
-            mem: std::sync::Arc::new(TestMemory),
+            mem: std::sync::Arc::new(synapse_memory::NoopUnifiedMemory),
             auto_save: false,
             webhook_secret_hash: None,
             pairing,

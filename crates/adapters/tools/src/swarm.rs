@@ -1,5 +1,4 @@
 use super::traits::{Tool, ToolResult};
-use synapse_providers::{self, Provider};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
@@ -8,6 +7,7 @@ use std::time::Duration;
 use synapse_domain::config::schema::{DelegateAgentConfig, SwarmConfig, SwarmStrategy};
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_providers::{self, Provider};
 
 /// Default timeout for individual agent calls within a swarm.
 const SWARM_AGENT_TIMEOUT_SECS: u64 = 120;

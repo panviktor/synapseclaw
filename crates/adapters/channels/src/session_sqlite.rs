@@ -5,12 +5,12 @@
 //! Designed as the default backend, replacing JSONL for new installations.
 
 use crate::session_backend::{ChannelSummary, SessionBackend, SessionMetadata, SessionQuery};
-use synapse_providers::traits::ChatMessage;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::Mutex;
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
+use synapse_providers::traits::ChatMessage;
 
 /// SQLite-backed session store with FTS5 and WAL mode.
 pub struct SqliteSessionBackend {

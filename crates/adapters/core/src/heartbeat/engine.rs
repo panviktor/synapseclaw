@@ -1,4 +1,3 @@
-use synapse_observability::{Observer, ObserverEvent};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex as ParkingMutex;
@@ -7,6 +6,7 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
 use synapse_domain::config::schema::HeartbeatConfig;
+use synapse_observability::{Observer, ObserverEvent};
 use tokio::time::{self, Duration};
 use tracing::{info, warn};
 

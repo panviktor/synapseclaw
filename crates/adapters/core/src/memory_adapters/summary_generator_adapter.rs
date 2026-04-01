@@ -1,10 +1,10 @@
 //! Adapter: wraps provider for summary generation as SummaryGeneratorPort.
 
-use synapse_providers::Provider;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
 use synapse_domain::ports::summary::SummaryGeneratorPort;
+use synapse_providers::Provider;
 
 /// Wraps a Provider for summary generation.
 pub struct ProviderSummaryGenerator {

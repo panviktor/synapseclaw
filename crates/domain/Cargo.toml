@@ -10,7 +10,7 @@ channel-nostr = []
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 jsonschema = "0.29"
 parking_lot = "0.12"
 schemars = "1.2"

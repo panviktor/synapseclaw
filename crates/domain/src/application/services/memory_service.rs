@@ -1,6 +1,6 @@
 //! Memory service — owns memory tier policy and recall formatting.
 //!
-//! Phase 4.0 Slice 6: extracts memory business logic into synapse_domain.
+//! Phase 4.3: updated for specialized memory ports.
 //!
 //! Business rules this service owns:
 //! - autosave policy (when to persist inbound messages)
@@ -9,8 +9,7 @@
 //! - tier selection (which category for which operation)
 
 use crate::domain::memory::{MemoryCategory, MemoryEntry, RecallConfig};
-use crate::ports::memory::MemoryTiersPort;
-use anyhow::Result;
+use crate::ports::memory::UnifiedMemoryPort;
 
 /// Minimum message length (chars) to trigger autosave.
 pub const AUTOSAVE_MIN_CHARS: usize = 20;
@@ -69,18 +68,13 @@ pub fn format_recall_context(entries: &[MemoryEntry], config: &RecallConfig) -> 
 }
 
 /// Recall and format memory context for a conversation turn.
-///
-/// Uses tier-aware recall: searches long-term memory, formats for prompt injection.
 pub async fn recall_context(
-    mem: &dyn MemoryTiersPort,
+    mem: &dyn UnifiedMemoryPort,
     query: &str,
     session_id: Option<&str>,
     config: &RecallConfig,
 ) -> String {
-    let entries = match mem
-        .recall(query, config.max_entries + 2, None, session_id)
-        .await
-    {
+    let entries = match mem.recall(query, config.max_entries + 2, session_id).await {
         Ok(e) => e,
         Err(_) => return String::new(),
     };
@@ -93,18 +87,6 @@ pub async fn recall_context(
 /// Decide whether to run memory consolidation after a turn.
 pub fn should_consolidate(auto_save_enabled: bool, user_message: &str) -> bool {
     auto_save_enabled && user_message.chars().count() >= AUTOSAVE_MIN_CHARS
-}
-
-/// Run memory consolidation (fire-and-forget).
-///
-/// Delegates to MemoryTiersPort which handles LLM extraction internally.
-/// Extracts facts → Core tier, journal → Daily tier.
-pub async fn consolidate_turn(
-    mem: &dyn MemoryTiersPort,
-    user_message: &str,
-    assistant_response: &str,
-) -> Result<()> {
-    mem.consolidate_turn(user_message, assistant_response).await
 }
 
 // ── Tier selection ───────────────────────────────────────────────

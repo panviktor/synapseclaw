@@ -14,8 +14,7 @@ use synapse_domain::domain::channel::{ChannelCapability, DegradationPolicy, Outb
 use synapse_domain::ports::channel_registry::ChannelRegistryPort;
 
 /// Builder function type for creating channels from config.
-pub type ChannelBuilderFn =
-    dyn Fn(&Config, &str) -> anyhow::Result<Arc<dyn Channel>> + Send + Sync;
+pub type ChannelBuilderFn = dyn Fn(&Config, &str) -> anyhow::Result<Arc<dyn Channel>> + Send + Sync;
 
 /// Concrete `ChannelRegistryPort` that caches adapters for the daemon lifetime.
 pub struct CachedChannelRegistry {
@@ -256,14 +255,20 @@ mod tests {
     #[test]
     fn resolve_unknown_channel_returns_error() {
         let config = Config::default();
-        let registry = CachedChannelRegistry::new(config, Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")));
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+        );
         assert!(registry.resolve("nonexistent").is_err());
     }
 
     #[test]
     fn has_channel_returns_true_for_injected() {
         let config = Config::default();
-        let registry = CachedChannelRegistry::new(config, Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")));
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+        );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock);
         assert!(registry.has_channel("test"));
@@ -273,7 +278,10 @@ mod tests {
     #[test]
     fn capabilities_known_channels() {
         let config = Config::default();
-        let registry = CachedChannelRegistry::new(config, Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")));
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+        );
         let tg = registry.capabilities("telegram");
         assert!(tg.contains(&ChannelCapability::SendText));
         assert!(tg.contains(&ChannelCapability::RichFormatting));
@@ -291,7 +299,10 @@ mod tests {
     #[test]
     fn cache_reuse_returns_same_arc() {
         let config = Config::default();
-        let registry = CachedChannelRegistry::new(config, Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")));
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+        );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
 
@@ -303,7 +314,10 @@ mod tests {
     #[tokio::test]
     async fn deliver_sends_through_mock_channel() {
         let config = Config::default();
-        let registry = CachedChannelRegistry::new(config, Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")));
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+        );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
 
@@ -316,7 +330,10 @@ mod tests {
     #[tokio::test]
     async fn deliver_skips_empty_content() {
         let config = Config::default();
-        let registry = CachedChannelRegistry::new(config, Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")));
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+        );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
 
@@ -329,7 +346,10 @@ mod tests {
     #[tokio::test]
     async fn deliver_drops_on_missing_capability_with_drop_policy() {
         let config = Config::default();
-        let registry = CachedChannelRegistry::new(config, Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")));
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+        );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
 
@@ -345,7 +365,10 @@ mod tests {
     #[tokio::test]
     async fn deliver_continues_on_missing_capability_with_plaintext_policy() {
         let config = Config::default();
-        let registry = CachedChannelRegistry::new(config, Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")));
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|cfg, id| anyhow::bail!("no channels configured for {id}")),
+        );
         let mock = Arc::new(MockChannel::new("test"));
         registry.inject("test", mock.clone());
 
