@@ -4,22 +4,18 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
-[features]
-memory-postgres = ["dep:postgres", "dep:tokio-postgres"]
-
 [dependencies]
 synapse_domain = { path = "../../domain" }
 anyhow = "1.0"
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 parking_lot = "0.12"
-postgres = { version = "0.19", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+surrealdb = { version = "3.0", default-features = false, features = ["kv-surrealkv"] }
 tokio = { version = "1.50", default-features = false, features = ["fs", "sync", "time", "rt"] }
-tokio-postgres = { version = "0.7", optional = true }
 tracing = "0.1"
 uuid = { version = "1.22", default-features = false, features = ["v4", "std"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

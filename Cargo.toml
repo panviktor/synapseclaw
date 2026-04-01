@@ -219,7 +219,6 @@ channel-nostr = ["dep:nostr-sdk", "synapse_domain/channel-nostr", "synapse_adapt
 channel-matrix = ["dep:matrix-sdk", "synapse_adapters/channel-matrix"]
 channel-lark = ["dep:prost", "synapse_adapters/channel-lark"]
 channel-feishu = ["channel-lark"]
-memory-postgres = ["dep:postgres", "synapse_memory/memory-postgres", "synapse_adapters/memory-postgres"]
 observability-prometheus = ["dep:prometheus", "synapse_adapters/observability-prometheus"]
 observability-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "synapse_adapters/observability-otel"]
 browser-native = ["dep:fantoccini", "synapse_adapters/browser-native"]

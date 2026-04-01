@@ -19,10 +19,10 @@
 pub use synapse_tools::*;
 
 // ── Re-exports from synapse_mcp crate ──
-pub use synapse_mcp::McpRegistry;
-pub use synapse_mcp::{ActivatedToolSet, DeferredMcpToolSet};
-pub use synapse_mcp::McpToolWrapper;
 pub use synapse_mcp::tool_search::ToolSearchTool;
+pub use synapse_mcp::McpRegistry;
+pub use synapse_mcp::McpToolWrapper;
+pub use synapse_mcp::{ActivatedToolSet, DeferredMcpToolSet};
 
 // ── Modules that remain in core (agent/gateway dependencies) ──
 pub mod agents_ipc;
@@ -45,8 +45,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use synapse_domain::config::schema::{Config, DelegateAgentConfig};
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::memory_backend::Memory;
 use synapse_domain::ports::runtime::RuntimeAdapter;
+use synapse_memory::UnifiedMemoryPort;
+use synapse_tools::core_memory_update::CoreMemoryUpdateTool;
 
 /// No-op agent runner for contexts where the runner is not available (e.g., tests).
 struct NoopAgentRunner;
@@ -145,7 +146,7 @@ pub fn default_tools_with_runtime(
 pub fn all_tools(
     config: Arc<Config>,
     security: &Arc<SecurityPolicy>,
-    memory: Arc<dyn Memory>,
+    memory: Arc<dyn UnifiedMemoryPort>,
     composio_key: Option<&str>,
     composio_entity_id: Option<&str>,
     browser_config: &synapse_domain::config::schema::BrowserConfig,
@@ -190,7 +191,7 @@ pub fn all_tools_with_runtime(
     config: Arc<Config>,
     security: &Arc<SecurityPolicy>,
     runtime: Arc<dyn RuntimeAdapter>,
-    memory: Arc<dyn Memory>,
+    memory: Arc<dyn UnifiedMemoryPort>,
     composio_key: Option<&str>,
     composio_entity_id: Option<&str>,
     browser_config: &synapse_domain::config::schema::BrowserConfig,
@@ -229,7 +230,12 @@ pub fn all_tools_with_runtime(
         Arc::new(CronRunsTool::new(config.clone())),
         Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())),
         Arc::new(MemoryRecallTool::new(memory.clone())),
-        Arc::new(MemoryForgetTool::new(memory, security.clone())),
+        Arc::new(MemoryForgetTool::new(memory.clone(), security.clone())),
+        Arc::new(CoreMemoryUpdateTool::new(
+            memory.clone(),
+            security.clone(),
+            "default".to_string(),
+        )),
         Arc::new(ScheduleTool::new(security.clone(), root_config.clone())),
         Arc::new(ModelRoutingConfigTool::new(
             config.clone(),
@@ -410,7 +416,9 @@ pub fn all_tools_with_runtime(
 
     // PDF extraction (feature-gated at compile time via rag-pdf)
     #[cfg(feature = "rag-pdf")]
-    tool_arcs.push(Arc::new(synapse_tools::pdf_read::PdfReadTool::new(security.clone())));
+    tool_arcs.push(Arc::new(synapse_tools::pdf_read::PdfReadTool::new(
+        security.clone(),
+    )));
 
     // Vision tools are always available
     tool_arcs.push(Arc::new(ScreenshotTool::new(security.clone())));
@@ -439,7 +447,9 @@ pub fn all_tools_with_runtime(
 
     // IPC tools (inter-agent communication via broker).
     // In daemon mode, a shared IpcClient is injected to avoid duplicate seq counters.
-    let mut ipc_client_for_registration: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>> = None;
+    let mut ipc_client_for_registration: Option<
+        Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
+    > = None;
     if root_config.agents_ipc.enabled {
         if let Some(ref token) = root_config.agents_ipc.broker_token {
             let ipc_client = if let Some(shared) = shared_ipc_client {
@@ -566,26 +576,11 @@ pub fn all_tools_with_runtime(
         }
     }
 
-    // Knowledge graph tool
+    // Phase 4.3: Knowledge graph via SemanticMemoryPort in SurrealDB.
     if root_config.knowledge.enabled {
-        let db_path_str = root_config.knowledge.db_path.replace(
-            '~',
-            &directories::UserDirs::new()
-                .map(|u| u.home_dir().to_string_lossy().to_string())
-                .unwrap_or_else(|| ".".to_string()),
-        );
-        let db_path = std::path::PathBuf::from(&db_path_str);
-        match synapse_memory::knowledge_graph::KnowledgeGraph::new(
-            &db_path,
-            root_config.knowledge.max_nodes,
-        ) {
-            Ok(graph) => {
-                tool_arcs.push(Arc::new(KnowledgeTool::new(Arc::new(graph))));
-            }
-            Err(e) => {
-                tracing::warn!("knowledge graph disabled due to init error: {e}");
-            }
-        }
+        tool_arcs.push(Arc::new(synapse_tools::knowledge_tool::KnowledgeTool::new(
+            Arc::clone(&memory),
+        )));
     }
 
     // Add delegation tool when agents are configured
@@ -671,7 +666,7 @@ pub fn all_tools_with_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_domain::config::schema::{BrowserConfig, Config, MemoryConfig};
+    use synapse_domain::config::schema::{BrowserConfig, Config};
     use tempfile::TempDir;
 
     fn test_config(tmp: &TempDir) -> Config {
@@ -693,12 +688,7 @@ mod tests {
     fn all_tools_excludes_browser_when_disabled() {
         let tmp = TempDir::new().unwrap();
         let security = Arc::new(SecurityPolicy::default());
-        let mem_cfg = MemoryConfig {
-            backend: "markdown".into(),
-            ..MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> =
-            Arc::from(synapse_memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let browser = BrowserConfig {
             enabled: false,
@@ -736,12 +726,7 @@ mod tests {
     fn all_tools_includes_browser_when_enabled() {
         let tmp = TempDir::new().unwrap();
         let security = Arc::new(SecurityPolicy::default());
-        let mem_cfg = MemoryConfig {
-            backend: "markdown".into(),
-            ..MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> =
-            Arc::from(synapse_memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let browser = BrowserConfig {
             enabled: true,
@@ -876,12 +861,7 @@ mod tests {
     fn all_tools_includes_delegate_when_agents_configured() {
         let tmp = TempDir::new().unwrap();
         let security = Arc::new(SecurityPolicy::default());
-        let mem_cfg = MemoryConfig {
-            backend: "markdown".into(),
-            ..MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> =
-            Arc::from(synapse_memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let browser = BrowserConfig::default();
         let http = synapse_domain::config::schema::HttpRequestConfig::default();
@@ -926,12 +906,7 @@ mod tests {
     fn all_tools_excludes_delegate_when_no_agents() {
         let tmp = TempDir::new().unwrap();
         let security = Arc::new(SecurityPolicy::default());
-        let mem_cfg = MemoryConfig {
-            backend: "markdown".into(),
-            ..MemoryConfig::default()
-        };
-        let mem: Arc<dyn Memory> =
-            Arc::from(synapse_memory::create_memory(&mem_cfg, tmp.path(), None).unwrap());
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let browser = BrowserConfig::default();
         let http = synapse_domain::config::schema::HttpRequestConfig::default();

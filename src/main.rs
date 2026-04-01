@@ -1048,10 +1048,6 @@ async fn main() -> Result<()> {
             );
             println!("🛡️  Autonomy:      {:?}", config.autonomy.level);
             println!("⚙️  Runtime:       {}", config.runtime.kind);
-            let effective_memory_backend = memory::effective_memory_backend_name(
-                &config.memory.backend,
-                Some(&config.storage.provider.config),
-            );
             println!(
                 "💓 Heartbeat:      {}",
                 if config.heartbeat.enabled {
@@ -1062,7 +1058,7 @@ async fn main() -> Result<()> {
             );
             println!(
                 "🧠 Memory:         {} (auto-save: {})",
-                effective_memory_backend,
+                &config.memory.backend,
                 if config.memory.auto_save { "on" } else { "off" }
             );
 
@@ -1132,12 +1128,7 @@ async fn main() -> Result<()> {
                     }
                     synapse_onboard::run_models_refresh_all(&config, force).await
                 } else {
-                    synapse_onboard::run_models_refresh(
-                        &config,
-                        provider.as_deref(),
-                        force,
-                    )
-                    .await
+                    synapse_onboard::run_models_refresh(&config, provider.as_deref(), force).await
                 }
             }
             ModelCommands::List { provider } => {
@@ -1674,7 +1665,8 @@ fn read_plain_input(prompt: &str) -> Result<String> {
 }
 
 fn extract_openai_account_id_for_profile(access_token: &str) -> Option<String> {
-    let account_id = synapse_providers::auth::openai_oauth::extract_account_id_from_jwt(access_token);
+    let account_id =
+        synapse_providers::auth::openai_oauth::extract_account_id_from_jwt(access_token);
     if account_id.is_none() {
         warn!(
             "Could not extract OpenAI account id from OAuth access token; \
@@ -1793,10 +1785,11 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         }
                     };
 
-                    let token_set = synapse_providers::auth::gemini_oauth::exchange_code_for_tokens(
-                        &client, &code, &pkce,
-                    )
-                    .await?;
+                    let token_set =
+                        synapse_providers::auth::gemini_oauth::exchange_code_for_tokens(
+                            &client, &code, &pkce,
+                        )
+                        .await?;
                     let account_id = token_set.id_token.as_deref().and_then(
                         synapse_providers::auth::gemini_oauth::extract_account_email_from_id_token,
                     );
@@ -1884,10 +1877,11 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                         }
                     };
 
-                    let token_set = synapse_providers::auth::openai_oauth::exchange_code_for_tokens(
-                        &client, &code, &pkce,
-                    )
-                    .await?;
+                    let token_set =
+                        synapse_providers::auth::openai_oauth::exchange_code_for_tokens(
+                            &client, &code, &pkce,
+                        )
+                        .await?;
                     let account_id = extract_openai_account_id_for_profile(&token_set.access_token);
 
                     auth_service
@@ -1947,10 +1941,11 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                     };
 
                     let client = reqwest::Client::new();
-                    let token_set = synapse_providers::auth::openai_oauth::exchange_code_for_tokens(
-                        &client, &code, &pkce,
-                    )
-                    .await?;
+                    let token_set =
+                        synapse_providers::auth::openai_oauth::exchange_code_for_tokens(
+                            &client, &code, &pkce,
+                        )
+                        .await?;
                     let account_id = extract_openai_account_id_for_profile(&token_set.access_token);
 
                     auth_service
@@ -1993,10 +1988,11 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
                     };
 
                     let client = reqwest::Client::new();
-                    let token_set = synapse_providers::auth::gemini_oauth::exchange_code_for_tokens(
-                        &client, &code, &pkce,
-                    )
-                    .await?;
+                    let token_set =
+                        synapse_providers::auth::gemini_oauth::exchange_code_for_tokens(
+                            &client, &code, &pkce,
+                        )
+                        .await?;
                     let account_id = token_set.id_token.as_deref().and_then(
                         synapse_providers::auth::gemini_oauth::extract_account_email_from_id_token,
                     );

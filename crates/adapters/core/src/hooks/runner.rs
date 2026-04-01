@@ -6,8 +6,8 @@ use std::panic::AssertUnwindSafe;
 use tracing::info;
 
 use crate::channels::traits::ChannelMessage;
-use synapse_providers::traits::{ChatMessage, ChatResponse};
 use crate::tools::traits::ToolResult;
+use synapse_providers::traits::{ChatMessage, ChatResponse};
 
 use super::traits::{HookHandler, HookResult};
 

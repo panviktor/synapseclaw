@@ -127,7 +127,8 @@ impl HttpRequestTool {
             .timeout(Duration::from_secs(timeout_secs))
             .connect_timeout(Duration::from_secs(10))
             .redirect(reqwest::redirect::Policy::none());
-        let builder = synapse_providers::proxy::apply_runtime_proxy_to_builder(builder, "tool.http_request");
+        let builder =
+            synapse_providers::proxy::apply_runtime_proxy_to_builder(builder, "tool.http_request");
         let client = builder.build()?;
 
         let mut request = client.request(method, url);

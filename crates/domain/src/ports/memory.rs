@@ -1,79 +1,245 @@
-//! Port: tier-aware memory operations.
+//! Phase 4.3: Specialized memory ports.
 //!
-//! Phase 4.0: explicit three-tier memory model.
+//! Seven ports for the full agent memory architecture:
 //!
-//! Tier 1: Working memory — in-run only (RunContext, not in this port)
-//! Tier 2: Session memory — conversation-scoped, durable
-//! Tier 3: Long-term memory — cross-session knowledge
+//! - [`WorkingMemoryPort`] — core memory blocks (MemGPT), always in prompt
+//! - [`EpisodicMemoryPort`] — interaction history, session-scoped
+//! - [`SemanticMemoryPort`] — knowledge graph: entities + bitemporal facts
+//! - [`SkillMemoryPort`] — procedural memory: learned skills
+//! - [`ReflectionPort`] — self-improvement records
+//! - [`ConsolidationPort`] — background extraction & GC
+//! - [`UnifiedMemoryPort`] — facade for cross-tier hybrid search + convenience ops
 
-use crate::domain::memory::{MemoryCategory, MemoryEntry, SessionMemory};
-use anyhow::Result;
+use crate::domain::memory::{
+    AgentId, ConsolidationReport, CoreMemoryBlock, Entity, HybridSearchResult, MemoryCategory,
+    MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, SearchResult, SessionId, Skill,
+    SkillUpdate, TemporalFact,
+};
 use async_trait::async_trait;
 
-/// Tier-aware memory port.
-///
-/// Callers specify which tier they're addressing. The adapter routes
-/// to the appropriate backend.
+// ── Working Memory (core blocks, always in prompt) ───────────────
+
+/// Core memory blocks that are **always** included in the agent's
+/// system prompt. Agents edit them via `core_memory_update` tool.
 #[async_trait]
-pub trait MemoryTiersPort: Send + Sync {
-    // ── Tier 2: Session memory ───────────────────────────────────
-
-    /// Get session memory (goal + summary) for a conversation.
-    async fn get_session_memory(&self, conversation_key: &str) -> Result<SessionMemory>;
-
-    /// Update the current goal for a conversation.
-    async fn set_session_goal(&self, conversation_key: &str, goal: &str) -> Result<()>;
-
-    /// Update the rolling summary for a conversation.
-    async fn set_session_summary(&self, conversation_key: &str, summary: &str) -> Result<()>;
-
-    // ── Tier 3: Long-term memory ─────────────────────────────────
-
-    /// Recall relevant long-term memories for a query.
-    ///
-    /// Searches across categories. Returns entries sorted by relevance.
-    async fn recall(
+pub trait WorkingMemoryPort: Send + Sync {
+    /// Get all core memory blocks for an agent.
+    async fn get_core_blocks(
         &self,
-        query: &str,
-        limit: usize,
-        category: Option<&MemoryCategory>,
-        session_id: Option<&str>,
-    ) -> Result<Vec<MemoryEntry>>;
+        agent_id: &AgentId,
+    ) -> Result<Vec<CoreMemoryBlock>, MemoryError>;
 
-    /// Store a memory entry with explicit category.
+    /// Replace the content of a core memory block.
+    async fn update_core_block(
+        &self,
+        agent_id: &AgentId,
+        label: &str,
+        content: String,
+    ) -> Result<(), MemoryError>;
+
+    /// Append text to a core memory block.
+    async fn append_core_block(
+        &self,
+        agent_id: &AgentId,
+        label: &str,
+        text: &str,
+    ) -> Result<(), MemoryError>;
+}
+
+// ── Episodic Memory (interaction history) ────────────────────────
+
+/// Raw interaction episodes — conversation turns, tool calls, etc.
+#[async_trait]
+pub trait EpisodicMemoryPort: Send + Sync {
+    /// Store a new episode.
+    async fn store_episode(&self, entry: MemoryEntry) -> Result<MemoryId, MemoryError>;
+
+    /// Get the N most recent episodes for an agent.
+    async fn get_recent(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>, MemoryError>;
+
+    /// Get all episodes for a session.
+    async fn get_session(&self, session_id: &SessionId) -> Result<Vec<MemoryEntry>, MemoryError>;
+
+    /// Hybrid search across episodes (vector + BM25).
+    async fn search_episodes(&self, query: &MemoryQuery) -> Result<Vec<SearchResult>, MemoryError>;
+}
+
+// ── Semantic Memory (knowledge graph) ────────────────────────────
+
+/// Entities and bitemporal facts forming a knowledge graph.
+#[async_trait]
+pub trait SemanticMemoryPort: Send + Sync {
+    /// Create or update an entity (entity resolution).
+    async fn upsert_entity(&self, entity: Entity) -> Result<MemoryId, MemoryError>;
+
+    /// Find entity by name (with fuzzy matching).
+    async fn find_entity(&self, name: &str) -> Result<Option<Entity>, MemoryError>;
+
+    /// Add a fact (graph edge) with bitemporal semantics.
+    async fn add_fact(&self, fact: TemporalFact) -> Result<MemoryId, MemoryError>;
+
+    /// Invalidate a fact (set `valid_to = now`).
+    async fn invalidate_fact(&self, fact_id: &MemoryId) -> Result<(), MemoryError>;
+
+    /// Get current (non-invalidated) facts about an entity.
+    async fn get_current_facts(
+        &self,
+        entity_id: &MemoryId,
+    ) -> Result<Vec<TemporalFact>, MemoryError>;
+
+    /// Graph traversal: entities reachable within N hops.
+    async fn traverse(
+        &self,
+        entity_id: &MemoryId,
+        hops: usize,
+    ) -> Result<Vec<(Entity, TemporalFact)>, MemoryError>;
+
+    /// Search entities (vector + BM25).
+    async fn search_entities(&self, query: &MemoryQuery) -> Result<Vec<Entity>, MemoryError>;
+}
+
+// ── Skill Memory (procedural) ────────────────────────────────────
+
+/// Learned procedures from successful (or failed) pipeline runs.
+#[async_trait]
+pub trait SkillMemoryPort: Send + Sync {
+    /// Store a new skill.
+    async fn store_skill(&self, skill: Skill) -> Result<MemoryId, MemoryError>;
+
+    /// Find skills relevant to a task.
+    async fn find_skills(&self, query: &MemoryQuery) -> Result<Vec<Skill>, MemoryError>;
+
+    /// Update a skill (bump counters, new content, version++).
+    async fn update_skill(
+        &self,
+        skill_id: &MemoryId,
+        update: SkillUpdate,
+    ) -> Result<(), MemoryError>;
+
+    /// Get skill by name.
+    async fn get_skill(&self, name: &str) -> Result<Option<Skill>, MemoryError>;
+}
+
+// ── Reflection (self-improvement) ────────────────────────────────
+
+/// Post-run introspection records.
+#[async_trait]
+pub trait ReflectionPort: Send + Sync {
+    /// Store a reflection.
+    async fn store_reflection(&self, reflection: Reflection) -> Result<MemoryId, MemoryError>;
+
+    /// Get reflections relevant to a query.
+    async fn get_relevant_reflections(
+        &self,
+        query: &MemoryQuery,
+    ) -> Result<Vec<Reflection>, MemoryError>;
+
+    /// Get recent failure patterns for an agent.
+    async fn get_failure_patterns(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+    ) -> Result<Vec<Reflection>, MemoryError>;
+}
+
+// ── Consolidation (background processing) ────────────────────────
+
+/// Background memory maintenance: extraction, decay, GC.
+#[async_trait]
+pub trait ConsolidationPort: Send + Sync {
+    /// Run a full consolidation cycle.
+    async fn run_consolidation(
+        &self,
+        agent_id: &AgentId,
+    ) -> Result<ConsolidationReport, MemoryError>;
+
+    /// Recalculate importance scores across all entries.
+    async fn recalculate_importance(&self, agent_id: &AgentId) -> Result<u32, MemoryError>;
+
+    /// Garbage-collect entries below importance threshold and older than max_age_days.
+    async fn gc_low_importance(
+        &self,
+        threshold: f32,
+        max_age_days: u32,
+    ) -> Result<u32, MemoryError>;
+}
+
+// ── Unified Memory (facade) ──────────────────────────────────────
+
+/// Facade composing all memory subsystems.
+///
+/// Agents and services use this as the single memory interface.
+/// Tool implementations hold `Arc<dyn UnifiedMemoryPort>`.
+#[async_trait]
+pub trait UnifiedMemoryPort:
+    WorkingMemoryPort
+    + EpisodicMemoryPort
+    + SemanticMemoryPort
+    + SkillMemoryPort
+    + ReflectionPort
+    + ConsolidationPort
+    + Send
+    + Sync
+{
+    /// Cross-tier hybrid search with RRF fusion.
+    async fn hybrid_search(&self, query: &MemoryQuery) -> Result<HybridSearchResult, MemoryError>;
+
+    /// Generate an embedding vector for text.
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError>;
+
+    // ── Convenience methods for inbound message flow ─────────────
+
+    /// Quick store: persist a key-value entry (used by autosave, consolidation).
     async fn store(
         &self,
         key: &str,
         content: &str,
         category: &MemoryCategory,
         session_id: Option<&str>,
-    ) -> Result<()>;
+    ) -> Result<(), MemoryError>;
 
-    /// Forget a memory entry by key.
-    async fn forget(&self, key: &str) -> Result<bool>;
+    /// Quick recall: keyword/vector search for prompt injection.
+    async fn recall(
+        &self,
+        query: &str,
+        limit: usize,
+        session_id: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError>;
 
-    /// List entries by category.
+    /// Fire-and-forget consolidation after a conversation turn.
+    async fn consolidate_turn(
+        &self,
+        user_message: &str,
+        assistant_response: &str,
+    ) -> Result<(), MemoryError>;
+
+    /// Forget (delete) a memory entry by key. Returns true if found.
+    async fn forget(&self, key: &str) -> Result<bool, MemoryError>;
+
+    /// Get a single memory entry by exact key.
+    async fn get(&self, key: &str) -> Result<Option<MemoryEntry>, MemoryError>;
+
+    /// List memory entries, optionally filtered by category and/or session.
     async fn list(
         &self,
-        category: &MemoryCategory,
+        category: Option<&MemoryCategory>,
         session_id: Option<&str>,
-    ) -> Result<Vec<MemoryEntry>>;
-
-    // ── Consolidation ────────────────────────────────────────────
-
-    /// Run LLM-driven memory consolidation for a turn.
-    ///
-    /// Extracts facts → Core tier, journal → Daily tier.
-    async fn consolidate_turn(&self, user_message: &str, assistant_response: &str) -> Result<()>;
-
-    // ── Utility ──────────────────────────────────────────────────
+        limit: usize,
+    ) -> Result<Vec<MemoryEntry>, MemoryError>;
 
     /// Check if content should be skipped for auto-save (noise filter).
     fn should_skip_autosave(&self, content: &str) -> bool;
 
-    /// Total entry count across all tiers.
-    async fn count(&self) -> Result<usize>;
-}
+    /// Total entry count across all subsystems.
+    async fn count(&self) -> Result<usize, MemoryError>;
 
-/// Backward-compatible alias — callers that don't need tier awareness.
-pub type MemoryPort = dyn MemoryTiersPort;
+    /// Backend name.
+    fn name(&self) -> &str;
+
+    /// Health check.
+    async fn health_check(&self) -> bool;
+}

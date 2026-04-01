@@ -106,59 +106,65 @@ pub async fn run(
     // One Arc<IpcClient> with a single AtomicI64 seq counter shared across
     // gateway, channels, and tools. Prevents replay_rejected from duplicate
     // seq numbers when multiple components send signed IPC messages.
-    let shared_ipc_client: Option<std::sync::Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>> =
-        if config.agents_ipc.enabled {
-            if let Some(ref token) = config.agents_ipc.broker_token {
-                let mut client = crate::tools::agents_ipc::IpcClient::new(
-                    &config.agents_ipc.broker_url,
-                    token,
-                    config.agents_ipc.request_timeout_secs,
-                );
-                let key_path = config
-                    .config_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .join("agent.key");
-                match synapse_security::identity::AgentIdentity::load_or_generate(&key_path) {
-                    Ok(identity) => {
-                        let agent_id = config
-                            .agents_ipc
-                            .agent_id
-                            .clone()
-                            .unwrap_or_else(|| config.agents_ipc.role.clone());
-                        tracing::info!(
-                            agent_id = %agent_id,
-                            "daemon: shared IpcClient with Ed25519 identity"
-                        );
-                        client = client.with_identity(identity, agent_id);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "daemon: Ed25519 identity unavailable");
-                    }
+    let shared_ipc_client: Option<
+        std::sync::Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
+    > = if config.agents_ipc.enabled {
+        if let Some(ref token) = config.agents_ipc.broker_token {
+            let mut client = crate::tools::agents_ipc::IpcClient::new(
+                &config.agents_ipc.broker_url,
+                token,
+                config.agents_ipc.request_timeout_secs,
+            );
+            let key_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("agent.key");
+            match synapse_security::identity::AgentIdentity::load_or_generate(&key_path) {
+                Ok(identity) => {
+                    let agent_id = config
+                        .agents_ipc
+                        .agent_id
+                        .clone()
+                        .unwrap_or_else(|| config.agents_ipc.role.clone());
+                    tracing::info!(
+                        agent_id = %agent_id,
+                        "daemon: shared IpcClient with Ed25519 identity"
+                    );
+                    client = client.with_identity(identity, agent_id);
                 }
-                let client = std::sync::Arc::new(client);
-                // Fire-and-forget key registration with background retry.
-                // Gateway listener may not be up yet — retries handle that.
-                {
-                    let c = client.clone();
-                    tokio::spawn(async move {
-                        { let _ = c.register_public_key().await; }
-                    });
+                Err(e) => {
+                    tracing::warn!(error = %e, "daemon: Ed25519 identity unavailable");
                 }
-                Some(client)
-            } else {
-                None
             }
+            let client = std::sync::Arc::new(client);
+            // Fire-and-forget key registration with background retry.
+            // Gateway listener may not be up yet — retries handle that.
+            {
+                let c = client.clone();
+                tokio::spawn(async move {
+                    {
+                        let _ = c.register_public_key().await;
+                    }
+                });
+            }
+            Some(client)
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
     // ── Phase 4.0: ChannelRegistryPort ─────────────────────────────
     // Always available in daemon mode.  Shared between relay, heartbeat,
     // scheduler, delivery service, and gateway REST API.
     let channel_registry: std::sync::Arc<
         dyn synapse_domain::ports::channel_registry::ChannelRegistryPort,
-    > = std::sync::Arc::new(crate::channels::registry::CachedChannelRegistry::new(config.clone(), std::sync::Arc::new(crate::channels::build_channel_by_id)));
+    > = std::sync::Arc::new(crate::channels::registry::CachedChannelRegistry::new(
+        config.clone(),
+        std::sync::Arc::new(crate::channels::build_channel_by_id),
+    ));
 
     // Phase 4.0 Slice 1: DeliveryService owns delivery policy.
     let delivery_service = std::sync::Arc::new(
@@ -283,9 +289,63 @@ pub async fn run(
         }));
     }
 
+    // ── Phase 4.3: Memory consolidation worker ────────────────────
+    {
+        let raw_mem = match synapse_memory::create_memory(
+            &config.memory,
+            &config.workspace_dir,
+            "default",
+            config.api_key.as_deref(),
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!(
+                    "Memory init failed in daemon: {e} — consolidation worker disabled"
+                );
+                std::sync::Arc::new(synapse_memory::NoopUnifiedMemory)
+            }
+        };
+
+        // Wrap with ConsolidatingMemory if provider available.
+        let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> = {
+            let consolidation_model = config
+                .default_model
+                .clone()
+                .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
+            match synapse_providers::create_resilient_provider(
+                config.default_provider.as_deref().unwrap_or("openrouter"),
+                config.api_key.as_deref(),
+                config.api_url.as_deref(),
+                &config.reliability,
+            ) {
+                Ok(p) => std::sync::Arc::new(
+                    crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+                        raw_mem,
+                        std::sync::Arc::from(p),
+                        consolidation_model,
+                    ),
+                ),
+                Err(e) => {
+                    tracing::warn!("Consolidation provider unavailable: {e}");
+                    raw_mem
+                }
+            }
+        };
+
+        let worker_handle =
+            crate::memory_adapters::consolidation_worker::spawn_consolidation_worker(
+                mem,
+                crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default(),
+                "default".to_string(),
+            );
+        handles.push(worker_handle);
+    }
+
     println!("🧠 SynapseClaw daemon started");
     println!("   Gateway:  http://{host}:{port}");
-    println!("   Components: gateway, channels, heartbeat, scheduler");
+    println!("   Components: gateway, channels, heartbeat, scheduler, memory");
     if config.gateway.require_pairing {
         println!("   Pairing:    enabled (code appears in gateway output above)");
     }
@@ -421,8 +481,9 @@ async fn run_heartbeat_worker(
     };
     use std::sync::Arc;
 
-    let observer: std::sync::Arc<dyn synapse_observability::Observer> =
-        std::sync::Arc::from(synapse_observability::create_observer(&config.observability));
+    let observer: std::sync::Arc<dyn synapse_observability::Observer> = std::sync::Arc::from(
+        synapse_observability::create_observer(&config.observability),
+    );
     let engine = HeartbeatEngine::new(
         config.heartbeat.clone(),
         config.workspace_dir.clone(),

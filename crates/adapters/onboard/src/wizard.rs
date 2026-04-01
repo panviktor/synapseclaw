@@ -1,9 +1,3 @@
-use synapse_infra::config_io::ConfigIO;
-use synapse_providers::{
-    canonical_china_provider_name, is_glm_alias, is_glm_cn_alias, is_minimax_alias,
-    is_moonshot_alias, is_qianfan_alias, is_qwen_alias, is_qwen_oauth_alias, is_zai_alias,
-    is_zai_cn_alias,
-};
 use anyhow::{bail, Context, Result};
 use console::style;
 use dialoguer::{Confirm, Input, Select};
@@ -24,9 +18,14 @@ use synapse_domain::config::schema::{
     DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig, NextcloudTalkConfig, QQConfig,
     SignalConfig, StreamMode, WhatsAppConfig,
 };
-use synapse_memory::{
-    default_memory_backend_key, memory_backend_profile, selectable_memory_backends,
+use synapse_infra::config_io::ConfigIO;
+use synapse_providers::{
+    canonical_china_provider_name, is_glm_alias, is_glm_cn_alias, is_minimax_alias,
+    is_moonshot_alias, is_qianfan_alias, is_qwen_alias, is_qwen_oauth_alias, is_zai_alias,
+    is_zai_cn_alias,
 };
+// Phase 4.3: memory backend selection removed — SurrealDB is the only backend.
+// Old: use synapse_memory::{default_memory_backend_key, memory_backend_profile, selectable_memory_backends};
 use tokio::fs;
 
 // ── Project context collected during wizard ──────────────────────
@@ -374,44 +373,13 @@ fn apply_provider_update(
 
 /// Non-interactive setup: generates a sensible default config instantly.
 /// Use `synapseclaw onboard` or `synapseclaw onboard --api-key sk-... --provider openrouter --memory sqlite|lucid`.
-fn backend_key_from_choice(choice: usize) -> &'static str {
-    selectable_memory_backends()
-        .get(choice)
-        .map_or(default_memory_backend_key(), |backend| backend.key)
+// Phase 4.3: SurrealDB is the only backend — no selection needed.
+fn backend_key_from_choice(_choice: usize) -> &'static str {
+    "surrealdb"
 }
 
-fn memory_config_defaults_for_backend(backend: &str) -> MemoryConfig {
-    let profile = memory_backend_profile(backend);
-
-    MemoryConfig {
-        backend: backend.to_string(),
-        auto_save: profile.auto_save_default,
-        hygiene_enabled: profile.uses_sqlite_hygiene,
-        archive_after_days: if profile.uses_sqlite_hygiene { 7 } else { 0 },
-        purge_after_days: if profile.uses_sqlite_hygiene { 30 } else { 0 },
-        conversation_retention_days: 30,
-        embedding_provider: "none".to_string(),
-        embedding_model: "text-embedding-3-small".to_string(),
-        embedding_dimensions: 1536,
-        vector_weight: 0.7,
-        keyword_weight: 0.3,
-        min_relevance_score: 0.4,
-        embedding_cache_size: if profile.uses_sqlite_hygiene {
-            10000
-        } else {
-            0
-        },
-        chunk_max_tokens: 512,
-        response_cache_enabled: false,
-        response_cache_ttl_minutes: 60,
-        response_cache_max_entries: 5_000,
-        response_cache_hot_entries: 256,
-        snapshot_enabled: false,
-        snapshot_on_hygiene: false,
-        auto_hydrate: true,
-        sqlite_open_timeout_secs: None,
-        qdrant: synapse_domain::config::schema::QdrantConfig::default(),
-    }
+fn memory_config_defaults_for_backend(_backend: &str) -> MemoryConfig {
+    MemoryConfig::default()
 }
 
 #[allow(clippy::too_many_lines)]
@@ -490,9 +458,7 @@ async fn run_quick_setup_with_home(
     let model = model_override
         .map(str::to_string)
         .unwrap_or_else(|| default_model_for_provider(&provider_name));
-    let memory_backend_name = memory_backend
-        .unwrap_or(default_memory_backend_key())
-        .to_string();
+    let memory_backend_name = memory_backend.unwrap_or("surrealdb").to_string();
 
     // Create memory config based on backend choice
     let memory_config = memory_config_defaults_for_backend(&memory_backend_name);
@@ -3155,38 +3121,22 @@ fn setup_project_context() -> Result<ProjectContext> {
 // ── Step 6: Memory Configuration ───────────────────────────────
 
 fn setup_memory() -> Result<MemoryConfig> {
-    print_bullet("Choose how SynapseClaw stores and searches memories.");
-    print_bullet("You can always change this later in config.toml.");
+    // Phase 4.3: SurrealDB is the only backend.
+    print_bullet("Memory backend: SurrealDB embedded (Phase 4.3).");
     println!();
 
-    let options: Vec<&str> = selectable_memory_backends()
-        .iter()
-        .map(|backend| backend.label)
-        .collect();
-
-    let choice = Select::new()
-        .with_prompt("  Select memory backend")
-        .items(&options)
-        .default(0)
+    let auto_save = Confirm::new()
+        .with_prompt("  Auto-save conversations to memory?")
+        .default(true)
         .interact()?;
 
-    let backend = backend_key_from_choice(choice);
-    let profile = memory_backend_profile(backend);
-
-    let auto_save = profile.auto_save_default
-        && Confirm::new()
-            .with_prompt("  Auto-save conversations to memory?")
-            .default(true)
-            .interact()?;
-
     println!(
-        "  {} Memory: {} (auto-save: {})",
+        "  {} Memory: surrealdb (auto-save: {})",
         style("✓").green().bold(),
-        style(backend).green(),
         if auto_save { "on" } else { "off" }
     );
 
-    let mut config = memory_config_defaults_for_backend(backend);
+    let mut config = MemoryConfig::default();
     config.auto_save = auto_save;
     Ok(config)
 }
@@ -6956,56 +6906,13 @@ mod tests {
     }
 
     #[test]
-    fn backend_key_from_choice_maps_supported_backends() {
-        assert_eq!(backend_key_from_choice(0), "sqlite");
-        assert_eq!(backend_key_from_choice(1), "lucid");
-        assert_eq!(backend_key_from_choice(2), "markdown");
-        assert_eq!(backend_key_from_choice(3), "none");
-        assert_eq!(backend_key_from_choice(999), "sqlite");
+    fn backend_key_from_choice_always_returns_surrealdb() {
+        // Phase 4.3: SurrealDB is the only backend
+        assert_eq!(backend_key_from_choice(0), "surrealdb");
+        assert_eq!(backend_key_from_choice(999), "surrealdb");
     }
 
-    #[test]
-    fn memory_backend_profile_marks_lucid_as_optional_sqlite_backed() {
-        let lucid = memory_backend_profile("lucid");
-        assert!(lucid.auto_save_default);
-        assert!(lucid.uses_sqlite_hygiene);
-        assert!(lucid.sqlite_based);
-        assert!(lucid.optional_dependency);
-
-        let markdown = memory_backend_profile("markdown");
-        assert!(markdown.auto_save_default);
-        assert!(!markdown.uses_sqlite_hygiene);
-
-        let none = memory_backend_profile("none");
-        assert!(!none.auto_save_default);
-        assert!(!none.uses_sqlite_hygiene);
-
-        let custom = memory_backend_profile("custom-memory");
-        assert!(custom.auto_save_default);
-        assert!(!custom.uses_sqlite_hygiene);
-    }
-
-    #[test]
-    fn memory_config_defaults_for_lucid_enable_sqlite_hygiene() {
-        let config = memory_config_defaults_for_backend("lucid");
-        assert_eq!(config.backend, "lucid");
-        assert!(config.auto_save);
-        assert!(config.hygiene_enabled);
-        assert_eq!(config.archive_after_days, 7);
-        assert_eq!(config.purge_after_days, 30);
-        assert_eq!(config.embedding_cache_size, 10000);
-    }
-
-    #[test]
-    fn memory_config_defaults_for_none_disable_sqlite_hygiene() {
-        let config = memory_config_defaults_for_backend("none");
-        assert_eq!(config.backend, "none");
-        assert!(!config.auto_save);
-        assert!(!config.hygiene_enabled);
-        assert_eq!(config.archive_after_days, 0);
-        assert_eq!(config.purge_after_days, 0);
-        assert_eq!(config.embedding_cache_size, 0);
-    }
+    // Phase 4.3: old memory backend tests removed (sqlite/lucid/markdown/none gone)
 
     #[test]
     fn channel_menu_choices_include_signal_nextcloud_lark_and_feishu() {

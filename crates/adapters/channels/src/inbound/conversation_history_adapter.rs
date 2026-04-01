@@ -7,10 +7,10 @@
 //! `synapse_domain::domain::message::ChatMessage`, no conversions are needed.
 
 use crate::session_store::SessionStore;
-use synapse_providers::ChatMessage;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use synapse_domain::ports::conversation_history::ConversationHistoryPort;
+use synapse_providers::ChatMessage;
 
 /// Max history turns per sender (same as old MAX_CHANNEL_HISTORY).
 const MAX_HISTORY: usize = 50;

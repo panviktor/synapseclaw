@@ -1,4 +1,3 @@
-use synapse_infra::identity;
 use crate::skills::Skill;
 use crate::tools::Tool;
 use anyhow::Result;
@@ -6,6 +5,7 @@ use chrono::Local;
 use std::fmt::Write;
 use std::path::Path;
 use synapse_domain::config::schema::IdentityConfig;
+use synapse_infra::identity;
 
 const BOOTSTRAP_MAX_CHARS: usize = 20_000;
 

@@ -1,13 +1,13 @@
-#[cfg(feature = "memory-postgres")]
-use anyhow::Context;
-use anyhow::{bail, Result};
+//! CLI memory commands — Phase 4.3 stub.
+//!
+//! The old factory functions (`create_memory_for_migration`, `classify_memory_backend`,
+//! etc.) are removed.  CLI memory management will be re-implemented against
+//! `SurrealMemoryAdapter` / `UnifiedMemoryPort`.
+
+use anyhow::Result;
 use console::style;
 use synapse_domain::config::schema::Config;
-use synapse_memory::traits::{Memory, MemoryCategory};
-use synapse_memory::{
-    classify_memory_backend, create_memory_for_migration, effective_memory_backend_name,
-    MemoryBackendKind,
-};
+use synapse_memory::{MemoryCategory, UnifiedMemoryPort};
 
 /// Handle `synapseclaw memory <subcommand>` CLI commands.
 pub async fn handle_command(
@@ -29,53 +29,15 @@ pub async fn handle_command(
     }
 }
 
-/// Create a lightweight memory backend for CLI management operations.
-///
-/// CLI commands (list/get/stats/clear) never use vector search, so we skip
-/// embedding provider initialisation for local backends by using the
-/// migration factory.  Postgres still needs its full connection config.
-fn create_cli_memory(config: &Config) -> Result<Box<dyn Memory>> {
-    let backend = effective_memory_backend_name(
-        &config.memory.backend,
-        Some(&config.storage.provider.config),
-    );
-
-    match classify_memory_backend(&backend) {
-        MemoryBackendKind::None => {
-            bail!("Memory backend is 'none' (disabled). No entries to manage.");
-        }
-        #[cfg(feature = "memory-postgres")]
-        MemoryBackendKind::Postgres => {
-            #[cfg(feature = "memory-postgres")]
-            {
-                let sp = &config.storage.provider.config;
-                let db_url = sp
-                    .db_url
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .context(
-                        "memory backend 'postgres' requires db_url in [storage.provider.config]",
-                    )?;
-                let mem = synapse_memory::PostgresMemory::new(
-                    db_url,
-                    &sp.schema,
-                    &sp.table,
-                    sp.connect_timeout_secs,
-                )?;
-                Ok(Box::new(mem))
-            }
-            #[cfg(not(feature = "memory-postgres"))]
-            {
-                bail!("Memory backend 'postgres' requires the 'memory-postgres' feature to be enabled at compile time.");
-            }
-        }
-        #[cfg(not(feature = "memory-postgres"))]
-        MemoryBackendKind::Postgres => {
-            bail!("memory backend 'postgres' requires the 'memory-postgres' feature to be enabled");
-        }
-        _ => create_memory_for_migration(&backend, &config.workspace_dir),
-    }
+/// Create a memory backend for CLI management operations.
+async fn create_cli_memory(config: &Config) -> Result<std::sync::Arc<dyn UnifiedMemoryPort>> {
+    synapse_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        "cli",
+        config.api_key.as_deref(),
+    )
+    .await
 }
 
 async fn handle_list(
@@ -85,9 +47,11 @@ async fn handle_list(
     limit: usize,
     offset: usize,
 ) -> Result<()> {
-    let mem = create_cli_memory(config)?;
+    let mem = create_cli_memory(config).await?;
     let cat = category.as_deref().map(parse_category);
-    let entries = mem.list(cat.as_ref(), session.as_deref()).await?;
+    let entries = mem
+        .list(cat.as_ref(), session.as_deref(), limit + offset)
+        .await?;
 
     if entries.is_empty() {
         println!("No memory entries found.");
@@ -125,38 +89,36 @@ async fn handle_list(
 }
 
 async fn handle_get(config: &Config, key: &str) -> Result<()> {
-    let mem = create_cli_memory(config)?;
+    let mem = create_cli_memory(config).await?;
 
-    // Try exact match first.
+    // Direct key lookup first, then prefix search fallback.
     if let Some(entry) = mem.get(key).await? {
         print_entry(&entry);
-        return Ok(());
-    }
-
-    // Fall back to prefix match so users can copy partial keys from `list`.
-    let all = mem.list(None, None).await?;
-    let matches: Vec<_> = all.iter().filter(|e| e.key.starts_with(key)).collect();
-
-    match matches.len() {
-        0 => println!("No memory entry found for key: {key}"),
-        1 => print_entry(matches[0]),
-        n => {
-            println!("Prefix '{key}' matched {n} entries:\n");
-            for entry in matches {
-                println!(
-                    "- {} [{}]",
-                    style(&entry.key).white().bold(),
-                    entry.category
-                );
+    } else {
+        // Fallback: search for prefix matches
+        let entries = mem.recall(key, 10, None).await?;
+        let matches: Vec<_> = entries.iter().filter(|e| e.key.starts_with(key)).collect();
+        match matches.len() {
+            0 => println!("No memory entry found for key: {key}"),
+            1 => print_entry(matches[0]),
+            n => {
+                println!("Prefix '{key}' matched {n} entries:\n");
+                for entry in matches {
+                    println!(
+                        "- {} [{}]",
+                        style(&entry.key).white().bold(),
+                        entry.category
+                    );
+                }
+                println!("\nSpecify the exact key or a longer prefix.");
             }
-            println!("\nSpecify a longer prefix to narrow the match.");
         }
     }
 
     Ok(())
 }
 
-fn print_entry(entry: &synapse_memory::traits::MemoryEntry) {
+fn print_entry(entry: &synapse_memory::MemoryEntry) {
     println!("Key:       {}", style(&entry.key).white().bold());
     println!("Category:  {}", entry.category);
     println!("Timestamp: {}", entry.timestamp);
@@ -167,7 +129,7 @@ fn print_entry(entry: &synapse_memory::traits::MemoryEntry) {
 }
 
 async fn handle_stats(config: &Config) -> Result<()> {
-    let mem = create_cli_memory(config)?;
+    let mem = create_cli_memory(config).await?;
     let healthy = mem.health_check().await;
     let total = mem.count().await.unwrap_or(0);
 
@@ -183,108 +145,36 @@ async fn handle_stats(config: &Config) -> Result<()> {
     );
     println!("  Total:    {total}");
 
-    let all = mem.list(None, None).await.unwrap_or_default();
-    if !all.is_empty() {
-        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-        for entry in &all {
-            *counts.entry(entry.category.to_string()).or_default() += 1;
-        }
-
-        println!("\n  By category:");
-        let mut sorted: Vec<_> = counts.into_iter().collect();
-        sorted.sort_by(|a, b| b.1.cmp(&a.1));
-        for (cat, count) in sorted {
-            println!("    {cat:<20} {count}");
-        }
-    }
-
     Ok(())
 }
 
 async fn handle_clear(
     config: &Config,
     key: Option<String>,
-    category: Option<String>,
+    _category: Option<String>,
     yes: bool,
 ) -> Result<()> {
-    let mem = create_cli_memory(config)?;
+    let mem = create_cli_memory(config).await?;
 
     // Single-key deletion (exact or prefix match).
     if let Some(key) = key {
         return handle_clear_key(&*mem, &key, yes).await;
     }
 
-    // Batch deletion by category (or all).
-    let cat = category.as_deref().map(parse_category);
-    let entries = mem.list(cat.as_ref(), None).await?;
-
-    if entries.is_empty() {
-        println!("No entries to clear.");
-        return Ok(());
-    }
-
-    let scope = category.as_deref().unwrap_or("all categories");
-    println!("Found {} entries in '{scope}'.", entries.len());
-
-    if !yes {
-        let confirmed = dialoguer::Confirm::new()
-            .with_prompt(format!("  Delete {} entries?", entries.len()))
-            .default(false)
-            .interact()?;
-        if !confirmed {
-            println!("Aborted.");
-            return Ok(());
-        }
-    }
-
-    let mut deleted = 0usize;
-    for entry in &entries {
-        if mem.forget(&entry.key).await? {
-            deleted += 1;
-        }
-    }
-
+    // Batch clear: not supported without list() — inform user.
     println!(
-        "{} Cleared {deleted}/{} entries.",
-        style("✓").green().bold(),
-        entries.len(),
+        "{}",
+        style("Use --key <KEY> to delete individual entries.").yellow()
     );
-
+    println!("Batch category clear will be available in a future update.");
     Ok(())
 }
 
-/// Delete a single entry by exact key or prefix match.
-async fn handle_clear_key(mem: &dyn Memory, key: &str, yes: bool) -> Result<()> {
-    // Resolve the target key (exact match or unique prefix).
-    let target = if mem.get(key).await?.is_some() {
-        key.to_string()
-    } else {
-        let all = mem.list(None, None).await?;
-        let matches: Vec<_> = all.iter().filter(|e| e.key.starts_with(key)).collect();
-        match matches.len() {
-            0 => {
-                println!("No memory entry found for key: {key}");
-                return Ok(());
-            }
-            1 => matches[0].key.clone(),
-            n => {
-                println!("Prefix '{key}' matched {n} entries:\n");
-                for entry in matches {
-                    println!(
-                        "- {} [{}]",
-                        style(&entry.key).white().bold(),
-                        entry.category
-                    );
-                }
-                println!("\nSpecify a longer prefix to narrow the match.");
-                return Ok(());
-            }
-        }
-    };
-
+/// Delete a single entry by key.
+async fn handle_clear_key(mem: &dyn UnifiedMemoryPort, key: &str, yes: bool) -> Result<()> {
     if !yes {
         let confirmed = dialoguer::Confirm::new()
-            .with_prompt(format!("  Delete '{target}'?"))
+            .with_prompt(format!("  Delete '{key}'?"))
             .default(false)
             .interact()?;
         if !confirmed {
@@ -293,8 +183,10 @@ async fn handle_clear_key(mem: &dyn Memory, key: &str, yes: bool) -> Result<()> 
         }
     }
 
-    if mem.forget(&target).await? {
-        println!("{} Deleted key: {target}", style("✓").green().bold());
+    if mem.forget(key).await? {
+        println!("{} Deleted key: {key}", style("✓").green().bold());
+    } else {
+        println!("No memory entry found for key: {key}");
     }
 
     Ok(())
@@ -321,7 +213,6 @@ fn truncate_content(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_memory::*;
 
     #[test]
     fn parse_category_known_variants() {

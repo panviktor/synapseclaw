@@ -1,9 +1,3 @@
-use synapse_infra::approval::ApprovalManager;
-use synapse_providers::multimodal;
-use synapse_observability::{self, runtime_trace, Observer, ObserverEvent};
-use synapse_providers::{
-    self, ChatMessage, ChatRequest, Provider, ProviderCapabilityError, ToolCall,
-};
 use crate::runtime;
 use crate::tools::{self, Tool};
 use anyhow::Result;
@@ -18,7 +12,13 @@ use std::time::{Duration, Instant};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::util::truncate_with_ellipsis;
 use synapse_domain::ports::approval::ApprovalPort;
-use synapse_memory::{self, Memory, MemoryCategory};
+use synapse_infra::approval::ApprovalManager;
+use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
+use synapse_observability::{self, runtime_trace, Observer, ObserverEvent};
+use synapse_providers::multimodal;
+use synapse_providers::{
+    self, ChatMessage, ChatRequest, Provider, ProviderCapabilityError, ToolCall,
+};
 use synapse_security::security_policy_from_config;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -194,14 +194,29 @@ fn save_interactive_session_history(path: &Path, history: &[ChatMessage]) -> Res
 /// Entries with a hybrid score below `min_relevance_score` are dropped to
 /// prevent unrelated memories from bleeding into the conversation.
 async fn build_context(
-    mem: &dyn Memory,
+    mem: &dyn UnifiedMemoryPort,
     user_msg: &str,
     min_relevance_score: f64,
     session_id: Option<&str>,
 ) -> String {
     let mut context = String::new();
 
-    // Pull relevant memories for this message
+    // ── Core memory blocks (MemGPT pattern) ──────────────────────
+    // Always-in-prompt blocks: persona, user_knowledge, task_state, domain.
+    if let Ok(blocks) = mem.get_core_blocks(&"default".to_string()).await {
+        for block in &blocks {
+            if !block.content.trim().is_empty() {
+                let _ = writeln!(context, "<{}>", block.label);
+                let _ = writeln!(context, "{}", block.content.trim());
+                let _ = writeln!(context, "</{}>", block.label);
+            }
+        }
+        if !context.is_empty() {
+            context.push('\n');
+        }
+    }
+
+    // ── Relevant memories for this message ───────────────────────
     if let Ok(entries) = mem.recall(user_msg, 5, session_id).await {
         let relevant: Vec<_> = entries
             .iter()
@@ -236,6 +251,25 @@ async fn build_context(
         }
     }
 
+    // ── Relevant skills ────────────────────────────────────────────
+    let skill_query = synapse_domain::domain::memory::MemoryQuery {
+        text: user_msg.to_string(),
+        embedding: None,
+        agent_id: "default".to_string(),
+        include_shared: false,
+        time_range: None,
+        limit: 3,
+    };
+    if let Ok(skills) = mem.find_skills(&skill_query).await {
+        for skill in &skills {
+            if !skill.content.trim().is_empty() {
+                let _ = writeln!(context, "<skill name=\"{}\">", skill.name);
+                let _ = writeln!(context, "{}", skill.content.trim());
+                let _ = writeln!(context, "</skill>");
+            }
+        }
+    }
+
     context
 }
 
@@ -256,10 +290,10 @@ pub(crate) use tool_execution::{agent_turn, is_tool_loop_cancelled, ToolLoopCanc
 #[cfg(test)]
 pub(crate) use tool_call_parsing::{
     build_native_assistant_history, build_native_assistant_history_from_parsed_calls,
-    default_param_for_tool, detect_tool_call_parse_issue, extract_json_values,
-    map_tool_name_alias, parse_arguments_value, parse_glm_shortened_body,
-    parse_glm_style_tool_calls, parse_perl_style_tool_calls, parse_tool_call_value,
-    parse_tool_calls, parse_tool_calls_from_json_value, resolve_display_text, strip_think_tags,
+    default_param_for_tool, detect_tool_call_parse_issue, extract_json_values, map_tool_name_alias,
+    parse_arguments_value, parse_glm_shortened_body, parse_glm_style_tool_calls,
+    parse_perl_style_tool_calls, parse_tool_call_value, parse_tool_calls,
+    parse_tool_calls_from_json_value, resolve_display_text, strip_think_tags,
     strip_tool_result_blocks,
 };
 #[cfg(test)]

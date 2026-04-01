@@ -40,6 +40,15 @@ impl EmbeddingProvider for NoopEmbedding {
     }
 }
 
+/// Default base URL for known embedding providers.
+pub fn default_base_url_for_provider(provider: &str) -> String {
+    match provider.to_lowercase().as_str() {
+        "openai" => "https://api.openai.com/v1".to_string(),
+        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
+        _ => "https://api.openai.com/v1".to_string(),
+    }
+}
+
 // ── OpenAI-compatible embedding provider ─────────────────────
 
 pub struct OpenAiEmbedding {

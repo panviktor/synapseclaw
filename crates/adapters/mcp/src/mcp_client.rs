@@ -15,9 +15,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
 
-use crate::mcp_protocol::{
-    JsonRpcRequest, McpToolDef, McpToolsListResult, MCP_PROTOCOL_VERSION,
-};
+use crate::mcp_protocol::{JsonRpcRequest, McpToolDef, McpToolsListResult, MCP_PROTOCOL_VERSION};
 use crate::mcp_transport::{create_transport, McpTransportConn};
 use synapse_domain::config::schema::McpServerConfig;
 

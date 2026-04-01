@@ -1,8 +1,8 @@
 use super::traits::{Tool, ToolResult};
-use synapse_cron::{ CronJobPatch};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_cron::CronJobPatch;
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 

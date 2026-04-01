@@ -12,11 +12,11 @@ pub use synapse_security;
 
 // Config facade.
 pub mod config {
+    pub use synapse_domain::config::schema;
+    pub use synapse_domain::config::schema::Config;
     pub use synapse_infra::config_io::ConfigIO;
     pub use synapse_infra::workspace;
     pub use synapse_infra::workspace_io;
-    pub use synapse_domain::config::schema;
-    pub use synapse_domain::config::schema::Config;
 }
 
 // CLI command enums.

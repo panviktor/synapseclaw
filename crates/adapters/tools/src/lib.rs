@@ -15,6 +15,7 @@ pub mod cloud_ops;
 pub mod cloud_patterns;
 pub mod composio;
 pub mod content_search;
+pub mod core_memory_update;
 pub mod cron_add;
 pub mod cron_list;
 pub mod cron_remove;
@@ -36,8 +37,8 @@ pub mod linkedin_client;
 pub mod memory_forget;
 pub mod memory_recall;
 pub mod memory_store;
-pub mod model_routing_config;
 pub mod microsoft365;
+pub mod model_routing_config;
 pub mod notion_tool;
 #[cfg(feature = "rag-pdf")]
 pub mod pdf_read;
@@ -59,8 +60,8 @@ pub mod web_search_tool;
 pub mod workspace_tool;
 
 // Re-export key types
-pub use traits::{Tool, ToolResult, ToolSpec};
 pub use synapse_domain::ports::tool::ArcToolRef;
+pub use traits::{Tool, ToolResult, ToolSpec};
 
 pub use backup_tool::BackupTool;
 pub use browser::{BrowserTool, ComputerUseConfig};

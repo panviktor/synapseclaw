@@ -1,5 +1,28 @@
 # SynapseClaw News & Changelog
 
+## 2026-04-01
+
+### Phase 4.3: SurrealDB Memory Architecture (PR #217)
+
+Complete memory system replacement — SurrealDB 3.0 embedded as single backend.
+
+**Done (Slices 1-5+7):**
+- 7 specialized memory ports (Working, Episodic, Semantic, Skill, Reflection, Consolidation, Unified)
+- SurrealDB adapter with 6-table schema + BM25 indexes
+- Core memory blocks (MemGPT pattern) injected into every agent prompt
+- `core_memory_update` tool — agents edit their own persona/knowledge/state
+- EntityExtractor — LLM-driven entity + relationship extraction into knowledge graph
+- SkillLearner — post-pipeline reflection → skill creation/update
+- ConsolidationWorker — background maintenance (importance decay + GC)
+- ConsolidatingMemory wrapper for real LLM consolidation
+- RRF fusion for hybrid search
+- Net: -3659 LOC (deleted 11 old backend files, migrated 30+ consumers)
+
+**Deferred to next pass:**
+- Slice 6: IPC memory sharing + ACL (depends on broker)
+- Slice 8: HNSW vector indexes + local embeddings via llama.cpp
+- Slice 9: SQLite → SurrealDB data migration
+
 ## 2026-03-31
 
 ### Phase 3.12: Thread Context Seeding (PR #215)

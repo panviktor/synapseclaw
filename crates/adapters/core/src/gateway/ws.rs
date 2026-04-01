@@ -473,7 +473,7 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
     // or fall back to legacy ChatDb path.
     let db_session;
     let config = state.config.lock().clone();
-    let mut agent = crate::agent::Agent::from_config(&config)?;
+    let mut agent = crate::agent::Agent::from_config(&config).await?;
 
     let now = Instant::now();
     let _now_secs_val = now_secs();
@@ -987,7 +987,9 @@ async fn run_agent_turn_with_abort(
     message: &str,
     mut abort_rx: tokio::sync::watch::Receiver<bool>,
 ) -> anyhow::Result<String> {
-    // Swap agent out so we don't hold lock across await
+    // Clone config before await to avoid holding MutexGuard across await.
+    let config_snapshot = state.config.lock().clone();
+    let replacement_agent = crate::agent::Agent::from_config(&config_snapshot).await?;
     let mut agent = {
         let mut sessions = state
             .chat_sessions
@@ -996,10 +998,7 @@ async fn run_agent_turn_with_abort(
         let session = sessions
             .get_mut(session_key)
             .ok_or_else(|| anyhow::anyhow!("session not found"))?;
-        std::mem::replace(
-            &mut session.agent,
-            crate::agent::Agent::from_config(&state.config.lock().clone())?,
-        )
+        std::mem::replace(&mut session.agent, replacement_agent)
     };
 
     // Race: agent.turn vs abort signal
@@ -1564,11 +1563,12 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
         (model, temp, prov)
     };
 
-    let generator = crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
-        provider,
-        summary_model,
-        temperature,
-    );
+    let generator =
+        crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
+            provider,
+            summary_model,
+            temperature,
+        );
 
     match synapse_domain::application::services::conversation_service::generate_session_summary(
         store.as_ref(),

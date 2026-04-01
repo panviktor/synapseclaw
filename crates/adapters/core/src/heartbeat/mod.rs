@@ -4,9 +4,9 @@ pub mod store;
 #[cfg(test)]
 mod tests {
     use crate::heartbeat::engine::HeartbeatEngine;
-    use synapse_observability::NoopObserver;
     use std::sync::Arc;
     use synapse_domain::config::schema::HeartbeatConfig;
+    use synapse_observability::NoopObserver;
 
     #[test]
     fn heartbeat_engine_is_constructible_via_module_export() {

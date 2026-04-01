@@ -16,7 +16,6 @@ whatsapp-web = ["dep:wa-rs", "dep:wa-rs-core", "dep:wa-rs-binary", "dep:wa-rs-pr
 rag-pdf = ["dep:pdf-extract", "synapse_tools/rag-pdf"]
 browser-native = ["dep:fantoccini", "synapse_tools/browser-native"]
 sandbox-landlock = ["synapse_security/sandbox-landlock"]
-memory-postgres = []
 
 [dependencies]
 synapse_domain = { path = "../../domain" }

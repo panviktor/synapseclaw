@@ -1,8 +1,8 @@
 use super::traits::{Tool, ToolResult};
-use synapse_cron::{ DeliveryConfig, JobType, Schedule, SessionTarget};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_cron::{DeliveryConfig, JobType, Schedule, SessionTarget};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 
@@ -254,7 +254,13 @@ impl Tool for CronAddTool {
                     return Ok(blocked);
                 }
 
-                synapse_cron::add_shell_job_with_approval(&self.config, name, schedule, command, approved)
+                synapse_cron::add_shell_job_with_approval(
+                    &self.config,
+                    name,
+                    schedule,
+                    command,
+                    approved,
+                )
             }
             JobType::Agent => {
                 let prompt = match args.get("prompt").and_then(serde_json::Value::as_str) {

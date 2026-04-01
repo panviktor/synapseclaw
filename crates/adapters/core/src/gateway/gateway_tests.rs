@@ -1,14 +1,14 @@
 use super::*;
 use crate::channels::traits::ChannelMessage;
-use synapse_providers::Provider;
 use async_trait::async_trait;
 use axum::http::HeaderValue;
 use axum::response::IntoResponse;
 use http_body_util::BodyExt;
 use parking_lot::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use synapse_domain::domain::memory::{MemoryCategory, MemoryEntry};
-use synapse_domain::ports::memory_backend::Memory;
+use synapse_domain::domain::memory::{MemoryCategory, MemoryEntry, MemoryError};
+use synapse_memory::UnifiedMemoryPort;
+use synapse_providers::Provider;
 
 struct NoopRunner;
 #[async_trait]
@@ -87,7 +87,7 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
         model: "test-model".into(),
         summary_model: None,
         temperature: 0.0,
-        mem: Arc::new(MockMemory),
+        mem: Arc::new(synapse_memory::NoopUnifiedMemory),
         auto_save: false,
         webhook_secret_hash: None,
         pairing: Arc::new(PairingGuard::new(false, &[])),
@@ -163,7 +163,7 @@ async fn metrics_endpoint_renders_prometheus_output() {
         model: "test-model".into(),
         summary_model: None,
         temperature: 0.0,
-        mem: Arc::new(MockMemory),
+        mem: Arc::new(synapse_memory::NoopUnifiedMemory),
         auto_save: false,
         webhook_secret_hash: None,
         pairing: Arc::new(PairingGuard::new(false, &[])),
@@ -418,58 +418,7 @@ fn whatsapp_memory_key_includes_sender_and_message_id() {
     assert_eq!(key, "whatsapp_+1234567890_wamid-123");
 }
 
-#[derive(Default)]
-struct MockMemory;
-
-#[async_trait]
-impl Memory for MockMemory {
-    fn name(&self) -> &str {
-        "mock"
-    }
-
-    async fn store(
-        &self,
-        _key: &str,
-        _content: &str,
-        _category: MemoryCategory,
-        _session_id: Option<&str>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn recall(
-        &self,
-        _query: &str,
-        _limit: usize,
-        _session_id: Option<&str>,
-    ) -> anyhow::Result<Vec<MemoryEntry>> {
-        Ok(Vec::new())
-    }
-
-    async fn get(&self, _key: &str) -> anyhow::Result<Option<MemoryEntry>> {
-        Ok(None)
-    }
-
-    async fn list(
-        &self,
-        _category: Option<&MemoryCategory>,
-        _session_id: Option<&str>,
-    ) -> anyhow::Result<Vec<MemoryEntry>> {
-        Ok(Vec::new())
-    }
-
-    async fn forget(&self, _key: &str) -> anyhow::Result<bool> {
-        Ok(false)
-    }
-
-    async fn count(&self) -> anyhow::Result<usize> {
-        Ok(0)
-    }
-
-    async fn health_check(&self) -> bool {
-        true
-    }
-}
+// MockMemory replaced by synapse_memory::NoopUnifiedMemory (used inline).
 
 #[derive(Default)]
 struct MockProvider {
@@ -495,53 +444,239 @@ struct TrackingMemory {
     keys: Mutex<Vec<String>>,
 }
 
+// Delegate all sub-trait impls to noop, override store/count in UnifiedMemoryPort.
 #[async_trait]
-impl Memory for TrackingMemory {
-    fn name(&self) -> &str {
-        "tracking"
+impl synapse_domain::ports::memory::WorkingMemoryPort for TrackingMemory {
+    async fn get_core_blocks(
+        &self,
+        _: &synapse_domain::domain::memory::AgentId,
+    ) -> Result<Vec<synapse_domain::domain::memory::CoreMemoryBlock>, MemoryError> {
+        Ok(vec![])
     }
-
+    async fn update_core_block(
+        &self,
+        _: &synapse_domain::domain::memory::AgentId,
+        _: &str,
+        _: String,
+    ) -> Result<(), MemoryError> {
+        Ok(())
+    }
+    async fn append_core_block(
+        &self,
+        _: &synapse_domain::domain::memory::AgentId,
+        _: &str,
+        _: &str,
+    ) -> Result<(), MemoryError> {
+        Ok(())
+    }
+}
+#[async_trait]
+impl synapse_domain::ports::memory::EpisodicMemoryPort for TrackingMemory {
+    async fn store_episode(
+        &self,
+        _: MemoryEntry,
+    ) -> Result<synapse_domain::domain::memory::MemoryId, MemoryError> {
+        Ok(String::new())
+    }
+    async fn get_recent(
+        &self,
+        _: &synapse_domain::domain::memory::AgentId,
+        _: usize,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        Ok(vec![])
+    }
+    async fn get_session(
+        &self,
+        _: &synapse_domain::domain::memory::SessionId,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        Ok(vec![])
+    }
+    async fn search_episodes(
+        &self,
+        _: &synapse_domain::domain::memory::MemoryQuery,
+    ) -> Result<Vec<synapse_domain::domain::memory::SearchResult>, MemoryError> {
+        Ok(vec![])
+    }
+}
+#[async_trait]
+impl synapse_domain::ports::memory::SemanticMemoryPort for TrackingMemory {
+    async fn upsert_entity(
+        &self,
+        _: synapse_domain::domain::memory::Entity,
+    ) -> Result<synapse_domain::domain::memory::MemoryId, MemoryError> {
+        Ok(String::new())
+    }
+    async fn find_entity(
+        &self,
+        _: &str,
+    ) -> Result<Option<synapse_domain::domain::memory::Entity>, MemoryError> {
+        Ok(None)
+    }
+    async fn add_fact(
+        &self,
+        _: synapse_domain::domain::memory::TemporalFact,
+    ) -> Result<synapse_domain::domain::memory::MemoryId, MemoryError> {
+        Ok(String::new())
+    }
+    async fn invalidate_fact(
+        &self,
+        _: &synapse_domain::domain::memory::MemoryId,
+    ) -> Result<(), MemoryError> {
+        Ok(())
+    }
+    async fn get_current_facts(
+        &self,
+        _: &synapse_domain::domain::memory::MemoryId,
+    ) -> Result<Vec<synapse_domain::domain::memory::TemporalFact>, MemoryError> {
+        Ok(vec![])
+    }
+    async fn traverse(
+        &self,
+        _: &synapse_domain::domain::memory::MemoryId,
+        _: usize,
+    ) -> Result<
+        Vec<(
+            synapse_domain::domain::memory::Entity,
+            synapse_domain::domain::memory::TemporalFact,
+        )>,
+        MemoryError,
+    > {
+        Ok(vec![])
+    }
+    async fn search_entities(
+        &self,
+        _: &synapse_domain::domain::memory::MemoryQuery,
+    ) -> Result<Vec<synapse_domain::domain::memory::Entity>, MemoryError> {
+        Ok(vec![])
+    }
+}
+#[async_trait]
+impl synapse_domain::ports::memory::SkillMemoryPort for TrackingMemory {
+    async fn store_skill(
+        &self,
+        _: synapse_domain::domain::memory::Skill,
+    ) -> Result<synapse_domain::domain::memory::MemoryId, MemoryError> {
+        Ok(String::new())
+    }
+    async fn find_skills(
+        &self,
+        _: &synapse_domain::domain::memory::MemoryQuery,
+    ) -> Result<Vec<synapse_domain::domain::memory::Skill>, MemoryError> {
+        Ok(vec![])
+    }
+    async fn update_skill(
+        &self,
+        _: &synapse_domain::domain::memory::MemoryId,
+        _: synapse_domain::domain::memory::SkillUpdate,
+    ) -> Result<(), MemoryError> {
+        Ok(())
+    }
+    async fn get_skill(
+        &self,
+        _: &str,
+    ) -> Result<Option<synapse_domain::domain::memory::Skill>, MemoryError> {
+        Ok(None)
+    }
+}
+#[async_trait]
+impl synapse_domain::ports::memory::ReflectionPort for TrackingMemory {
+    async fn store_reflection(
+        &self,
+        _: synapse_domain::domain::memory::Reflection,
+    ) -> Result<synapse_domain::domain::memory::MemoryId, MemoryError> {
+        Ok(String::new())
+    }
+    async fn get_relevant_reflections(
+        &self,
+        _: &synapse_domain::domain::memory::MemoryQuery,
+    ) -> Result<Vec<synapse_domain::domain::memory::Reflection>, MemoryError> {
+        Ok(vec![])
+    }
+    async fn get_failure_patterns(
+        &self,
+        _: &synapse_domain::domain::memory::AgentId,
+        _: usize,
+    ) -> Result<Vec<synapse_domain::domain::memory::Reflection>, MemoryError> {
+        Ok(vec![])
+    }
+}
+#[async_trait]
+impl synapse_domain::ports::memory::ConsolidationPort for TrackingMemory {
+    async fn run_consolidation(
+        &self,
+        _: &synapse_domain::domain::memory::AgentId,
+    ) -> Result<synapse_domain::domain::memory::ConsolidationReport, MemoryError> {
+        Ok(Default::default())
+    }
+    async fn recalculate_importance(
+        &self,
+        _: &synapse_domain::domain::memory::AgentId,
+    ) -> Result<u32, MemoryError> {
+        Ok(0)
+    }
+    async fn gc_low_importance(&self, _: f32, _: u32) -> Result<u32, MemoryError> {
+        Ok(0)
+    }
+}
+#[async_trait]
+impl UnifiedMemoryPort for TrackingMemory {
+    async fn hybrid_search(
+        &self,
+        _: &synapse_domain::domain::memory::MemoryQuery,
+    ) -> Result<synapse_domain::domain::memory::HybridSearchResult, MemoryError> {
+        Ok(Default::default())
+    }
+    async fn embed(&self, _: &str) -> Result<Vec<f32>, MemoryError> {
+        Ok(vec![])
+    }
     async fn store(
         &self,
         key: &str,
-        _content: &str,
-        _category: MemoryCategory,
-        _session_id: Option<&str>,
-    ) -> anyhow::Result<()> {
+        _: &str,
+        _: &MemoryCategory,
+        _: Option<&str>,
+    ) -> Result<(), MemoryError> {
         self.keys.lock().push(key.to_string());
         Ok(())
     }
-
     async fn recall(
         &self,
-        _query: &str,
-        _limit: usize,
-        _session_id: Option<&str>,
-    ) -> anyhow::Result<Vec<MemoryEntry>> {
-        Ok(Vec::new())
+        _: &str,
+        _: usize,
+        _: Option<&str>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        Ok(vec![])
     }
-
-    async fn get(&self, _key: &str) -> anyhow::Result<Option<MemoryEntry>> {
-        Ok(None)
+    async fn consolidate_turn(&self, _: &str, _: &str) -> Result<(), MemoryError> {
+        Ok(())
     }
-
-    async fn list(
-        &self,
-        _category: Option<&MemoryCategory>,
-        _session_id: Option<&str>,
-    ) -> anyhow::Result<Vec<MemoryEntry>> {
-        Ok(Vec::new())
-    }
-
-    async fn forget(&self, _key: &str) -> anyhow::Result<bool> {
+    async fn forget(&self, _: &str) -> Result<bool, MemoryError> {
         Ok(false)
     }
-
-    async fn count(&self) -> anyhow::Result<usize> {
+    async fn get(
+        &self,
+        _: &str,
+    ) -> Result<Option<synapse_domain::domain::memory::MemoryEntry>, MemoryError> {
+        Ok(None)
+    }
+    async fn list(
+        &self,
+        _: Option<&synapse_domain::domain::memory::MemoryCategory>,
+        _: Option<&str>,
+        _: usize,
+    ) -> Result<Vec<synapse_domain::domain::memory::MemoryEntry>, MemoryError> {
+        Ok(vec![])
+    }
+    fn should_skip_autosave(&self, _: &str) -> bool {
+        false
+    }
+    async fn count(&self) -> Result<usize, MemoryError> {
         let size = self.keys.lock().len();
         Ok(size)
     }
-
+    fn name(&self) -> &str {
+        "tracking"
+    }
     async fn health_check(&self) -> bool {
         true
     }
@@ -555,7 +690,7 @@ fn test_connect_info() -> ConnectInfo<SocketAddr> {
 async fn webhook_idempotency_skips_duplicate_provider_calls() {
     let provider_impl = Arc::new(MockProvider::default());
     let provider: Arc<dyn Provider> = provider_impl.clone();
-    let memory: Arc<dyn Memory> = Arc::new(MockMemory);
+    let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
     let state = AppState {
         config: Arc::new(Mutex::new(Config::default())),
@@ -645,7 +780,7 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
     let provider: Arc<dyn Provider> = provider_impl.clone();
 
     let tracking_impl = Arc::new(TrackingMemory::default());
-    let memory: Arc<dyn Memory> = tracking_impl.clone();
+    let memory: Arc<dyn UnifiedMemoryPort> = tracking_impl.clone();
 
     let state = AppState {
         config: Arc::new(Mutex::new(Config::default())),
@@ -746,7 +881,7 @@ fn webhook_secret_hash_is_deterministic_and_nonempty() {
 async fn webhook_secret_hash_rejects_missing_header() {
     let provider_impl = Arc::new(MockProvider::default());
     let provider: Arc<dyn Provider> = provider_impl.clone();
-    let memory: Arc<dyn Memory> = Arc::new(MockMemory);
+    let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
     let secret = generate_test_secret();
 
     let state = AppState {
@@ -819,7 +954,7 @@ async fn webhook_secret_hash_rejects_missing_header() {
 async fn webhook_secret_hash_rejects_invalid_header() {
     let provider_impl = Arc::new(MockProvider::default());
     let provider: Arc<dyn Provider> = provider_impl.clone();
-    let memory: Arc<dyn Memory> = Arc::new(MockMemory);
+    let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
     let valid_secret = generate_test_secret();
     let wrong_secret = generate_test_secret();
 
@@ -899,7 +1034,7 @@ async fn webhook_secret_hash_rejects_invalid_header() {
 async fn webhook_secret_hash_accepts_valid_header() {
     let provider_impl = Arc::new(MockProvider::default());
     let provider: Arc<dyn Provider> = provider_impl.clone();
-    let memory: Arc<dyn Memory> = Arc::new(MockMemory);
+    let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
     let secret = generate_test_secret();
 
     let state = AppState {
@@ -984,7 +1119,7 @@ fn compute_nextcloud_signature_hex(secret: &str, random: &str, body: &str) -> St
 #[tokio::test]
 async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
     let provider: Arc<dyn Provider> = Arc::new(MockProvider::default());
-    let memory: Arc<dyn Memory> = Arc::new(MockMemory);
+    let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
     let state = AppState {
         config: Arc::new(Mutex::new(Config::default())),
@@ -1052,7 +1187,7 @@ async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
 async fn nextcloud_talk_webhook_rejects_invalid_signature() {
     let provider_impl = Arc::new(MockProvider::default());
     let provider: Arc<dyn Provider> = provider_impl.clone();
-    let memory: Arc<dyn Memory> = Arc::new(MockMemory);
+    let memory: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
     let channel = Arc::new(NextcloudTalkChannel::new(
         "https://cloud.example.com".into(),

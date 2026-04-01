@@ -8,8 +8,9 @@
 //! This two-phase approach replaces the naive raw-message auto-save with
 //! semantic extraction, similar to Nanobot's `save_memory` tool call pattern.
 
+use super::entity_extractor;
+use synapse_memory::{MemoryCategory, UnifiedMemoryPort};
 use synapse_providers::traits::Provider;
-use synapse_memory::{Memory, MemoryCategory};
 
 /// Output of consolidation extraction.
 #[derive(Debug, serde::Deserialize)]
@@ -36,7 +37,7 @@ Do not include any text outside the JSON object."#;
 pub async fn consolidate_turn(
     provider: &dyn Provider,
     model: &str,
-    memory: &dyn Memory,
+    memory: &dyn UnifiedMemoryPort,
     user_message: &str,
     assistant_response: &str,
 ) -> anyhow::Result<()> {
@@ -69,7 +70,7 @@ pub async fn consolidate_turn(
         .store(
             &history_key,
             &result.history_entry,
-            MemoryCategory::Daily,
+            &MemoryCategory::Daily,
             None,
         )
         .await?;
@@ -79,8 +80,30 @@ pub async fn consolidate_turn(
         if !update.trim().is_empty() {
             let mem_key = format!("core_{}", uuid::Uuid::new_v4());
             memory
-                .store(&mem_key, update, MemoryCategory::Core, None)
+                .store(&mem_key, update, &MemoryCategory::Core, None)
                 .await?;
+        }
+    }
+
+    // Phase 3: Entity extraction — populate knowledge graph.
+    // Best-effort: errors logged but don't fail consolidation.
+    match entity_extractor::extract_entities(provider, model, &truncated).await {
+        Ok(extraction) => {
+            if !extraction.entities.is_empty() || !extraction.relationships.is_empty() {
+                tracing::debug!(
+                    "Extracted {} entities, {} relationships",
+                    extraction.entities.len(),
+                    extraction.relationships.len()
+                );
+                if let Err(e) =
+                    entity_extractor::store_extraction(memory, &extraction, "default").await
+                {
+                    tracing::debug!("Entity storage failed: {e}");
+                }
+            }
+        }
+        Err(e) => {
+            tracing::debug!("Entity extraction skipped: {e}");
         }
     }
 

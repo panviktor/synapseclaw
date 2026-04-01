@@ -339,7 +339,8 @@ impl ScheduleTool {
         }
 
         if let Some(value) = delay {
-            let job = match synapse_cron::add_once_validated(&self.config, value, command, approved) {
+            let job = match synapse_cron::add_once_validated(&self.config, value, command, approved)
+            {
                 Ok(job) => job,
                 Err(error) => {
                     return Ok(ToolResult {
@@ -366,8 +367,12 @@ impl ScheduleTool {
             .map_err(|error| anyhow::anyhow!("Invalid run_at timestamp: {error}"))?
             .with_timezone(&Utc);
 
-        let job = match synapse_cron::add_once_at_validated(&self.config, run_at_parsed, command, approved)
-        {
+        let job = match synapse_cron::add_once_at_validated(
+            &self.config,
+            run_at_parsed,
+            command,
+            approved,
+        ) {
             Ok(job) => job,
             Err(error) => {
                 return Ok(ToolResult {

@@ -177,9 +177,11 @@ pub use nostr::NostrChannel;
 pub use notion::NotionChannel;
 pub use qq::QQChannel;
 pub use reddit::RedditChannel;
+pub use session_backend::SessionBackend;
 pub use signal::SignalChannel;
 pub use slack::SlackChannel;
 pub use telegram::TelegramChannel;
+pub use traits::{Channel, ChannelMessage, SendMessage};
 #[allow(unused_imports)]
 pub use tts::{TtsManager, TtsProvider};
 pub use twitter::TwitterChannel;
@@ -189,5 +191,3 @@ pub use wecom::WeComChannel;
 pub use whatsapp::WhatsAppChannel;
 #[cfg(feature = "whatsapp-web")]
 pub use whatsapp_web::WhatsAppWebChannel;
-pub use session_backend::SessionBackend;
-pub use traits::{Channel, ChannelMessage, SendMessage};

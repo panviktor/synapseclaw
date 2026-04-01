@@ -77,5 +77,4 @@ pub trait IpcClientPort: Send + Sync {
 
     /// Synchronize sender sequence counter from DB.
     fn sync_sender_seq(&self, db_seq: i64);
-
 }
