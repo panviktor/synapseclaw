@@ -128,6 +128,7 @@ Related documents:
 | CORE-010 | PipelineRunner + IPC bridge + checkpointing | `fork-only` | `low` | `crates/fork_core/src/application/services/pipeline_service.rs`, `crates/fork_core/src/application/use_cases/start_pipeline.rs`, `crates/fork_core/src/ports/pipeline_executor.rs`, `src/fork_adapters/pipeline/ipc_step_executor.rs` | Phase 4.1 Slice 2; new files only |
 | CORE-011 | ToolMiddleware: chain, rate limit, validation, approval gate | `fork-only` | `low` | `crates/fork_core/src/domain/tool_middleware.rs`, `crates/fork_core/src/ports/tool_middleware.rs`, `crates/fork_core/src/application/services/tool_middleware_service.rs`, `src/fork_adapters/middleware/*` | Phase 4.1 Slice 3; hook in loop_.rs wired |
 | CORE-012 | Pipeline wiring: config, gateway, IPC endpoints, agent inbox | `fork-only` | `medium` | `crates/domain/src/config/schema.rs`, `crates/adapters/core/src/gateway/mod.rs`, `crates/adapters/core/src/gateway/ipc.rs`, `crates/adapters/core/src/agent/loop_.rs` | Phase 4.1 wiring; shared hotspots |
+| CORE-013 | Phase 4.3: SurrealDB memory architecture — 7 ports, knowledge graph, MemGPT, skill learning | `fork-only` | `high` | `crates/domain/src/ports/memory.rs`, `crates/domain/src/domain/memory.rs`, `crates/adapters/memory/src/surrealdb_adapter.rs`, `crates/adapters/memory/src/surrealdb_schema.surql`, `crates/adapters/core/src/memory_adapters/*` | Phase 4.3; deleted Memory trait + 6 old backends; SurrealDB 3.0 embedded only backend; PRs #217-#218 |
 
 ## Other (MISC-001 .. MISC-003)
 
