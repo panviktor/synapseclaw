@@ -64,7 +64,7 @@ synapseclaw/
         ├── security/        ← synapse_security (10K)
         │   └── src/           pairing, secrets, audit, sandbox, identity
         ├── memory/          ← synapse_memory (8K)
-        │   └── src/           sqlite, qdrant, embeddings, markdown, lucid
+        │   └── src/           SurrealDB embedded, embeddings, vector search, response cache
         ├── providers/       ← synapse_providers (20K)
         │   └── src/           openai, anthropic, gemini, ollama, auth, proxy
         ├── observability/   ← synapse_observability (5K)
@@ -101,8 +101,8 @@ adapters/mcp/        → domain/
 adapters/providers/  → domain/, security/
 adapters/cron/       → domain/, security/
 adapters/infra/      → domain/, security/, providers/
-adapters/channels/   → domain/, security/, providers/, infra/, mcp/, observability/, memory/
-adapters/tools/      → domain/, security/, providers/, infra/, mcp/, cron/, memory/
+adapters/channels/   → domain/, security/, providers/, infra/
+adapters/tools/      → domain/, security/, providers/, infra/, cron/, memory/
 adapters/onboard/    → domain/, infra/, providers/, memory/
 adapters/core/       → ALL above crates (composition root)
 src/main.rs          → all crates (binary composition root)
@@ -115,7 +115,7 @@ All cross-crate communication goes through domain port traits:
 - `crates/domain/src/ports/channel.rs` (`Channel`)
 - `crates/domain/src/ports/tool.rs` (`Tool`, `ToolSpec`, `ToolResult`, `ArcToolRef`)
 - `crates/domain/src/ports/provider.rs` (`Provider`)
-- `crates/domain/src/ports/memory_backend.rs` (`Memory`)
+- `crates/domain/src/ports/memory.rs` (`UnifiedMemoryPort`, `WorkingMemoryPort`, `EpisodicMemoryPort`, `SemanticMemoryPort`, `SkillMemoryPort`, `ReflectionPort`, `ConsolidationPort`)
 - `crates/domain/src/ports/ipc_client.rs` (`IpcClientPort`)
 - `crates/domain/src/ports/runtime.rs` (`RuntimeAdapter`)
 - `crates/adapters/observability/src/traits.rs` (`Observer`)
@@ -129,7 +129,7 @@ All cross-crate communication goes through domain port traits:
 | `crates/adapters/channels/` | `synapse_channels` | 34K | Channel implementations (30+ platforms) |
 | `crates/adapters/tools/` | `synapse_tools` | 37K | Tool implementations (49 tools) |
 | `crates/adapters/security/` | `synapse_security` | 10K | Security: pairing, secrets, audit, sandbox |
-| `crates/adapters/memory/` | `synapse_memory` | 8K | Memory: sqlite, qdrant, embeddings, markdown |
+| `crates/adapters/memory/` | `synapse_memory` | 8K | Memory: SurrealDB embedded, embeddings, vector search |
 | `crates/adapters/providers/` | `synapse_providers` | 20K | LLM providers: openai, anthropic, gemini, ollama |
 | `crates/adapters/observability/` | `synapse_observability` | 5K | Prometheus, OpenTelemetry, tracing |
 | `crates/adapters/cron-store/` | `synapse_cron` | 3K | Cron scheduler, job persistence |

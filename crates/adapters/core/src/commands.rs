@@ -222,6 +222,12 @@ pub enum MemoryCommands {
         #[arg(long)]
         yes: bool,
     },
+    /// Migrate legacy SQLite brain.db to SurrealDB
+    Migrate {
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 /// Integration subcommands

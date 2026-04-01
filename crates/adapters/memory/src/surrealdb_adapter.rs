@@ -67,11 +67,37 @@ impl SurrealMemoryAdapter {
     }
 
     async fn apply_schema(&self) -> Result<(), MemoryError> {
+        // Apply base schema (tables, fields, standard indexes).
         let schema = include_str!("surrealdb_schema.surql");
         self.db
             .query(schema)
             .await
             .map_err(|e| MemoryError::Storage(format!("Schema apply: {e}")))?;
+
+        // Apply BM25 full-text search index (separate query — syntax incompatible with IF NOT EXISTS).
+        if let Err(e) = self
+            .db
+            .query("DEFINE INDEX idx_ep_content ON episode FIELDS content SEARCH ANALYZER simple_analyzer BM25")
+            .await
+        {
+            tracing::debug!("BM25 index creation (may already exist): {e}");
+        }
+
+        // Apply HNSW vector indexes (best-effort — requires embedding data).
+        for (table, idx) in [
+            ("episode", "idx_ep_vector"),
+            ("entity", "idx_ent_vector"),
+            ("skill", "idx_skill_vector"),
+            ("reflection", "idx_refl_vector"),
+        ] {
+            let q = format!(
+                "DEFINE INDEX {idx} ON {table} FIELDS embedding HNSW DIMENSION 768 DIST COSINE"
+            );
+            if let Err(e) = self.db.query(&q).await {
+                tracing::debug!("HNSW index {idx} (may already exist): {e}");
+            }
+        }
+
         tracing::info!("SurrealDB memory schema applied");
         Ok(())
     }

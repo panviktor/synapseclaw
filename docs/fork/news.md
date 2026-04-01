@@ -18,10 +18,22 @@ Complete memory system replacement — SurrealDB 3.0 embedded as single backend.
 - RRF fusion for hybrid search
 - Net: -3659 LOC (deleted 11 old backend files, migrated 30+ consumers)
 
-**Deferred to next pass:**
-- Slice 6: IPC memory sharing + ACL (depends on broker)
-- Slice 8: HNSW vector indexes + local embeddings via llama.cpp
-- Slice 9: SQLite → SurrealDB data migration
+### Phase 4.3 Complete: Embeddings + HNSW + Final Polish (PR #218)
+
+All previously deferred items resolved:
+- HNSW vector indexes on episode, entity, skill, reflection tables
+- Embedding pipeline: OpenAI, OpenRouter, llama.cpp (local), custom URLs
+- CachedEmbeddingProvider (LRU 10K entries)
+- Vector search + BM25 → RRF fusion in search_episodes()
+- Entity resolution via embedding similarity (>0.85 cosine threshold)
+- Multi-hop graph traversal (up to 5 hops, cycle-safe BFS)
+- ACL enforcement (shared_with support in all read queries)
+- SQLite → SurrealDB migration tool
+- InstrumentedMemory wrapper (query latency monitoring)
+- MemoryEvent IPC kind + ACL rules
+- Gateway VALID_KINDS synced (fixed missing done+report kinds)
+
+**Phase 4.3 status: COMPLETE** — 0 deferred items remaining (except llama.cpp deploy on VPS)
 
 ## 2026-03-31
 

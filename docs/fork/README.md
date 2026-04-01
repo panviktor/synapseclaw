@@ -46,7 +46,8 @@ See [`news.md`](news.md) for the latest updates and release notes.
 | [ipc-phase4_0-plan.md](ipc-phase4_0-plan.md) | Phase 4.0: Modular Core Refactor — capability-driven channels, conversation store | Everyone |
 | [ipc-phase4_0-progress.md](ipc-phase4_0-progress.md) | Phase 4.0 execution checklist | Opus |
 | [ipc-phase4_3-plan.md](ipc-phase4_3-plan.md) | Phase 4.3: Memory Architecture — SurrealDB embedded, knowledge graph, skill learning, MemGPT pattern | Everyone |
-| [ipc-phase4_3-progress.md](ipc-phase4_3-progress.md) | Phase 4.3 execution checklist (9 slices — NOT STARTED) | Opus |
+| [ipc-phase4_3-progress.md](ipc-phase4_3-progress.md) | Phase 4.3 execution checklist (COMPLETE — all 9 slices, PRs #217-#218) | Opus |
+| [memory-architecture.md](memory-architecture.md) | Memory system data flows, SurrealDB schema, embedding pipeline, tools | Everyone |
 | [channel-triage.md](channel-triage.md) | Channel port priority: 10 Tier 1 (port) + 17 Tier 2 (defer) | Everyone |
 
 ## Reading order

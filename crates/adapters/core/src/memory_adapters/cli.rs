@@ -26,6 +26,7 @@ pub async fn handle_command(
         crate::commands::MemoryCommands::Clear { key, category, yes } => {
             handle_clear(config, key, category, yes).await
         }
+        crate::commands::MemoryCommands::Migrate { yes } => handle_migrate(config, yes).await,
     }
 }
 
@@ -188,6 +189,53 @@ async fn handle_clear_key(mem: &dyn UnifiedMemoryPort, key: &str, yes: bool) -> 
     } else {
         println!("No memory entry found for key: {key}");
     }
+
+    Ok(())
+}
+
+async fn handle_migrate(config: &Config, yes: bool) -> Result<()> {
+    let sqlite_path = config.workspace_dir.join("memory").join("brain.db");
+
+    if !sqlite_path.exists() {
+        println!("No legacy brain.db found at {}", sqlite_path.display());
+        return Ok(());
+    }
+
+    let count = {
+        let conn = rusqlite::Connection::open_with_flags(
+            &sqlite_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )?;
+        conn.query_row("SELECT count(*) FROM memories", [], |row| {
+            row.get::<_, i64>(0)
+        })?
+    };
+
+    println!(
+        "Found legacy brain.db: {} entries at {}",
+        style(count).white().bold(),
+        sqlite_path.display()
+    );
+
+    if !yes {
+        let confirmed = dialoguer::Confirm::new()
+            .with_prompt(format!("  Migrate {count} entries to SurrealDB?"))
+            .default(true)
+            .interact()?;
+        if !confirmed {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    let mem = create_cli_memory(config).await?;
+    let migrated =
+        super::migration::migrate_sqlite_to_surrealdb(&sqlite_path, mem.as_ref()).await?;
+
+    println!(
+        "{} Migrated {migrated} entries to SurrealDB",
+        style("✓").green().bold()
+    );
 
     Ok(())
 }
