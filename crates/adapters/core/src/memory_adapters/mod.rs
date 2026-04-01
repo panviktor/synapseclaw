@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod consolidation;
+pub mod consolidation_worker;
 pub mod entity_extractor;
 pub mod memory_adapter;
 pub mod skill_learner;
