@@ -11,11 +11,27 @@ use synapse_domain::ports::agent_runner::AgentRunnerPort;
 /// Concrete implementation of `AgentRunnerPort` backed by the real agent loop.
 pub struct AgentRunner {
     config: Arc<Mutex<Config>>,
+    /// Shared memory to avoid SurrealKV lock conflicts in daemon mode.
+    shared_memory: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>>,
 }
 
 impl AgentRunner {
     pub fn new(config: Arc<Mutex<Config>>) -> Self {
-        Self { config }
+        Self {
+            config,
+            shared_memory: None,
+        }
+    }
+
+    /// Create with shared memory (daemon mode — avoids SurrealKV LOCK conflicts).
+    pub fn with_shared_memory(
+        config: Arc<Mutex<Config>>,
+        memory: Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>,
+    ) -> Self {
+        Self {
+            config,
+            shared_memory: Some(memory),
+        }
     }
 }
 
@@ -33,7 +49,7 @@ impl AgentRunnerPort for AgentRunner {
         run_ctx: Option<Arc<RunContext>>,
     ) -> Result<String> {
         let config = self.config.lock().unwrap().clone();
-        Box::pin(super::run(
+        Box::pin(super::run_with_shared_memory(
             config,
             message,
             provider_override,
@@ -43,6 +59,7 @@ impl AgentRunnerPort for AgentRunner {
             session_state_file,
             allowed_tools,
             run_ctx,
+            self.shared_memory.clone(),
         ))
         .await
     }

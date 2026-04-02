@@ -13,8 +13,36 @@ pub async fn run(
     temperature: f64,
     interactive: bool,
     session_state_file: Option<PathBuf>,
+    allowed_tools: Option<Vec<String>>,
+    run_ctx: Option<std::sync::Arc<crate::agent::run_context::RunContext>>,
+) -> Result<String> {
+    run_with_shared_memory(
+        config,
+        message,
+        provider_override,
+        model_override,
+        temperature,
+        interactive,
+        session_state_file,
+        allowed_tools,
+        run_ctx,
+        None,
+    )
+    .await
+}
+
+/// Run agent with optional shared memory (daemon mode avoids SurrealKV lock conflicts).
+pub async fn run_with_shared_memory(
+    config: Config,
+    message: Option<String>,
+    provider_override: Option<String>,
+    model_override: Option<String>,
+    temperature: f64,
+    interactive: bool,
+    session_state_file: Option<PathBuf>,
     _allowed_tools: Option<Vec<String>>,
     run_ctx: Option<std::sync::Arc<crate::agent::run_context::RunContext>>,
+    shared_memory: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>>,
 ) -> Result<String> {
     // ── Wire up agnostic subsystems ──────────────────────────────
     let base_observer = synapse_observability::create_observer(&config.observability);
@@ -28,15 +56,21 @@ pub async fn run(
 
     // ── Memory (the brain) ────────────────────────────────────────
     let resolved_agent_id = resolve_agent_id(&config);
-    let mem_backend = synapse_memory::create_memory(
-        &config.memory,
-        &config.workspace_dir,
-        &resolved_agent_id,
-        config.api_key.as_deref(),
-    )
-    .await?;
-    let mem = mem_backend.memory;
-    let surreal_handle = mem_backend.surreal;
+    let (mem, surreal_handle) = if let Some(shared) = shared_memory {
+        tracing::info!(backend = shared.name(), "Memory: using shared instance");
+        (shared, None)
+    } else {
+        let mem_backend = synapse_memory::create_memory(
+            &config.memory,
+            &config.workspace_dir,
+            &resolved_agent_id,
+            config.api_key.as_deref(),
+        )
+        .await?;
+        let surreal = mem_backend.surreal;
+        tracing::info!(backend = mem_backend.memory.name(), "Memory initialized");
+        (mem_backend.memory, surreal)
+    };
     tracing::info!(backend = mem.name(), "Memory initialized");
 
     // ── Tools ────────────────────────────────────────────────────

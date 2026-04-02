@@ -215,6 +215,17 @@ pub async fn run(
     let shared_dead_letter = mem_backend.dead_letter;
     let shared_surreal = mem_backend.surreal;
 
+    // Replace AgentRunner with one that shares memory (avoids SurrealKV LOCK conflicts)
+    let agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort> = {
+        let config_for_runner = std::sync::Arc::new(std::sync::Mutex::new(config.clone()));
+        std::sync::Arc::new(
+            crate::agent::runner_adapter::AgentRunner::with_shared_memory(
+                config_for_runner,
+                shared_raw_mem.clone(),
+            ),
+        )
+    };
+
     {
         let gateway_cfg = config.clone();
         let gateway_host = host.clone();

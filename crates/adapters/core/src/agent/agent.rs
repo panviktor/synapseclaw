@@ -295,6 +295,15 @@ impl Agent {
     }
 
     pub async fn from_config(config: &Config) -> Result<Self> {
+        Self::from_config_with_memory(config, None).await
+    }
+
+    /// Create an agent from config, optionally reusing a shared memory backend.
+    /// In daemon mode, `shared_memory` avoids opening a second SurrealKV lock.
+    pub async fn from_config_with_memory(
+        config: &Config,
+        shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
+    ) -> Result<Self> {
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::create_observer(
             &config.observability,
         ));
@@ -306,15 +315,19 @@ impl Agent {
         ));
 
         let resolved_agent_id = crate::agent::loop_::resolve_agent_id(config);
-        let memory_backend = synapse_memory::create_memory(
-            &config.memory,
-            &config.workspace_dir,
-            &resolved_agent_id,
-            config.api_key.as_deref(),
-        )
-        .await?;
-        let memory: Arc<dyn UnifiedMemoryPort> = memory_backend.memory;
-        let surreal_handle = memory_backend.surreal;
+        let (memory, surreal_handle): (Arc<dyn UnifiedMemoryPort>, _) =
+            if let Some(mem) = shared_memory {
+                (mem, None)
+            } else {
+                let memory_backend = synapse_memory::create_memory(
+                    &config.memory,
+                    &config.workspace_dir,
+                    &resolved_agent_id,
+                    config.api_key.as_deref(),
+                )
+                .await?;
+                (memory_backend.memory, memory_backend.surreal)
+            };
 
         let composio_key = if config.composio.enabled {
             config.composio.api_key.as_deref()
@@ -786,6 +799,26 @@ pub async fn run(
     model_override: Option<String>,
     temperature: f64,
 ) -> Result<()> {
+    run_with_memory(
+        config,
+        message,
+        provider_override,
+        model_override,
+        temperature,
+        None,
+    )
+    .await
+}
+
+/// Run agent with optional shared memory (avoids SurrealKV lock conflicts in daemon mode).
+pub async fn run_with_memory(
+    config: Config,
+    message: Option<String>,
+    provider_override: Option<String>,
+    model_override: Option<String>,
+    temperature: f64,
+    shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
+) -> Result<()> {
     let start = Instant::now();
 
     let mut effective_config = config;
@@ -797,7 +830,7 @@ pub async fn run(
     }
     effective_config.default_temperature = temperature;
 
-    let mut agent = Agent::from_config(&effective_config).await?;
+    let mut agent = Agent::from_config_with_memory(&effective_config, shared_memory).await?;
 
     let provider_name = effective_config
         .default_provider

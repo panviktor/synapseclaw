@@ -333,7 +333,7 @@ pub(super) mod tool_call_parsing;
 pub(super) mod tool_execution;
 
 // Re-export public API from sub-modules.
-pub use cli_run::{process_message, run};
+pub use cli_run::{process_message, run, run_with_shared_memory};
 #[allow(unused_imports)]
 pub(crate) use synapse_domain::application::services::tool_filtering::build_tool_instructions;
 #[allow(unused_imports)]

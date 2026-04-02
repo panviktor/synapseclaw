@@ -473,7 +473,8 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
     // or fall back to legacy ChatDb path.
     let db_session;
     let config = state.config.lock().clone();
-    let mut agent = crate::agent::Agent::from_config(&config).await?;
+    let mut agent =
+        crate::agent::Agent::from_config_with_memory(&config, Some(state.mem.clone())).await?;
 
     let now = Instant::now();
     let _now_secs_val = now_secs();
@@ -994,7 +995,9 @@ async fn run_agent_turn_with_abort(
 ) -> anyhow::Result<String> {
     // Clone config before await to avoid holding MutexGuard across await.
     let config_snapshot = state.config.lock().clone();
-    let replacement_agent = crate::agent::Agent::from_config(&config_snapshot).await?;
+    let replacement_agent =
+        crate::agent::Agent::from_config_with_memory(&config_snapshot, Some(state.mem.clone()))
+            .await?;
     let mut agent = {
         let mut sessions = state
             .chat_sessions
