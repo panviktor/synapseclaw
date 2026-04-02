@@ -322,7 +322,10 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         // Generate embedding if provider is available (best-effort).
         let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
             match self.embedder.embed_one(&entry.content).await {
-                Ok(emb) => Some(emb),
+                Ok(emb) => {
+                    tracing::info!(dims = emb.len(), "memory.embedding.stored");
+                    Some(emb)
+                }
                 Err(e) => {
                     tracing::warn!(op = "store_episode", "Embedding failed: {e}");
                     None
@@ -497,7 +500,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             row_map.entry(id).or_insert(row);
         }
 
-        Ok(fused
+        let results: Vec<SearchResult> = fused
             .into_iter()
             .filter_map(|scored| {
                 let row = row_map.get(&scored.id)?;
@@ -508,7 +511,16 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                     source: synapse_domain::domain::memory::SearchSource::Hybrid,
                 })
             })
-            .collect())
+            .collect();
+
+        tracing::info!(
+            bm25_results = bm25_rows.len(),
+            vector_results = vec_rows.len(),
+            fused = results.len(),
+            "memory.search.hybrid"
+        );
+
+        Ok(results)
     }
 }
 

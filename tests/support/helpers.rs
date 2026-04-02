@@ -100,7 +100,6 @@ pub fn build_agent_with_sqlite_memory(
         backend: "noop".into(),
         ..MemoryConfig::default()
     };
-    // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
     let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(memory::NoopUnifiedMemory);
     Agent::builder()
         .provider(provider)

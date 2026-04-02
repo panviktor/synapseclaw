@@ -1736,8 +1736,7 @@ fn autosave_memory_key_has_prefix_and_uniqueness() {
     assert_ne!(key1, key2);
 }
 
-// TODO(phase4.3): These tests need SurrealMemoryAdapter to properly test store/recall.
-// Temporarily use NoopUnifiedMemory for compilation — real behavior tests deferred.
+// Unit tests use NoopUnifiedMemory; real store/recall tested in tests/integration/memory_restart.rs.
 
 #[tokio::test]
 async fn autosave_memory_keys_preserve_multiple_turns() {

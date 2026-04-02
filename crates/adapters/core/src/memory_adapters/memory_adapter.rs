@@ -249,6 +249,10 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
         // IPC broadcast: notify fleet about discovered entities.
         if let Some(ref ipc) = self.ipc_client {
             if outcome.entities_extracted > 0 {
+                tracing::info!(
+                    entities = outcome.entities_extracted,
+                    "memory.ipc.entity_broadcast"
+                );
                 let event = synapse_domain::domain::memory::MemoryEvent {
                     event_type: synapse_domain::domain::memory::MemoryEventType::EntityDiscovered,
                     source_agent: self.agent_id.clone(),
@@ -265,6 +269,8 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
                     tracing::warn!("MemoryEvent IPC broadcast failed: {e}");
                 }
             }
+        } else {
+            tracing::debug!("memory.ipc.no_client");
         }
 
         Ok(())
@@ -278,8 +284,10 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
         tools_used: &[String],
     ) -> Result<(), MemoryError> {
         if tools_used.is_empty() {
+            tracing::debug!("memory.reflect_on_turn.skip_no_tools");
             return Ok(());
         }
+        tracing::info!(tools = tools_used.len(), "memory.reflect_on_turn.start");
         let summary = super::skill_learner::PipelineRunSummary {
             run_id: uuid::Uuid::new_v4().to_string(),
             task: user_message.chars().take(200).collect(),

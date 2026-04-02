@@ -338,7 +338,16 @@ pub(crate) async fn run_tool_call_loop(
     };
 
     let turn_id = Uuid::new_v4().to_string();
+    let turn_start = std::time::Instant::now();
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
+    let mut total_tool_calls = 0usize;
+
+    tracing::info!(
+        model,
+        channel = channel_name,
+        max_iterations,
+        "agent.turn.start"
+    );
 
     for iteration in 0..max_iterations {
         if cancellation_token
@@ -632,6 +641,14 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
             history.push(ChatMessage::assistant(response_text.clone()));
+            tracing::info!(
+                model,
+                iterations = iteration + 1,
+                tool_calls = total_tool_calls,
+                duration_ms = turn_start.elapsed().as_millis() as u64,
+                response_len = display_text.len(),
+                "agent.turn.complete"
+            );
             return Ok(display_text);
         }
 
@@ -646,6 +663,14 @@ pub(crate) async fn run_tool_call_loop(
         //
         // When multiple tool calls are present and interactive CLI approval is not needed, run
         // tool executions concurrently for lower wall-clock latency.
+        tracing::info!(
+            iteration,
+            tool_count = tool_calls.len(),
+            tools = %tool_calls.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(","),
+            "agent.turn.tool_calls"
+        );
+        total_tool_calls += tool_calls.len();
+
         let mut tool_results = String::new();
         let mut individual_results: Vec<(Option<String>, String)> = Vec::new();
         let mut ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome)>> =

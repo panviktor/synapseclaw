@@ -1211,6 +1211,14 @@ async fn handle_message_via_orchestrator(
     caps: &[synapse_domain::domain::channel::ChannelCapability],
     original_msg: &traits::ChannelMessage,
 ) {
+    let handler_start = std::time::Instant::now();
+    tracing::info!(
+        channel = %envelope.source_adapter,
+        sender = %envelope.actor_id,
+        message_len = envelope.content.len(),
+        "channel.message.received"
+    );
+
     use crate::runtime::{agent_runtime_adapter, hooks_adapter};
     use synapse_channels::inbound::{
         channel_output_adapter, conversation_history_adapter, route_selection_adapter,
@@ -1484,6 +1492,12 @@ async fn handle_message_via_orchestrator(
             tracing::warn!("Message handling failed unexpectedly: {e}");
         }
     }
+
+    tracing::info!(
+        channel = %envelope.source_adapter,
+        duration_ms = handler_start.elapsed().as_millis() as u64,
+        "channel.message.handled"
+    );
 
     // Persist session store turn if available
     if let Some(ref _store) = ctx.session_store {
