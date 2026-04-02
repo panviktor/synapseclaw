@@ -227,6 +227,7 @@ struct ChannelRuntimeContext {
     model_routes: Arc<Vec<synapse_domain::config::schema::ModelRouteConfig>>,
     query_classification: synapse_domain::config::schema::QueryClassificationConfig,
     ack_reactions: bool,
+    agent_id: Arc<String>,
     show_tool_calls: bool,
     session_store: Option<Arc<session_store::SessionStore>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
@@ -1310,8 +1311,42 @@ async fn handle_message_via_orchestrator(
         .map(|r| (r.provider.clone(), r.model.clone(), r.hint.clone()))
         .collect();
 
+    // SOUL.md hot-reload: re-read from disk and replace section in static prompt.
+    // Other bootstrap files (AGENTS.md, TOOLS.md) are stable — no need to re-read.
+    // Core blocks injected per-turn in use case (handle_inbound_message #8).
+    let system_prompt = {
+        let soul_path = ctx.workspace_dir.join("SOUL.md");
+        if let Ok(fresh) = tokio::fs::read_to_string(&soul_path).await {
+            let fresh = fresh.trim();
+            if !fresh.is_empty() {
+                // Static prompt has "### SOUL.md\n{old content}\n### {next file}"
+                // Replace everything between "### SOUL.md\n" and the next "### " marker.
+                let static_p = ctx.system_prompt.as_str();
+                if let Some(start) = static_p.find("### SOUL.md\n") {
+                    let after_header = start + "### SOUL.md\n".len();
+                    // Find next section marker or end of string
+                    let end = static_p[after_header..]
+                        .find("\n### ")
+                        .map(|i| after_header + i + 1) // +1 to include the \n
+                        .unwrap_or(static_p.len());
+                    format!(
+                        "{}{fresh}\n\n{}",
+                        &static_p[..after_header],
+                        &static_p[end..]
+                    )
+                } else {
+                    ctx.system_prompt.to_string()
+                }
+            } else {
+                ctx.system_prompt.to_string()
+            }
+        } else {
+            ctx.system_prompt.to_string()
+        }
+    };
+
     let config = uc::InboundMessageConfig {
-        system_prompt: ctx.system_prompt.to_string(),
+        system_prompt,
         default_provider: ctx.default_provider.to_string(),
         default_model: ctx.model.to_string(),
         temperature: ctx.temperature,
@@ -1337,6 +1372,7 @@ async fn handle_message_via_orchestrator(
         message_timeout_secs: ctx.message_timeout_secs,
         min_relevance_score: ctx.min_relevance_score,
         ack_reactions: ctx.ack_reactions,
+        agent_id: ctx.agent_id.to_string(),
     };
 
     let memory_port: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>> =
@@ -3343,6 +3379,7 @@ pub async fn start_channels(
         model_routes: Arc::new(config.model_routes.clone()),
         query_classification: config.query_classification.clone(),
         ack_reactions: config.channels_config.ack_reactions,
+        agent_id: Arc::new(crate::agent::loop_::resolve_agent_id(&config)),
         show_tool_calls: config.channels_config.show_tool_calls,
         session_store: if config.channels_config.session_persistence {
             match session_store::SessionStore::new(&config.workspace_dir) {
@@ -3839,6 +3876,7 @@ mod tests {
             query_classification:
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
+            agent_id: Arc::new("test-agent".to_string()),
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -3941,6 +3979,7 @@ mod tests {
             query_classification:
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
+            agent_id: Arc::new("test-agent".to_string()),
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4051,6 +4090,7 @@ mod tests {
             message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
             ack_reactions: true,
+            agent_id: Arc::new("test-agent".to_string()),
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4172,6 +4212,7 @@ mod tests {
             query_classification:
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
+            agent_id: Arc::new("test-agent".to_string()),
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),

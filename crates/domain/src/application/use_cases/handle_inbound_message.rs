@@ -49,6 +49,9 @@ pub struct InboundMessageConfig {
     pub min_relevance_score: f64,
     /// Whether to show ack reactions (👀).
     pub ack_reactions: bool,
+    /// Agent identity for memory operations (core blocks, consolidation).
+    #[allow(dead_code)]
+    pub agent_id: String,
 }
 
 impl std::fmt::Debug for InboundMessageConfig {
@@ -281,21 +284,42 @@ async fn handle_regular_message(
         HistoryEnrichment::MemoryContext {
             conversation_key: conv_key,
         } => {
-            // #8: Memory context enrichment
+            // #8: Memory context enrichment (core blocks + recall)
             if let Some(ref mem) = ports.memory {
+                let mut full_context = String::new();
+
+                // Core memory blocks (MemGPT: always in context)
+                if let Ok(blocks) = mem.get_core_blocks(&config.agent_id).await {
+                    for block in &blocks {
+                        if !block.content.trim().is_empty() {
+                            full_context.push_str(&format!(
+                                "<{}>\n{}\n</{}>\n",
+                                block.label,
+                                block.content.trim(),
+                                block.label
+                            ));
+                        }
+                    }
+                }
+
+                // Keyword/vector recall
                 let recall_cfg = crate::domain::memory::RecallConfig {
                     min_relevance_score: config.min_relevance_score,
                     ..Default::default()
                 };
-                let context = crate::application::services::memory_service::recall_context(
+                let recall = crate::application::services::memory_service::recall_context(
                     mem.as_ref(),
                     content,
                     Some(&conv_key),
                     &recall_cfg,
                 )
                 .await;
-                if !context.is_empty() {
-                    history.push(ChatMessage::user(format!("{context}\n{content}")));
+                if !recall.is_empty() {
+                    full_context.push_str(&recall);
+                }
+
+                if !full_context.is_empty() {
+                    history.push(ChatMessage::user(format!("{full_context}\n{content}")));
                     // Skip the normal user turn append below
                     ports
                         .history
@@ -493,6 +517,35 @@ async fn execute_agent_turn(
                     let asst_resp = response_text.clone();
                     tokio::spawn(async move {
                         let _ = mem.consolidate_turn(&user_msg, &asst_resp).await;
+                    });
+                }
+            }
+
+            // ── #19: Skill reflection (fire-and-forget) ──────
+            // Multi-criteria gate: only reflect on high-value turns to avoid wasting LLM calls.
+            if let Some(ref mem) = ports.memory {
+                let resp_lower = response_text.to_lowercase();
+                let should_reflect = response_text.len() > 200
+                    && content.chars().count() >= 30
+                    && (turn_result.tools_used
+                        || resp_lower.contains("error")
+                        || resp_lower.contains("failed"));
+
+                if should_reflect {
+                    let mem = Arc::clone(mem);
+                    let user_msg = content.to_string();
+                    let asst_resp = response_text.clone();
+                    // Parse tool names from summary: "[Used tools: foo, bar]" → vec!["foo", "bar"]
+                    let tools: Vec<String> = turn_result
+                        .tool_summary
+                        .trim_start_matches("[Used tools: ")
+                        .trim_end_matches(']')
+                        .split(", ")
+                        .filter(|s| !s.is_empty())
+                        .map(String::from)
+                        .collect();
+                    tokio::spawn(async move {
+                        let _ = mem.reflect_on_turn(&user_msg, &asst_resp, &tools).await;
                     });
                 }
             }
@@ -813,6 +866,7 @@ mod tests {
             message_timeout_secs: 60,
             min_relevance_score: 0.5,
             ack_reactions: false,
+            agent_id: "test-agent".into(),
         }
     }
 

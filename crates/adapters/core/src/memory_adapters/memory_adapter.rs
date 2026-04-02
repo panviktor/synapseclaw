@@ -287,18 +287,32 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     async fn reflect_on_turn(
         &self,
         user_message: &str,
-        _assistant_response: &str,
+        assistant_response: &str,
         tools_used: &[String],
     ) -> Result<(), MemoryError> {
-        if tools_used.is_empty() {
-            tracing::debug!("memory.reflect_on_turn.skip_no_tools");
-            return Ok(());
-        }
-        tracing::info!(tools = tools_used.len(), "memory.reflect_on_turn.start");
+        tracing::info!(
+            tools = tools_used.len(),
+            msg_len = user_message.len(),
+            "memory.reflect_on_turn.start"
+        );
+
+        // Detect outcome from response content (heuristic)
+        let resp_lower = assistant_response.to_lowercase();
+        let outcome = if resp_lower.contains("error")
+            || resp_lower.contains("failed")
+            || resp_lower.contains("sorry, i")
+            || resp_lower.contains("couldn't")
+            || resp_lower.contains("unable to")
+        {
+            synapse_domain::domain::memory::ReflectionOutcome::Partial
+        } else {
+            synapse_domain::domain::memory::ReflectionOutcome::Success
+        };
+
         let summary = super::skill_learner::PipelineRunSummary {
             run_id: uuid::Uuid::new_v4().to_string(),
             task: user_message.chars().take(200).collect(),
-            outcome: synapse_domain::domain::memory::ReflectionOutcome::Success,
+            outcome,
             steps: tools_used.to_vec(),
             errors: vec![],
         };
