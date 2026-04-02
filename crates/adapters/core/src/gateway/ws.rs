@@ -515,30 +515,34 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
             }
         } else {
             // Legacy ChatDb fallback
-            db_session = state
-                .chat_db
-                .as_ref()
-                .and_then(|db| db.get_session(session_key).ok().flatten())
-                .map(|r| ConversationSession {
-                    key: r.key,
-                    kind: ConversationKind::Web,
-                    label: r.label,
-                    summary: r.session_summary,
-                    current_goal: r.current_goal,
-                    #[allow(clippy::cast_sign_loss)]
-                    created_at: r.created_at as u64,
-                    #[allow(clippy::cast_sign_loss)]
-                    last_active: r.last_active as u64,
-                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                    message_count: r.message_count as u32,
-                    #[allow(clippy::cast_sign_loss)]
-                    input_tokens: r.input_tokens as u64,
-                    #[allow(clippy::cast_sign_loss)]
-                    output_tokens: r.output_tokens as u64,
-                });
+            db_session = if let Some(db) = state.chat_db.as_ref() {
+                db.get_session(session_key)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|r| ConversationSession {
+                        key: r.key,
+                        kind: ConversationKind::Web,
+                        label: r.label,
+                        summary: r.session_summary,
+                        current_goal: r.current_goal,
+                        #[allow(clippy::cast_sign_loss)]
+                        created_at: r.created_at as u64,
+                        #[allow(clippy::cast_sign_loss)]
+                        last_active: r.last_active as u64,
+                        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                        message_count: r.message_count as u32,
+                        #[allow(clippy::cast_sign_loss)]
+                        input_tokens: r.input_tokens as u64,
+                        #[allow(clippy::cast_sign_loss)]
+                        output_tokens: r.output_tokens as u64,
+                    })
+            } else {
+                None
+            };
             if let Some(ref session) = db_session {
                 if let Some(db) = state.chat_db.as_ref() {
-                    let messages = db.get_messages(session_key, 200)?;
+                    let messages = db.get_messages(session_key, 200).await?;
                     replay_messages_into_agent(&mut agent, &messages)?;
                 }
                 (
@@ -705,6 +709,7 @@ async fn handle_chat_history(
     } else if let Some(db) = state.chat_db.as_ref() {
         // Fallback: convert ChatMessageRow → ConversationEvent
         db.get_messages(&session_key, limit)
+            .await
             .unwrap_or_default()
             .iter()
             .map(|m| ConversationEvent {
@@ -1070,6 +1075,7 @@ async fn handle_sessions_list(
     } else if let Some(db) = state.chat_db.as_ref() {
         // Fallback: convert ChatSessionRow → ConversationSession
         db.list_sessions(&prefix)
+            .await
             .unwrap_or_default()
             .iter()
             .map(|r| ConversationSession {
@@ -1117,6 +1123,7 @@ async fn handle_sessions_list(
             evts.last().map(|e| truncate_str(&e.content, 60))
         } else if let Some(db) = state.chat_db.as_ref() {
             db.get_messages(&s.key, 1)
+                .await
                 .ok()
                 .and_then(|msgs| msgs.last().map(|m| truncate_str(&m.content, 60)))
         } else {

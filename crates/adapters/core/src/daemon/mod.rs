@@ -207,6 +207,7 @@ pub async fn run(
             synapse_memory::MemoryBackend {
                 memory: noop.clone(),
                 dead_letter: noop,
+                surreal: None,
             }
         }
     };

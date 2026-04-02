@@ -7433,6 +7433,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
+ "surrealdb",
  "synapse_channels",
  "synapse_cron",
  "synapse_domain",

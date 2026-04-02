@@ -801,7 +801,7 @@ pub async fn handle_api_chat_sessions(
 
     let prefix = params.prefix.as_deref().unwrap_or("");
     match &state.chat_db {
-        Some(db) => match db.list_sessions(prefix) {
+        Some(db) => match db.list_sessions(prefix).await {
             Ok(sessions) => Json(serde_json::json!({"sessions": sessions})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -826,7 +826,7 @@ pub async fn handle_api_chat_session_messages(
 
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
     match &state.chat_db {
-        Some(db) => match db.get_messages(&key, limit) {
+        Some(db) => match db.get_messages(&key, limit).await {
             Ok(messages) => Json(serde_json::json!({"messages": messages})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -1406,7 +1406,7 @@ pub async fn handle_api_activity(
 
     // 1. Chat/channel messages from chat_db (real message-level events, not session summaries)
     if let Some(ref db) = state.chat_db {
-        if let Ok(sessions) = db.list_sessions("") {
+        if let Ok(sessions) = db.list_sessions("").await {
             for session in sessions {
                 if session.last_active < from_ts {
                     continue;
@@ -1427,7 +1427,7 @@ pub async fn handle_api_activity(
 
                 // Fetch recent messages for this session (real turns, not summaries)
                 let msg_limit = 10i64; // per session
-                if let Ok(messages) = db.get_messages(key, msg_limit) {
+                if let Ok(messages) = db.get_messages(key, msg_limit).await {
                     for msg in &messages {
                         if msg.timestamp < from_ts {
                             continue;

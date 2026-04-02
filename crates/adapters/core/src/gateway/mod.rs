@@ -797,17 +797,10 @@ pub async fn run_gateway(
         None
     };
 
-    // ── Chat DB (SQLite persistence for web chat sessions) ──
-    let chat_db = {
-        let chat_dir = config.workspace_dir.join("chat");
-        match chat_db::ChatDb::open(&chat_dir.join("sessions.db")) {
-            Ok(db) => Some(Arc::new(db)),
-            Err(e) => {
-                tracing::warn!("Failed to open chat database: {e}");
-                None
-            }
-        }
-    };
+    // ── Chat DB (SurrealDB persistence for web chat sessions) ──
+    let chat_db: Option<Arc<chat_db::ChatDb>> = shared_surreal
+        .as_ref()
+        .map(|s| Arc::new(chat_db::ChatDb::new(Arc::clone(s))));
 
     // ── Phase 4.0: ConversationStorePort (wraps ChatDb) ──
     let conversation_store: Option<
@@ -817,11 +810,11 @@ pub async fn run_gateway(
             as Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>
     });
 
-    // ── Phase 4.0: RunStorePort (wraps ChatDb) ──
+    // ── Phase 4.0: RunStorePort (SurrealDB-backed) ──
     let run_store: Option<Arc<dyn synapse_domain::ports::run_store::RunStorePort>> =
-        chat_db.as_ref().map(|db| {
-            Arc::new(crate::storage::run_store::ChatDbRunStore::new(Arc::clone(
-                db,
+        shared_surreal.as_ref().map(|s| {
+            Arc::new(crate::storage::run_store::SurrealRunStore::new(Arc::clone(
+                s,
             ))) as Arc<dyn synapse_domain::ports::run_store::RunStorePort>
         });
 
