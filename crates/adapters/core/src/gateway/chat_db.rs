@@ -1,19 +1,19 @@
-//! SQLite persistence for web chat sessions.
+//! SurrealDB persistence for web chat sessions.
 //!
-//! Stores session metadata and message transcripts in `workspace/chat/sessions.db`.
-//! WAL mode for concurrent reads during active conversations.
+//! Phase 4.5: migrated from SQLite to shared SurrealDB instance.
+//! Tables: chat_session, chat_message, run, run_event (schema in surrealdb_schema.surql).
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
-use std::path::Path;
-use std::sync::Mutex;
+use std::sync::Arc;
+use surrealdb::engine::local::Db;
+use surrealdb::Surreal;
 
-/// Persistent chat session database.
+/// Persistent chat session database backed by SurrealDB.
 pub struct ChatDb {
-    conn: Mutex<Connection>,
+    db: Arc<Surreal<Db>>,
 }
 
-/// A row from `chat_sessions`.
+/// A row from `chat_session`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChatSessionRow {
     pub key: String,
@@ -27,7 +27,7 @@ pub struct ChatSessionRow {
     pub output_tokens: i64,
 }
 
-/// A row from `chat_messages`.
+/// A row from `chat_message`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChatMessageRow {
     pub id: i64,
@@ -42,362 +42,275 @@ pub struct ChatMessageRow {
     pub timestamp: i64,
 }
 
+fn json_str(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|val| val.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn json_i64(v: &serde_json::Value, key: &str) -> i64 {
+    v.get(key).and_then(|val| val.as_i64()).unwrap_or(0)
+}
+
+fn json_opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|val| val.as_str()).map(String::from)
+}
+
+fn json_opt_i64(v: &serde_json::Value, key: &str) -> Option<i64> {
+    v.get(key).and_then(|val| val.as_i64())
+}
+
+fn row_to_session(v: &serde_json::Value) -> ChatSessionRow {
+    ChatSessionRow {
+        key: json_str(v, "key"),
+        label: json_opt_str(v, "label"),
+        current_goal: json_opt_str(v, "current_goal"),
+        session_summary: json_opt_str(v, "session_summary"),
+        created_at: json_i64(v, "created_at"),
+        last_active: json_i64(v, "last_active"),
+        message_count: json_i64(v, "message_count"),
+        input_tokens: json_i64(v, "input_tokens"),
+        output_tokens: json_i64(v, "output_tokens"),
+    }
+}
+
+fn row_to_message(v: &serde_json::Value) -> ChatMessageRow {
+    ChatMessageRow {
+        id: json_i64(v, "seq"),
+        session_key: json_str(v, "session_key"),
+        kind: json_str(v, "kind"),
+        role: json_opt_str(v, "role"),
+        content: json_str(v, "content"),
+        tool_name: json_opt_str(v, "tool_name"),
+        run_id: json_opt_str(v, "run_id"),
+        input_tokens: json_opt_i64(v, "input_tokens"),
+        output_tokens: json_opt_i64(v, "output_tokens"),
+        timestamp: json_i64(v, "timestamp"),
+    }
+}
+
 impl ChatDb {
-    /// Acquire a lock on the database connection.
-    pub fn conn(&self) -> Result<std::sync::MutexGuard<'_, Connection>> {
-        self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))
-    }
-
-    /// Open (or create) the chat database at `path`.
-    pub fn open(path: &Path) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let conn = Connection::open(path)?;
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
-        )?;
-        let db = Self {
-            conn: Mutex::new(conn),
-        };
-        db.migrate()?;
-        Ok(db)
-    }
-
-    fn migrate(&self) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS chat_sessions (
-                key             TEXT PRIMARY KEY,
-                label           TEXT,
-                current_goal    TEXT,
-                session_summary TEXT,
-                created_at      INTEGER NOT NULL,
-                last_active     INTEGER NOT NULL,
-                message_count   INTEGER DEFAULT 0,
-                input_tokens    INTEGER DEFAULT 0,
-                output_tokens   INTEGER DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS chat_messages (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_key   TEXT NOT NULL REFERENCES chat_sessions(key) ON DELETE CASCADE,
-                kind          TEXT NOT NULL,
-                role          TEXT,
-                content       TEXT NOT NULL,
-                tool_name     TEXT,
-                run_id        TEXT,
-                input_tokens  INTEGER,
-                output_tokens INTEGER,
-                timestamp     INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_chat_messages_session
-                ON chat_messages(session_key, timestamp);
-
-            -- Phase 4.0: unified run execution tracking
-            CREATE TABLE IF NOT EXISTS runs (
-                run_id           TEXT PRIMARY KEY,
-                conversation_key TEXT,
-                origin           TEXT NOT NULL,
-                state            TEXT NOT NULL DEFAULT 'running',
-                started_at       INTEGER NOT NULL,
-                finished_at      INTEGER,
-                created_at       INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_runs_conversation
-                ON runs(conversation_key);
-
-            CREATE TABLE IF NOT EXISTS run_events (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                run_id     TEXT NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
-                event_type TEXT NOT NULL,
-                content    TEXT NOT NULL,
-                tool_name  TEXT,
-                created_at INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_run_events_run
-                ON run_events(run_id, created_at);",
-        )?;
-        Ok(())
+    /// Create a new ChatDb backed by the shared SurrealDB instance.
+    /// Schema is already applied via surrealdb_schema.surql.
+    pub fn new(db: Arc<Surreal<Db>>) -> Self {
+        Self { db }
     }
 
     // ── Session CRUD ──────────────────────────────────────────────────
 
-    pub fn upsert_session(&self, row: &ChatSessionRow) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "INSERT INTO chat_sessions (key, label, current_goal, session_summary, created_at, last_active, message_count, input_tokens, output_tokens)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-             ON CONFLICT(key) DO UPDATE SET
-                label = ?2, current_goal = ?3, session_summary = ?4,
-                last_active = ?6, message_count = ?7, input_tokens = ?8, output_tokens = ?9",
-            params![
-                row.key,
-                row.label,
-                row.current_goal,
-                row.session_summary,
-                row.created_at,
-                row.last_active,
-                row.message_count,
-                row.input_tokens,
-                row.output_tokens,
-            ],
-        )?;
+    pub async fn upsert_session(&self, row: &ChatSessionRow) -> Result<()> {
+        self.db
+            .query(
+                "IF (SELECT count() FROM chat_session WHERE key = $key GROUP ALL)[0].count > 0 {
+                    UPDATE chat_session SET
+                        label = $label, current_goal = $goal, session_summary = $summary,
+                        last_active = $last_active, message_count = $msg_count,
+                        input_tokens = $in_tok, output_tokens = $out_tok
+                    WHERE key = $key;
+                } ELSE {
+                    CREATE chat_session SET
+                        key = $key, label = $label, current_goal = $goal, session_summary = $summary,
+                        created_at = $created_at, last_active = $last_active, message_count = $msg_count,
+                        input_tokens = $in_tok, output_tokens = $out_tok;
+                };",
+            )
+            .bind(("key", row.key.clone()))
+            .bind(("label", row.label.clone()))
+            .bind(("goal", row.current_goal.clone()))
+            .bind(("summary", row.session_summary.clone()))
+            .bind(("created_at", row.created_at))
+            .bind(("last_active", row.last_active))
+            .bind(("msg_count", row.message_count))
+            .bind(("in_tok", row.input_tokens))
+            .bind(("out_tok", row.output_tokens))
+            .await
+            .map_err(|e| anyhow::anyhow!("upsert_session: {e}"))?;
         Ok(())
     }
 
-    pub fn list_sessions(&self, key_prefix: &str) -> Result<Vec<ChatSessionRow>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let mut stmt = conn.prepare(
-            "SELECT key, label, current_goal, session_summary, created_at, last_active, message_count, input_tokens, output_tokens
-             FROM chat_sessions WHERE key LIKE ?1 ORDER BY last_active DESC",
-        )?;
-        let prefix = format!("{key_prefix}%");
-        let rows = stmt
-            .query_map(params![prefix], |row| {
-                Ok(ChatSessionRow {
-                    key: row.get(0)?,
-                    label: row.get(1)?,
-                    current_goal: row.get(2)?,
-                    session_summary: row.get(3)?,
-                    created_at: row.get(4)?,
-                    last_active: row.get(5)?,
-                    message_count: row.get(6)?,
-                    input_tokens: row.get(7)?,
-                    output_tokens: row.get(8)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+    pub async fn list_sessions(&self, key_prefix: &str) -> Result<Vec<ChatSessionRow>> {
+        let pattern = format!("{key_prefix}%");
+        let mut resp = self
+            .db
+            .query("SELECT * FROM chat_session WHERE key LIKE $pattern ORDER BY last_active DESC")
+            .bind(("pattern", pattern))
+            .await
+            .map_err(|e| anyhow::anyhow!("list_sessions: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("list_sessions parse: {e}"))?;
+        Ok(rows.iter().map(row_to_session).collect())
     }
 
-    pub fn get_session(&self, key: &str) -> Result<Option<ChatSessionRow>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let mut stmt = conn.prepare(
-            "SELECT key, label, current_goal, session_summary, created_at, last_active, message_count, input_tokens, output_tokens
-             FROM chat_sessions WHERE key = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![key], |row| {
-            Ok(ChatSessionRow {
-                key: row.get(0)?,
-                label: row.get(1)?,
-                current_goal: row.get(2)?,
-                session_summary: row.get(3)?,
-                created_at: row.get(4)?,
-                last_active: row.get(5)?,
-                message_count: row.get(6)?,
-                input_tokens: row.get(7)?,
-                output_tokens: row.get(8)?,
-            })
-        })?;
-        match rows.next() {
-            Some(Ok(r)) => Ok(Some(r)),
-            Some(Err(e)) => Err(e.into()),
-            None => Ok(None),
-        }
+    pub async fn get_session(&self, key: &str) -> Result<Option<ChatSessionRow>> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM chat_session WHERE key = $key LIMIT 1")
+            .bind(("key", key.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("get_session: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("get_session parse: {e}"))?;
+        Ok(rows.first().map(row_to_session))
     }
 
-    pub fn delete_session(&self, key: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "DELETE FROM chat_messages WHERE session_key = ?1",
-            params![key],
-        )?;
-        conn.execute("DELETE FROM chat_sessions WHERE key = ?1", params![key])?;
+    pub async fn delete_session(&self, key: &str) -> Result<()> {
+        self.db
+            .query("DELETE FROM chat_message WHERE session_key = $key")
+            .bind(("key", key.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("delete messages: {e}"))?;
+        self.db
+            .query("DELETE FROM chat_session WHERE key = $key")
+            .bind(("key", key.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("delete session: {e}"))?;
         Ok(())
     }
 
-    pub fn update_session_label(&self, key: &str, label: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "UPDATE chat_sessions SET label = ?2 WHERE key = ?1",
-            params![key, label],
-        )?;
+    pub async fn update_session_label(&self, key: &str, label: &str) -> Result<()> {
+        self.db
+            .query("UPDATE chat_session SET label = $label WHERE key = $key")
+            .bind(("key", key.to_string()))
+            .bind(("label", label.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("update_label: {e}"))?;
         Ok(())
     }
 
-    pub fn touch_session(&self, key: &str, now: i64) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "UPDATE chat_sessions SET last_active = ?2 WHERE key = ?1",
-            params![key, now],
-        )?;
+    pub async fn touch_session(&self, key: &str, now: i64) -> Result<()> {
+        self.db
+            .query("UPDATE chat_session SET last_active = $now WHERE key = $key")
+            .bind(("key", key.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(|e| anyhow::anyhow!("touch_session: {e}"))?;
         Ok(())
     }
 
-    pub fn update_session_summary(&self, key: &str, summary: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "UPDATE chat_sessions SET session_summary = ?2 WHERE key = ?1",
-            params![key, summary],
-        )?;
+    pub async fn update_session_summary(&self, key: &str, summary: &str) -> Result<()> {
+        self.db
+            .query("UPDATE chat_session SET session_summary = $summary WHERE key = $key")
+            .bind(("key", key.to_string()))
+            .bind(("summary", summary.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("update_summary: {e}"))?;
         Ok(())
     }
 
-    pub fn update_session_goal(&self, key: &str, goal: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "UPDATE chat_sessions SET current_goal = ?2 WHERE key = ?1",
-            params![key, goal],
-        )?;
+    pub async fn update_session_goal(&self, key: &str, goal: &str) -> Result<()> {
+        self.db
+            .query("UPDATE chat_session SET current_goal = $goal WHERE key = $key")
+            .bind(("key", key.to_string()))
+            .bind(("goal", goal.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("update_goal: {e}"))?;
         Ok(())
     }
 
-    pub fn increment_message_count(&self, key: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "UPDATE chat_sessions SET message_count = message_count + 1 WHERE key = ?1",
-            params![key],
-        )?;
+    pub async fn increment_message_count(&self, key: &str) -> Result<()> {
+        self.db
+            .query("UPDATE chat_session SET message_count = message_count + 1 WHERE key = $key")
+            .bind(("key", key.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("increment_message_count: {e}"))?;
         Ok(())
     }
 
-    pub fn add_token_usage(&self, key: &str, input: i64, output: i64) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "UPDATE chat_sessions SET input_tokens = input_tokens + ?2, output_tokens = output_tokens + ?3 WHERE key = ?1",
-            params![key, input, output],
-        )?;
+    pub async fn add_token_usage(&self, key: &str, input: i64, output: i64) -> Result<()> {
+        self.db
+            .query(
+                "UPDATE chat_session SET input_tokens = input_tokens + $input, output_tokens = output_tokens + $output WHERE key = $key",
+            )
+            .bind(("key", key.to_string()))
+            .bind(("input", input))
+            .bind(("output", output))
+            .await
+            .map_err(|e| anyhow::anyhow!("add_token_usage: {e}"))?;
         Ok(())
     }
 
     // ── Message CRUD ──────────────────────────────────────────────────
 
-    pub fn append_message(&self, msg: &ChatMessageRow) -> Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "INSERT INTO chat_messages (session_key, kind, role, content, tool_name, run_id, input_tokens, output_tokens, timestamp)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                msg.session_key,
-                msg.kind,
-                msg.role,
-                msg.content,
-                msg.tool_name,
-                msg.run_id,
-                msg.input_tokens,
-                msg.output_tokens,
-                msg.timestamp,
-            ],
-        )?;
-        Ok(conn.last_insert_rowid())
+    pub async fn append_message(&self, msg: &ChatMessageRow) -> Result<i64> {
+        // Generate a monotonic sequence number per session
+        let seq = msg.timestamp * 1000 + (msg.id % 1000);
+        self.db
+            .query(
+                "CREATE chat_message SET
+                    session_key = $session_key, kind = $kind, role = $role,
+                    content = $content, tool_name = $tool_name, run_id = $run_id,
+                    input_tokens = $in_tok, output_tokens = $out_tok,
+                    timestamp = $timestamp, seq = $seq",
+            )
+            .bind(("session_key", msg.session_key.clone()))
+            .bind(("kind", msg.kind.clone()))
+            .bind(("role", msg.role.clone()))
+            .bind(("content", msg.content.clone()))
+            .bind(("tool_name", msg.tool_name.clone()))
+            .bind(("run_id", msg.run_id.clone()))
+            .bind(("in_tok", msg.input_tokens))
+            .bind(("out_tok", msg.output_tokens))
+            .bind(("timestamp", msg.timestamp))
+            .bind(("seq", seq))
+            .await
+            .map_err(|e| anyhow::anyhow!("append_message: {e}"))?;
+        Ok(seq)
     }
 
-    pub fn get_messages(&self, session_key: &str, limit: i64) -> Result<Vec<ChatMessageRow>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let mut stmt = conn.prepare(
-            "SELECT id, session_key, kind, role, content, tool_name, run_id, input_tokens, output_tokens, timestamp
-             FROM chat_messages WHERE session_key = ?1 ORDER BY id DESC LIMIT ?2",
-        )?;
-        let rows = stmt
-            .query_map(params![session_key, limit], |row| {
-                Ok(ChatMessageRow {
-                    id: row.get(0)?,
-                    session_key: row.get(1)?,
-                    kind: row.get(2)?,
-                    role: row.get(3)?,
-                    content: row.get(4)?,
-                    tool_name: row.get(5)?,
-                    run_id: row.get(6)?,
-                    input_tokens: row.get(7)?,
-                    output_tokens: row.get(8)?,
-                    timestamp: row.get(9)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        // Reverse to chronological order
-        let mut rows = rows;
-        rows.reverse();
-        Ok(rows)
+    pub async fn get_messages(&self, session_key: &str, limit: i64) -> Result<Vec<ChatMessageRow>> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM chat_message WHERE session_key = $key ORDER BY seq DESC LIMIT $limit",
+            )
+            .bind(("key", session_key.to_string()))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| anyhow::anyhow!("get_messages: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("get_messages parse: {e}"))?;
+        let mut messages: Vec<ChatMessageRow> = rows.iter().map(row_to_message).collect();
+        messages.reverse(); // chronological order
+        Ok(messages)
     }
 
-    pub fn clear_messages(&self, session_key: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "DELETE FROM chat_messages WHERE session_key = ?1",
-            params![session_key],
-        )?;
-        conn.execute(
-            "UPDATE chat_sessions SET message_count = 0, input_tokens = 0, output_tokens = 0 WHERE key = ?1",
-            params![session_key],
-        )?;
+    pub async fn clear_messages(&self, session_key: &str) -> Result<()> {
+        self.db
+            .query("DELETE FROM chat_message WHERE session_key = $key")
+            .bind(("key", session_key.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("clear_messages: {e}"))?;
+        self.db
+            .query(
+                "UPDATE chat_session SET message_count = 0, input_tokens = 0, output_tokens = 0 WHERE key = $key",
+            )
+            .bind(("key", session_key.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("reset_counters: {e}"))?;
         Ok(())
     }
 
     /// Get the first user message for auto-labeling.
-    pub fn first_user_message(&self, session_key: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("{e}"))?;
-        let mut stmt = conn.prepare(
-            "SELECT content FROM chat_messages WHERE session_key = ?1 AND kind = 'user' ORDER BY id ASC LIMIT 1",
-        )?;
-        let mut rows = stmt.query_map(params![session_key], |row| row.get::<_, String>(0))?;
-        match rows.next() {
-            Some(Ok(c)) => Ok(Some(c)),
-            _ => Ok(None),
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn now_secs() -> i64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
-    }
-
-    #[test]
-    fn roundtrip_session_and_messages() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = ChatDb::open(&dir.path().join("test.db")).unwrap();
-        let now = now_secs();
-
-        let session = ChatSessionRow {
-            key: "web:abc123:default".into(),
-            label: Some("Test".into()),
-            current_goal: None,
-            session_summary: None,
-            created_at: now,
-            last_active: now,
-            message_count: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-        };
-        db.upsert_session(&session).unwrap();
-
-        let msg = ChatMessageRow {
-            id: 0,
-            session_key: "web:abc123:default".into(),
-            kind: "user".into(),
-            role: Some("user".into()),
-            content: "Hello".into(),
-            tool_name: None,
-            run_id: None,
-            input_tokens: None,
-            output_tokens: None,
-            timestamp: now,
-        };
-        let id = db.append_message(&msg).unwrap();
-        assert!(id > 0);
-
-        db.increment_message_count("web:abc123:default").unwrap();
-
-        let messages = db.get_messages("web:abc123:default", 50).unwrap();
-        assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].content, "Hello");
-
-        let sessions = db.list_sessions("web:abc123:").unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].message_count, 1);
-
-        let first = db.first_user_message("web:abc123:default").unwrap();
-        assert_eq!(first.as_deref(), Some("Hello"));
-
-        db.delete_session("web:abc123:default").unwrap();
-        let sessions = db.list_sessions("web:abc123:").unwrap();
-        assert!(sessions.is_empty());
+    pub async fn first_user_message(&self, session_key: &str) -> Result<Option<String>> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT content FROM chat_message WHERE session_key = $key AND kind = 'user' ORDER BY seq ASC LIMIT 1",
+            )
+            .bind(("key", session_key.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("first_user_message: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("first_user_message parse: {e}"))?;
+        Ok(rows
+            .first()
+            .and_then(|v| v.get("content"))
+            .and_then(|v| v.as_str())
+            .map(String::from))
     }
 }

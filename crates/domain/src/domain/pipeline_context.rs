@@ -313,6 +313,64 @@ impl fmt::Display for StepStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Dead Letter Queue (Phase 4.5)
+// ---------------------------------------------------------------------------
+
+/// A failed pipeline step entry in the dead letter queue.
+///
+/// Created when a step exhausts all retry attempts. Preserves full context
+/// for inspection, manual retry, or dismissal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeadLetter {
+    /// Unique dead letter ID (UUID).
+    pub id: String,
+    /// Pipeline run that produced this failure.
+    pub pipeline_run_id: String,
+    /// Step within the pipeline that failed.
+    pub step_id: String,
+    /// Agent that was executing the step.
+    pub agent_id: String,
+    /// Original input the step received (JSON).
+    pub input: Value,
+    /// Error message from the last attempt.
+    pub error: String,
+    /// Number of attempts made before giving up.
+    pub attempt: u32,
+    /// Maximum retries configured for this step.
+    pub max_retries: u32,
+    /// When the dead letter was created (unix timestamp).
+    pub created_at: i64,
+    /// Current disposition status.
+    pub status: DeadLetterStatus,
+    /// When the dead letter was retried (unix timestamp).
+    pub retried_at: Option<i64>,
+    /// Who dismissed this dead letter (operator/agent ID).
+    pub dismissed_by: Option<String>,
+}
+
+/// Disposition status of a dead letter entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeadLetterStatus {
+    /// Awaiting operator action (retry or dismiss).
+    Pending,
+    /// Step was retried (may or may not have succeeded).
+    Retried,
+    /// Operator dismissed without retry.
+    Dismissed,
+}
+
+impl fmt::Display for DeadLetterStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => write!(f, "pending"),
+            Self::Retried => write!(f, "retried"),
+            Self::Dismissed => write!(f, "dismissed"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

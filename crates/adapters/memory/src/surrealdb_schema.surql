@@ -110,3 +110,89 @@ DEFINE FIELD IF NOT EXISTS embedding     ON reflection TYPE option<array<float>>
 
 DEFINE INDEX IF NOT EXISTS idx_refl_agent ON reflection FIELDS agent_id;
 -- HNSW vector index created separately via apply_vector_indexes()
+
+-- ═══════════════════════════════════════════
+-- DEAD LETTER QUEUE (Phase 4.5: failed pipeline steps)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS dead_letter SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS pipeline_run_id ON dead_letter TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS step_id         ON dead_letter TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS agent_id        ON dead_letter TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS input           ON dead_letter TYPE option<object>;
+DEFINE FIELD IF NOT EXISTS error           ON dead_letter TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS attempt         ON dead_letter TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS max_retries     ON dead_letter TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS created_at      ON dead_letter TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS status          ON dead_letter TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS retried_at      ON dead_letter TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS dismissed_by    ON dead_letter TYPE option<string>;
+
+DEFINE INDEX IF NOT EXISTS idx_dl_status  ON dead_letter FIELDS status;
+DEFINE INDEX IF NOT EXISTS idx_dl_created ON dead_letter FIELDS created_at;
+DEFINE INDEX IF NOT EXISTS idx_dl_run     ON dead_letter FIELDS pipeline_run_id;
+
+-- ═══════════════════════════════════════════
+-- CHAT SESSIONS (Phase 4.5: migrated from SQLite ChatDb)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS chat_session SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS key             ON chat_session TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS label           ON chat_session TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS current_goal    ON chat_session TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS session_summary ON chat_session TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at      ON chat_session TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS last_active     ON chat_session TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS message_count   ON chat_session TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS input_tokens    ON chat_session TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS output_tokens   ON chat_session TYPE option<int>;
+
+DEFINE INDEX IF NOT EXISTS idx_cs_key     ON chat_session FIELDS key UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_cs_active  ON chat_session FIELDS last_active;
+
+-- ═══════════════════════════════════════════
+-- CHAT MESSAGES (Phase 4.5: migrated from SQLite ChatDb)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS chat_message SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS session_key    ON chat_message TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS kind           ON chat_message TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS role           ON chat_message TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS content        ON chat_message TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS tool_name      ON chat_message TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS run_id         ON chat_message TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS input_tokens   ON chat_message TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS output_tokens  ON chat_message TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS timestamp      ON chat_message TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS seq            ON chat_message TYPE option<int>;
+
+DEFINE INDEX IF NOT EXISTS idx_cm_session ON chat_message FIELDS session_key, timestamp;
+
+-- ═══════════════════════════════════════════
+-- RUNS (Phase 4.5: migrated from SQLite ChatDb)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS run SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS run_id            ON run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS conversation_key  ON run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS origin            ON run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS state             ON run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS started_at        ON run TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS finished_at       ON run TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS created_at        ON run TYPE option<int>;
+
+DEFINE INDEX IF NOT EXISTS idx_run_id   ON run FIELDS run_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_run_conv ON run FIELDS conversation_key;
+
+-- ═══════════════════════════════════════════
+-- RUN EVENTS (Phase 4.5: migrated from SQLite ChatDb)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS run_event SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS run_id      ON run_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS event_type  ON run_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS content     ON run_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS tool_name   ON run_event TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at  ON run_event TYPE option<int>;
+
+DEFINE INDEX IF NOT EXISTS idx_re_run ON run_event FIELDS run_id, created_at;

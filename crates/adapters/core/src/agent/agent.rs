@@ -312,7 +312,8 @@ impl Agent {
             &resolved_agent_id,
             config.api_key.as_deref(),
         )
-        .await?;
+        .await?
+        .memory;
 
         let composio_key = if config.composio.enabled {
             config.composio.api_key.as_deref()

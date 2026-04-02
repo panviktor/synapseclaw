@@ -192,21 +192,27 @@ pub async fn run(
     // components causes contention. Create the raw adapter here and pass it
     // to gateway, channels, and the consolidation worker.
     let daemon_agent_id = crate::agent::loop_::resolve_agent_id(&config);
-    let shared_raw_mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
-        match synapse_memory::create_memory(
-            &config.memory,
-            &config.workspace_dir,
-            &daemon_agent_id,
-            config.api_key.as_deref(),
-        )
-        .await
-        {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::error!("Memory init failed in daemon: {e} — using noop memory");
-                std::sync::Arc::new(synapse_memory::NoopUnifiedMemory)
+    let mem_backend = match synapse_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        &daemon_agent_id,
+        config.api_key.as_deref(),
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Memory init failed in daemon: {e} — using noop memory");
+            let noop = std::sync::Arc::new(synapse_memory::NoopUnifiedMemory);
+            synapse_memory::MemoryBackend {
+                memory: noop.clone(),
+                dead_letter: noop,
             }
-        };
+        }
+    };
+    let shared_raw_mem = mem_backend.memory;
+    let shared_dead_letter = mem_backend.dead_letter;
+    let shared_surreal = mem_backend.surreal;
 
     {
         let gateway_cfg = config.clone();
@@ -216,6 +222,8 @@ pub async fn run(
         let gw_ipc = shared_ipc_client.clone();
         let gw_runner = agent_runner.clone();
         let gw_mem = shared_raw_mem.clone();
+        let gw_dlq = shared_dead_letter.clone();
+        let gw_surreal = shared_surreal.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -228,6 +236,8 @@ pub async fn run(
                 let ipc = gw_ipc.clone();
                 let ar = gw_runner.clone();
                 let mem = gw_mem.clone();
+                let dlq = gw_dlq.clone();
+                let surreal = gw_surreal.clone();
                 async move {
                     Box::pin(crate::gateway::run_gateway(
                         &host,
@@ -238,6 +248,8 @@ pub async fn run(
                         ipc,
                         ar,
                         Some(mem),
+                        Some(dlq),
+                        surreal,
                     ))
                     .await
                 }

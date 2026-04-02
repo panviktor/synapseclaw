@@ -565,11 +565,25 @@ const INBOX_PAYLOAD_TRUNCATE: usize = 4000;
 /// Tool for retrieving messages from the agent's inbox.
 pub struct AgentsInboxTool {
     client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
+    inbox_filter: synapse_domain::config::schema::InboxFilterConfig,
 }
 
 impl AgentsInboxTool {
     pub fn new(client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>) -> Self {
-        Self { client }
+        Self {
+            client,
+            inbox_filter: Default::default(),
+        }
+    }
+
+    pub fn with_filter(
+        client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
+        filter: synapse_domain::config::schema::InboxFilterConfig,
+    ) -> Self {
+        Self {
+            client,
+            inbox_filter: filter,
+        }
     }
 }
 
@@ -597,6 +611,10 @@ impl Tool for AgentsInboxTool {
                 "limit": {
                     "type": "integer",
                     "description": "Max messages to retrieve (default: 50)"
+                },
+                "unfiltered": {
+                    "type": "boolean",
+                    "description": "If true, bypass inbox filter and return all messages (default: false)"
                 }
             },
             "additionalProperties": false
@@ -606,8 +624,33 @@ impl Tool for AgentsInboxTool {
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let quarantine = args["quarantine"].as_bool().unwrap_or(false);
         let limit = args["limit"].as_u64().unwrap_or(50);
+        let unfiltered = args["unfiltered"].as_bool().unwrap_or(false);
 
-        let path = format!("/api/ipc/inbox?quarantine={quarantine}&limit={limit}");
+        let mut path = format!("/api/ipc/inbox?quarantine={quarantine}&limit={limit}");
+
+        // Phase 4.5: pass inbox filter params unless unfiltered requested
+        if !unfiltered && self.inbox_filter.is_active() {
+            if self.inbox_filter.default_per_source > 0 {
+                path.push_str(&format!(
+                    "&filter_per_source={}",
+                    self.inbox_filter.default_per_source
+                ));
+            }
+            if !self.inbox_filter.per_source.is_empty() {
+                if let Ok(json) = serde_json::to_string(&self.inbox_filter.per_source) {
+                    path.push_str(&format!(
+                        "&filter_per_source_overrides={}",
+                        urlencoding::encode(&json)
+                    ));
+                }
+            }
+            if !self.inbox_filter.allowed_kinds.is_empty() {
+                path.push_str(&format!(
+                    "&filter_kinds={}",
+                    self.inbox_filter.allowed_kinds.join(",")
+                ));
+            }
+        }
         let result = self
             .client
             .broker_get(&path)

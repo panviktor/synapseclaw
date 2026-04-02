@@ -408,6 +408,10 @@ pub struct AppState {
     pub tool_middleware: Option<
         Arc<synapse_domain::application::services::tool_middleware_service::ToolMiddlewareChain>,
     >,
+    /// Phase 4.5: Dead letter queue for failed pipeline steps
+    pub dead_letter: Option<Arc<dyn synapse_domain::ports::dead_letter::DeadLetterPort>>,
+    /// Phase 4.5: Shared SurrealDB handle for all components
+    pub surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -421,6 +425,8 @@ pub async fn run_gateway(
     shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     agent_runner: Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
     shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
+    shared_dead_letter: Option<Arc<dyn synapse_domain::ports::dead_letter::DeadLetterPort>>,
+    shared_surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -481,6 +487,7 @@ pub async fn run_gateway(
                 config.api_key.as_deref(),
             )
             .await?
+            .memory
         }
     };
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
@@ -947,6 +954,8 @@ pub async fn run_gateway(
         pipeline_executor: None, // initialized below if pipelines enabled
         message_router: None,    // initialized below if pipelines enabled
         tool_middleware: None,   // initialized below if pipelines enabled
+        dead_letter: shared_dead_letter,
+        surreal: shared_surreal,
     };
 
     // Phase 4.1: Initialize pipeline engine if enabled
@@ -1103,6 +1112,11 @@ pub async fn run_gateway(
             ));
         }
 
+        // Phase 4.5: DLQ backed by shared SurrealDB instance
+        if state.dead_letter.is_some() {
+            tracing::info!("dead letter queue: using shared SurrealDB backend");
+        }
+
         state.pipeline_store = Some(pipeline_store.clone());
         state.pipeline_executor = pipeline_executor;
         state.message_router = Some(message_router);
@@ -1134,6 +1148,7 @@ pub async fn run_gateway(
                     pipeline_store: ps.clone(),
                     run_store: rs.clone(),
                     executor: pe.clone(),
+                    dead_letter: state.dead_letter.clone(),
                 };
             let report =
                 synapse_domain::application::use_cases::resume_pipeline::recover_all(&ports).await;
@@ -1249,6 +1264,18 @@ pub async fn run_gateway(
         // ── Pipeline routes (Phase 4.1) ──
         .route("/api/pipelines/start", post(ipc::handle_pipeline_start))
         .route("/api/pipelines/list", get(ipc::handle_pipeline_list))
+        // ── Dead Letter Queue routes (Phase 4.5) ──
+        .route("/api/pipelines/dead-letters", get(handle_dlq_list))
+        .route(
+            "/api/pipelines/dead-letters/{id}/retry",
+            post(handle_dlq_retry),
+        )
+        .route(
+            "/api/pipelines/dead-letters/{id}/dismiss",
+            post(handle_dlq_dismiss),
+        )
+        // ── Pipeline visualization routes (Phase 4.5) ──
+        .route("/api/pipelines/{name}/graph", get(handle_pipeline_graph))
         .route(
             "/api/ipc/provision-ephemeral",
             post(ipc::handle_ipc_provision_ephemeral),
@@ -1970,6 +1997,147 @@ async fn agent_inbox_processor(
             }
         }
     }
+}
+
+// ── Dead Letter Queue handlers (Phase 4.5) ───────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+struct DlqListQuery {
+    #[serde(default = "default_dlq_limit")]
+    limit: usize,
+    #[serde(default)]
+    all: bool,
+}
+
+fn default_dlq_limit() -> usize {
+    50
+}
+
+async fn handle_dlq_list(
+    State(state): State<AppState>,
+    Query(query): Query<DlqListQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let dlq = state.dead_letter.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "dead letter queue not available"})),
+        )
+    })?;
+
+    let letters = if query.all {
+        dlq.list_all(query.limit).await
+    } else {
+        dlq.list_pending(query.limit).await
+    }
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
+
+    Ok(Json(serde_json::json!({ "dead_letters": letters })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct DlqDismissBody {
+    #[serde(default = "default_dlq_operator")]
+    dismissed_by: String,
+}
+
+fn default_dlq_operator() -> String {
+    "admin".into()
+}
+
+async fn handle_dlq_retry(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let dlq = state.dead_letter.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "dead letter queue not available"})),
+        )
+    })?;
+
+    dlq.mark_retried(&id).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
+
+    // TODO(Phase 4.5 Slice 4): re-execute the step with original input
+    // For now, just mark as retried. Full retry requires pipeline executor.
+
+    Ok(Json(serde_json::json!({"status": "retried", "id": id})))
+}
+
+async fn handle_dlq_dismiss(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<DlqDismissBody>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let dlq = state.dead_letter.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "dead letter queue not available"})),
+        )
+    })?;
+
+    dlq.dismiss(&id, &body.dismissed_by).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
+
+    Ok(Json(
+        serde_json::json!({"status": "dismissed", "id": id, "by": body.dismissed_by}),
+    ))
+}
+
+// ── Pipeline visualization handler (Phase 4.5) ──────────────────
+
+#[derive(Debug, serde::Deserialize)]
+struct PipelineGraphQuery {
+    #[serde(default = "default_graph_format")]
+    format: String,
+}
+
+fn default_graph_format() -> String {
+    "ascii".into()
+}
+
+async fn handle_pipeline_graph(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(query): Query<PipelineGraphQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let store = state.pipeline_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pipeline engine not enabled"})),
+        )
+    })?;
+
+    let def = store.get(&name).await.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("pipeline '{}' not found", name)})),
+        )
+    })?;
+
+    let graph = match query.format.as_str() {
+        "mermaid" => def.to_mermaid(),
+        _ => def.to_ascii(),
+    };
+
+    Ok(Json(serde_json::json!({
+        "pipeline": name,
+        "format": query.format,
+        "graph": graph,
+    })))
 }
 
 async fn handle_health(State(state): State<AppState>) -> impl IntoResponse {

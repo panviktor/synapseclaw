@@ -82,7 +82,7 @@ use synapseclaw::{adapters, agent, memory};
 #[allow(unused_imports)]
 use synapseclaw::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MemoryCommands,
-    ServiceCommands, SkillCommands,
+    PipelineCommands, ServiceCommands, SkillCommands,
 };
 
 #[allow(unused_imports)]
@@ -377,6 +377,12 @@ Examples:
     Memory {
         #[command(subcommand)]
         memory_command: MemoryCommands,
+    },
+
+    /// Pipeline management: show graph, dead letters, retry, dismiss
+    Pipeline {
+        #[command(subcommand)]
+        pipeline_command: PipelineCommands,
     },
 
     /// Manage configuration
@@ -883,6 +889,8 @@ async fn main() -> Result<()> {
                         None,
                         agent_runner.clone(),
                         None,
+                        None,
+                        None,
                     ))
                     .await
                 }
@@ -942,6 +950,8 @@ async fn main() -> Result<()> {
                         None,
                         agent_runner.clone(),
                         None,
+                        None,
+                        None,
                     ))
                     .await
                 }
@@ -957,6 +967,8 @@ async fn main() -> Result<()> {
                         None,
                         None,
                         agent_runner.clone(),
+                        None,
+                        None,
                         None,
                     ))
                     .await
@@ -1230,6 +1242,10 @@ async fn main() -> Result<()> {
 
         Commands::Memory { memory_command } => {
             synapse_adapters::memory_adapters::cli::handle_command(memory_command, &config).await
+        }
+
+        Commands::Pipeline { pipeline_command } => {
+            handle_pipeline_command(pipeline_command, &config).await
         }
 
         Commands::Auth { auth_command } => handle_auth_command(auth_command, &config).await,
@@ -2184,6 +2200,92 @@ async fn handle_auth_command(auth_command: AuthCommands, config: &Config) -> Res
             Ok(())
         }
     }
+}
+
+// ── Pipeline CLI handler (Phase 4.5) ────────────────────────────
+
+async fn handle_pipeline_command(
+    cmd: PipelineCommands,
+    config: &config::Config,
+) -> anyhow::Result<()> {
+    use synapse_domain::ports::pipeline_store::PipelineStorePort;
+    let mem_backend = synapse_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        "cli",
+        config.api_key.as_deref(),
+    )
+    .await?;
+
+    match cmd {
+        PipelineCommands::Show { name, mermaid } => {
+            let pipeline_dir = config
+                .pipelines
+                .directory
+                .as_ref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| config.workspace_dir.join("pipelines"));
+            let store =
+                synapse_adapters::pipeline::toml_loader::TomlPipelineLoader::new(&pipeline_dir);
+            if let Err(e) = store.reload().await {
+                anyhow::bail!("Failed to load pipelines: {e}");
+            }
+            let def = store
+                .get(&name)
+                .await
+                .ok_or_else(|| anyhow::anyhow!("Pipeline '{name}' not found"))?;
+            if mermaid {
+                println!("{}", def.to_mermaid());
+            } else {
+                println!("{}", def.to_ascii());
+            }
+        }
+        PipelineCommands::DeadLetters { limit, all } => {
+            let dlq = mem_backend.dead_letter;
+            let letters = if all {
+                dlq.list_all(limit).await?
+            } else {
+                dlq.list_pending(limit).await?
+            };
+            if letters.is_empty() {
+                println!("No dead letters found.");
+            } else {
+                println!(
+                    "{:<36} {:<20} {:<15} {:<10} {:<10} {}",
+                    "ID", "PIPELINE", "STEP", "AGENT", "ATTEMPTS", "ERROR"
+                );
+                println!("{}", "-".repeat(110));
+                for dl in &letters {
+                    let error_short = if dl.error.len() > 40 {
+                        format!("{}...", &dl.error[..40])
+                    } else {
+                        dl.error.clone()
+                    };
+                    println!(
+                        "{:<36} {:<20} {:<15} {:<10} {:<10} {}",
+                        dl.id,
+                        dl.pipeline_run_id.chars().take(20).collect::<String>(),
+                        dl.step_id,
+                        dl.agent_id,
+                        dl.attempt,
+                        error_short,
+                    );
+                }
+                println!("\n{} dead letter(s)", letters.len());
+            }
+        }
+        PipelineCommands::Retry { id } => {
+            let dlq = mem_backend.dead_letter;
+            dlq.mark_retried(&id).await?;
+            println!("Dead letter '{id}' marked as retried.");
+        }
+        PipelineCommands::Dismiss { id } => {
+            let dlq = mem_backend.dead_letter;
+            dlq.dismiss(&id, "cli").await?;
+            println!("Dead letter '{id}' dismissed.");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

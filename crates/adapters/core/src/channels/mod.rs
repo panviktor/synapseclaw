@@ -1438,6 +1438,7 @@ async fn handle_message_via_orchestrator(
                         pipeline_store: Arc::clone(store),
                         executor: Arc::clone(executor),
                         run_store,
+                        dead_letter: None,
                     };
                 let params =
                     synapse_domain::application::services::pipeline_service::StartPipelineParams {
@@ -2891,6 +2892,7 @@ pub async fn start_channels(
                 config.api_key.as_deref(),
             )
             .await?
+            .memory
         }
     };
     let (composio_key, composio_entity_id) = if config.composio.enabled {

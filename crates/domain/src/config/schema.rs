@@ -1634,6 +1634,64 @@ pub struct AgentsIpcConfig {
     /// Platform-specific recipient for push relay (e.g. Telegram chat ID, Matrix room ID).
     #[serde(default)]
     pub push_relay_recipient: Option<String>,
+
+    /// Per-agent inbox filtering configuration.
+    /// Controls which IPC messages appear in the agent's inbox (read-side only).
+    #[serde(default)]
+    pub inbox_filter: InboxFilterConfig,
+}
+
+/// Per-agent inbox filtering configuration (AutoGen MessageFilterAgent pattern).
+///
+/// Applied read-side only — no changes to message storage.
+/// When `default_per_source` is 0 and `allowed_kinds` is empty, no filtering occurs.
+///
+/// ```toml
+/// [agents_ipc.inbox_filter]
+/// default_per_source = 1
+/// allowed_kinds = ["task", "query", "result"]
+///
+/// [agents_ipc.inbox_filter.per_source]
+/// "marketing-lead" = 3
+/// "broker" = 5
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct InboxFilterConfig {
+    /// Max messages to show per source agent (0 = no limit, show all).
+    pub default_per_source: usize,
+
+    /// Per-source overrides. Key = agent_id, value = max messages from that source.
+    pub per_source: HashMap<String, usize>,
+
+    /// Only show messages of these kinds. Empty = all kinds allowed.
+    pub allowed_kinds: Vec<String>,
+}
+
+// Default derived: default_per_source=0, per_source={}, allowed_kinds=[]
+
+impl InboxFilterConfig {
+    /// Returns true if any filtering rules are configured.
+    pub fn is_active(&self) -> bool {
+        self.default_per_source > 0 || !self.per_source.is_empty() || !self.allowed_kinds.is_empty()
+    }
+
+    /// Max messages allowed from the given source agent.
+    /// Returns `None` if no per-source limit applies (show all).
+    pub fn limit_for_source(&self, source: &str) -> Option<usize> {
+        if let Some(&limit) = self.per_source.get(source) {
+            Some(limit)
+        } else if self.default_per_source > 0 {
+            Some(self.default_per_source)
+        } else {
+            None
+        }
+    }
+
+    /// Returns true if the given message kind is allowed by the filter.
+    pub fn kind_allowed(&self, kind: &str) -> bool {
+        self.allowed_kinds.is_empty() || self.allowed_kinds.iter().any(|k| k == kind)
+    }
 }
 
 /// Pipeline engine configuration (`[pipelines]` section).
@@ -1888,6 +1946,7 @@ impl Default for AgentsIpcConfig {
             push_one_way: false,
             push_relay_channel: None,
             push_relay_recipient: None,
+            inbox_filter: InboxFilterConfig::default(),
         }
     }
 }

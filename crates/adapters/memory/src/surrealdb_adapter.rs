@@ -23,6 +23,7 @@ use synapse_domain::ports::memory::{
 use crate::embeddings::EmbeddingProvider;
 
 /// Log memory operation latency after an async block completes.
+#[allow(dead_code)]
 fn log_latency(op: &str, start: Instant) {
     let ms = start.elapsed().as_millis() as u64;
     if ms > 50 {
@@ -64,6 +65,12 @@ impl SurrealMemoryAdapter {
         adapter.apply_schema().await?;
 
         Ok(adapter)
+    }
+
+    /// Get a shared handle to the underlying SurrealDB instance.
+    /// Used by other components (IPC, cron, chat, etc.) to share the same DB.
+    pub fn db(&self) -> Arc<Surreal<Db>> {
+        Arc::clone(&self.db)
     }
 
     async fn apply_schema(&self) -> Result<(), MemoryError> {
@@ -500,19 +507,19 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         // RRF fusion: combine BM25 + vector results.
         let bm25_list: Vec<(String, f32)> = bm25_rows
             .iter()
-            .filter_map(|v| {
+            .map(|v| {
                 let id = json_str(v, "id");
                 let score = v.get("bm25_score").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
-                Some((id, score))
+                (id, score)
             })
             .collect();
 
         let vec_list: Vec<(String, f32)> = vec_rows
             .iter()
-            .filter_map(|v| {
+            .map(|v| {
                 let id = json_str(v, "id");
                 let score = v.get("vec_score").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
-                Some((id, score))
+                (id, score)
             })
             .collect();
 
@@ -1340,5 +1347,165 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
 
     async fn health_check(&self) -> bool {
         self.db.health().await.is_ok()
+    }
+}
+
+// ── DeadLetterPort (Phase 4.5) ─────────────────────────────────
+
+use synapse_domain::domain::pipeline_context::{DeadLetter, DeadLetterStatus};
+use synapse_domain::ports::dead_letter::DeadLetterPort;
+
+fn row_to_dead_letter(v: &serde_json::Value) -> Option<DeadLetter> {
+    let status_str = v.get("status")?.as_str()?;
+    Some(DeadLetter {
+        id: json_str(v, "id"),
+        pipeline_run_id: json_str(v, "pipeline_run_id"),
+        step_id: json_str(v, "step_id"),
+        agent_id: json_str(v, "agent_id"),
+        input: v.get("input").cloned().unwrap_or(serde_json::Value::Null),
+        error: json_str(v, "error"),
+        attempt: v.get("attempt").and_then(|a| a.as_u64()).unwrap_or(0) as u32,
+        max_retries: v.get("max_retries").and_then(|a| a.as_u64()).unwrap_or(0) as u32,
+        created_at: v
+            .get("created_at")
+            .and_then(|t| t.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp())
+            .unwrap_or(0),
+        status: match status_str {
+            "retried" => DeadLetterStatus::Retried,
+            "dismissed" => DeadLetterStatus::Dismissed,
+            _ => DeadLetterStatus::Pending,
+        },
+        retried_at: v
+            .get("retried_at")
+            .and_then(|t| t.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.timestamp()),
+        dismissed_by: v
+            .get("dismissed_by")
+            .and_then(|s| s.as_str())
+            .map(String::from),
+    })
+}
+
+#[async_trait]
+impl DeadLetterPort for SurrealMemoryAdapter {
+    async fn enqueue(&self, letter: DeadLetter) -> anyhow::Result<()> {
+        self.db
+            .query(
+                "CREATE dead_letter SET
+                    id = $dl_id,
+                    pipeline_run_id = $run_id,
+                    step_id = $step_id,
+                    agent_id = $agent_id,
+                    input = $input,
+                    error = $error,
+                    attempt = $attempt,
+                    max_retries = $max_retries,
+                    created_at = time::now(),
+                    status = $status",
+            )
+            .bind(("dl_id", letter.id))
+            .bind(("run_id", letter.pipeline_run_id))
+            .bind(("step_id", letter.step_id))
+            .bind(("agent_id", letter.agent_id))
+            .bind(("input", letter.input))
+            .bind(("error", letter.error))
+            .bind(("attempt", letter.attempt as i64))
+            .bind(("max_retries", letter.max_retries as i64))
+            .bind(("status", letter.status.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("DLQ enqueue failed: {e}"))?;
+        Ok(())
+    }
+
+    async fn list_pending(&self, limit: usize) -> anyhow::Result<Vec<DeadLetter>> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM dead_letter
+                 WHERE status = 'pending'
+                 ORDER BY created_at DESC
+                 LIMIT $limit",
+            )
+            .bind(("limit", limit as i64))
+            .await
+            .map_err(|e| anyhow::anyhow!("DLQ list_pending failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("DLQ response parse: {e}"))?;
+        Ok(rows.iter().filter_map(row_to_dead_letter).collect())
+    }
+
+    async fn list_all(&self, limit: usize) -> anyhow::Result<Vec<DeadLetter>> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM dead_letter
+                 ORDER BY created_at DESC
+                 LIMIT $limit",
+            )
+            .bind(("limit", limit as i64))
+            .await
+            .map_err(|e| anyhow::anyhow!("DLQ list_all failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("DLQ response parse: {e}"))?;
+        Ok(rows.iter().filter_map(row_to_dead_letter).collect())
+    }
+
+    async fn mark_retried(&self, id: &str) -> anyhow::Result<()> {
+        let mut resp = self
+            .db
+            .query(
+                "UPDATE dead_letter SET status = 'retried', retried_at = time::now()
+                 WHERE id = $dl_id AND status = 'pending'
+                 RETURN AFTER",
+            )
+            .bind(("dl_id", id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("DLQ mark_retried failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("DLQ response parse: {e}"))?;
+        if rows.is_empty() {
+            anyhow::bail!("dead letter '{id}' not found or not pending");
+        }
+        Ok(())
+    }
+
+    async fn dismiss(&self, id: &str, by: &str) -> anyhow::Result<()> {
+        let mut resp = self
+            .db
+            .query(
+                "UPDATE dead_letter SET status = 'dismissed', dismissed_by = $by
+                 WHERE id = $dl_id AND status = 'pending'
+                 RETURN AFTER",
+            )
+            .bind(("dl_id", id.to_string()))
+            .bind(("by", by.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("DLQ dismiss failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("DLQ response parse: {e}"))?;
+        if rows.is_empty() {
+            anyhow::bail!("dead letter '{id}' not found or not pending");
+        }
+        Ok(())
+    }
+
+    async fn get(&self, id: &str) -> anyhow::Result<Option<DeadLetter>> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM dead_letter WHERE id = $dl_id LIMIT 1")
+            .bind(("dl_id", id.to_string()))
+            .await
+            .map_err(|e| anyhow::anyhow!("DLQ get failed: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| anyhow::anyhow!("DLQ response parse: {e}"))?;
+        Ok(rows.first().and_then(row_to_dead_letter))
     }
 }

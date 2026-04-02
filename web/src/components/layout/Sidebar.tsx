@@ -19,6 +19,8 @@ import {
   FileSearch,
   Radio,
   Timer,
+  AlertTriangle,
+  GitBranch,
 } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import { checkIpcAccess, fetchMessages } from '@/lib/ipc-api';
@@ -52,6 +54,8 @@ const ipcNavItems: NavItem[] = [
   { to: '/ipc/quarantine', icon: ShieldAlert, labelKey: 'nav.ipc_quarantine', descKey: 'ipc.quarantine_subtitle' },
   { to: '/ipc/audit', icon: FileSearch, labelKey: 'nav.ipc_audit', descKey: 'ipc.audit_subtitle' },
   { to: '/ipc/cron', icon: Timer, labelKey: 'nav.ipc_cron', descKey: 'ipc.cron_subtitle' },
+  { to: '/ipc/dead-letters', icon: AlertTriangle, labelKey: 'Dead Letters', descKey: 'Failed pipeline steps' },
+  { to: '/ipc/pipelines', icon: GitBranch, labelKey: 'Pipelines', descKey: 'Pipeline graph visualization' },
 ];
 
 function NavLinkItem({ to, icon: Icon, labelKey, descKey, end, idx, badge }: NavItem & { idx: number; badge?: number }) {

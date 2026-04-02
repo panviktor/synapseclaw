@@ -12,6 +12,7 @@ pub mod channel_registry;
 pub mod coding_worker;
 pub mod conversation_history;
 pub mod conversation_store;
+pub mod dead_letter;
 pub mod hooks;
 pub mod ipc_bus;
 pub mod ipc_client;

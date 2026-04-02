@@ -32,13 +32,14 @@ pub async fn handle_command(
 
 /// Create a memory backend for CLI management operations.
 async fn create_cli_memory(config: &Config) -> Result<std::sync::Arc<dyn UnifiedMemoryPort>> {
-    synapse_memory::create_memory(
+    let backend = synapse_memory::create_memory(
         &config.memory,
         &config.workspace_dir,
         "cli",
         config.api_key.as_deref(),
     )
-    .await
+    .await?;
+    Ok(backend.memory)
 }
 
 async fn handle_list(

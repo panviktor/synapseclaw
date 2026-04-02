@@ -28,13 +28,14 @@ pub async fn run(
 
     // ── Memory (the brain) ────────────────────────────────────────
     let resolved_agent_id = resolve_agent_id(&config);
-    let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
+    let mem_backend = synapse_memory::create_memory(
         &config.memory,
         &config.workspace_dir,
         &resolved_agent_id,
         config.api_key.as_deref(),
     )
     .await?;
+    let mem = mem_backend.memory;
     tracing::info!(backend = mem.name(), "Memory initialized");
 
     // ── Tools ────────────────────────────────────────────────────
@@ -658,7 +659,8 @@ pub async fn process_message(
         &resolved_agent_id,
         config.api_key.as_deref(),
     )
-    .await?;
+    .await?
+    .memory;
 
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (

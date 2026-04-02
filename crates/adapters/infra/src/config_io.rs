@@ -110,6 +110,7 @@ async fn load_persisted_workspace_dirs(
     Ok(Some((config_dir.clone(), config_dir.join("workspace"))))
 }
 
+#[allow(dead_code)]
 pub(crate) async fn persist_active_workspace_config_dir(config_dir: &Path) -> Result<()> {
     let default_config_dir = default_config_dir()?;
     let state_path = active_workspace_state_path(&default_config_dir);
@@ -981,9 +982,11 @@ impl ConfigIO for Config {
             );
             Ok(config)
         } else {
-            let mut config = Config::default();
-            config.config_path = config_path.clone();
-            config.workspace_dir = workspace_dir;
+            let mut config = Config {
+                config_path: config_path.clone(),
+                workspace_dir,
+                ..Config::default()
+            };
             config.save().await?;
 
             // Restrict permissions on newly created config file (may contain API keys)
@@ -1238,7 +1241,7 @@ impl ConfigIO for Config {
                     .microsoft365
                     .client_secret
                     .as_deref()
-                    .map_or(true, |s| s.trim().is_empty())
+                    .is_none_or(|s| s.trim().is_empty())
             {
                 anyhow::bail!(
                     "microsoft365.client_secret must not be empty when auth_flow is 'client_credentials'"
@@ -1407,10 +1410,10 @@ impl ConfigIO for Config {
                 self.default_provider = Some(provider);
             }
         } else if let Ok(provider) = std::env::var("PROVIDER") {
-            let should_apply_legacy_provider =
-                self.default_provider.as_deref().map_or(true, |configured| {
-                    configured.trim().eq_ignore_ascii_case("openrouter")
-                });
+            let should_apply_legacy_provider = self
+                .default_provider
+                .as_deref()
+                .is_none_or(|configured| configured.trim().eq_ignore_ascii_case("openrouter"));
             if should_apply_legacy_provider && !provider.is_empty() {
                 self.default_provider = Some(provider);
             }

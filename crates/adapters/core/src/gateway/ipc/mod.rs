@@ -817,6 +817,80 @@ impl IpcDb {
         }
     }
 
+    /// Apply inbox filter rules to a list of messages (read-side only).
+    ///
+    /// Phase 4.5: AutoGen `MessageFilterAgent` pattern.
+    /// - `allowed_kinds`: drop messages whose kind is not in the list (empty = all)
+    /// - `default_per_source` / `per_source`: keep only the last N messages per sender
+    ///
+    /// Messages are expected to be ordered by `(priority DESC, created_at ASC)`.
+    /// The per-source filter keeps the *last N* (most recent) from each sender.
+    pub fn apply_inbox_filter(
+        messages: Vec<InboxMessage>,
+        filter: &synapse_domain::config::schema::InboxFilterConfig,
+    ) -> Vec<InboxMessage> {
+        if !filter.is_active() {
+            return messages;
+        }
+
+        // Step 1: filter by kind
+        let messages: Vec<InboxMessage> = if filter.allowed_kinds.is_empty() {
+            messages
+        } else {
+            messages
+                .into_iter()
+                .filter(|m| filter.kind_allowed(&m.kind))
+                .collect()
+        };
+
+        // Step 2: per-source limit (keep last N per from_agent)
+        let has_per_source = filter.default_per_source > 0 || !filter.per_source.is_empty();
+        if !has_per_source {
+            return messages;
+        }
+
+        // Group by source, preserving order
+        let mut by_source: std::collections::HashMap<&str, Vec<InboxMessage>> =
+            std::collections::HashMap::new();
+        let mut order: Vec<&str> = Vec::new();
+        for msg in &messages {
+            if !by_source.contains_key(msg.from_agent.as_str()) {
+                order.push(msg.from_agent.as_str());
+            }
+            by_source
+                .entry(msg.from_agent.as_str())
+                .or_default()
+                .push(InboxMessage {
+                    id: msg.id,
+                    session_id: msg.session_id.clone(),
+                    from_agent: msg.from_agent.clone(),
+                    to_agent: msg.to_agent.clone(),
+                    kind: msg.kind.clone(),
+                    payload: msg.payload.clone(),
+                    priority: msg.priority,
+                    from_trust_level: msg.from_trust_level,
+                    seq: msg.seq,
+                    created_at: msg.created_at,
+                    trust_warning: msg.trust_warning.clone(),
+                    quarantined: msg.quarantined,
+                });
+        }
+
+        let mut result = Vec::new();
+        for source in order {
+            if let Some(mut msgs) = by_source.remove(source) {
+                if let Some(limit) = filter.limit_for_source(source) {
+                    // Keep last N (most recent) — messages arrive ordered by created_at ASC,
+                    // so take from the end.
+                    let start = msgs.len().saturating_sub(limit);
+                    msgs = msgs.split_off(start);
+                }
+                result.extend(msgs);
+            }
+        }
+        result
+    }
+
     /// List known agents with staleness check.
     pub fn list_agents(&self, staleness_secs: u64) -> Vec<AgentInfo> {
         let now = unix_now();
@@ -1808,6 +1882,17 @@ pub struct InboxQuery {
     /// Filter messages by kind (comma-separated, e.g. "task,query,result").
     #[serde(default)]
     pub kinds: Option<String>,
+    /// Phase 4.5: per-source message limit (0 = no limit).
+    /// Applied read-side after DB fetch.
+    #[serde(default)]
+    pub filter_per_source: Option<usize>,
+    /// Phase 4.5: per-source overrides as JSON (e.g. `{"opus":5,"sentinel":3}`).
+    #[serde(default)]
+    pub filter_per_source_overrides: Option<String>,
+    /// Phase 4.5: allowed message kinds for inbox filter (comma-separated).
+    /// Separate from `kinds` (SQL-level): this applies the InboxFilter post-fetch.
+    #[serde(default)]
+    pub filter_kinds: Option<String>,
 }
 
 fn default_inbox_limit() -> u32 {
@@ -1832,6 +1917,33 @@ pub struct InboxMessage {
     /// Whether this message came from the quarantine lane.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quarantined: Option<bool>,
+}
+
+/// Build an `InboxFilterConfig` from query parameters (Phase 4.5).
+fn build_inbox_filter_from_query(
+    query: &InboxQuery,
+) -> synapse_domain::config::schema::InboxFilterConfig {
+    let default_per_source = query.filter_per_source.unwrap_or(0);
+    let per_source: std::collections::HashMap<String, usize> = query
+        .filter_per_source_overrides
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    let allowed_kinds: Vec<String> = query
+        .filter_kinds
+        .as_deref()
+        .map(|k| {
+            k.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    synapse_domain::config::schema::InboxFilterConfig {
+        default_per_source,
+        per_source,
+        allowed_kinds,
+    }
 }
 
 fn trust_warning_for(from_trust_level: u8, is_quarantine: bool) -> Option<String> {
@@ -2782,6 +2894,12 @@ pub async fn handle_ipc_inbox(
         if query.quarantine {
             m.quarantined = Some(true);
         }
+    }
+
+    // Phase 4.5: apply inbox filter (read-side only, post-fetch)
+    let inbox_filter = build_inbox_filter_from_query(&query);
+    if inbox_filter.is_active() {
+        messages = IpcDb::apply_inbox_filter(messages, &inbox_filter);
     }
 
     // Audit: log IpcReceived for each fetched message
@@ -4214,6 +4332,7 @@ pub async fn handle_pipeline_start(
         pipeline_store: pipeline_store.clone(),
         run_store: run_store.clone(),
         executor: executor.clone(),
+        dead_letter: state.dead_letter.clone(),
     };
 
     // Spawn pipeline execution in background (non-blocking)
