@@ -1358,7 +1358,7 @@ use synapse_domain::ports::dead_letter::DeadLetterPort;
 fn row_to_dead_letter(v: &serde_json::Value) -> Option<DeadLetter> {
     let status_str = v.get("status")?.as_str()?;
     Some(DeadLetter {
-        id: json_str(v, "id"),
+        id: json_str(v, "dl_id"),
         pipeline_run_id: json_str(v, "pipeline_run_id"),
         step_id: json_str(v, "step_id"),
         agent_id: json_str(v, "agent_id"),
@@ -1395,7 +1395,7 @@ impl DeadLetterPort for SurrealMemoryAdapter {
         self.db
             .query(
                 "CREATE dead_letter SET
-                    id = $dl_id,
+                    dl_id = $dl_id,
                     pipeline_run_id = $run_id,
                     step_id = $step_id,
                     agent_id = $agent_id,
@@ -1460,7 +1460,7 @@ impl DeadLetterPort for SurrealMemoryAdapter {
             .db
             .query(
                 "UPDATE dead_letter SET status = 'retried', retried_at = time::now()
-                 WHERE id = $dl_id AND status = 'pending'
+                 WHERE dl_id = $dl_id AND status = 'pending'
                  RETURN AFTER",
             )
             .bind(("dl_id", id.to_string()))
@@ -1480,7 +1480,7 @@ impl DeadLetterPort for SurrealMemoryAdapter {
             .db
             .query(
                 "UPDATE dead_letter SET status = 'dismissed', dismissed_by = $by
-                 WHERE id = $dl_id AND status = 'pending'
+                 WHERE dl_id = $dl_id AND status = 'pending'
                  RETURN AFTER",
             )
             .bind(("dl_id", id.to_string()))
@@ -1499,7 +1499,7 @@ impl DeadLetterPort for SurrealMemoryAdapter {
     async fn get(&self, id: &str) -> anyhow::Result<Option<DeadLetter>> {
         let mut resp = self
             .db
-            .query("SELECT * FROM dead_letter WHERE id = $dl_id LIMIT 1")
+            .query("SELECT * FROM dead_letter WHERE dl_id = $dl_id LIMIT 1")
             .bind(("dl_id", id.to_string()))
             .await
             .map_err(|e| anyhow::anyhow!("DLQ get failed: {e}"))?;

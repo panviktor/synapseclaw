@@ -116,6 +116,7 @@ DEFINE INDEX IF NOT EXISTS idx_refl_agent ON reflection FIELDS agent_id;
 -- ═══════════════════════════════════════════
 
 DEFINE TABLE IF NOT EXISTS dead_letter SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS dl_id           ON dead_letter TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS pipeline_run_id ON dead_letter TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS step_id         ON dead_letter TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS agent_id        ON dead_letter TYPE option<string>;

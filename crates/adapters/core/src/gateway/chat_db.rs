@@ -130,13 +130,20 @@ impl ChatDb {
     }
 
     pub async fn list_sessions(&self, key_prefix: &str) -> Result<Vec<ChatSessionRow>> {
-        let pattern = format!("{key_prefix}%");
-        let mut resp = self
-            .db
-            .query("SELECT * FROM chat_session WHERE key LIKE $pattern ORDER BY last_active DESC")
-            .bind(("pattern", pattern))
-            .await
-            .map_err(|e| anyhow::anyhow!("list_sessions: {e}"))?;
+        let mut resp = if key_prefix.is_empty() {
+            self.db
+                .query("SELECT * FROM chat_session ORDER BY last_active DESC")
+                .await
+                .map_err(|e| anyhow::anyhow!("list_sessions: {e}"))?
+        } else {
+            self.db
+                .query(
+                    "SELECT * FROM chat_session WHERE string::starts_with(key, $prefix) ORDER BY last_active DESC",
+                )
+                .bind(("prefix", key_prefix.to_string()))
+                .await
+                .map_err(|e| anyhow::anyhow!("list_sessions: {e}"))?
+        };
         let rows: Vec<serde_json::Value> = resp
             .take(0)
             .map_err(|e| anyhow::anyhow!("list_sessions parse: {e}"))?;
