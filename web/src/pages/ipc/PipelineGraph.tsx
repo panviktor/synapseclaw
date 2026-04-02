@@ -20,7 +20,7 @@ export default function PipelineGraph() {
         const data = await apiFetch<{ pipelines: string[] }>('/api/pipelines/list');
         const names: string[] = data.pipelines || [];
         setPipelines(names.map(n => ({ name: n })));
-        if (names.length > 0 && !selected) {
+        if (names.length > 0 && !selected && names[0] !== undefined) {
           setSelected(names[0]);
         }
       } catch {
