@@ -306,6 +306,30 @@ impl WorkingMemoryPort for SurrealMemoryAdapter {
             .bind(("text", text.to_string()))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        // Enforce max size: trim oldest content if block exceeds 2000 chars.
+        const MAX_BLOCK_CHARS: usize = 2000;
+        if let Ok(blocks) = self.get_core_blocks(agent_id).await {
+            if let Some(block) = blocks.iter().find(|b| b.label == label) {
+                if block.content.len() > MAX_BLOCK_CHARS {
+                    let trimmed = &block.content[block.content.len() - MAX_BLOCK_CHARS..];
+                    let start = trimmed.find('\n').map(|i| i + 1).unwrap_or(0);
+                    let final_content = trimmed[start..].to_string();
+                    let _ = self
+                        .db
+                        .query(
+                            "UPDATE core_memory SET content = $content, updated_at = time::now()
+                             WHERE agent_id = $agent AND label = $label",
+                        )
+                        .bind(("content", final_content))
+                        .bind(("agent", agent_id.clone()))
+                        .bind(("label", label.to_string()))
+                        .await;
+                    tracing::info!(label, "memory.core_block.trimmed");
+                }
+            }
+        }
+
         Ok(())
     }
 }

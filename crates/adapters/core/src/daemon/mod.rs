@@ -326,42 +326,52 @@ pub async fn run(
     // ── Phase 4.3: Memory consolidation worker ────────────────────
     {
         // Wrap with ConsolidatingMemory if provider available.
-        let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> = {
-            let consolidation_model = config
-                .default_model
-                .clone()
-                .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
+        let consolidation_model = config
+            .default_model
+            .clone()
+            .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
+        let provider_for_worker: Option<(
+            std::sync::Arc<dyn synapse_providers::traits::Provider>,
+            String,
+        )>;
+        let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
             match synapse_providers::create_resilient_provider(
                 config.default_provider.as_deref().unwrap_or("openrouter"),
                 config.api_key.as_deref(),
                 config.api_url.as_deref(),
                 &config.reliability,
             ) {
-                Ok(p) => std::sync::Arc::new(
-                    crate::memory_adapters::instrumented::InstrumentedMemory::new(
-                        std::sync::Arc::new(
-                            crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
-                                shared_raw_mem.clone(),
-                                std::sync::Arc::from(p),
-                                consolidation_model,
-                                daemon_agent_id.clone(),
-                                shared_ipc_client.clone(),
+                Ok(p) => {
+                    let prov_arc: std::sync::Arc<dyn synapse_providers::traits::Provider> =
+                        std::sync::Arc::from(p);
+                    provider_for_worker = Some((prov_arc.clone(), consolidation_model.clone()));
+                    std::sync::Arc::new(
+                        crate::memory_adapters::instrumented::InstrumentedMemory::new(
+                            std::sync::Arc::new(
+                                crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+                                    shared_raw_mem.clone(),
+                                    prov_arc,
+                                    consolidation_model,
+                                    daemon_agent_id.clone(),
+                                    shared_ipc_client.clone(),
+                                ),
                             ),
                         ),
-                    ),
-                ),
+                    )
+                }
                 Err(e) => {
                     tracing::warn!("Consolidation provider unavailable: {e}");
+                    provider_for_worker = None;
                     shared_raw_mem.clone()
                 }
-            }
-        };
+            };
 
         let worker_handle =
             crate::memory_adapters::consolidation_worker::spawn_consolidation_worker(
                 mem,
                 crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default(),
                 daemon_agent_id.clone(),
+                provider_for_worker,
             );
         handles.push(worker_handle);
     }

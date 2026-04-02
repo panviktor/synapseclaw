@@ -48,6 +48,8 @@ See [`news.md`](news.md) for the latest updates and release notes.
 | [ipc-phase4_3-plan.md](ipc-phase4_3-plan.md) | Phase 4.3: Memory Architecture — SurrealDB embedded, knowledge graph, skill learning, MemGPT pattern | Everyone |
 | [ipc-phase4_3-progress.md](ipc-phase4_3-progress.md) | Phase 4.3 execution checklist (COMPLETE — all 9 slices, PRs #217-#218) | Opus |
 | [memory-architecture.md](memory-architecture.md) | Memory system data flows, SurrealDB schema, embedding pipeline, tools | Everyone |
+| [ipc-phase4_4-plan.md](ipc-phase4_4-plan.md) | Phase 4.4: Prompt Optimizer — self-improving agent instructions | Everyone |
+| [ipc-phase4_4-progress.md](ipc-phase4_4-progress.md) | Phase 4.4 execution checklist (3 slices — NOT STARTED) | Opus |
 | [channel-triage.md](channel-triage.md) | Channel port priority: 10 Tier 1 (port) + 17 Tier 2 (defer) | Everyone |
 
 ## Reading order
