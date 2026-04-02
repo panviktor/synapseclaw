@@ -784,7 +784,7 @@ async fn main() -> Result<()> {
 
         // Auto-start channels if user said yes during wizard
         if std::env::var("SYNAPSECLAW_AUTOSTART_CHANNELS").as_deref() == Ok("1") {
-            Box::pin(adapters::channels::start_channels(config, None, None)).await?;
+            Box::pin(adapters::channels::start_channels(config, None, None, None)).await?;
         }
         return Ok(());
     }
@@ -1128,7 +1128,18 @@ async fn main() -> Result<()> {
         } => handle_estop_command(&config, estop_command, level, domains, tools),
 
         Commands::Cron { cron_command } => {
-            synapse_cron::commands::handle_command(cron_command, &config)
+            let resolved_agent_id = synapse_adapters::agent::loop_::resolve_agent_id(&config);
+            let mem_backend = synapse_memory::create_memory(
+                &config.memory,
+                &config.workspace_dir,
+                &resolved_agent_id,
+                config.api_key.as_deref(),
+            )
+            .await?;
+            let db = mem_backend
+                .surreal
+                .ok_or_else(|| anyhow::anyhow!("SurrealDB not available for cron commands"))?;
+            synapse_cron::commands::handle_command(cron_command, &db, &config).await
         }
 
         Commands::Models { model_command } => match model_command {
@@ -1226,7 +1237,7 @@ async fn main() -> Result<()> {
 
         Commands::Channel { channel_command } => match channel_command {
             ChannelCommands::Start => {
-                Box::pin(adapters::channels::start_channels(config, None, None)).await
+                Box::pin(adapters::channels::start_channels(config, None, None, None)).await
             }
             ChannelCommands::Doctor => Box::pin(adapters::channels::doctor_channels(config)).await,
             other => Box::pin(adapters::channels::handle_command(other, &config)).await,

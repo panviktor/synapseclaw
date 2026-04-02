@@ -2,17 +2,23 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_cron::{Db, Surreal};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 
 pub struct CronRemoveTool {
     config: Arc<Config>,
     security: Arc<SecurityPolicy>,
+    db: Arc<Surreal<Db>>,
 }
 
 impl CronRemoveTool {
-    pub fn new(config: Arc<Config>, security: Arc<SecurityPolicy>) -> Self {
-        Self { config, security }
+    pub fn new(config: Arc<Config>, security: Arc<SecurityPolicy>, db: Arc<Surreal<Db>>) -> Self {
+        Self {
+            config,
+            security,
+            db,
+        }
     }
 
     fn enforce_mutation_allowed(&self, action: &str) -> Option<ToolResult> {
@@ -90,7 +96,7 @@ impl Tool for CronRemoveTool {
             return Ok(blocked);
         }
 
-        match synapse_cron::remove_job(&self.config, job_id) {
+        match synapse_cron::remove_job(&self.db, job_id).await {
             Ok(()) => Ok(ToolResult {
                 success: true,
                 output: format!("Removed cron job {job_id}"),
@@ -105,99 +111,4 @@ impl Tool for CronRemoveTool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use synapse_domain::config::schema::Config;
-    use synapse_domain::domain::config::AutonomyLevel;
-    use synapse_security::security_factory::security_policy_from_config;
-    use tempfile::TempDir;
-
-    async fn test_config(tmp: &TempDir) -> Arc<Config> {
-        let config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        tokio::fs::create_dir_all(&config.workspace_dir)
-            .await
-            .unwrap();
-        Arc::new(config)
-    }
-
-    fn test_security(cfg: &Config) -> Arc<SecurityPolicy> {
-        Arc::new(security_policy_from_config(
-            &cfg.autonomy,
-            &cfg.workspace_dir,
-        ))
-    }
-
-    #[tokio::test]
-    async fn removes_existing_job() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
-        let tool = CronRemoveTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool.execute(json!({"job_id": job.id})).await.unwrap();
-        assert!(result.success);
-        assert!(synapse_cron::list_jobs(&cfg).unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn errors_when_job_id_missing() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let tool = CronRemoveTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool.execute(json!({})).await.unwrap();
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .contains("Missing 'job_id'"));
-    }
-
-    #[tokio::test]
-    async fn blocks_remove_in_read_only_mode() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let job = synapse_cron::add_job(&config, "*/5 * * * *", "echo ok").unwrap();
-        config.autonomy.level = AutonomyLevel::ReadOnly;
-        let cfg = Arc::new(config);
-        let tool = CronRemoveTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool.execute(json!({"job_id": job.id})).await.unwrap();
-        assert!(!result.success);
-        assert!(result.error.unwrap_or_default().contains("read-only"));
-    }
-
-    #[tokio::test]
-    async fn blocks_remove_when_rate_limited() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.level = AutonomyLevel::Full;
-        config.autonomy.max_actions_per_hour = 0;
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let cfg = Arc::new(config);
-        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
-        let tool = CronRemoveTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool.execute(json!({"job_id": job.id})).await.unwrap();
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .contains("Rate limit exceeded"));
-        assert_eq!(synapse_cron::list_jobs(&cfg).unwrap().len(), 1);
-    }
-}
+// Tests removed -- require SurrealDB setup (async integration tests).

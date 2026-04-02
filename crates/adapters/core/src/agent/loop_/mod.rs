@@ -192,7 +192,7 @@ fn save_interactive_session_history(path: &Path, history: &[ChatMessage]) -> Res
 
 /// Resolve the canonical agent ID from config.
 /// Prefers `agents_ipc.agent_id`, falls back to `agents_ipc.role`, then `"default"`.
-pub(crate) fn resolve_agent_id(config: &synapse_domain::config::schema::Config) -> String {
+pub fn resolve_agent_id(config: &synapse_domain::config::schema::Config) -> String {
     config.agents_ipc.agent_id.clone().unwrap_or_else(|| {
         let role = config.agents_ipc.role.clone();
         if !role.is_empty() {

@@ -951,6 +951,7 @@ pub struct AgentsSpawnTool {
     security: Arc<synapse_domain::domain::security_policy::SecurityPolicy>,
     parent_trust_level: u8,
     ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
+    cron_db: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
 }
 
 impl AgentsSpawnTool {
@@ -958,12 +959,14 @@ impl AgentsSpawnTool {
         config: Arc<synapse_domain::config::schema::Config>,
         security: Arc<synapse_domain::domain::security_policy::SecurityPolicy>,
         parent_trust_level: u8,
+        cron_db: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
     ) -> Self {
         Self {
             config,
             security,
             parent_trust_level,
             ipc_client: None,
+            cron_db,
         }
     }
 
@@ -973,12 +976,14 @@ impl AgentsSpawnTool {
         security: Arc<synapse_domain::domain::security_policy::SecurityPolicy>,
         parent_trust_level: u8,
         ipc_client: Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>,
+        cron_db: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
     ) -> Self {
         Self {
             config,
             security,
             parent_trust_level,
             ipc_client: Some(ipc_client),
+            cron_db,
         }
     }
 }
@@ -1106,19 +1111,23 @@ impl Tool for AgentsSpawnTool {
                 ),
             });
         }
-        self.spawn_legacy(prompt, name, model, child_level)
+        self.spawn_legacy(prompt, name, model, child_level).await
     }
 }
 
 impl AgentsSpawnTool {
     /// Legacy fire-and-forget spawn via in-process cron job.
-    fn spawn_legacy(
+    async fn spawn_legacy(
         &self,
         prompt: &str,
         name: Option<String>,
         model: Option<String>,
         child_level: u8,
     ) -> anyhow::Result<ToolResult> {
+        let db = self
+            .cron_db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("SurrealDB not available for legacy spawn"))?;
         let run_at = chrono::Utc::now() + chrono::Duration::seconds(1);
         let schedule = synapse_cron::Schedule::At { at: run_at };
 
@@ -1126,7 +1135,7 @@ impl AgentsSpawnTool {
         let spawn_prompt = format!("[IPC spawned agent | trust_level={child_level}]\n\n{prompt}");
 
         match synapse_cron::add_agent_job(
-            &self.config,
+            db,
             Some(job_name.clone()),
             schedule,
             &spawn_prompt,
@@ -1134,7 +1143,9 @@ impl AgentsSpawnTool {
             model,
             None,
             true,
-        ) {
+        )
+        .await
+        {
             Ok(job) => Ok(ToolResult {
                 success: true,
                 output: serde_json::to_string_pretty(&json!({
@@ -1287,8 +1298,12 @@ impl AgentsSpawnTool {
             .and_then(|wl| wl.model.clone())
             .or(model);
 
+        let db = self
+            .cron_db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("SurrealDB not available for subprocess spawn"))?;
         let job = synapse_cron::add_agent_job_full(
-            &self.config,
+            db,
             Some(job_name.clone()),
             schedule,
             &spawn_prompt,
@@ -1299,6 +1314,7 @@ impl AgentsSpawnTool {
             synapse_cron::ExecutionMode::Subprocess,
             env_overlay,
         )
+        .await
         .map_err(|e| anyhow::anyhow!("Failed to create subprocess job: {e}"))?;
 
         // 6. If wait=false, return immediately
@@ -1495,7 +1511,7 @@ mod tests {
     fn agents_spawn_tool_spec() {
         let config = Arc::new(synapse_domain::config::schema::Config::default());
         let security = Arc::new(synapse_domain::domain::security_policy::SecurityPolicy::default());
-        let tool = AgentsSpawnTool::new(config, security, 2);
+        let tool = AgentsSpawnTool::new(config, security, 2, None);
         let spec = tool.spec();
         assert_eq!(spec.name, "agents_spawn");
         let required = spec.parameters["required"].as_array().unwrap();
@@ -1512,7 +1528,7 @@ mod tests {
         let config = Arc::new(synapse_domain::config::schema::Config::default());
         let security = Arc::new(synapse_domain::domain::security_policy::SecurityPolicy::default());
         let client = Arc::new(IpcClient::new("http://localhost:42617", "t", 10));
-        let tool = AgentsSpawnTool::with_broker(config, security, 1, client);
+        let tool = AgentsSpawnTool::with_broker(config, security, 1, client, None);
         assert!(tool.ipc_client.is_some());
     }
 

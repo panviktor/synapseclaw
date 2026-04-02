@@ -212,6 +212,80 @@ DEFINE FIELD IF NOT EXISTS duration_ms   ON heartbeat_run TYPE option<int>;
 DEFINE INDEX IF NOT EXISTS idx_hb_started ON heartbeat_run FIELDS started_at;
 
 -- ═══════════════════════════════════════════
+-- CHANNEL SESSIONS (migrated from SQLite)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS channel_session SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS session_key ON channel_session TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS role ON channel_session TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS content ON channel_session TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at ON channel_session TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS idx_chs_key ON channel_session FIELDS session_key;
+
+-- ═══════════════════════════════════════════
+-- CHANNEL SESSION METADATA
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS channel_session_meta SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS session_key ON channel_session_meta TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at ON channel_session_meta TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS last_activity ON channel_session_meta TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS message_count ON channel_session_meta TYPE option<int>;
+DEFINE INDEX IF NOT EXISTS idx_csm_key ON channel_session_meta FIELDS session_key UNIQUE;
+
+-- ═══════════════════════════════════════════
+-- CHANNEL SESSION SUMMARIES
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS channel_session_summary SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS session_key ON channel_session_summary TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS summary ON channel_session_summary TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS message_count_at_summary ON channel_session_summary TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS updated_at ON channel_session_summary TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS idx_css_key ON channel_session_summary FIELDS session_key UNIQUE;
+
+-- ═══════════════════════════════════════════
+-- CRON JOBS (migrated from SQLite)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS cron_job SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS job_id ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS expression ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS command ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS schedule ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS job_type ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS prompt ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS name ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS session_target ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS model ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS enabled ON cron_job TYPE option<bool>;
+DEFINE FIELD IF NOT EXISTS delivery ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS delete_after_run ON cron_job TYPE option<bool>;
+DEFINE FIELD IF NOT EXISTS execution_mode ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS env_overlay ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS created_at ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS next_run ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS last_run ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS last_status ON cron_job TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS last_output ON cron_job TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS idx_cj_id ON cron_job FIELDS job_id UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_cj_next ON cron_job FIELDS next_run;
+
+-- ═══════════════════════════════════════════
+-- CRON RUNS (migrated from SQLite)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS cron_run SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS job_id ON cron_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS started_at ON cron_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS finished_at ON cron_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status ON cron_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS output ON cron_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS duration_ms ON cron_run TYPE option<int>;
+DEFINE INDEX IF NOT EXISTS idx_cr_job ON cron_run FIELDS job_id;
+DEFINE INDEX IF NOT EXISTS idx_cr_started ON cron_run FIELDS started_at;
+
+-- ═══════════════════════════════════════════
 -- RESPONSE CACHE (migrated from SQLite)
 -- ═══════════════════════════════════════════
 

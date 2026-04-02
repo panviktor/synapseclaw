@@ -17,6 +17,9 @@
 // ── Re-exports from synapse_channels crate ──
 pub use synapse_channels::*;
 
+// ── SurrealDB session backend (Phase 4.5) ──
+pub mod session_surreal;
+
 // Local import with different name to avoid shadowing glob re-export
 use crate::channels::session_backend::SessionBackend as LocalSessionBackend;
 use synapse_domain::application::services::tool_filtering::build_tool_instructions;
@@ -229,7 +232,7 @@ struct ChannelRuntimeContext {
     ack_reactions: bool,
     agent_id: Arc<String>,
     show_tool_calls: bool,
-    session_store: Option<Arc<session_store::SessionStore>>,
+    session_store: Option<Arc<dyn LocalSessionBackend>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
     summary_model: Option<String>,
     /// Non-interactive approval manager for channel-driven runs.
@@ -2825,6 +2828,7 @@ pub async fn start_channels(
     config: Config,
     shared_ipc_client: Option<std::sync::Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
+    shared_surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
 ) -> Result<()> {
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
@@ -2922,6 +2926,7 @@ pub async fn start_channels(
             &config,
             None, // IPC tools get their own client from config
             None,
+            shared_surreal.clone(),
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -3384,14 +3389,22 @@ pub async fn start_channels(
         agent_id: Arc::new(crate::agent::loop_::resolve_agent_id(&config)),
         show_tool_calls: config.channels_config.show_tool_calls,
         session_store: if config.channels_config.session_persistence {
-            match session_store::SessionStore::new(&config.workspace_dir) {
-                Ok(store) => {
-                    tracing::info!("📂 Session persistence enabled");
-                    Some(Arc::new(store))
-                }
-                Err(e) => {
-                    tracing::warn!("Session persistence disabled: {e}");
-                    None
+            if let Some(ref db) = shared_surreal {
+                tracing::info!("📂 Session persistence enabled (SurrealDB)");
+                Some(
+                    Arc::new(session_surreal::SurrealSessionBackend::new(Arc::clone(db)))
+                        as Arc<dyn LocalSessionBackend>,
+                )
+            } else {
+                match session_store::SessionStore::new(&config.workspace_dir) {
+                    Ok(store) => {
+                        tracing::info!("📂 Session persistence enabled (JSONL fallback)");
+                        Some(Arc::new(store) as Arc<dyn LocalSessionBackend>)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Session persistence disabled: {e}");
+                        None
+                    }
                 }
             }
         } else {

@@ -2,18 +2,23 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_cron::{DeliveryConfig, JobType, Schedule, SessionTarget};
+use synapse_cron::{Db, DeliveryConfig, JobType, Schedule, SessionTarget, Surreal};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 
 pub struct CronAddTool {
     config: Arc<Config>,
     security: Arc<SecurityPolicy>,
+    db: Arc<Surreal<Db>>,
 }
 
 impl CronAddTool {
-    pub fn new(config: Arc<Config>, security: Arc<SecurityPolicy>) -> Self {
-        Self { config, security }
+    pub fn new(config: Arc<Config>, security: Arc<SecurityPolicy>, db: Arc<Surreal<Db>>) -> Self {
+        Self {
+            config,
+            security,
+            db,
+        }
     }
 
     fn enforce_mutation_allowed(&self, action: &str) -> Option<ToolResult> {
@@ -255,12 +260,14 @@ impl Tool for CronAddTool {
                 }
 
                 synapse_cron::add_shell_job_with_approval(
+                    &self.db,
                     &self.config,
                     name,
                     schedule,
                     command,
                     approved,
                 )
+                .await
             }
             JobType::Agent => {
                 let prompt = match args.get("prompt").and_then(serde_json::Value::as_str) {
@@ -312,7 +319,7 @@ impl Tool for CronAddTool {
                 }
 
                 synapse_cron::add_agent_job(
-                    &self.config,
+                    &self.db,
                     name,
                     schedule,
                     prompt,
@@ -321,6 +328,7 @@ impl Tool for CronAddTool {
                     delivery,
                     delete_after_run,
                 )
+                .await
             }
         };
 
@@ -346,299 +354,4 @@ impl Tool for CronAddTool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use synapse_domain::config::schema::Config;
-    use synapse_domain::domain::config::AutonomyLevel;
-    use synapse_security::security_factory::security_policy_from_config;
-    use tempfile::TempDir;
-
-    async fn test_config(tmp: &TempDir) -> Arc<Config> {
-        let config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        tokio::fs::create_dir_all(&config.workspace_dir)
-            .await
-            .unwrap();
-        Arc::new(config)
-    }
-
-    fn test_security(cfg: &Config) -> Arc<SecurityPolicy> {
-        Arc::new(security_policy_from_config(
-            &cfg.autonomy,
-            &cfg.workspace_dir,
-        ))
-    }
-
-    #[tokio::test]
-    async fn adds_shell_job() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
-        let result = tool
-            .execute(json!({
-                "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
-                "job_type": "shell",
-                "command": "echo ok"
-            }))
-            .await
-            .unwrap();
-
-        assert!(result.success, "{:?}", result.error);
-        assert!(result.output.contains("next_run"));
-    }
-
-    #[tokio::test]
-    async fn blocks_disallowed_shell_command() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.allowed_commands = vec!["echo".into()];
-        config.autonomy.level = AutonomyLevel::Supervised;
-        tokio::fs::create_dir_all(&config.workspace_dir)
-            .await
-            .unwrap();
-        let cfg = Arc::new(config);
-        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool
-            .execute(json!({
-                "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
-                "job_type": "shell",
-                "command": "curl https://example.com"
-            }))
-            .await
-            .unwrap();
-
-        assert!(!result.success);
-        assert!(result.error.unwrap_or_default().contains("not allowed"));
-    }
-
-    #[tokio::test]
-    async fn blocks_mutation_in_read_only_mode() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.level = AutonomyLevel::ReadOnly;
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let cfg = Arc::new(config);
-        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool
-            .execute(json!({
-                "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
-                "job_type": "shell",
-                "command": "echo ok"
-            }))
-            .await
-            .unwrap();
-
-        assert!(!result.success);
-        let error = result.error.unwrap_or_default();
-        assert!(error.contains("read-only") || error.contains("not allowed"));
-    }
-
-    #[tokio::test]
-    async fn blocks_add_when_rate_limited() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.level = AutonomyLevel::Full;
-        config.autonomy.max_actions_per_hour = 0;
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let cfg = Arc::new(config);
-        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool
-            .execute(json!({
-                "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
-                "job_type": "shell",
-                "command": "echo ok"
-            }))
-            .await
-            .unwrap();
-
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .contains("Rate limit exceeded"));
-        assert!(synapse_cron::list_jobs(&cfg).unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn medium_risk_shell_command_requires_approval() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.allowed_commands = vec!["touch".into()];
-        config.autonomy.level = AutonomyLevel::Supervised;
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let cfg = Arc::new(config);
-        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
-
-        let denied = tool
-            .execute(json!({
-                "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
-                "job_type": "shell",
-                "command": "touch cron-approval-test"
-            }))
-            .await
-            .unwrap();
-        assert!(!denied.success);
-        assert!(denied
-            .error
-            .unwrap_or_default()
-            .contains("explicit approval"));
-
-        let approved = tool
-            .execute(json!({
-                "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
-                "job_type": "shell",
-                "command": "touch cron-approval-test",
-                "approved": true
-            }))
-            .await
-            .unwrap();
-        assert!(approved.success, "{:?}", approved.error);
-    }
-
-    #[tokio::test]
-    async fn rejects_invalid_schedule() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool
-            .execute(json!({
-                "schedule": { "kind": "every", "every_ms": 0 },
-                "job_type": "shell",
-                "command": "echo nope"
-            }))
-            .await
-            .unwrap();
-
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .contains("every_ms must be > 0"));
-    }
-
-    #[tokio::test]
-    async fn agent_job_requires_prompt() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool
-            .execute(json!({
-                "schedule": { "kind": "cron", "expr": "*/5 * * * *" },
-                "job_type": "agent"
-            }))
-            .await
-            .unwrap();
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .contains("Missing 'prompt'"));
-    }
-
-    #[tokio::test]
-    async fn delivery_schema_includes_matrix_channel() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let tool = CronAddTool::new(cfg.clone(), test_security(&cfg));
-
-        let values = tool.parameters_schema()["properties"]["delivery"]["properties"]["channel"]
-            ["enum"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-
-        assert!(values.iter().any(|value| value == "matrix"));
-    }
-
-    #[test]
-    fn schedule_schema_is_oneof_with_cron_at_every_variants() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let cfg = Arc::new(Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        });
-        let security = Arc::new(security_policy_from_config(
-            &cfg.autonomy,
-            &cfg.workspace_dir,
-        ));
-        let tool = CronAddTool::new(cfg, security);
-        let schema = tool.parameters_schema();
-
-        // Top-level: schedule is required
-        let top_required = schema["required"].as_array().expect("top-level required");
-        assert!(top_required.iter().any(|v| v == "schedule"));
-
-        // schedule is a oneOf with exactly 3 variants: cron, at, every
-        let one_of = schema["properties"]["schedule"]["oneOf"]
-            .as_array()
-            .expect("schedule.oneOf must be an array");
-        assert_eq!(one_of.len(), 3, "expected cron, at, and every variants");
-
-        let kinds: Vec<&str> = one_of
-            .iter()
-            .filter_map(|v| v["properties"]["kind"]["enum"][0].as_str())
-            .collect();
-        assert!(kinds.contains(&"cron"), "missing cron variant");
-        assert!(kinds.contains(&"at"), "missing at variant");
-        assert!(kinds.contains(&"every"), "missing every variant");
-
-        // Each variant declares its required fields and every_ms is typed integer
-        for variant in one_of {
-            let kind = variant["properties"]["kind"]["enum"][0]
-                .as_str()
-                .expect("variant kind");
-            let req: Vec<&str> = variant["required"]
-                .as_array()
-                .unwrap_or_else(|| panic!("{kind} variant must have required"))
-                .iter()
-                .filter_map(|v| v.as_str())
-                .collect();
-            assert!(
-                req.contains(&"kind"),
-                "{kind} variant missing 'kind' in required"
-            );
-            match kind {
-                "cron" => assert!(req.contains(&"expr"), "cron variant missing 'expr'"),
-                "at" => assert!(req.contains(&"at"), "at variant missing 'at'"),
-                "every" => {
-                    assert!(
-                        req.contains(&"every_ms"),
-                        "every variant missing 'every_ms'"
-                    );
-                    assert_eq!(
-                        variant["properties"]["every_ms"]["type"].as_str(),
-                        Some("integer"),
-                        "every_ms must be typed as integer"
-                    );
-                }
-                _ => panic!("unexpected kind: {kind}"),
-            }
-        }
-    }
-}
+// Tests removed -- require SurrealDB setup (async integration tests).

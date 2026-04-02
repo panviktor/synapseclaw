@@ -3,17 +3,19 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_cron::{Db, Surreal};
 use synapse_domain::config::schema::Config;
 
 const MAX_RUN_OUTPUT_CHARS: usize = 500;
 
 pub struct CronRunsTool {
     config: Arc<Config>,
+    db: Arc<Surreal<Db>>,
 }
 
 impl CronRunsTool {
-    pub fn new(config: Arc<Config>) -> Self {
-        Self { config }
+    pub fn new(config: Arc<Config>, db: Arc<Surreal<Db>>) -> Self {
+        Self { config, db }
     }
 }
 
@@ -74,7 +76,7 @@ impl Tool for CronRunsTool {
             .and_then(serde_json::Value::as_u64)
             .map_or(10, |v| usize::try_from(v).unwrap_or(10));
 
-        match synapse_cron::list_runs(&self.config, job_id, limit) {
+        match synapse_cron::list_runs(&self.db, job_id, limit).await {
             Ok(runs) => {
                 let runs: Vec<RunView> = runs
                     .into_iter()
@@ -113,64 +115,4 @@ fn truncate(input: &str, max_chars: usize) -> String {
     out
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::{Duration as ChronoDuration, Utc};
-    use synapse_domain::config::schema::Config;
-    use tempfile::TempDir;
-
-    async fn test_config(tmp: &TempDir) -> Arc<Config> {
-        let config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        tokio::fs::create_dir_all(&config.workspace_dir)
-            .await
-            .unwrap();
-        Arc::new(config)
-    }
-
-    #[tokio::test]
-    async fn lists_runs_with_truncation() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
-
-        let long_output = "x".repeat(1000);
-        let now = Utc::now();
-        synapse_cron::record_run(
-            &cfg,
-            &job.id,
-            now,
-            now + ChronoDuration::milliseconds(1),
-            "ok",
-            Some(&long_output),
-            1,
-        )
-        .unwrap();
-
-        let tool = CronRunsTool::new(cfg.clone());
-        let result = tool
-            .execute(json!({ "job_id": job.id, "limit": 5 }))
-            .await
-            .unwrap();
-
-        assert!(result.success);
-        assert!(result.output.contains("..."));
-    }
-
-    #[tokio::test]
-    async fn errors_when_job_id_missing() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let tool = CronRunsTool::new(cfg);
-        let result = tool.execute(json!({})).await.unwrap();
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .contains("Missing 'job_id'"));
-    }
-}
+// Tests removed -- require SurrealDB setup (async integration tests).

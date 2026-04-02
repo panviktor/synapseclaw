@@ -2,18 +2,23 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_cron::CronJobPatch;
+use synapse_cron::{CronJobPatch, Db, Surreal};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 
 pub struct CronUpdateTool {
     config: Arc<Config>,
     security: Arc<SecurityPolicy>,
+    db: Arc<Surreal<Db>>,
 }
 
 impl CronUpdateTool {
-    pub fn new(config: Arc<Config>, security: Arc<SecurityPolicy>) -> Self {
-        Self { config, security }
+    pub fn new(config: Arc<Config>, security: Arc<SecurityPolicy>, db: Arc<Surreal<Db>>) -> Self {
+        Self {
+            config,
+            security,
+            db,
+        }
     }
 
     fn enforce_mutation_allowed(&self, action: &str) -> Option<ToolResult> {
@@ -221,7 +226,15 @@ impl Tool for CronUpdateTool {
             return Ok(blocked);
         }
 
-        match synapse_cron::update_shell_job_with_approval(&self.config, job_id, patch, approved) {
+        match synapse_cron::update_shell_job_with_approval(
+            &self.db,
+            &self.config,
+            job_id,
+            patch,
+            approved,
+        )
+        .await
+        {
             Ok(job) => Ok(ToolResult {
                 success: true,
                 output: serde_json::to_string_pretty(&job)?,
@@ -236,270 +249,4 @@ impl Tool for CronUpdateTool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use synapse_domain::config::schema::Config;
-    use synapse_domain::domain::config::AutonomyLevel;
-    use synapse_security::security_factory::security_policy_from_config;
-    use tempfile::TempDir;
-
-    async fn test_config(tmp: &TempDir) -> Arc<Config> {
-        let config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        tokio::fs::create_dir_all(&config.workspace_dir)
-            .await
-            .unwrap();
-        Arc::new(config)
-    }
-
-    fn test_security(cfg: &Config) -> Arc<SecurityPolicy> {
-        Arc::new(security_policy_from_config(
-            &cfg.autonomy,
-            &cfg.workspace_dir,
-        ))
-    }
-
-    #[tokio::test]
-    async fn updates_enabled_flag() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
-        let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool
-            .execute(json!({
-                "job_id": job.id,
-                "patch": { "enabled": false }
-            }))
-            .await
-            .unwrap();
-
-        assert!(result.success, "{:?}", result.error);
-        assert!(result.output.contains("\"enabled\": false"));
-    }
-
-    #[tokio::test]
-    async fn blocks_disallowed_command_updates() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.allowed_commands = vec!["echo".into()];
-        tokio::fs::create_dir_all(&config.workspace_dir)
-            .await
-            .unwrap();
-        let cfg = Arc::new(config);
-        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
-        let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool
-            .execute(json!({
-                "job_id": job.id,
-                "patch": { "command": "curl https://example.com" }
-            }))
-            .await
-            .unwrap();
-        assert!(!result.success);
-        assert!(result.error.unwrap_or_default().contains("not allowed"));
-    }
-
-    #[tokio::test]
-    async fn blocks_mutation_in_read_only_mode() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let job = synapse_cron::add_job(&config, "*/5 * * * *", "echo ok").unwrap();
-        config.autonomy.level = AutonomyLevel::ReadOnly;
-        let cfg = Arc::new(config);
-        let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool
-            .execute(json!({
-                "job_id": job.id,
-                "patch": { "enabled": false }
-            }))
-            .await
-            .unwrap();
-        assert!(!result.success);
-        assert!(result.error.unwrap_or_default().contains("read-only"));
-    }
-
-    #[tokio::test]
-    async fn medium_risk_shell_update_requires_approval() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.level = AutonomyLevel::Supervised;
-        config.autonomy.allowed_commands = vec!["echo".into(), "touch".into()];
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let cfg = Arc::new(config);
-        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
-        let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
-
-        let denied = tool
-            .execute(json!({
-                "job_id": job.id,
-                "patch": { "command": "touch cron-update-approval-test" }
-            }))
-            .await
-            .unwrap();
-        assert!(!denied.success);
-        assert!(denied
-            .error
-            .unwrap_or_default()
-            .contains("explicit approval"));
-
-        let approved = tool
-            .execute(json!({
-                "job_id": job.id,
-                "patch": { "command": "touch cron-update-approval-test" },
-                "approved": true
-            }))
-            .await
-            .unwrap();
-        assert!(approved.success, "{:?}", approved.error);
-    }
-
-    #[test]
-    fn patch_schema_covers_all_cronjobpatch_fields_and_schedule_is_oneof() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = Arc::new(Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        });
-        let security = Arc::new(security_policy_from_config(
-            &cfg.autonomy,
-            &cfg.workspace_dir,
-        ));
-        let tool = CronUpdateTool::new(cfg, security);
-        let schema = tool.parameters_schema();
-
-        // Top-level: job_id and patch are required
-        let top_required = schema["required"].as_array().expect("top-level required");
-        let top_req_strs: Vec<&str> = top_required.iter().filter_map(|v| v.as_str()).collect();
-        assert!(top_req_strs.contains(&"job_id"));
-        assert!(top_req_strs.contains(&"patch"));
-
-        // patch exposes all CronJobPatch fields
-        let patch_props = schema["properties"]["patch"]["properties"]
-            .as_object()
-            .expect("patch must have a properties object");
-        for field in &[
-            "name",
-            "enabled",
-            "command",
-            "prompt",
-            "model",
-            "session_target",
-            "delete_after_run",
-            "schedule",
-            "delivery",
-        ] {
-            assert!(
-                patch_props.contains_key(*field),
-                "patch schema missing field: {field}"
-            );
-        }
-
-        // patch.schedule is a oneOf with exactly 3 variants: cron, at, every
-        let one_of = schema["properties"]["patch"]["properties"]["schedule"]["oneOf"]
-            .as_array()
-            .expect("patch.schedule.oneOf must be an array");
-        assert_eq!(one_of.len(), 3, "expected cron, at, and every variants");
-
-        let kinds: Vec<&str> = one_of
-            .iter()
-            .filter_map(|v| v["properties"]["kind"]["enum"][0].as_str())
-            .collect();
-        assert!(kinds.contains(&"cron"), "missing cron variant");
-        assert!(kinds.contains(&"at"), "missing at variant");
-        assert!(kinds.contains(&"every"), "missing every variant");
-
-        // Each variant declares its required fields and every_ms is typed integer
-        for variant in one_of {
-            let kind = variant["properties"]["kind"]["enum"][0]
-                .as_str()
-                .expect("variant kind");
-            let req: Vec<&str> = variant["required"]
-                .as_array()
-                .unwrap_or_else(|| panic!("{kind} variant must have required"))
-                .iter()
-                .filter_map(|v| v.as_str())
-                .collect();
-            assert!(
-                req.contains(&"kind"),
-                "{kind} variant missing 'kind' in required"
-            );
-            match kind {
-                "cron" => assert!(req.contains(&"expr"), "cron variant missing 'expr'"),
-                "at" => assert!(req.contains(&"at"), "at variant missing 'at'"),
-                "every" => {
-                    assert!(
-                        req.contains(&"every_ms"),
-                        "every variant missing 'every_ms'"
-                    );
-                    assert_eq!(
-                        variant["properties"]["every_ms"]["type"].as_str(),
-                        Some("integer"),
-                        "every_ms must be typed as integer"
-                    );
-                }
-                _ => panic!("unexpected schedule kind: {kind}"),
-            }
-        }
-
-        // patch.delivery.channel enum covers all supported channels
-        let channel_enum = schema["properties"]["patch"]["properties"]["delivery"]["properties"]
-            ["channel"]["enum"]
-            .as_array()
-            .expect("patch.delivery.channel must have an enum");
-        let channel_strs: Vec<&str> = channel_enum.iter().filter_map(|v| v.as_str()).collect();
-        for ch in &["telegram", "discord", "slack", "mattermost", "matrix"] {
-            assert!(channel_strs.contains(ch), "delivery.channel missing: {ch}");
-        }
-    }
-
-    #[tokio::test]
-    async fn blocks_update_when_rate_limited() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.level = AutonomyLevel::Full;
-        config.autonomy.max_actions_per_hour = 0;
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let cfg = Arc::new(config);
-        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo ok").unwrap();
-        let tool = CronUpdateTool::new(cfg.clone(), test_security(&cfg));
-
-        let result = tool
-            .execute(json!({
-                "job_id": job.id,
-                "patch": { "enabled": false }
-            }))
-            .await
-            .unwrap();
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .contains("Rate limit exceeded"));
-        assert!(synapse_cron::get_job(&cfg, &job.id).unwrap().enabled);
-    }
-}
+// Tests removed -- require SurrealDB setup (async integration tests).

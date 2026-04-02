@@ -263,6 +263,7 @@ pub async fn run(
             let channels_cfg = config.clone();
             let ch_ipc = shared_ipc_client.clone();
             let ch_mem = shared_raw_mem.clone();
+            let ch_surreal = shared_surreal.clone();
             handles.push(spawn_component_supervisor(
                 "channels",
                 initial_backoff,
@@ -271,8 +272,15 @@ pub async fn run(
                     let cfg = channels_cfg.clone();
                     let ipc = ch_ipc.clone();
                     let mem = ch_mem.clone();
+                    let surreal = ch_surreal.clone();
                     async move {
-                        Box::pin(crate::channels::start_channels(cfg, ipc, Some(mem))).await
+                        Box::pin(crate::channels::start_channels(
+                            cfg,
+                            ipc,
+                            Some(mem),
+                            surreal,
+                        ))
+                        .await
                     }
                 },
             ));
@@ -304,12 +312,14 @@ pub async fn run(
     if config.cron.enabled {
         let scheduler_cfg = config.clone();
         let sched_delivery = delivery_service.clone();
+        let sched_surreal = shared_surreal.clone();
         handles.push(spawn_component_supervisor(
             "scheduler",
             initial_backoff,
             max_backoff,
             move || {
                 let cfg = scheduler_cfg.clone();
+                let db = sched_surreal.clone();
                 let ds: std::sync::Arc<dyn synapse_cron::scheduler::CronDeliveryPort> =
                     std::sync::Arc::new(CronDeliveryAdapter {
                         delivery_service: sched_delivery.clone(),
@@ -317,7 +327,9 @@ pub async fn run(
                 let ar = agent_runner.clone();
                 async move {
                     let health = std::sync::Arc::new(CronHealthReporter);
-                    Box::pin(synapse_cron::scheduler::run(cfg, ds, ar, health)).await
+                    let db =
+                        db.ok_or_else(|| anyhow::anyhow!("SurrealDB not available for scheduler"))?;
+                    Box::pin(synapse_cron::scheduler::run(cfg, db, ds, ar, health)).await
                 }
             },
         ));

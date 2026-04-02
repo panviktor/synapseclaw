@@ -36,6 +36,7 @@ pub async fn run(
     )
     .await?;
     let mem = mem_backend.memory;
+    let surreal_handle = mem_backend.surreal;
     tracing::info!(backend = mem.name(), "Memory initialized");
 
     // ── Tools ────────────────────────────────────────────────────
@@ -64,6 +65,7 @@ pub async fn run(
             &config,
             None, // Agents create their own IpcClient (no shared daemon client)
             None,
+            surreal_handle,
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -653,14 +655,15 @@ pub async fn process_message(
         &config.workspace_dir,
     ));
     let resolved_agent_id = resolve_agent_id(&config);
-    let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
+    let mem_backend_pm = synapse_memory::create_memory(
         &config.memory,
         &config.workspace_dir,
         &resolved_agent_id,
         config.api_key.as_deref(),
     )
-    .await?
-    .memory;
+    .await?;
+    let mem: Arc<dyn UnifiedMemoryPort> = mem_backend_pm.memory;
+    let surreal_handle_pm = mem_backend_pm.surreal;
 
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
@@ -686,6 +689,7 @@ pub async fn process_message(
         &config,
         None,
         None,
+        surreal_handle_pm,
     );
     // ── Wire MCP tools (non-fatal) — process_message path ────────
     // NOTE: Same ordering contract as the CLI path above — MCP tools must be

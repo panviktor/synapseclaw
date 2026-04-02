@@ -522,6 +522,7 @@ pub async fn run_gateway(
         &config,
         None, // IPC tools get their own client from config
         Some(agent_runner.clone()),
+        shared_surreal.clone(),
     );
     let tools_registry: Arc<Vec<ToolSpec>> =
         Arc::new(tools_registry_raw.iter().map(|t| t.spec()).collect());
@@ -930,11 +931,19 @@ pub async fn run_gateway(
         },
         ipc_push_signal: None, // initialized below for agent-side inbox processor
         channel_session_backend: if config.channels_config.session_persistence {
-            match crate::channels::session_store::SessionStore::new(&config.workspace_dir) {
-                Ok(store) => Some(Arc::new(store)),
-                Err(e) => {
-                    tracing::warn!("Channel session backend disabled: {e}");
-                    None
+            if let Some(ref db) = shared_surreal {
+                Some(Arc::new(
+                    crate::channels::session_surreal::SurrealSessionBackend::new(Arc::clone(db)),
+                )
+                    as Arc<dyn crate::channels::session_backend::SessionBackend>)
+            } else {
+                match crate::channels::session_store::SessionStore::new(&config.workspace_dir) {
+                    Ok(store) => Some(Arc::new(store)
+                        as Arc<dyn crate::channels::session_backend::SessionBackend>),
+                    Err(e) => {
+                        tracing::warn!("Channel session backend disabled: {e}");
+                        None
+                    }
                 }
             }
         } else {

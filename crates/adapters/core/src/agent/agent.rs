@@ -343,6 +343,7 @@ impl Agent {
             config,
             None,
             None,
+            surreal_handle.clone(),
         );
 
         let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");

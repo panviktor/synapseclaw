@@ -1,12 +1,12 @@
 //! Adapter: wraps the existing `Mutex<HashMap<String, Vec<ChatMessage>>>` as ConversationHistoryPort.
 //!
-//! Also persists turns to the optional SessionStore (JSONL) so history
+//! Also persists turns to the optional session backend so history
 //! survives restarts.
 //!
 //! Since `providers::ChatMessage` is now a re-export of
 //! `synapse_domain::domain::message::ChatMessage`, no conversions are needed.
 
-use crate::session_store::SessionStore;
+use crate::session_backend::SessionBackend;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use synapse_domain::ports::conversation_history::ConversationHistoryPort;
@@ -17,13 +17,13 @@ const MAX_HISTORY: usize = 50;
 
 pub struct MutexMapConversationHistory {
     map: Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>,
-    session_store: Option<Arc<SessionStore>>,
+    session_store: Option<Arc<dyn SessionBackend>>,
 }
 
 impl MutexMapConversationHistory {
     pub fn new(
         map: Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>,
-        session_store: Option<Arc<SessionStore>>,
+        session_store: Option<Arc<dyn SessionBackend>>,
     ) -> Self {
         Self { map, session_store }
     }

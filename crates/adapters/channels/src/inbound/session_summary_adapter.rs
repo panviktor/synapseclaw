@@ -1,15 +1,15 @@
-//! Adapter: wraps existing `SessionStore` (via SessionBackend trait) as SessionSummaryPort.
+//! Adapter: wraps any `SessionBackend` implementation as `SessionSummaryPort`.
 
 use crate::session_backend::{ChannelSummary, SessionBackend};
 use std::sync::Arc;
 use synapse_domain::ports::session_summary::SessionSummaryPort;
 
 pub struct SessionStoreAdapter {
-    store: Arc<crate::session_store::SessionStore>,
+    store: Arc<dyn SessionBackend>,
 }
 
 impl SessionStoreAdapter {
-    pub fn new(store: Arc<crate::session_store::SessionStore>) -> Self {
+    pub fn new(store: Arc<dyn SessionBackend>) -> Self {
         Self { store }
     }
 }
