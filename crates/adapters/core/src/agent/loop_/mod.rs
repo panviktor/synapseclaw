@@ -220,6 +220,11 @@ async fn build_context(
     // ── Core memory blocks (MemGPT pattern) ──────────────────────
     // Always-in-prompt blocks: persona, user_knowledge, task_state, domain.
     if let Ok(blocks) = mem.get_core_blocks(&agent_id.to_string()).await {
+        tracing::info!(
+            agent_id,
+            blocks = blocks.len(),
+            "memory.context.core_blocks"
+        );
         for block in &blocks {
             if !block.content.trim().is_empty() {
                 let _ = writeln!(context, "<{}>", block.label);
@@ -234,6 +239,11 @@ async fn build_context(
 
     // ── Relevant memories for this message ───────────────────────
     if let Ok(entries) = mem.recall(user_msg, 5, session_id).await {
+        tracing::info!(
+            query_len = user_msg.len(),
+            results = entries.len(),
+            "memory.context.recall"
+        );
         let relevant: Vec<_> = entries
             .iter()
             .filter(|e| match e.score {
@@ -277,6 +287,7 @@ async fn build_context(
         limit: 3,
     };
     if let Ok(skills) = mem.find_skills(&skill_query).await {
+        tracing::info!(skills = skills.len(), "memory.context.skills");
         for skill in &skills {
             if !skill.content.trim().is_empty() {
                 let _ = writeln!(context, "<skill name=\"{}\">", skill.name);
@@ -297,6 +308,7 @@ async fn build_context(
             limit: 3,
         };
         if let Ok(entities) = mem.search_entities(&entity_query).await {
+            tracing::info!(entities = entities.len(), "memory.context.entities");
             for entity in &entities {
                 if let Some(ref summary) = entity.summary {
                     let _ = writeln!(
@@ -310,6 +322,8 @@ async fn build_context(
             }
         }
     }
+
+    tracing::info!(context_chars = context.len(), "memory.context.assembled");
 
     context
 }

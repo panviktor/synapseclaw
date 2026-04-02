@@ -1,7 +1,7 @@
 //! Instrumented memory wrapper — adds latency tracking to all memory operations.
 //!
 //! Wraps any `UnifiedMemoryPort` and logs operation duration via tracing.
-//! Slow operations (>50ms) are logged at INFO level; normal at DEBUG.
+//! Slow operations (>100ms) are logged at WARN level; normal at INFO.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -23,10 +23,10 @@ impl InstrumentedMemory {
 
 fn log_op(op: &str, start: Instant, count: usize) {
     let ms = start.elapsed().as_millis() as u64;
-    if ms > 50 {
-        tracing::info!(op, latency_ms = ms, results = count, "memory.slow_op");
+    if ms > 100 {
+        tracing::warn!(op, latency_ms = ms, results = count, "memory.slow_op");
     } else {
-        tracing::debug!(op, latency_ms = ms, results = count, "memory.op");
+        tracing::info!(op, latency_ms = ms, results = count, "memory.op");
     }
 }
 

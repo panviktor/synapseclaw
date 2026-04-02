@@ -91,6 +91,13 @@ async fn run_pipeline_inner(
         }
     };
 
+    tracing::info!(
+        pipeline = %params.pipeline_name,
+        triggered_by = %params.triggered_by,
+        depth = params.depth,
+        "pipeline.start"
+    );
+
     // Create run context
     let run_id = uuid_v4();
     let mut ctx = PipelineContext::new(
@@ -501,6 +508,13 @@ async fn execute_step_with_retries(
     let max_attempts = step.max_retries as u32 + 1; // +1 for initial attempt
 
     for attempt in 0..max_attempts {
+        tracing::info!(
+            run_id = %ctx.run_id,
+            step = %step.id,
+            agent = %step.agent_id,
+            attempt,
+            "pipeline.step.start"
+        );
         ctx.record_step_start(&step.id, &step.agent_id, attempt as u8);
         ctx.state = PipelineState::WaitingForAgent(step.agent_id.clone());
 

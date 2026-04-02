@@ -2667,7 +2667,7 @@ pub async fn handle_ipc_send(
         to = %resolved_to,
         kind = body.kind,
         msg_id = msg_id,
-        "IPC message sent"
+        "ipc.send"
     );
 
     if let Some(ref logger) = state.audit_logger {

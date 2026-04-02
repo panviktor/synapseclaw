@@ -258,7 +258,7 @@ fn make_memory() -> Arc<dyn UnifiedMemoryPort> {
 
 fn make_sqlite_memory() -> (Arc<dyn UnifiedMemoryPort>, tempfile::TempDir) {
     let tmp = tempfile::TempDir::new().unwrap();
-    // TODO(phase4.3): replace with SurrealMemoryAdapter::new()
+    // NoopUnifiedMemory for unit tests — real SurrealDB tests in tests/integration/.
     let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
     (mem, tmp)
 }
@@ -624,8 +624,7 @@ async fn history_trims_after_max_messages() {
 // 9. Memory auto-save round-trip
 // ═══════════════════════════════════════════════════════════════════════════
 
-// TODO(phase4.3): auto_save memory tests need SurrealMemoryAdapter for real store/get.
-// With NoopUnifiedMemory, store/count are stubs. Deferring to SurrealDB integration.
+// Unit tests use NoopUnifiedMemory; real store/recall tested in tests/integration/memory_restart.rs.
 
 #[tokio::test]
 async fn auto_save_stores_only_user_messages_in_memory() {

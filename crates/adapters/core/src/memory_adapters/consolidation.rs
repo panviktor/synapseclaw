@@ -64,11 +64,19 @@ pub async fn consolidate_turn(
         turn_text.clone()
     };
 
+    tracing::info!(agent_id, "memory.consolidation.start");
+
     let raw = provider
         .chat_with_system(Some(CONSOLIDATION_SYSTEM_PROMPT), &truncated, model, 0.1)
         .await?;
 
     let result: ConsolidationResult = parse_consolidation_response(&raw, &turn_text);
+
+    tracing::info!(
+        agent_id,
+        has_memory_update = result.memory_update.is_some(),
+        "memory.consolidation.extracted"
+    );
 
     // Phase 1: Write history entry to Daily category.
     let date = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -82,6 +90,8 @@ pub async fn consolidate_turn(
         )
         .await?;
 
+    tracing::info!(key = %history_key, "memory.consolidation.daily_stored");
+
     // Phase 2: Write memory update to Core category (if present).
     if let Some(ref update) = result.memory_update {
         if !update.trim().is_empty() {
@@ -89,21 +99,25 @@ pub async fn consolidate_turn(
             memory
                 .store(&mem_key, update, &MemoryCategory::Core, None)
                 .await?;
+            tracing::info!(key = %mem_key, "memory.consolidation.core_stored");
         }
     }
 
     // Phase 3: Entity extraction — populate knowledge graph.
     // Best-effort: errors logged but don't fail consolidation.
     let mut outcome = ConsolidationOutcome::default();
+
+    tracing::info!(agent_id, "memory.consolidation.entity_extraction_start");
+
     match entity_extractor::extract_entities(provider, model, &truncated).await {
         Ok(extraction) => {
+            tracing::info!(
+                entities = extraction.entities.len(),
+                relationships = extraction.relationships.len(),
+                "memory.consolidation.entities_extracted"
+            );
             if !extraction.entities.is_empty() || !extraction.relationships.is_empty() {
                 outcome.entities_extracted = extraction.entities.len();
-                tracing::debug!(
-                    "Extracted {} entities, {} relationships",
-                    extraction.entities.len(),
-                    extraction.relationships.len()
-                );
                 if let Err(e) =
                     entity_extractor::store_extraction(memory, &extraction, agent_id).await
                 {

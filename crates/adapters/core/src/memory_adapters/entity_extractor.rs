@@ -104,8 +104,17 @@ pub async fn store_extraction(
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        if let Err(e) = memory.upsert_entity(entity).await {
-            tracing::debug!("Entity upsert failed for '{}': {e}", extracted.name);
+        match memory.upsert_entity(entity).await {
+            Ok(_) => {
+                tracing::info!(
+                    name = %extracted.name,
+                    entity_type = %extracted.entity_type,
+                    "memory.entity.upserted"
+                );
+            }
+            Err(e) => {
+                tracing::debug!("Entity upsert failed for '{}': {e}", extracted.name);
+            }
         }
     }
 
@@ -119,9 +128,9 @@ pub async fn store_extraction(
             (Some(s), Some(o)) => (s.id, o.id),
             _ => {
                 tracing::debug!(
-                    "Skipping relationship '{}' -> '{}': entities not found",
-                    rel.subject,
-                    rel.object
+                    subject = %rel.subject,
+                    object = %rel.object,
+                    "memory.fact.skipped_entities_not_found"
                 );
                 continue;
             }
@@ -140,13 +149,23 @@ pub async fn store_extraction(
             created_by: agent_id.to_string(),
         };
 
-        if let Err(e) = memory.add_fact(fact).await {
-            tracing::debug!(
-                "Fact creation failed for '{}' {} '{}': {e}",
-                rel.subject,
-                rel.predicate,
-                rel.object
-            );
+        match memory.add_fact(fact).await {
+            Ok(_) => {
+                tracing::info!(
+                    subject = %rel.subject,
+                    predicate = %rel.predicate,
+                    object = %rel.object,
+                    "memory.fact.added"
+                );
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "Fact creation failed for '{}' {} '{}': {e}",
+                    rel.subject,
+                    rel.predicate,
+                    rel.object
+                );
+            }
         }
     }
 

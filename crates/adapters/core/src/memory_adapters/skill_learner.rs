@@ -83,6 +83,13 @@ pub async fn reflect_on_run(
         .replace("{steps}", &summary.steps_description())
         .replace("{errors}", &summary.errors_description());
 
+    tracing::info!(
+        agent_id,
+        task = %summary.task.chars().take(80).collect::<String>(),
+        outcome = %summary.outcome,
+        "memory.skill_reflection.start"
+    );
+
     let raw = provider
         .chat_with_system(None, &prompt, model, 0.1)
         .await
@@ -105,6 +112,12 @@ pub async fn reflect_on_run(
 
     memory.store_reflection(reflection).await?;
 
+    tracing::info!(
+        agent_id,
+        lesson = %analysis.lesson.chars().take(100).collect::<String>(),
+        "memory.reflection.stored"
+    );
+
     // Create or update skill if recommended
     if analysis.should_create_skill {
         if let (Some(name), Some(content)) = (&analysis.skill_name, &analysis.skill_content) {
@@ -117,7 +130,7 @@ pub async fn reflect_on_run(
                         new_content: Some(content.clone()),
                     };
                     memory.update_skill(&existing.id, update).await?;
-                    tracing::info!("Skill '{}' updated (v{}+1)", name, existing.version);
+                    tracing::info!(name = %name, version = existing.version + 1, "memory.skill.updated");
                 }
                 None => {
                     // Create new skill
@@ -135,7 +148,7 @@ pub async fn reflect_on_run(
                         updated_at: Utc::now(),
                     };
                     memory.store_skill(skill).await?;
-                    tracing::info!("Skill '{}' created", name);
+                    tracing::info!(name = %name, "memory.skill.created");
                 }
             }
         }

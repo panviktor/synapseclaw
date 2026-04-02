@@ -116,6 +116,12 @@ async fn execute_job_with_retry(
     job: &CronJob,
     agent_runner: &dyn synapse_domain::ports::agent_runner::AgentRunnerPort,
 ) -> (bool, String) {
+    tracing::info!(
+        job_name = ?job.name,
+        job_type = ?job.job_type,
+        "cron.job.start"
+    );
+    let job_start = std::time::Instant::now();
     let mut last_output = String::new();
     let retries = config.reliability.scheduler_retries;
     let mut backoff_ms = config.reliability.provider_backoff_ms.max(200);
@@ -128,6 +134,13 @@ async fn execute_job_with_retry(
         last_output = output;
 
         if success {
+            tracing::info!(
+                job_name = ?job.name,
+                success = true,
+                attempt,
+                duration_ms = job_start.elapsed().as_millis() as u64,
+                "cron.job.complete"
+            );
             return (true, last_output);
         }
 
@@ -143,6 +156,12 @@ async fn execute_job_with_retry(
         }
     }
 
+    tracing::info!(
+        job_name = ?job.name,
+        success = false,
+        duration_ms = job_start.elapsed().as_millis() as u64,
+        "cron.job.complete"
+    );
     (false, last_output)
 }
 
