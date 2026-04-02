@@ -395,8 +395,17 @@ pub async fn handle_api_cron_list(
         return e.into_response();
     }
 
-    let config = state.config.lock().clone();
-    match synapse_cron::list_jobs(&config) {
+    let db = match &state.surreal {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "SurrealDB not available for cron"})),
+            )
+                .into_response();
+        }
+    };
+    match synapse_cron::list_jobs(db).await {
         Ok(jobs) => {
             let jobs_json: Vec<serde_json::Value> = jobs
                 .iter()
@@ -433,18 +442,31 @@ pub async fn handle_api_cron_add(
     }
 
     let config = state.config.lock().clone();
+    let db = match &state.surreal {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "SurrealDB not available for cron"})),
+            )
+                .into_response();
+        }
+    };
     let schedule = synapse_cron::Schedule::Cron {
         expr: body.schedule,
         tz: None,
     };
 
     match synapse_cron::add_shell_job_with_approval(
+        db,
         &config,
         body.name,
         schedule,
         &body.command,
         false,
-    ) {
+    )
+    .await
+    {
         Ok(job) => Json(serde_json::json!({
             "status": "ok",
             "job": {
@@ -475,10 +497,19 @@ pub async fn handle_api_cron_runs(
     }
 
     let limit = params.limit.unwrap_or(20).clamp(1, 100) as usize;
-    let config = state.config.lock().clone();
+    let db = match &state.surreal {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "SurrealDB not available for cron"})),
+            )
+                .into_response();
+        }
+    };
 
     // Verify the job exists before listing runs.
-    if let Err(e) = synapse_cron::get_job(&config, &id) {
+    if let Err(e) = synapse_cron::get_job(db, &id).await {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": format!("Cron job not found: {e}")})),
@@ -486,7 +517,7 @@ pub async fn handle_api_cron_runs(
             .into_response();
     }
 
-    match synapse_cron::list_runs(&config, &id, limit) {
+    match synapse_cron::list_runs(db, &id, limit).await {
         Ok(runs) => {
             let runs_json: Vec<serde_json::Value> = runs
                 .iter()
@@ -522,8 +553,17 @@ pub async fn handle_api_cron_delete(
         return e.into_response();
     }
 
-    let config = state.config.lock().clone();
-    match synapse_cron::remove_job(&config, &id) {
+    let db = match &state.surreal {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "SurrealDB not available for cron"})),
+            )
+                .into_response();
+        }
+    };
+    match synapse_cron::remove_job(db, &id).await {
         Ok(()) => Json(serde_json::json!({"status": "ok"})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -801,7 +841,7 @@ pub async fn handle_api_chat_sessions(
 
     let prefix = params.prefix.as_deref().unwrap_or("");
     match &state.chat_db {
-        Some(db) => match db.list_sessions(prefix) {
+        Some(db) => match db.list_sessions(prefix).await {
             Ok(sessions) => Json(serde_json::json!({"sessions": sessions})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -826,7 +866,7 @@ pub async fn handle_api_chat_session_messages(
 
     let limit = params.limit.unwrap_or(50).clamp(1, 500);
     match &state.chat_db {
-        Some(db) => match db.get_messages(&key, limit) {
+        Some(db) => match db.get_messages(&key, limit).await {
             Ok(messages) => Json(serde_json::json!({"messages": messages})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -859,23 +899,21 @@ pub async fn handle_api_channel_sessions(
         None => return Json(serde_json::json!({"sessions": []})).into_response(),
     };
 
-    let metadata = backend.list_sessions_with_metadata();
-    let sessions: Vec<serde_json::Value> = metadata
-        .into_iter()
-        .map(|m| {
-            let (channel, sender) = m.key.split_once('_').unwrap_or(("unknown", m.key.as_str()));
-            let summary = backend.load_summary(&m.key);
-            serde_json::json!({
-                "key": m.key,
-                "channel": channel,
-                "sender": sender,
-                "created_at": m.created_at.timestamp(),
-                "last_activity": m.last_activity.timestamp(),
-                "message_count": m.message_count,
-                "summary": summary.map(|s| s.summary),
-            })
-        })
-        .collect();
+    let metadata = backend.list_sessions_with_metadata().await;
+    let mut sessions: Vec<serde_json::Value> = Vec::with_capacity(metadata.len());
+    for m in &metadata {
+        let (channel, sender) = m.key.split_once('_').unwrap_or(("unknown", m.key.as_str()));
+        let summary = backend.load_summary(&m.key).await;
+        sessions.push(serde_json::json!({
+            "key": m.key,
+            "channel": channel,
+            "sender": sender,
+            "created_at": m.created_at.timestamp(),
+            "last_activity": m.last_activity.timestamp(),
+            "message_count": m.message_count,
+            "summary": summary.map(|s| s.summary),
+        }));
+    }
 
     Json(serde_json::json!({"sessions": sessions})).into_response()
 }
@@ -895,7 +933,7 @@ pub async fn handle_api_channel_session_messages(
         None => return Json(serde_json::json!({"messages": []})).into_response(),
     };
 
-    let messages = backend.load(&key);
+    let messages = backend.load(&key).await;
     let msgs: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
@@ -930,7 +968,7 @@ pub async fn handle_api_channel_session_delete(
         }
     };
 
-    match backend.delete(&key) {
+    match backend.delete(&key).await {
         Ok(true) => Json(serde_json::json!({"deleted": true})).into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
@@ -1406,7 +1444,7 @@ pub async fn handle_api_activity(
 
     // 1. Chat/channel messages from chat_db (real message-level events, not session summaries)
     if let Some(ref db) = state.chat_db {
-        if let Ok(sessions) = db.list_sessions("") {
+        if let Ok(sessions) = db.list_sessions("").await {
             for session in sessions {
                 if session.last_active < from_ts {
                     continue;
@@ -1427,7 +1465,7 @@ pub async fn handle_api_activity(
 
                 // Fetch recent messages for this session (real turns, not summaries)
                 let msg_limit = 10i64; // per session
-                if let Ok(messages) = db.get_messages(key, msg_limit) {
+                if let Ok(messages) = db.get_messages(key, msg_limit).await {
                     for msg in &messages {
                         if msg.timestamp < from_ts {
                             continue;
@@ -1497,44 +1535,46 @@ pub async fn handle_api_activity(
     }
 
     // 2. Cron runs
-    if let Ok(jobs) = synapse_cron::list_jobs(&config) {
-        for job in &jobs {
-            if let Ok(runs) = synapse_cron::list_runs(&config, &job.id, 10) {
-                for run in &runs {
-                    let ts = run.started_at.timestamp();
-                    if ts < from_ts {
-                        continue;
-                    }
-                    let name = job.name.as_deref().unwrap_or(&job.id);
-                    let dur = run.duration_ms.unwrap_or(0);
-                    let summary = format!("cron: {} [{}] ({dur}ms)", name, run.status);
+    if let Some(ref db) = state.surreal {
+        if let Ok(jobs) = synapse_cron::list_jobs(db).await {
+            for job in &jobs {
+                if let Ok(runs) = synapse_cron::list_runs(db, &job.id, 10).await {
+                    for run in &runs {
+                        let ts = run.started_at.timestamp();
+                        if ts < from_ts {
+                            continue;
+                        }
+                        let name = job.name.as_deref().unwrap_or(&job.id);
+                        let dur = run.duration_ms.unwrap_or(0);
+                        let summary = format!("cron: {} [{}] ({dur}ms)", name, run.status);
 
-                    events.push(ActivityEvent {
-                        event_type: "cron_run".to_string(),
-                        agent_id: agent_id.clone(),
-                        timestamp: ts,
-                        summary,
-                        trace_ref: TraceRef {
-                            surface: "cron".to_string(),
-                            session_id: None,
-                            message_id: None,
-                            from_agent: None,
-                            to_agent: None,
-                            spawn_run_id: None,
-                            parent_agent_id: None,
-                            child_agent_id: None,
-                            chat_session_key: None,
-                            run_id: None,
-                            channel_name: None,
-                            channel_session_key: None,
-                            job_id: Some(job.id.clone()),
-                            job_name: job.name.clone(),
-                        },
-                    });
+                        events.push(ActivityEvent {
+                            event_type: "cron_run".to_string(),
+                            agent_id: agent_id.clone(),
+                            timestamp: ts,
+                            summary,
+                            trace_ref: TraceRef {
+                                surface: "cron".to_string(),
+                                session_id: None,
+                                message_id: None,
+                                from_agent: None,
+                                to_agent: None,
+                                spawn_run_id: None,
+                                parent_agent_id: None,
+                                child_agent_id: None,
+                                chat_session_key: None,
+                                run_id: None,
+                                channel_name: None,
+                                channel_session_key: None,
+                                job_id: Some(job.id.clone()),
+                                job_name: job.name.clone(),
+                            },
+                        });
+                    }
                 }
             }
         }
-    }
+    } // if let Some(ref db)
 
     // Filter by event_type and surface if specified
     if let Some(ref et) = params.event_type {

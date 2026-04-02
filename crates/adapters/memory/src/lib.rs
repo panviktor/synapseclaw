@@ -5,7 +5,7 @@
 //! - `embeddings` — pluggable embedding providers (OpenAI, custom, noop)
 //! - `vector` — cosine similarity, hybrid merge, byte serialization
 //! - `chunker` — markdown document chunking
-//! - `response_cache` — two-tier LLM response cache (in-memory + SQLite)
+//! - `response_cache` — two-tier LLM response cache (in-memory + SurrealDB)
 
 pub mod chunker;
 pub mod embeddings;
@@ -34,20 +34,39 @@ use synapse_domain::config::schema::MemoryConfig;
 
 // ── Memory Factory ───────────────────────────────────────────────
 
+// Re-export SurrealDB types for downstream consumers (IPC, cron, chat, etc.)
+pub use surrealdb::engine::local::Db as SurrealDb;
+pub use surrealdb::Surreal;
+
+/// Result of memory backend creation — provides memory, DLQ ports, and
+/// the raw SurrealDB handle for other components to share (Phase 4.5).
+pub struct MemoryBackend {
+    pub memory: Arc<dyn UnifiedMemoryPort>,
+    pub dead_letter: Arc<dyn synapse_domain::ports::dead_letter::DeadLetterPort>,
+    /// Shared SurrealDB handle. `None` when backend is "none" (noop).
+    pub surreal: Option<Arc<Surreal<SurrealDb>>>,
+}
+
 /// Create the memory backend from config.
 ///
-/// Returns `Arc<dyn UnifiedMemoryPort>` — either SurrealDB or Noop.
-/// This is async because SurrealDB initialization requires await.
+/// Returns [`MemoryBackend`] containing both the memory port and the DLQ port,
+/// backed by the same SurrealDB instance. This is async because SurrealDB
+/// initialization requires await.
 pub async fn create_memory(
     config: &MemoryConfig,
     workspace_dir: &Path,
     agent_id: &str,
     api_key: Option<&str>,
-) -> anyhow::Result<Arc<dyn UnifiedMemoryPort>> {
+) -> anyhow::Result<MemoryBackend> {
     // If backend is "none" or memory is explicitly disabled, use noop.
     if config.backend == "none" {
         tracing::info!("Memory backend: none (disabled)");
-        return Ok(Arc::new(NoopUnifiedMemory));
+        let noop = Arc::new(NoopUnifiedMemory);
+        return Ok(MemoryBackend {
+            memory: noop.clone(),
+            dead_letter: noop,
+            surreal: None,
+        });
     }
 
     // Warn about legacy backend names — Phase 4.3 always uses SurrealDB.
@@ -73,11 +92,22 @@ pub async fn create_memory(
     match SurrealMemoryAdapter::new(&data_dir_str, embedder, agent_id.to_string()).await {
         Ok(adapter) => {
             tracing::info!("Memory backend: surrealdb ({})", data_dir_str);
-            Ok(Arc::new(adapter))
+            let surreal_handle = adapter.db();
+            let shared: Arc<SurrealMemoryAdapter> = Arc::new(adapter);
+            Ok(MemoryBackend {
+                memory: shared.clone(),
+                dead_letter: shared,
+                surreal: Some(surreal_handle),
+            })
         }
         Err(e) => {
             tracing::error!("SurrealDB init failed: {e}, falling back to noop");
-            Ok(Arc::new(NoopUnifiedMemory))
+            let noop = Arc::new(NoopUnifiedMemory);
+            Ok(MemoryBackend {
+                memory: noop.clone(),
+                dead_letter: noop,
+                surreal: None,
+            })
         }
     }
 }
@@ -182,29 +212,32 @@ pub fn should_skip_autosave_content(content: &str) -> bool {
 // ── Response Cache Factory ───────────────────────────────────────
 
 /// Factory: create an optional response cache from config.
-pub fn create_response_cache(config: &MemoryConfig, workspace_dir: &Path) -> Option<ResponseCache> {
+///
+/// Requires a shared SurrealDB handle. When `surreal` is `None` (noop memory
+/// backend), the response cache is silently disabled.
+pub fn create_response_cache(
+    config: &MemoryConfig,
+    surreal: Option<Arc<Surreal<SurrealDb>>>,
+) -> Option<ResponseCache> {
     if !config.response_cache_enabled {
         return None;
     }
 
-    match ResponseCache::new(
-        workspace_dir,
+    let Some(db) = surreal else {
+        tracing::info!("Response cache disabled: no SurrealDB backend available");
+        return None;
+    };
+
+    tracing::info!(
+        "Response cache enabled (TTL: {}min, max: {} entries)",
+        config.response_cache_ttl_minutes,
+        config.response_cache_max_entries
+    );
+    Some(ResponseCache::new_with_surreal(
+        db,
         config.response_cache_ttl_minutes,
         config.response_cache_max_entries,
-    ) {
-        Ok(cache) => {
-            tracing::info!(
-                "Response cache enabled (TTL: {}min, max: {} entries)",
-                config.response_cache_ttl_minutes,
-                config.response_cache_max_entries
-            );
-            Some(cache)
-        }
-        Err(e) => {
-            tracing::warn!("Response cache disabled due to error: {e}");
-            None
-        }
-    }
+    ))
 }
 
 // ── NoopUnifiedMemory (for tests and "none" backend) ────────────
@@ -381,6 +414,32 @@ impl synapse_domain::ports::memory::UnifiedMemoryPort for NoopUnifiedMemory {
         _tools_used: &[String],
     ) -> Result<(), MemoryError> {
         Ok(())
+    }
+}
+
+// ── DeadLetterPort (Phase 4.5) ──────────────────────────────────
+
+use synapse_domain::domain::pipeline_context::DeadLetter;
+
+#[async_trait::async_trait]
+impl synapse_domain::ports::dead_letter::DeadLetterPort for NoopUnifiedMemory {
+    async fn enqueue(&self, _: DeadLetter) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn list_pending(&self, _: usize) -> anyhow::Result<Vec<DeadLetter>> {
+        Ok(vec![])
+    }
+    async fn list_all(&self, _: usize) -> anyhow::Result<Vec<DeadLetter>> {
+        Ok(vec![])
+    }
+    async fn mark_retried(&self, _: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn dismiss(&self, _: &str, _: &str) -> anyhow::Result<()> {
+        Ok(())
+    }
+    async fn get(&self, _: &str) -> anyhow::Result<Option<DeadLetter>> {
+        Ok(None)
     }
 }
 

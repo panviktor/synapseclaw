@@ -412,6 +412,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: Arc::new(run_store),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let report = recover_all(&ports).await;
@@ -442,6 +443,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: Arc::new(run_store),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let report = recover_all(&ports).await;
@@ -477,6 +479,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: Arc::new(run_store),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let report = recover_all(&ports).await;
@@ -503,6 +506,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: Arc::new(run_store),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let report = recover_all(&ports).await;

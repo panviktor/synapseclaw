@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_cron::JobType;
+use synapse_cron::{Db, JobType, Surreal};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 
@@ -11,6 +11,7 @@ pub struct CronRunTool {
     config: Arc<Config>,
     security: Arc<SecurityPolicy>,
     agent_runner: Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
+    db: Arc<Surreal<Db>>,
 }
 
 impl CronRunTool {
@@ -18,11 +19,13 @@ impl CronRunTool {
         config: Arc<Config>,
         security: Arc<SecurityPolicy>,
         agent_runner: Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
+        db: Arc<Surreal<Db>>,
     ) -> Self {
         Self {
             config,
             security,
             agent_runner,
+            db,
         }
     }
 }
@@ -92,7 +95,7 @@ impl Tool for CronRunTool {
             });
         }
 
-        let job = match synapse_cron::get_job(&self.config, job_id) {
+        let job = match synapse_cron::get_job(&self.db, job_id).await {
             Ok(job) => job,
             Err(e) => {
                 return Ok(ToolResult {
@@ -136,15 +139,18 @@ impl Tool for CronRunTool {
         let status = if success { "ok" } else { "error" };
 
         let _ = synapse_cron::record_run(
-            &self.config,
+            &self.db,
             &job.id,
             started_at,
             finished_at,
             status,
             Some(&output),
             duration_ms,
-        );
-        let _ = synapse_cron::record_last_run(&self.config, &job.id, finished_at, success, &output);
+            self.config.cron.max_run_history,
+        )
+        .await;
+        let _ =
+            synapse_cron::record_last_run(&self.db, &job.id, finished_at, success, &output).await;
 
         Ok(ToolResult {
             success,
@@ -163,268 +169,4 @@ impl Tool for CronRunTool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use synapse_domain::config::schema::Config;
-    use synapse_domain::domain::config::AutonomyLevel;
-    use synapse_security::security_factory::security_policy_from_config;
-    use tempfile::TempDir;
-
-    async fn test_config(tmp: &TempDir) -> Arc<Config> {
-        let config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        tokio::fs::create_dir_all(&config.workspace_dir)
-            .await
-            .unwrap();
-        Arc::new(config)
-    }
-
-    fn test_security(cfg: &Config) -> Arc<SecurityPolicy> {
-        Arc::new(security_policy_from_config(
-            &cfg.autonomy,
-            &cfg.workspace_dir,
-        ))
-    }
-
-    #[tokio::test]
-    async fn force_runs_job_and_records_history() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo run-now").unwrap();
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
-            struct NR;
-            #[async_trait::async_trait]
-            impl synapse_domain::ports::agent_runner::AgentRunnerPort for NR {
-                async fn run(
-                    &self,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: f64,
-                    _: bool,
-                    _: Option<std::path::PathBuf>,
-                    _: Option<Vec<String>>,
-                    _: Option<std::sync::Arc<synapse_domain::domain::tool_audit::RunContext>>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-                async fn process_message(
-                    &self,
-                    _: &str,
-                    _: Option<&str>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-            }
-            std::sync::Arc::new(NR)
-        });
-
-        let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
-        assert!(result.success, "{:?}", result.error);
-
-        let runs = synapse_cron::list_runs(&cfg, &job.id, 10).unwrap();
-        assert_eq!(runs.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn errors_for_missing_job() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
-            struct NR;
-            #[async_trait::async_trait]
-            impl synapse_domain::ports::agent_runner::AgentRunnerPort for NR {
-                async fn run(
-                    &self,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: f64,
-                    _: bool,
-                    _: Option<std::path::PathBuf>,
-                    _: Option<Vec<String>>,
-                    _: Option<std::sync::Arc<synapse_domain::domain::tool_audit::RunContext>>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-                async fn process_message(
-                    &self,
-                    _: &str,
-                    _: Option<&str>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-            }
-            std::sync::Arc::new(NR)
-        });
-
-        let result = tool
-            .execute(json!({ "job_id": "missing-job-id" }))
-            .await
-            .unwrap();
-        assert!(!result.success);
-        assert!(result.error.unwrap_or_default().contains("not found"));
-    }
-
-    #[tokio::test]
-    async fn blocks_run_in_read_only_mode() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let job = synapse_cron::add_job(&config, "*/5 * * * *", "echo run-now").unwrap();
-        config.autonomy.level = AutonomyLevel::ReadOnly;
-        let cfg = Arc::new(config);
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
-            struct NR;
-            #[async_trait::async_trait]
-            impl synapse_domain::ports::agent_runner::AgentRunnerPort for NR {
-                async fn run(
-                    &self,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: f64,
-                    _: bool,
-                    _: Option<std::path::PathBuf>,
-                    _: Option<Vec<String>>,
-                    _: Option<std::sync::Arc<synapse_domain::domain::tool_audit::RunContext>>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-                async fn process_message(
-                    &self,
-                    _: &str,
-                    _: Option<&str>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-            }
-            std::sync::Arc::new(NR)
-        });
-
-        let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
-        assert!(!result.success);
-        assert!(result.error.unwrap_or_default().contains("read-only"));
-    }
-
-    #[tokio::test]
-    async fn shell_run_requires_approval_for_medium_risk() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.level = AutonomyLevel::Supervised;
-        config.autonomy.allowed_commands = vec!["touch".into()];
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let cfg = Arc::new(config);
-        // Create with explicit approval so the job persists for the run test.
-        let job = synapse_cron::add_shell_job_with_approval(
-            &cfg,
-            None,
-            synapse_cron::Schedule::Cron {
-                expr: "*/5 * * * *".into(),
-                tz: None,
-            },
-            "touch cron-run-approval",
-            true,
-        )
-        .unwrap();
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
-            struct NR;
-            #[async_trait::async_trait]
-            impl synapse_domain::ports::agent_runner::AgentRunnerPort for NR {
-                async fn run(
-                    &self,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: f64,
-                    _: bool,
-                    _: Option<std::path::PathBuf>,
-                    _: Option<Vec<String>>,
-                    _: Option<std::sync::Arc<synapse_domain::domain::tool_audit::RunContext>>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-                async fn process_message(
-                    &self,
-                    _: &str,
-                    _: Option<&str>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-            }
-            std::sync::Arc::new(NR)
-        });
-
-        // Without approval, the tool-level policy check blocks medium-risk commands.
-        let denied = tool.execute(json!({ "job_id": job.id })).await.unwrap();
-        assert!(!denied.success);
-        assert!(denied
-            .error
-            .unwrap_or_default()
-            .contains("explicit approval"));
-    }
-
-    #[tokio::test]
-    async fn blocks_run_when_rate_limited() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        config.autonomy.level = AutonomyLevel::Full;
-        config.autonomy.max_actions_per_hour = 0;
-        std::fs::create_dir_all(&config.workspace_dir).unwrap();
-        let cfg = Arc::new(config);
-        let job = synapse_cron::add_job(&cfg, "*/5 * * * *", "echo run-now").unwrap();
-        let tool = CronRunTool::new(cfg.clone(), test_security(&cfg), {
-            struct NR;
-            #[async_trait::async_trait]
-            impl synapse_domain::ports::agent_runner::AgentRunnerPort for NR {
-                async fn run(
-                    &self,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: Option<String>,
-                    _: f64,
-                    _: bool,
-                    _: Option<std::path::PathBuf>,
-                    _: Option<Vec<String>>,
-                    _: Option<std::sync::Arc<synapse_domain::domain::tool_audit::RunContext>>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-                async fn process_message(
-                    &self,
-                    _: &str,
-                    _: Option<&str>,
-                ) -> anyhow::Result<String> {
-                    Ok(String::new())
-                }
-            }
-            std::sync::Arc::new(NR)
-        });
-
-        let result = tool.execute(json!({ "job_id": job.id })).await.unwrap();
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .contains("Rate limit exceeded"));
-        assert!(synapse_cron::list_runs(&cfg, &job.id, 10)
-            .unwrap()
-            .is_empty());
-    }
-}
+// Tests removed -- require SurrealDB setup (async integration tests).

@@ -2,7 +2,9 @@
 //!
 //! All IPC communication is broker-mediated: agents authenticate with bearer
 //! tokens, and the broker resolves trust levels from token metadata. The broker
-//! owns the SQLite database — agents never access it directly.
+//! owns the SurrealDB tables — agents never access them directly.
+//!
+//! Phase 4.5: migrated from SQLite (rusqlite) to shared SurrealDB instance.
 
 use super::{require_localhost, AppState};
 use crate::gateway::api::extract_bearer_token;
@@ -12,18 +14,61 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use parking_lot::Mutex;
-use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use surrealdb::engine::local::Db;
+use surrealdb::Surreal;
 use synapse_domain::config::schema::TokenMetadata;
 use synapse_security::audit::{AuditEvent, AuditEventType};
 use synapse_security::{GuardResult, LeakResult};
 use tracing::{info, warn};
+
+// ── JSON helpers (same pattern as ChatDb) ─────────────────────
+
+fn json_str(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|val| val.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn json_i64(v: &serde_json::Value, key: &str) -> i64 {
+    v.get(key).and_then(|val| val.as_i64()).unwrap_or(0)
+}
+
+fn json_opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|val| {
+        if val.is_null() {
+            None
+        } else {
+            val.as_str().map(String::from)
+        }
+    })
+}
+
+fn json_opt_i64(v: &serde_json::Value, key: &str) -> Option<i64> {
+    v.get(key)
+        .and_then(|val| if val.is_null() { None } else { val.as_i64() })
+}
+
+fn json_u8(v: &serde_json::Value, key: &str) -> u8 {
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let val = v.get(key).and_then(|val| val.as_i64()).unwrap_or(0) as u8;
+    val
+}
+
+fn json_bool_from_int(v: &serde_json::Value, key: &str) -> bool {
+    v.get(key).and_then(|val| val.as_i64()).unwrap_or(0) != 0
+}
+
+fn json_i32(v: &serde_json::Value, key: &str) -> i32 {
+    #[allow(clippy::cast_possible_truncation)]
+    let val = v.get(key).and_then(|val| val.as_i64()).unwrap_or(0) as i32;
+    val
+}
 
 // ── Insert error type ───────────────────────────────────────────
 
@@ -34,7 +79,7 @@ pub enum IpcInsertError {
     /// Monotonic sequence integrity violation — possible DB corruption or rollback.
     SequenceViolation { seq: i64, last_seq: i64 },
     /// Generic database error.
-    Db(rusqlite::Error),
+    Db(String),
 }
 
 impl fmt::Display for IpcInsertError {
@@ -48,12 +93,6 @@ impl fmt::Display for IpcInsertError {
             }
             Self::Db(e) => write!(f, "Database error: {e}"),
         }
-    }
-}
-
-impl From<rusqlite::Error> for IpcInsertError {
-    fn from(e: rusqlite::Error) -> Self {
-        Self::Db(e)
     }
 }
 
@@ -195,7 +234,7 @@ impl PushDispatcher {
             }
 
             let status = if delivered { "pushed" } else { "failed" };
-            let _ = db.update_delivery_status(job.message_id, status);
+            let _ = db.update_delivery_status(job.message_id, status).await;
 
             if delivered {
                 tracing::info!(
@@ -223,385 +262,306 @@ pub struct PendingMessage {
     pub priority: i32,
 }
 
-// ── IpcDb (broker-owned SQLite) ─────────────────────────────────
+// ── IpcDb (broker-owned SurrealDB tables) ─────────────────────
 
-/// Broker-owned SQLite database for IPC messages, agent registry, and shared state.
+/// Broker-owned SurrealDB tables for IPC messages, agent registry, and shared state.
 ///
-/// Initialized when `agents_ipc.enabled = true`. The database is WAL-mode
-/// and only accessible by the broker process.
+/// Initialized when `agents_ipc.enabled = true`. Schema applied via surrealdb_schema.surql.
 pub struct IpcDb {
-    conn: Arc<Mutex<Connection>>,
+    db: Arc<Surreal<Db>>,
 }
 
 impl IpcDb {
-    /// Open (or create) the IPC database at the given path.
-    pub fn open(path: &Path) -> Result<Self, rusqlite::Error> {
-        let conn = Connection::open(path)?;
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "busy_timeout", 5000)?;
-        Self::init_schema(&conn)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
-    }
-
-    /// Open an in-memory database (for testing).
-    #[cfg(test)]
-    pub fn open_in_memory() -> Result<Self, rusqlite::Error> {
-        let conn = Connection::open_in_memory()?;
-        Self::init_schema(&conn)?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
-    }
-
-    fn init_schema(conn: &Connection) -> Result<(), rusqlite::Error> {
-        conn.execute_batch(
-            "
-            CREATE TABLE IF NOT EXISTS agents (
-                agent_id    TEXT PRIMARY KEY,
-                role        TEXT,
-                trust_level INTEGER NOT NULL DEFAULT 3,
-                status      TEXT DEFAULT 'online',
-                metadata    TEXT,
-                last_seen   INTEGER
-            );
-
-            CREATE TABLE IF NOT EXISTS messages (
-                id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id       TEXT,
-                from_agent       TEXT NOT NULL,
-                to_agent         TEXT NOT NULL,
-                kind             TEXT NOT NULL DEFAULT 'text',
-                payload          TEXT NOT NULL,
-                priority         INTEGER DEFAULT 0,
-                from_trust_level INTEGER NOT NULL,
-                seq              INTEGER NOT NULL,
-                blocked          INTEGER DEFAULT 0,
-                block_reason     TEXT,
-                created_at       INTEGER NOT NULL,
-                read             INTEGER DEFAULT 0,
-                expires_at       INTEGER
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_messages_inbox
-                ON messages(to_agent, read, created_at);
-            CREATE INDEX IF NOT EXISTS idx_messages_session
-                ON messages(session_id) WHERE session_id IS NOT NULL;
-
-            CREATE TABLE IF NOT EXISTS shared_state (
-                key        TEXT PRIMARY KEY,
-                value      TEXT NOT NULL,
-                owner      TEXT NOT NULL,
-                updated_at INTEGER NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS message_sequences (
-                agent_id TEXT PRIMARY KEY,
-                last_seq INTEGER NOT NULL DEFAULT 0
-            );
-
-            CREATE TABLE IF NOT EXISTS sender_sequences (
-                agent_id         TEXT PRIMARY KEY,
-                last_sender_seq  INTEGER NOT NULL DEFAULT 0
-            );
-
-            CREATE TABLE IF NOT EXISTS spawn_runs (
-                id           TEXT PRIMARY KEY,
-                parent_id    TEXT NOT NULL,
-                child_id     TEXT NOT NULL,
-                status       TEXT NOT NULL DEFAULT 'running',
-                result       TEXT,
-                created_at   INTEGER NOT NULL,
-                expires_at   INTEGER NOT NULL,
-                completed_at INTEGER
-            );
-            CREATE INDEX IF NOT EXISTS idx_spawn_runs_parent
-                ON spawn_runs(parent_id, status);
-            CREATE INDEX IF NOT EXISTS idx_spawn_runs_child
-                ON spawn_runs(child_id);
-            ",
-        )?;
-
-        // Phase 3.8: agent gateway registry for broker→agent proxy.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS agent_gateways (
-                agent_id      TEXT PRIMARY KEY,
-                gateway_url   TEXT NOT NULL,
-                proxy_token   TEXT NOT NULL,
-                registered_at INTEGER NOT NULL
-            );",
-        )?;
-
-        // Idempotent migration: add `delivery_status` column if missing (push delivery).
-        let has_delivery_status: bool = conn
-            .prepare("PRAGMA table_info(messages)")?
-            .query_map([], |row| row.get::<_, String>(1))?
-            .any(|name| name.as_deref() == Ok("delivery_status"));
-        if !has_delivery_status {
-            conn.execute_batch(
-                "ALTER TABLE messages ADD COLUMN delivery_status TEXT DEFAULT 'pending';",
-            )?;
-        }
-
-        // Idempotent migration: add `promoted` column if missing (Phase 2).
-        let has_promoted: bool = conn
-            .prepare("PRAGMA table_info(messages)")?
-            .query_map([], |row| row.get::<_, String>(1))?
-            .any(|name| name.as_deref() == Ok("promoted"));
-        if !has_promoted {
-            conn.execute_batch("ALTER TABLE messages ADD COLUMN promoted INTEGER DEFAULT 0;")?;
-        }
-
-        // Idempotent migration: add `public_key` column if missing (Phase 3B).
-        let has_pubkey: bool = conn
-            .prepare("PRAGMA table_info(agents)")?
-            .query_map([], |row| row.get::<_, String>(1))?
-            .any(|name| name.as_deref() == Ok("public_key"));
-        if !has_pubkey {
-            conn.execute_batch("ALTER TABLE agents ADD COLUMN public_key TEXT;")?;
-        }
-
-        Ok(())
+    /// Create a new IpcDb backed by the shared SurrealDB instance.
+    /// Schema is already applied via surrealdb_schema.surql.
+    pub fn new(db: Arc<Surreal<Db>>) -> Self {
+        Self { db }
     }
 
     /// Upsert agent record and update `last_seen` timestamp.
     ///
     /// Does NOT overwrite status if the agent has been revoked, disabled, or
     /// quarantined — admin kill-switches are authoritative.
-    pub fn update_last_seen(&self, agent_id: &str, trust_level: u8, role: &str) {
+    pub async fn update_last_seen(&self, agent_id: &str, trust_level: u8, role: &str) {
         let now = unix_now();
-        let conn = self.conn.lock();
-        let _ = conn.execute(
-            "INSERT INTO agents (agent_id, trust_level, role, last_seen, status)
-             VALUES (?1, ?2, ?3, ?4, 'online')
-             ON CONFLICT(agent_id) DO UPDATE SET
-                trust_level = ?2, role = ?3, last_seen = ?4",
-            params![agent_id, trust_level, role, now],
-        );
+        let _ = self
+            .db
+            .query(
+                "IF (SELECT count() FROM ipc_agent WHERE agent_id = $agent_id GROUP ALL)[0].count > 0 {
+                    UPDATE ipc_agent SET
+                        trust_level = $trust_level, role = $role, last_seen = $now
+                    WHERE agent_id = $agent_id;
+                } ELSE {
+                    CREATE ipc_agent SET
+                        agent_id = $agent_id, trust_level = $trust_level, role = $role,
+                        last_seen = $now, status = 'online';
+                };",
+            )
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("trust_level", i64::from(trust_level)))
+            .bind(("role", role.to_string()))
+            .bind(("now", now))
+            .await;
     }
 
     // ── Agent gateway registry (Phase 3.8) ────────────────────────
 
     /// Register or update an agent's gateway URL and proxy token.
-    pub fn upsert_agent_gateway(
+    pub async fn upsert_agent_gateway(
         &self,
         agent_id: &str,
         gateway_url: &str,
         proxy_token: &str,
-    ) -> Result<(), rusqlite::Error> {
+    ) -> Result<(), String> {
         let now = unix_now();
-        let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO agent_gateways (agent_id, gateway_url, proxy_token, registered_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(agent_id) DO UPDATE SET
-                gateway_url = ?2, proxy_token = ?3, registered_at = ?4",
-            params![agent_id, gateway_url, proxy_token, now],
-        )?;
+        self.db
+            .query(
+                "IF (SELECT count() FROM ipc_agent_gateway WHERE agent_id = $agent_id GROUP ALL)[0].count > 0 {
+                    UPDATE ipc_agent_gateway SET
+                        gateway_url = $gateway_url, proxy_token = $proxy_token, registered_at = $now
+                    WHERE agent_id = $agent_id;
+                } ELSE {
+                    CREATE ipc_agent_gateway SET
+                        agent_id = $agent_id, gateway_url = $gateway_url,
+                        proxy_token = $proxy_token, registered_at = $now;
+                };",
+            )
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("gateway_url", gateway_url.to_string()))
+            .bind(("proxy_token", proxy_token.to_string()))
+            .bind(("now", now))
+            .await
+            .map_err(|e| format!("upsert_agent_gateway: {e}"))?;
         Ok(())
     }
 
     /// List all registered agent gateways.
-    pub fn list_agent_gateways(&self) -> Result<Vec<AgentGatewayRow>, rusqlite::Error> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT agent_id, gateway_url, proxy_token, registered_at FROM agent_gateways",
-        )?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(AgentGatewayRow {
-                    agent_id: row.get(0)?,
-                    gateway_url: row.get(1)?,
-                    proxy_token: row.get(2)?,
-                    registered_at: row.get(3)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+    pub async fn list_agent_gateways(&self) -> Result<Vec<AgentGatewayRow>, String> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM ipc_agent_gateway")
+            .await
+            .map_err(|e| format!("list_agent_gateways: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| format!("list_agent_gateways parse: {e}"))?;
+        Ok(rows
+            .iter()
+            .map(|v| AgentGatewayRow {
+                agent_id: json_str(v, "agent_id"),
+                gateway_url: json_str(v, "gateway_url"),
+                proxy_token: json_str(v, "proxy_token"),
+                registered_at: json_i64(v, "registered_at"),
+            })
+            .collect())
     }
 
     /// Get a single agent's gateway info.
-    pub fn get_agent_gateway(
+    pub async fn get_agent_gateway(
         &self,
         agent_id: &str,
-    ) -> Result<Option<AgentGatewayRow>, rusqlite::Error> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT agent_id, gateway_url, proxy_token, registered_at FROM agent_gateways WHERE agent_id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![agent_id], |row| {
-            Ok(AgentGatewayRow {
-                agent_id: row.get(0)?,
-                gateway_url: row.get(1)?,
-                proxy_token: row.get(2)?,
-                registered_at: row.get(3)?,
-            })
-        })?;
-        match rows.next() {
-            Some(Ok(r)) => Ok(Some(r)),
-            Some(Err(e)) => Err(e),
-            None => Ok(None),
-        }
+    ) -> Result<Option<AgentGatewayRow>, String> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM ipc_agent_gateway WHERE agent_id = $agent_id LIMIT 1")
+            .bind(("agent_id", agent_id.to_string()))
+            .await
+            .map_err(|e| format!("get_agent_gateway: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| format!("get_agent_gateway parse: {e}"))?;
+        Ok(rows.first().map(|v| AgentGatewayRow {
+            agent_id: json_str(v, "agent_id"),
+            gateway_url: json_str(v, "gateway_url"),
+            proxy_token: json_str(v, "proxy_token"),
+            registered_at: json_i64(v, "registered_at"),
+        }))
     }
 
     /// Remove an agent's gateway registration.
-    pub fn remove_agent_gateway(&self, agent_id: &str) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock();
-        conn.execute(
-            "DELETE FROM agent_gateways WHERE agent_id = ?1",
-            params![agent_id],
-        )?;
+    pub async fn remove_agent_gateway(&self, agent_id: &str) -> Result<(), String> {
+        self.db
+            .query("DELETE FROM ipc_agent_gateway WHERE agent_id = $agent_id")
+            .bind(("agent_id", agent_id.to_string()))
+            .await
+            .map_err(|e| format!("remove_agent_gateway: {e}"))?;
         Ok(())
     }
 
     /// Get distinct communication pairs from message history (for topology edges).
     /// Returns `(from_agent, to_agent, message_count)` ordered by frequency.
-    pub fn communication_pairs(&self) -> Vec<(String, String, i64)> {
-        self.communication_pairs_filtered(None, 1, 100)
+    pub async fn communication_pairs(&self) -> Vec<(String, String, i64)> {
+        self.communication_pairs_filtered(None, 1, 100).await
     }
 
     /// Get distinct communication pairs from message history with optional
     /// recency/count filtering for topology views.
-    pub fn communication_pairs_filtered(
+    pub async fn communication_pairs_filtered(
         &self,
         since_ts: Option<i64>,
         min_count: i64,
         limit: u32,
     ) -> Vec<(String, String, i64)> {
-        let conn = self.conn.lock();
-        let limit = i64::from(limit.max(1));
         let min_count = min_count.max(1);
-        let (query, params): (&str, Vec<rusqlite::types::Value>) = match since_ts {
-            Some(since_ts) => (
-                "SELECT from_agent, to_agent, COUNT(*) as cnt
-                 FROM messages
-                 WHERE blocked = 0 AND created_at >= ?1
-                 GROUP BY from_agent, to_agent
-                 HAVING COUNT(*) >= ?2
-                 ORDER BY cnt DESC
-                 LIMIT ?3",
-                vec![since_ts.into(), min_count.into(), limit.into()],
-            ),
-            None => (
-                "SELECT from_agent, to_agent, COUNT(*) as cnt
-                 FROM messages
-                 WHERE blocked = 0
-                 GROUP BY from_agent, to_agent
-                 HAVING COUNT(*) >= ?1
-                 ORDER BY cnt DESC
-                 LIMIT ?2",
-                vec![min_count.into(), limit.into()],
-            ),
+        let limit = i64::from(limit.max(1));
+        let result = match since_ts {
+            Some(since_ts) => {
+                self.db
+                    .query(
+                        "SELECT from_agent, to_agent, count() AS cnt FROM ipc_message
+                         WHERE blocked = 0 AND created_at >= $since_ts
+                         GROUP BY from_agent, to_agent
+                         ORDER BY cnt DESC
+                         LIMIT $limit",
+                    )
+                    .bind(("since_ts", since_ts))
+                    .bind(("limit", limit))
+                    .await
+            }
+            None => {
+                self.db
+                    .query(
+                        "SELECT from_agent, to_agent, count() AS cnt FROM ipc_message
+                         WHERE blocked = 0
+                         GROUP BY from_agent, to_agent
+                         ORDER BY cnt DESC
+                         LIMIT $limit",
+                    )
+                    .bind(("limit", limit))
+                    .await
+            }
         };
-        let mut stmt = match conn.prepare(query) {
-            Ok(s) => s,
+        let mut resp = match result {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
-        stmt.query_map(rusqlite::params_from_iter(params.iter()), |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })
-        .map(|rows| rows.filter_map(Result::ok).collect())
-        .unwrap_or_default()
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.iter()
+            .filter_map(|v| {
+                let cnt = json_i64(v, "cnt");
+                if cnt >= min_count {
+                    Some((json_str(v, "from_agent"), json_str(v, "to_agent"), cnt))
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Fetch pending/failed unread messages for an agent (for push re-delivery).
     /// Limited to 256 rows to match the push channel capacity.
-    pub fn pending_messages_for(
+    pub async fn pending_messages_for(
         &self,
         agent_id: &str,
-    ) -> Result<Vec<PendingMessage>, rusqlite::Error> {
-        let conn = self.conn.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id, from_agent, kind, priority FROM messages
-             WHERE to_agent = ?1 AND read = 0
-               AND (delivery_status IS NULL OR delivery_status IN ('pending', 'failed', 'pushed'))
-             ORDER BY id ASC
-             LIMIT 256",
-        )?;
-        let rows = stmt
-            .query_map(params![agent_id], |row| {
-                Ok(PendingMessage {
-                    message_id: row.get(0)?,
-                    from_agent: row.get(1)?,
-                    kind: row.get(2)?,
-                    priority: row.get(3)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
+    ) -> Result<Vec<PendingMessage>, String> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM ipc_message
+                 WHERE to_agent = $agent_id AND read = 0
+                   AND (delivery_status = NONE OR delivery_status IN ['pending', 'failed', 'pushed'])
+                 ORDER BY msg_id ASC
+                 LIMIT 256",
+            )
+            .bind(("agent_id", agent_id.to_string()))
+            .await
+            .map_err(|e| format!("pending_messages_for: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| format!("pending_messages_for parse: {e}"))?;
+        Ok(rows
+            .iter()
+            .map(|v| PendingMessage {
+                message_id: json_i64(v, "msg_id"),
+                from_agent: json_str(v, "from_agent"),
+                kind: json_str(v, "kind"),
+                priority: json_i32(v, "priority"),
+            })
+            .collect())
     }
 
     /// Update delivery status for a message.
-    pub fn update_delivery_status(
+    pub async fn update_delivery_status(
         &self,
         message_id: i64,
         status: &str,
-    ) -> Result<(), rusqlite::Error> {
-        let conn = self.conn.lock();
-        conn.execute(
-            "UPDATE messages SET delivery_status = ?1 WHERE id = ?2",
-            params![status, message_id],
-        )?;
+    ) -> Result<(), String> {
+        self.db
+            .query("UPDATE ipc_message SET delivery_status = $status WHERE msg_id = $msg_id")
+            .bind(("status", status.to_string()))
+            .bind(("msg_id", message_id))
+            .await
+            .map_err(|e| format!("update_delivery_status: {e}"))?;
         Ok(())
     }
 
     /// Check whether an agent is blocked (revoked, disabled, or quarantined).
-    pub fn is_agent_blocked(&self, agent_id: &str) -> Option<String> {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT status FROM agents WHERE agent_id = ?1",
-            params![agent_id],
-            |row| row.get::<_, String>(0),
-        )
-        .ok()
-        .and_then(|status| match status.as_str() {
+    pub async fn is_agent_blocked(&self, agent_id: &str) -> Option<String> {
+        let mut resp = self
+            .db
+            .query("SELECT status FROM ipc_agent WHERE agent_id = $agent_id LIMIT 1")
+            .bind(("agent_id", agent_id.to_string()))
+            .await
+            .ok()?;
+        let rows: Vec<serde_json::Value> = resp.take(0).ok()?;
+        let status = rows.first().map(|v| json_str(v, "status"))?;
+        match status.as_str() {
             "revoked" | "disabled" | "quarantined" => Some(status),
             _ => None,
-        })
+        }
     }
 
     /// Check whether a session contains a task or query directed at the given agent.
-    ///
-    /// A `result` message is valid as a reply to either a `task` or a `query`
-    /// in the same session. This enables both parent→child task flows and
-    /// peer-to-peer query→result flows (e.g. Research↔Code, Sentinel↔DevOps).
-    pub fn session_has_request_for(&self, session_id: &str, agent_id: &str) -> bool {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT COUNT(*) FROM messages
-             WHERE session_id = ?1 AND to_agent = ?2
-               AND kind IN ('task', 'query') AND blocked = 0",
-            params![session_id, agent_id],
-            |row| row.get::<_, i64>(0),
-        )
-        .unwrap_or(0)
-            > 0
+    pub async fn session_has_request_for(&self, session_id: &str, agent_id: &str) -> bool {
+        let mut resp = match self
+            .db
+            .query(
+                "SELECT count() AS cnt FROM ipc_message
+                 WHERE session_id = $session_id AND to_agent = $agent_id
+                   AND kind IN ['task', 'query'] AND blocked = 0
+                 GROUP ALL",
+            )
+            .bind(("session_id", session_id.to_string()))
+            .bind(("agent_id", agent_id.to_string()))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.first()
+            .map(|v| json_i64(v, "cnt") > 0)
+            .unwrap_or(false)
     }
 
     /// Allocate the next monotonic sequence number for a sender.
-    pub fn next_seq(&self, agent_id: &str) -> i64 {
-        let conn = self.conn.lock();
-        conn.execute(
-            "INSERT INTO message_sequences (agent_id, last_seq) VALUES (?1, 1)
-             ON CONFLICT(agent_id) DO UPDATE SET last_seq = last_seq + 1",
-            params![agent_id],
-        )
-        .ok();
-        conn.query_row(
-            "SELECT last_seq FROM message_sequences WHERE agent_id = ?1",
-            params![agent_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(1)
+    pub async fn next_seq(&self, agent_id: &str) -> i64 {
+        let _ = self
+            .db
+            .query(
+                "IF (SELECT count() FROM ipc_message_seq WHERE agent_id = $agent_id GROUP ALL)[0].count > 0 {
+                    UPDATE ipc_message_seq SET last_seq = last_seq + 1 WHERE agent_id = $agent_id;
+                } ELSE {
+                    CREATE ipc_message_seq SET agent_id = $agent_id, last_seq = 1;
+                };",
+            )
+            .bind(("agent_id", agent_id.to_string()))
+            .await;
+        let mut resp = match self
+            .db
+            .query("SELECT last_seq FROM ipc_message_seq WHERE agent_id = $agent_id LIMIT 1")
+            .bind(("agent_id", agent_id.to_string()))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return 1,
+        };
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.first().map(|v| json_i64(v, "last_seq")).unwrap_or(1)
     }
 
     /// Insert a message into the database.
-    pub fn insert_message(
+    pub async fn insert_message(
         &self,
         from_agent: &str,
         to_agent: &str,
@@ -613,108 +573,119 @@ impl IpcDb {
         message_ttl_secs: Option<u64>,
     ) -> Result<i64, IpcInsertError> {
         let now = unix_now();
-        let seq = self.next_seq(from_agent);
+        let seq = self.next_seq(from_agent).await;
         let expires_at = message_ttl_secs.map(|ttl| now + ttl as i64);
-        let conn = self.conn.lock();
 
-        // Sequence integrity check: verify monotonicity per sender-receiver pair.
-        // Detects DB corruption or manual rollback (broker allocates seq, so this
-        // is an integrity check, not transport-level replay protection).
-        Self::check_seq_integrity(&conn, from_agent, to_agent, seq)?;
+        // Sequence integrity check
+        self.check_seq_integrity(from_agent, to_agent, seq).await?;
 
-        conn.execute(
-            "INSERT INTO messages (session_id, from_agent, to_agent, kind, payload,
-             priority, from_trust_level, seq, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            params![
-                session_id,
-                from_agent,
-                to_agent,
-                kind,
-                payload,
-                priority,
-                from_trust_level,
-                seq,
-                now,
-                expires_at
-            ],
-        )?;
-        Ok(conn.last_insert_rowid())
+        // Generate monotonic msg_id from timestamp
+        let msg_id = self.next_msg_id(now).await;
+
+        self.db
+            .query(
+                "CREATE ipc_message SET
+                    session_id = $session_id, from_agent = $from_agent, to_agent = $to_agent,
+                    kind = $kind, payload = $payload, priority = $priority,
+                    from_trust_level = $from_trust_level, seq = $seq, blocked = 0,
+                    created_at = $now, read = 0, expires_at = $expires_at,
+                    delivery_status = 'pending', promoted = 0, msg_id = $msg_id",
+            )
+            .bind(("session_id", session_id.map(String::from)))
+            .bind(("from_agent", from_agent.to_string()))
+            .bind(("to_agent", to_agent.to_string()))
+            .bind(("kind", kind.to_string()))
+            .bind(("payload", payload.to_string()))
+            .bind(("priority", i64::from(priority)))
+            .bind(("from_trust_level", i64::from(from_trust_level)))
+            .bind(("seq", seq))
+            .bind(("now", now))
+            .bind(("expires_at", expires_at))
+            .bind(("msg_id", msg_id))
+            .await
+            .map_err(|e| IpcInsertError::Db(format!("{e}")))?;
+        Ok(msg_id)
+    }
+
+    /// Generate a monotonic message ID from timestamp.
+    /// Uses timestamp * 1000 + offset to ensure uniqueness within the same second.
+    async fn next_msg_id(&self, now: i64) -> i64 {
+        let base = now * 1000;
+        let mut resp = match self
+            .db
+            .query(
+                "SELECT msg_id FROM ipc_message WHERE msg_id >= $base ORDER BY msg_id DESC LIMIT 1",
+            )
+            .bind(("base", base))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return base,
+        };
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        match rows.first() {
+            Some(v) => json_i64(v, "msg_id") + 1,
+            None => base,
+        }
     }
 
     /// Fetch unread messages for an agent, optionally including quarantine.
-    pub fn fetch_inbox(
+    pub async fn fetch_inbox(
         &self,
         agent_id: &str,
         include_quarantine: bool,
         limit: u32,
     ) -> Vec<InboxMessage> {
         let now = unix_now();
-        let conn = self.conn.lock();
         // Lazy TTL cleanup
-        let _ = conn.execute(
-            "DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at < ?1",
-            params![now],
-        );
-        // quarantine=false: normal inbox — from_trust_level < 4 OR promoted = 1
-        // quarantine=true: quarantine review lane — from_trust_level >= 4 AND NOT promoted
+        let _ = self
+            .db
+            .query("DELETE FROM ipc_message WHERE expires_at != NONE AND expires_at < $now")
+            .bind(("now", now))
+            .await;
+
         let query = if include_quarantine {
-            "SELECT id, session_id, from_agent, to_agent, kind, payload, priority,
-                    from_trust_level, seq, created_at
-             FROM messages
-             WHERE to_agent = ?1 AND read = 0 AND blocked = 0
+            "SELECT * FROM ipc_message
+             WHERE to_agent = $agent_id AND read = 0 AND blocked = 0
                AND from_trust_level >= 4 AND promoted = 0
              ORDER BY priority DESC, created_at ASC
-             LIMIT ?2"
+             LIMIT $limit"
         } else {
-            "SELECT id, session_id, from_agent, to_agent, kind, payload, priority,
-                    from_trust_level, seq, created_at
-             FROM messages
-             WHERE to_agent = ?1 AND read = 0 AND blocked = 0
+            "SELECT * FROM ipc_message
+             WHERE to_agent = $agent_id AND read = 0 AND blocked = 0
                AND (from_trust_level < 4 OR promoted = 1)
              ORDER BY priority DESC, created_at ASC
-             LIMIT ?2"
+             LIMIT $limit"
         };
-        let mut stmt = match conn.prepare(query) {
-            Ok(s) => s,
+
+        let mut resp = match self
+            .db
+            .query(query)
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("limit", i64::from(limit)))
+            .await
+        {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
-        let rows = stmt
-            .query_map(params![agent_id, limit], |row| {
-                Ok(InboxMessage {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    from_agent: row.get(2)?,
-                    to_agent: row.get(3)?,
-                    kind: row.get(4)?,
-                    payload: row.get(5)?,
-                    priority: row.get(6)?,
-                    from_trust_level: row.get(7)?,
-                    seq: row.get(8)?,
-                    created_at: row.get(9)?,
-                    trust_warning: None,
-                    quarantined: None,
-                })
-            })
-            .ok();
-        let messages: Vec<InboxMessage> = rows
-            .map(|r| r.filter_map(|m| m.ok()).collect())
-            .unwrap_or_default();
-        // Mark as read — but NOT quarantine messages (they stay unread until
-        // explicitly promoted or discarded by admin).
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        let messages: Vec<InboxMessage> = rows.iter().map(row_to_inbox_message).collect();
+
+        // Mark as read — but NOT quarantine messages
         if !include_quarantine {
-            let ids: Vec<i64> = messages.iter().map(|m| m.id).collect();
-            for id in &ids {
-                let _ = conn.execute("UPDATE messages SET read = 1 WHERE id = ?1", params![id]);
+            for m in &messages {
+                let _ = self
+                    .db
+                    .query("UPDATE ipc_message SET read = 1 WHERE msg_id = $msg_id")
+                    .bind(("msg_id", m.id))
+                    .await;
             }
         }
         messages
     }
 
     /// Peek at unread messages without marking them as read.
-    /// Used by push inbox processor for pre-fetch + inject (Phase 3.10).
-    /// Messages remain unread until explicitly acknowledged via `ack_messages`.
-    pub fn peek_inbox(
+    pub async fn peek_inbox(
         &self,
         agent_id: &str,
         from_agent: Option<&str>,
@@ -722,280 +693,385 @@ impl IpcDb {
         limit: u32,
     ) -> Vec<InboxMessage> {
         let now = unix_now();
-        let conn = self.conn.lock();
-        // Lazy TTL cleanup (same as fetch_inbox)
-        let _ = conn.execute(
-            "DELETE FROM messages WHERE expires_at IS NOT NULL AND expires_at < ?1",
-            params![now],
-        );
+        // Lazy TTL cleanup
+        let _ = self
+            .db
+            .query("DELETE FROM ipc_message WHERE expires_at != NONE AND expires_at < $now")
+            .bind(("now", now))
+            .await;
 
-        // Build dynamic WHERE clause for optional filters
+        // Build dynamic WHERE clause
         let mut conditions = vec![
-            "to_agent = ?1".to_string(),
+            "to_agent = $agent_id".to_string(),
             "read = 0".to_string(),
             "blocked = 0".to_string(),
             "(from_trust_level < 4 OR promoted = 1)".to_string(),
         ];
-        let mut param_idx = 2u32;
         if from_agent.is_some() {
-            conditions.push(format!("from_agent = ?{param_idx}"));
-            param_idx += 1;
+            conditions.push("from_agent = $from_agent".to_string());
         }
         if let Some(k) = kinds {
             if !k.is_empty() {
-                #[allow(clippy::cast_possible_truncation)]
-                let placeholders: Vec<String> = (0..k.len())
-                    .map(|i| format!("?{}", param_idx + (i as u32)))
-                    .collect();
-                conditions.push(format!("kind IN ({})", placeholders.join(",")));
-                #[allow(clippy::cast_possible_truncation)]
-                {
-                    param_idx += k.len() as u32;
-                }
+                let kind_list: Vec<String> = k.iter().map(|s| format!("'{s}'")).collect();
+                conditions.push(format!("kind IN [{}]", kind_list.join(",")));
             }
         }
         let where_clause = conditions.join(" AND ");
         let query = format!(
-            "SELECT id, session_id, from_agent, to_agent, kind, payload, priority,
-                    from_trust_level, seq, created_at
-             FROM messages
-             WHERE {where_clause}
+            "SELECT * FROM ipc_message WHERE {where_clause}
              ORDER BY priority DESC, created_at ASC
-             LIMIT ?{param_idx}"
+             LIMIT $limit"
         );
 
-        let mut stmt = match conn.prepare(&query) {
-            Ok(s) => s,
+        let mut q = self
+            .db
+            .query(&query)
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("limit", i64::from(limit)));
+        if let Some(from) = from_agent {
+            q = q.bind(("from_agent", from.to_string()));
+        }
+
+        let mut resp = match q.await {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
-
-        // Build params dynamically
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        params_vec.push(Box::new(agent_id.to_string()));
-        if let Some(from) = from_agent {
-            params_vec.push(Box::new(from.to_string()));
-        }
-        if let Some(k) = kinds {
-            for kind in k {
-                params_vec.push(Box::new(kind.to_string()));
-            }
-        }
-        params_vec.push(Box::new(limit));
-
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params_vec.iter().map(|p| p.as_ref()).collect();
-
-        let rows = stmt
-            .query_map(params_refs.as_slice(), |row| {
-                Ok(InboxMessage {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    from_agent: row.get(2)?,
-                    to_agent: row.get(3)?,
-                    kind: row.get(4)?,
-                    payload: row.get(5)?,
-                    priority: row.get(6)?,
-                    from_trust_level: row.get(7)?,
-                    seq: row.get(8)?,
-                    created_at: row.get(9)?,
-                    trust_warning: None,
-                    quarantined: None,
-                })
-            })
-            .ok();
-        rows.map(|r| r.filter_map(|m| m.ok()).collect())
-            .unwrap_or_default()
-        // NOTE: No `UPDATE read = 1` — messages stay unread.
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.iter().map(row_to_inbox_message).collect()
     }
 
     /// Mark specific messages as read by ID.
-    /// Called after successful agent::run() processing in push inbox processor.
-    pub fn ack_messages(&self, ids: &[i64]) {
-        let conn = self.conn.lock();
+    pub async fn ack_messages(&self, ids: &[i64]) {
         for id in ids {
-            let _ = conn.execute("UPDATE messages SET read = 1 WHERE id = ?1", params![id]);
+            let _ = self
+                .db
+                .query("UPDATE ipc_message SET read = 1 WHERE msg_id = $msg_id")
+                .bind(("msg_id", *id))
+                .await;
         }
+    }
+
+    /// Ack messages for a specific agent only (safety check).
+    pub async fn ack_messages_for_agent(&self, ids: &[i64], agent_id: &str) -> i64 {
+        let mut acked = 0i64;
+        for id in ids {
+            let result = self
+                .db
+                .query(
+                    "UPDATE ipc_message SET read = 1
+                     WHERE msg_id = $msg_id AND to_agent = $agent_id AND read = 0",
+                )
+                .bind(("msg_id", *id))
+                .bind(("agent_id", agent_id.to_string()))
+                .await;
+            // Count successful updates
+            if result.is_ok() {
+                // Check if the row was actually updated by reading it back
+                if let Ok(mut resp) = self
+                    .db
+                    .query(
+                        "SELECT read FROM ipc_message WHERE msg_id = $msg_id AND to_agent = $agent_id AND read = 1 LIMIT 1",
+                    )
+                    .bind(("msg_id", *id))
+                    .bind(("agent_id", agent_id.to_string()))
+                    .await
+                {
+                    let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+                    if !rows.is_empty() {
+                        acked += 1;
+                    }
+                }
+            }
+        }
+        acked
+    }
+
+    /// Apply inbox filter rules to a list of messages (read-side only).
+    ///
+    /// Phase 4.5: AutoGen `MessageFilterAgent` pattern.
+    pub fn apply_inbox_filter(
+        messages: Vec<InboxMessage>,
+        filter: &synapse_domain::config::schema::InboxFilterConfig,
+    ) -> Vec<InboxMessage> {
+        if !filter.is_active() {
+            return messages;
+        }
+
+        // Step 1: filter by kind
+        let messages: Vec<InboxMessage> = if filter.allowed_kinds.is_empty() {
+            messages
+        } else {
+            messages
+                .into_iter()
+                .filter(|m| filter.kind_allowed(&m.kind))
+                .collect()
+        };
+
+        // Step 2: per-source limit (keep last N per from_agent)
+        let has_per_source = filter.default_per_source > 0 || !filter.per_source.is_empty();
+        if !has_per_source {
+            return messages;
+        }
+
+        let mut by_source: std::collections::HashMap<&str, Vec<InboxMessage>> =
+            std::collections::HashMap::new();
+        let mut order: Vec<&str> = Vec::new();
+        for msg in &messages {
+            if !by_source.contains_key(msg.from_agent.as_str()) {
+                order.push(msg.from_agent.as_str());
+            }
+            by_source
+                .entry(msg.from_agent.as_str())
+                .or_default()
+                .push(InboxMessage {
+                    id: msg.id,
+                    session_id: msg.session_id.clone(),
+                    from_agent: msg.from_agent.clone(),
+                    to_agent: msg.to_agent.clone(),
+                    kind: msg.kind.clone(),
+                    payload: msg.payload.clone(),
+                    priority: msg.priority,
+                    from_trust_level: msg.from_trust_level,
+                    seq: msg.seq,
+                    created_at: msg.created_at,
+                    trust_warning: msg.trust_warning.clone(),
+                    quarantined: msg.quarantined,
+                });
+        }
+
+        let mut result = Vec::new();
+        for source in order {
+            if let Some(mut msgs) = by_source.remove(source) {
+                if let Some(limit) = filter.limit_for_source(source) {
+                    let start = msgs.len().saturating_sub(limit);
+                    msgs = msgs.split_off(start);
+                }
+                result.extend(msgs);
+            }
+        }
+        result
     }
 
     /// List known agents with staleness check.
-    pub fn list_agents(&self, staleness_secs: u64) -> Vec<AgentInfo> {
+    pub async fn list_agents(&self, staleness_secs: u64) -> Vec<AgentInfo> {
         let now = unix_now();
-        let conn = self.conn.lock();
-        let mut stmt = match conn.prepare(
-            "SELECT agent_id, role, trust_level, status, last_seen, public_key
-             FROM agents ORDER BY agent_id",
-        ) {
-            Ok(s) => s,
+        let mut resp = match self
+            .db
+            .query("SELECT * FROM ipc_agent ORDER BY agent_id")
+            .await
+        {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
-        stmt.query_map([], |row| {
-            let last_seen: Option<i64> = row.get(4)?;
-            let status: String = row.get(3)?;
-            let effective_status = if status == "online" {
-                match last_seen {
-                    Some(ts) if (now - ts) > staleness_secs as i64 => "stale".to_string(),
-                    _ => status,
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.iter()
+            .map(|v| {
+                let last_seen = json_opt_i64(v, "last_seen");
+                let status = json_str(v, "status");
+                let effective_status = if status == "online" {
+                    match last_seen {
+                        Some(ts) if (now - ts) > staleness_secs as i64 => "stale".to_string(),
+                        _ => status,
+                    }
+                } else {
+                    status
+                };
+                AgentInfo {
+                    agent_id: json_str(v, "agent_id"),
+                    role: json_opt_str(v, "role"),
+                    trust_level: Some(json_u8(v, "trust_level")),
+                    status: effective_status,
+                    last_seen,
+                    public_key: json_opt_str(v, "public_key"),
                 }
-            } else {
-                status
-            };
-            Ok(AgentInfo {
-                agent_id: row.get(0)?,
-                role: row.get(1)?,
-                trust_level: Some(row.get(2)?),
-                status: effective_status,
-                last_seen,
-                public_key: row.get(5)?,
             })
-        })
-        .ok()
-        .map(|r| r.filter_map(|a| a.ok()).collect())
-        .unwrap_or_default()
+            .collect()
     }
 
     /// Get a shared state value.
-    pub fn get_state(&self, key: &str) -> Option<StateEntry> {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT key, value, owner, updated_at FROM shared_state WHERE key = ?1",
-            params![key],
-            |row| {
-                Ok(StateEntry {
-                    key: row.get(0)?,
-                    value: row.get(1)?,
-                    owner: row.get(2)?,
-                    updated_at: row.get(3)?,
-                })
-            },
-        )
-        .ok()
+    pub async fn get_state(&self, key: &str) -> Option<StateEntry> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM ipc_shared_state WHERE key = $key LIMIT 1")
+            .bind(("key", key.to_string()))
+            .await
+            .ok()?;
+        let rows: Vec<serde_json::Value> = resp.take(0).ok()?;
+        rows.first().map(|v| StateEntry {
+            key: json_str(v, "key"),
+            value: json_str(v, "value"),
+            owner: json_str(v, "owner"),
+            updated_at: json_i64(v, "updated_at"),
+        })
     }
 
     /// Upsert a shared state value.
-    pub fn set_state(&self, key: &str, value: &str, owner: &str) {
+    pub async fn set_state(&self, key: &str, value: &str, owner: &str) {
         let now = unix_now();
-        let conn = self.conn.lock();
-        let _ = conn.execute(
-            "INSERT INTO shared_state (key, value, owner, updated_at)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(key) DO UPDATE SET value = ?2, owner = ?3, updated_at = ?4",
-            params![key, value, owner, now],
-        );
+        let _ = self
+            .db
+            .query(
+                "IF (SELECT count() FROM ipc_shared_state WHERE key = $key GROUP ALL)[0].count > 0 {
+                    UPDATE ipc_shared_state SET value = $value, owner = $owner, updated_at = $now
+                    WHERE key = $key;
+                } ELSE {
+                    CREATE ipc_shared_state SET
+                        key = $key, value = $value, owner = $owner, updated_at = $now;
+                };",
+            )
+            .bind(("key", key.to_string()))
+            .bind(("value", value.to_string()))
+            .bind(("owner", owner.to_string()))
+            .bind(("now", now))
+            .await;
     }
 
     /// Set agent status (for admin disable/quarantine).
-    pub fn set_agent_status(&self, agent_id: &str, status: &str) -> bool {
-        let conn = self.conn.lock();
-        let changed = conn
-            .execute(
-                "UPDATE agents SET status = ?2 WHERE agent_id = ?1",
-                params![agent_id, status],
-            )
-            .unwrap_or(0);
-        changed > 0
+    pub async fn set_agent_status(&self, agent_id: &str, status: &str) -> bool {
+        let result = self
+            .db
+            .query("UPDATE ipc_agent SET status = $status WHERE agent_id = $agent_id")
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("status", status.to_string()))
+            .await;
+        result.is_ok()
     }
 
     /// Set agent trust level (for admin downgrade).
-    pub fn set_agent_trust_level(&self, agent_id: &str, new_level: u8) -> Option<u8> {
-        let conn = self.conn.lock();
-        let current: u8 = conn
-            .query_row(
-                "SELECT trust_level FROM agents WHERE agent_id = ?1",
-                params![agent_id],
-                |row| row.get(0),
-            )
+    pub async fn set_agent_trust_level(&self, agent_id: &str, new_level: u8) -> Option<u8> {
+        let mut resp = self
+            .db
+            .query("SELECT trust_level FROM ipc_agent WHERE agent_id = $agent_id LIMIT 1")
+            .bind(("agent_id", agent_id.to_string()))
+            .await
             .ok()?;
-        // Can only downgrade (increase number)
+        let rows: Vec<serde_json::Value> = resp.take(0).ok()?;
+        let current = rows.first().map(|v| json_u8(v, "trust_level"))?;
         if new_level <= current {
             return None;
         }
-        conn.execute(
-            "UPDATE agents SET trust_level = ?2 WHERE agent_id = ?1",
-            params![agent_id, new_level],
-        )
-        .ok();
+        let _ = self
+            .db
+            .query("UPDATE ipc_agent SET trust_level = $new_level WHERE agent_id = $agent_id")
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("new_level", i64::from(new_level)))
+            .await;
         Some(current)
     }
 
     /// Retroactively move unread messages from an agent into the quarantine lane.
-    /// Sets `from_trust_level = 4` on all unread, unblocked messages from this agent,
-    /// so they appear in quarantine inbox rather than the normal inbox.
-    pub fn quarantine_pending_messages(&self, agent_id: &str) -> usize {
-        let conn = self.conn.lock();
-        conn.execute(
-            "UPDATE messages SET from_trust_level = 4
-             WHERE from_agent = ?1 AND read = 0 AND blocked = 0 AND from_trust_level < 4",
-            params![agent_id],
-        )
-        .unwrap_or(0)
+    pub async fn quarantine_pending_messages(&self, agent_id: &str) -> usize {
+        let result = self
+            .db
+            .query(
+                "UPDATE ipc_message SET from_trust_level = 4
+                 WHERE from_agent = $agent_id AND read = 0 AND blocked = 0 AND from_trust_level < 4",
+            )
+            .bind(("agent_id", agent_id.to_string()))
+            .await;
+        // SurrealDB doesn't directly return "rows affected" easily; estimate via count
+        match result {
+            Ok(_) => {
+                // Count is approximate since we can't get exact affected count easily
+                if let Ok(mut resp) = self
+                    .db
+                    .query(
+                        "SELECT count() AS cnt FROM ipc_message
+                         WHERE from_agent = $agent_id AND from_trust_level = 4 AND read = 0 AND blocked = 0
+                         GROUP ALL",
+                    )
+                    .bind(("agent_id", agent_id.to_string()))
+                    .await
+                {
+                    let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    return rows.first().map(|v| json_i64(v, "cnt") as usize).unwrap_or(0);
+                }
+                0
+            }
+            Err(_) => 0,
+        }
     }
 
     /// Count messages in a session (for session length limits).
-    pub fn session_message_count(&self, session_id: &str) -> i64 {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT COUNT(*) FROM messages WHERE session_id = ?1 AND blocked = 0",
-            params![session_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0)
+    pub async fn session_message_count(&self, session_id: &str) -> i64 {
+        let mut resp = match self
+            .db
+            .query(
+                "SELECT count() AS cnt FROM ipc_message
+                 WHERE session_id = $session_id AND blocked = 0
+                 GROUP ALL",
+            )
+            .bind(("session_id", session_id.to_string()))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return 0,
+        };
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.first().map(|v| json_i64(v, "cnt")).unwrap_or(0)
     }
 
     /// Block pending messages for an agent (used by revoke/disable).
-    pub fn block_pending_messages(&self, agent_id: &str, reason: &str) {
-        let conn = self.conn.lock();
-        let _ = conn.execute(
-            "UPDATE messages SET blocked = 1, block_reason = ?2
-             WHERE to_agent = ?1 AND read = 0 AND blocked = 0",
-            params![agent_id, reason],
-        );
+    pub async fn block_pending_messages(&self, agent_id: &str, reason: &str) {
+        let _ = self
+            .db
+            .query(
+                "UPDATE ipc_message SET blocked = 1, block_reason = $reason
+                 WHERE to_agent = $agent_id AND read = 0 AND blocked = 0",
+            )
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("reason", reason.to_string()))
+            .await;
     }
 
     /// Fetch a single message by ID (for promote-to-task).
-    pub fn get_message(&self, id: i64) -> Option<StoredMessage> {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT id, session_id, from_agent, to_agent, kind, payload,
-                    priority, from_trust_level, seq, created_at, promoted, read
-             FROM messages WHERE id = ?1",
-            params![id],
-            |row| {
-                let promoted_i: i32 = row.get(10)?;
-                let read_i: i32 = row.get(11)?;
-                Ok(StoredMessage {
-                    id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    from_agent: row.get(2)?,
-                    to_agent: row.get(3)?,
-                    kind: row.get(4)?,
-                    payload: row.get(5)?,
-                    priority: row.get(6)?,
-                    from_trust_level: row.get(7)?,
-                    seq: row.get(8)?,
-                    created_at: row.get(9)?,
-                    promoted: promoted_i != 0,
-                    read: read_i != 0,
-                })
-            },
-        )
-        .ok()
+    pub async fn get_message(&self, id: i64) -> Option<StoredMessage> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM ipc_message WHERE msg_id = $msg_id LIMIT 1")
+            .bind(("msg_id", id))
+            .await
+            .ok()?;
+        let rows: Vec<serde_json::Value> = resp.take(0).ok()?;
+        rows.first().map(|v| StoredMessage {
+            id: json_i64(v, "msg_id"),
+            session_id: json_opt_str(v, "session_id"),
+            from_agent: json_str(v, "from_agent"),
+            to_agent: json_str(v, "to_agent"),
+            kind: json_str(v, "kind"),
+            payload: json_str(v, "payload"),
+            priority: json_i32(v, "priority"),
+            from_trust_level: json_u8(v, "from_trust_level"),
+            seq: json_i64(v, "seq"),
+            created_at: json_i64(v, "created_at"),
+            promoted: json_bool_from_int(v, "promoted"),
+            read: json_bool_from_int(v, "read"),
+        })
     }
 
     /// Check whether an agent exists in the registry.
-    pub fn agent_exists(&self, agent_id: &str) -> bool {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT 1 FROM agents WHERE agent_id = ?1",
-            params![agent_id],
-            |_| Ok(()),
-        )
-        .is_ok()
+    pub async fn agent_exists(&self, agent_id: &str) -> bool {
+        let resp = self
+            .db
+            .query("SELECT count() AS cnt FROM ipc_agent WHERE agent_id = $agent_id GROUP ALL")
+            .bind(("agent_id", agent_id.to_string()))
+            .await;
+        match resp {
+            Ok(mut r) => {
+                let rows: Vec<serde_json::Value> = r.take(0).unwrap_or_default();
+                rows.first()
+                    .map(|v| json_i64(v, "cnt") > 0)
+                    .unwrap_or(false)
+            }
+            Err(_) => false,
+        }
     }
 
     // ── Spawn Runs (Phase 3A) ───────────────────────────────────
 
     /// Create a spawn_runs row for an ephemeral child agent.
-    pub fn create_spawn_run(
+    pub async fn create_spawn_run(
         &self,
         session_id: &str,
         parent_id: &str,
@@ -1003,111 +1079,116 @@ impl IpcDb {
         expires_at: i64,
     ) {
         let now = unix_now();
-        let conn = self.conn.lock();
-        let _ = conn.execute(
-            "INSERT INTO spawn_runs (id, parent_id, child_id, status, created_at, expires_at)
-             VALUES (?1, ?2, ?3, 'running', ?4, ?5)",
-            params![session_id, parent_id, child_id, now, expires_at],
-        );
+        let _ = self
+            .db
+            .query(
+                "CREATE ipc_spawn_run SET
+                    run_id = $run_id, parent_id = $parent_id, child_id = $child_id,
+                    status = 'running', created_at = $now, expires_at = $expires_at",
+            )
+            .bind(("run_id", session_id.to_string()))
+            .bind(("parent_id", parent_id.to_string()))
+            .bind(("child_id", child_id.to_string()))
+            .bind(("now", now))
+            .bind(("expires_at", expires_at))
+            .await;
     }
 
     /// Get the current status and result of a spawn run.
-    pub fn get_spawn_run(&self, session_id: &str) -> Option<SpawnRunInfo> {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT id, parent_id, child_id, status, result, created_at, expires_at, completed_at
-             FROM spawn_runs WHERE id = ?1",
-            params![session_id],
-            |row| {
-                Ok(SpawnRunInfo {
-                    id: row.get(0)?,
-                    parent_id: row.get(1)?,
-                    child_id: row.get(2)?,
-                    status: row.get(3)?,
-                    result: row.get(4)?,
-                    created_at: row.get(5)?,
-                    expires_at: row.get(6)?,
-                    completed_at: row.get(7)?,
-                })
-            },
-        )
-        .ok()
+    pub async fn get_spawn_run(&self, session_id: &str) -> Option<SpawnRunInfo> {
+        let mut resp = self
+            .db
+            .query("SELECT * FROM ipc_spawn_run WHERE run_id = $run_id LIMIT 1")
+            .bind(("run_id", session_id.to_string()))
+            .await
+            .ok()?;
+        let rows: Vec<serde_json::Value> = resp.take(0).ok()?;
+        rows.first().map(row_to_spawn_run)
     }
 
     /// Mark a spawn run as completed with a result payload.
-    pub fn complete_spawn_run(&self, session_id: &str, result: &str) -> bool {
+    pub async fn complete_spawn_run(&self, session_id: &str, result: &str) -> bool {
         let now = unix_now();
-        let conn = self.conn.lock();
-        let changed = conn
-            .execute(
-                "UPDATE spawn_runs SET status = 'completed', result = ?2, completed_at = ?3
-                 WHERE id = ?1 AND status = 'running'",
-                params![session_id, result, now],
+        let r = self
+            .db
+            .query(
+                "UPDATE ipc_spawn_run SET status = 'completed', result = $result, completed_at = $now
+                 WHERE run_id = $run_id AND status = 'running'",
             )
-            .unwrap_or(0);
-        changed > 0
+            .bind(("run_id", session_id.to_string()))
+            .bind(("result", result.to_string()))
+            .bind(("now", now))
+            .await;
+        r.is_ok()
     }
 
-    /// Mark a spawn run with a terminal status (timeout, revoked, error, interrupted).
-    pub fn fail_spawn_run(&self, session_id: &str, status: &str) -> bool {
+    /// Mark a spawn run with a terminal status.
+    pub async fn fail_spawn_run(&self, session_id: &str, status: &str) -> bool {
         let now = unix_now();
-        let conn = self.conn.lock();
-        let changed = conn
-            .execute(
-                "UPDATE spawn_runs SET status = ?2, completed_at = ?3
-                 WHERE id = ?1 AND status = 'running'",
-                params![session_id, status, now],
+        let r = self
+            .db
+            .query(
+                "UPDATE ipc_spawn_run SET status = $status, completed_at = $now
+                 WHERE run_id = $run_id AND status = 'running'",
             )
-            .unwrap_or(0);
-        changed > 0
+            .bind(("run_id", session_id.to_string()))
+            .bind(("status", status.to_string()))
+            .bind(("now", now))
+            .await;
+        r.is_ok()
     }
 
-    /// Transition all stale running spawn_runs to 'interrupted' (broker restart recovery).
-    /// Returns the number of rows transitioned.
-    pub fn interrupt_stale_spawn_runs(&self) -> usize {
+    /// Transition all stale running spawn_runs to 'interrupted'.
+    pub async fn interrupt_stale_spawn_runs(&self) -> usize {
         let now = unix_now();
-        let conn = self.conn.lock();
-        conn.execute(
-            "UPDATE spawn_runs SET status = 'interrupted', completed_at = ?1
-             WHERE status = 'running' AND expires_at < ?1",
-            params![now],
-        )
-        .unwrap_or(0)
+        let _ = self
+            .db
+            .query(
+                "UPDATE ipc_spawn_run SET status = 'interrupted', completed_at = $now
+                 WHERE status = 'running' AND expires_at < $now",
+            )
+            .bind(("now", now))
+            .await;
+        0 // SurrealDB doesn't easily return affected count
     }
 
     /// Transition all running spawn_runs for ephemeral agents to 'interrupted'.
-    /// Called on broker restart to clean up orphaned sessions.
-    pub fn interrupt_all_ephemeral_spawn_runs(&self) -> usize {
+    pub async fn interrupt_all_ephemeral_spawn_runs(&self) -> usize {
         let now = unix_now();
-        let conn = self.conn.lock();
         // Transition agents table: ephemeral -> interrupted
-        let agents_updated = conn
-            .execute(
-                "UPDATE agents SET status = 'interrupted'
-                 WHERE status = 'ephemeral'",
-                [],
-            )
-            .unwrap_or(0);
+        let _ = self
+            .db
+            .query("UPDATE ipc_agent SET status = 'interrupted' WHERE status = 'ephemeral'")
+            .await;
         // Transition spawn_runs: running -> interrupted
-        let runs_updated = conn
-            .execute(
-                "UPDATE spawn_runs SET status = 'interrupted', completed_at = ?1
+        let _ = self
+            .db
+            .query(
+                "UPDATE ipc_spawn_run SET status = 'interrupted', completed_at = $now
                  WHERE status = 'running'",
-                params![now],
             )
-            .unwrap_or(0);
-        if agents_updated > 0 || runs_updated > 0 {
-            info!(
-                agents = agents_updated,
-                runs = runs_updated,
-                "Broker restart: interrupted orphaned ephemeral sessions"
-            );
+            .bind(("now", now))
+            .await;
+        // Count for logging
+        if let Ok(mut resp) = self
+            .db
+            .query(
+                "SELECT count() AS cnt FROM ipc_spawn_run WHERE status = 'interrupted' GROUP ALL",
+            )
+            .await
+        {
+            let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            return rows
+                .first()
+                .map(|v| json_i64(v, "cnt") as usize)
+                .unwrap_or(0);
         }
-        runs_updated
+        0
     }
 
     /// Register an ephemeral agent in the agents table.
-    pub fn register_ephemeral_agent(
+    pub async fn register_ephemeral_agent(
         &self,
         agent_id: &str,
         parent_id: &str,
@@ -1123,90 +1204,121 @@ impl IpcDb {
             "expires_at": expires_at,
         })
         .to_string();
-        let conn = self.conn.lock();
-        let _ = conn.execute(
-            "INSERT INTO agents (agent_id, role, trust_level, status, metadata, last_seen)
-             VALUES (?1, ?2, ?3, 'ephemeral', ?4, ?5)
-             ON CONFLICT(agent_id) DO UPDATE SET
-                role = ?2, trust_level = ?3, status = 'ephemeral', metadata = ?4, last_seen = ?5",
-            params![agent_id, role, trust_level, metadata, now],
-        );
+        let _ = self
+            .db
+            .query(
+                "IF (SELECT count() FROM ipc_agent WHERE agent_id = $agent_id GROUP ALL)[0].count > 0 {
+                    UPDATE ipc_agent SET
+                        role = $role, trust_level = $trust_level, status = 'ephemeral',
+                        metadata = $metadata, last_seen = $now
+                    WHERE agent_id = $agent_id;
+                } ELSE {
+                    CREATE ipc_agent SET
+                        agent_id = $agent_id, role = $role, trust_level = $trust_level,
+                        status = 'ephemeral', metadata = $metadata, last_seen = $now;
+                };",
+            )
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("role", role.to_string()))
+            .bind(("trust_level", i64::from(trust_level)))
+            .bind(("metadata", metadata))
+            .bind(("now", now))
+            .await;
     }
 
     // ── Phase 3B: Ed25519 Public Key Management ───────────────────
 
     /// Register or update an agent's Ed25519 public key.
-    pub fn set_agent_public_key(&self, agent_id: &str, public_key_hex: &str) -> bool {
-        let conn = self.conn.lock();
-        let changed = conn
-            .execute(
-                "UPDATE agents SET public_key = ?2 WHERE agent_id = ?1",
-                params![agent_id, public_key_hex],
-            )
-            .unwrap_or(0);
-        changed > 0
+    pub async fn set_agent_public_key(&self, agent_id: &str, public_key_hex: &str) -> bool {
+        let result = self
+            .db
+            .query("UPDATE ipc_agent SET public_key = $pk WHERE agent_id = $agent_id")
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("pk", public_key_hex.to_string()))
+            .await;
+        result.is_ok()
     }
 
-    /// Clear an agent's Ed25519 public key (used on ephemeral agent revoke).
-    pub fn clear_agent_public_key(&self, agent_id: &str) {
-        let conn = self.conn.lock();
-        let _ = conn.execute(
-            "UPDATE agents SET public_key = NULL WHERE agent_id = ?1",
-            params![agent_id],
-        );
+    /// Clear an agent's Ed25519 public key.
+    pub async fn clear_agent_public_key(&self, agent_id: &str) {
+        let _ = self
+            .db
+            .query("UPDATE ipc_agent SET public_key = NONE WHERE agent_id = $agent_id")
+            .bind(("agent_id", agent_id.to_string()))
+            .await;
     }
 
     /// Get an agent's registered Ed25519 public key.
-    pub fn get_agent_public_key(&self, agent_id: &str) -> Option<String> {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT public_key FROM agents WHERE agent_id = ?1",
-            params![agent_id],
-            |row| row.get::<_, Option<String>>(0),
-        )
-        .ok()
-        .flatten()
+    pub async fn get_agent_public_key(&self, agent_id: &str) -> Option<String> {
+        let mut resp = self
+            .db
+            .query("SELECT public_key FROM ipc_agent WHERE agent_id = $agent_id LIMIT 1")
+            .bind(("agent_id", agent_id.to_string()))
+            .await
+            .ok()?;
+        let rows: Vec<serde_json::Value> = resp.take(0).ok()?;
+        rows.first().and_then(|v| json_opt_str(v, "public_key"))
     }
 
     // ── Phase 3B Step 10: Sender-side replay protection ────────────
 
     /// Get the last seen sender-side sequence number for an agent.
-    pub fn get_last_sender_seq(&self, agent_id: &str) -> i64 {
-        let conn = self.conn.lock();
-        conn.query_row(
-            "SELECT last_sender_seq FROM sender_sequences WHERE agent_id = ?1",
-            params![agent_id],
-            |row| row.get(0),
-        )
-        .unwrap_or(0)
+    pub async fn get_last_sender_seq(&self, agent_id: &str) -> i64 {
+        let mut resp = match self
+            .db
+            .query("SELECT last_sender_seq FROM ipc_sender_seq WHERE agent_id = $agent_id LIMIT 1")
+            .bind(("agent_id", agent_id.to_string()))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return 0,
+        };
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.first()
+            .map(|v| json_i64(v, "last_sender_seq"))
+            .unwrap_or(0)
     }
 
     /// Update the last seen sender-side sequence number for an agent.
-    pub fn set_last_sender_seq(&self, agent_id: &str, seq: i64) {
-        let conn = self.conn.lock();
-        let _ = conn.execute(
-            "INSERT INTO sender_sequences (agent_id, last_sender_seq) VALUES (?1, ?2)
-             ON CONFLICT(agent_id) DO UPDATE SET last_sender_seq = ?2",
-            params![agent_id, seq],
-        );
+    pub async fn set_last_sender_seq(&self, agent_id: &str, seq: i64) {
+        let _ = self
+            .db
+            .query(
+                "IF (SELECT count() FROM ipc_sender_seq WHERE agent_id = $agent_id GROUP ALL)[0].count > 0 {
+                    UPDATE ipc_sender_seq SET last_sender_seq = $seq WHERE agent_id = $agent_id;
+                } ELSE {
+                    CREATE ipc_sender_seq SET agent_id = $agent_id, last_sender_seq = $seq;
+                };",
+            )
+            .bind(("agent_id", agent_id.to_string()))
+            .bind(("seq", seq))
+            .await;
     }
 
     /// Check sequence integrity: seq must be strictly greater than the last
-    /// seq for this sender-receiver pair. Shared by all insert paths.
-    fn check_seq_integrity(
-        conn: &Connection,
+    /// seq for this sender-receiver pair.
+    async fn check_seq_integrity(
+        &self,
         from_agent: &str,
         to_agent: &str,
         seq: i64,
     ) -> Result<(), IpcInsertError> {
-        let last_seq: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(seq), 0) FROM messages
-                 WHERE from_agent = ?1 AND to_agent = ?2 AND blocked = 0",
-                params![from_agent, to_agent],
-                |row| row.get(0),
+        let mut resp = match self
+            .db
+            .query(
+                "SELECT math::max(seq) AS max_seq FROM ipc_message
+                 WHERE from_agent = $from_agent AND to_agent = $to_agent AND blocked = 0
+                 GROUP ALL",
             )
-            .unwrap_or(0);
+            .bind(("from_agent", from_agent.to_string()))
+            .bind(("to_agent", to_agent.to_string()))
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return Ok(()),
+        };
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        let last_seq = rows.first().map(|v| json_i64(v, "max_seq")).unwrap_or(0);
         if seq <= last_seq {
             warn!(
                 from = %from_agent,
@@ -1221,7 +1333,7 @@ impl IpcDb {
     }
 
     /// Insert a promoted message (escapes quarantine lane via promoted=1).
-    pub fn insert_promoted_message(
+    pub async fn insert_promoted_message(
         &self,
         from_agent: &str,
         to_agent: &str,
@@ -1233,39 +1345,43 @@ impl IpcDb {
         message_ttl_secs: Option<u64>,
     ) -> Result<i64, IpcInsertError> {
         let now = unix_now();
-        let seq = self.next_seq(from_agent);
+        let seq = self.next_seq(from_agent).await;
         let expires_at = message_ttl_secs.map(|ttl| now + ttl as i64);
-        let conn = self.conn.lock();
 
-        // Same sequence integrity check as insert_message
-        Self::check_seq_integrity(&conn, from_agent, to_agent, seq)?;
+        self.check_seq_integrity(from_agent, to_agent, seq).await?;
 
-        conn.execute(
-            "INSERT INTO messages (session_id, from_agent, to_agent, kind, payload,
-             priority, from_trust_level, seq, created_at, expires_at, promoted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1)",
-            params![
-                session_id,
-                from_agent,
-                to_agent,
-                kind,
-                payload,
-                priority,
-                from_trust_level,
-                seq,
-                now,
-                expires_at
-            ],
-        )?;
-        Ok(conn.last_insert_rowid())
+        let msg_id = self.next_msg_id(now).await;
+
+        self.db
+            .query(
+                "CREATE ipc_message SET
+                    session_id = $session_id, from_agent = $from_agent, to_agent = $to_agent,
+                    kind = $kind, payload = $payload, priority = $priority,
+                    from_trust_level = $from_trust_level, seq = $seq, blocked = 0,
+                    created_at = $now, read = 0, expires_at = $expires_at,
+                    delivery_status = 'pending', promoted = 1, msg_id = $msg_id",
+            )
+            .bind(("session_id", session_id.map(String::from)))
+            .bind(("from_agent", from_agent.to_string()))
+            .bind(("to_agent", to_agent.to_string()))
+            .bind(("kind", kind.to_string()))
+            .bind(("payload", payload.to_string()))
+            .bind(("priority", i64::from(priority)))
+            .bind(("from_trust_level", i64::from(from_trust_level)))
+            .bind(("seq", seq))
+            .bind(("now", now))
+            .bind(("expires_at", expires_at))
+            .bind(("msg_id", msg_id))
+            .await
+            .map_err(|e| IpcInsertError::Db(format!("{e}")))?;
+        Ok(msg_id)
     }
 
     // ── Phase 3.5 Step 0: Admin read endpoints ─────────────────────
 
     /// Paginated admin message listing with filters.
-    /// Does NOT set `read=1` or update `last_seen` (AD-2: side-effect-free).
     #[allow(clippy::too_many_arguments)]
-    pub fn list_messages_admin(
+    pub async fn list_messages_admin(
         &self,
         agent_id: Option<&str>,
         session_id: Option<&str>,
@@ -1278,26 +1394,21 @@ impl IpcDb {
         limit: u32,
         offset: u32,
     ) -> Vec<AdminMessageInfo> {
-        let conn = self.conn.lock();
-        let mut conditions = vec!["1=1".to_string()];
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut conditions = vec!["true".to_string()];
 
         if let Some(aid) = agent_id {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("(from_agent = ?{idx} OR to_agent = ?{idx})"));
-            param_values.push(Box::new(aid.to_string()));
+            conditions.push(format!(
+                "(from_agent = '{}' OR to_agent = '{}')",
+                aid.replace('\'', "\\'"),
+                aid.replace('\'', "\\'")
+            ));
         }
         if let Some(sid) = session_id {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("session_id = ?{idx}"));
-            param_values.push(Box::new(sid.to_string()));
+            conditions.push(format!("session_id = '{}'", sid.replace('\'', "\\'")));
         }
         if let Some(k) = kind {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("kind = ?{idx}"));
-            param_values.push(Box::new(k.to_string()));
+            conditions.push(format!("kind = '{}'", k.replace('\'', "\\'")));
         }
-        // Lane filter: normal / quarantine / blocked
         if let Some(l) = lane {
             match l {
                 "normal" => conditions
@@ -1308,88 +1419,46 @@ impl IpcDb {
                 _ => {}
             }
         }
-        // Quarantine filter (for Quarantine Review page)
         if let Some(true) = quarantine {
             conditions.push("from_trust_level >= 4".to_string());
         }
-        // Dismissed filter: dismissed = blocked=1 AND block_reason='dismissed'
         if let Some(dismissed_val) = dismissed {
             if dismissed_val {
-                // Only dismissed items
                 conditions.push("blocked = 1 AND block_reason = 'dismissed'".to_string());
             } else {
-                // Exclude dismissed items (pending + promoted)
                 conditions.push("NOT (blocked = 1 AND block_reason = 'dismissed')".to_string());
             }
         }
         if let Some(ts) = from_ts {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("created_at >= ?{idx}"));
-            param_values.push(Box::new(ts));
+            conditions.push(format!("created_at >= {ts}"));
         }
         if let Some(ts) = to_ts {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("created_at <= ?{idx}"));
-            param_values.push(Box::new(ts));
+            conditions.push(format!("created_at <= {ts}"));
         }
 
-        let limit_idx = param_values.len() + 1;
-        param_values.push(Box::new(limit));
-        let offset_idx = param_values.len() + 1;
-        param_values.push(Box::new(offset));
-
-        let sql = format!(
-            "SELECT id, session_id, from_agent, to_agent, kind, payload, priority,
-                    from_trust_level, seq, created_at, blocked, block_reason, promoted, read
-             FROM messages
-             WHERE {}
+        let where_clause = conditions.join(" AND ");
+        let query = format!(
+            "SELECT * FROM ipc_message WHERE {where_clause}
              ORDER BY created_at DESC
-             LIMIT ?{limit_idx} OFFSET ?{offset_idx}",
-            conditions.join(" AND ")
+             LIMIT $limit START $offset"
         );
 
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = match conn.prepare(&sql) {
-            Ok(s) => s,
+        let mut resp = match self
+            .db
+            .query(&query)
+            .bind(("limit", i64::from(limit)))
+            .bind(("offset", i64::from(offset)))
+            .await
+        {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
-        stmt.query_map(params_ref.as_slice(), |row| {
-            let from_trust_level: u8 = row.get(7)?;
-            let blocked: i32 = row.get(10)?;
-            let promoted: i32 = row.get(12)?;
-            let lane = if blocked != 0 {
-                "blocked"
-            } else if from_trust_level >= 4 && promoted == 0 {
-                "quarantine"
-            } else {
-                "normal"
-            };
-            Ok(AdminMessageInfo {
-                id: row.get(0)?,
-                session_id: row.get(1)?,
-                from_agent: row.get(2)?,
-                to_agent: row.get(3)?,
-                kind: row.get(4)?,
-                payload: row.get(5)?,
-                priority: row.get(6)?,
-                from_trust_level,
-                seq: row.get(8)?,
-                created_at: row.get(9)?,
-                blocked: blocked != 0,
-                blocked_reason: row.get(11)?,
-                promoted: promoted != 0,
-                read: row.get::<_, i32>(13)? != 0,
-                lane: lane.to_string(),
-            })
-        })
-        .ok()
-        .map(|r| r.filter_map(|m| m.ok()).collect())
-        .unwrap_or_default()
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.iter().map(row_to_admin_message).collect()
     }
 
     /// Paginated admin spawn run listing with filters.
-    pub fn list_spawn_runs_admin(
+    pub async fn list_spawn_runs_admin(
         &self,
         status: Option<&str>,
         parent_id: Option<&str>,
@@ -1399,192 +1468,161 @@ impl IpcDb {
         limit: u32,
         offset: u32,
     ) -> Vec<SpawnRunInfo> {
-        let conn = self.conn.lock();
-        let mut conditions = vec!["1=1".to_string()];
-        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut conditions = vec!["true".to_string()];
 
         if let Some(sid) = session_id {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("id = ?{idx}"));
-            param_values.push(Box::new(sid.to_string()));
+            conditions.push(format!("run_id = '{}'", sid.replace('\'', "\\'")));
         }
         if let Some(s) = status {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("status = ?{idx}"));
-            param_values.push(Box::new(s.to_string()));
+            conditions.push(format!("status = '{}'", s.replace('\'', "\\'")));
         }
         if let Some(pid) = parent_id {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("parent_id = ?{idx}"));
-            param_values.push(Box::new(pid.to_string()));
+            conditions.push(format!("parent_id = '{}'", pid.replace('\'', "\\'")));
         }
         if let Some(ts) = from_ts {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("created_at >= ?{idx}"));
-            param_values.push(Box::new(ts));
+            conditions.push(format!("created_at >= {ts}"));
         }
         if let Some(ts) = to_ts {
-            let idx = param_values.len() + 1;
-            conditions.push(format!("created_at <= ?{idx}"));
-            param_values.push(Box::new(ts));
+            conditions.push(format!("created_at <= {ts}"));
         }
 
-        let limit_idx = param_values.len() + 1;
-        param_values.push(Box::new(limit));
-        let offset_idx = param_values.len() + 1;
-        param_values.push(Box::new(offset));
-
-        let sql = format!(
-            "SELECT id, parent_id, child_id, status, result, created_at, expires_at, completed_at
-             FROM spawn_runs
-             WHERE {}
+        let where_clause = conditions.join(" AND ");
+        let query = format!(
+            "SELECT * FROM ipc_spawn_run WHERE {where_clause}
              ORDER BY created_at DESC
-             LIMIT ?{limit_idx} OFFSET ?{offset_idx}",
-            conditions.join(" AND ")
+             LIMIT $limit START $offset"
         );
 
-        let params_ref: Vec<&dyn rusqlite::types::ToSql> =
-            param_values.iter().map(|p| p.as_ref()).collect();
-        let mut stmt = match conn.prepare(&sql) {
-            Ok(s) => s,
+        let mut resp = match self
+            .db
+            .query(&query)
+            .bind(("limit", i64::from(limit)))
+            .bind(("offset", i64::from(offset)))
+            .await
+        {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
-        stmt.query_map(params_ref.as_slice(), |row| {
-            Ok(SpawnRunInfo {
-                id: row.get(0)?,
-                parent_id: row.get(1)?,
-                child_id: row.get(2)?,
-                status: row.get(3)?,
-                result: row.get(4)?,
-                created_at: row.get(5)?,
-                expires_at: row.get(6)?,
-                completed_at: row.get(7)?,
-            })
-        })
-        .ok()
-        .map(|r| r.filter_map(|s| s.ok()).collect())
-        .unwrap_or_default()
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.iter().map(row_to_spawn_run).collect()
     }
 
-    /// Get detailed info for a single agent, including recent messages and active spawns.
-    pub fn agent_detail(&self, agent_id: &str, staleness_secs: u64) -> Option<AgentDetailInfo> {
+    /// Get detailed info for a single agent.
+    pub async fn agent_detail(
+        &self,
+        agent_id: &str,
+        staleness_secs: u64,
+    ) -> Option<AgentDetailInfo> {
         let now = unix_now();
-        let conn = self.conn.lock();
 
         // Fetch agent
-        let agent = conn
-            .query_row(
-                "SELECT agent_id, role, trust_level, status, last_seen, public_key
-                 FROM agents WHERE agent_id = ?1",
-                params![agent_id],
-                |row| {
-                    let last_seen: Option<i64> = row.get(4)?;
-                    let status: String = row.get(3)?;
-                    let effective_status = if status == "online" {
-                        match last_seen {
-                            Some(ts) if (now - ts) > staleness_secs as i64 => "stale".to_string(),
-                            _ => status,
-                        }
-                    } else {
-                        status
-                    };
-                    Ok(AgentInfo {
-                        agent_id: row.get(0)?,
-                        role: row.get(1)?,
-                        trust_level: Some(row.get(2)?),
-                        status: effective_status,
-                        last_seen,
-                        public_key: row.get(5)?,
-                    })
-                },
-            )
+        let mut resp = self
+            .db
+            .query("SELECT * FROM ipc_agent WHERE agent_id = $agent_id LIMIT 1")
+            .bind(("agent_id", agent_id.to_string()))
+            .await
             .ok()?;
+        let rows: Vec<serde_json::Value> = resp.take(0).ok()?;
+        let agent_row = rows.first()?;
 
-        // Recent messages (last 20, sent or received)
-        let recent_messages = conn
-            .prepare(
-                "SELECT id, session_id, from_agent, to_agent, kind, payload, priority,
-                        from_trust_level, seq, created_at, blocked, block_reason, promoted, read
-                 FROM messages
-                 WHERE from_agent = ?1 OR to_agent = ?1
-                 ORDER BY created_at DESC
-                 LIMIT 20",
-            )
-            .ok()
-            .map(|mut stmt| {
-                stmt.query_map(params![agent_id], |row| {
-                    let from_trust_level: u8 = row.get(7)?;
-                    let blocked: i32 = row.get(10)?;
-                    let promoted: i32 = row.get(12)?;
-                    let lane = if blocked != 0 {
-                        "blocked"
-                    } else if from_trust_level >= 4 && promoted == 0 {
-                        "quarantine"
-                    } else {
-                        "normal"
-                    };
-                    Ok(AdminMessageInfo {
-                        id: row.get(0)?,
-                        session_id: row.get(1)?,
-                        from_agent: row.get(2)?,
-                        to_agent: row.get(3)?,
-                        kind: row.get(4)?,
-                        payload: row.get(5)?,
-                        priority: row.get(6)?,
-                        from_trust_level,
-                        seq: row.get(8)?,
-                        created_at: row.get(9)?,
-                        blocked: blocked != 0,
-                        blocked_reason: row.get(11)?,
-                        promoted: promoted != 0,
-                        read: row.get::<_, i32>(13)? != 0,
-                        lane: lane.to_string(),
+        let last_seen = json_opt_i64(agent_row, "last_seen");
+        let status = json_str(agent_row, "status");
+        let effective_status = if status == "online" {
+            match last_seen {
+                Some(ts) if (now - ts) > staleness_secs as i64 => "stale".to_string(),
+                _ => status,
+            }
+        } else {
+            status
+        };
+        let agent = AgentInfo {
+            agent_id: json_str(agent_row, "agent_id"),
+            role: json_opt_str(agent_row, "role"),
+            trust_level: Some(json_u8(agent_row, "trust_level")),
+            status: effective_status,
+            last_seen,
+            public_key: json_opt_str(agent_row, "public_key"),
+        };
+
+        // Recent messages (last 20)
+        let recent_messages = {
+            let mut resp = match self
+                .db
+                .query(
+                    "SELECT * FROM ipc_message
+                     WHERE from_agent = $agent_id OR to_agent = $agent_id
+                     ORDER BY created_at DESC
+                     LIMIT 20",
+                )
+                .bind(("agent_id", agent_id.to_string()))
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    return Some(AgentDetailInfo {
+                        agent,
+                        recent_messages: Vec::new(),
+                        active_spawns: Vec::new(),
+                        quarantine_count: 0,
                     })
-                })
-                .ok()
-                .map(|r| r.filter_map(|m| m.ok()).collect::<Vec<_>>())
-                .unwrap_or_default()
-            })
-            .unwrap_or_default();
+                }
+            };
+            let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+            rows.iter().map(row_to_admin_message).collect::<Vec<_>>()
+        };
 
-        // Active spawn runs (parent or child)
-        let active_spawns = conn
-            .prepare(
-                "SELECT id, parent_id, child_id, status, result, created_at, expires_at, completed_at
-                 FROM spawn_runs
-                 WHERE (parent_id = ?1 OR child_id = ?1) AND status = 'running'
-                 ORDER BY created_at DESC",
-            )
-            .ok()
-            .map(|mut stmt| {
-                stmt.query_map(params![agent_id], |row| {
-                    Ok(SpawnRunInfo {
-                        id: row.get(0)?,
-                        parent_id: row.get(1)?,
-                        child_id: row.get(2)?,
-                        status: row.get(3)?,
-                        result: row.get(4)?,
-                        created_at: row.get(5)?,
-                        expires_at: row.get(6)?,
-                        completed_at: row.get(7)?,
+        // Active spawn runs
+        let active_spawns = {
+            let mut resp = match self
+                .db
+                .query(
+                    "SELECT * FROM ipc_spawn_run
+                     WHERE (parent_id = $agent_id OR child_id = $agent_id) AND status = 'running'
+                     ORDER BY created_at DESC",
+                )
+                .bind(("agent_id", agent_id.to_string()))
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    return Some(AgentDetailInfo {
+                        agent,
+                        recent_messages,
+                        active_spawns: Vec::new(),
+                        quarantine_count: 0,
                     })
-                })
-                .ok()
-                .map(|r| r.filter_map(|s| s.ok()).collect::<Vec<_>>())
-                .unwrap_or_default()
-            })
-            .unwrap_or_default();
+                }
+            };
+            let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+            rows.iter().map(row_to_spawn_run).collect::<Vec<_>>()
+        };
 
-        // Quarantine count (pending quarantine messages from this agent)
-        let quarantine_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM messages
-                 WHERE from_agent = ?1 AND from_trust_level >= 4 AND promoted = 0
-                   AND blocked = 0 AND read = 0",
-                params![agent_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        // Quarantine count
+        let quarantine_count = {
+            let mut resp = match self
+                .db
+                .query(
+                    "SELECT count() AS cnt FROM ipc_message
+                     WHERE from_agent = $agent_id AND from_trust_level >= 4 AND promoted = 0
+                       AND blocked = 0 AND read = 0
+                     GROUP ALL",
+                )
+                .bind(("agent_id", agent_id.to_string()))
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    return Some(AgentDetailInfo {
+                        agent,
+                        recent_messages,
+                        active_spawns,
+                        quarantine_count: 0,
+                    })
+                }
+            };
+            let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+            rows.first().map(|v| json_i64(v, "cnt")).unwrap_or(0)
+        };
 
         Some(AgentDetailInfo {
             agent,
@@ -1594,38 +1632,48 @@ impl IpcDb {
         })
     }
 
-    /// Mark a quarantine message as dismissed (soft-dismiss without delivering).
-    /// Sets `blocked=1, block_reason='dismissed'`.
-    pub fn dismiss_message(&self, message_id: i64) -> Result<(), String> {
-        let conn = self.conn.lock();
-
-        // Fetch message to validate it's a pending quarantine message
-        let (from_trust_level, promoted, blocked, read): (u8, i32, i32, i32) = conn
-            .query_row(
-                "SELECT from_trust_level, promoted, blocked, read FROM messages WHERE id = ?1",
-                params![message_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    /// Mark a quarantine message as dismissed.
+    pub async fn dismiss_message(&self, message_id: i64) -> Result<(), String> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT from_trust_level, promoted, blocked, read FROM ipc_message WHERE msg_id = $msg_id LIMIT 1",
             )
-            .map_err(|_| "Message not found".to_string())?;
+            .bind(("msg_id", message_id))
+            .await
+            .map_err(|e| format!("dismiss_message query: {e}"))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| format!("dismiss_message parse: {e}"))?;
+        let row = rows
+            .first()
+            .ok_or_else(|| "Message not found".to_string())?;
+
+        let from_trust_level = json_u8(row, "from_trust_level");
+        let promoted = json_bool_from_int(row, "promoted");
+        let blocked = json_bool_from_int(row, "blocked");
+        let read = json_bool_from_int(row, "read");
 
         if from_trust_level < 4 {
             return Err("Only quarantine messages (from_trust_level >= 4) can be dismissed".into());
         }
-        if promoted != 0 {
+        if promoted {
             return Err("Message has already been promoted".into());
         }
-        if blocked != 0 {
+        if blocked {
             return Err("Message is already blocked/dismissed".into());
         }
-        if read != 0 {
+        if read {
             return Err("Message has already been read".into());
         }
 
-        conn.execute(
-            "UPDATE messages SET blocked = 1, block_reason = 'dismissed' WHERE id = ?1",
-            params![message_id],
-        )
-        .map_err(|e| format!("Failed to dismiss message: {e}"))?;
+        self.db
+            .query(
+                "UPDATE ipc_message SET blocked = 1, block_reason = 'dismissed' WHERE msg_id = $msg_id",
+            )
+            .bind(("msg_id", message_id))
+            .await
+            .map_err(|e| format!("Failed to dismiss message: {e}"))?;
 
         Ok(())
     }
@@ -1633,118 +1681,190 @@ impl IpcDb {
     // ── Activity feed queries (Phase 3.9) ───────────────────────
 
     /// Recent IPC messages as activity events for the broker activity feed.
-    pub fn recent_activity_messages(&self, from_ts: i64, limit: u32) -> Vec<ActivityEvent> {
-        let conn = self.conn.lock();
-        let mut stmt = match conn.prepare(
-            "SELECT id, session_id, from_agent, to_agent, kind, payload, created_at
-             FROM messages
-             WHERE created_at >= ?1 AND blocked = 0
-             ORDER BY created_at DESC
-             LIMIT ?2",
-        ) {
-            Ok(s) => s,
+    pub async fn recent_activity_messages(&self, from_ts: i64, limit: u32) -> Vec<ActivityEvent> {
+        let mut resp = match self
+            .db
+            .query(
+                "SELECT * FROM ipc_message
+                 WHERE created_at >= $from_ts AND blocked = 0
+                 ORDER BY created_at DESC
+                 LIMIT $limit",
+            )
+            .bind(("from_ts", from_ts))
+            .bind(("limit", i64::from(limit)))
+            .await
+        {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
 
-        stmt.query_map(params![from_ts, limit], |row| {
-            let id: i64 = row.get(0)?;
-            let session_id: Option<String> = row.get(1)?;
-            let from_agent: String = row.get(2)?;
-            let to_agent: String = row.get(3)?;
-            let kind: String = row.get(4)?;
-            let payload: String = row.get(5)?;
-            let created_at: i64 = row.get(6)?;
+        rows.iter()
+            .map(|v| {
+                let id = json_i64(v, "msg_id");
+                let session_id = json_opt_str(v, "session_id");
+                let from_agent = json_str(v, "from_agent");
+                let to_agent = json_str(v, "to_agent");
+                let kind = json_str(v, "kind");
+                let payload = json_str(v, "payload");
+                let created_at = json_i64(v, "created_at");
 
-            let preview = if payload.len() > 80 {
-                format!("{}…", &payload[..80])
-            } else {
-                payload
-            };
-            let summary = format!("{from_agent} → {to_agent}: [{kind}] {preview}");
+                let preview = if payload.len() > 80 {
+                    format!("{}…", &payload[..80])
+                } else {
+                    payload
+                };
+                let summary = format!("{from_agent} → {to_agent}: [{kind}] {preview}");
 
-            Ok(ActivityEvent {
-                event_type: "ipc_send".to_string(),
-                agent_id: from_agent.clone(),
-                timestamp: created_at,
-                summary,
-                trace_ref: TraceRef {
-                    surface: "ipc".to_string(),
-                    session_id,
-                    message_id: Some(id),
-                    from_agent: Some(from_agent),
-                    to_agent: Some(to_agent),
-                    spawn_run_id: None,
-                    parent_agent_id: None,
-                    child_agent_id: None,
-                    chat_session_key: None,
-                    run_id: None,
-                    channel_name: None,
-                    channel_session_key: None,
-                    job_id: None,
-                    job_name: None,
-                },
+                ActivityEvent {
+                    event_type: "ipc_send".to_string(),
+                    agent_id: from_agent.clone(),
+                    timestamp: created_at,
+                    summary,
+                    trace_ref: TraceRef {
+                        surface: "ipc".to_string(),
+                        session_id,
+                        message_id: Some(id),
+                        from_agent: Some(from_agent),
+                        to_agent: Some(to_agent),
+                        spawn_run_id: None,
+                        parent_agent_id: None,
+                        child_agent_id: None,
+                        chat_session_key: None,
+                        run_id: None,
+                        channel_name: None,
+                        channel_session_key: None,
+                        job_id: None,
+                        job_name: None,
+                    },
+                }
             })
-        })
-        .ok()
-        .map(|r| r.filter_map(|e| e.ok()).collect())
-        .unwrap_or_default()
+            .collect()
     }
 
     /// Recent spawn runs as activity events for the broker activity feed.
-    pub fn recent_activity_spawns(&self, from_ts: i64, limit: u32) -> Vec<ActivityEvent> {
-        let conn = self.conn.lock();
-        let mut stmt = match conn.prepare(
-            "SELECT id, parent_id, child_id, status, created_at, completed_at
-             FROM spawn_runs
-             WHERE created_at >= ?1
-             ORDER BY created_at DESC
-             LIMIT ?2",
-        ) {
-            Ok(s) => s,
+    pub async fn recent_activity_spawns(&self, from_ts: i64, limit: u32) -> Vec<ActivityEvent> {
+        let mut resp = match self
+            .db
+            .query(
+                "SELECT * FROM ipc_spawn_run
+                 WHERE created_at >= $from_ts
+                 ORDER BY created_at DESC
+                 LIMIT $limit",
+            )
+            .bind(("from_ts", from_ts))
+            .bind(("limit", i64::from(limit)))
+            .await
+        {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
 
-        stmt.query_map(params![from_ts, limit], |row| {
-            let id: String = row.get(0)?;
-            let parent_id: String = row.get(1)?;
-            let child_id: String = row.get(2)?;
-            let status: String = row.get(3)?;
-            let created_at: i64 = row.get(4)?;
-            let completed_at: Option<i64> = row.get(5)?;
+        rows.iter()
+            .map(|v| {
+                let id = json_str(v, "run_id");
+                let parent_id = json_str(v, "parent_id");
+                let child_id = json_str(v, "child_id");
+                let status = json_str(v, "status");
+                let created_at = json_i64(v, "created_at");
+                let completed_at = json_opt_i64(v, "completed_at");
 
-            let event_type = match status.as_str() {
-                "completed" | "timeout" | "revoked" | "interrupted" | "error" => "spawn_complete",
-                _ => "spawn_start",
-            };
-            let ts = completed_at.unwrap_or(created_at);
-            let summary = format!("{parent_id} → {child_id}: [{status}]");
+                let event_type = match status.as_str() {
+                    "completed" | "timeout" | "revoked" | "interrupted" | "error" => {
+                        "spawn_complete"
+                    }
+                    _ => "spawn_start",
+                };
+                let ts = completed_at.unwrap_or(created_at);
+                let summary = format!("{parent_id} → {child_id}: [{status}]");
 
-            Ok(ActivityEvent {
-                event_type: event_type.to_string(),
-                agent_id: parent_id.clone(),
-                timestamp: ts,
-                summary,
-                trace_ref: TraceRef {
-                    surface: "spawn".to_string(),
-                    session_id: None,
-                    message_id: None,
-                    from_agent: None,
-                    to_agent: None,
-                    spawn_run_id: Some(id),
-                    parent_agent_id: Some(parent_id),
-                    child_agent_id: Some(child_id),
-                    chat_session_key: None,
-                    run_id: None,
-                    channel_name: None,
-                    channel_session_key: None,
-                    job_id: None,
-                    job_name: None,
-                },
+                ActivityEvent {
+                    event_type: event_type.to_string(),
+                    agent_id: parent_id.clone(),
+                    timestamp: ts,
+                    summary,
+                    trace_ref: TraceRef {
+                        surface: "spawn".to_string(),
+                        session_id: None,
+                        message_id: None,
+                        from_agent: None,
+                        to_agent: None,
+                        spawn_run_id: Some(id),
+                        parent_agent_id: Some(parent_id),
+                        child_agent_id: Some(child_id),
+                        chat_session_key: None,
+                        run_id: None,
+                        channel_name: None,
+                        channel_session_key: None,
+                        job_id: None,
+                        job_name: None,
+                    },
+                }
             })
-        })
-        .ok()
-        .map(|r| r.filter_map(|e| e.ok()).collect())
-        .unwrap_or_default()
+            .collect()
+    }
+}
+
+// ── Row conversion helpers ────────────────────────────────────
+
+fn row_to_inbox_message(v: &serde_json::Value) -> InboxMessage {
+    InboxMessage {
+        id: json_i64(v, "msg_id"),
+        session_id: json_opt_str(v, "session_id"),
+        from_agent: json_str(v, "from_agent"),
+        to_agent: json_str(v, "to_agent"),
+        kind: json_str(v, "kind"),
+        payload: json_str(v, "payload"),
+        priority: json_i32(v, "priority"),
+        from_trust_level: json_u8(v, "from_trust_level"),
+        seq: json_i64(v, "seq"),
+        created_at: json_i64(v, "created_at"),
+        trust_warning: None,
+        quarantined: None,
+    }
+}
+
+fn row_to_admin_message(v: &serde_json::Value) -> AdminMessageInfo {
+    let from_trust_level = json_u8(v, "from_trust_level");
+    let blocked = json_bool_from_int(v, "blocked");
+    let promoted = json_bool_from_int(v, "promoted");
+    let lane = if blocked {
+        "blocked"
+    } else if from_trust_level >= 4 && !promoted {
+        "quarantine"
+    } else {
+        "normal"
+    };
+    AdminMessageInfo {
+        id: json_i64(v, "msg_id"),
+        session_id: json_opt_str(v, "session_id"),
+        from_agent: json_str(v, "from_agent"),
+        to_agent: json_str(v, "to_agent"),
+        kind: json_str(v, "kind"),
+        payload: json_str(v, "payload"),
+        priority: json_i32(v, "priority"),
+        from_trust_level,
+        seq: json_i64(v, "seq"),
+        created_at: json_i64(v, "created_at"),
+        blocked,
+        blocked_reason: json_opt_str(v, "block_reason"),
+        promoted,
+        read: json_bool_from_int(v, "read"),
+        lane: lane.to_string(),
+    }
+}
+
+fn row_to_spawn_run(v: &serde_json::Value) -> SpawnRunInfo {
+    SpawnRunInfo {
+        id: json_str(v, "run_id"),
+        parent_id: json_str(v, "parent_id"),
+        child_id: json_str(v, "child_id"),
+        status: json_str(v, "status"),
+        result: json_opt_str(v, "result"),
+        created_at: json_i64(v, "created_at"),
+        expires_at: json_i64(v, "expires_at"),
+        completed_at: json_opt_i64(v, "completed_at"),
     }
 }
 
@@ -1777,7 +1897,6 @@ pub struct SendBody {
     #[serde(default)]
     pub priority: i32,
     /// Ed25519 signature over `{from}|{to}|{seq}|{timestamp}|{sha256(payload)}` (Phase 3B).
-    /// Optional — broker verifies only when agent has a registered public key.
     #[serde(default)]
     pub signature: Option<String>,
     /// Sender-side monotonic sequence number for replay protection (Phase 3B Step 10).
@@ -1798,23 +1917,31 @@ pub struct InboxQuery {
     pub quarantine: bool,
     #[serde(default = "default_inbox_limit")]
     pub limit: u32,
-    /// When true, return messages without marking them as read (non-consuming peek).
-    /// Used by push inbox processor for pre-fetch + inject (Phase 3.10).
+    /// When true, return messages without marking them as read.
     #[serde(default)]
     pub peek: bool,
     /// Filter messages by sender agent ID.
     #[serde(default)]
     pub from: Option<String>,
-    /// Filter messages by kind (comma-separated, e.g. "task,query,result").
+    /// Filter messages by kind (comma-separated).
     #[serde(default)]
     pub kinds: Option<String>,
+    /// Phase 4.5: per-source message limit.
+    #[serde(default)]
+    pub filter_per_source: Option<usize>,
+    /// Phase 4.5: per-source overrides as JSON.
+    #[serde(default)]
+    pub filter_per_source_overrides: Option<String>,
+    /// Phase 4.5: allowed message kinds for inbox filter.
+    #[serde(default)]
+    pub filter_kinds: Option<String>,
 }
 
 fn default_inbox_limit() -> u32 {
     50
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct InboxMessage {
     pub id: i64,
     pub session_id: Option<String>,
@@ -1826,12 +1953,39 @@ pub struct InboxMessage {
     pub from_trust_level: u8,
     pub seq: i64,
     pub created_at: i64,
-    /// Trust warning for the LLM. Present when from_trust_level >= 3.
+    /// Trust warning for the LLM.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trust_warning: Option<String>,
     /// Whether this message came from the quarantine lane.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quarantined: Option<bool>,
+}
+
+/// Build an `InboxFilterConfig` from query parameters (Phase 4.5).
+fn build_inbox_filter_from_query(
+    query: &InboxQuery,
+) -> synapse_domain::config::schema::InboxFilterConfig {
+    let default_per_source = query.filter_per_source.unwrap_or(0);
+    let per_source: std::collections::HashMap<String, usize> = query
+        .filter_per_source_overrides
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default();
+    let allowed_kinds: Vec<String> = query
+        .filter_kinds
+        .as_deref()
+        .map(|k| {
+            k.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    synapse_domain::config::schema::InboxFilterConfig {
+        default_per_source,
+        per_source,
+        allowed_kinds,
+    }
 }
 
 fn trust_warning_for(from_trust_level: u8, is_quarantine: bool) -> Option<String> {
@@ -1915,7 +2069,7 @@ pub struct PromoteBody {
 
 // ── Phase 3.5 admin types ───────────────────────────────────────
 
-/// Admin message info with computed lane field (side-effect-free).
+/// Admin message info with computed lane field.
 #[derive(Debug, Serialize)]
 pub struct AdminMessageInfo {
     pub id: i64,
@@ -2072,7 +2226,6 @@ const VALID_KINDS: &[&str] = &[
 ];
 
 /// Internal-only message kind for system-generated escalation notifications.
-/// Not in VALID_KINDS — cannot be sent by agents, only by broker logic.
 const ESCALATION_KIND: &str = "escalation";
 
 /// Internal-only message kind for quarantine content promoted by admin.
@@ -2080,17 +2233,9 @@ const PROMOTED_KIND: &str = "promoted_quarantine";
 
 /// Validate whether a send operation is permitted by the ACL rules.
 ///
-/// Rules:
-/// 0. Kind must be in the whitelist.
-/// 1. L4 agents can only send `text`.
-/// 2. `task` cannot be sent upward (to lower trust_level number = higher trust).
-/// 3. `result` requires a correlated task in the same session.
-/// 4. L4↔L4 direct messaging is denied (must go through a higher-trust agent).
-/// 5. L3 lateral `text` requires an explicit allowlist entry.
-#[allow(clippy::implicit_hasher)]
-///
 /// Phase 4.0 Slice 5: delegates ACL validation to synapse_domain domain.
-pub fn validate_send(
+#[allow(clippy::implicit_hasher)]
+pub async fn validate_send(
     from_level: u8,
     to_level: u8,
     kind: &str,
@@ -2101,16 +2246,16 @@ pub fn validate_send(
     l4_destinations: &std::collections::HashMap<String, String>,
     db: &IpcDb,
 ) -> Result<(), IpcError> {
-    // Convert types for synapse_domain domain function
     let lateral: Vec<(String, String)> = lateral_text_pairs
         .iter()
         .map(|p| (p[0].clone(), p[1].clone()))
         .collect();
     let l4_dests: Vec<String> = l4_destinations.values().cloned().collect();
     let session_has_request = if kind == "result" {
-        session_id
-            .map(|sid| db.session_has_request_for(sid, from_agent))
-            .unwrap_or(false)
+        match session_id {
+            Some(sid) => db.session_has_request_for(sid, from_agent).await,
+            None => false,
+        }
     } else {
         false
     };
@@ -2139,13 +2284,6 @@ pub fn validate_send(
 }
 
 /// Validate whether a state write is permitted.
-///
-/// Key format: `{scope}:{owner}:{key}`
-/// - L4: only `agent:{self}:*`
-/// - L3: + `public:*`
-/// - L2: + `team:*`
-/// - L1: + `global:*`
-/// - `secret:*` denied for all (reserved for Phase 2)
 ///
 /// Phase 4.0 Slice 5: delegates state write validation to synapse_domain domain.
 pub fn validate_state_set(trust_level: u8, agent_id: &str, key: &str) -> Result<(), IpcError> {
@@ -2249,14 +2387,14 @@ pub async fn handle_ipc_agents(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let db = require_ipc_db(&state)?;
     let meta = require_ipc_auth(&state, &headers)?;
-    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
-    require_agent_active(db, &meta.agent_id)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role)
+        .await;
+    require_agent_active(db, &meta.agent_id).await?;
 
     let staleness = state.config.lock().agents_ipc.staleness_secs;
-    let agents = db.list_agents(staleness);
+    let agents = db.list_agents(staleness).await;
 
     // L4 agents see only logical aliases with fully masked metadata.
-    // Real agent_ids, roles, and trust_levels are hidden from restricted agents.
     let agents: Vec<AgentInfo> = if meta.trust_level >= 4 {
         let l4_dests = &state.config.lock().agents_ipc.l4_destinations;
         l4_dests
@@ -2285,8 +2423,9 @@ pub async fn handle_ipc_send(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let db = require_ipc_db(&state)?;
     let meta = require_ipc_auth(&state, &headers)?;
-    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
-    require_agent_active(db, &meta.agent_id)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role)
+        .await;
+    require_agent_active(db, &meta.agent_id).await?;
 
     // Per-agent send rate limiting
     if let Some(ref limiter) = state.ipc_rate_limiter {
@@ -2315,24 +2454,34 @@ pub async fn handle_ipc_send(
     }
 
     // Phase 4.0: recipient resolution via ipc_service
-    let config = state.config.lock();
-    let resolved_to = synapse_domain::application::services::ipc_service::resolve_recipient(
-        &body.to,
-        i32::from(meta.trust_level),
-        &config.agents_ipc.l4_destinations,
-    )
-    .map_err(|e| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({
-                "error": e.message,
-                "code": e.code
-            })),
+    // Extract config values before async calls to avoid holding lock across .await
+    let (resolved_to, staleness_secs, lateral_text_pairs, l4_destinations) = {
+        let config = state.config.lock();
+        let resolved_to = synapse_domain::application::services::ipc_service::resolve_recipient(
+            &body.to,
+            i32::from(meta.trust_level),
+            &config.agents_ipc.l4_destinations,
         )
-    })?;
+        .map_err(|e| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({
+                    "error": e.message,
+                    "code": e.code
+                })),
+            )
+        })?;
+        (
+            resolved_to,
+            config.agents_ipc.staleness_secs,
+            config.agents_ipc.lateral_text_pairs.clone(),
+            config.agents_ipc.l4_destinations.clone(),
+        )
+    };
 
     let to_level = db
-        .list_agents(config.agents_ipc.staleness_secs)
+        .list_agents(staleness_secs)
+        .await
         .iter()
         .find(|a| a.agent_id == resolved_to)
         .and_then(|a| a.trust_level)
@@ -2354,10 +2503,12 @@ pub async fn handle_ipc_send(
         &meta.agent_id,
         &resolved_to,
         body.session_id.as_deref(),
-        &config.agents_ipc.lateral_text_pairs,
-        &config.agents_ipc.l4_destinations,
+        &lateral_text_pairs,
+        &l4_destinations,
         db,
-    ) {
+    )
+    .await
+    {
         if let Some(ref logger) = state.audit_logger {
             let mut event = AuditEvent::ipc(
                 AuditEventType::IpcBlocked,
@@ -2373,9 +2524,13 @@ pub async fn handle_ipc_send(
         return Err(e.into_response_pair(meta.trust_level));
     }
 
-    let message_ttl = config.agents_ipc.message_ttl_secs;
-    let pg_exempt = config.agents_ipc.prompt_guard.exempt_levels.clone();
-    drop(config);
+    let (message_ttl, pg_exempt) = {
+        let config = state.config.lock();
+        (
+            config.agents_ipc.message_ttl_secs,
+            config.agents_ipc.prompt_guard.exempt_levels.clone(),
+        )
+    };
 
     // PromptGuard payload scan (after ACL, before INSERT)
     if let Some(ref guard) = state.ipc_prompt_guard {
@@ -2411,17 +2566,13 @@ pub async fn handle_ipc_send(
                         patterns = ?patterns,
                         "IPC message suspicious but allowed"
                     );
-                    // No separate audit event here — the post-insert IpcSend
-                    // audit is authoritative. Suspicious detail captured by tracing.
                 }
                 GuardResult::Safe => {}
             }
         }
     }
 
-    // Credential leak scan (after PromptGuard, before INSERT).
-    // Pipeline engine (trust=0, kind=task) is exempt — its payloads contain
-    // UUIDs and session IDs that trigger high-entropy false positives.
+    // Credential leak scan
     let skip_leak_scan = meta.trust_level == 0 && body.kind == "task";
     if !skip_leak_scan {
         if let Some(ref detector) = state.ipc_leak_detector {
@@ -2448,7 +2599,7 @@ pub async fn handle_ipc_send(
                 ));
             }
         }
-    } // end skip_leak_scan
+    }
 
     // Phase 4.0: session limit check via ipc_service
     if synapse_domain::application::services::ipc_service::session_limit_applies(
@@ -2456,12 +2607,15 @@ pub async fn handle_ipc_send(
         i32::from(to_level),
     ) {
         if let Some(ref sid) = body.session_id {
-            let count = db.session_message_count(sid);
-            let config_lock = state.config.lock();
-            let max = config_lock.agents_ipc.session_max_exchanges;
-            let coordinator = config_lock.agents_ipc.coordinator_agent.clone();
-            let ttl = config_lock.agents_ipc.message_ttl_secs;
-            drop(config_lock);
+            let count = db.session_message_count(sid).await;
+            let (max, coordinator, ttl) = {
+                let config_lock = state.config.lock();
+                (
+                    config_lock.agents_ipc.session_max_exchanges,
+                    config_lock.agents_ipc.coordinator_agent.clone(),
+                    config_lock.agents_ipc.message_ttl_secs,
+                )
+            };
 
             #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
             let count_usize = count.max(0) as usize;
@@ -2470,7 +2624,6 @@ pub async fn handle_ipc_send(
                 count_usize,
                 max_usize,
             ) {
-                // Phase 4.0: escalation payload built by ipc_service
                 let escalation_payload =
                     synapse_domain::application::services::ipc_service::build_escalation_payload(
                         sid,
@@ -2479,16 +2632,18 @@ pub async fn handle_ipc_send(
                         count_usize,
                         max_usize,
                     );
-                let _ = db.insert_message(
-                    &meta.agent_id,
-                    &coordinator,
-                    synapse_domain::domain::ipc::ESCALATION_KIND,
-                    &escalation_payload,
-                    meta.trust_level,
-                    Some(sid),
-                    0,
-                    ttl,
-                );
+                let _ = db
+                    .insert_message(
+                        &meta.agent_id,
+                        &coordinator,
+                        synapse_domain::domain::ipc::ESCALATION_KIND,
+                        &escalation_payload,
+                        meta.trust_level,
+                        Some(sid),
+                        0,
+                        ttl,
+                    )
+                    .await;
 
                 if let Some(ref logger) = state.audit_logger {
                     let _ = logger.log(&AuditEvent::ipc(
@@ -2512,9 +2667,7 @@ pub async fn handle_ipc_send(
     }
 
     // ── Phase 3B: Ed25519 signature + replay protection ────────────
-    // If the sender has a registered public key, verify signature + seq + timestamp.
-    // If no public key is registered, signature is not required (backward compat).
-    if let Some(ref pubkey_hex) = db.get_agent_public_key(&meta.agent_id) {
+    if let Some(ref pubkey_hex) = db.get_agent_public_key(&meta.agent_id).await {
         let (sig, sender_seq, sender_ts) = match (
             &body.signature,
             body.sender_seq,
@@ -2539,7 +2692,7 @@ pub async fn handle_ipc_send(
             }
         };
 
-        // 1. Verify signature over {from}|{to}|{seq}|{timestamp}|{sha256(payload)}
+        // 1. Verify signature
         {
             use sha2::{Digest, Sha256};
             let payload_hash = hex::encode(Sha256::digest(body.payload.as_bytes()));
@@ -2569,9 +2722,9 @@ pub async fn handle_ipc_send(
             }
         }
 
-        // 2. Replay protection: sender_seq must be > last_seen_sender_seq
+        // 2. Replay protection
         {
-            let last_seq = db.get_last_sender_seq(&meta.agent_id);
+            let last_seq = db.get_last_sender_seq(&meta.agent_id).await;
             if sender_seq <= last_seq {
                 emit_blocked_audit(
                     &state,
@@ -2588,10 +2741,10 @@ pub async fn handle_ipc_send(
                     })),
                 ));
             }
-            db.set_last_sender_seq(&meta.agent_id, sender_seq);
+            db.set_last_sender_seq(&meta.agent_id, sender_seq).await;
         }
 
-        // 3. Timestamp window: reject messages older than 5 minutes
+        // 3. Timestamp window
         {
             let now = unix_now();
             let drift = (now - sender_ts).abs();
@@ -2625,6 +2778,7 @@ pub async fn handle_ipc_send(
             body.priority,
             message_ttl,
         )
+        .await
         .map_err(|e| {
             warn!(error = %e, "IPC insert_message failed");
             match &e {
@@ -2693,18 +2847,15 @@ pub async fn handle_ipc_send(
     }
 
     // ── Phase 4.0: Spawn result completion via ipc_service ──
-    // Business rule: check is owned by synapse_domain; DB ops stay in gateway.
     if synapse_domain::application::services::ipc_service::should_complete_spawn(
         &body.kind,
         body.session_id.as_deref(),
     ) {
         if let Some(ref session_id) = body.session_id {
-            if let Some(run) = db.get_spawn_run(session_id) {
+            if let Some(run) = db.get_spawn_run(session_id).await {
                 if run.status == "running" && run.child_id == meta.agent_id {
-                    // Complete the spawn run with the result payload
-                    db.complete_spawn_run(session_id, &body.payload);
+                    db.complete_spawn_run(session_id, &body.payload).await;
 
-                    // Auto-revoke ephemeral child
                     revoke_ephemeral_agent(
                         db,
                         &state.pairing,
@@ -2712,7 +2863,8 @@ pub async fn handle_ipc_send(
                         session_id,
                         "completed",
                         state.audit_logger.as_ref().map(|l| l.as_ref()),
-                    );
+                    )
+                    .await;
 
                     info!(
                         child = meta.agent_id,
@@ -2736,8 +2888,9 @@ pub async fn handle_ipc_inbox(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let db = require_ipc_db(&state)?;
     let meta = require_ipc_auth(&state, &headers)?;
-    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
-    require_agent_active(db, &meta.agent_id)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role)
+        .await;
+    require_agent_active(db, &meta.agent_id).await?;
 
     // Per-agent read rate limiting
     if let Some(ref limiter) = state.ipc_read_rate_limiter {
@@ -2754,7 +2907,6 @@ pub async fn handle_ipc_inbox(
     }
 
     let mut messages = if query.peek {
-        // Phase 3.10: non-consuming peek with optional scoped filters
         let kind_strings: Vec<String> = query
             .kinds
             .as_deref()
@@ -2772,11 +2924,13 @@ pub async fn handle_ipc_inbox(
             kinds_arg,
             query.limit,
         )
+        .await
     } else {
         db.fetch_inbox(&meta.agent_id, query.quarantine, query.limit)
+            .await
     };
 
-    // Populate trust warnings for LLM consumption
+    // Populate trust warnings
     for m in &mut messages {
         m.trust_warning = trust_warning_for(m.from_trust_level, query.quarantine);
         if query.quarantine {
@@ -2784,7 +2938,12 @@ pub async fn handle_ipc_inbox(
         }
     }
 
-    // Audit: log IpcReceived for each fetched message
+    // Phase 4.5: apply inbox filter
+    let inbox_filter = build_inbox_filter_from_query(&query);
+    if inbox_filter.is_active() {
+        messages = IpcDb::apply_inbox_filter(messages, &inbox_filter);
+    }
+
     if !messages.is_empty() {
         if let Some(ref logger) = state.audit_logger {
             let _ = logger.log(&AuditEvent::ipc(
@@ -2804,9 +2963,6 @@ pub async fn handle_ipc_inbox(
 }
 
 /// POST /api/ipc/ack — explicitly acknowledge (mark as read) specific messages.
-///
-/// Phase 3.10: used by push inbox processor after successful agent::run().
-/// Only the recipient agent can ack their own messages.
 pub async fn handle_ipc_ack(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2814,8 +2970,9 @@ pub async fn handle_ipc_ack(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let db = require_ipc_db(&state)?;
     let meta = require_ipc_auth(&state, &headers)?;
-    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
-    require_agent_active(db, &meta.agent_id)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role)
+        .await;
+    require_agent_active(db, &meta.agent_id).await?;
 
     let ids: Vec<i64> = body["message_ids"]
         .as_array()
@@ -2832,19 +2989,7 @@ pub async fn handle_ipc_ack(
         ));
     }
 
-    // Only ack messages addressed to this agent (safety: can't ack other agents' mail)
-    let conn = db.conn.lock();
-    let mut acked = 0i64;
-    for id in &ids {
-        let changed = conn
-            .execute(
-                "UPDATE messages SET read = 1 WHERE id = ?1 AND to_agent = ?2 AND read = 0",
-                params![id, meta.agent_id],
-            )
-            .unwrap_or(0);
-        acked += changed as i64;
-    }
-    drop(conn);
+    let acked = db.ack_messages_for_agent(&ids, &meta.agent_id).await;
 
     if acked > 0 {
         if let Some(ref logger) = state.audit_logger {
@@ -2868,13 +3013,14 @@ pub async fn handle_ipc_state_get(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let db = require_ipc_db(&state)?;
     let meta = require_ipc_auth(&state, &headers)?;
-    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
-    require_agent_active(db, &meta.agent_id)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role)
+        .await;
+    require_agent_active(db, &meta.agent_id).await?;
 
     validate_state_get(meta.trust_level, &query.key)
         .map_err(|e| e.into_response_pair(meta.trust_level))?;
 
-    let entry = db.get_state(&query.key);
+    let entry = db.get_state(&query.key).await;
     Ok(Json(serde_json::json!({ "entry": entry })))
 }
 
@@ -2886,14 +3032,14 @@ pub async fn handle_ipc_state_set(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let db = require_ipc_db(&state)?;
     let meta = require_ipc_auth(&state, &headers)?;
-    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
-    require_agent_active(db, &meta.agent_id)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role)
+        .await;
+    require_agent_active(db, &meta.agent_id).await?;
 
     validate_state_set(meta.trust_level, &meta.agent_id, &body.key)
         .map_err(|e| e.into_response_pair(meta.trust_level))?;
 
     // Credential leak scan on state values
-    // Note: secret:* is already denied by validate_state_set for all levels
     if let Some(ref detector) = state.ipc_leak_detector {
         if let LeakResult::Detected { patterns, .. } = detector.scan(&body.value) {
             if let Some(ref logger) = state.audit_logger {
@@ -2922,7 +3068,7 @@ pub async fn handle_ipc_state_set(
         }
     }
 
-    db.set_state(&body.key, &body.value, &meta.agent_id);
+    db.set_state(&body.key, &body.value, &meta.agent_id).await;
 
     info!(agent = meta.agent_id, key = body.key, "IPC state set");
 
@@ -2943,13 +3089,10 @@ pub async fn handle_ipc_state_set(
 /// Request body for `POST /api/ipc/provision-ephemeral`.
 #[derive(Debug, Deserialize)]
 pub struct ProvisionEphemeralBody {
-    /// Trust level for the child (0–4). Must be >= parent's level.
     #[serde(default)]
     pub trust_level: Option<u8>,
-    /// Timeout in seconds for the spawn session (default: 300).
     #[serde(default = "default_spawn_timeout")]
     pub timeout: u32,
-    /// Optional workload profile name.
     pub workload: Option<String>,
 }
 
@@ -2964,9 +3107,6 @@ pub struct SpawnStatusQuery {
 }
 
 /// POST /api/ipc/provision-ephemeral — provision an ephemeral child agent identity.
-///
-/// Parent must be L0-L3. Generates a runtime-only bearer token, registers the
-/// child in the IPC DB, and creates a `spawn_runs` row with status=running.
 pub async fn handle_ipc_provision_ephemeral(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2974,10 +3114,10 @@ pub async fn handle_ipc_provision_ephemeral(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let db = require_ipc_db(&state)?;
     let meta = require_ipc_auth(&state, &headers)?;
-    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
-    require_agent_active(db, &meta.agent_id)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role)
+        .await;
+    require_agent_active(db, &meta.agent_id).await?;
 
-    // L4 agents cannot spawn children
     if meta.trust_level >= 4 {
         return Err((
             StatusCode::FORBIDDEN,
@@ -2988,21 +3128,17 @@ pub async fn handle_ipc_provision_ephemeral(
         ));
     }
 
-    // Trust propagation: child_level = max(parent_level, requested_level)
     let requested_level = body.trust_level.unwrap_or(meta.trust_level);
     let child_level = requested_level.max(meta.trust_level);
 
-    // Generate identifiers
     let uuid_short = &uuid::Uuid::new_v4().to_string()[..8];
     let agent_id = format!("eph-{}-{uuid_short}", meta.agent_id);
     let session_id = uuid::Uuid::new_v4().to_string();
     let role = body.workload.as_deref().unwrap_or("ephemeral");
 
-    // Calculate expiry
     let timeout_secs = i64::from(body.timeout.clamp(10, 3600));
     let expires_at = unix_now() + timeout_secs;
 
-    // Register ephemeral token in runtime-only PairingGuard
     let child_metadata = TokenMetadata {
         agent_id: agent_id.clone(),
         trust_level: child_level,
@@ -3010,7 +3146,6 @@ pub async fn handle_ipc_provision_ephemeral(
     };
     let token = state.pairing.register_ephemeral_token(child_metadata);
 
-    // Register in IPC DB agents table
     db.register_ephemeral_agent(
         &agent_id,
         &meta.agent_id,
@@ -3018,10 +3153,11 @@ pub async fn handle_ipc_provision_ephemeral(
         role,
         &session_id,
         expires_at,
-    );
+    )
+    .await;
 
-    // Create spawn_runs row
-    db.create_spawn_run(&session_id, &meta.agent_id, &agent_id, expires_at);
+    db.create_spawn_run(&session_id, &meta.agent_id, &agent_id, expires_at)
+        .await;
 
     info!(
         parent = meta.agent_id,
@@ -3054,9 +3190,6 @@ pub async fn handle_ipc_provision_ephemeral(
 }
 
 /// GET /api/ipc/spawn-status — poll the status of a spawn run.
-///
-/// Returns the current status and result (if completed) of a spawn session.
-/// Used by `agents_spawn(wait=true)` to poll for the child's result.
 pub async fn handle_ipc_spawn_status(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3064,9 +3197,9 @@ pub async fn handle_ipc_spawn_status(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let db = require_ipc_db(&state)?;
     let meta = require_ipc_auth(&state, &headers)?;
-    require_agent_active(db, &meta.agent_id)?;
+    require_agent_active(db, &meta.agent_id).await?;
 
-    let run = db.get_spawn_run(&query.session_id).ok_or_else(|| {
+    let run = db.get_spawn_run(&query.session_id).await.ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -3076,7 +3209,6 @@ pub async fn handle_ipc_spawn_status(
         )
     })?;
 
-    // Only the parent can check spawn status
     if run.parent_id != meta.agent_id {
         return Err((
             StatusCode::FORBIDDEN,
@@ -3087,8 +3219,6 @@ pub async fn handle_ipc_spawn_status(
         ));
     }
 
-    // Lazy timeout enforcement: if the run is still "running" but past
-    // its expiry, transition to "timeout" and revoke the child token.
     let effective_status = if run.status == "running" && unix_now() > run.expires_at {
         revoke_ephemeral_agent(
             db,
@@ -3097,7 +3227,8 @@ pub async fn handle_ipc_spawn_status(
             &run.id,
             "timeout",
             state.audit_logger.as_ref().map(|l| l.as_ref()),
-        );
+        )
+        .await;
         "timeout".to_string()
     } else {
         run.status
@@ -3117,14 +3248,10 @@ pub async fn handle_ipc_spawn_status(
 /// Request body for `POST /api/ipc/register-key`.
 #[derive(Debug, Deserialize)]
 pub struct RegisterKeyBody {
-    pub public_key: String, // hex-encoded Ed25519 public key
+    pub public_key: String,
 }
 
 /// POST /api/ipc/register-key — register an agent's Ed25519 public key.
-///
-/// Each agent registers its public key with the broker. The broker stores
-/// it in the agents table for message signature verification (Step 8).
-/// Ephemeral agents call this on startup after generating their keypair.
 pub async fn handle_ipc_register_key(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3132,10 +3259,10 @@ pub async fn handle_ipc_register_key(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let db = require_ipc_db(&state)?;
     let meta = require_ipc_auth(&state, &headers)?;
-    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
-    require_agent_active(db, &meta.agent_id)?;
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role)
+        .await;
+    require_agent_active(db, &meta.agent_id).await?;
 
-    // Validate hex encoding and key length (Ed25519 pubkey = 32 bytes = 64 hex chars)
     let key_hex = body.public_key.trim();
     if key_hex.len() != 64 || !key_hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err((
@@ -3147,7 +3274,7 @@ pub async fn handle_ipc_register_key(
         ));
     }
 
-    let updated = db.set_agent_public_key(&meta.agent_id, key_hex);
+    let updated = db.set_agent_public_key(&meta.agent_id, key_hex).await;
     if !updated {
         return Err((
             StatusCode::NOT_FOUND,
@@ -3172,11 +3299,8 @@ pub async fn handle_ipc_register_key(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-/// Revoke an ephemeral agent: remove token, set status, update spawn_runs.
-///
-/// Called on result delivery, timeout, or manual revoke. Not an HTTP handler
-/// itself — used by the result delivery path and timeout logic.
-pub fn revoke_ephemeral_agent(
+/// Revoke an ephemeral agent.
+pub async fn revoke_ephemeral_agent(
     db: &IpcDb,
     pairing: &synapse_security::PairingGuard,
     agent_id: &str,
@@ -3184,16 +3308,12 @@ pub fn revoke_ephemeral_agent(
     status: &str,
     audit_logger: Option<&synapse_security::audit::AuditLogger>,
 ) {
-    // Remove token from runtime state
     let tokens_revoked = pairing.revoke_by_agent_id(agent_id);
-    // Clear public key to prevent key inheritance on agent_id reuse
-    db.clear_agent_public_key(agent_id);
-    // Set agent status in IPC DB
-    db.set_agent_status(agent_id, status);
-    // Block pending messages
-    db.block_pending_messages(agent_id, &format!("ephemeral_{status}"));
-    // Update spawn_runs
-    db.fail_spawn_run(session_id, status);
+    db.clear_agent_public_key(agent_id).await;
+    db.set_agent_status(agent_id, status).await;
+    db.block_pending_messages(agent_id, &format!("ephemeral_{status}"))
+        .await;
+    db.fail_spawn_run(session_id, status).await;
 
     info!(
         agent = agent_id,
@@ -3215,10 +3335,7 @@ pub fn revoke_ephemeral_agent(
 
 // ── IPC gateway registration (Phase 3.8) ────────────────────────
 
-/// POST /api/ipc/register-gateway — agent registers its gateway URL + proxy token with broker.
-///
-/// Authenticated via bearer token (agent's broker_token). Broker stores
-/// the gateway_url + proxy_token for chat proxy connections.
+/// POST /api/ipc/register-gateway — agent registers its gateway URL + proxy token.
 pub async fn handle_ipc_register_gateway(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3245,7 +3362,6 @@ pub async fn handle_ipc_register_gateway(
         return Err(mk_err("gateway_url must start with http:// or https://"));
     }
 
-    // Validate proxy_token: must be non-empty, reasonable length, no control chars
     if proxy_token.is_empty() || proxy_token.len() > 256 || proxy_token.contains('\0') {
         return Err(mk_err(
             "proxy_token must be non-empty, <= 256 chars, no null bytes",
@@ -3253,17 +3369,17 @@ pub async fn handle_ipc_register_gateway(
     }
 
     db.upsert_agent_gateway(&meta.agent_id, gateway_url, proxy_token)
+        .await
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string(), "code": "db_error"})),
+                Json(serde_json::json!({"error": e, "code": "db_error"})),
             )
         })?;
 
-    // Ensure agent is visible in IPC agents list (not just gateway registry)
-    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role);
+    db.update_last_seen(&meta.agent_id, meta.trust_level, &meta.role)
+        .await;
 
-    // Update in-memory AgentRegistry
     state
         .agent_registry
         .upsert(&meta.agent_id, gateway_url, proxy_token);
@@ -3271,9 +3387,9 @@ pub async fn handle_ipc_register_gateway(
         .agent_registry
         .set_trust_info(&meta.agent_id, meta.trust_level, &meta.role);
 
-    // Re-push any pending/failed unread messages on reconnect
+    // Re-push pending/failed unread messages on reconnect
     if let Some(ref dispatcher) = state.ipc_push_dispatcher {
-        if let Ok(pending) = db.pending_messages_for(&meta.agent_id) {
+        if let Ok(pending) = db.pending_messages_for(&meta.agent_id).await {
             let count = pending.len();
             for msg in pending {
                 dispatcher.try_push(PushJob {
@@ -3315,11 +3431,11 @@ pub async fn handle_admin_ipc_agents(
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     let staleness = state.config.lock().agents_ipc.staleness_secs;
-    let agents = db.list_agents(staleness);
+    let agents = db.list_agents(staleness).await;
     Ok(Json(serde_json::json!({ "agents": agents })))
 }
 
-/// POST /admin/ipc/revoke — revoke an agent (block messages, revoke token, set status=revoked).
+/// POST /admin/ipc/revoke — revoke an agent.
 pub async fn handle_admin_ipc_revoke(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -3327,9 +3443,9 @@ pub async fn handle_admin_ipc_revoke(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
-    db.block_pending_messages(&body.agent_id, "agent_revoked");
-    let found = db.set_agent_status(&body.agent_id, "revoked");
-    // True token revocation: remove from PairingGuard so authenticate() fails
+    db.block_pending_messages(&body.agent_id, "agent_revoked")
+        .await;
+    let found = db.set_agent_status(&body.agent_id, "revoked").await;
     let tokens_revoked = state.pairing.revoke_by_agent_id(&body.agent_id);
     if found {
         info!(
@@ -3361,8 +3477,9 @@ pub async fn handle_admin_ipc_disable(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
-    db.block_pending_messages(&body.agent_id, "agent_disabled");
-    let found = db.set_agent_status(&body.agent_id, "disabled");
+    db.block_pending_messages(&body.agent_id, "agent_disabled")
+        .await;
+    let found = db.set_agent_status(&body.agent_id, "disabled").await;
     if found {
         info!(agent = body.agent_id, "IPC agent disabled");
         if let Some(ref logger) = state.audit_logger {
@@ -3377,7 +3494,7 @@ pub async fn handle_admin_ipc_disable(
     Ok(Json(serde_json::json!({ "ok": true, "found": found })))
 }
 
-/// POST /admin/ipc/quarantine — quarantine an agent (set trust_level=4).
+/// POST /admin/ipc/quarantine — quarantine an agent.
 pub async fn handle_admin_ipc_quarantine(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -3385,16 +3502,14 @@ pub async fn handle_admin_ipc_quarantine(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
-    let found = db.set_agent_status(&body.agent_id, "quarantined");
-    // Force trust level to 4
-    let _ = db.set_agent_trust_level(&body.agent_id, 4);
-    // Retroactively move unread messages into quarantine lane
-    let moved = db.quarantine_pending_messages(&body.agent_id);
+    let found = db.set_agent_status(&body.agent_id, "quarantined").await;
+    let _ = db.set_agent_trust_level(&body.agent_id, 4).await;
+    let moved = db.quarantine_pending_messages(&body.agent_id).await;
     if found {
         info!(
             agent = body.agent_id,
             messages_quarantined = moved,
-            "IPC agent quarantined (pending messages moved to quarantine lane)"
+            "IPC agent quarantined"
         );
         if let Some(ref logger) = state.audit_logger {
             let _ = logger.log(&AuditEvent::ipc(
@@ -3412,7 +3527,7 @@ pub async fn handle_admin_ipc_quarantine(
     })))
 }
 
-/// POST /admin/ipc/downgrade — downgrade an agent's trust level (only increases).
+/// POST /admin/ipc/downgrade — downgrade an agent's trust level.
 pub async fn handle_admin_ipc_downgrade(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -3420,7 +3535,10 @@ pub async fn handle_admin_ipc_downgrade(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
-    match db.set_agent_trust_level(&body.agent_id, body.new_level) {
+    match db
+        .set_agent_trust_level(&body.agent_id, body.new_level)
+        .await
+    {
         Some(old_level) => {
             info!(
                 agent = body.agent_id,
@@ -3452,7 +3570,7 @@ pub async fn handle_admin_ipc_downgrade(
     }
 }
 
-/// POST /admin/ipc/promote — promote a quarantine message to the normal inbox.
+/// POST /admin/ipc/promote — promote a quarantine message.
 pub async fn handle_admin_ipc_promote(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -3461,7 +3579,7 @@ pub async fn handle_admin_ipc_promote(
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
 
-    let msg = db.get_message(body.message_id).ok_or_else(|| {
+    let msg = db.get_message(body.message_id).await.ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -3471,7 +3589,6 @@ pub async fn handle_admin_ipc_promote(
         )
     })?;
 
-    // Validate: message must be in quarantine lane (L4, not promoted, not read)
     if msg.from_trust_level < 4 {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -3500,8 +3617,7 @@ pub async fn handle_admin_ipc_promote(
         ));
     }
 
-    // Validate: target agent must exist in the registry
-    if !db.agent_exists(&body.to_agent) {
+    if !db.agent_exists(&body.to_agent).await {
         return Err((
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({
@@ -3539,6 +3655,7 @@ pub async fn handle_admin_ipc_promote(
             0,
             ttl,
         )
+        .await
         .map_err(|e| {
             warn!(error = %e, "Failed to insert promoted message");
             match e {
@@ -3600,7 +3717,7 @@ pub async fn handle_admin_ipc_agent_detail(
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
     let staleness = state.config.lock().agents_ipc.staleness_secs;
-    match db.agent_detail(&agent_id, staleness) {
+    match db.agent_detail(&agent_id, staleness).await {
         Some(detail) => Ok(Json(serde_json::json!(detail))),
         None => Err((
             StatusCode::NOT_FOUND,
@@ -3620,18 +3737,20 @@ pub async fn handle_admin_ipc_messages(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
-    let messages = db.list_messages_admin(
-        q.agent_id.as_deref(),
-        q.session_id.as_deref(),
-        q.kind.as_deref(),
-        q.quarantine,
-        q.dismissed,
-        q.lane.as_deref(),
-        q.from_ts,
-        q.to_ts,
-        q.limit,
-        q.offset,
-    );
+    let messages = db
+        .list_messages_admin(
+            q.agent_id.as_deref(),
+            q.session_id.as_deref(),
+            q.kind.as_deref(),
+            q.quarantine,
+            q.dismissed,
+            q.lane.as_deref(),
+            q.from_ts,
+            q.to_ts,
+            q.limit,
+            q.offset,
+        )
+        .await;
     Ok(Json(serde_json::json!({ "messages": messages })))
 }
 
@@ -3643,20 +3762,21 @@ pub async fn handle_admin_ipc_spawn_runs(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
-    let runs = db.list_spawn_runs_admin(
-        q.status.as_deref(),
-        q.parent_id.as_deref(),
-        q.session_id.as_deref(),
-        q.from_ts,
-        q.to_ts,
-        q.limit,
-        q.offset,
-    );
+    let runs = db
+        .list_spawn_runs_admin(
+            q.status.as_deref(),
+            q.parent_id.as_deref(),
+            q.session_id.as_deref(),
+            q.from_ts,
+            q.to_ts,
+            q.limit,
+            q.offset,
+        )
+        .await;
     Ok(Json(serde_json::json!({ "spawn_runs": runs })))
 }
 
 /// GET /admin/ipc/audit — paginated audit event listing with filters.
-/// Reads from the JSONL audit log file directly.
 pub async fn handle_admin_ipc_audit(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -3730,7 +3850,7 @@ pub async fn handle_admin_ipc_dismiss_message(
     require_localhost(&peer, &state.admin_cidrs)?;
     let db = require_ipc_db(&state)?;
 
-    if let Err(e) = db.dismiss_message(body.message_id) {
+    if let Err(e) = db.dismiss_message(body.message_id).await {
         return Err((
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
@@ -3758,8 +3878,7 @@ pub async fn handle_admin_ipc_dismiss_message(
     })))
 }
 
-/// GET /admin/activity — unified activity feed with broker IPC/spawn data
-/// merged with fan-out to online agents for local events (cron, chat, channel).
+/// GET /admin/activity — unified activity feed.
 pub async fn handle_admin_activity(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -3769,26 +3888,23 @@ pub async fn handle_admin_activity(
 
     let limit = q.limit.min(500);
     let now = unix_now();
-    // Default: last 24 hours
     let from_ts = q.from_ts.unwrap_or(now - 86400);
     let to_ts = q.to_ts.unwrap_or(now);
 
     let mut events: Vec<ActivityEvent> = Vec::new();
     let mut partial = false;
 
-    // 1. IPC message events from broker's own ipc_db
     if let Some(ref db) = state.ipc_db {
-        let ipc_events = db.recent_activity_messages(from_ts, limit);
+        let ipc_events = db.recent_activity_messages(from_ts, limit).await;
         events.extend(ipc_events);
     }
 
-    // 2. Spawn run events from broker's own ipc_db
     if let Some(ref db) = state.ipc_db {
-        let spawn_events = db.recent_activity_spawns(from_ts, limit);
+        let spawn_events = db.recent_activity_spawns(from_ts, limit).await;
         events.extend(spawn_events);
     }
 
-    // 3. Fan-out to online agents for local events (cron, chat, channel)
+    // Fan-out to online agents
     let agents = state.agent_registry.list();
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
@@ -3803,9 +3919,6 @@ pub async fn handle_admin_activity(
         ) {
             continue;
         }
-        // Forward the full requested limit to each agent.
-        // Broker performs merge+sort+final truncation after fan-out, so
-        // pre-truncating per-agent slices can silently drop relevant events.
         let per_agent_limit = limit.min(200);
         let mut agent_params = format!("limit={per_agent_limit}&from_ts={from_ts}");
         if let Some(ref et) = q.event_type {
@@ -3849,10 +3962,8 @@ pub async fn handle_admin_activity(
         }
     }
 
-    // Filter by to_ts
     events.retain(|e| e.timestamp <= to_ts);
 
-    // Apply optional filters
     if let Some(ref agent_id) = q.agent_id {
         events.retain(|e| e.agent_id == *agent_id);
     }
@@ -3863,7 +3974,6 @@ pub async fn handle_admin_activity(
         events.retain(|e| e.trace_ref.surface == *surface);
     }
 
-    // Sort by timestamp desc, truncate
     events.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
     events.truncate(limit as usize);
 
@@ -3894,7 +4004,6 @@ fn list_audit_events(
         std::fs::File::open(log_path).map_err(|e| format!("Failed to open audit log: {e}"))?;
     let reader = std::io::BufReader::new(file);
 
-    // Read all lines into memory in reverse chronological order
     let mut all_events: Vec<serde_json::Value> = Vec::new();
     for line in reader.lines() {
         let line = line.map_err(|e| format!("Failed to read line: {e}"))?;
@@ -3906,14 +4015,11 @@ fn list_audit_events(
         all_events.push(event);
     }
 
-    // Reverse for newest-first
     all_events.reverse();
 
-    // Apply filters
     let filtered: Vec<serde_json::Value> = all_events
         .into_iter()
         .filter(|evt| {
-            // Agent ID filter: match actor.user_id or action.command containing the agent
             if let Some(aid) = agent_id {
                 let actor_match = evt
                     .get("actor")
@@ -3929,14 +4035,12 @@ fn list_audit_events(
                     return false;
                 }
             }
-            // Event type filter
             if let Some(et) = event_type {
                 let evt_type = evt.get("event_type").and_then(|t| t.as_str()).unwrap_or("");
                 if evt_type != et {
                     return false;
                 }
             }
-            // Time range filters
             if let Some(fts) = from_ts {
                 if let Some(ts_str) = evt.get("timestamp").and_then(|t| t.as_str()) {
                     if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) {
@@ -3955,7 +4059,6 @@ fn list_audit_events(
                     }
                 }
             }
-            // Full-text search in action.command
             if let Some(s) = search {
                 let command = evt
                     .get("action")
@@ -3982,11 +4085,11 @@ fn require_ipc_db(state: &AppState) -> Result<&Arc<IpcDb>, (StatusCode, Json<ser
 }
 
 /// Reject requests from agents whose status is revoked, disabled, or quarantined.
-fn require_agent_active(
+async fn require_agent_active(
     db: &IpcDb,
     agent_id: &str,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    if let Some(status) = db.is_agent_blocked(agent_id) {
+    if let Some(status) = db.is_agent_blocked(agent_id).await {
         return Err((
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
@@ -4015,7 +4118,7 @@ fn unix_now() -> i64 {
         .as_secs() as i64
 }
 
-/// Emit a blocked audit event (DRY helper for signature/replay/timestamp checks).
+/// Emit a blocked audit event (DRY helper).
 fn emit_blocked_audit(state: &AppState, from: &str, to: &str, detail: &str) {
     if let Some(ref logger) = state.audit_logger {
         let mut event = AuditEvent::ipc(AuditEventType::IpcBlocked, from, Some(to), detail);
@@ -4029,9 +4132,8 @@ fn emit_blocked_audit(state: &AppState, from: &str, to: &str, detail: &str) {
 // ── Push dedup set ──────────────────────────────────────────────
 
 /// Bounded dedup set for push notification message IDs.
-/// Evicts oldest entries when capacity is reached.
 pub struct PushDedupSet {
-    inner: Mutex<(
+    inner: parking_lot::Mutex<(
         std::collections::VecDeque<i64>,
         std::collections::HashSet<i64>,
     )>,
@@ -4041,7 +4143,7 @@ pub struct PushDedupSet {
 impl PushDedupSet {
     pub fn new(capacity: usize) -> Self {
         Self {
-            inner: Mutex::new((
+            inner: parking_lot::Mutex::new((
                 std::collections::VecDeque::with_capacity(capacity),
                 std::collections::HashSet::with_capacity(capacity),
             )),
@@ -4069,16 +4171,11 @@ impl PushDedupSet {
 // ── Push notification receiver (agent-side) ─────────────────────
 
 /// POST /api/ipc/push — receive a push notification from the broker.
-///
-/// Validates the bearer token matches this agent's proxy_token.
-/// Returns 202 Accepted immediately, signaling the inbox processor
-/// to fetch messages.
 pub async fn handle_ipc_push_notification(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // Validate bearer token = this agent's proxy_token
     let token = extract_bearer_token(&headers).ok_or_else(|| {
         (
             StatusCode::UNAUTHORIZED,
@@ -4112,17 +4209,12 @@ pub async fn handle_ipc_push_notification(
     let from = body["from"].as_str().unwrap_or("unknown");
     let kind = body["kind"].as_str().unwrap_or("text");
 
-    // Dedup via push_dedup set on AppState
     if let Some(ref dedup) = state.ipc_push_dedup {
         if !dedup.insert(message_id) {
-            // Already seen — still return 202 (idempotent)
             return Ok((StatusCode::ACCEPTED, Json(serde_json::json!({"ok": true}))));
         }
     }
 
-    // Kind-based filtering (Phase 3.10)
-    // One-way trust check is deferred to inbox processor where broker-authoritative
-    // trust level is available from the peeked messages.
     if let Some(ref tx) = state.ipc_push_signal {
         let config = state.config.lock();
         let auto_kinds = config.agents_ipc.push_auto_process_kinds.clone();
@@ -4175,7 +4267,6 @@ pub async fn handle_pipeline_start(
     headers: HeaderMap,
     Json(body): Json<PipelineStartBody>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // Require IPC auth (pipeline start is an authenticated operation)
     let meta = require_ipc_auth(&state, &headers)?;
 
     let pipeline_store = state.pipeline_store.as_ref().ok_or_else(|| {
@@ -4199,7 +4290,6 @@ pub async fn handle_pipeline_start(
         )
     })?;
 
-    // Verify pipeline exists
     if pipeline_store.get(&body.pipeline_name).await.is_none() {
         return Err((
             StatusCode::NOT_FOUND,
@@ -4214,9 +4304,9 @@ pub async fn handle_pipeline_start(
         pipeline_store: pipeline_store.clone(),
         run_store: run_store.clone(),
         executor: executor.clone(),
+        dead_letter: state.dead_letter.clone(),
     };
 
-    // Spawn pipeline execution in background (non-blocking)
     let pipeline_name = body.pipeline_name.clone();
     let triggered_by = meta.agent_id.clone();
     let input = if body.input.is_null() {
@@ -4225,7 +4315,6 @@ pub async fn handle_pipeline_start(
         body.input
     };
 
-    // Generate run_id for immediate response
     let run_id = uuid::Uuid::new_v4().to_string();
 
     let run_id_clone = run_id.clone();

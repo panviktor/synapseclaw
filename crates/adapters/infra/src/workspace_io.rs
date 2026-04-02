@@ -221,6 +221,7 @@ pub enum ConfigResolutionSource {
 }
 
 impl ConfigResolutionSource {
+    #[allow(dead_code)]
     const fn as_str(self) -> &'static str {
         match self {
             Self::EnvConfigDir => "SYNAPSECLAW_CONFIG_DIR",

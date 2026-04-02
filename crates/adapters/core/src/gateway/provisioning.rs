@@ -870,7 +870,7 @@ pub async fn handle_provisioning_topology(
     // Source 2: IPC DB (agents that have done IPC operations)
     if let Some(ref ipc_db) = state.ipc_db {
         let staleness = state.config.lock().agents_ipc.staleness_secs;
-        for agent in ipc_db.list_agents(staleness) {
+        for agent in ipc_db.list_agents(staleness).await {
             agents_map
                 .entry(agent.agent_id.clone())
                 .and_modify(|existing| {
@@ -904,33 +904,35 @@ pub async fn handle_provisioning_topology(
     }
 
     // Build edges from config topology + actual message history
-    let config = state.config.lock();
-    let mut edges: Vec<serde_json::Value> = Vec::new();
-    let mut seen_pairs: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
+    let (mut edges, mut seen_pairs) = {
+        let config = state.config.lock();
+        let mut edges: Vec<serde_json::Value> = Vec::new();
+        let mut seen_pairs: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
 
-    // lateral_text_pairs — bidirectional L3 peer communication (config-declared)
-    for pair in &config.agents_ipc.lateral_text_pairs {
-        edges.push(serde_json::json!({
-            "from": pair[0],
-            "to": pair[1],
-            "type": "lateral",
-        }));
-        seen_pairs.insert((pair[0].clone(), pair[1].clone()));
-        seen_pairs.insert((pair[1].clone(), pair[0].clone()));
-    }
+        // lateral_text_pairs — bidirectional L3 peer communication (config-declared)
+        for pair in &config.agents_ipc.lateral_text_pairs {
+            edges.push(serde_json::json!({
+                "from": pair[0],
+                "to": pair[1],
+                "type": "lateral",
+            }));
+            seen_pairs.insert((pair[0].clone(), pair[1].clone()));
+            seen_pairs.insert((pair[1].clone(), pair[0].clone()));
+        }
 
-    // l4_destinations — directed: L4 agent → destination (via alias)
-    for (alias, target) in &config.agents_ipc.l4_destinations {
-        edges.push(serde_json::json!({
-            "from": alias,
-            "to": target,
-            "type": "l4_destination",
-            "alias": alias,
-        }));
-        seen_pairs.insert((alias.clone(), target.clone()));
-    }
-    drop(config);
+        // l4_destinations — directed: L4 agent → destination (via alias)
+        for (alias, target) in &config.agents_ipc.l4_destinations {
+            edges.push(serde_json::json!({
+                "from": alias,
+                "to": target,
+                "type": "l4_destination",
+                "alias": alias,
+            }));
+            seen_pairs.insert((alias.clone(), target.clone()));
+        }
+        (edges, seen_pairs)
+    };
 
     // Message-based edges — actual recent communication observed in IPC history.
     // Hidden by default on the main fleet graph because policy topology and
@@ -940,11 +942,10 @@ pub async fn handle_provisioning_topology(
         let now = unix_now();
         let since_ts = now - (traffic_hours as i64 * 3600);
         if let Some(ref ipc_db) = state.ipc_db {
-            for (from, to, count) in ipc_db.communication_pairs_filtered(
-                Some(since_ts),
-                i64::from(traffic_min_count),
-                100,
-            ) {
+            for (from, to, count) in ipc_db
+                .communication_pairs_filtered(Some(since_ts), i64::from(traffic_min_count), 100)
+                .await
+            {
                 if !include_ephemeral
                     && (is_ephemeral_agent_id(&from) || is_ephemeral_agent_id(&to))
                 {

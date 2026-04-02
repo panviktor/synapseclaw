@@ -48,6 +48,172 @@ impl PipelineDefinition {
         self.steps.iter().find(|s| s.id == id)
     }
 
+    /// Render pipeline as ASCII graph for terminal display.
+    pub fn to_ascii(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "{} ({} steps, entry: {})",
+            self.name,
+            self.steps.len(),
+            self.entry_point
+        );
+        let _ = writeln!(out, "{}", "═".repeat(50));
+
+        // Walk from entry_point, rendering edges
+        let mut visited = std::collections::HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(self.entry_point.clone());
+
+        while let Some(step_id) = queue.pop_front() {
+            if !visited.insert(step_id.clone()) {
+                continue;
+            }
+            if step_id == "end" {
+                let _ = writeln!(out, "  [END]");
+                continue;
+            }
+            let step = match self.step(&step_id) {
+                Some(s) => s,
+                None => continue,
+            };
+            match &step.next {
+                StepTransition::Next(target) => {
+                    if target == "end" {
+                        let _ = writeln!(out, "  [{}] ──→ [END]", step.id);
+                    } else {
+                        let _ = writeln!(out, "  [{}] ──→ [{}]", step.id, target);
+                        queue.push_back(target.clone());
+                    }
+                }
+                StepTransition::Complex(ct) => {
+                    if !ct.conditional.is_empty() {
+                        let _ = writeln!(out, "  [{}]", step.id);
+                        for branch in &ct.conditional {
+                            let _ = writeln!(
+                                out,
+                                "    ├── {} {} {} ──→ [{}]",
+                                branch.field, branch.operator, branch.value, branch.target
+                            );
+                            queue.push_back(branch.target.clone());
+                        }
+                        if let Some(ref fb) = ct.fallback {
+                            let _ = writeln!(out, "    └── else ──→ [{}]", fb);
+                            queue.push_back(fb.clone());
+                        }
+                    } else if let Some(ref fo) = ct.fan_out {
+                        let _ = writeln!(out, "  [{}] ──┬── fan-out", step.id);
+                        for (i, br) in fo.branches.iter().enumerate() {
+                            let prefix = if i + 1 < fo.branches.len() {
+                                "├"
+                            } else {
+                                "└"
+                            };
+                            let _ = writeln!(out, "         {}── [{}]", prefix, br.step_id);
+                            queue.push_back(br.step_id.clone());
+                        }
+                        let _ = writeln!(out, "         └── join → [{}]", fo.join_step);
+                        queue.push_back(fo.join_step.clone());
+                    } else if let Some(ref ap) = ct.wait_for_approval {
+                        let _ = writeln!(
+                            out,
+                            "  [{}] ──→ ⏳ approval ──→ [{}] / [{}]",
+                            step.id, ap.next_approved, ap.next_denied
+                        );
+                        queue.push_back(ap.next_approved.clone());
+                        queue.push_back(ap.next_denied.clone());
+                    } else if let Some(ref sp) = ct.sub_pipeline {
+                        let _ = writeln!(
+                            out,
+                            "  [{}] ──→ sub:{} ──→ [{}]",
+                            step.id, sp.pipeline_name, sp.next
+                        );
+                        queue.push_back(sp.next.clone());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Render pipeline as Mermaid graph syntax for web visualization.
+    pub fn to_mermaid(&self) -> String {
+        use std::fmt::Write;
+        let mut out = String::new();
+        let _ = writeln!(out, "graph TD");
+
+        // Assign short labels (A, B, C...) to step IDs
+        let mut labels: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+        for (i, step) in self.steps.iter().enumerate() {
+            let label = (b'A' + (i as u8 % 26)) as char;
+            labels.insert(&step.id, label.to_string());
+        }
+        let end_label = "END";
+
+        let get_label = |id: &str| -> String {
+            if id == "end" {
+                end_label.to_string()
+            } else {
+                labels.get(id).cloned().unwrap_or_else(|| id.to_string())
+            }
+        };
+
+        // Emit node definitions with step names
+        for step in &self.steps {
+            let l = get_label(&step.id);
+            let _ = writeln!(out, "    {}[{}]", l, step.id);
+        }
+        let _ = writeln!(out, "    {}(({}))", end_label, end_label);
+
+        // Emit edges
+        for step in &self.steps {
+            let from = get_label(&step.id);
+            match &step.next {
+                StepTransition::Next(target) => {
+                    let to = get_label(target);
+                    let _ = writeln!(out, "    {} --> {}", from, to);
+                }
+                StepTransition::Complex(ct) => {
+                    if !ct.conditional.is_empty() {
+                        for branch in &ct.conditional {
+                            let to = get_label(&branch.target);
+                            let _ = writeln!(
+                                out,
+                                "    {} -->|{} {} {}| {}",
+                                from, branch.field, branch.operator, branch.value, to
+                            );
+                        }
+                        if let Some(ref fb) = ct.fallback {
+                            let to = get_label(fb);
+                            let _ = writeln!(out, "    {} -->|else| {}", from, to);
+                        }
+                    } else if let Some(ref fo) = ct.fan_out {
+                        for br in &fo.branches {
+                            let to = get_label(&br.step_id);
+                            let _ = writeln!(out, "    {} --> {}", from, to);
+                        }
+                        // join edges
+                        let join = get_label(&fo.join_step);
+                        for br in &fo.branches {
+                            let br_label = get_label(&br.step_id);
+                            let _ = writeln!(out, "    {} --> {}", br_label, join);
+                        }
+                    } else if let Some(ref ap) = ct.wait_for_approval {
+                        let approved = get_label(&ap.next_approved);
+                        let denied = get_label(&ap.next_denied);
+                        let _ = writeln!(out, "    {} -->|approved| {}", from, approved);
+                        let _ = writeln!(out, "    {} -->|denied| {}", from, denied);
+                    } else if let Some(ref sp) = ct.sub_pipeline {
+                        let to = get_label(&sp.next);
+                        let _ = writeln!(out, "    {} -->|sub: {}| {}", from, sp.pipeline_name, to);
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Validate internal consistency:
     /// - entry_point exists
     /// - all transition targets exist
@@ -414,6 +580,21 @@ pub enum Operator {
     /// Regex match (currently substring; full regex when `regex` crate added).
     /// Kept as distinct variant for TOML forward-compatibility.
     Matches,
+}
+
+impl std::fmt::Display for Operator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Eq => write!(f, "=="),
+            Self::Ne => write!(f, "!="),
+            Self::Gt => write!(f, ">"),
+            Self::Lt => write!(f, "<"),
+            Self::Gte => write!(f, ">="),
+            Self::Lte => write!(f, "<="),
+            Self::Contains => write!(f, "contains"),
+            Self::Matches => write!(f, "matches"),
+        }
+    }
 }
 
 /// Helper: compare two JSON values as f64.

@@ -10,8 +10,11 @@
 //! later slices.
 
 use crate::domain::pipeline::{PipelineDefinition, PipelineStep, StepTransition};
-use crate::domain::pipeline_context::{PipelineContext, PipelineState, StepStatus};
+use crate::domain::pipeline_context::{
+    DeadLetter, DeadLetterStatus, PipelineContext, PipelineState, StepStatus,
+};
 use crate::domain::run::{Run, RunEvent, RunEventType, RunOrigin, RunState};
+use crate::ports::dead_letter::DeadLetterPort;
 use crate::ports::pipeline_executor::PipelineExecutorPort;
 use crate::ports::pipeline_store::PipelineStorePort;
 use crate::ports::run_store::RunStorePort;
@@ -24,6 +27,8 @@ pub struct PipelineRunnerPorts {
     pub pipeline_store: Arc<dyn PipelineStorePort>,
     pub run_store: Arc<dyn RunStorePort>,
     pub executor: Arc<dyn PipelineExecutorPort>,
+    /// Phase 4.5: dead letter queue for failed steps (optional).
+    pub dead_letter: Option<Arc<dyn DeadLetterPort>>,
 }
 
 /// Result of starting a pipeline.
@@ -568,6 +573,33 @@ async fn execute_step_with_retries(
                         retryable = err.retryable,
                         "step failed (final)"
                     );
+
+                    // Phase 4.5: enqueue to dead letter queue (fire-and-forget)
+                    if let Some(ref dlq) = ports.dead_letter {
+                        let letter = DeadLetter {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            pipeline_run_id: ctx.run_id.clone(),
+                            step_id: step.id.clone(),
+                            agent_id: step.agent_id.clone(),
+                            input: input.clone(),
+                            error: err.message.clone(),
+                            attempt: attempt + 1,
+                            max_retries: step.max_retries as u32,
+                            created_at: chrono::Utc::now().timestamp(),
+                            status: DeadLetterStatus::Pending,
+                            retried_at: None,
+                            dismissed_by: None,
+                        };
+                        if let Err(e) = dlq.enqueue(letter).await {
+                            warn!(
+                                run_id = %ctx.run_id,
+                                step = %step.id,
+                                error = %e,
+                                "failed to enqueue dead letter"
+                            );
+                        }
+                    }
+
                     return None;
                 }
 
@@ -1075,6 +1107,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: Arc::new(run_store),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let result = run_pipeline(
@@ -1107,6 +1140,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: Arc::new(run_store),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let result = run_pipeline(
@@ -1144,6 +1178,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: Arc::new(run_store),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let result = run_pipeline(
@@ -1217,6 +1252,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: Arc::new(run_store),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let result = run_pipeline(
@@ -1248,6 +1284,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: run_store.clone(),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let result = run_pipeline(
@@ -1285,6 +1322,7 @@ mod tests {
             pipeline_store: Arc::new(store),
             run_store: run_store.clone(),
             executor: Arc::new(executor),
+            dead_letter: None,
         };
 
         let result = run_pipeline(
@@ -1378,6 +1416,7 @@ mod tests {
                 pipeline_store: Arc::new(store),
                 run_store: Arc::new(run_store),
                 executor: Arc::new(executor),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "cond-test".into(),
@@ -1411,6 +1450,7 @@ mod tests {
                 pipeline_store: Arc::new(store2),
                 run_store: Arc::new(run_store2),
                 executor: Arc::new(executor2),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "cond-test".into(),
@@ -1464,6 +1504,7 @@ mod tests {
                 pipeline_store: Arc::new(store),
                 run_store: Arc::new(run_store),
                 executor: Arc::new(executor),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "schema-test".into(),
@@ -1578,6 +1619,7 @@ mod tests {
                 pipeline_store: Arc::new(store),
                 run_store: Arc::new(run_store),
                 executor: Arc::new(executor),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "fan-out-test".into(),
@@ -1625,6 +1667,7 @@ mod tests {
                 pipeline_store: Arc::new(store),
                 run_store: Arc::new(run_store),
                 executor: Arc::new(executor),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "fan-out-test".into(),
@@ -1673,6 +1716,7 @@ mod tests {
                 pipeline_store: Arc::new(store),
                 run_store: Arc::new(run_store),
                 executor: Arc::new(executor),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "fan-out-test".into(),
@@ -1771,6 +1815,7 @@ mod tests {
                 pipeline_store: Arc::new(store),
                 run_store: Arc::new(run_store),
                 executor: Arc::new(executor),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "approval-test".into(),
@@ -1800,6 +1845,7 @@ mod tests {
                 pipeline_store: Arc::new(store),
                 run_store: Arc::new(run_store),
                 executor: Arc::new(executor),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "approval-test".into(),
@@ -1898,6 +1944,7 @@ mod tests {
                 pipeline_store: Arc::new(store),
                 run_store: Arc::new(run_store),
                 executor: Arc::new(executor),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "parent".into(),
@@ -1955,6 +2002,7 @@ mod tests {
                 pipeline_store: Arc::new(store),
                 run_store: Arc::new(run_store),
                 executor: Arc::new(executor),
+                dead_letter: None,
             },
             StartPipelineParams {
                 pipeline_name: "recursive".into(),

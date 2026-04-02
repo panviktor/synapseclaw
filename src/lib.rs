@@ -22,7 +22,7 @@ pub mod config {
 // CLI command enums.
 pub use synapse_adapters::commands::{
     ChannelCommands, CronCommands, GatewayCommands, IntegrationCommands, MemoryCommands,
-    ServiceCommands, SkillCommands,
+    PipelineCommands, ServiceCommands, SkillCommands,
 };
 
 // Memory.

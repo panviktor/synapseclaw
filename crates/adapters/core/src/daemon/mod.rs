@@ -192,21 +192,28 @@ pub async fn run(
     // components causes contention. Create the raw adapter here and pass it
     // to gateway, channels, and the consolidation worker.
     let daemon_agent_id = crate::agent::loop_::resolve_agent_id(&config);
-    let shared_raw_mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
-        match synapse_memory::create_memory(
-            &config.memory,
-            &config.workspace_dir,
-            &daemon_agent_id,
-            config.api_key.as_deref(),
-        )
-        .await
-        {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::error!("Memory init failed in daemon: {e} — using noop memory");
-                std::sync::Arc::new(synapse_memory::NoopUnifiedMemory)
+    let mem_backend = match synapse_memory::create_memory(
+        &config.memory,
+        &config.workspace_dir,
+        &daemon_agent_id,
+        config.api_key.as_deref(),
+    )
+    .await
+    {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Memory init failed in daemon: {e} — using noop memory");
+            let noop = std::sync::Arc::new(synapse_memory::NoopUnifiedMemory);
+            synapse_memory::MemoryBackend {
+                memory: noop.clone(),
+                dead_letter: noop,
+                surreal: None,
             }
-        };
+        }
+    };
+    let shared_raw_mem = mem_backend.memory;
+    let shared_dead_letter = mem_backend.dead_letter;
+    let shared_surreal = mem_backend.surreal;
 
     {
         let gateway_cfg = config.clone();
@@ -216,6 +223,8 @@ pub async fn run(
         let gw_ipc = shared_ipc_client.clone();
         let gw_runner = agent_runner.clone();
         let gw_mem = shared_raw_mem.clone();
+        let gw_dlq = shared_dead_letter.clone();
+        let gw_surreal = shared_surreal.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -228,6 +237,8 @@ pub async fn run(
                 let ipc = gw_ipc.clone();
                 let ar = gw_runner.clone();
                 let mem = gw_mem.clone();
+                let dlq = gw_dlq.clone();
+                let surreal = gw_surreal.clone();
                 async move {
                     Box::pin(crate::gateway::run_gateway(
                         &host,
@@ -238,6 +249,8 @@ pub async fn run(
                         ipc,
                         ar,
                         Some(mem),
+                        Some(dlq),
+                        surreal,
                     ))
                     .await
                 }
@@ -250,6 +263,7 @@ pub async fn run(
             let channels_cfg = config.clone();
             let ch_ipc = shared_ipc_client.clone();
             let ch_mem = shared_raw_mem.clone();
+            let ch_surreal = shared_surreal.clone();
             handles.push(spawn_component_supervisor(
                 "channels",
                 initial_backoff,
@@ -258,8 +272,15 @@ pub async fn run(
                     let cfg = channels_cfg.clone();
                     let ipc = ch_ipc.clone();
                     let mem = ch_mem.clone();
+                    let surreal = ch_surreal.clone();
                     async move {
-                        Box::pin(crate::channels::start_channels(cfg, ipc, Some(mem))).await
+                        Box::pin(crate::channels::start_channels(
+                            cfg,
+                            ipc,
+                            Some(mem),
+                            surreal,
+                        ))
+                        .await
                     }
                 },
             ));
@@ -273,6 +294,7 @@ pub async fn run(
         let heartbeat_cfg = config.clone();
         let hb_delivery = delivery_service.clone();
         let heartbeat_runner = agent_runner.clone();
+        let hb_surreal = shared_surreal.clone();
         handles.push(spawn_component_supervisor(
             "heartbeat",
             initial_backoff,
@@ -281,7 +303,8 @@ pub async fn run(
                 let cfg = heartbeat_cfg.clone();
                 let ds = hb_delivery.clone();
                 let ar = heartbeat_runner.clone();
-                async move { Box::pin(run_heartbeat_worker(cfg, ds, ar)).await }
+                let surreal = hb_surreal.clone();
+                async move { Box::pin(run_heartbeat_worker(cfg, ds, ar, surreal)).await }
             },
         ));
     }
@@ -289,12 +312,14 @@ pub async fn run(
     if config.cron.enabled {
         let scheduler_cfg = config.clone();
         let sched_delivery = delivery_service.clone();
+        let sched_surreal = shared_surreal.clone();
         handles.push(spawn_component_supervisor(
             "scheduler",
             initial_backoff,
             max_backoff,
             move || {
                 let cfg = scheduler_cfg.clone();
+                let db = sched_surreal.clone();
                 let ds: std::sync::Arc<dyn synapse_cron::scheduler::CronDeliveryPort> =
                     std::sync::Arc::new(CronDeliveryAdapter {
                         delivery_service: sched_delivery.clone(),
@@ -302,7 +327,9 @@ pub async fn run(
                 let ar = agent_runner.clone();
                 async move {
                     let health = std::sync::Arc::new(CronHealthReporter);
-                    Box::pin(synapse_cron::scheduler::run(cfg, ds, ar, health)).await
+                    let db =
+                        db.ok_or_else(|| anyhow::anyhow!("SurrealDB not available for scheduler"))?;
+                    Box::pin(synapse_cron::scheduler::run(cfg, db, ds, ar, health)).await
                 }
             },
         ));
@@ -508,6 +535,7 @@ async fn run_heartbeat_worker(
         synapse_domain::application::services::delivery_service::DeliveryService,
     >,
     agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
+    surreal: Option<std::sync::Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
 ) -> Result<()> {
     use crate::heartbeat::engine::{
         compute_adaptive_interval, HeartbeatEngine, HeartbeatTask, TaskPriority, TaskStatus,
@@ -655,17 +683,20 @@ async fn run_heartbeat_worker(
                     #[allow(clippy::cast_possible_truncation)]
                     let duration_ms = task_start.elapsed().as_millis() as i64;
                     let now = chrono::Utc::now();
-                    let _ = crate::heartbeat::store::record_run(
-                        &config.workspace_dir,
-                        &task.text,
-                        &task.priority.to_string(),
-                        now - chrono::Duration::milliseconds(duration_ms),
-                        now,
-                        "ok",
-                        Some(output.as_str()),
-                        duration_ms,
-                        config.heartbeat.max_run_history,
-                    );
+                    if let Some(ref db) = surreal {
+                        let _ = crate::heartbeat::store::record_run(
+                            db,
+                            &task.text,
+                            &task.priority.to_string(),
+                            now - chrono::Duration::milliseconds(duration_ms),
+                            now,
+                            "ok",
+                            Some(output.as_str()),
+                            duration_ms,
+                            config.heartbeat.max_run_history,
+                        )
+                        .await;
+                    }
                     let announcement = if output.trim().is_empty() {
                         format!("💓 heartbeat task completed: {}", task.text)
                     } else {
@@ -686,17 +717,20 @@ async fn run_heartbeat_worker(
                     #[allow(clippy::cast_possible_truncation)]
                     let duration_ms = task_start.elapsed().as_millis() as i64;
                     let now = chrono::Utc::now();
-                    let _ = crate::heartbeat::store::record_run(
-                        &config.workspace_dir,
-                        &task.text,
-                        &task.priority.to_string(),
-                        now - chrono::Duration::milliseconds(duration_ms),
-                        now,
-                        "error",
-                        Some(&e.to_string()),
-                        duration_ms,
-                        config.heartbeat.max_run_history,
-                    );
+                    if let Some(ref db) = surreal {
+                        let _ = crate::heartbeat::store::record_run(
+                            db,
+                            &task.text,
+                            &task.priority.to_string(),
+                            now - chrono::Duration::milliseconds(duration_ms),
+                            now,
+                            "error",
+                            Some(&e.to_string()),
+                            duration_ms,
+                            config.heartbeat.max_run_history,
+                        )
+                        .await;
+                    }
                     crate::health::mark_component_error("heartbeat", e.to_string());
                     tracing::warn!("Heartbeat task failed: {e}");
                 }

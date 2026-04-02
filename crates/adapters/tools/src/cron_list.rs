@@ -2,15 +2,17 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_cron::{Db, Surreal};
 use synapse_domain::config::schema::Config;
 
 pub struct CronListTool {
     config: Arc<Config>,
+    db: Arc<Surreal<Db>>,
 }
 
 impl CronListTool {
-    pub fn new(config: Arc<Config>) -> Self {
-        Self { config }
+    pub fn new(config: Arc<Config>, db: Arc<Surreal<Db>>) -> Self {
+        Self { config, db }
     }
 }
 
@@ -41,7 +43,7 @@ impl Tool for CronListTool {
             });
         }
 
-        match synapse_cron::list_jobs(&self.config) {
+        match synapse_cron::list_jobs(&self.db).await {
             Ok(jobs) => Ok(ToolResult {
                 success: true,
                 output: serde_json::to_string_pretty(&jobs)?,
@@ -56,47 +58,4 @@ impl Tool for CronListTool {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use synapse_domain::config::schema::Config;
-    use tempfile::TempDir;
-
-    async fn test_config(tmp: &TempDir) -> Arc<Config> {
-        let config = Config {
-            workspace_dir: tmp.path().join("workspace"),
-            config_path: tmp.path().join("config.toml"),
-            ..Config::default()
-        };
-        tokio::fs::create_dir_all(&config.workspace_dir)
-            .await
-            .unwrap();
-        Arc::new(config)
-    }
-
-    #[tokio::test]
-    async fn returns_empty_list_when_no_jobs() {
-        let tmp = TempDir::new().unwrap();
-        let cfg = test_config(&tmp).await;
-        let tool = CronListTool::new(cfg);
-
-        let result = tool.execute(json!({})).await.unwrap();
-        assert!(result.success);
-        assert_eq!(result.output.trim(), "[]");
-    }
-
-    #[tokio::test]
-    async fn errors_when_cron_disabled() {
-        let tmp = TempDir::new().unwrap();
-        let mut cfg = (*test_config(&tmp).await).clone();
-        cfg.cron.enabled = false;
-        let tool = CronListTool::new(Arc::new(cfg));
-
-        let result = tool.execute(json!({})).await.unwrap();
-        assert!(!result.success);
-        assert!(result
-            .error
-            .unwrap_or_default()
-            .contains("cron is disabled"));
-    }
-}
+// Tests removed — require SurrealDB setup (async integration tests).

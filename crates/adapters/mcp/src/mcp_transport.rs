@@ -460,6 +460,7 @@ impl SseTransport {
         Ok((derived, false))
     }
 
+    #[allow(dead_code)]
     fn maybe_try_alternate_message_url(
         &self,
         current_url: &str,

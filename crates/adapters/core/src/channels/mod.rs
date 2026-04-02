@@ -17,6 +17,9 @@
 // ── Re-exports from synapse_channels crate ──
 pub use synapse_channels::*;
 
+// ── SurrealDB session backend (Phase 4.5) ──
+pub mod session_surreal;
+
 // Local import with different name to avoid shadowing glob re-export
 use crate::channels::session_backend::SessionBackend as LocalSessionBackend;
 use synapse_domain::application::services::tool_filtering::build_tool_instructions;
@@ -229,7 +232,7 @@ struct ChannelRuntimeContext {
     ack_reactions: bool,
     agent_id: Arc<String>,
     show_tool_calls: bool,
-    session_store: Option<Arc<session_store::SessionStore>>,
+    session_store: Option<Arc<dyn LocalSessionBackend>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
     summary_model: Option<String>,
     /// Non-interactive approval manager for channel-driven runs.
@@ -560,6 +563,7 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
 
     let last_summary_count = store
         .load_summary(history_key)
+        .await
         .map_or(0, |s| s.message_count_at_summary);
 
     if msg_count < CHANNEL_SUMMARY_INTERVAL
@@ -587,7 +591,8 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
     let _guard = InflightGuard(history_key.to_string());
 
     // Collect last 10 messages for the summary prompt.
-    let (recent_text, prev_summary) = {
+    // Lock scope is intentionally separate from the .await below (Send safety).
+    let recent_text = {
         let histories = ctx
             .conversation_histories
             .lock()
@@ -607,9 +612,9 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
             };
             let _ = writeln!(text, "{}: {content_preview}", t.role);
         }
-        let prev = store.load_summary(history_key).map(|s| s.summary);
-        (text, prev)
-    };
+        text
+    }; // MutexGuard dropped here — before any .await
+    let prev_summary = store.load_summary(history_key).await.map(|s| s.summary);
 
     if recent_text.is_empty() {
         return;
@@ -675,7 +680,7 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
                 message_count_at_summary: msg_count,
                 updated_at: chrono::Utc::now(),
             };
-            if let Err(e) = store.save_summary(history_key, &channel_summary) {
+            if let Err(e) = store.save_summary(history_key, &channel_summary).await {
                 tracing::warn!("Failed to persist channel summary: {e}");
             }
             tracing::debug!("Channel summary updated for {history_key}: {summary}");
@@ -1438,6 +1443,7 @@ async fn handle_message_via_orchestrator(
                         pipeline_store: Arc::clone(store),
                         executor: Arc::clone(executor),
                         run_store,
+                        dead_letter: None,
                     };
                 let params =
                     synapse_domain::application::services::pipeline_service::StartPipelineParams {
@@ -2824,6 +2830,7 @@ pub async fn start_channels(
     config: Config,
     shared_ipc_client: Option<std::sync::Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
+    shared_surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
 ) -> Result<()> {
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
@@ -2891,6 +2898,7 @@ pub async fn start_channels(
                 config.api_key.as_deref(),
             )
             .await?
+            .memory
         }
     };
     let (composio_key, composio_entity_id) = if config.composio.enabled {
@@ -2920,6 +2928,7 @@ pub async fn start_channels(
             &config,
             None, // IPC tools get their own client from config
             None,
+            shared_surreal.clone(),
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -3382,14 +3391,22 @@ pub async fn start_channels(
         agent_id: Arc::new(crate::agent::loop_::resolve_agent_id(&config)),
         show_tool_calls: config.channels_config.show_tool_calls,
         session_store: if config.channels_config.session_persistence {
-            match session_store::SessionStore::new(&config.workspace_dir) {
-                Ok(store) => {
-                    tracing::info!("📂 Session persistence enabled");
-                    Some(Arc::new(store))
-                }
-                Err(e) => {
-                    tracing::warn!("Session persistence disabled: {e}");
-                    None
+            if let Some(ref db) = shared_surreal {
+                tracing::info!("📂 Session persistence enabled (SurrealDB)");
+                Some(
+                    Arc::new(session_surreal::SurrealSessionBackend::new(Arc::clone(db)))
+                        as Arc<dyn LocalSessionBackend>,
+                )
+            } else {
+                match session_store::SessionStore::new(&config.workspace_dir) {
+                    Ok(store) => {
+                        tracing::info!("📂 Session persistence enabled (JSONL fallback)");
+                        Some(Arc::new(store) as Arc<dyn LocalSessionBackend>)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Session persistence disabled: {e}");
+                        None
+                    }
                 }
             }
         } else {
@@ -3412,19 +3429,25 @@ pub async fn start_channels(
 
     // Hydrate in-memory conversation histories from persisted JSONL session files.
     if let Some(ref store) = runtime_ctx.session_store {
-        let mut hydrated = 0usize;
-        let mut histories = runtime_ctx
-            .conversation_histories
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        for key in store.list_sessions() {
-            let msgs = store.load(&key);
+        // Collect sessions first (no MutexGuard held across .await)
+        let session_keys = store.list_sessions().await;
+        let mut loaded: Vec<(String, Vec<synapse_providers::ChatMessage>)> = Vec::new();
+        for key in session_keys {
+            let msgs = store.load(&key).await;
             if !msgs.is_empty() {
-                hydrated += 1;
+                loaded.push((key, msgs));
+            }
+        }
+        let hydrated = loaded.len();
+        {
+            let mut histories = runtime_ctx
+                .conversation_histories
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for (key, msgs) in loaded {
                 histories.insert(key, msgs);
             }
         }
-        drop(histories);
         if hydrated > 0 {
             tracing::info!("📂 Restored {hydrated} session(s) from disk");
         }

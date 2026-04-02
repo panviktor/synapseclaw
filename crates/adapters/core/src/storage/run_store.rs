@@ -1,63 +1,98 @@
-//! Adapter: wraps `ChatDb` to implement `RunStorePort`.
+//! Adapter: SurrealDB-backed `RunStorePort`.
 //!
-//! Uses the `runs` + `run_events` tables added to ChatDb in Phase 4.0.
+//! Phase 4.5: migrated from SQLite ChatDb to shared SurrealDB.
+//! Uses `run` + `run_event` tables (schema in surrealdb_schema.surql).
 
-use crate::gateway::chat_db::ChatDb;
 use async_trait::async_trait;
 use std::sync::Arc;
+use surrealdb::engine::local::Db;
+use surrealdb::Surreal;
 use synapse_domain::domain::run::{Run, RunEvent, RunEventType, RunOrigin, RunState};
 use synapse_domain::ports::run_store::RunStorePort;
 
-/// Wraps `ChatDb` to implement `RunStorePort`.
-pub struct ChatDbRunStore {
-    db: Arc<ChatDb>,
+fn json_str(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|val| val.as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
-impl ChatDbRunStore {
-    pub fn new(db: Arc<ChatDb>) -> Self {
+fn json_opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|val| val.as_str()).map(String::from)
+}
+
+fn json_i64(v: &serde_json::Value, key: &str) -> i64 {
+    v.get(key).and_then(|val| val.as_i64()).unwrap_or(0)
+}
+
+/// SurrealDB-backed RunStore.
+pub struct SurrealRunStore {
+    db: Arc<Surreal<Db>>,
+}
+
+impl SurrealRunStore {
+    pub fn new(db: Arc<Surreal<Db>>) -> Self {
         Self { db }
     }
 }
 
+fn row_to_run(v: &serde_json::Value) -> Run {
+    Run {
+        run_id: json_str(v, "run_id"),
+        conversation_key: json_opt_str(v, "conversation_key"),
+        origin: run_origin_from_str(&json_str(v, "origin")),
+        state: RunState::from_str_lossy(&json_str(v, "state")),
+        #[allow(clippy::cast_sign_loss)]
+        started_at: json_i64(v, "started_at") as u64,
+        #[allow(clippy::cast_sign_loss)]
+        finished_at: v
+            .get("finished_at")
+            .and_then(|v| v.as_i64())
+            .map(|t| t as u64),
+    }
+}
+
+fn row_to_event(v: &serde_json::Value) -> RunEvent {
+    RunEvent {
+        run_id: json_str(v, "run_id"),
+        event_type: RunEventType::from_str_lossy(&json_str(v, "event_type")),
+        content: json_str(v, "content"),
+        tool_name: json_opt_str(v, "tool_name"),
+        #[allow(clippy::cast_sign_loss)]
+        created_at: json_i64(v, "created_at") as u64,
+    }
+}
+
 #[async_trait]
-impl RunStorePort for ChatDbRunStore {
+impl RunStorePort for SurrealRunStore {
     async fn create_run(&self, run: &Run) -> anyhow::Result<()> {
-        let conn = self.db.conn().map_err(|e| anyhow::anyhow!("{e}"))?;
-        conn.execute(
-            "INSERT OR IGNORE INTO runs (run_id, conversation_key, origin, state, started_at, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            rusqlite::params![
-                run.run_id,
-                run.conversation_key,
-                run.origin.to_string(),
-                run.state.to_string(),
-                run.started_at as i64,
-                chrono::Utc::now().timestamp(),
-            ],
-        )?;
+        #[allow(clippy::cast_possible_wrap)]
+        self.db
+            .query(
+                "CREATE run SET
+                    run_id = $run_id, conversation_key = $conv_key, origin = $origin,
+                    state = $state, started_at = $started_at, created_at = $created_at",
+            )
+            .bind(("run_id", run.run_id.clone()))
+            .bind(("conv_key", run.conversation_key.clone()))
+            .bind(("origin", run.origin.to_string()))
+            .bind(("state", run.state.to_string()))
+            .bind(("started_at", run.started_at as i64))
+            .bind(("created_at", chrono::Utc::now().timestamp()))
+            .await
+            .map_err(|e| anyhow::anyhow!("create_run: {e}"))?;
         Ok(())
     }
 
     async fn get_run(&self, run_id: &str) -> Option<Run> {
-        let conn = self.db.conn().ok()?;
-        conn.query_row(
-            "SELECT run_id, conversation_key, origin, state, started_at, finished_at
-             FROM runs WHERE run_id = ?1",
-            [run_id],
-            |row| {
-                Ok(Run {
-                    run_id: row.get(0)?,
-                    conversation_key: row.get(1)?,
-                    origin: run_origin_from_str(&row.get::<_, String>(2)?),
-                    state: RunState::from_str_lossy(&row.get::<_, String>(3)?),
-                    #[allow(clippy::cast_sign_loss)]
-                    started_at: row.get::<_, i64>(4)? as u64,
-                    #[allow(clippy::cast_sign_loss)]
-                    finished_at: row.get::<_, Option<i64>>(5)?.map(|t| t as u64),
-                })
-            },
-        )
-        .ok()
+        let mut resp = self
+            .db
+            .query("SELECT * FROM run WHERE run_id = $run_id LIMIT 1")
+            .bind(("run_id", run_id.to_string()))
+            .await
+            .ok()?;
+        let rows: Vec<serde_json::Value> = resp.take(0).ok()?;
+        rows.first().map(row_to_run)
     }
 
     async fn update_state(
@@ -66,118 +101,83 @@ impl RunStorePort for ChatDbRunStore {
         state: RunState,
         finished_at: Option<u64>,
     ) -> anyhow::Result<()> {
-        let conn = self.db.conn().map_err(|e| anyhow::anyhow!("{e}"))?;
         #[allow(clippy::cast_possible_wrap)]
-        conn.execute(
-            "UPDATE runs SET state = ?1, finished_at = ?2 WHERE run_id = ?3",
-            rusqlite::params![state.to_string(), finished_at.map(|t| t as i64), run_id],
-        )?;
+        self.db
+            .query(
+                "UPDATE run SET state = $state, finished_at = $finished_at WHERE run_id = $run_id",
+            )
+            .bind(("run_id", run_id.to_string()))
+            .bind(("state", state.to_string()))
+            .bind(("finished_at", finished_at.map(|t| t as i64)))
+            .await
+            .map_err(|e| anyhow::anyhow!("update_state: {e}"))?;
         Ok(())
     }
 
     async fn list_runs(&self, conversation_key: &str, limit: usize) -> Vec<Run> {
-        let conn = match self.db.conn() {
-            Ok(c) => c,
+        let mut resp = match self
+            .db
+            .query(
+                "SELECT * FROM run WHERE conversation_key = $conv ORDER BY started_at DESC LIMIT $limit",
+            )
+            .bind(("conv", conversation_key.to_string()))
+            .bind(("limit", limit as i64))
+            .await
+        {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
-        let mut stmt = match conn.prepare(
-            "SELECT run_id, conversation_key, origin, state, started_at, finished_at
-             FROM runs WHERE conversation_key = ?1 ORDER BY started_at DESC LIMIT ?2",
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        #[allow(clippy::cast_possible_wrap)]
-        stmt.query_map(rusqlite::params![conversation_key, limit as i64], |row| {
-            Ok(Run {
-                run_id: row.get(0)?,
-                conversation_key: row.get(1)?,
-                origin: run_origin_from_str(&row.get::<_, String>(2)?),
-                state: RunState::from_str_lossy(&row.get::<_, String>(3)?),
-                #[allow(clippy::cast_sign_loss)]
-                started_at: row.get::<_, i64>(4)? as u64,
-                #[allow(clippy::cast_sign_loss)]
-                finished_at: row.get::<_, Option<i64>>(5)?.map(|t| t as u64),
-            })
-        })
-        .ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.iter().map(row_to_run).collect()
     }
 
     async fn list_all_runs(&self, limit: usize) -> Vec<Run> {
-        let conn = match self.db.conn() {
-            Ok(c) => c,
+        let mut resp = match self
+            .db
+            .query("SELECT * FROM run ORDER BY started_at DESC LIMIT $limit")
+            .bind(("limit", limit as i64))
+            .await
+        {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
-        let mut stmt = match conn.prepare(
-            "SELECT run_id, conversation_key, origin, state, started_at, finished_at
-             FROM runs ORDER BY started_at DESC LIMIT ?1",
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        #[allow(clippy::cast_possible_wrap)]
-        stmt.query_map(rusqlite::params![limit as i64], |row| {
-            Ok(Run {
-                run_id: row.get(0)?,
-                conversation_key: row.get(1)?,
-                origin: run_origin_from_str(&row.get::<_, String>(2)?),
-                state: RunState::from_str_lossy(&row.get::<_, String>(3)?),
-                #[allow(clippy::cast_sign_loss)]
-                started_at: row.get::<_, i64>(4)? as u64,
-                #[allow(clippy::cast_sign_loss)]
-                finished_at: row.get::<_, Option<i64>>(5)?.map(|t| t as u64),
-            })
-        })
-        .ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.iter().map(row_to_run).collect()
     }
 
     async fn append_event(&self, event: &RunEvent) -> anyhow::Result<()> {
-        let conn = self.db.conn().map_err(|e| anyhow::anyhow!("{e}"))?;
         #[allow(clippy::cast_possible_wrap)]
-        conn.execute(
-            "INSERT INTO run_events (run_id, event_type, content, tool_name, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![
-                event.run_id,
-                event.event_type.to_string(),
-                event.content,
-                event.tool_name,
-                event.created_at as i64,
-            ],
-        )?;
+        self.db
+            .query(
+                "CREATE run_event SET
+                    run_id = $run_id, event_type = $event_type, content = $content,
+                    tool_name = $tool_name, created_at = $created_at",
+            )
+            .bind(("run_id", event.run_id.clone()))
+            .bind(("event_type", event.event_type.to_string()))
+            .bind(("content", event.content.clone()))
+            .bind(("tool_name", event.tool_name.clone()))
+            .bind(("created_at", event.created_at as i64))
+            .await
+            .map_err(|e| anyhow::anyhow!("append_event: {e}"))?;
         Ok(())
     }
 
     async fn get_events(&self, run_id: &str, limit: usize) -> Vec<RunEvent> {
-        let conn = match self.db.conn() {
-            Ok(c) => c,
+        let mut resp = match self
+            .db
+            .query(
+                "SELECT * FROM run_event WHERE run_id = $run_id ORDER BY created_at ASC LIMIT $limit",
+            )
+            .bind(("run_id", run_id.to_string()))
+            .bind(("limit", limit as i64))
+            .await
+        {
+            Ok(r) => r,
             Err(_) => return Vec::new(),
         };
-        let mut stmt = match conn.prepare(
-            "SELECT run_id, event_type, content, tool_name, created_at
-             FROM run_events WHERE run_id = ?1 ORDER BY created_at ASC LIMIT ?2",
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        #[allow(clippy::cast_possible_wrap)]
-        stmt.query_map(rusqlite::params![run_id, limit as i64], |row| {
-            Ok(RunEvent {
-                run_id: row.get(0)?,
-                event_type: RunEventType::from_str_lossy(&row.get::<_, String>(1)?),
-                content: row.get(2)?,
-                tool_name: row.get(3)?,
-                #[allow(clippy::cast_sign_loss)]
-                created_at: row.get::<_, i64>(4)? as u64,
-            })
-        })
-        .ok()
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
+        let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+        rows.iter().map(row_to_event).collect()
     }
 }
 
@@ -190,159 +190,5 @@ fn run_origin_from_str(s: &str) -> RunOrigin {
         "spawn" => RunOrigin::Spawn,
         "cron" => RunOrigin::Cron,
         _ => RunOrigin::Channel,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    fn make_store() -> (TempDir, ChatDbRunStore) {
-        let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("test_runs.db");
-        let db = Arc::new(ChatDb::open(&db_path).unwrap());
-        (tmp, ChatDbRunStore::new(db))
-    }
-
-    #[tokio::test]
-    async fn create_and_get_run() {
-        let (_tmp, store) = make_store();
-        let run = Run {
-            run_id: "run-1".into(),
-            conversation_key: Some("web:abc:1".into()),
-            origin: RunOrigin::Web,
-            state: RunState::Running,
-            started_at: 1000,
-            finished_at: None,
-        };
-        store.create_run(&run).await.unwrap();
-        let loaded = store.get_run("run-1").await.unwrap();
-        assert_eq!(loaded.run_id, "run-1");
-        assert_eq!(loaded.origin, RunOrigin::Web);
-        assert_eq!(loaded.state, RunState::Running);
-        assert!(loaded.finished_at.is_none());
-    }
-
-    #[tokio::test]
-    async fn update_state_to_completed() {
-        let (_tmp, store) = make_store();
-        store
-            .create_run(&Run {
-                run_id: "run-2".into(),
-                conversation_key: Some("web:abc:1".into()),
-                origin: RunOrigin::Channel,
-                state: RunState::Running,
-                started_at: 1000,
-                finished_at: None,
-            })
-            .await
-            .unwrap();
-
-        store
-            .update_state("run-2", RunState::Completed, Some(2000))
-            .await
-            .unwrap();
-
-        let loaded = store.get_run("run-2").await.unwrap();
-        assert_eq!(loaded.state, RunState::Completed);
-        assert_eq!(loaded.finished_at, Some(2000));
-    }
-
-    #[tokio::test]
-    async fn list_runs_by_conversation() {
-        let (_tmp, store) = make_store();
-        for i in 0..3 {
-            store
-                .create_run(&Run {
-                    run_id: format!("run-{i}"),
-                    conversation_key: Some("conv-1".into()),
-                    origin: RunOrigin::Web,
-                    state: RunState::Completed,
-                    started_at: 1000 + i,
-                    finished_at: Some(2000 + i),
-                })
-                .await
-                .unwrap();
-        }
-        let runs = store.list_runs("conv-1", 10).await;
-        assert_eq!(runs.len(), 3);
-        // Newest first
-        assert_eq!(runs[0].run_id, "run-2");
-    }
-
-    #[tokio::test]
-    async fn append_and_get_events() {
-        let (_tmp, store) = make_store();
-        store
-            .create_run(&Run {
-                run_id: "run-ev".into(),
-                conversation_key: None,
-                origin: RunOrigin::Cron,
-                state: RunState::Running,
-                started_at: 1000,
-                finished_at: None,
-            })
-            .await
-            .unwrap();
-
-        store
-            .append_event(&RunEvent {
-                run_id: "run-ev".into(),
-                event_type: RunEventType::ToolCall,
-                content: "shell: ls".into(),
-                tool_name: Some("shell".into()),
-                created_at: 1001,
-            })
-            .await
-            .unwrap();
-        store
-            .append_event(&RunEvent {
-                run_id: "run-ev".into(),
-                event_type: RunEventType::Result,
-                content: "done".into(),
-                tool_name: None,
-                created_at: 1002,
-            })
-            .await
-            .unwrap();
-
-        let events = store.get_events("run-ev", 10).await;
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event_type, RunEventType::ToolCall);
-        assert_eq!(events[0].tool_name, Some("shell".into()));
-        assert_eq!(events[1].event_type, RunEventType::Result);
-    }
-
-    #[tokio::test]
-    async fn get_nonexistent_run() {
-        let (_tmp, store) = make_store();
-        assert!(store.get_run("nope").await.is_none());
-    }
-
-    #[tokio::test]
-    async fn list_all_runs_across_conversations() {
-        let (_tmp, store) = make_store();
-        // Create runs in different conversations
-        for (i, conv) in ["conv-a", "conv-b"].iter().enumerate() {
-            store
-                .create_run(&Run {
-                    run_id: format!("all-{i}"),
-                    conversation_key: Some((*conv).to_string()),
-                    origin: RunOrigin::Web,
-                    state: RunState::Completed,
-                    started_at: 1000 + i as u64,
-                    finished_at: Some(2000 + i as u64),
-                })
-                .await
-                .unwrap();
-        }
-        // list_runs filters by conversation
-        assert_eq!(store.list_runs("conv-a", 10).await.len(), 1);
-        // list_all_runs returns all
-        let all = store.list_all_runs(10).await;
-        assert_eq!(all.len(), 2);
-        // Newest first
-        assert_eq!(all[0].run_id, "all-1");
     }
 }

@@ -21,6 +21,8 @@ import IpcAudit from './pages/ipc/Audit';
 import IpcActivity from './pages/ipc/Activity';
 import IpcCron from './pages/ipc/Cron';
 import IpcConversation from './pages/ipc/Conversation';
+import IpcDeadLetters from './pages/ipc/DeadLetters';
+import IpcPipelineGraph from './pages/ipc/PipelineGraph';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { ThemeProvider } from './hooks/useTheme';
 import { setLocale, type Locale } from './lib/i18n';
@@ -216,6 +218,9 @@ function AppContent() {
           <Route path="/ipc/activity" element={<IpcActivity />} />
           <Route path="/ipc/cron" element={<IpcCron />} />
           <Route path="/ipc/conversation" element={<IpcConversation />} />
+          {/* Phase 4.5: Pipeline hardening */}
+          <Route path="/ipc/dead-letters" element={<IpcDeadLetters />} />
+          <Route path="/ipc/pipelines" element={<IpcPipelineGraph />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

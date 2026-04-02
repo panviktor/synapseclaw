@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use synapse_domain::ports::runtime::RuntimeAdapter;
 
 /// Native runtime — full access, runs on Mac/Linux/Windows/Docker/Raspberry Pi
+#[derive(Default)]
 pub struct NativeRuntime;
 
 impl NativeRuntime {

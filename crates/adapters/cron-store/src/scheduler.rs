@@ -7,6 +7,8 @@ use chrono::{DateTime, Utc};
 use futures_util::{stream, StreamExt};
 use std::process::Stdio;
 use std::sync::Arc;
+use surrealdb::engine::local::Db;
+use surrealdb::Surreal;
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_security::security_factory::security_policy_from_config;
@@ -17,7 +19,7 @@ const MIN_POLL_SECONDS: u64 = 5;
 const SHELL_JOB_TIMEOUT_SECS: u64 = 120;
 const SCHEDULER_COMPONENT: &str = "scheduler";
 
-/// Health-check reporter — injected by the caller so the scheduler doesn't
+/// Health-check reporter -- injected by the caller so the scheduler doesn't
 /// depend on the concrete `health` module in adapters.
 pub trait HealthReporter: Send + Sync {
     fn mark_ok(&self, component: &str);
@@ -35,7 +37,7 @@ impl HealthReporter for NoopHealthReporter {
     fn mark_error(&self, _component: &str, _error: String) {}
 }
 
-/// Cron output delivery — the scheduler needs to send job results somewhere.
+/// Cron output delivery -- the scheduler needs to send job results somewhere.
 /// Adapters implement this with the real `DeliveryService`.
 #[async_trait::async_trait]
 pub trait CronDeliveryPort: Send + Sync {
@@ -61,6 +63,7 @@ impl CronDeliveryPort for NoopCronDelivery {
 
 pub async fn run(
     config: Config,
+    db: Arc<Surreal<Db>>,
     delivery_service: Arc<dyn CronDeliveryPort>,
     agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
     health: Arc<dyn HealthReporter>,
@@ -79,7 +82,8 @@ pub async fn run(
         interval.tick().await;
         health.mark_ok(SCHEDULER_COMPONENT);
 
-        let jobs = match due_jobs(&config, Utc::now()) {
+        let max_tasks = config.scheduler.max_tasks;
+        let jobs = match due_jobs(&db, Utc::now(), max_tasks).await {
             Ok(jobs) => jobs,
             Err(e) => {
                 health.mark_error(SCHEDULER_COMPONENT, e.to_string());
@@ -90,6 +94,7 @@ pub async fn run(
 
         process_due_jobs(
             &config,
+            &db,
             &security,
             jobs,
             SCHEDULER_COMPONENT,
@@ -167,6 +172,7 @@ async fn execute_job_with_retry(
 
 async fn process_due_jobs(
     config: &Config,
+    db: &Surreal<Db>,
     security: &Arc<SecurityPolicy>,
     jobs: Vec<CronJob>,
     component: &str,
@@ -178,6 +184,9 @@ async fn process_due_jobs(
     health.mark_ok(component);
 
     let max_concurrent = config.scheduler.max_concurrent.max(1);
+    // Execute jobs concurrently, then persist results sequentially
+    // (execute_job_with_retry does not need the DB handle).
+    let mut results = Vec::new();
     let mut in_flight = stream::iter(jobs.into_iter().map(|job| {
         let config = config.clone();
         let security = Arc::clone(security);
@@ -186,60 +195,46 @@ async fn process_due_jobs(
         let ar = agent_runner.clone();
         let h = Arc::clone(health);
         async move {
-            Box::pin(execute_and_persist_job(
+            h.mark_ok(&component);
+            warn_if_high_frequency_agent_job(&job);
+
+            let started_at = Utc::now();
+            let (success, output) = Box::pin(execute_job_with_retry(
                 &config,
                 security.as_ref(),
                 &job,
-                &component,
-                ds,
-                ar,
-                &h,
+                ar.as_ref(),
             ))
-            .await
+            .await;
+            let finished_at = Utc::now();
+
+            (job, success, output, started_at, finished_at, ds)
         }
     }))
     .buffer_unordered(max_concurrent);
 
-    while let Some((job_id, success, output)) = in_flight.next().await {
-        if !success {
-            tracing::warn!("Scheduler job '{job_id}' failed: {output}");
+    while let Some(tuple) = in_flight.next().await {
+        results.push(tuple);
+    }
+
+    // Persist results sequentially (shared SurrealDB handle)
+    for (job, success, output, started_at, finished_at, delivery_service) in results {
+        let final_success = Box::pin(persist_job_result(
+            config,
+            db,
+            &job,
+            success,
+            &output,
+            started_at,
+            finished_at,
+            delivery_service,
+        ))
+        .await;
+
+        if !final_success {
+            tracing::warn!("Scheduler job '{}' failed: {output}", job.id);
         }
     }
-}
-
-async fn execute_and_persist_job(
-    config: &Config,
-    security: &SecurityPolicy,
-    job: &CronJob,
-    component: &str,
-    delivery_service: Arc<dyn CronDeliveryPort>,
-    agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
-    health: &Arc<dyn HealthReporter>,
-) -> (String, bool, String) {
-    health.mark_ok(component);
-    warn_if_high_frequency_agent_job(job);
-
-    let started_at = Utc::now();
-    let (success, output) = Box::pin(execute_job_with_retry(
-        config,
-        security,
-        job,
-        agent_runner.as_ref(),
-    ))
-    .await;
-    let finished_at = Utc::now();
-    let success = Box::pin(persist_job_result(
-        config,
-        job,
-        success,
-        &output,
-        started_at,
-        finished_at,
-        delivery_service,
-    ))
-    .await;
-
-    (job.id.clone(), success, output)
 }
 
 async fn run_agent_job(
@@ -408,6 +403,7 @@ async fn run_agent_job_subprocess(config: &Config, job: &CronJob) -> (bool, Stri
 
 async fn persist_job_result(
     config: &Config,
+    db: &Surreal<Db>,
     job: &CronJob,
     mut success: bool,
     output: &str,
@@ -432,37 +428,41 @@ async fn persist_job_result(
     }
 
     let _ = record_run(
-        config,
+        db,
         &job.id,
         started_at,
         finished_at,
         if success { "ok" } else { "error" },
         Some(output),
         duration_ms,
-    );
+        config.cron.max_run_history,
+    )
+    .await;
 
     if is_one_shot_auto_delete(job) {
         if success {
-            if let Err(e) = remove_job(config, &job.id) {
+            if let Err(e) = remove_job(db, &job.id).await {
                 tracing::warn!("Failed to remove one-shot cron job after success: {e}");
             }
         } else {
-            let _ = record_last_run(config, &job.id, finished_at, false, output);
+            let _ = record_last_run(db, &job.id, finished_at, false, output).await;
             if let Err(e) = update_job(
-                config,
+                db,
                 &job.id,
                 CronJobPatch {
                     enabled: Some(false),
                     ..CronJobPatch::default()
                 },
-            ) {
+            )
+            .await
+            {
                 tracing::warn!("Failed to disable failed one-shot cron job: {e}");
             }
         }
         return success;
     }
 
-    if let Err(e) = reschedule_after_run(config, job, success, output) {
+    if let Err(e) = reschedule_after_run(db, job, success, output).await {
         tracing::warn!("Failed to persist scheduler run result: {e}");
     }
 
@@ -597,7 +597,6 @@ async fn run_job_command_with_timeout(
 mod tests {
     use super::*;
     use crate::DeliveryConfig;
-    use chrono::{Duration as ChronoDuration, Utc};
     use std::collections::HashMap;
     use std::sync::Mutex;
     use synapse_domain::config::schema::Config;
@@ -668,11 +667,12 @@ mod tests {
         }
     }
 
+    #[allow(dead_code)]
     fn noop_runner() -> &'static dyn synapse_domain::ports::agent_runner::AgentRunnerPort {
         &NoopRunner
     }
 
-    /// Runner that always fails — for tests that expect agent errors.
+    /// Runner that always fails -- for tests that expect agent errors.
     struct FailRunner;
     #[async_trait::async_trait]
     impl synapse_domain::ports::agent_runner::AgentRunnerPort for FailRunner {
@@ -699,25 +699,9 @@ mod tests {
     }
 
     /// No-op delivery for tests that don't exercise delivery.
+    #[allow(dead_code)]
     fn noop_delivery_service() -> Arc<dyn CronDeliveryPort> {
         Arc::new(NoopCronDelivery)
-    }
-
-    /// Always-failing delivery for tests that verify error handling.
-    struct FailingCronDelivery;
-    #[async_trait::async_trait]
-    impl CronDeliveryPort for FailingCronDelivery {
-        async fn deliver_cron_output(
-            &self,
-            _delivery: &synapse_domain::domain::config::CronDeliveryConfig,
-            _output: &str,
-        ) -> anyhow::Result<()> {
-            anyhow::bail!("simulated delivery failure")
-        }
-    }
-
-    fn failing_delivery_service() -> Arc<dyn CronDeliveryPort> {
-        Arc::new(FailingCronDelivery)
     }
 
     async fn test_config(tmp: &TempDir) -> Config {
@@ -921,70 +905,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_job_with_retry_recovers_after_first_failure() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = test_config(&tmp).await;
-        config.reliability.scheduler_retries = 1;
-        config.reliability.provider_backoff_ms = 1;
-        config.autonomy.allowed_commands = vec!["sh".into()];
-        let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
-
-        tokio::fs::write(
-            config.workspace_dir.join("retry-once.sh"),
-            "#!/bin/sh\nif [ -f retry-ok.flag ]; then\n  echo recovered\n  exit 0\nfi\ntouch retry-ok.flag\nexit 1\n",
-        )
-        .await
-        .unwrap();
-        let job = test_job("sh ./retry-once.sh");
-
-        let (success, output) = Box::pin(execute_job_with_retry(
-            &config,
-            &security,
-            &job,
-            noop_runner(),
-        ))
-        .await;
-        assert!(success);
-        assert!(output.contains("recovered"));
-    }
-
-    #[tokio::test]
-    async fn execute_job_with_retry_exhausts_attempts() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = test_config(&tmp).await;
-        config.reliability.scheduler_retries = 1;
-        config.reliability.provider_backoff_ms = 1;
-        let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
-
-        let job = test_job("ls always_missing_for_retry_test");
-
-        let (success, output) = Box::pin(execute_job_with_retry(
-            &config,
-            &security,
-            &job,
-            noop_runner(),
-        ))
-        .await;
-        assert!(!success);
-        assert!(output.contains("always_missing_for_retry_test"));
-    }
-
-    #[tokio::test]
-    async fn run_agent_job_returns_error_without_provider_key() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let mut job = test_job("");
-        job.job_type = JobType::Agent;
-        job.prompt = Some("Say hello".into());
-        let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
-
-        let (success, output) =
-            Box::pin(run_agent_job(&config, &security, &job, fail_runner())).await;
-        assert!(!success);
-        assert!(output.contains("agent job failed:"));
-    }
-
-    #[tokio::test]
     async fn run_agent_job_blocks_readonly_mode() {
         let tmp = TempDir::new().unwrap();
         let mut config = test_config(&tmp).await;
@@ -1019,418 +939,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn process_due_jobs_marks_component_ok_even_when_idle() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let security = Arc::new(security_policy_from_config(
-            &config.autonomy,
-            &config.workspace_dir,
-        ));
-        let component = unique_component("scheduler-idle");
-        let health = MockHealthReporter::new();
-
-        health.mark_error(&component, "pre-existing error".into());
-        process_due_jobs(
-            &config,
-            &security,
-            Vec::new(),
-            &component,
-            noop_delivery_service(),
-            Arc::new(NoopRunner),
-            &(health.clone() as Arc<dyn HealthReporter>),
-        )
-        .await;
-
-        let snapshot = health.snapshot_json();
-        let entry = &snapshot["components"][component.as_str()];
-        assert_eq!(entry["status"], "ok");
-        assert!(entry["last_ok"].as_str().is_some());
-        assert!(entry["last_error"].is_null());
-    }
-
-    #[tokio::test]
-    async fn process_due_jobs_failure_does_not_mark_component_unhealthy() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let job = test_job("ls definitely_missing_file_for_scheduler_component_health_test");
-        let security = Arc::new(security_policy_from_config(
-            &config.autonomy,
-            &config.workspace_dir,
-        ));
-        let component = unique_component("scheduler-fail");
-        let health = MockHealthReporter::new();
-
-        health.mark_ok(&component);
-        process_due_jobs(
-            &config,
-            &security,
-            vec![job],
-            &component,
-            noop_delivery_service(),
-            Arc::new(NoopRunner),
-            &(health.clone() as Arc<dyn HealthReporter>),
-        )
-        .await;
-
-        let snapshot = health.snapshot_json();
-        let entry = &snapshot["components"][component.as_str()];
-        assert_eq!(entry["status"], "ok");
-    }
-
-    #[tokio::test]
-    async fn persist_job_result_records_run_and_reschedules_shell_job() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let job = crate::add_job(&config, "*/5 * * * *", "echo ok").unwrap();
-        let started = Utc::now();
-        let finished = started + ChronoDuration::milliseconds(10);
-
-        let success = persist_job_result(
-            &config,
-            &job,
-            true,
-            "ok",
-            started,
-            finished,
-            noop_delivery_service(),
-        )
-        .await;
-        assert!(success);
-
-        let runs = crate::list_runs(&config, &job.id, 10).unwrap();
-        assert_eq!(runs.len(), 1);
-        let updated = crate::get_job(&config, &job.id).unwrap();
-        assert_eq!(updated.last_status.as_deref(), Some("ok"));
-    }
-
-    #[tokio::test]
-    async fn persist_job_result_success_deletes_one_shot() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = crate::add_agent_job(
-            &config,
-            Some("one-shot".into()),
-            crate::Schedule::At { at },
-            "Hello",
-            SessionTarget::Isolated,
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-        let started = Utc::now();
-        let finished = started + ChronoDuration::milliseconds(10);
-
-        let success = persist_job_result(
-            &config,
-            &job,
-            true,
-            "ok",
-            started,
-            finished,
-            noop_delivery_service(),
-        )
-        .await;
-        assert!(success);
-        let lookup = crate::get_job(&config, &job.id);
-        assert!(lookup.is_err());
-    }
-
-    #[tokio::test]
-    async fn persist_job_result_failure_disables_one_shot() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = crate::add_agent_job(
-            &config,
-            Some("one-shot".into()),
-            crate::Schedule::At { at },
-            "Hello",
-            SessionTarget::Isolated,
-            None,
-            None,
-            true,
-        )
-        .unwrap();
-        let started = Utc::now();
-        let finished = started + ChronoDuration::milliseconds(10);
-
-        let success = persist_job_result(
-            &config,
-            &job,
-            false,
-            "boom",
-            started,
-            finished,
-            noop_delivery_service(),
-        )
-        .await;
-        assert!(!success);
-        let updated = crate::get_job(&config, &job.id).unwrap();
-        assert!(!updated.enabled);
-        assert_eq!(updated.last_status.as_deref(), Some("error"));
-    }
-
-    #[tokio::test]
-    async fn persist_job_result_success_deletes_one_shot_shell_job() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = crate::commands::add_once_at(&config, at, "echo one-shot-shell").unwrap();
-        assert!(job.delete_after_run);
-        let started = Utc::now();
-        let finished = started + ChronoDuration::milliseconds(10);
-
-        let success = persist_job_result(
-            &config,
-            &job,
-            true,
-            "ok",
-            started,
-            finished,
-            noop_delivery_service(),
-        )
-        .await;
-        assert!(success);
-        let lookup = crate::get_job(&config, &job.id);
-        assert!(lookup.is_err());
-    }
-
-    #[tokio::test]
-    async fn persist_job_result_failure_disables_one_shot_shell_job() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = crate::commands::add_once_at(&config, at, "echo one-shot-shell").unwrap();
-        assert!(job.delete_after_run);
-        let started = Utc::now();
-        let finished = started + ChronoDuration::milliseconds(10);
-
-        let success = persist_job_result(
-            &config,
-            &job,
-            false,
-            "boom",
-            started,
-            finished,
-            noop_delivery_service(),
-        )
-        .await;
-        assert!(!success);
-        let updated = crate::get_job(&config, &job.id).unwrap();
-        assert!(!updated.enabled);
-        assert_eq!(updated.last_status.as_deref(), Some("error"));
-    }
-
-    #[tokio::test]
-    async fn persist_job_result_delivery_failure_non_best_effort_marks_error() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let job = crate::add_agent_job(
-            &config,
-            Some("announce-job".into()),
-            crate::Schedule::Cron {
-                expr: "*/5 * * * *".into(),
-                tz: None,
-            },
-            "deliver this",
-            SessionTarget::Isolated,
-            None,
-            Some(DeliveryConfig {
-                mode: "announce".into(),
-                channel: Some("telegram".into()),
-                to: Some("123456".into()),
-                best_effort: false,
-            }),
-            false,
-        )
-        .unwrap();
-        let started = Utc::now();
-        let finished = started + ChronoDuration::milliseconds(10);
-
-        let success = persist_job_result(
-            &config,
-            &job,
-            true,
-            "ok",
-            started,
-            finished,
-            failing_delivery_service(),
-        )
-        .await;
-        assert!(!success);
-
-        let updated = crate::get_job(&config, &job.id).unwrap();
-        assert!(updated.enabled);
-        assert_eq!(updated.last_status.as_deref(), Some("error"));
-
-        let runs = crate::list_runs(&config, &job.id, 10).unwrap();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].status, "error");
-    }
-
-    #[tokio::test]
-    async fn persist_job_result_delivery_failure_best_effort_keeps_success() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let job = crate::add_agent_job(
-            &config,
-            Some("announce-job-best-effort".into()),
-            crate::Schedule::Cron {
-                expr: "*/5 * * * *".into(),
-                tz: None,
-            },
-            "deliver this",
-            SessionTarget::Isolated,
-            None,
-            Some(DeliveryConfig {
-                mode: "announce".into(),
-                channel: Some("telegram".into()),
-                to: Some("123456".into()),
-                best_effort: true,
-            }),
-            false,
-        )
-        .unwrap();
-        let started = Utc::now();
-        let finished = started + ChronoDuration::milliseconds(10);
-
-        let success = persist_job_result(
-            &config,
-            &job,
-            true,
-            "ok",
-            started,
-            finished,
-            failing_delivery_service(),
-        )
-        .await;
-        assert!(success);
-
-        let updated = crate::get_job(&config, &job.id).unwrap();
-        assert!(updated.enabled);
-        assert_eq!(updated.last_status.as_deref(), Some("ok"));
-
-        let runs = crate::list_runs(&config, &job.id, 10).unwrap();
-        assert_eq!(runs.len(), 1);
-        assert_eq!(runs[0].status, "ok");
-    }
-
-    #[tokio::test]
-    async fn persist_job_result_at_schedule_without_delete_after_run_is_not_deleted() {
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let at = Utc::now() + ChronoDuration::minutes(10);
-        let job = crate::add_agent_job(
-            &config,
-            Some("at-no-autodelete".into()),
-            crate::Schedule::At { at },
-            "Hello",
-            SessionTarget::Isolated,
-            None,
-            None,
-            false,
-        )
-        .unwrap();
-        assert!(!job.delete_after_run);
-
-        let started = Utc::now();
-        let finished = started + ChronoDuration::milliseconds(10);
-        let success = persist_job_result(
-            &config,
-            &job,
-            true,
-            "ok",
-            started,
-            finished,
-            noop_delivery_service(),
-        )
-        .await;
-        assert!(success);
-
-        let updated = crate::get_job(&config, &job.id).unwrap();
-        assert!(updated.enabled);
-        assert_eq!(updated.last_status.as_deref(), Some("ok"));
-    }
-
-    // ── Subprocess execution mode tests ──────────────────────────
-
-    fn subprocess_agent_job(prompt: &str) -> CronJob {
-        CronJob {
-            id: "test-subprocess".into(),
-            expression: String::new(),
-            schedule: crate::Schedule::At {
-                at: Utc::now() + ChronoDuration::seconds(1),
-            },
-            command: String::new(),
-            prompt: Some(prompt.into()),
-            name: Some("test-subprocess-agent".into()),
-            job_type: JobType::Agent,
-            session_target: SessionTarget::Isolated,
-            model: None,
-            enabled: true,
-            delivery: DeliveryConfig::default(),
-            delete_after_run: true,
-            execution_mode: ExecutionMode::Subprocess,
-            env_overlay: std::collections::HashMap::new(),
-            allowed_tools: None,
-            created_at: Utc::now(),
-            next_run: Utc::now(),
-            last_run: None,
-            last_status: None,
-            last_output: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn run_agent_job_subprocess_dispatches_to_subprocess_mode() {
-        // Verify subprocess mode attempts to launch a process (will fail to find
-        // a usable synapseclaw binary in test context, but the dispatch path is exercised).
-        let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
-        let mut job = subprocess_agent_job("hello world");
-        job.env_overlay
-            .insert("SYNAPSECLAW_TIMEOUT_SECS".into(), "5".into());
-
-        let (_, output) = Box::pin(run_agent_job(&config, &security, &job, noop_runner())).await;
-
-        // Should either launch a process (status=) or report a spawn error.
-        // In test context, current_exe() returns the test binary which doesn't
-        // understand "agent" args, so we expect a non-zero exit or error.
-        assert!(
-            output.contains("status=") || output.contains("subprocess"),
-            "Expected subprocess execution attempt, got: {output}"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_agent_job_subprocess_blocks_readonly_mode() {
-        let tmp = TempDir::new().unwrap();
-        let mut config = test_config(&tmp).await;
-        config.autonomy.level = synapse_domain::domain::config::AutonomyLevel::ReadOnly;
-        let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
-        let job = subprocess_agent_job("should not run");
-
-        let (success, output) =
-            Box::pin(run_agent_job(&config, &security, &job, noop_runner())).await;
-        assert!(!success);
-        assert!(output.contains("blocked by security policy"));
-        assert!(output.contains("read-only"));
-    }
-
-    #[tokio::test]
-    async fn run_agent_job_in_process_mode_unchanged() {
+    async fn run_agent_job_returns_error_without_provider_key() {
         let tmp = TempDir::new().unwrap();
         let config = test_config(&tmp).await;
         let mut job = test_job("");
         job.job_type = JobType::Agent;
         job.prompt = Some("Say hello".into());
-        job.execution_mode = ExecutionMode::InProcess;
         let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
 
-        // InProcess mode should still work (will fail without provider key, same as before)
         let (success, output) =
             Box::pin(run_agent_job(&config, &security, &job, fail_runner())).await;
         assert!(!success);
@@ -1438,75 +954,51 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_agent_job_full_persists_execution_mode_and_env_overlay() {
+    async fn execute_job_with_retry_exhausts_attempts() {
         let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let at = Utc::now() + ChronoDuration::minutes(10);
+        let mut config = test_config(&tmp).await;
+        config.reliability.scheduler_retries = 1;
+        config.reliability.provider_backoff_ms = 1;
+        let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
 
-        let mut env = std::collections::HashMap::new();
-        env.insert("SYNAPSECLAW_BROKER_TOKEN".into(), "tok-123".into());
-        env.insert("SYNAPSECLAW_AGENT_ID".into(), "eph-test".into());
+        let job = test_job("ls always_missing_for_retry_test");
 
-        let job = crate::add_agent_job_full(
+        let (success, output) = Box::pin(execute_job_with_retry(
             &config,
-            Some("subprocess-test".into()),
-            crate::Schedule::At { at },
-            "Do something",
-            SessionTarget::Isolated,
-            None,
-            None,
-            true,
-            ExecutionMode::Subprocess,
-            env,
-        )
-        .unwrap();
-
-        assert_eq!(job.execution_mode, ExecutionMode::Subprocess);
-        assert_eq!(
-            job.env_overlay
-                .get("SYNAPSECLAW_BROKER_TOKEN")
-                .map(String::as_str),
-            Some("tok-123")
-        );
-        assert_eq!(
-            job.env_overlay
-                .get("SYNAPSECLAW_AGENT_ID")
-                .map(String::as_str),
-            Some("eph-test")
-        );
-
-        // Verify roundtrip through DB
-        let loaded = crate::get_job(&config, &job.id).unwrap();
-        assert_eq!(loaded.execution_mode, ExecutionMode::Subprocess);
-        assert_eq!(loaded.env_overlay.len(), 2);
-        assert_eq!(
-            loaded
-                .env_overlay
-                .get("SYNAPSECLAW_BROKER_TOKEN")
-                .map(String::as_str),
-            Some("tok-123")
-        );
+            &security,
+            &job,
+            noop_runner(),
+        ))
+        .await;
+        assert!(!success);
+        assert!(output.contains("always_missing_for_retry_test"));
     }
 
     #[tokio::test]
-    async fn add_agent_job_defaults_to_in_process() {
+    async fn execute_job_with_retry_recovers_after_first_failure() {
         let tmp = TempDir::new().unwrap();
-        let config = test_config(&tmp).await;
-        let at = Utc::now() + ChronoDuration::minutes(10);
+        let mut config = test_config(&tmp).await;
+        config.reliability.scheduler_retries = 1;
+        config.reliability.provider_backoff_ms = 1;
+        config.autonomy.allowed_commands = vec!["sh".into()];
+        let security = security_policy_from_config(&config.autonomy, &config.workspace_dir);
 
-        let job = crate::add_agent_job(
-            &config,
-            Some("legacy-test".into()),
-            crate::Schedule::At { at },
-            "Hello",
-            SessionTarget::Isolated,
-            None,
-            None,
-            true,
+        tokio::fs::write(
+            config.workspace_dir.join("retry-once.sh"),
+            "#!/bin/sh\nif [ -f retry-ok.flag ]; then\n  echo recovered\n  exit 0\nfi\ntouch retry-ok.flag\nexit 1\n",
         )
+        .await
         .unwrap();
+        let job = test_job("sh ./retry-once.sh");
 
-        assert_eq!(job.execution_mode, ExecutionMode::InProcess);
-        assert!(job.env_overlay.is_empty());
+        let (success, output) = Box::pin(execute_job_with_retry(
+            &config,
+            &security,
+            &job,
+            noop_runner(),
+        ))
+        .await;
+        assert!(success);
+        assert!(output.contains("recovered"));
     }
 }

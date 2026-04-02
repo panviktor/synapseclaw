@@ -23,18 +23,17 @@ impl QuarantineAdapter {
 #[async_trait]
 impl QuarantinePort for QuarantineAdapter {
     async fn quarantine_agent(&self, agent_id: &str) -> Result<u64> {
-        let count = self.db.quarantine_pending_messages(agent_id);
+        let count = self.db.quarantine_pending_messages(agent_id).await;
         Ok(count as u64)
     }
 
     async fn promote_message(&self, message_id: i64, to_agent: &str) -> Result<i64> {
-        // Fetch original message to get metadata for promotion
         let original = self
             .db
             .get_message(message_id)
+            .await
             .ok_or_else(|| anyhow::anyhow!("Message {message_id} not found"))?;
 
-        // Wrap payload in promoted_quarantine envelope
         let promoted_payload = serde_json::json!({
             "original_id": message_id,
             "original_kind": original.kind,
@@ -54,6 +53,7 @@ impl QuarantinePort for QuarantineAdapter {
                 original.priority,
                 None,
             )
+            .await
             .map_err(|e| anyhow::anyhow!("Promote insert error: {e:?}"))?;
 
         Ok(new_id)
@@ -62,22 +62,26 @@ impl QuarantinePort for QuarantineAdapter {
     async fn dismiss_message(&self, message_id: i64) -> Result<()> {
         self.db
             .dismiss_message(message_id)
+            .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     async fn list_quarantine(&self, limit: u32) -> Result<Vec<QuarantineItem>> {
-        let rows = self.db.list_messages_admin(
-            None,
-            None,
-            None,
-            Some(true),
-            None,
-            None,
-            None,
-            None,
-            limit,
-            0,
-        );
+        let rows = self
+            .db
+            .list_messages_admin(
+                None,
+                None,
+                None,
+                Some(true),
+                None,
+                None,
+                None,
+                None,
+                limit,
+                0,
+            )
+            .await;
         Ok(rows
             .into_iter()
             .map(|r| QuarantineItem {

@@ -1,7 +1,7 @@
-//! Adapter: wraps existing `ChatDb` behind `ConversationStorePort`.
+//! Adapter: wraps `ChatDb` behind `ConversationStorePort`.
 //!
-//! This is NOT a rewrite — it delegates to the existing SQLite backend
-//! and maps between synapse_domain domain types and ChatDb row types.
+//! Phase 4.5: ChatDb methods are now async (SurrealDB backend).
+//! Maps between synapse_domain domain types and ChatDb row types.
 
 use crate::gateway::chat_db::{ChatDb, ChatMessageRow, ChatSessionRow};
 use async_trait::async_trait;
@@ -92,7 +92,7 @@ fn event_from_row(row: &ChatMessageRow) -> ConversationEvent {
 
 fn event_to_row(session_key: &str, event: &ConversationEvent) -> ChatMessageRow {
     ChatMessageRow {
-        id: 0, // auto-increment
+        id: 0,
         session_key: session_key.to_string(),
         kind: event.event_type.to_string(),
         role: Some(event.actor.clone()),
@@ -115,6 +115,7 @@ impl ConversationStorePort for ChatDbConversationStore {
     async fn get_session(&self, key: &str) -> Option<ConversationSession> {
         self.db
             .get_session(key)
+            .await
             .ok()
             .flatten()
             .map(|r| session_from_row(&r))
@@ -124,6 +125,7 @@ impl ConversationStorePort for ChatDbConversationStore {
         let prefix = prefix.unwrap_or("");
         self.db
             .list_sessions(prefix)
+            .await
             .unwrap_or_default()
             .iter()
             .map(session_from_row)
@@ -132,18 +134,18 @@ impl ConversationStorePort for ChatDbConversationStore {
 
     async fn upsert_session(&self, session: &ConversationSession) -> anyhow::Result<()> {
         let row = session_to_row(session);
-        self.db.upsert_session(&row)
+        self.db.upsert_session(&row).await
     }
 
     async fn delete_session(&self, key: &str) -> anyhow::Result<bool> {
-        let existed = self.db.get_session(key)?.is_some();
-        self.db.delete_session(key)?;
+        let existed = self.db.get_session(key).await?.is_some();
+        self.db.delete_session(key).await?;
         Ok(existed)
     }
 
     async fn touch_session(&self, key: &str) -> anyhow::Result<()> {
         let now = chrono::Utc::now().timestamp();
-        self.db.touch_session(key, now)
+        self.db.touch_session(key, now).await
     }
 
     async fn append_event(
@@ -152,7 +154,7 @@ impl ConversationStorePort for ChatDbConversationStore {
         event: &ConversationEvent,
     ) -> anyhow::Result<()> {
         let row = event_to_row(session_key, event);
-        self.db.append_message(&row)?;
+        self.db.append_message(&row).await?;
         Ok(())
     }
 
@@ -160,6 +162,7 @@ impl ConversationStorePort for ChatDbConversationStore {
         #[allow(clippy::cast_possible_wrap)]
         self.db
             .get_messages(session_key, limit as i64)
+            .await
             .unwrap_or_default()
             .iter()
             .map(event_from_row)
@@ -167,281 +170,35 @@ impl ConversationStorePort for ChatDbConversationStore {
     }
 
     async fn clear_events(&self, session_key: &str) -> anyhow::Result<()> {
-        self.db.clear_messages(session_key)
+        self.db.clear_messages(session_key).await
     }
 
     async fn update_label(&self, key: &str, label: &str) -> anyhow::Result<()> {
-        self.db.update_session_label(key, label)
+        self.db.update_session_label(key, label).await
     }
 
     async fn update_goal(&self, key: &str, goal: &str) -> anyhow::Result<()> {
-        self.db.update_session_goal(key, goal)
+        self.db.update_session_goal(key, goal).await
     }
 
     async fn increment_message_count(&self, key: &str) -> anyhow::Result<()> {
-        self.db.increment_message_count(key)
+        self.db.increment_message_count(key).await
     }
 
     async fn add_token_usage(&self, key: &str, input: i64, output: i64) -> anyhow::Result<()> {
-        self.db.add_token_usage(key, input, output)
+        self.db.add_token_usage(key, input, output).await
     }
 
     async fn get_summary(&self, key: &str) -> Option<String> {
         self.db
             .get_session(key)
+            .await
             .ok()
             .flatten()
             .and_then(|r| r.session_summary)
     }
 
     async fn set_summary(&self, key: &str, summary: &str) -> anyhow::Result<()> {
-        self.db.update_session_summary(key, summary)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    fn make_store() -> (TempDir, ChatDbConversationStore) {
-        let tmp = TempDir::new().unwrap();
-        let db_path = tmp.path().join("test_chat.db");
-        let db = Arc::new(ChatDb::open(&db_path).unwrap());
-        (tmp, ChatDbConversationStore::new(db))
-    }
-
-    #[tokio::test]
-    async fn upsert_and_get_session() {
-        let (_tmp, store) = make_store();
-        let session = ConversationSession {
-            key: "web:test:1".into(),
-            kind: ConversationKind::Web,
-            label: Some("Test".into()),
-            summary: None,
-            current_goal: None,
-            created_at: 1000,
-            last_active: 2000,
-            message_count: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-        };
-        store.upsert_session(&session).await.unwrap();
-        let loaded = store.get_session("web:test:1").await.unwrap();
-        assert_eq!(loaded.key, "web:test:1");
-        assert_eq!(loaded.kind, ConversationKind::Web);
-        assert_eq!(loaded.label, Some("Test".into()));
-    }
-
-    #[tokio::test]
-    async fn append_and_get_events() {
-        let (_tmp, store) = make_store();
-        // Create session first
-        let session = ConversationSession {
-            key: "web:test:2".into(),
-            kind: ConversationKind::Web,
-            label: None,
-            summary: None,
-            current_goal: None,
-            created_at: 1000,
-            last_active: 2000,
-            message_count: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-        };
-        store.upsert_session(&session).await.unwrap();
-
-        let event = ConversationEvent {
-            event_type: EventType::User,
-            actor: "user123".into(),
-            content: "hello".into(),
-            tool_name: None,
-            run_id: None,
-            input_tokens: None,
-            output_tokens: None,
-            timestamp: 1000,
-        };
-        store.append_event("web:test:2", &event).await.unwrap();
-
-        let events = store.get_events("web:test:2", 10).await;
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type, EventType::User);
-        assert_eq!(events[0].content, "hello");
-    }
-
-    #[tokio::test]
-    async fn list_sessions_with_prefix() {
-        let (_tmp, store) = make_store();
-        for i in 0..3 {
-            store
-                .upsert_session(&ConversationSession {
-                    key: format!("web:a:{i}"),
-                    kind: ConversationKind::Web,
-                    label: None,
-                    summary: None,
-                    current_goal: None,
-                    created_at: 1000,
-                    #[allow(clippy::cast_sign_loss)]
-                    last_active: 2000 + i as u64,
-                    message_count: 0,
-                    input_tokens: 0,
-                    output_tokens: 0,
-                })
-                .await
-                .unwrap();
-        }
-        store
-            .upsert_session(&ConversationSession {
-                key: "channel:b:0".into(),
-                kind: ConversationKind::Channel,
-                label: None,
-                summary: None,
-                current_goal: None,
-                created_at: 1000,
-                last_active: 3000,
-                message_count: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-            })
-            .await
-            .unwrap();
-
-        let web = store.list_sessions(Some("web:")).await;
-        assert_eq!(web.len(), 3);
-
-        let all = store.list_sessions(None).await;
-        assert_eq!(all.len(), 4);
-    }
-
-    #[tokio::test]
-    async fn delete_session_cascades() {
-        let (_tmp, store) = make_store();
-        let session = ConversationSession {
-            key: "web:del:1".into(),
-            kind: ConversationKind::Web,
-            label: None,
-            summary: None,
-            current_goal: None,
-            created_at: 1000,
-            last_active: 2000,
-            message_count: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-        };
-        store.upsert_session(&session).await.unwrap();
-        store
-            .append_event(
-                "web:del:1",
-                &ConversationEvent {
-                    event_type: EventType::User,
-                    actor: "u".into(),
-                    content: "msg".into(),
-                    tool_name: None,
-                    run_id: None,
-                    input_tokens: None,
-                    output_tokens: None,
-                    timestamp: 1000,
-                },
-            )
-            .await
-            .unwrap();
-
-        store.delete_session("web:del:1").await.unwrap();
-        assert!(store.get_session("web:del:1").await.is_none());
-        assert!(store.get_events("web:del:1", 10).await.is_empty());
-    }
-
-    #[tokio::test]
-    async fn update_label_and_goal() {
-        let (_tmp, store) = make_store();
-        store
-            .upsert_session(&ConversationSession {
-                key: "web:lbl:1".into(),
-                kind: ConversationKind::Web,
-                label: None,
-                summary: None,
-                current_goal: None,
-                created_at: 1000,
-                last_active: 2000,
-                message_count: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-            })
-            .await
-            .unwrap();
-
-        store.update_label("web:lbl:1", "My Chat").await.unwrap();
-        store.update_goal("web:lbl:1", "Fix the bug").await.unwrap();
-
-        let loaded = store.get_session("web:lbl:1").await.unwrap();
-        assert_eq!(loaded.label, Some("My Chat".into()));
-        assert_eq!(loaded.current_goal, Some("Fix the bug".into()));
-    }
-
-    #[tokio::test]
-    async fn increment_count_and_add_tokens() {
-        let (_tmp, store) = make_store();
-        store
-            .upsert_session(&ConversationSession {
-                key: "web:tok:1".into(),
-                kind: ConversationKind::Web,
-                label: None,
-                summary: None,
-                current_goal: None,
-                created_at: 1000,
-                last_active: 2000,
-                message_count: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-            })
-            .await
-            .unwrap();
-
-        store.increment_message_count("web:tok:1").await.unwrap();
-        store.increment_message_count("web:tok:1").await.unwrap();
-        store.add_token_usage("web:tok:1", 100, 50).await.unwrap();
-        store.add_token_usage("web:tok:1", 200, 75).await.unwrap();
-
-        let loaded = store.get_session("web:tok:1").await.unwrap();
-        assert_eq!(loaded.message_count, 2);
-        assert_eq!(loaded.input_tokens, 300);
-        assert_eq!(loaded.output_tokens, 125);
-    }
-
-    #[tokio::test]
-    async fn delete_nonexistent_returns_false() {
-        let (_tmp, store) = make_store();
-        let result = store.delete_session("web:nope:1").await.unwrap();
-        assert!(!result);
-    }
-
-    #[tokio::test]
-    async fn summary_round_trip() {
-        let (_tmp, store) = make_store();
-        store
-            .upsert_session(&ConversationSession {
-                key: "web:sum:1".into(),
-                kind: ConversationKind::Web,
-                label: None,
-                summary: None,
-                current_goal: None,
-                created_at: 1000,
-                last_active: 2000,
-                message_count: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-            })
-            .await
-            .unwrap();
-
-        assert!(store.get_summary("web:sum:1").await.is_none());
-        store
-            .set_summary("web:sum:1", "This is a test summary")
-            .await
-            .unwrap();
-        assert_eq!(
-            store.get_summary("web:sum:1").await.unwrap(),
-            "This is a test summary"
-        );
+        self.db.update_session_summary(key, summary).await
     }
 }

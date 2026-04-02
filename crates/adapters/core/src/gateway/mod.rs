@@ -408,6 +408,10 @@ pub struct AppState {
     pub tool_middleware: Option<
         Arc<synapse_domain::application::services::tool_middleware_service::ToolMiddlewareChain>,
     >,
+    /// Phase 4.5: Dead letter queue for failed pipeline steps
+    pub dead_letter: Option<Arc<dyn synapse_domain::ports::dead_letter::DeadLetterPort>>,
+    /// Phase 4.5: Shared SurrealDB handle for all components
+    pub surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -421,6 +425,8 @@ pub async fn run_gateway(
     shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     agent_runner: Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
     shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
+    shared_dead_letter: Option<Arc<dyn synapse_domain::ports::dead_letter::DeadLetterPort>>,
+    shared_surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -481,6 +487,7 @@ pub async fn run_gateway(
                 config.api_key.as_deref(),
             )
             .await?
+            .memory
         }
     };
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
@@ -515,6 +522,7 @@ pub async fn run_gateway(
         &config,
         None, // IPC tools get their own client from config
         Some(agent_runner.clone()),
+        shared_surreal.clone(),
     );
     let tools_registry: Arc<Vec<ToolSpec>> =
         Arc::new(tools_registry_raw.iter().map(|t| t.spec()).collect());
@@ -790,17 +798,10 @@ pub async fn run_gateway(
         None
     };
 
-    // ── Chat DB (SQLite persistence for web chat sessions) ──
-    let chat_db = {
-        let chat_dir = config.workspace_dir.join("chat");
-        match chat_db::ChatDb::open(&chat_dir.join("sessions.db")) {
-            Ok(db) => Some(Arc::new(db)),
-            Err(e) => {
-                tracing::warn!("Failed to open chat database: {e}");
-                None
-            }
-        }
-    };
+    // ── Chat DB (SurrealDB persistence for web chat sessions) ──
+    let chat_db: Option<Arc<chat_db::ChatDb>> = shared_surreal
+        .as_ref()
+        .map(|s| Arc::new(chat_db::ChatDb::new(Arc::clone(s))));
 
     // ── Phase 4.0: ConversationStorePort (wraps ChatDb) ──
     let conversation_store: Option<
@@ -810,11 +811,11 @@ pub async fn run_gateway(
             as Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>
     });
 
-    // ── Phase 4.0: RunStorePort (wraps ChatDb) ──
+    // ── Phase 4.0: RunStorePort (SurrealDB-backed) ──
     let run_store: Option<Arc<dyn synapse_domain::ports::run_store::RunStorePort>> =
-        chat_db.as_ref().map(|db| {
-            Arc::new(crate::storage::run_store::ChatDbRunStore::new(Arc::clone(
-                db,
+        shared_surreal.as_ref().map(|s| {
+            Arc::new(crate::storage::run_store::SurrealRunStore::new(Arc::clone(
+                s,
             ))) as Arc<dyn synapse_domain::ports::run_store::RunStorePort>
         });
 
@@ -872,15 +873,11 @@ pub async fn run_gateway(
         ipc_prompt_guard,
         ipc_leak_detector,
         ipc_db: if config.agents_ipc.enabled {
-            let ipc_dir = config.workspace_dir.join("ipc");
-            if let Err(e) = std::fs::create_dir_all(&ipc_dir) {
-                tracing::warn!("Failed to create IPC directory: {e}");
-            }
-            match ipc::IpcDb::open(&ipc_dir.join("agents.db")) {
-                Ok(db) => {
-                    let db = Arc::new(db);
+            match shared_surreal.as_ref() {
+                Some(surreal_arc) => {
+                    let db = Arc::new(ipc::IpcDb::new(surreal_arc.clone()));
                     // Broker restart recovery: interrupt orphaned ephemeral sessions
-                    let interrupted = db.interrupt_all_ephemeral_spawn_runs();
+                    let interrupted = db.interrupt_all_ephemeral_spawn_runs().await;
                     if interrupted > 0 {
                         tracing::info!(
                             interrupted = interrupted,
@@ -889,8 +886,8 @@ pub async fn run_gateway(
                     }
                     Some(db)
                 }
-                Err(e) => {
-                    tracing::error!("Failed to open IPC database: {e}");
+                None => {
+                    tracing::error!("IPC enabled but SurrealDB handle not available");
                     None
                 }
             }
@@ -930,11 +927,19 @@ pub async fn run_gateway(
         },
         ipc_push_signal: None, // initialized below for agent-side inbox processor
         channel_session_backend: if config.channels_config.session_persistence {
-            match crate::channels::session_store::SessionStore::new(&config.workspace_dir) {
-                Ok(store) => Some(Arc::new(store)),
-                Err(e) => {
-                    tracing::warn!("Channel session backend disabled: {e}");
-                    None
+            if let Some(ref db) = shared_surreal {
+                Some(Arc::new(
+                    crate::channels::session_surreal::SurrealSessionBackend::new(Arc::clone(db)),
+                )
+                    as Arc<dyn crate::channels::session_backend::SessionBackend>)
+            } else {
+                match crate::channels::session_store::SessionStore::new(&config.workspace_dir) {
+                    Ok(store) => Some(Arc::new(store)
+                        as Arc<dyn crate::channels::session_backend::SessionBackend>),
+                    Err(e) => {
+                        tracing::warn!("Channel session backend disabled: {e}");
+                        None
+                    }
                 }
             }
         } else {
@@ -947,6 +952,8 @@ pub async fn run_gateway(
         pipeline_executor: None, // initialized below if pipelines enabled
         message_router: None,    // initialized below if pipelines enabled
         tool_middleware: None,   // initialized below if pipelines enabled
+        dead_letter: shared_dead_letter,
+        surreal: shared_surreal,
     };
 
     // Phase 4.1: Initialize pipeline engine if enabled
@@ -993,7 +1000,7 @@ pub async fn run_gateway(
                             .clone()
                             .or_else(|| config.agents_ipc.agent_id.clone())
                             .unwrap_or_else(|| config.agents_ipc.role.clone());
-                        let db_seq = db.get_last_sender_seq(&runner_id);
+                        let db_seq = db.get_last_sender_seq(&runner_id).await;
                         shared.sync_sender_seq(db_seq);
                     }
                     Arc::clone(shared)
@@ -1027,7 +1034,7 @@ pub async fn run_gateway(
                         );
                     }
                     if let Some(ref db) = state.ipc_db {
-                        let db_seq = db.get_last_sender_seq(&runner_id);
+                        let db_seq = db.get_last_sender_seq(&runner_id).await;
                         client.sync_sender_seq(db_seq);
                     }
 
@@ -1103,6 +1110,11 @@ pub async fn run_gateway(
             ));
         }
 
+        // Phase 4.5: DLQ backed by shared SurrealDB instance
+        if state.dead_letter.is_some() {
+            tracing::info!("dead letter queue: using shared SurrealDB backend");
+        }
+
         state.pipeline_store = Some(pipeline_store.clone());
         state.pipeline_executor = pipeline_executor;
         state.message_router = Some(message_router);
@@ -1134,6 +1146,7 @@ pub async fn run_gateway(
                     pipeline_store: ps.clone(),
                     run_store: rs.clone(),
                     executor: pe.clone(),
+                    dead_letter: state.dead_letter.clone(),
                 };
             let report =
                 synapse_domain::application::use_cases::resume_pipeline::recover_all(&ports).await;
@@ -1152,9 +1165,9 @@ pub async fn run_gateway(
     // Phase 3.8: seed AgentRegistry from DB + start health polling
     if config.agents_ipc.enabled {
         if let Some(ref db) = state.ipc_db {
-            if let Ok(gateways) = db.list_agent_gateways() {
+            if let Ok(gateways) = db.list_agent_gateways().await {
                 // Also fetch trust/role from IPC agents table
-                let ipc_agents = db.list_agents(config.agents_ipc.staleness_secs);
+                let ipc_agents = db.list_agents(config.agents_ipc.staleness_secs).await;
                 for gw in &gateways {
                     state
                         .agent_registry
@@ -1249,6 +1262,18 @@ pub async fn run_gateway(
         // ── Pipeline routes (Phase 4.1) ──
         .route("/api/pipelines/start", post(ipc::handle_pipeline_start))
         .route("/api/pipelines/list", get(ipc::handle_pipeline_list))
+        // ── Dead Letter Queue routes (Phase 4.5) ──
+        .route("/api/pipelines/dead-letters", get(handle_dlq_list))
+        .route(
+            "/api/pipelines/dead-letters/{id}/retry",
+            post(handle_dlq_retry),
+        )
+        .route(
+            "/api/pipelines/dead-letters/{id}/dismiss",
+            post(handle_dlq_dismiss),
+        )
+        // ── Pipeline visualization routes (Phase 4.5) ──
+        .route("/api/pipelines/{name}/graph", get(handle_pipeline_graph))
         .route(
             "/api/ipc/provision-ephemeral",
             post(ipc::handle_ipc_provision_ephemeral),
@@ -1970,6 +1995,147 @@ async fn agent_inbox_processor(
             }
         }
     }
+}
+
+// ── Dead Letter Queue handlers (Phase 4.5) ───────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+struct DlqListQuery {
+    #[serde(default = "default_dlq_limit")]
+    limit: usize,
+    #[serde(default)]
+    all: bool,
+}
+
+fn default_dlq_limit() -> usize {
+    50
+}
+
+async fn handle_dlq_list(
+    State(state): State<AppState>,
+    Query(query): Query<DlqListQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let dlq = state.dead_letter.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "dead letter queue not available"})),
+        )
+    })?;
+
+    let letters = if query.all {
+        dlq.list_all(query.limit).await
+    } else {
+        dlq.list_pending(query.limit).await
+    }
+    .map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
+
+    Ok(Json(serde_json::json!({ "dead_letters": letters })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct DlqDismissBody {
+    #[serde(default = "default_dlq_operator")]
+    dismissed_by: String,
+}
+
+fn default_dlq_operator() -> String {
+    "admin".into()
+}
+
+async fn handle_dlq_retry(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let dlq = state.dead_letter.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "dead letter queue not available"})),
+        )
+    })?;
+
+    dlq.mark_retried(&id).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
+
+    // TODO(Phase 4.5 Slice 4): re-execute the step with original input
+    // For now, just mark as retried. Full retry requires pipeline executor.
+
+    Ok(Json(serde_json::json!({"status": "retried", "id": id})))
+}
+
+async fn handle_dlq_dismiss(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<DlqDismissBody>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let dlq = state.dead_letter.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "dead letter queue not available"})),
+        )
+    })?;
+
+    dlq.dismiss(&id, &body.dismissed_by).await.map_err(|e| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": e.to_string()})),
+        )
+    })?;
+
+    Ok(Json(
+        serde_json::json!({"status": "dismissed", "id": id, "by": body.dismissed_by}),
+    ))
+}
+
+// ── Pipeline visualization handler (Phase 4.5) ──────────────────
+
+#[derive(Debug, serde::Deserialize)]
+struct PipelineGraphQuery {
+    #[serde(default = "default_graph_format")]
+    format: String,
+}
+
+fn default_graph_format() -> String {
+    "ascii".into()
+}
+
+async fn handle_pipeline_graph(
+    State(state): State<AppState>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    Query(query): Query<PipelineGraphQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let store = state.pipeline_store.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "pipeline engine not enabled"})),
+        )
+    })?;
+
+    let def = store.get(&name).await.ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("pipeline '{}' not found", name)})),
+        )
+    })?;
+
+    let graph = match query.format.as_str() {
+        "mermaid" => def.to_mermaid(),
+        _ => def.to_ascii(),
+    };
+
+    Ok(Json(serde_json::json!({
+        "pipeline": name,
+        "format": query.format,
+        "graph": graph,
+    })))
 }
 
 async fn handle_health(State(state): State<AppState>) -> impl IntoResponse {

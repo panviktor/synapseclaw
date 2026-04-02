@@ -230,6 +230,38 @@ pub enum MemoryCommands {
     },
 }
 
+/// Pipeline subcommands (Phase 4.5)
+#[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PipelineCommands {
+    /// Show pipeline graph (ASCII or Mermaid)
+    Show {
+        /// Pipeline name
+        name: String,
+        /// Output Mermaid syntax instead of ASCII
+        #[arg(long)]
+        mermaid: bool,
+    },
+    /// List dead letters (failed pipeline steps)
+    DeadLetters {
+        /// Max entries to show
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Show all (including retried/dismissed)
+        #[arg(long)]
+        all: bool,
+    },
+    /// Retry a dead letter
+    Retry {
+        /// Dead letter ID
+        id: String,
+    },
+    /// Dismiss a dead letter without retrying
+    Dismiss {
+        /// Dead letter ID
+        id: String,
+    },
+}
+
 /// Integration subcommands
 #[derive(Subcommand, Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum IntegrationCommands {

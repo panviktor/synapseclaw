@@ -178,6 +178,7 @@ pub fn all_tools(
         root_config,
         shared_ipc_client,
         None,
+        None,
     )
 }
 
@@ -203,6 +204,7 @@ pub fn all_tools_with_runtime(
     root_config: &synapse_domain::config::schema::Config,
     shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     agent_runner: Option<Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>>,
+    cron_db: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
@@ -216,19 +218,41 @@ pub fn all_tools_with_runtime(
         Arc::new(FileEditTool::new(security.clone())),
         Arc::new(GlobSearchTool::new(security.clone())),
         Arc::new(ContentSearchTool::new(security.clone())),
-        Arc::new(CronAddTool::new(config.clone(), security.clone())),
-        Arc::new(CronListTool::new(config.clone())),
-        Arc::new(CronRemoveTool::new(config.clone(), security.clone())),
-        Arc::new(CronUpdateTool::new(config.clone(), security.clone())),
-        Arc::new(CronRunTool::new(
-            config.clone(),
-            security.clone(),
-            agent_runner
-                .clone()
-                .unwrap_or_else(|| Arc::from(NoopAgentRunner)),
-        )),
-        Arc::new(CronRunsTool::new(config.clone())),
-        Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())),
+    ];
+
+    // Cron tools require a SurrealDB handle; only register when available.
+    if let Some(ref db) = cron_db {
+        tool_arcs.extend([
+            Arc::new(CronAddTool::new(
+                config.clone(),
+                security.clone(),
+                db.clone(),
+            )) as Arc<dyn Tool>,
+            Arc::new(CronListTool::new(config.clone(), db.clone())),
+            Arc::new(CronRemoveTool::new(
+                config.clone(),
+                security.clone(),
+                db.clone(),
+            )),
+            Arc::new(CronUpdateTool::new(
+                config.clone(),
+                security.clone(),
+                db.clone(),
+            )),
+            Arc::new(CronRunTool::new(
+                config.clone(),
+                security.clone(),
+                agent_runner
+                    .clone()
+                    .unwrap_or_else(|| Arc::from(NoopAgentRunner)),
+                db.clone(),
+            )),
+            Arc::new(CronRunsTool::new(config.clone(), db.clone())),
+        ]);
+    }
+
+    tool_arcs.extend([
+        Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())) as Arc<dyn Tool>,
         Arc::new(MemoryRecallTool::new(memory.clone())),
         Arc::new(MemoryForgetTool::new(memory.clone(), security.clone())),
         Arc::new(CoreMemoryUpdateTool::new(
@@ -236,11 +260,21 @@ pub fn all_tools_with_runtime(
             security.clone(),
             crate::agent::loop_::resolve_agent_id(root_config),
         )),
-        Arc::new(ScheduleTool::new(security.clone(), root_config.clone())),
+    ]);
+
+    if let Some(ref db) = cron_db {
+        tool_arcs.push(Arc::new(ScheduleTool::new(
+            security.clone(),
+            root_config.clone(),
+            db.clone(),
+        )));
+    }
+
+    tool_arcs.extend([
         Arc::new(ModelRoutingConfigTool::new(
             config.clone(),
             security.clone(),
-        )),
+        )) as Arc<dyn Tool>,
         Arc::new(ProxyConfigTool::new(config.clone(), security.clone())),
         Arc::new(GitOperationsTool::new(
             security.clone(),
@@ -254,7 +288,7 @@ pub fn all_tools_with_runtime(
             security.clone(),
             workspace_dir.to_path_buf(),
         )),
-    ];
+    ]);
 
     if browser_config.enabled {
         // Add legacy browser_open tool for simple URL opening
@@ -500,7 +534,10 @@ pub fn all_tools_with_runtime(
             }
             tool_arcs.push(Arc::new(AgentsListTool::new(ipc_client.clone())));
             tool_arcs.push(Arc::new(AgentsSendTool::new(ipc_client.clone())));
-            tool_arcs.push(Arc::new(AgentsInboxTool::new(ipc_client.clone())));
+            tool_arcs.push(Arc::new(AgentsInboxTool::with_filter(
+                ipc_client.clone(),
+                root_config.agents_ipc.inbox_filter.clone(),
+            )));
             tool_arcs.push(Arc::new(AgentsReplyTool::new(ipc_client.clone())));
             tool_arcs.push(Arc::new(StateGetTool::new(ipc_client.clone())));
             tool_arcs.push(Arc::new(StateSetTool::new(ipc_client.clone())));
@@ -510,6 +547,7 @@ pub fn all_tools_with_runtime(
                 security.clone(),
                 root_config.agents_ipc.trust_level,
                 ipc_client,
+                cron_db.clone(),
             )));
         } else {
             // Legacy spawn: fire-and-forget in-process cron job (no broker)
@@ -517,6 +555,7 @@ pub fn all_tools_with_runtime(
                 config.clone(),
                 security.clone(),
                 root_config.agents_ipc.trust_level,
+                cron_db.clone(),
             )));
         }
     }
