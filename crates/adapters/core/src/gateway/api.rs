@@ -899,23 +899,21 @@ pub async fn handle_api_channel_sessions(
         None => return Json(serde_json::json!({"sessions": []})).into_response(),
     };
 
-    let metadata = backend.list_sessions_with_metadata();
-    let sessions: Vec<serde_json::Value> = metadata
-        .into_iter()
-        .map(|m| {
-            let (channel, sender) = m.key.split_once('_').unwrap_or(("unknown", m.key.as_str()));
-            let summary = backend.load_summary(&m.key);
-            serde_json::json!({
-                "key": m.key,
-                "channel": channel,
-                "sender": sender,
-                "created_at": m.created_at.timestamp(),
-                "last_activity": m.last_activity.timestamp(),
-                "message_count": m.message_count,
-                "summary": summary.map(|s| s.summary),
-            })
-        })
-        .collect();
+    let metadata = backend.list_sessions_with_metadata().await;
+    let mut sessions: Vec<serde_json::Value> = Vec::with_capacity(metadata.len());
+    for m in &metadata {
+        let (channel, sender) = m.key.split_once('_').unwrap_or(("unknown", m.key.as_str()));
+        let summary = backend.load_summary(&m.key).await;
+        sessions.push(serde_json::json!({
+            "key": m.key,
+            "channel": channel,
+            "sender": sender,
+            "created_at": m.created_at.timestamp(),
+            "last_activity": m.last_activity.timestamp(),
+            "message_count": m.message_count,
+            "summary": summary.map(|s| s.summary),
+        }));
+    }
 
     Json(serde_json::json!({"sessions": sessions})).into_response()
 }
@@ -935,7 +933,7 @@ pub async fn handle_api_channel_session_messages(
         None => return Json(serde_json::json!({"messages": []})).into_response(),
     };
 
-    let messages = backend.load(&key);
+    let messages = backend.load(&key).await;
     let msgs: Vec<serde_json::Value> = messages
         .iter()
         .map(|m| {
@@ -970,7 +968,7 @@ pub async fn handle_api_channel_session_delete(
         }
     };
 
-    match backend.delete(&key) {
+    match backend.delete(&key).await {
         Ok(true) => Json(serde_json::json!({"deleted": true})).into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,

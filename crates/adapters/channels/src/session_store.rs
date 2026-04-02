@@ -138,34 +138,39 @@ impl SessionStore {
     }
 }
 
+#[async_trait::async_trait]
 impl SessionBackend for SessionStore {
-    fn load(&self, session_key: &str) -> Vec<ChatMessage> {
+    async fn load(&self, session_key: &str) -> Vec<ChatMessage> {
         self.load(session_key)
     }
 
-    fn append(&self, session_key: &str, message: &ChatMessage) -> std::io::Result<()> {
+    async fn append(&self, session_key: &str, message: &ChatMessage) -> std::io::Result<()> {
         self.append(session_key, message)
     }
 
-    fn remove_last(&self, session_key: &str) -> std::io::Result<bool> {
+    async fn remove_last(&self, session_key: &str) -> std::io::Result<bool> {
         self.remove_last(session_key)
     }
 
-    fn list_sessions(&self) -> Vec<String> {
+    async fn list_sessions(&self) -> Vec<String> {
         self.list_sessions()
     }
 
-    fn compact(&self, session_key: &str) -> std::io::Result<()> {
+    async fn compact(&self, session_key: &str) -> std::io::Result<()> {
         self.compact(session_key)
     }
 
-    fn load_summary(&self, session_key: &str) -> Option<ChannelSummary> {
+    async fn load_summary(&self, session_key: &str) -> Option<ChannelSummary> {
         let path = self.summary_path(session_key);
         let data = std::fs::read_to_string(&path).ok()?;
         serde_json::from_str(&data).ok()
     }
 
-    fn save_summary(&self, session_key: &str, summary: &ChannelSummary) -> std::io::Result<()> {
+    async fn save_summary(
+        &self,
+        session_key: &str,
+        summary: &ChannelSummary,
+    ) -> std::io::Result<()> {
         let path = self.summary_path(session_key);
         let tmp_path = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(summary)
@@ -175,7 +180,7 @@ impl SessionBackend for SessionStore {
         Ok(())
     }
 
-    fn delete(&self, session_key: &str) -> std::io::Result<bool> {
+    async fn delete(&self, session_key: &str) -> std::io::Result<bool> {
         let session = self.session_path(session_key);
         let summary = self.summary_path(session_key);
         let existed = session.exists();

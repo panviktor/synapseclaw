@@ -16,17 +16,23 @@ impl SessionStoreAdapter {
 
 impl SessionSummaryPort for SessionStoreAdapter {
     fn load_summary(&self, key: &str) -> Option<String> {
-        self.store.load_summary(key).map(|s| s.summary)
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(self.store.load_summary(key))
+                .map(|s| s.summary)
+        })
     }
 
     fn save_summary(&self, key: &str, summary: &str) {
-        let _ = self.store.save_summary(
-            key,
-            &ChannelSummary {
-                summary: summary.to_string(),
-                updated_at: chrono::Utc::now(),
-                message_count_at_summary: 0,
-            },
-        );
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.store.save_summary(
+                key,
+                &ChannelSummary {
+                    summary: summary.to_string(),
+                    updated_at: chrono::Utc::now(),
+                    message_count_at_summary: 0,
+                },
+            ))
+        });
     }
 }

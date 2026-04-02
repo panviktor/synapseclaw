@@ -119,7 +119,24 @@ impl SqliteSessionBackend {
                     continue;
                 }
                 if let Ok(msg) = serde_json::from_str::<ChatMessage>(trimmed) {
-                    if self.append(key, &msg).is_ok() {
+                    // Direct SQLite insert (bypass async trait method)
+                    let now = chrono::Utc::now().to_rfc3339();
+                    let conn = self.conn.lock();
+                    if conn
+                        .execute(
+                            "INSERT INTO sessions (session_key, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+                            params![key, msg.role, msg.content, now],
+                        )
+                        .is_ok()
+                    {
+                        let _ = conn.execute(
+                            "INSERT INTO session_metadata (session_key, created_at, last_activity, message_count)
+                             VALUES (?1, ?2, ?3, 1)
+                             ON CONFLICT(session_key) DO UPDATE SET
+                                last_activity = excluded.last_activity,
+                                message_count = message_count + 1",
+                            params![key, now, now],
+                        );
                         count += 1;
                     }
                 }
@@ -136,8 +153,9 @@ impl SqliteSessionBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl SessionBackend for SqliteSessionBackend {
-    fn load(&self, session_key: &str) -> Vec<ChatMessage> {
+    async fn load(&self, session_key: &str) -> Vec<ChatMessage> {
         let conn = self.conn.lock();
         let mut stmt = match conn
             .prepare("SELECT role, content FROM sessions WHERE session_key = ?1 ORDER BY id ASC")
@@ -159,7 +177,7 @@ impl SessionBackend for SqliteSessionBackend {
         rows.filter_map(|r| r.ok()).collect()
     }
 
-    fn append(&self, session_key: &str, message: &ChatMessage) -> std::io::Result<()> {
+    async fn append(&self, session_key: &str, message: &ChatMessage) -> std::io::Result<()> {
         let conn = self.conn.lock();
         let now = Utc::now().to_rfc3339();
 
@@ -184,7 +202,7 @@ impl SessionBackend for SqliteSessionBackend {
         Ok(())
     }
 
-    fn remove_last(&self, session_key: &str) -> std::io::Result<bool> {
+    async fn remove_last(&self, session_key: &str) -> std::io::Result<bool> {
         let conn = self.conn.lock();
 
         let last_id: Option<i64> = conn
@@ -213,7 +231,7 @@ impl SessionBackend for SqliteSessionBackend {
         Ok(true)
     }
 
-    fn list_sessions(&self) -> Vec<String> {
+    async fn list_sessions(&self) -> Vec<String> {
         let conn = self.conn.lock();
         let mut stmt = match conn
             .prepare("SELECT session_key FROM session_metadata ORDER BY last_activity DESC")
@@ -230,7 +248,7 @@ impl SessionBackend for SqliteSessionBackend {
         rows.filter_map(|r| r.ok()).collect()
     }
 
-    fn list_sessions_with_metadata(&self) -> Vec<SessionMetadata> {
+    async fn list_sessions_with_metadata(&self) -> Vec<SessionMetadata> {
         let conn = self.conn.lock();
         let mut stmt = match conn.prepare(
             "SELECT session_key, created_at, last_activity, message_count
@@ -268,7 +286,7 @@ impl SessionBackend for SqliteSessionBackend {
         rows.filter_map(|r| r.ok()).collect()
     }
 
-    fn cleanup_stale(&self, ttl_hours: u32) -> std::io::Result<usize> {
+    async fn cleanup_stale(&self, ttl_hours: u32) -> std::io::Result<usize> {
         let conn = self.conn.lock();
         let cutoff = (Utc::now() - Duration::hours(i64::from(ttl_hours))).to_rfc3339();
 
@@ -295,9 +313,9 @@ impl SessionBackend for SqliteSessionBackend {
         Ok(count)
     }
 
-    fn search(&self, query: &SessionQuery) -> Vec<SessionMetadata> {
+    async fn search(&self, query: &SessionQuery) -> Vec<SessionMetadata> {
         let Some(keyword) = &query.keyword else {
-            return self.list_sessions_with_metadata();
+            return self.list_sessions_with_metadata().await;
         };
 
         let conn = self.conn.lock();
@@ -355,7 +373,7 @@ impl SessionBackend for SqliteSessionBackend {
             .collect()
     }
 
-    fn load_summary(&self, session_key: &str) -> Option<ChannelSummary> {
+    async fn load_summary(&self, session_key: &str) -> Option<ChannelSummary> {
         let conn = self.conn.lock();
         conn.query_row(
             "SELECT summary, message_count_at_summary, updated_at
@@ -376,7 +394,11 @@ impl SessionBackend for SqliteSessionBackend {
         .ok()
     }
 
-    fn save_summary(&self, session_key: &str, summary: &ChannelSummary) -> std::io::Result<()> {
+    async fn save_summary(
+        &self,
+        session_key: &str,
+        summary: &ChannelSummary,
+    ) -> std::io::Result<()> {
         let conn = self.conn.lock();
         conn.execute(
             "INSERT INTO session_summaries (session_key, summary, message_count_at_summary, updated_at)
@@ -396,7 +418,7 @@ impl SessionBackend for SqliteSessionBackend {
         Ok(())
     }
 
-    fn delete(&self, session_key: &str) -> std::io::Result<bool> {
+    async fn delete(&self, session_key: &str) -> std::io::Result<bool> {
         let conn = self.conn.lock();
         let deleted = conn
             .execute(

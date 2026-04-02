@@ -48,9 +48,11 @@ impl ConversationHistoryPort for MutexMapConversationHistory {
     }
 
     fn append_turn(&self, key: &str, turn: ChatMessage) {
-        // Persist to JSONL session store (survives restart)
+        // Persist to session store (survives restart)
         if let Some(ref store) = self.session_store {
-            let _ = store.append(key, &turn);
+            let _ = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(store.append(key, &turn))
+            });
         }
 
         // Append to in-memory map
@@ -86,7 +88,9 @@ impl ConversationHistoryPort for MutexMapConversationHistory {
     fn rollback_last_turn(&self, key: &str, expected_content: &str) -> bool {
         // Rollback from session store
         if let Some(ref store) = self.session_store {
-            let _ = store.remove_last(key);
+            let _ = tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(store.remove_last(key))
+            });
         }
 
         let mut guard = self.map.lock().unwrap_or_else(|e| e.into_inner());
