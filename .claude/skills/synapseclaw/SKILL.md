@@ -80,6 +80,27 @@ journalctl --user -u synapseclaw@copywriter.service --since "10 min ago"
 systemctl --user restart synapseclaw@copywriter.service
 ```
 
+## Memory (Phase 4.3 — SurrealDB)
+
+```bash
+synapseclaw memory list [--category core] [--limit 20]
+synapseclaw memory get <key>
+synapseclaw memory stats
+synapseclaw memory clear --key <key> [--yes]
+synapseclaw memory migrate [--yes]     # SQLite → SurrealDB one-time migration
+```
+
+Per-agent: `synapseclaw --config-dir ~/.synapseclaw/agents/<name> memory <command>`
+
+Backend: SurrealDB 3.0 embedded (`brain.surreal`).
+Embeddings: OpenRouter Qwen3 Embedding 8B (4096 dims).
+Config: `[memory]` section in config.toml.
+
+Tools available to agents:
+- `memory_store` / `memory_recall` / `memory_forget`
+- `core_memory_update` — MemGPT core blocks (persona, user_knowledge, task_state, domain)
+- `knowledge` — entity graph (search, add_entity, add_fact, get_facts)
+
 ## Troubleshooting
 
 1. **Not responding** → `synapseclaw doctor` + check journalctl

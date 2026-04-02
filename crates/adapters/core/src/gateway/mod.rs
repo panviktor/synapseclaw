@@ -420,6 +420,7 @@ pub async fn run_gateway(
     channel_registry: Option<Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort>>,
     shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     agent_runner: Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
+    shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -470,13 +471,18 @@ pub async fn run_gateway(
     let summary_model = config.summary_model.clone();
     let temperature = config.default_temperature;
     let resolved_agent_id = crate::agent::loop_::resolve_agent_id(&config);
-    let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
-        &config.memory,
-        &config.workspace_dir,
-        &resolved_agent_id,
-        config.api_key.as_deref(),
-    )
-    .await?;
+    let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {
+        Some(m) => m,
+        None => {
+            synapse_memory::create_memory(
+                &config.memory,
+                &config.workspace_dir,
+                &resolved_agent_id,
+                config.api_key.as_deref(),
+            )
+            .await?
+        }
+    };
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
     let security = Arc::new(security_policy_from_config(
@@ -840,7 +846,8 @@ pub async fn run_gateway(
                     Arc::clone(&provider),
                     model.clone(),
                     resolved_agent_id.clone(),
-                    None,
+                    // TODO: pass shared_ipc_client here once gateway plumbs it to AppState construction
+                    shared_ipc_client.clone(),
                 ),
             )),
         ),

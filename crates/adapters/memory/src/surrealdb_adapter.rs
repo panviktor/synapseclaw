@@ -84,17 +84,21 @@ impl SurrealMemoryAdapter {
         }
 
         // Apply HNSW vector indexes (best-effort — requires embedding data).
-        for (table, idx) in [
-            ("episode", "idx_ep_vector"),
-            ("entity", "idx_ent_vector"),
-            ("skill", "idx_skill_vector"),
-            ("reflection", "idx_refl_vector"),
-        ] {
-            let q = format!(
-                "DEFINE INDEX {idx} ON {table} FIELDS embedding HNSW DIMENSION 768 DIST COSINE"
-            );
-            if let Err(e) = self.db.query(&q).await {
-                tracing::debug!("HNSW index {idx} (may already exist): {e}");
+        // Dimension is sourced from the embedder so indexes match the actual model output.
+        let dim = self.embedder.dimensions();
+        if dim > 0 {
+            for (table, idx) in [
+                ("episode", "idx_ep_vector"),
+                ("entity", "idx_ent_vector"),
+                ("skill", "idx_skill_vector"),
+                ("reflection", "idx_refl_vector"),
+            ] {
+                let q = format!(
+                    "DEFINE INDEX {idx} ON {table} FIELDS embedding HNSW DIMENSION {dim} DIST COSINE"
+                );
+                if let Err(e) = self.db.query(&q).await {
+                    tracing::trace!("HNSW index {idx} (may already exist): {e}");
+                }
             }
         }
 
@@ -317,7 +321,13 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
 
         // Generate embedding if provider is available (best-effort).
         let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
-            self.embedder.embed_one(&entry.content).await.ok()
+            match self.embedder.embed_one(&entry.content).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::warn!(op = "store_episode", "Embedding failed: {e}");
+                    None
+                }
+            }
         } else {
             None
         };
@@ -405,7 +415,13 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         let query_embedding = if self.embedder.dimensions() > 0 {
             match &query.embedding {
                 Some(emb) => Some(emb.clone()),
-                None => self.embedder.embed_one(&query.text).await.ok(),
+                None => match self.embedder.embed_one(&query.text).await {
+                    Ok(emb) => Some(emb),
+                    Err(e) => {
+                        tracing::warn!(op = "search_episodes", "Embedding failed: {e}");
+                        None
+                    }
+                },
             }
         } else {
             None
@@ -528,7 +544,13 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             entity.summary.as_deref().unwrap_or("")
         );
         let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
-            self.embedder.embed_one(&embed_text).await.ok()
+            match self.embedder.embed_one(&embed_text).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::warn!(op = "upsert_entity", "Embedding failed: {e}");
+                    None
+                }
+            }
         } else {
             None
         };
@@ -587,7 +609,11 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
 
         // 2. Embedding similarity fallback (>0.85 threshold)
         if self.embedder.dimensions() > 0 {
-            if let Ok(emb) = self.embedder.embed_one(name).await {
+            let emb_result = self.embedder.embed_one(name).await;
+            if let Err(ref e) = emb_result {
+                tracing::warn!(op = "find_entity", "Embedding failed: {e}");
+            }
+            if let Ok(emb) = emb_result {
                 let mut vec_resp = self
                     .db
                     .query(

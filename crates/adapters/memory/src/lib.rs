@@ -50,6 +50,15 @@ pub async fn create_memory(
         return Ok(Arc::new(NoopUnifiedMemory));
     }
 
+    // Warn about legacy backend names — Phase 4.3 always uses SurrealDB.
+    let backend_lower = config.backend.to_lowercase();
+    if backend_lower != "surrealdb" && backend_lower != "none" {
+        tracing::warn!(
+            "Memory backend '{}' is deprecated. Phase 4.3 uses SurrealDB. Proceeding with SurrealDB.",
+            config.backend
+        );
+    }
+
     // Create embedding provider
     let embedder = create_embedding_provider(config, api_key);
 

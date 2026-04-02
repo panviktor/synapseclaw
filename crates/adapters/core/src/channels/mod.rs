@@ -2780,6 +2780,7 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 pub async fn start_channels(
     config: Config,
     shared_ipc_client: Option<std::sync::Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
+    shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
 ) -> Result<()> {
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
@@ -2837,13 +2838,18 @@ pub async fn start_channels(
     let model = resolved_default_model(&config);
     let temperature = config.default_temperature;
     let resolved_agent_id = crate::agent::loop_::resolve_agent_id(&config);
-    let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
-        &config.memory,
-        &config.workspace_dir,
-        &resolved_agent_id,
-        config.api_key.as_deref(),
-    )
-    .await?;
+    let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {
+        Some(m) => m,
+        None => {
+            synapse_memory::create_memory(
+                &config.memory,
+                &config.workspace_dir,
+                &resolved_agent_id,
+                config.api_key.as_deref(),
+            )
+            .await?
+        }
+    };
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
             config.composio.api_key.as_deref(),

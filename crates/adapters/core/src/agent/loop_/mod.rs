@@ -191,13 +191,18 @@ fn save_interactive_session_history(path: &Path, history: &[ChatMessage]) -> Res
 }
 
 /// Resolve the canonical agent ID from config.
-/// Prefers `agents_ipc.agent_id`, falls back to `agents_ipc.role`.
+/// Prefers `agents_ipc.agent_id`, falls back to `agents_ipc.role`, then `"default"`.
 pub(crate) fn resolve_agent_id(config: &synapse_domain::config::schema::Config) -> String {
-    config
-        .agents_ipc
-        .agent_id
-        .clone()
-        .unwrap_or_else(|| config.agents_ipc.role.clone())
+    config.agents_ipc.agent_id.clone().unwrap_or_else(|| {
+        let role = config.agents_ipc.role.clone();
+        if !role.is_empty() {
+            tracing::debug!("No explicit agent_id, using IPC role: {role}");
+            role
+        } else {
+            tracing::warn!("No agent_id or role configured, using 'default'");
+            "default".to_string()
+        }
+    })
 }
 
 /// Build context preamble by searching memory for relevant entries.
