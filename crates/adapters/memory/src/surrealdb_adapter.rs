@@ -81,19 +81,57 @@ impl SurrealMemoryAdapter {
             .await
             .map_err(|e| MemoryError::Storage(format!("Schema apply: {e}")))?;
 
-        // Apply BM25 full-text search index (separate query — syntax incompatible with IF NOT EXISTS).
+        // Apply BM25 full-text search index.
+        // SurrealDB 3.0 changed syntax: SEARCH ANALYZER → FULLTEXT ANALYZER.
+        // We REMOVE first (idempotent) then re-DEFINE on every startup.
+        // Without this index, recall() returns empty because @1@ requires it.
+        let _ = self.db
+            .query("REMOVE INDEX IF EXISTS idx_ep_content ON episode")
+            .await;
         if let Err(e) = self
             .db
-            .query("DEFINE INDEX idx_ep_content ON episode FIELDS content SEARCH ANALYZER simple_analyzer BM25")
+            .query("DEFINE INDEX idx_ep_content ON episode FIELDS content FULLTEXT ANALYZER simple_analyzer BM25")
             .await
         {
-            tracing::debug!("BM25 index creation (may already exist): {e}");
+            tracing::error!("BM25 FULLTEXT index creation failed: {e} — recall() will return empty results!");
+        } else {
+            tracing::info!("BM25 FULLTEXT index created on episode.content");
         }
 
-        // Apply HNSW vector indexes (best-effort — requires embedding data).
-        // Dimension is sourced from the embedder so indexes match the actual model output.
+        // Apply HNSW vector indexes — auto-detect dimension mismatch and recreate.
         let dim = self.embedder.dimensions();
         if dim > 0 {
+            // Probe existing index dimension from INFO FOR TABLE on the first table.
+            let need_recreate = match self.db.query("INFO FOR TABLE episode").await {
+                Ok(mut r) => {
+                    let info: Option<serde_json::Value> = r.take(0).unwrap_or(None);
+                    let existing_dim = info
+                        .as_ref()
+                        .and_then(|v| v.get("indexes"))
+                        .and_then(|v| v.get("idx_ep_vector"))
+                        .and_then(|v| {
+                            let s = v.as_str().unwrap_or("");
+                            // Parse "DIMENSION <N>" from the index definition string.
+                            s.find("DIMENSION ")
+                                .map(|pos| &s[pos + 10..])
+                                .and_then(|rest| rest.split_whitespace().next())
+                                .and_then(|n| n.parse::<usize>().ok())
+                        });
+                    match existing_dim {
+                        Some(d) if d == dim => false, // dimensions match, no action needed
+                        Some(d) => {
+                            tracing::warn!(
+                                old_dim = d, new_dim = dim,
+                                "HNSW dimension mismatch detected — recreating vector indexes"
+                            );
+                            true
+                        }
+                        None => true, // no index exists yet
+                    }
+                }
+                Err(_) => true, // can't probe, recreate to be safe
+            };
+
             for (table, idx) in [
                 ("episode", "idx_ep_vector"),
                 ("entity", "idx_ent_vector"),
@@ -101,16 +139,95 @@ impl SurrealMemoryAdapter {
                 ("skill", "idx_skill_vector"),
                 ("reflection", "idx_refl_vector"),
             ] {
-                let q = format!(
-                    "DEFINE INDEX {idx} ON {table} FIELDS embedding HNSW DIMENSION {dim} DIST COSINE"
-                );
+                let q = if need_recreate {
+                    format!(
+                        "REMOVE INDEX IF EXISTS {idx} ON {table}; \
+                         DEFINE INDEX {idx} ON {table} FIELDS embedding HNSW DIMENSION {dim} DIST COSINE"
+                    )
+                } else {
+                    format!(
+                        "DEFINE INDEX IF NOT EXISTS {idx} ON {table} FIELDS embedding HNSW DIMENSION {dim} DIST COSINE"
+                    )
+                };
                 if let Err(e) = self.db.query(&q).await {
-                    tracing::trace!("HNSW index {idx} (may already exist): {e}");
+                    tracing::warn!("HNSW index {idx} failed: {e}");
                 }
+            }
+            if need_recreate {
+                tracing::info!(dim, "HNSW vector indexes recreated (dimension changed)");
+            } else {
+                tracing::debug!(dim, "HNSW vector indexes verified");
             }
         }
 
-        tracing::info!("SurrealDB memory schema applied");
+        // Migrate stale agent_ids to the current agent_id.
+        // Before PR #230, CLI and daemon modes could use different IDs ("cli", "default")
+        // for the same logical agent. Reassign orphaned episodes so recall() can find them.
+        let stale_ids = ["cli", "default"];
+        for stale in &stale_ids {
+            if *stale == self.me() {
+                continue; // current agent already uses this ID
+            }
+            match self.db
+                .query("UPDATE episode SET agent_id = $new WHERE agent_id = $old RETURN BEFORE")
+                .bind(("new", self.me().to_string()))
+                .bind(("old", stale.to_string()))
+                .await
+            {
+                Ok(mut r) => {
+                    let migrated: Vec<serde_json::Value> = r.take(0).unwrap_or_default();
+                    if !migrated.is_empty() {
+                        tracing::info!(
+                            from = *stale,
+                            to = self.me(),
+                            count = migrated.len(),
+                            "memory: migrated stale agent_id episodes"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(from = *stale, "memory: agent_id migration failed: {e}");
+                }
+            }
+            // Also migrate core_memory blocks.
+            if let Err(e) = self.db
+                .query("UPDATE core_memory SET agent_id = $new WHERE agent_id = $old")
+                .bind(("new", self.me().to_string()))
+                .bind(("old", stale.to_string()))
+                .await
+            {
+                tracing::warn!(from = *stale, "memory: core_memory migration failed: {e}");
+            }
+        }
+
+        // Diagnostic: report episode count and agent_id distribution.
+        match self.db.query(
+            "SELECT count() AS total FROM episode GROUP ALL;
+             SELECT agent_id, count() AS cnt FROM episode GROUP BY agent_id ORDER BY cnt DESC LIMIT 10"
+        ).await {
+            Ok(mut r) => {
+                let total_rows: Vec<serde_json::Value> = r.take(0).unwrap_or_default();
+                let count = total_rows.first()
+                    .and_then(|v| v.get("total"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let agent_rows: Vec<serde_json::Value> = r.take(1).unwrap_or_default();
+                let agents: Vec<String> = agent_rows.iter().filter_map(|v| {
+                    let aid = v.get("agent_id").and_then(|a| a.as_str()).unwrap_or("NULL");
+                    let cnt = v.get("cnt").and_then(|c| c.as_u64()).unwrap_or(0);
+                    Some(format!("{}={}", aid, cnt))
+                }).collect();
+                tracing::info!(
+                    episode_count = count,
+                    my_agent_id = self.me(),
+                    agent_ids = %agents.join(", "),
+                    "SurrealDB memory schema applied"
+                );
+            }
+            Err(e) => {
+                tracing::warn!("SurrealDB schema applied but episode count failed: {e}");
+            }
+        }
         Ok(())
     }
 
@@ -368,7 +485,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             None
         };
 
-        self.db
+        let mut resp = self.db
             .query(
                 "CREATE episode SET
                     agent_id = $agent,
@@ -388,7 +505,18 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             .bind(("session_id", entry.session_id))
             .bind(("embedding", embedding))
             .await
-            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+            .map_err(|e| MemoryError::Storage(format!("store_episode transport: {e}")))?;
+
+        // Check for query-level errors (not just transport errors).
+        let created: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(format!("store_episode query: {e}")))?;
+
+        if created.is_empty() {
+            tracing::warn!(agent = self.me(), "store_episode: CREATE returned 0 rows — data may not have been persisted");
+        } else {
+            tracing::debug!(agent = self.me(), rows = created.len(), "store_episode: created");
+        }
 
         Ok(id)
     }
