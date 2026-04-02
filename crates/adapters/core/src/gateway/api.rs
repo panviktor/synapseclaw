@@ -695,9 +695,7 @@ pub async fn handle_api_memory_list(
             other => synapse_domain::domain::memory::MemoryCategory::Custom(other.to_string()),
         });
 
-        // UnifiedMemoryPort uses recall() for listing — category name as query term.
-        let query = category.as_ref().map(|c| c.to_string()).unwrap_or_default();
-        match state.mem.recall(&query, 100, None).await {
+        match state.mem.list(category.as_ref(), None, 100).await {
             Ok(entries) => Json(serde_json::json!({"entries": entries})).into_response(),
             Err(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
