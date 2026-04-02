@@ -231,6 +231,16 @@ pub trait UnifiedMemoryPort:
         limit: usize,
     ) -> Result<Vec<MemoryEntry>, MemoryError>;
 
+    /// Find facts similar to the given embedding vector. Returns (fact, similarity) pairs.
+    /// Used by AUDN dedup cycle to prevent duplicate facts in memory.
+    async fn find_similar_facts(
+        &self,
+        _embedding: &[f32],
+        _limit: usize,
+    ) -> Result<Vec<(TemporalFact, f32)>, MemoryError> {
+        Ok(vec![]) // default no-op
+    }
+
     /// Check if content should be skipped for auto-save (noise filter).
     fn should_skip_autosave(&self, content: &str) -> bool;
 

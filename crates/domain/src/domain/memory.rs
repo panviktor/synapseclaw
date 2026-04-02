@@ -217,6 +217,10 @@ pub struct TemporalFact {
     /// Episode that sourced this fact (provenance).
     pub source_episode: Option<MemoryId>,
     pub created_by: AgentId,
+    /// Pre-computed embedding vector. If provided, add_fact() reuses it
+    /// instead of generating a new one (avoids redundant API calls).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub embedding: Option<Vec<f32>>,
 }
 
 // ── Skill (procedural memory) ────────────────────────────────────

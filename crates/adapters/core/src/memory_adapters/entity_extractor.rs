@@ -118,22 +118,85 @@ pub async fn store_extraction(
         }
     }
 
-    // 2. Add facts (relationships)
+    // 2. Add facts with AUDN deduplication (Add/Update/Delete/Noop)
     for rel in &extraction.relationships {
-        // Resolve subject and object entities by name
-        let subject = memory.find_entity(&rel.subject).await.ok().flatten();
-        let object = memory.find_entity(&rel.object).await.ok().flatten();
+        let subject_entity = memory.find_entity(&rel.subject).await.ok().flatten();
+        let object_entity = memory.find_entity(&rel.object).await.ok().flatten();
 
-        let (subject_id, object_id) = match (subject, object) {
-            (Some(s), Some(o)) => (s.id, o.id),
-            _ => {
-                tracing::debug!(
-                    subject = %rel.subject,
-                    object = %rel.object,
-                    "memory.fact.skipped_entities_not_found"
-                );
-                continue;
+        let (subject_id, object_id, subject_name, object_name) =
+            match (subject_entity, object_entity) {
+                (Some(s), Some(o)) => (s.id.clone(), o.id.clone(), s.name.clone(), o.name.clone()),
+                _ => {
+                    tracing::debug!(
+                        subject = %rel.subject,
+                        object = %rel.object,
+                        "memory.fact.skipped_entities_not_found"
+                    );
+                    continue;
+                }
+            };
+
+        // AUDN: embed fact using entity NAMES (not IDs) for meaningful similarity
+        let fact_text = format!(
+            "{subject_name} {predicate} {object_name}",
+            predicate = rel.predicate
+        );
+        let mut final_confidence = rel.confidence;
+        let mut fact_embedding: Option<Vec<f32>> = None;
+        let audn_action = match memory.embed(&fact_text).await {
+            Ok(embedding) if !embedding.is_empty() => {
+                fact_embedding = Some(embedding.clone()); // capture for reuse in add_fact
+                match memory.find_similar_facts(&embedding, 5).await {
+                    Ok(similar) if !similar.is_empty() => {
+                        let (best_fact, best_sim) = &similar[0];
+                        if *best_sim > 0.95 {
+                            // NOOP: near-exact duplicate
+                            tracing::info!(
+                                sim = *best_sim,
+                                subject = %rel.subject,
+                                predicate = %rel.predicate,
+                                object = %rel.object,
+                                "memory.audn.noop"
+                            );
+                            continue;
+                        } else if *best_sim > 0.85
+                            && best_fact.predicate == rel.predicate
+                            && best_fact.subject == subject_id
+                            && best_fact.object == object_id
+                        {
+                            // UPDATE: same entities + same predicate → merge confidence
+                            final_confidence = best_fact.confidence.max(rel.confidence);
+                            let _ = memory.invalidate_fact(&best_fact.id).await;
+                            tracing::info!(
+                                sim = *best_sim,
+                                old_confidence = best_fact.confidence,
+                                new_confidence = final_confidence,
+                                "memory.audn.update"
+                            );
+                            "update"
+                        } else if *best_sim > 0.85
+                            && best_fact.subject == subject_id
+                            && best_fact.object == object_id
+                            && best_fact.predicate != rel.predicate
+                        {
+                            // REPLACE: same entities but contradictory predicate
+                            let _ = memory.invalidate_fact(&best_fact.id).await;
+                            tracing::info!(
+                                sim = *best_sim,
+                                old_predicate = %best_fact.predicate,
+                                new_predicate = %rel.predicate,
+                                "memory.audn.replace"
+                            );
+                            "replace"
+                        } else {
+                            // ADD: different entities or below threshold
+                            "add"
+                        }
+                    }
+                    _ => "add",
+                }
             }
+            _ => "add", // embedding unavailable — just add
         };
 
         let fact = TemporalFact {
@@ -141,12 +204,13 @@ pub async fn store_extraction(
             subject: subject_id,
             predicate: rel.predicate.clone(),
             object: object_id,
-            confidence: rel.confidence,
+            confidence: final_confidence,
             valid_from: Utc::now(),
             valid_to: None,
             recorded_at: Utc::now(),
             source_episode: None,
             created_by: agent_id.to_string(),
+            embedding: fact_embedding, // reuse AUDN embedding — no redundant API call
         };
 
         match memory.add_fact(fact).await {
@@ -155,6 +219,8 @@ pub async fn store_extraction(
                     subject = %rel.subject,
                     predicate = %rel.predicate,
                     object = %rel.object,
+                    confidence = final_confidence,
+                    audn = audn_action,
                     "memory.fact.added"
                 );
             }
