@@ -45,6 +45,7 @@ impl IpcBusPort for IpcBusAdapter {
                 priority,
                 None, // message_ttl_secs — use default
             )
+            .await
             .map_err(|e| anyhow::anyhow!("IPC insert error: {e:?}"))?;
         Ok(id)
     }
@@ -55,7 +56,10 @@ impl IpcBusPort for IpcBusAdapter {
         include_quarantine: bool,
         limit: u32,
     ) -> Result<Vec<IpcMessage>> {
-        let rows = self.db.fetch_inbox(agent_id, include_quarantine, limit);
+        let rows = self
+            .db
+            .fetch_inbox(agent_id, include_quarantine, limit)
+            .await;
         Ok(rows
             .into_iter()
             .map(|r| IpcMessage {
@@ -76,17 +80,21 @@ impl IpcBusPort for IpcBusAdapter {
     }
 
     async fn ack_messages(&self, _agent_id: &str, message_ids: &[i64]) -> Result<u64> {
-        self.db.ack_messages(message_ids);
+        self.db.ack_messages(message_ids).await;
         Ok(message_ids.len() as u64)
     }
 
     async fn session_has_request(&self, session_id: &str, from_agent: &str) -> Result<bool> {
-        Ok(self.db.session_has_request_for(session_id, from_agent))
+        Ok(self
+            .db
+            .session_has_request_for(session_id, from_agent)
+            .await)
     }
 
     async fn get_agent_trust_level(&self, agent_id: &str) -> Option<i32> {
         self.db
             .agent_detail(agent_id, 0)
+            .await
             .and_then(|info| info.agent.trust_level.map(i32::from))
     }
 }

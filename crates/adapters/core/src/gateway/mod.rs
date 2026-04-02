@@ -873,15 +873,11 @@ pub async fn run_gateway(
         ipc_prompt_guard,
         ipc_leak_detector,
         ipc_db: if config.agents_ipc.enabled {
-            let ipc_dir = config.workspace_dir.join("ipc");
-            if let Err(e) = std::fs::create_dir_all(&ipc_dir) {
-                tracing::warn!("Failed to create IPC directory: {e}");
-            }
-            match ipc::IpcDb::open(&ipc_dir.join("agents.db")) {
-                Ok(db) => {
-                    let db = Arc::new(db);
+            match shared_surreal.as_ref() {
+                Some(surreal_arc) => {
+                    let db = Arc::new(ipc::IpcDb::new(surreal_arc.clone()));
                     // Broker restart recovery: interrupt orphaned ephemeral sessions
-                    let interrupted = db.interrupt_all_ephemeral_spawn_runs();
+                    let interrupted = db.interrupt_all_ephemeral_spawn_runs().await;
                     if interrupted > 0 {
                         tracing::info!(
                             interrupted = interrupted,
@@ -890,8 +886,8 @@ pub async fn run_gateway(
                     }
                     Some(db)
                 }
-                Err(e) => {
-                    tracing::error!("Failed to open IPC database: {e}");
+                None => {
+                    tracing::error!("IPC enabled but SurrealDB handle not available");
                     None
                 }
             }
@@ -1004,7 +1000,7 @@ pub async fn run_gateway(
                             .clone()
                             .or_else(|| config.agents_ipc.agent_id.clone())
                             .unwrap_or_else(|| config.agents_ipc.role.clone());
-                        let db_seq = db.get_last_sender_seq(&runner_id);
+                        let db_seq = db.get_last_sender_seq(&runner_id).await;
                         shared.sync_sender_seq(db_seq);
                     }
                     Arc::clone(shared)
@@ -1038,7 +1034,7 @@ pub async fn run_gateway(
                         );
                     }
                     if let Some(ref db) = state.ipc_db {
-                        let db_seq = db.get_last_sender_seq(&runner_id);
+                        let db_seq = db.get_last_sender_seq(&runner_id).await;
                         client.sync_sender_seq(db_seq);
                     }
 
@@ -1169,9 +1165,9 @@ pub async fn run_gateway(
     // Phase 3.8: seed AgentRegistry from DB + start health polling
     if config.agents_ipc.enabled {
         if let Some(ref db) = state.ipc_db {
-            if let Ok(gateways) = db.list_agent_gateways() {
+            if let Ok(gateways) = db.list_agent_gateways().await {
                 // Also fetch trust/role from IPC agents table
-                let ipc_agents = db.list_agents(config.agents_ipc.staleness_secs);
+                let ipc_agents = db.list_agents(config.agents_ipc.staleness_secs).await;
                 for gw in &gateways {
                     state
                         .agent_registry
