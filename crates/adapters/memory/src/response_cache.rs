@@ -1,6 +1,6 @@
 //! Response cache — avoid burning tokens on repeated prompts.
 //!
-//! Stores LLM responses in a separate SQLite table keyed by a SHA-256 hash of
+//! Stores LLM responses in SurrealDB keyed by a SHA-256 hash of
 //! `(model, system_prompt_hash, user_prompt)`. Entries expire after a
 //! configurable TTL (default: 1 hour). The cache is optional and disabled by
 //! default — users opt in via `[memory] response_cache_enabled = true`.
@@ -8,10 +8,11 @@
 use anyhow::Result;
 use chrono::{Duration, Local};
 use parking_lot::Mutex;
-use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use surrealdb::engine::local::Db;
+use surrealdb::Surreal;
 
 /// An in-memory hot cache entry for the two-tier response cache.
 struct InMemoryEntry {
@@ -21,15 +22,13 @@ struct InMemoryEntry {
     accessed_at: std::time::Instant,
 }
 
-/// Two-tier response cache: in-memory LRU (hot) + SQLite (warm).
+/// Two-tier response cache: in-memory LRU (hot) + SurrealDB (warm).
 ///
-/// The hot cache avoids SQLite round-trips for frequently repeated prompts.
-/// On miss from hot cache, falls through to SQLite. On hit from SQLite,
+/// The hot cache avoids SurrealDB round-trips for frequently repeated prompts.
+/// On miss from hot cache, falls through to SurrealDB. On hit from SurrealDB,
 /// the entry is promoted to the hot cache.
 pub struct ResponseCache {
-    conn: Mutex<Connection>,
-    #[allow(dead_code)]
-    db_path: PathBuf,
+    db: Arc<Surreal<Db>>,
     ttl_minutes: i64,
     max_entries: usize,
     hot_cache: Mutex<HashMap<String, InMemoryEntry>>,
@@ -37,52 +36,25 @@ pub struct ResponseCache {
 }
 
 impl ResponseCache {
-    /// Open (or create) the response cache database.
-    pub fn new(workspace_dir: &Path, ttl_minutes: u32, max_entries: usize) -> Result<Self> {
-        Self::with_hot_cache(workspace_dir, ttl_minutes, max_entries, 256)
+    /// Create a response cache backed by a shared SurrealDB instance.
+    pub fn new_with_surreal(db: Arc<Surreal<Db>>, ttl_minutes: u32, max_entries: usize) -> Self {
+        Self::with_hot_cache_surreal(db, ttl_minutes, max_entries, 256)
     }
 
-    /// Open (or create) the response cache database with a custom hot cache size.
-    pub fn with_hot_cache(
-        workspace_dir: &Path,
+    /// Create a response cache with a custom hot cache size.
+    pub fn with_hot_cache_surreal(
+        db: Arc<Surreal<Db>>,
         ttl_minutes: u32,
         max_entries: usize,
         hot_max_entries: usize,
-    ) -> Result<Self> {
-        let db_dir = workspace_dir.join("memory");
-        std::fs::create_dir_all(&db_dir)?;
-        let db_path = db_dir.join("response_cache.db");
-
-        let conn = Connection::open(&db_path)?;
-
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous  = NORMAL;
-             PRAGMA temp_store   = MEMORY;",
-        )?;
-
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS response_cache (
-                prompt_hash TEXT PRIMARY KEY,
-                model       TEXT NOT NULL,
-                response    TEXT NOT NULL,
-                token_count INTEGER NOT NULL DEFAULT 0,
-                created_at  TEXT NOT NULL,
-                accessed_at TEXT NOT NULL,
-                hit_count   INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS idx_rc_accessed ON response_cache(accessed_at);
-            CREATE INDEX IF NOT EXISTS idx_rc_created ON response_cache(created_at);",
-        )?;
-
-        Ok(Self {
-            conn: Mutex::new(conn),
-            db_path,
+    ) -> Self {
+        Self {
+            db,
             ttl_minutes: i64::from(ttl_minutes),
             max_entries,
             hot_cache: Mutex::new(HashMap::new()),
             hot_max_entries,
-        })
+        }
     }
 
     /// Build a deterministic cache key from model + system prompt + user prompt.
@@ -99,64 +71,76 @@ impl ResponseCache {
         hex::encode(hash)
     }
 
+    /// Check the hot cache synchronously. Returns `Some(response)` on hit,
+    /// `None` on miss or expired entry. This is a separate method to avoid
+    /// holding a `parking_lot::MutexGuard` across an `.await` point.
+    #[allow(clippy::cast_sign_loss)]
+    fn check_hot_cache(&self, key: &str) -> Option<String> {
+        let mut hot = self.hot_cache.lock();
+        let entry = hot.get_mut(key)?;
+        let ttl = std::time::Duration::from_secs(self.ttl_minutes as u64 * 60);
+        if entry.created_at.elapsed() > ttl {
+            hot.remove(key);
+            None
+        } else {
+            entry.accessed_at = std::time::Instant::now();
+            Some(entry.response.clone())
+        }
+    }
+
     /// Look up a cached response. Returns `None` on miss or expired entry.
     ///
     /// Two-tier lookup: checks the in-memory hot cache first, then falls
-    /// through to SQLite. On a SQLite hit the entry is promoted to hot cache.
+    /// through to SurrealDB. On a SurrealDB hit the entry is promoted to hot cache.
     #[allow(clippy::cast_sign_loss)]
-    pub fn get(&self, key: &str) -> Result<Option<String>> {
+    pub async fn get(&self, key: &str) -> Result<Option<String>> {
         // Tier 1: hot cache (with TTL check)
-        {
-            let mut hot = self.hot_cache.lock();
-            if let Some(entry) = hot.get_mut(key) {
-                let ttl = std::time::Duration::from_secs(self.ttl_minutes as u64 * 60);
-                if entry.created_at.elapsed() > ttl {
-                    hot.remove(key);
-                } else {
-                    entry.accessed_at = std::time::Instant::now();
-                    let response = entry.response.clone();
-                    drop(hot);
-                    // Still bump SQLite hit count for accurate stats
-                    let conn = self.conn.lock();
-                    let now_str = Local::now().to_rfc3339();
-                    conn.execute(
-                        "UPDATE response_cache
-                         SET accessed_at = ?1, hit_count = hit_count + 1
-                         WHERE prompt_hash = ?2",
-                        params![now_str, key],
-                    )?;
-                    return Ok(Some(response));
-                }
-            }
+        if let Some(response) = self.check_hot_cache(key) {
+            // Still bump SurrealDB hit count for accurate stats
+            let now_str = Local::now().to_rfc3339();
+            let _ = self
+                .db
+                .query(
+                    "UPDATE response_cache SET accessed_at = $now, hit_count = hit_count + 1 WHERE prompt_hash = $hash",
+                )
+                .bind(("now", now_str))
+                .bind(("hash", key.to_string()))
+                .await;
+            return Ok(Some(response));
         }
 
-        // Tier 2: SQLite (warm)
-        let result: Option<(String, u32)> = {
-            let conn = self.conn.lock();
-            let now = Local::now();
-            let cutoff = (now - Duration::minutes(self.ttl_minutes)).to_rfc3339();
+        // Tier 2: SurrealDB (warm)
+        let now = Local::now();
+        let cutoff = (now - Duration::minutes(self.ttl_minutes)).to_rfc3339();
 
-            let mut stmt = conn.prepare(
-                "SELECT response, token_count FROM response_cache
-                 WHERE prompt_hash = ?1 AND created_at > ?2",
-            )?;
+        let mut resp = self
+            .db
+            .query(
+                "SELECT response, token_count FROM response_cache WHERE prompt_hash = $hash AND created_at > $cutoff LIMIT 1",
+            )
+            .bind(("hash", key.to_string()))
+            .bind(("cutoff", cutoff))
+            .await?;
 
-            let result: Option<(String, u32)> = stmt
-                .query_row(params![key, cutoff], |row| Ok((row.get(0)?, row.get(1)?)))
-                .ok();
+        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        let result: Option<(String, u32)> = rows.first().and_then(|row| {
+            let response = row.get("response")?.as_str()?.to_string();
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let token_count = row.get("token_count")?.as_u64()? as u32;
+            Some((response, token_count))
+        });
 
-            if result.is_some() {
-                let now_str = now.to_rfc3339();
-                conn.execute(
-                    "UPDATE response_cache
-                     SET accessed_at = ?1, hit_count = hit_count + 1
-                     WHERE prompt_hash = ?2",
-                    params![now_str, key],
-                )?;
-            }
-
-            result
-        };
+        if result.is_some() {
+            let now_str = now.to_rfc3339();
+            let _ = self
+                .db
+                .query(
+                    "UPDATE response_cache SET accessed_at = $now, hit_count = hit_count + 1 WHERE prompt_hash = $hash",
+                )
+                .bind(("now", now_str))
+                .bind(("hash", key.to_string()))
+                .await;
+        }
 
         if let Some((ref response, token_count)) = result {
             self.promote_to_hot(key, response, token_count);
@@ -166,40 +150,69 @@ impl ResponseCache {
     }
 
     /// Store a response in the cache (both hot and warm tiers).
-    pub fn put(&self, key: &str, model: &str, response: &str, token_count: u32) -> Result<()> {
+    pub async fn put(
+        &self,
+        key: &str,
+        model: &str,
+        response: &str,
+        token_count: u32,
+    ) -> Result<()> {
         // Write to hot cache
         self.promote_to_hot(key, response, token_count);
 
-        // Write to SQLite (warm)
-        let conn = self.conn.lock();
-
+        // Write to SurrealDB (warm) — upsert by prompt_hash
         let now = Local::now().to_rfc3339();
 
-        conn.execute(
-            "INSERT OR REPLACE INTO response_cache
-             (prompt_hash, model, response, token_count, created_at, accessed_at, hit_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-            params![key, model, response, token_count, now, now],
-        )?;
+        self.db
+            .query(
+                "IF (SELECT count() FROM response_cache WHERE prompt_hash = $hash GROUP ALL)[0].count > 0 {
+                    UPDATE response_cache SET model = $model, response = $response, token_count = $tc, created_at = $now, accessed_at = $now, hit_count = 0
+                    WHERE prompt_hash = $hash
+                } ELSE {
+                    CREATE response_cache SET prompt_hash = $hash, model = $model, response = $response, token_count = $tc, created_at = $now, accessed_at = $now, hit_count = 0
+                };",
+            )
+            .bind(("hash", key.to_string()))
+            .bind(("model", model.to_string()))
+            .bind(("response", response.to_string()))
+            .bind(("tc", token_count))
+            .bind(("now", now))
+            .await?;
 
         // Evict expired entries
         let cutoff = (Local::now() - Duration::minutes(self.ttl_minutes)).to_rfc3339();
-        conn.execute(
-            "DELETE FROM response_cache WHERE created_at <= ?1",
-            params![cutoff],
-        )?;
+        self.db
+            .query("DELETE FROM response_cache WHERE created_at <= $cutoff")
+            .bind(("cutoff", cutoff))
+            .await?;
 
         // LRU eviction if over max_entries
         #[allow(clippy::cast_possible_wrap)]
         let max = self.max_entries as i64;
-        conn.execute(
-            "DELETE FROM response_cache WHERE prompt_hash IN (
-                SELECT prompt_hash FROM response_cache
-                ORDER BY accessed_at ASC
-                LIMIT MAX(0, (SELECT COUNT(*) FROM response_cache) - ?1)
-            )",
-            params![max],
-        )?;
+
+        // SurrealDB doesn't support DELETE ... ORDER BY ... LIMIT in a single statement
+        // the same way SQLite does, so we count first then delete the oldest excess.
+        let mut count_resp = self
+            .db
+            .query("SELECT count() FROM response_cache GROUP ALL")
+            .await?;
+        let count_rows: Vec<serde_json::Value> = count_resp.take(0)?;
+        let total = count_rows
+            .first()
+            .and_then(|r| r.get("count"))
+            .and_then(|c| c.as_i64())
+            .unwrap_or(0);
+
+        if total > max {
+            let excess = total - max;
+            self.db
+                .query(
+                    "LET $old = (SELECT id, accessed_at FROM response_cache ORDER BY accessed_at ASC LIMIT $excess);
+                     FOR $row IN $old { DELETE response_cache WHERE id = $row.id; };",
+                )
+                .bind(("excess", excess))
+                .await?;
+        }
 
         Ok(())
     }
@@ -242,46 +255,90 @@ impl ResponseCache {
     }
 
     /// Return cache statistics: (total_entries, total_hits, total_tokens_saved).
-    pub fn stats(&self) -> Result<(usize, u64, u64)> {
-        let conn = self.conn.lock();
+    pub async fn stats(&self) -> Result<(usize, u64, u64)> {
+        let mut count_resp = self
+            .db
+            .query("SELECT count() FROM response_cache GROUP ALL")
+            .await?;
+        let count_rows: Vec<serde_json::Value> = count_resp.take(0)?;
+        let count = count_rows
+            .first()
+            .and_then(|r| r.get("count"))
+            .and_then(|c| c.as_i64())
+            .unwrap_or(0);
 
-        let count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM response_cache", [], |row| row.get(0))?;
+        let mut hits_resp = self
+            .db
+            .query("SELECT math::sum(hit_count) AS total FROM response_cache GROUP ALL")
+            .await?;
+        let hits_rows: Vec<serde_json::Value> = hits_resp.take(0)?;
+        let hits = hits_rows
+            .first()
+            .and_then(|r| r.get("total"))
+            .and_then(|c| c.as_i64())
+            .unwrap_or(0);
 
-        let hits: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(hit_count), 0) FROM response_cache",
-            [],
-            |row| row.get(0),
-        )?;
-
-        let tokens_saved: i64 = conn.query_row(
-            "SELECT COALESCE(SUM(token_count * hit_count), 0) FROM response_cache",
-            [],
-            |row| row.get(0),
-        )?;
+        let mut tokens_resp = self
+            .db
+            .query(
+                "SELECT math::sum(token_count * hit_count) AS total FROM response_cache GROUP ALL",
+            )
+            .await?;
+        let tokens_rows: Vec<serde_json::Value> = tokens_resp.take(0)?;
+        let tokens_saved = tokens_rows
+            .first()
+            .and_then(|r| r.get("total"))
+            .and_then(|c| c.as_i64())
+            .unwrap_or(0);
 
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         Ok((count as usize, hits as u64, tokens_saved as u64))
     }
 
     /// Wipe the entire cache (useful for `synapseclaw cache clear`).
-    pub fn clear(&self) -> Result<usize> {
+    pub async fn clear(&self) -> Result<usize> {
         self.hot_cache.lock().clear();
-        let conn = self.conn.lock();
-        let affected = conn.execute("DELETE FROM response_cache", [])?;
-        Ok(affected)
+
+        // Get count before delete
+        let mut count_resp = self
+            .db
+            .query("SELECT count() FROM response_cache GROUP ALL")
+            .await?;
+        let count_rows: Vec<serde_json::Value> = count_resp.take(0)?;
+        let count = count_rows
+            .first()
+            .and_then(|r| r.get("count"))
+            .and_then(|c| c.as_i64())
+            .unwrap_or(0);
+
+        self.db.query("DELETE FROM response_cache").await?;
+
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        Ok(count as usize)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use surrealdb::engine::local::SurrealKv;
     use tempfile::TempDir;
 
-    fn temp_cache(ttl_minutes: u32) -> (TempDir, ResponseCache) {
+    async fn test_db() -> (TempDir, Arc<Surreal<Db>>) {
         let tmp = TempDir::new().unwrap();
-        let cache = ResponseCache::new(tmp.path(), ttl_minutes, 1000).unwrap();
-        (tmp, cache)
+        let db = Surreal::new::<SurrealKv>(tmp.path().join("test.surreal"))
+            .await
+            .unwrap();
+        db.use_ns("test").use_db("test").await.unwrap();
+        // Apply schema
+        let schema = include_str!("surrealdb_schema.surql");
+        db.query(schema).await.unwrap();
+        (tmp, Arc::new(db))
+    }
+
+    async fn temp_cache(ttl_minutes: u32) -> (TempDir, ResponseCache) {
+        let (tmp, db) = test_db().await;
+        (tmp, ResponseCache::new_with_surreal(db, ttl_minutes, 1000))
     }
 
     #[test]
@@ -313,214 +370,219 @@ mod tests {
         assert_ne!(k1, k2);
     }
 
-    #[test]
-    fn put_and_get() {
-        let (_tmp, cache) = temp_cache(60);
+    #[tokio::test]
+    async fn put_and_get() {
+        let (_tmp, cache) = temp_cache(60).await;
         let key = ResponseCache::cache_key("gpt-4", None, "What is Rust?");
 
         cache
             .put(&key, "gpt-4", "Rust is a systems programming language.", 25)
+            .await
             .unwrap();
 
-        let result = cache.get(&key).unwrap();
+        let result = cache.get(&key).await.unwrap();
         assert_eq!(
             result.as_deref(),
             Some("Rust is a systems programming language.")
         );
     }
 
-    #[test]
-    fn miss_returns_none() {
-        let (_tmp, cache) = temp_cache(60);
-        let result = cache.get("nonexistent_key").unwrap();
+    #[tokio::test]
+    async fn miss_returns_none() {
+        let (_tmp, cache) = temp_cache(60).await;
+        let result = cache.get("nonexistent_key").await.unwrap();
         assert!(result.is_none());
     }
 
-    #[test]
-    fn expired_entry_returns_none() {
-        let (_tmp, cache) = temp_cache(0); // 0-minute TTL → everything is instantly expired
+    #[tokio::test]
+    async fn expired_entry_returns_none() {
+        let (_tmp, cache) = temp_cache(0).await; // 0-minute TTL -> everything is instantly expired
         let key = ResponseCache::cache_key("gpt-4", None, "test");
 
-        cache.put(&key, "gpt-4", "response", 10).unwrap();
+        cache.put(&key, "gpt-4", "response", 10).await.unwrap();
 
         // The entry was created with created_at = now(), but TTL is 0 minutes,
         // so cutoff = now() - 0 = now(). The entry's created_at is NOT > cutoff.
-        let result = cache.get(&key).unwrap();
+        let result = cache.get(&key).await.unwrap();
         assert!(result.is_none());
     }
 
-    #[test]
-    fn hit_count_incremented() {
-        let (_tmp, cache) = temp_cache(60);
+    #[tokio::test]
+    async fn hit_count_incremented() {
+        let (_tmp, cache) = temp_cache(60).await;
         let key = ResponseCache::cache_key("gpt-4", None, "hello");
 
-        cache.put(&key, "gpt-4", "Hi!", 5).unwrap();
+        cache.put(&key, "gpt-4", "Hi!", 5).await.unwrap();
 
         // 3 hits
         for _ in 0..3 {
-            let _ = cache.get(&key).unwrap();
+            let _ = cache.get(&key).await.unwrap();
         }
 
-        let (_, total_hits, _) = cache.stats().unwrap();
+        let (_, total_hits, _) = cache.stats().await.unwrap();
         assert_eq!(total_hits, 3);
     }
 
-    #[test]
-    fn tokens_saved_calculated() {
-        let (_tmp, cache) = temp_cache(60);
+    #[tokio::test]
+    async fn tokens_saved_calculated() {
+        let (_tmp, cache) = temp_cache(60).await;
         let key = ResponseCache::cache_key("gpt-4", None, "explain rust");
 
-        cache.put(&key, "gpt-4", "Rust is...", 100).unwrap();
+        cache.put(&key, "gpt-4", "Rust is...", 100).await.unwrap();
 
-        // 5 cache hits × 100 tokens = 500 tokens saved
+        // 5 cache hits x 100 tokens = 500 tokens saved
         for _ in 0..5 {
-            let _ = cache.get(&key).unwrap();
+            let _ = cache.get(&key).await.unwrap();
         }
 
-        let (_, _, tokens_saved) = cache.stats().unwrap();
+        let (_, _, tokens_saved) = cache.stats().await.unwrap();
         assert_eq!(tokens_saved, 500);
     }
 
-    #[test]
-    fn lru_eviction() {
-        let tmp = TempDir::new().unwrap();
-        let cache = ResponseCache::new(tmp.path(), 60, 3).unwrap(); // max 3 entries
+    #[tokio::test]
+    async fn lru_eviction() {
+        let (_tmp, db) = test_db().await;
+        let cache = ResponseCache::new_with_surreal(db, 60, 3); // max 3 entries
 
         for i in 0..5 {
             let key = ResponseCache::cache_key("gpt-4", None, &format!("prompt {i}"));
             cache
                 .put(&key, "gpt-4", &format!("response {i}"), 10)
+                .await
                 .unwrap();
         }
 
-        let (count, _, _) = cache.stats().unwrap();
+        let (count, _, _) = cache.stats().await.unwrap();
         assert!(count <= 3, "Should have at most 3 entries after eviction");
     }
 
-    #[test]
-    fn clear_wipes_all() {
-        let (_tmp, cache) = temp_cache(60);
+    #[tokio::test]
+    async fn clear_wipes_all() {
+        let (_tmp, cache) = temp_cache(60).await;
 
         for i in 0..10 {
             let key = ResponseCache::cache_key("gpt-4", None, &format!("prompt {i}"));
             cache
                 .put(&key, "gpt-4", &format!("response {i}"), 10)
+                .await
                 .unwrap();
         }
 
-        let cleared = cache.clear().unwrap();
+        let cleared = cache.clear().await.unwrap();
         assert_eq!(cleared, 10);
 
-        let (count, _, _) = cache.stats().unwrap();
+        let (count, _, _) = cache.stats().await.unwrap();
         assert_eq!(count, 0);
     }
 
-    #[test]
-    fn stats_empty_cache() {
-        let (_tmp, cache) = temp_cache(60);
-        let (count, hits, tokens) = cache.stats().unwrap();
+    #[tokio::test]
+    async fn stats_empty_cache() {
+        let (_tmp, cache) = temp_cache(60).await;
+        let (count, hits, tokens) = cache.stats().await.unwrap();
         assert_eq!(count, 0);
         assert_eq!(hits, 0);
         assert_eq!(tokens, 0);
     }
 
-    #[test]
-    fn overwrite_same_key() {
-        let (_tmp, cache) = temp_cache(60);
+    #[tokio::test]
+    async fn overwrite_same_key() {
+        let (_tmp, cache) = temp_cache(60).await;
         let key = ResponseCache::cache_key("gpt-4", None, "question");
 
-        cache.put(&key, "gpt-4", "answer v1", 20).unwrap();
-        cache.put(&key, "gpt-4", "answer v2", 25).unwrap();
+        cache.put(&key, "gpt-4", "answer v1", 20).await.unwrap();
+        cache.put(&key, "gpt-4", "answer v2", 25).await.unwrap();
 
-        let result = cache.get(&key).unwrap();
+        let result = cache.get(&key).await.unwrap();
         assert_eq!(result.as_deref(), Some("answer v2"));
 
-        let (count, _, _) = cache.stats().unwrap();
+        let (count, _, _) = cache.stats().await.unwrap();
         assert_eq!(count, 1);
     }
 
-    #[test]
-    fn unicode_prompt_handling() {
-        let (_tmp, cache) = temp_cache(60);
+    #[tokio::test]
+    async fn unicode_prompt_handling() {
+        let (_tmp, cache) = temp_cache(60).await;
         let key = ResponseCache::cache_key("gpt-4", None, "日本語のテスト 🦀");
 
         cache
             .put(&key, "gpt-4", "はい、Rustは素晴らしい", 30)
+            .await
             .unwrap();
 
-        let result = cache.get(&key).unwrap();
+        let result = cache.get(&key).await.unwrap();
         assert_eq!(result.as_deref(), Some("はい、Rustは素晴らしい"));
     }
 
-    // ── §4.4 Cache eviction under pressure tests ─────────────
+    // -- Cache eviction under pressure tests --
 
-    #[test]
-    fn lru_eviction_keeps_most_recent() {
-        let tmp = TempDir::new().unwrap();
-        let cache = ResponseCache::new(tmp.path(), 60, 3).unwrap();
+    #[tokio::test]
+    async fn lru_eviction_keeps_most_recent() {
+        let (_tmp, db) = test_db().await;
+        let cache = ResponseCache::new_with_surreal(db, 60, 3);
 
         // Insert 3 entries
         for i in 0..3 {
             let key = ResponseCache::cache_key("gpt-4", None, &format!("prompt {i}"));
             cache
                 .put(&key, "gpt-4", &format!("response {i}"), 10)
+                .await
                 .unwrap();
         }
 
         // Access entry 0 to make it recently used
         let key0 = ResponseCache::cache_key("gpt-4", None, "prompt 0");
-        let _ = cache.get(&key0).unwrap();
+        let _ = cache.get(&key0).await.unwrap();
 
         // Insert entry 3 (triggers eviction)
         let key3 = ResponseCache::cache_key("gpt-4", None, "prompt 3");
-        cache.put(&key3, "gpt-4", "response 3", 10).unwrap();
+        cache.put(&key3, "gpt-4", "response 3", 10).await.unwrap();
 
-        let (count, _, _) = cache.stats().unwrap();
+        let (count, _, _) = cache.stats().await.unwrap();
         assert!(count <= 3, "cache must not exceed max_entries");
 
         // Entry 0 was recently accessed and should survive
-        let entry0 = cache.get(&key0).unwrap();
+        let entry0 = cache.get(&key0).await.unwrap();
         assert!(
             entry0.is_some(),
             "recently accessed entry should survive LRU eviction"
         );
     }
 
-    #[test]
-    fn cache_handles_zero_max_entries() {
-        let tmp = TempDir::new().unwrap();
-        let cache = ResponseCache::new(tmp.path(), 60, 0).unwrap();
+    #[tokio::test]
+    async fn cache_handles_zero_max_entries() {
+        let (_tmp, db) = test_db().await;
+        let cache = ResponseCache::new_with_surreal(db, 60, 0);
 
         let key = ResponseCache::cache_key("gpt-4", None, "test");
         // Should not panic even with max_entries=0
-        cache.put(&key, "gpt-4", "response", 10).unwrap();
+        cache.put(&key, "gpt-4", "response", 10).await.unwrap();
 
-        let (count, _, _) = cache.stats().unwrap();
+        let (count, _, _) = cache.stats().await.unwrap();
         assert_eq!(count, 0, "cache with max_entries=0 should evict everything");
     }
 
-    #[test]
-    fn cache_concurrent_reads_no_panic() {
-        let tmp = TempDir::new().unwrap();
-        let cache = std::sync::Arc::new(ResponseCache::new(tmp.path(), 60, 100).unwrap());
+    #[tokio::test]
+    async fn cache_concurrent_reads_no_panic() {
+        let (_tmp, db) = test_db().await;
+        let cache = Arc::new(ResponseCache::new_with_surreal(db, 60, 100));
 
         let key = ResponseCache::cache_key("gpt-4", None, "concurrent");
-        cache.put(&key, "gpt-4", "response", 10).unwrap();
+        cache.put(&key, "gpt-4", "response", 10).await.unwrap();
 
         let mut handles = Vec::new();
         for _ in 0..10 {
-            let cache = std::sync::Arc::clone(&cache);
+            let cache = Arc::clone(&cache);
             let key = key.clone();
-            handles.push(std::thread::spawn(move || {
-                let _ = cache.get(&key).unwrap();
+            handles.push(tokio::spawn(async move {
+                let _ = cache.get(&key).await.unwrap();
             }));
         }
 
         for handle in handles {
-            handle.join().unwrap();
+            handle.await.unwrap();
         }
 
-        let (_, hits, _) = cache.stats().unwrap();
+        let (_, hits, _) = cache.stats().await.unwrap();
         assert_eq!(hits, 10, "all concurrent reads should register as hits");
     }
 }

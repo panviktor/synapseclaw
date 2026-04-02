@@ -5,7 +5,7 @@
 //! - `embeddings` — pluggable embedding providers (OpenAI, custom, noop)
 //! - `vector` — cosine similarity, hybrid merge, byte serialization
 //! - `chunker` — markdown document chunking
-//! - `response_cache` — two-tier LLM response cache (in-memory + SQLite)
+//! - `response_cache` — two-tier LLM response cache (in-memory + SurrealDB)
 
 pub mod chunker;
 pub mod embeddings;
@@ -212,29 +212,32 @@ pub fn should_skip_autosave_content(content: &str) -> bool {
 // ── Response Cache Factory ───────────────────────────────────────
 
 /// Factory: create an optional response cache from config.
-pub fn create_response_cache(config: &MemoryConfig, workspace_dir: &Path) -> Option<ResponseCache> {
+///
+/// Requires a shared SurrealDB handle. When `surreal` is `None` (noop memory
+/// backend), the response cache is silently disabled.
+pub fn create_response_cache(
+    config: &MemoryConfig,
+    surreal: Option<Arc<Surreal<SurrealDb>>>,
+) -> Option<ResponseCache> {
     if !config.response_cache_enabled {
         return None;
     }
 
-    match ResponseCache::new(
-        workspace_dir,
+    let Some(db) = surreal else {
+        tracing::info!("Response cache disabled: no SurrealDB backend available");
+        return None;
+    };
+
+    tracing::info!(
+        "Response cache enabled (TTL: {}min, max: {} entries)",
+        config.response_cache_ttl_minutes,
+        config.response_cache_max_entries
+    );
+    Some(ResponseCache::new_with_surreal(
+        db,
         config.response_cache_ttl_minutes,
         config.response_cache_max_entries,
-    ) {
-        Ok(cache) => {
-            tracing::info!(
-                "Response cache enabled (TTL: {}min, max: {} entries)",
-                config.response_cache_ttl_minutes,
-                config.response_cache_max_entries
-            );
-            Some(cache)
-        }
-        Err(e) => {
-            tracing::warn!("Response cache disabled due to error: {e}");
-            None
-        }
-    }
+    ))
 }
 
 // ── NoopUnifiedMemory (for tests and "none" backend) ────────────

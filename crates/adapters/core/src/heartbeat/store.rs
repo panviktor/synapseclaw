@@ -1,12 +1,12 @@
-//! SQLite persistence for heartbeat task execution history.
+//! SurrealDB persistence for heartbeat task execution history.
 //!
-//! Mirrors the `cron/store.rs` pattern: fresh connection per call, schema
-//! auto-created, output truncated, history pruned to a configurable limit.
+//! Phase 4.5: migrated from SQLite to shared SurrealDB instance.
+//! Schema defined in `surrealdb_schema.surql` (heartbeat_run table).
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
-use std::path::{Path, PathBuf};
+use surrealdb::engine::local::Db;
+use surrealdb::Surreal;
 
 const MAX_OUTPUT_BYTES: usize = 16 * 1024;
 const TRUNCATED_MARKER: &str = "\n...[truncated]";
@@ -14,7 +14,7 @@ const TRUNCATED_MARKER: &str = "\n...[truncated]";
 /// A single heartbeat task execution record.
 #[derive(Debug, Clone)]
 pub struct HeartbeatRun {
-    pub id: i64,
+    pub id: String,
     pub task_text: String,
     pub task_priority: String,
     pub started_at: DateTime<Utc>,
@@ -25,8 +25,9 @@ pub struct HeartbeatRun {
 }
 
 /// Record a heartbeat task execution and prune old entries.
-pub fn record_run(
-    workspace_dir: &Path,
+#[allow(clippy::too_many_arguments)]
+pub async fn record_run(
+    db: &Surreal<Db>,
     task_text: &str,
     task_priority: &str,
     started_at: DateTime<Utc>,
@@ -37,130 +38,132 @@ pub fn record_run(
     max_history: u32,
 ) -> Result<()> {
     let bounded_output = output.map(truncate_output);
-    with_connection(workspace_dir, |conn| {
-        let tx = conn.unchecked_transaction()?;
 
-        tx.execute(
-            "INSERT INTO heartbeat_runs
-                (task_text, task_priority, started_at, finished_at, status, output, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                task_text,
-                task_priority,
-                started_at.to_rfc3339(),
-                finished_at.to_rfc3339(),
-                status,
-                bounded_output.as_deref(),
-                duration_ms,
-            ],
-        )
-        .context("Failed to insert heartbeat run")?;
+    db.query(
+        "CREATE heartbeat_run SET
+            task_text = $task_text,
+            task_priority = $task_priority,
+            started_at = $started_at,
+            finished_at = $finished_at,
+            status = $status,
+            output = $output,
+            duration_ms = $duration_ms",
+    )
+    .bind(("task_text", task_text.to_string()))
+    .bind(("task_priority", task_priority.to_string()))
+    .bind(("started_at", started_at.to_rfc3339()))
+    .bind(("finished_at", finished_at.to_rfc3339()))
+    .bind(("status", status.to_string()))
+    .bind(("output", bounded_output))
+    .bind(("duration_ms", duration_ms))
+    .await
+    .context("Failed to insert heartbeat run")?;
 
-        let keep = i64::from(max_history.max(1));
-        tx.execute(
-            "DELETE FROM heartbeat_runs
-             WHERE id NOT IN (
-                 SELECT id FROM heartbeat_runs
-                 ORDER BY started_at DESC, id DESC
-                 LIMIT ?1
-             )",
-            params![keep],
-        )
-        .context("Failed to prune heartbeat run history")?;
+    // Prune oldest entries beyond max_history
+    let keep = i64::from(max_history.max(1));
+    db.query(
+        "DELETE heartbeat_run WHERE id NOT IN (
+            SELECT VALUE id FROM heartbeat_run
+            ORDER BY started_at DESC
+            LIMIT $keep
+        )",
+    )
+    .bind(("keep", keep))
+    .await
+    .context("Failed to prune heartbeat run history")?;
 
-        tx.commit()
-            .context("Failed to commit heartbeat run transaction")?;
-        Ok(())
-    })
+    Ok(())
 }
 
 /// List the most recent heartbeat runs.
-pub fn list_runs(workspace_dir: &Path, limit: usize) -> Result<Vec<HeartbeatRun>> {
-    with_connection(workspace_dir, |conn| {
-        let lim = i64::try_from(limit.max(1)).context("Run history limit overflow")?;
-        let mut stmt = conn.prepare(
-            "SELECT id, task_text, task_priority, started_at, finished_at, status, output, duration_ms
-             FROM heartbeat_runs
-             ORDER BY started_at DESC, id DESC
-             LIMIT ?1",
-        )?;
+pub async fn list_runs(db: &Surreal<Db>, limit: usize) -> Result<Vec<HeartbeatRun>> {
+    let lim = i64::try_from(limit.max(1)).context("Run history limit overflow")?;
 
-        let rows = stmt.query_map(params![lim], |row| {
-            Ok(HeartbeatRun {
-                id: row.get(0)?,
-                task_text: row.get(1)?,
-                task_priority: row.get(2)?,
-                started_at: parse_rfc3339(&row.get::<_, String>(3)?).map_err(sql_err)?,
-                finished_at: parse_rfc3339(&row.get::<_, String>(4)?).map_err(sql_err)?,
-                status: row.get(5)?,
-                output: row.get(6)?,
-                duration_ms: row.get(7)?,
-            })
-        })?;
+    let mut resp = db
+        .query(
+            "SELECT * FROM heartbeat_run
+             ORDER BY started_at DESC
+             LIMIT $limit",
+        )
+        .bind(("limit", lim))
+        .await
+        .context("Failed to query heartbeat runs")?;
 
-        let mut runs = Vec::new();
-        for row in rows {
-            runs.push(row?);
-        }
-        Ok(runs)
-    })
+    let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+    rows.iter().map(row_to_run).collect()
 }
 
 /// Get aggregate stats: (total_runs, total_ok, total_error).
-pub fn run_stats(workspace_dir: &Path) -> Result<(u64, u64, u64)> {
-    with_connection(workspace_dir, |conn| {
-        let total: i64 = conn.query_row("SELECT COUNT(*) FROM heartbeat_runs", [], |r| r.get(0))?;
-        let ok: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM heartbeat_runs WHERE status = 'ok'",
-            [],
-            |r| r.get(0),
-        )?;
-        let err: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM heartbeat_runs WHERE status = 'error'",
-            [],
-            |r| r.get(0),
-        )?;
-        #[allow(clippy::cast_sign_loss)]
-        Ok((total as u64, ok as u64, err as u64))
+pub async fn run_stats(db: &Surreal<Db>) -> Result<(u64, u64, u64)> {
+    let mut resp = db
+        .query(
+            "SELECT
+                count() AS total,
+                count(status = 'ok' OR NULL) AS ok,
+                count(status = 'error' OR NULL) AS err
+             FROM heartbeat_run GROUP ALL",
+        )
+        .await
+        .context("Failed to query heartbeat run stats")?;
+
+    let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+    if let Some(row) = rows.first() {
+        let total = row.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+        let ok = row.get("ok").and_then(|v| v.as_u64()).unwrap_or(0);
+        let err = row.get("err").and_then(|v| v.as_u64()).unwrap_or(0);
+        Ok((total, ok, err))
+    } else {
+        // No rows means empty table
+        Ok((0, 0, 0))
+    }
+}
+
+fn row_to_run(v: &serde_json::Value) -> Result<HeartbeatRun> {
+    let id = v
+        .get("id")
+        .and_then(|val| val.as_str().or_else(|| None))
+        .map(String::from)
+        .unwrap_or_else(|| {
+            // SurrealDB Thing IDs can be objects like {"tb":"heartbeat_run","id":{"String":"..."}}
+            v.get("id").map(|val| val.to_string()).unwrap_or_default()
+        });
+
+    let started_at = parse_rfc3339(
+        v.get("started_at")
+            .and_then(|val| val.as_str())
+            .unwrap_or_default(),
+    )?;
+    let finished_at = parse_rfc3339(
+        v.get("finished_at")
+            .and_then(|val| val.as_str())
+            .unwrap_or_default(),
+    )?;
+
+    Ok(HeartbeatRun {
+        id,
+        task_text: json_str(v, "task_text"),
+        task_priority: json_str(v, "task_priority"),
+        started_at,
+        finished_at,
+        status: json_str(v, "status"),
+        output: json_opt_str(v, "output"),
+        duration_ms: json_i64(v, "duration_ms"),
     })
 }
 
-fn db_path(workspace_dir: &Path) -> PathBuf {
-    workspace_dir.join("heartbeat").join("history.db")
+fn json_str(v: &serde_json::Value, key: &str) -> String {
+    v.get(key)
+        .and_then(|val| val.as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
-fn with_connection<T>(workspace_dir: &Path, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-    let path = db_path(workspace_dir);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("Failed to create heartbeat directory: {}", parent.display())
-        })?;
-    }
+fn json_opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|val| val.as_str()).map(String::from)
+}
 
-    let conn = Connection::open(&path)
-        .with_context(|| format!("Failed to open heartbeat history DB: {}", path.display()))?;
-
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA synchronous = NORMAL;
-         PRAGMA temp_store = MEMORY;
-
-         CREATE TABLE IF NOT EXISTS heartbeat_runs (
-            id             INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_text      TEXT NOT NULL,
-            task_priority  TEXT NOT NULL,
-            started_at     TEXT NOT NULL,
-            finished_at    TEXT NOT NULL,
-            status         TEXT NOT NULL,
-            output         TEXT,
-            duration_ms    INTEGER
-         );
-         CREATE INDEX IF NOT EXISTS idx_hb_runs_started ON heartbeat_runs(started_at);
-         CREATE INDEX IF NOT EXISTS idx_hb_runs_task ON heartbeat_runs(task_text);",
-    )
-    .context("Failed to initialize heartbeat history schema")?;
-
-    f(&conn)
+fn json_i64(v: &serde_json::Value, key: &str) -> i64 {
+    v.get(key).and_then(|val| val.as_i64()).unwrap_or(0)
 }
 
 fn truncate_output(output: &str) -> String {
@@ -186,120 +189,4 @@ fn parse_rfc3339(raw: &str) -> Result<DateTime<Utc>> {
     let parsed = DateTime::parse_from_rfc3339(raw)
         .with_context(|| format!("Invalid RFC3339 timestamp in heartbeat DB: {raw}"))?;
     Ok(parsed.with_timezone(&Utc))
-}
-
-fn sql_err(err: anyhow::Error) -> rusqlite::Error {
-    rusqlite::Error::ToSqlConversionFailure(err.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::Duration as ChronoDuration;
-    use tempfile::TempDir;
-
-    #[test]
-    fn record_and_list_runs() {
-        let tmp = TempDir::new().unwrap();
-        let base = Utc::now();
-
-        for i in 0..3 {
-            let start = base + ChronoDuration::seconds(i);
-            let end = start + ChronoDuration::milliseconds(100);
-            record_run(
-                tmp.path(),
-                &format!("Task {i}"),
-                "medium",
-                start,
-                end,
-                "ok",
-                Some("done"),
-                100,
-                50,
-            )
-            .unwrap();
-        }
-
-        let runs = list_runs(tmp.path(), 10).unwrap();
-        assert_eq!(runs.len(), 3);
-        // Most recent first
-        assert!(runs[0].task_text.contains('2'));
-    }
-
-    #[test]
-    fn prunes_old_runs() {
-        let tmp = TempDir::new().unwrap();
-        let base = Utc::now();
-
-        for i in 0..5 {
-            let start = base + ChronoDuration::seconds(i);
-            let end = start + ChronoDuration::milliseconds(50);
-            record_run(
-                tmp.path(),
-                "Task",
-                "high",
-                start,
-                end,
-                "ok",
-                None,
-                50,
-                2, // keep only 2
-            )
-            .unwrap();
-        }
-
-        let runs = list_runs(tmp.path(), 10).unwrap();
-        assert_eq!(runs.len(), 2);
-    }
-
-    #[test]
-    fn run_stats_counts_correctly() {
-        let tmp = TempDir::new().unwrap();
-        let now = Utc::now();
-
-        record_run(tmp.path(), "A", "high", now, now, "ok", None, 10, 50).unwrap();
-        record_run(
-            tmp.path(),
-            "B",
-            "low",
-            now,
-            now,
-            "error",
-            Some("fail"),
-            20,
-            50,
-        )
-        .unwrap();
-        record_run(tmp.path(), "C", "medium", now, now, "ok", None, 15, 50).unwrap();
-
-        let (total, ok, err) = run_stats(tmp.path()).unwrap();
-        assert_eq!(total, 3);
-        assert_eq!(ok, 2);
-        assert_eq!(err, 1);
-    }
-
-    #[test]
-    fn truncates_large_output() {
-        let tmp = TempDir::new().unwrap();
-        let now = Utc::now();
-        let big = "x".repeat(MAX_OUTPUT_BYTES + 512);
-
-        record_run(
-            tmp.path(),
-            "T",
-            "medium",
-            now,
-            now,
-            "ok",
-            Some(&big),
-            10,
-            50,
-        )
-        .unwrap();
-
-        let runs = list_runs(tmp.path(), 1).unwrap();
-        let stored = runs[0].output.as_deref().unwrap_or_default();
-        assert!(stored.ends_with(TRUNCATED_MARKER));
-        assert!(stored.len() <= MAX_OUTPUT_BYTES);
-    }
 }

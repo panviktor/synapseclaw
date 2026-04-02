@@ -196,3 +196,32 @@ DEFINE FIELD IF NOT EXISTS tool_name   ON run_event TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at  ON run_event TYPE option<int>;
 
 DEFINE INDEX IF NOT EXISTS idx_re_run ON run_event FIELDS run_id, created_at;
+
+-- ═══════════════════════════════════════════
+-- HEARTBEAT RUNS (Phase 4.5: migrated from SQLite)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS heartbeat_run SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS task_text     ON heartbeat_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS task_priority ON heartbeat_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS started_at    ON heartbeat_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS finished_at   ON heartbeat_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS status        ON heartbeat_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS output        ON heartbeat_run TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS duration_ms   ON heartbeat_run TYPE option<int>;
+DEFINE INDEX IF NOT EXISTS idx_hb_started ON heartbeat_run FIELDS started_at;
+
+-- ═══════════════════════════════════════════
+-- RESPONSE CACHE (migrated from SQLite)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS response_cache SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS prompt_hash ON response_cache TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS model       ON response_cache TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS response    ON response_cache TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS token_count ON response_cache TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS created_at  ON response_cache TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS accessed_at ON response_cache TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS hit_count   ON response_cache TYPE option<int>;
+DEFINE INDEX IF NOT EXISTS idx_rc_hash     ON response_cache FIELDS prompt_hash UNIQUE;
+DEFINE INDEX IF NOT EXISTS idx_rc_accessed ON response_cache FIELDS accessed_at;

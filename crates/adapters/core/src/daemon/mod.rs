@@ -286,6 +286,7 @@ pub async fn run(
         let heartbeat_cfg = config.clone();
         let hb_delivery = delivery_service.clone();
         let heartbeat_runner = agent_runner.clone();
+        let hb_surreal = shared_surreal.clone();
         handles.push(spawn_component_supervisor(
             "heartbeat",
             initial_backoff,
@@ -294,7 +295,8 @@ pub async fn run(
                 let cfg = heartbeat_cfg.clone();
                 let ds = hb_delivery.clone();
                 let ar = heartbeat_runner.clone();
-                async move { Box::pin(run_heartbeat_worker(cfg, ds, ar)).await }
+                let surreal = hb_surreal.clone();
+                async move { Box::pin(run_heartbeat_worker(cfg, ds, ar, surreal)).await }
             },
         ));
     }
@@ -521,6 +523,7 @@ async fn run_heartbeat_worker(
         synapse_domain::application::services::delivery_service::DeliveryService,
     >,
     agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
+    surreal: Option<std::sync::Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
 ) -> Result<()> {
     use crate::heartbeat::engine::{
         compute_adaptive_interval, HeartbeatEngine, HeartbeatTask, TaskPriority, TaskStatus,
@@ -668,17 +671,20 @@ async fn run_heartbeat_worker(
                     #[allow(clippy::cast_possible_truncation)]
                     let duration_ms = task_start.elapsed().as_millis() as i64;
                     let now = chrono::Utc::now();
-                    let _ = crate::heartbeat::store::record_run(
-                        &config.workspace_dir,
-                        &task.text,
-                        &task.priority.to_string(),
-                        now - chrono::Duration::milliseconds(duration_ms),
-                        now,
-                        "ok",
-                        Some(output.as_str()),
-                        duration_ms,
-                        config.heartbeat.max_run_history,
-                    );
+                    if let Some(ref db) = surreal {
+                        let _ = crate::heartbeat::store::record_run(
+                            db,
+                            &task.text,
+                            &task.priority.to_string(),
+                            now - chrono::Duration::milliseconds(duration_ms),
+                            now,
+                            "ok",
+                            Some(output.as_str()),
+                            duration_ms,
+                            config.heartbeat.max_run_history,
+                        )
+                        .await;
+                    }
                     let announcement = if output.trim().is_empty() {
                         format!("💓 heartbeat task completed: {}", task.text)
                     } else {
@@ -699,17 +705,20 @@ async fn run_heartbeat_worker(
                     #[allow(clippy::cast_possible_truncation)]
                     let duration_ms = task_start.elapsed().as_millis() as i64;
                     let now = chrono::Utc::now();
-                    let _ = crate::heartbeat::store::record_run(
-                        &config.workspace_dir,
-                        &task.text,
-                        &task.priority.to_string(),
-                        now - chrono::Duration::milliseconds(duration_ms),
-                        now,
-                        "error",
-                        Some(&e.to_string()),
-                        duration_ms,
-                        config.heartbeat.max_run_history,
-                    );
+                    if let Some(ref db) = surreal {
+                        let _ = crate::heartbeat::store::record_run(
+                            db,
+                            &task.text,
+                            &task.priority.to_string(),
+                            now - chrono::Duration::milliseconds(duration_ms),
+                            now,
+                            "error",
+                            Some(&e.to_string()),
+                            duration_ms,
+                            config.heartbeat.max_run_history,
+                        )
+                        .await;
+                    }
                     crate::health::mark_component_error("heartbeat", e.to_string());
                     tracing::warn!("Heartbeat task failed: {e}");
                 }

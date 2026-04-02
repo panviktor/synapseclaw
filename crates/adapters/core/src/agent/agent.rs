@@ -306,14 +306,15 @@ impl Agent {
         ));
 
         let resolved_agent_id = crate::agent::loop_::resolve_agent_id(config);
-        let memory: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
+        let memory_backend = synapse_memory::create_memory(
             &config.memory,
             &config.workspace_dir,
             &resolved_agent_id,
             config.api_key.as_deref(),
         )
-        .await?
-        .memory;
+        .await?;
+        let memory: Arc<dyn UnifiedMemoryPort> = memory_backend.memory;
+        let surreal_handle = memory_backend.surreal;
 
         let composio_key = if config.composio.enabled {
             config.composio.api_key.as_deref()
@@ -405,14 +406,16 @@ impl Agent {
         let available_hints: Vec<String> = route_model_by_hint.keys().cloned().collect();
 
         let response_cache = if config.memory.response_cache_enabled {
-            synapse_memory::response_cache::ResponseCache::with_hot_cache(
-                &config.workspace_dir,
-                config.memory.response_cache_ttl_minutes,
-                config.memory.response_cache_max_entries,
-                config.memory.response_cache_hot_entries,
-            )
-            .ok()
-            .map(Arc::new)
+            surreal_handle.map(|db| {
+                Arc::new(
+                    synapse_memory::response_cache::ResponseCache::with_hot_cache_surreal(
+                        db,
+                        config.memory.response_cache_ttl_minutes,
+                        config.memory.response_cache_max_entries,
+                        config.memory.response_cache_hot_entries,
+                    ),
+                )
+            })
         } else {
             None
         };
@@ -635,7 +638,7 @@ impl Agent {
             };
 
             if let (Some(ref cache), Some(ref key)) = (&self.response_cache, &cache_key) {
-                if let Ok(Some(cached)) = cache.get(key) {
+                if let Ok(Some(cached)) = cache.get(key).await {
                     self.observer.record_event(&ObserverEvent::CacheHit {
                         cache_type: "response".into(),
                         tokens_saved: 0,
@@ -703,7 +706,9 @@ impl Agent {
                         .and_then(|u| u.output_tokens)
                         .unwrap_or(0);
                     #[allow(clippy::cast_possible_truncation)]
-                    let _ = cache.put(key, &effective_model, &final_text, token_count as u32);
+                    let _ = cache
+                        .put(key, &effective_model, &final_text, token_count as u32)
+                        .await;
                 }
 
                 self.history
