@@ -173,8 +173,9 @@ export default function Memory() {
 
       {/* Add Memory Form Modal */}
       {showForm && (
-        <div className="fixed inset-0 modal-backdrop flex items-center justify-center z-50">
-          <div className="glass-card p-6 w-full max-w-md mx-auto animate-fade-in-scale">
+        <div className="fixed inset-0 pl-60 z-[9999] flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setShowForm(false); setFormError(null); }} />
+          <div className="relative glass-card p-6 w-full max-w-md mx-4 animate-fade-in-scale">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold text-[var(--text-primary)]">{t('memory.add_modal_title')}</h3>
               <button
