@@ -216,6 +216,13 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
         self.inner.list(category, session_id, limit).await
     }
+    async fn find_similar_facts(
+        &self,
+        embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(TemporalFact, f32)>, MemoryError> {
+        self.inner.find_similar_facts(embedding, limit).await
+    }
     fn should_skip_autosave(&self, content: &str) -> bool {
         self.inner.should_skip_autosave(content)
     }

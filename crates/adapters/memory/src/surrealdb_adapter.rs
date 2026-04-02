@@ -90,6 +90,7 @@ impl SurrealMemoryAdapter {
             for (table, idx) in [
                 ("episode", "idx_ep_vector"),
                 ("entity", "idx_ent_vector"),
+                ("fact", "idx_fact_vector"),
                 ("skill", "idx_skill_vector"),
                 ("reflection", "idx_refl_vector"),
             ] {
@@ -174,6 +175,7 @@ fn row_to_fact(v: &serde_json::Value) -> Option<TemporalFact> {
             .and_then(|s| s.as_str())
             .map(String::from),
         created_by: json_str(v, "created_by"),
+        embedding: None,
     })
 }
 
@@ -660,6 +662,23 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             fact.id.clone()
         };
 
+        // Use pre-computed embedding if provided (from AUDN in entity_extractor).
+        // Fallback: embed using predicate text (for knowledge_tool and other callers).
+        let embedding: Option<Vec<f32>> = if fact.embedding.is_some() {
+            fact.embedding.clone()
+        } else if self.embedder.dimensions() > 0 {
+            let fact_text = format!("{} {} {}", fact.subject, fact.predicate, fact.object);
+            match self.embedder.embed_one(&fact_text).await {
+                Ok(emb) => Some(emb),
+                Err(e) => {
+                    tracing::warn!(op = "add_fact", "Embedding failed: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         self.db
             .query(
                 "CREATE fact SET
@@ -670,7 +689,8 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                     valid_from = time::now(),
                     recorded_at = time::now(),
                     source_episode = $source,
-                    created_by = $agent",
+                    created_by = $agent,
+                    embedding = $embedding",
             )
             .bind(("subj", fact.subject))
             .bind(("pred", fact.predicate))
@@ -678,6 +698,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             .bind(("conf", fact.confidence))
             .bind(("source", fact.source_episode))
             .bind(("agent", fact.created_by))
+            .bind(("embedding", embedding))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
@@ -1222,6 +1243,44 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         // LLM consolidation runs via ConsolidatingMemory wrapper, not here.
         // This stub exists for when SurrealMemoryAdapter is used unwrapped.
         Ok(())
+    }
+
+    async fn find_similar_facts(
+        &self,
+        embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(TemporalFact, f32)>, MemoryError> {
+        if embedding.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut resp = self
+            .db
+            .query(
+                "SELECT *,
+                    vector::similarity::cosine(embedding, $emb) AS sim
+                 FROM fact
+                 WHERE embedding <|$limit,64|> $emb
+                 AND valid_to IS NONE
+                 AND (created_by = $agent OR created_by IS NONE)
+                 ORDER BY sim DESC
+                 LIMIT $limit",
+            )
+            .bind(("emb", embedding.to_vec()))
+            .bind(("agent", self.me().to_string()))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(rows
+            .iter()
+            .filter_map(|v| {
+                let fact = row_to_fact(v)?;
+                let sim = v.get("sim").and_then(|s| s.as_f64()).unwrap_or(0.0) as f32;
+                Some((fact, sim))
+            })
+            .collect())
     }
 
     fn should_skip_autosave(&self, content: &str) -> bool {

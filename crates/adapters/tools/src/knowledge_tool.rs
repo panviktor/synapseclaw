@@ -204,6 +204,7 @@ impl Tool for KnowledgeTool {
                     recorded_at: chrono::Utc::now(),
                     source_episode: None,
                     created_by: "default".to_string(),
+                    embedding: None, // SurrealDB will embed on insert
                 };
 
                 match self.memory.add_fact(fact).await {

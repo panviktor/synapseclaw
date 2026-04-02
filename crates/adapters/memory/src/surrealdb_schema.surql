@@ -67,6 +67,7 @@ DEFINE FIELD IF NOT EXISTS valid_to       ON fact TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS recorded_at    ON fact TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS source_episode ON fact TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_by     ON fact TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS embedding      ON fact TYPE option<array<float>>;
 
 DEFINE INDEX IF NOT EXISTS idx_fact_subj ON fact FIELDS subject;
 DEFINE INDEX IF NOT EXISTS idx_fact_obj  ON fact FIELDS object;

@@ -322,6 +322,20 @@ impl UnifiedMemoryPort for InstrumentedMemory {
         log_op("list", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
         r
     }
+    async fn find_similar_facts(
+        &self,
+        embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(synapse_domain::domain::memory::TemporalFact, f32)>, MemoryError> {
+        let t = Instant::now();
+        let r = self.inner.find_similar_facts(embedding, limit).await;
+        log_op(
+            "find_similar_facts",
+            t,
+            r.as_ref().map(|v| v.len()).unwrap_or(0),
+        );
+        r
+    }
     fn should_skip_autosave(&self, content: &str) -> bool {
         self.inner.should_skip_autosave(content)
     }
