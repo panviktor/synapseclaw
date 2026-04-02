@@ -846,7 +846,6 @@ pub async fn run_gateway(
                     Arc::clone(&provider),
                     model.clone(),
                     resolved_agent_id.clone(),
-                    // TODO: pass shared_ipc_client here once gateway plumbs it to AppState construction
                     shared_ipc_client.clone(),
                 ),
             )),
@@ -1115,8 +1114,7 @@ pub async fn run_gateway(
         if config.pipelines.hot_reload {
             match crate::pipeline::hot_reload::start_watcher(pipeline_dir, pipeline_store) {
                 Ok(_handle) => {
-                    // Handle is stored implicitly — watcher runs until daemon exits.
-                    // TODO: store handle for graceful shutdown
+                    // Handle dropped — watcher thread lives until process exits.
                     tracing::info!("pipeline hot-reload watcher started");
                 }
                 Err(e) => {

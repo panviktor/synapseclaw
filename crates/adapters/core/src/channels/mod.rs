@@ -279,13 +279,6 @@ impl InFlightTaskCompletion {
     }
 }
 
-/// Adapter wrapper — delegates to `conversation_key()` via InboundEnvelope.
-/// TODO(phase4): remove when callers switch to InboundEnvelope directly.
-fn conversation_history_key(msg: &traits::ChannelMessage) -> String {
-    let envelope = crate::envelope_from_channel_message(msg);
-    synapse_domain::application::services::inbound_message_service::conversation_key(&envelope)
-}
-
 fn followup_thread_id(msg: &traits::ChannelMessage) -> Option<String> {
     msg.thread_ts.clone().or_else(|| Some(msg.id.clone()))
 }
