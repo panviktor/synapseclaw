@@ -7423,7 +7423,6 @@ dependencies = [
  "regex",
  "reqwest 0.13.2",
  "ring",
- "rusqlite",
  "rust-embed",
  "rustls",
  "rustls-pki-types",
