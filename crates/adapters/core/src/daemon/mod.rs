@@ -187,6 +187,27 @@ pub async fn run(
         None
     };
 
+    // ── Phase 4.3: Shared memory — create ONCE, share across all components ──
+    // SurrealKV locks the DB file; creating multiple adapters from different
+    // components causes contention. Create the raw adapter here and pass it
+    // to gateway, channels, and the consolidation worker.
+    let daemon_agent_id = crate::agent::loop_::resolve_agent_id(&config);
+    let shared_raw_mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
+        match synapse_memory::create_memory(
+            &config.memory,
+            &config.workspace_dir,
+            &daemon_agent_id,
+            config.api_key.as_deref(),
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::error!("Memory init failed in daemon: {e} — using noop memory");
+                std::sync::Arc::new(synapse_memory::NoopUnifiedMemory)
+            }
+        };
+
     {
         let gateway_cfg = config.clone();
         let gateway_host = host.clone();
@@ -194,6 +215,7 @@ pub async fn run(
         let gw_registry = Some(channel_registry.clone());
         let gw_ipc = shared_ipc_client.clone();
         let gw_runner = agent_runner.clone();
+        let gw_mem = shared_raw_mem.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -205,9 +227,17 @@ pub async fn run(
                 let reg = gw_registry.clone();
                 let ipc = gw_ipc.clone();
                 let ar = gw_runner.clone();
+                let mem = gw_mem.clone();
                 async move {
                     Box::pin(crate::gateway::run_gateway(
-                        &host, port, cfg, otx, reg, ipc, ar,
+                        &host,
+                        port,
+                        cfg,
+                        otx,
+                        reg,
+                        ipc,
+                        ar,
+                        Some(mem),
                     ))
                     .await
                 }
@@ -219,6 +249,7 @@ pub async fn run(
         if has_supervised_channels(&config) {
             let channels_cfg = config.clone();
             let ch_ipc = shared_ipc_client.clone();
+            let ch_mem = shared_raw_mem.clone();
             handles.push(spawn_component_supervisor(
                 "channels",
                 initial_backoff,
@@ -226,7 +257,10 @@ pub async fn run(
                 move || {
                     let cfg = channels_cfg.clone();
                     let ipc = ch_ipc.clone();
-                    async move { Box::pin(crate::channels::start_channels(cfg, ipc)).await }
+                    let mem = ch_mem.clone();
+                    async move {
+                        Box::pin(crate::channels::start_channels(cfg, ipc, Some(mem))).await
+                    }
                 },
             ));
         } else {
@@ -291,24 +325,6 @@ pub async fn run(
 
     // ── Phase 4.3: Memory consolidation worker ────────────────────
     {
-        let daemon_agent_id = crate::agent::loop_::resolve_agent_id(&config);
-        let raw_mem = match synapse_memory::create_memory(
-            &config.memory,
-            &config.workspace_dir,
-            &daemon_agent_id,
-            config.api_key.as_deref(),
-        )
-        .await
-        {
-            Ok(m) => m,
-            Err(e) => {
-                tracing::error!(
-                    "Memory init failed in daemon: {e} — consolidation worker disabled"
-                );
-                std::sync::Arc::new(synapse_memory::NoopUnifiedMemory)
-            }
-        };
-
         // Wrap with ConsolidatingMemory if provider available.
         let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> = {
             let consolidation_model = config
@@ -325,18 +341,18 @@ pub async fn run(
                     crate::memory_adapters::instrumented::InstrumentedMemory::new(
                         std::sync::Arc::new(
                             crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
-                                raw_mem,
+                                shared_raw_mem.clone(),
                                 std::sync::Arc::from(p),
                                 consolidation_model,
                                 daemon_agent_id.clone(),
-                                None,
+                                shared_ipc_client.clone(),
                             ),
                         ),
                     ),
                 ),
                 Err(e) => {
                     tracing::warn!("Consolidation provider unavailable: {e}");
-                    raw_mem
+                    shared_raw_mem.clone()
                 }
             }
         };

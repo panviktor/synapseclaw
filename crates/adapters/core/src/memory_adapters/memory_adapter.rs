@@ -261,7 +261,9 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
                     "msg_type": "memory_event",
                     "payload": payload,
                 });
-                let _ = ipc.send_message(&body).await;
+                if let Err(e) = ipc.send_message(&body).await {
+                    tracing::warn!("MemoryEvent IPC broadcast failed: {e}");
+                }
             }
         }
 

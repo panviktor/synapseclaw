@@ -1,43 +1,41 @@
 ---
 name: ipc-context
-description: "Load full fork project context for a new session. Reads delta registry, plans, progress, architectural decisions, and current state so Claude understands the multi-agent IPC system, web UI, security extensions, and fork strategy. Use at the start of any session that will touch IPC code, fork plans, sync, or reviews. Trigger on: 'загрузи контекст', 'что мы делаем', 'контекст IPC', 'catch me up', 'where are we', 'new session', 'контекст форка'."
+description: "Load full project context for a new session. Reads delta registry, plans, progress, memory architecture, and current state. Use at the start of any session that will touch IPC, memory, fork plans, or reviews. Trigger on: 'загрузи контекст', 'что мы делаем', 'контекст', 'catch me up', 'where are we', 'new session'."
 user-invocable: true
 ---
 
-# Fork Project Context Loader
+# Project Context Loader
 
-Load the full project context so this session understands the fork: IPC system, web UI, security extensions, sync strategy, and what's next.
+Load the full project context so this session understands SynapseClaw: IPC system, memory architecture, security, and what's next.
 
 ## Step 1: Read core documents
 
 Read these files in parallel:
 
 - `docs/fork/README.md` — doc index and branch model
-- `docs/fork/delta-registry.md` — **all** fork deltas (44+ entries across 11 categories), shared hotspots, fork-owned paths
-- `docs/fork/sync-strategy.md` — merge-based sync, cadence, branch model
+- `docs/fork/delta-registry.md` — all fork deltas (56+ entries), shared hotspots
+- `docs/fork/news.md` — changelog with latest features
 
 ## Step 2: Read current phase context
 
 Read these files to understand the current work:
 
-- `docs/fork/ipc-phase4_0-plan.md` — current phase plan (modular core refactor)
-- `docs/fork/ipc-phase4_0-progress.md` — current phase progress
-- `docs/fork/ipc-phase3_8-progress.md` — previous phase (completed)
+- `docs/fork/ipc-phase4_3-progress.md` — Phase 4.3 Memory Architecture (COMPLETE)
+- `docs/fork/memory-architecture.md` — how memory actually works (data flows, SurrealDB schema, tools)
+- `docs/fork/ipc-phase4_3-scope.md` — what was deleted/replaced/kept
 
 ## Step 3: Read key code files
 
 Read these key files (first 50 lines each is enough for orientation):
 
-- `crates/adapters/core/src/gateway/ipc.rs` — IPC broker (handlers, IpcDb, ACL validation, audit events)
-- `crates/adapters/core/src/gateway/agent_registry.rs` — agent registry + health polling
-- `crates/adapters/core/src/gateway/chat_db.rs` — chat session SQLite persistence
-- `crates/adapters/core/src/gateway/ws.rs` — WS handler with operator isolation (op: prefix folding)
-- `crates/adapters/tools/src/agents_ipc.rs` — IPC tools (agents_spawn, send, inbox, reply, state)
-- `crates/adapters/security/src/pairing.rs` — token auth, TokenMetadata
-- `crates/adapters/security/src/execution.rs` — execution profiles, fail-closed sandbox
-- `crates/adapters/security/src/identity.rs` — Ed25519 agent identity
-- `crates/adapters/security/src/audit.rs` — dual-chain audit (Merkle + HMAC), IPC event types
-- `crates/domain/src/config/schema.rs` — AgentsIpcConfig, IpcPromptGuardConfig, SandboxConfig
+- `crates/domain/src/ports/memory.rs` — 7 memory ports (UnifiedMemoryPort facade)
+- `crates/adapters/memory/src/surrealdb_adapter.rs` — SurrealDB embedded backend
+- `crates/adapters/core/src/memory_adapters/memory_adapter.rs` — ConsolidatingMemory wrapper
+- `crates/adapters/core/src/memory_adapters/entity_extractor.rs` — LLM entity extraction
+- `crates/adapters/core/src/memory_adapters/skill_learner.rs` — Skill learning from reflections
+- `crates/adapters/core/src/agent/loop_/mod.rs` — build_context() with core blocks + recall + skills + entities
+- `crates/adapters/core/src/gateway/ipc/mod.rs` — IPC broker (handlers, ACL, audit)
+- `crates/domain/src/config/schema.rs` — MemoryConfig, AgentsIpcConfig
 
 ## Step 4: Check git state
 
@@ -46,45 +44,39 @@ Run:
 git log --oneline -10
 git status
 git branch --show-current
-git rev-list --count origin/main..upstream/master  # check upstream drift
 ```
 
 ## Step 5: Present summary
 
-Output a concise summary in this format:
+Output a concise summary:
 
 ```
-## Fork Project Context
+## Project Context
 
 ### Architecture
-- Broker-mediated HTTP IPC between agents with trust levels L0-L4
-- 5 ACL rules, quarantine lane for L4, promote-to-task workflow
-- PromptGuard + LeakDetector + sequence integrity + session limits
-- Ed25519 signed messages, fail-closed execution profiles
-- Dual-chain audit trail: Merkle (keyless) + HMAC-SHA256 (key-based)
-- Web dashboard: Fleet, Audit, Quarantine, Sessions, Spawns, Agent provisioning
-- Multi-agent dashboard with WS proxy + per-operator session isolation (Phase 3.8)
-- Response cache (two-tier SQLite + hot LRU), session-scoped memory
+- Hexagonal: 12 workspace crates, pure domain (zero infra deps)
+- SurrealDB 3.0 embedded: single memory backend (replaced 6 old backends)
+- 7 memory ports: Working, Episodic, Semantic, Skill, Reflection, Consolidation, Unified
+- Self-improvement: entity extraction → knowledge graph → prompt enrichment
+- Skill learning: reflect_on_run → create/update skills → inject in context
+- MemGPT pattern: core blocks (persona, user_knowledge, task_state, domain) always in prompt
+- IPC broker with L0-L4 trust, Ed25519 signing, quarantine, ACL
+- 6 agents: main broker + marketing-lead + copywriter + news-reader + publisher + trend-aggregator
 
-### Upstream Sync Status
-- Last full sync: 2026-03-17 (PRs #119, #120, #121)
-- Synced with: upstream v0.4.3 + 18 post-release commits
-- Upstream drift: {N} commits behind (from rev-list)
-- rerere: all known conflict patterns recorded
-
-### Fork Delta (from delta-registry.md)
-- 44+ total entries: 31 fork-only, 12 candidate-upstream, 1 temporary-backport
-- 11 categories: IPC Core, Security, Gateway, Agent, Cron, Config, Web UI, Web Infra, Channels, Other, Infra/CI
+### Memory System
+- Backend: SurrealDB embedded (kv-surrealkv, pure Rust)
+- Embeddings: OpenRouter Qwen3 Embedding 8B (4096 dims)
+- Search: BM25 + HNSW vector → RRF fusion
+- Consolidation: LLM extraction (history + facts + entities) fire-and-forget
+- Tools: memory_store, memory_recall, memory_forget, core_memory_update, knowledge
+- Monitoring: InstrumentedMemory wrapper (latency tracking)
 
 ### Phase Status
-- Phase 1 (brokered coordination): DONE — PRs #5-#21
-- Phase 2 (broker-side safety): DONE — PRs #26-#34
-- Phase 3A/3B (trusted execution): DONE — PRs #35-#55
-- Phase 3.5 (control plane UI): DONE
-- Phase 3.6 (agent provisioning): DONE
-- Phase 3.7/3.7b (chat sessions): DONE
-- Phase 3.8 (multi-agent dashboard): DONE — findings fixed in #120
-- Phase 4.0 (modular core refactor): IN PROGRESS
+- Phases 1-3.12 (IPC): DONE
+- Phase 4.0 (modular core): DONE
+- Phase 4.1 (pipeline engine): DONE
+- Phase 4.1H (hexagonal extraction): DONE
+- Phase 4.3 (memory architecture): DONE — PRs #217-#221
 
 ### Current branch: {branch}
 ### Recent commits: {last 3}
@@ -102,4 +94,3 @@ After presenting context, ask:
 - No args: full context load
 - `brief`: skip code reading, just docs + git state
 - `code`: skip docs, focus on current code state + git
-- `sync`: focus on sync-related context (delta registry, strategy, upstream divergence)
