@@ -2836,10 +2836,11 @@ pub async fn start_channels(
     ));
     let model = resolved_default_model(&config);
     let temperature = config.default_temperature;
+    let resolved_agent_id = crate::agent::loop_::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = synapse_memory::create_memory(
         &config.memory,
         &config.workspace_dir,
-        "default",
+        &resolved_agent_id,
         config.api_key.as_deref(),
     )
     .await?;
@@ -3270,12 +3271,18 @@ pub async fn start_channels(
     };
 
     // Wrap memory with ConsolidatingMemory for real LLM consolidation + entity extraction.
+    let ipc_for_mem: Option<std::sync::Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>> =
+        shared_ipc_client.as_ref().map(std::sync::Arc::clone);
     let consolidating_mem: Arc<dyn UnifiedMemoryPort> = Arc::new(
-        crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
-            Arc::clone(&mem),
-            Arc::clone(&provider),
-            model.clone(),
-        ),
+        crate::memory_adapters::instrumented::InstrumentedMemory::new(Arc::new(
+            crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+                Arc::clone(&mem),
+                Arc::clone(&provider),
+                model.clone(),
+                resolved_agent_id.clone(),
+                ipc_for_mem,
+            ),
+        )),
     );
 
     let runtime_ctx = Arc::new(ChannelRuntimeContext {

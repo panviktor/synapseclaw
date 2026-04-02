@@ -291,10 +291,11 @@ pub async fn run(
 
     // ── Phase 4.3: Memory consolidation worker ────────────────────
     {
+        let daemon_agent_id = crate::agent::loop_::resolve_agent_id(&config);
         let raw_mem = match synapse_memory::create_memory(
             &config.memory,
             &config.workspace_dir,
-            "default",
+            &daemon_agent_id,
             config.api_key.as_deref(),
         )
         .await
@@ -321,10 +322,16 @@ pub async fn run(
                 &config.reliability,
             ) {
                 Ok(p) => std::sync::Arc::new(
-                    crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
-                        raw_mem,
-                        std::sync::Arc::from(p),
-                        consolidation_model,
+                    crate::memory_adapters::instrumented::InstrumentedMemory::new(
+                        std::sync::Arc::new(
+                            crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
+                                raw_mem,
+                                std::sync::Arc::from(p),
+                                consolidation_model,
+                                daemon_agent_id.clone(),
+                                None,
+                            ),
+                        ),
                     ),
                 ),
                 Err(e) => {
@@ -338,7 +345,7 @@ pub async fn run(
             crate::memory_adapters::consolidation_worker::spawn_consolidation_worker(
                 mem,
                 crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default(),
-                "default".to_string(),
+                daemon_agent_id.clone(),
             );
         handles.push(worker_handle);
     }

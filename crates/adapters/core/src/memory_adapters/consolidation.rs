@@ -21,6 +21,12 @@ pub struct ConsolidationResult {
     pub memory_update: Option<String>,
 }
 
+/// Summary of what consolidation produced (returned to caller for IPC broadcast).
+#[derive(Debug, Default)]
+pub struct ConsolidationOutcome {
+    pub entities_extracted: usize,
+}
+
 const CONSOLIDATION_SYSTEM_PROMPT: &str = r#"You are a memory consolidation engine. Given a conversation turn, extract:
 1. "history_entry": A brief summary of what happened in this turn (1-2 sentences). Include the key topic or action.
 2. "memory_update": Any NEW facts, preferences, decisions, or commitments worth remembering long-term. Return null if nothing new was learned.
@@ -40,7 +46,8 @@ pub async fn consolidate_turn(
     memory: &dyn UnifiedMemoryPort,
     user_message: &str,
     assistant_response: &str,
-) -> anyhow::Result<()> {
+    agent_id: &str,
+) -> anyhow::Result<ConsolidationOutcome> {
     let turn_text = format!("User: {user_message}\nAssistant: {assistant_response}");
 
     // Truncate very long turns to avoid wasting tokens on consolidation.
@@ -87,16 +94,18 @@ pub async fn consolidate_turn(
 
     // Phase 3: Entity extraction — populate knowledge graph.
     // Best-effort: errors logged but don't fail consolidation.
+    let mut outcome = ConsolidationOutcome::default();
     match entity_extractor::extract_entities(provider, model, &truncated).await {
         Ok(extraction) => {
             if !extraction.entities.is_empty() || !extraction.relationships.is_empty() {
+                outcome.entities_extracted = extraction.entities.len();
                 tracing::debug!(
                     "Extracted {} entities, {} relationships",
                     extraction.entities.len(),
                     extraction.relationships.len()
                 );
                 if let Err(e) =
-                    entity_extractor::store_extraction(memory, &extraction, "default").await
+                    entity_extractor::store_extraction(memory, &extraction, agent_id).await
                 {
                     tracing::debug!("Entity storage failed: {e}");
                 }
@@ -107,7 +116,7 @@ pub async fn consolidate_turn(
         }
     }
 
-    Ok(())
+    Ok(outcome)
 }
 
 /// Parse the LLM's consolidation response, with fallback for malformed JSON.

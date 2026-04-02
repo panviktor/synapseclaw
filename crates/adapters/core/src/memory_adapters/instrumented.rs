@@ -334,4 +334,18 @@ impl UnifiedMemoryPort for InstrumentedMemory {
     async fn health_check(&self) -> bool {
         self.inner.health_check().await
     }
+    async fn reflect_on_turn(
+        &self,
+        user_message: &str,
+        assistant_response: &str,
+        tools_used: &[String],
+    ) -> Result<(), MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .reflect_on_turn(user_message, assistant_response, tools_used)
+            .await;
+        log_op("reflect_on_turn", t, 0);
+        r
+    }
 }

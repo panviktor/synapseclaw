@@ -234,7 +234,7 @@ pub fn all_tools_with_runtime(
         Arc::new(CoreMemoryUpdateTool::new(
             memory.clone(),
             security.clone(),
-            "default".to_string(),
+            crate::agent::loop_::resolve_agent_id(root_config),
         )),
         Arc::new(ScheduleTool::new(security.clone(), root_config.clone())),
         Arc::new(ModelRoutingConfigTool::new(
