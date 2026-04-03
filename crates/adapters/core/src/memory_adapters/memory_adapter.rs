@@ -305,10 +305,10 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
         let resp_lower = assistant_response.to_lowercase();
         let outcome = if resp_lower.contains("error")
             || resp_lower.contains("failed")
-            || resp_lower.contains("sorry, i")
-            || resp_lower.contains("couldn't")
             || resp_lower.contains("unable to")
         {
+            synapse_domain::domain::memory::ReflectionOutcome::Failure
+        } else if resp_lower.contains("sorry, i") || resp_lower.contains("couldn't") {
             synapse_domain::domain::memory::ReflectionOutcome::Partial
         } else {
             synapse_domain::domain::memory::ReflectionOutcome::Success
