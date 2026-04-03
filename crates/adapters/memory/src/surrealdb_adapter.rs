@@ -424,10 +424,12 @@ impl WorkingMemoryPort for SurrealMemoryAdapter {
     ) -> Result<(), MemoryError> {
         self.db
             .query(
-                "UPDATE core_memory SET
-                    content = string::concat(content, '\n', $text),
-                    updated_at = time::now()
-                 WHERE agent_id = $agent AND label = $label",
+                "IF (SELECT count() FROM core_memory WHERE agent_id = $agent AND label = $label GROUP ALL)[0].count > 0 {
+                    UPDATE core_memory SET content = string::concat(content, '\n', $text), updated_at = time::now()
+                        WHERE agent_id = $agent AND label = $label;
+                } ELSE {
+                    CREATE core_memory SET agent_id = $agent, label = $label, content = $text, max_tokens = 2000, updated_at = time::now();
+                };",
             )
             .bind(("agent", agent_id.clone()))
             .bind(("label", label.to_string()))
@@ -1328,38 +1330,24 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         limit: usize,
         session_id: Option<&str>,
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
-        let session_filter = if session_id.is_some() {
-            "AND session_id = $sid"
-        } else {
-            ""
+        let mq = MemoryQuery {
+            text: query.to_string(),
+            embedding: None,
+            agent_id: self.me().to_string(),
+            include_shared: true,
+            time_range: None,
+            limit,
         };
 
-        let q = format!(
-            "SELECT *, search::score(1) AS bm25_score FROM episode
-             WHERE content @1@ $text
-             AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
-             {session_filter}
-             ORDER BY bm25_score DESC
-             LIMIT $limit"
-        );
+        let results = self.search_episodes(&mq).await?;
 
-        let mut resp = self
-            .db
-            .query(&q)
-            .bind(("text", query.to_string()))
-            .bind(("agent", self.me().to_string()))
-            .bind(("sid", session_id.unwrap_or("").to_string()))
-            .bind(("limit", limit))
-            .await
-            .map_err(|e| MemoryError::Storage(e.to_string()))?;
-
-        let rows = take_json!(resp, 0);
-        Ok(rows
-            .iter()
-            .filter_map(|v| {
-                let mut entry = row_to_entry(v)?;
-                entry.score = v.get("bm25_score").and_then(|s| s.as_f64());
-                Some(entry)
+        Ok(results
+            .into_iter()
+            .filter(|r| session_id.map_or(true, |sid| r.entry.session_id.as_deref() == Some(sid)))
+            .map(|r| {
+                let mut entry = r.entry;
+                entry.score = Some(r.score as f64);
+                entry
             })
             .collect())
     }
