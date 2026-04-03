@@ -10,6 +10,7 @@ pub mod delivery_service;
 pub mod history_compaction;
 pub mod inbound_message_service;
 pub mod ipc_service;
+pub mod memory_mutation;
 pub mod pipeline_service;
 pub mod tool_filtering;
 pub mod post_turn;

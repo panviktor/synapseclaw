@@ -2,6 +2,16 @@
 
 ## 2026-04-03
 
+### Memory Learning Foundation — Phase A: AUDN-lite Mutation (PR #251)
+
+- **arch**: `MemoryMutationAction` (Add/Update/Delete/Noop) + `MutationCandidate` + `MutationDecision` domain types
+- **arch**: `memory_mutation` service — deterministic similarity-based AUDN evaluation + apply
+- **arch**: `MutationThresholds` (noop=0.95, update=0.85) — configurable per-agent
+- **fix**: consolidation Core facts now go through AUDN evaluation instead of blind append
+- **fix**: near-duplicate facts produce Noop (no more append-only noise)
+- **fix**: contradictory facts detected via negation heuristic → Delete old + Add new
+- observability: `tracing::debug` for mutation decisions (action, score, source)
+
 ### Memory Unification — Phase 4 Cleanup (PR #250)
 
 - refactor: rename `HistoryEnrichment::CoreBlocksOnly` → `Continuation` (name now matches behavior)
