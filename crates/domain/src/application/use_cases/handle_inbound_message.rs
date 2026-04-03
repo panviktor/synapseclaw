@@ -284,15 +284,16 @@ async fn handle_regular_message(
         HistoryEnrichment::MemoryContext {
             conversation_key: conv_key,
         } => {
-            // #8: Memory context enrichment (core blocks + recall)
+            // #8: Memory context enrichment (core blocks → system, recall → user)
             if let Some(ref mem) = ports.memory {
-                let mut full_context = String::new();
+                let mut core_blocks_ctx = String::new();
+                let mut recall_ctx = String::new();
 
-                // Core memory blocks (MemGPT: always in context)
+                // Core memory blocks (MemGPT: always in system prompt)
                 if let Ok(blocks) = mem.get_core_blocks(&config.agent_id).await {
                     for block in &blocks {
                         if !block.content.trim().is_empty() {
-                            full_context.push_str(&format!(
+                            core_blocks_ctx.push_str(&format!(
                                 "<{}>\n{}\n</{}>\n",
                                 block.label,
                                 block.content.trim(),
@@ -315,11 +316,20 @@ async fn handle_regular_message(
                 )
                 .await;
                 if !recall.is_empty() {
-                    full_context.push_str(&recall);
+                    recall_ctx.push_str(&recall);
                 }
 
-                if !full_context.is_empty() {
-                    history.push(ChatMessage::user(format!("{full_context}\n{content}")));
+                if !core_blocks_ctx.is_empty() || !recall_ctx.is_empty() {
+                    // Core blocks go into system prompt — higher priority, not user-overrideable
+                    if !core_blocks_ctx.is_empty() {
+                        history.push(ChatMessage::system(core_blocks_ctx));
+                    }
+                    // Recall context enriches the user message
+                    if !recall_ctx.is_empty() {
+                        history.push(ChatMessage::user(format!("{recall_ctx}\n{content}")));
+                    } else {
+                        history.push(ChatMessage::user(content));
+                    }
                     // Skip the normal user turn append below
                     ports
                         .history
