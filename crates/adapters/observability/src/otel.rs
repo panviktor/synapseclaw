@@ -210,6 +210,7 @@ impl Observer for OtelObserver {
             }
             ObserverEvent::LlmRequest { .. }
             | ObserverEvent::ToolCallStart { .. }
+            | ObserverEvent::ToolResult { .. }
             | ObserverEvent::TurnComplete => {}
             ObserverEvent::LlmResponse {
                 provider,

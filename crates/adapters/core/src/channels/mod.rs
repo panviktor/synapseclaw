@@ -58,31 +58,39 @@ struct ChannelNotifyObserver {
 
 impl Observer for ChannelNotifyObserver {
     fn record_event(&self, event: &ObserverEvent) {
-        if let ObserverEvent::ToolCallStart { tool, arguments } = event {
-            self.tools_used.store(true, Ordering::Relaxed);
-            let detail = match arguments {
-                Some(args) if !args.is_empty() => {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
-                        if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
-                            format!(": `{}`", truncate_with_ellipsis(cmd, 200))
-                        } else if let Some(q) = v.get("query").and_then(|c| c.as_str()) {
-                            format!(": {}", truncate_with_ellipsis(q, 200))
-                        } else if let Some(p) = v.get("path").and_then(|c| c.as_str()) {
-                            format!(": {p}")
-                        } else if let Some(u) = v.get("url").and_then(|c| c.as_str()) {
-                            format!(": {u}")
+        match event {
+            ObserverEvent::ToolCallStart { tool, arguments } => {
+                self.tools_used.store(true, Ordering::Relaxed);
+                let detail = match arguments {
+                    Some(args) if !args.is_empty() => {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
+                            if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
+                                format!(": `{}`", truncate_with_ellipsis(cmd, 200))
+                            } else if let Some(q) = v.get("query").and_then(|c| c.as_str()) {
+                                format!(": {}", truncate_with_ellipsis(q, 200))
+                            } else if let Some(p) = v.get("path").and_then(|c| c.as_str()) {
+                                format!(": {p}")
+                            } else if let Some(u) = v.get("url").and_then(|c| c.as_str()) {
+                                format!(": {u}")
+                            } else {
+                                let s = args.to_string();
+                                format!(": {}", truncate_with_ellipsis(&s, 120))
+                            }
                         } else {
                             let s = args.to_string();
                             format!(": {}", truncate_with_ellipsis(&s, 120))
                         }
-                    } else {
-                        let s = args.to_string();
-                        format!(": {}", truncate_with_ellipsis(&s, 120))
                     }
-                }
-                _ => String::new(),
-            };
-            let _ = self.tx.send(format!("\u{1F527} `{tool}`{detail}"));
+                    _ => String::new(),
+                };
+                let _ = self.tx.send(format!("\u{1F527} `{tool}`{detail}"));
+            }
+            ObserverEvent::ToolResult { tool, output, success } => {
+                let status = if *success { "\u{2705}" } else { "\u{274C}" };
+                let preview = truncate_with_ellipsis(output, 200);
+                let _ = self.tx.send(format!("{status} `{tool}`: {preview}"));
+            }
+            _ => {}
         }
         self.inner.record_event(event);
     }
@@ -1278,11 +1286,36 @@ async fn handle_message_via_orchestrator(
             Arc::new(NullChannelOutput)
         };
 
+    // Wrap observer with ChannelNotifyObserver to deliver live tool events
+    // to the channel as threaded replies while the agent is working.
+    // Only create if we have a target channel — avoids wasted allocations.
+    let observer_for_runtime: Arc<dyn Observer> = if let Some(ch) = target_channel.clone() {
+        let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let reply_target = original_msg.reply_target.clone();
+        let thread_ts = original_msg.thread_ts.clone();
+        tokio::spawn(async move {
+            while let Some(tool_msg) = tool_rx.recv().await {
+                let send = SendMessage::new(&tool_msg, &reply_target)
+                    .in_thread(thread_ts.clone());
+                if let Err(e) = ch.send(&send).await {
+                    tracing::debug!("tool notify send failed: {e}");
+                }
+            }
+        });
+        Arc::new(ChannelNotifyObserver {
+            inner: Arc::clone(&ctx.observer),
+            tx: tool_tx,
+            tools_used: std::sync::atomic::AtomicBool::new(false),
+        })
+    } else {
+        Arc::clone(&ctx.observer)
+    };
+
     let agent_runtime: Arc<dyn synapse_domain::ports::agent_runtime::AgentRuntimePort> =
         Arc::new(agent_runtime_adapter::ChannelAgentRuntime {
             provider: Arc::clone(&ctx.provider),
             tools_registry: Arc::clone(&ctx.tools_registry),
-            observer: Arc::clone(&ctx.observer),
+            observer: observer_for_runtime,
             approval_manager: Arc::clone(&ctx.approval_manager),
             channel_name: original_msg.channel.clone(),
             multimodal: ctx.multimodal.clone(),
