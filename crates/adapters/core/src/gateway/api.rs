@@ -766,6 +766,101 @@ pub async fn handle_api_memory_delete(
     }
 }
 
+// ── Learning Signal Patterns API ──────────────────────────────────
+
+/// GET /api/memory/learning-patterns — list all signal patterns
+pub async fn handle_api_learning_patterns_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    let Some(ref db) = state.surreal else {
+        let defaults = synapse_domain::application::services::learning_signals::default_patterns();
+        return Json(serde_json::json!({ "patterns": defaults, "source": "builtin" }))
+            .into_response();
+    };
+    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
+    match adapter.list_signal_patterns().await {
+        Ok(patterns) => Json(serde_json::json!({ "patterns": patterns })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/memory/learning-patterns — add a new signal pattern
+pub async fn handle_api_learning_patterns_add(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<synapse_domain::application::services::learning_signals::SignalPattern>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    let Some(ref db) = state.surreal else {
+        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "DB not available"}))).into_response();
+    };
+    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
+    match adapter.add_signal_pattern(&body).await {
+        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// DELETE /api/memory/learning-patterns/{id} — delete a signal pattern
+pub async fn handle_api_learning_patterns_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    let Some(ref db) = state.surreal else {
+        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "DB not available"}))).into_response();
+    };
+    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
+    match adapter.delete_signal_pattern(&id).await {
+        Ok(true) => Json(serde_json::json!({"deleted": true})).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /api/memory/learning-patterns/seed — seed default patterns (if empty)
+pub async fn handle_api_learning_patterns_seed(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    let Some(ref db) = state.surreal else {
+        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "DB not available"}))).into_response();
+    };
+    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
+    match adapter.seed_default_signal_patterns().await {
+        Ok(count) => Json(serde_json::json!({"seeded": count})).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("{e}")})),
+        )
+            .into_response(),
+    }
+}
+
 /// GET /api/cost — cost summary
 pub async fn handle_api_cost(
     State(state): State<AppState>,

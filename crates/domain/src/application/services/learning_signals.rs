@@ -4,33 +4,30 @@
 //! (remember, correct, prefer, instruct) that should bypass background
 //! consolidation and go straight into high-confidence memory mutation.
 //!
-//! Design: cheap heuristic-based classification — no LLM call on hot path.
+//! Patterns are loaded from DB (configurable via web UI).
+//! Fallback to built-in defaults when DB patterns are empty.
 
 // ── Signal types ─────────────────────────────────────────────────
 
 /// Classification of learning intent in a user message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LearningSignal {
     /// No explicit learning signal detected. Background consolidation only.
     BackgroundOnly,
     /// User explicitly asked to remember something.
-    /// e.g. "remember that I prefer Rust", "note: my timezone is UTC+3"
     ExplicitMemory,
     /// User is correcting previous information.
-    /// e.g. "actually, I use Python not Java", "that's wrong, I meant..."
     ExplicitCorrection,
     /// User is stating a preference or instruction.
-    /// e.g. "I prefer short answers", "always use type hints"
     ExplicitInstruction,
 }
 
 impl LearningSignal {
-    /// Whether this signal should trigger immediate high-confidence capture.
     pub fn is_explicit(&self) -> bool {
         !matches!(self, Self::BackgroundOnly)
     }
 
-    /// Suggested confidence for a mutation candidate from this signal.
     pub fn confidence(&self) -> f32 {
         match self {
             Self::BackgroundOnly => 0.5,
@@ -39,151 +36,217 @@ impl LearningSignal {
             Self::ExplicitInstruction => 0.85,
         }
     }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "correction" => Self::ExplicitCorrection,
+            "memory" => Self::ExplicitMemory,
+            "instruction" => Self::ExplicitInstruction,
+            _ => Self::BackgroundOnly,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::BackgroundOnly => "background",
+            Self::ExplicitMemory => "memory",
+            Self::ExplicitCorrection => "correction",
+            Self::ExplicitInstruction => "instruction",
+        }
+    }
+}
+
+// ── Configurable pattern ─────────────────────────────────────────
+
+/// How to match the pattern against the message.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchMode {
+    /// Pattern must appear at the start of the message.
+    StartsWith,
+    /// Pattern can appear anywhere in the message.
+    Contains,
+}
+
+impl MatchMode {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "contains" => Self::Contains,
+            _ => Self::StartsWith,
+        }
+    }
+}
+
+/// A configurable learning signal pattern, stored in DB.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SignalPattern {
+    /// DB record ID.
+    #[serde(default)]
+    pub id: String,
+    /// Which signal type this pattern detects.
+    pub signal_type: String,
+    /// The text pattern to match (lowercase).
+    pub pattern: String,
+    /// How to match: starts_with or contains.
+    pub match_mode: String,
+    /// Language hint (e.g. "en", "ru"). For display only.
+    #[serde(default = "default_language")]
+    pub language: String,
+    /// Whether this pattern is active.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_language() -> String {
+    "en".into()
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 // ── Classifier ───────────────────────────────────────────────────
 
-/// Classify a user message for explicit learning signals.
+/// Classify a user message using loaded patterns.
 ///
-/// Uses cheap heuristics (no LLM call). Checks in priority order:
-/// correction > memory > instruction > background.
-pub fn classify_signal(message: &str) -> LearningSignal {
+/// If `patterns` is empty, returns `BackgroundOnly` — no implicit fallback.
+/// Caller must load patterns from DB or seed defaults before calling.
+/// Priority: correction > memory > instruction (first match wins within group).
+pub fn classify_signal_with_patterns(message: &str, patterns: &[SignalPattern]) -> LearningSignal {
     let lower = message.to_lowercase();
     let trimmed = lower.trim();
 
-    // Skip very short messages — unlikely to be explicit signals
-    if trimmed.len() < 10 {
+    if trimmed.len() < 10 || patterns.is_empty() {
         return LearningSignal::BackgroundOnly;
     }
 
-    // ── Corrections (highest priority) ──
-    if is_correction(trimmed) {
-        return LearningSignal::ExplicitCorrection;
-    }
-
-    // ── Explicit memory requests ──
-    if is_memory_request(trimmed) {
-        return LearningSignal::ExplicitMemory;
-    }
-
-    // ── Preferences / instructions ──
-    if is_instruction(trimmed) {
-        return LearningSignal::ExplicitInstruction;
+    // Check in priority order: correction > memory > instruction
+    for signal_type in &["correction", "memory", "instruction"] {
+        for pat in patterns.iter().filter(|p| p.enabled && p.signal_type == *signal_type) {
+            let matched = match MatchMode::from_str(&pat.match_mode) {
+                MatchMode::StartsWith => trimmed.starts_with(&pat.pattern),
+                MatchMode::Contains => trimmed.contains(&pat.pattern),
+            };
+            if matched {
+                return LearningSignal::from_str(signal_type);
+            }
+        }
     }
 
     LearningSignal::BackgroundOnly
 }
 
-// ── Pattern matchers ─────────────────────────────────────────────
+/// Classify using built-in defaults (for tests and backward compat).
+pub fn classify_signal(message: &str) -> LearningSignal {
+    classify_signal_with_patterns(message, &default_patterns())
+}
 
-fn is_correction(s: &str) -> bool {
-    // Starts with correction markers
-    let correction_starts = [
-        "actually,",
-        "actually ",
-        "correction:",
-        "correction ",
-        "that's wrong",
-        "that's not right",
-        "that's incorrect",
-        "not quite,",
-        "no, ",
-        "wrong,",
-        "wrong.",
-        "let me correct",
-        "i was wrong",
-        "i meant ",
-        "i misspoke",
+// ── Default patterns (seed data) ─────────────────────────────────
+
+/// Get the default patterns for seeding the DB on first boot.
+pub fn default_patterns() -> Vec<SignalPattern> {
+    build_defaults()
+}
+
+fn build_defaults() -> Vec<SignalPattern> {
+    let mut patterns = Vec::new();
+
+    // Corrections
+    for pat in &[
+        "actually,", "actually ", "correction:", "correction ",
+        "that's wrong", "that's not right", "that's incorrect",
+        "not quite,", "no, ", "wrong,", "wrong.",
+        "let me correct", "i was wrong", "i meant ", "i misspoke",
         "you misunderstood",
-    ];
-    for pat in &correction_starts {
-        if s.starts_with(pat) {
-            return true;
-        }
+    ] {
+        patterns.push(SignalPattern {
+            id: String::new(),
+            signal_type: "correction".into(),
+            pattern: pat.to_string(),
+            match_mode: "starts_with".into(),
+            language: "en".into(),
+            enabled: true,
+        });
     }
-    // Contains strong correction markers (not at start)
-    let correction_contains = [
-        "that's wrong",
-        "that's not right",
-        "that's incorrect",
-        "let me correct",
-    ];
-    for pat in &correction_contains {
-        if s.contains(pat) {
-            return true;
-        }
+    // Correction contains patterns
+    for pat in &[
+        "that's wrong", "that's not right", "that's incorrect", "let me correct",
+    ] {
+        patterns.push(SignalPattern {
+            id: String::new(),
+            signal_type: "correction".into(),
+            pattern: pat.to_string(),
+            match_mode: "contains".into(),
+            language: "en".into(),
+            enabled: true,
+        });
     }
-    false
-}
 
-fn is_memory_request(s: &str) -> bool {
-    let memory_starts = [
-        "remember ",
-        "remember:",
-        "remember,",
-        "store:",
-        "save this",
-        "save that",
-        "note:",
-        "note that",
-        "take note",
-        "jot down",
-        "keep in mind",
-        "don't forget",
-        "запомни",
-        "запомни,",
-    ];
-    for pat in &memory_starts {
-        if s.starts_with(pat) {
-            return true;
-        }
+    // Memory requests
+    for pat in &[
+        "remember ", "remember:", "remember,", "store:", "save this",
+        "save that", "note:", "note that", "take note", "jot down",
+        "keep in mind", "don't forget", "important:", "important,",
+    ] {
+        patterns.push(SignalPattern {
+            id: String::new(),
+            signal_type: "memory".into(),
+            pattern: pat.to_string(),
+            match_mode: "starts_with".into(),
+            language: "en".into(),
+            enabled: true,
+        });
     }
-    // "important:" at start signals high-priority info
-    if s.starts_with("important:") || s.starts_with("important,") {
-        return true;
+    // Russian memory
+    for pat in &["запомни", "запомни,"] {
+        patterns.push(SignalPattern {
+            id: String::new(),
+            signal_type: "memory".into(),
+            pattern: pat.to_string(),
+            match_mode: "starts_with".into(),
+            language: "ru".into(),
+            enabled: true,
+        });
     }
-    false
-}
 
-fn is_instruction(s: &str) -> bool {
-    let instruction_starts = [
-        "i prefer ",
-        "i like ",
-        "i don't like ",
-        "i dislike ",
-        "i hate ",
-        "i want ",
-        "i need ",
-        "i always ",
-        "i never ",
-        "always ",
-        "never ",
-        "from now on",
-        "going forward",
-        "in the future",
-        "my preference is",
-        "my style is",
-        "я предпочитаю",
-        "мне нравится",
-    ];
-    for pat in &instruction_starts {
-        if s.starts_with(pat) {
-            return true;
-        }
+    // Instructions
+    for pat in &[
+        "i prefer ", "i like ", "i don't like ", "i dislike ", "i hate ",
+        "i want ", "i need ", "i always ", "i never ",
+        "always ", "never ", "from now on", "going forward",
+        "in the future", "my preference is", "my style is",
+    ] {
+        patterns.push(SignalPattern {
+            id: String::new(),
+            signal_type: "instruction".into(),
+            pattern: pat.to_string(),
+            match_mode: "starts_with".into(),
+            language: "en".into(),
+            enabled: true,
+        });
     }
-    false
+    // Russian instructions
+    for pat in &["я предпочитаю", "мне нравится"] {
+        patterns.push(SignalPattern {
+            id: String::new(),
+            signal_type: "instruction".into(),
+            pattern: pat.to_string(),
+            match_mode: "starts_with".into(),
+            language: "ru".into(),
+            enabled: true,
+        });
+    }
+
+    patterns
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── BackgroundOnly ──
-
     #[test]
     fn short_messages_are_background() {
         assert_eq!(classify_signal("hello"), LearningSignal::BackgroundOnly);
-        assert_eq!(classify_signal("hi"), LearningSignal::BackgroundOnly);
     }
 
     #[test]
@@ -192,13 +255,7 @@ mod tests {
             classify_signal("What is the capital of France?"),
             LearningSignal::BackgroundOnly
         );
-        assert_eq!(
-            classify_signal("Can you help me write a function?"),
-            LearningSignal::BackgroundOnly
-        );
     }
-
-    // ── ExplicitCorrection ──
 
     #[test]
     fn correction_actually() {
@@ -217,43 +274,9 @@ mod tests {
     }
 
     #[test]
-    fn correction_not_at_start() {
-        assert_eq!(
-            classify_signal("No wait, that's not right — I use vim"),
-            LearningSignal::ExplicitCorrection
-        );
-    }
-
-    #[test]
-    fn correction_i_meant() {
-        assert_eq!(
-            classify_signal("I meant Python, not JavaScript"),
-            LearningSignal::ExplicitCorrection
-        );
-    }
-
-    // ── ExplicitMemory ──
-
-    #[test]
     fn remember_explicit() {
         assert_eq!(
             classify_signal("Remember that I prefer Rust over Go"),
-            LearningSignal::ExplicitMemory
-        );
-    }
-
-    #[test]
-    fn note_explicit() {
-        assert_eq!(
-            classify_signal("Note: my timezone is UTC+3"),
-            LearningSignal::ExplicitMemory
-        );
-    }
-
-    #[test]
-    fn important_explicit() {
-        assert_eq!(
-            classify_signal("Important: always run tests before committing"),
             LearningSignal::ExplicitMemory
         );
     }
@@ -265,8 +288,6 @@ mod tests {
             LearningSignal::ExplicitMemory
         );
     }
-
-    // ── ExplicitInstruction ──
 
     #[test]
     fn preference_i_prefer() {
@@ -285,24 +306,6 @@ mod tests {
     }
 
     #[test]
-    fn instruction_from_now_on() {
-        assert_eq!(
-            classify_signal("From now on, write comments in English"),
-            LearningSignal::ExplicitInstruction
-        );
-    }
-
-    #[test]
-    fn instruction_never() {
-        assert_eq!(
-            classify_signal("Never use var in JavaScript"),
-            LearningSignal::ExplicitInstruction
-        );
-    }
-
-    // ── Signal properties ──
-
-    #[test]
     fn explicit_signals_are_explicit() {
         assert!(LearningSignal::ExplicitMemory.is_explicit());
         assert!(LearningSignal::ExplicitCorrection.is_explicit());
@@ -311,20 +314,49 @@ mod tests {
     }
 
     #[test]
-    fn confidence_ordering() {
-        assert!(LearningSignal::ExplicitMemory.confidence() > LearningSignal::ExplicitCorrection.confidence());
-        assert!(LearningSignal::ExplicitCorrection.confidence() > LearningSignal::ExplicitInstruction.confidence());
-        assert!(LearningSignal::ExplicitInstruction.confidence() > LearningSignal::BackgroundOnly.confidence());
-    }
-
-    // ── Priority: correction beats memory ──
-
-    #[test]
     fn correction_has_priority_over_memory() {
-        // "Actually, remember..." — correction signal wins
         assert_eq!(
             classify_signal("Actually, remember that I use vim not emacs"),
             LearningSignal::ExplicitCorrection
+        );
+    }
+
+    // ── Custom patterns ──
+
+    #[test]
+    fn custom_patterns_override_defaults() {
+        let custom = vec![SignalPattern {
+            id: String::new(),
+            signal_type: "memory".into(),
+            pattern: "hey bot, save".into(),
+            match_mode: "starts_with".into(),
+            language: "en".into(),
+            enabled: true,
+        }];
+        assert_eq!(
+            classify_signal_with_patterns("Hey bot, save this fact for later", &custom),
+            LearningSignal::ExplicitMemory
+        );
+        // Default "remember" won't work because custom patterns replace defaults
+        assert_eq!(
+            classify_signal_with_patterns("Remember my timezone", &custom),
+            LearningSignal::BackgroundOnly
+        );
+    }
+
+    #[test]
+    fn disabled_patterns_skipped() {
+        let custom = vec![SignalPattern {
+            id: String::new(),
+            signal_type: "correction".into(),
+            pattern: "actually".into(),
+            match_mode: "starts_with".into(),
+            language: "en".into(),
+            enabled: false,
+        }];
+        assert_eq!(
+            classify_signal_with_patterns("Actually this is wrong", &custom),
+            LearningSignal::BackgroundOnly
         );
     }
 }

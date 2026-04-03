@@ -962,6 +962,17 @@ pub async fn run_gateway(
         surreal: shared_surreal,
     };
 
+    // Seed default learning signal patterns (if table is empty).
+    if let Some(ref db) = state.surreal {
+        let adapter =
+            synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "gateway".into());
+        if let Ok(n) = adapter.seed_default_signal_patterns().await {
+            if n > 0 {
+                tracing::info!(count = n, "Seeded default learning signal patterns");
+            }
+        }
+    }
+
     // Phase 4.1: Initialize pipeline engine if enabled
     if config.pipelines.enabled {
         let pipeline_dir = config
@@ -1458,6 +1469,10 @@ pub async fn run_gateway(
         .route("/api/memory", get(api::handle_api_memory_list))
         .route("/api/memory", post(api::handle_api_memory_store))
         .route("/api/memory/{key}", delete(api::handle_api_memory_delete))
+        .route("/api/memory/learning-patterns", get(api::handle_api_learning_patterns_list))
+        .route("/api/memory/learning-patterns", post(api::handle_api_learning_patterns_add))
+        .route("/api/memory/learning-patterns/seed", post(api::handle_api_learning_patterns_seed))
+        .route("/api/memory/learning-patterns/{id}", delete(api::handle_api_learning_patterns_delete))
         .route("/api/cost", get(api::handle_api_cost))
         .route("/api/cli-tools", get(api::handle_api_cli_tools))
         .route("/api/health", get(api::handle_api_health))

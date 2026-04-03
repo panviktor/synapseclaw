@@ -67,6 +67,16 @@ impl SurrealMemoryAdapter {
         Ok(adapter)
     }
 
+    /// Wrap an existing SurrealDB handle (no schema init, no new connection).
+    /// Used by API handlers that share the gateway's DB handle.
+    pub fn from_existing(db: Arc<Surreal<Db>>, agent_id: String) -> Self {
+        Self {
+            db,
+            embedder: Arc::new(crate::embeddings::NoopEmbedding),
+            agent_id,
+        }
+    }
+
     /// Get a shared handle to the underlying SurrealDB instance.
     /// Used by other components (IPC, cron, chat, etc.) to share the same DB.
     pub fn db(&self) -> Arc<Surreal<Db>> {
@@ -1605,6 +1615,106 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
             "Visibility promoted"
         );
         Ok(())
+    }
+}
+
+// ── Learning Signal Patterns ─────────────────────────────────────
+
+impl SurrealMemoryAdapter {
+    /// Load all signal patterns from DB.
+    pub async fn list_signal_patterns(
+        &self,
+    ) -> Result<Vec<synapse_domain::application::services::learning_signals::SignalPattern>, synapse_domain::domain::memory::MemoryError>
+    {
+        use synapse_domain::application::services::learning_signals::SignalPattern;
+        let mut resp = self
+            .db
+            .query("SELECT * FROM learning_signal_pattern ORDER BY signal_type, pattern")
+            .await
+            .map_err(|e| synapse_domain::domain::memory::MemoryError::Storage(e.to_string()))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| synapse_domain::domain::memory::MemoryError::Storage(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .filter_map(|v| {
+                Some(SignalPattern {
+                    id: v.get("id")?.to_string().trim_matches('"').to_string(),
+                    signal_type: v.get("signal_type")?.as_str()?.to_string(),
+                    pattern: v.get("pattern")?.as_str()?.to_string(),
+                    match_mode: v.get("match_mode")?.as_str().unwrap_or("starts_with").to_string(),
+                    language: v.get("language")?.as_str().unwrap_or("en").to_string(),
+                    enabled: v.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+                })
+            })
+            .collect())
+    }
+
+    /// Add a new signal pattern.
+    pub async fn add_signal_pattern(
+        &self,
+        pattern: &synapse_domain::application::services::learning_signals::SignalPattern,
+    ) -> Result<String, synapse_domain::domain::memory::MemoryError> {
+        let mut resp = self
+            .db
+            .query(
+                "CREATE learning_signal_pattern SET \
+                 signal_type = $signal_type, \
+                 pattern = $pattern, \
+                 match_mode = $match_mode, \
+                 language = $language, \
+                 enabled = $enabled, \
+                 created_at = time::now() \
+                 RETURN id",
+            )
+            .bind(("signal_type", pattern.signal_type.clone()))
+            .bind(("pattern", pattern.pattern.clone()))
+            .bind(("match_mode", pattern.match_mode.clone()))
+            .bind(("language", pattern.language.clone()))
+            .bind(("enabled", pattern.enabled))
+            .await
+            .map_err(|e| synapse_domain::domain::memory::MemoryError::Storage(e.to_string()))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| synapse_domain::domain::memory::MemoryError::Storage(e.to_string()))?;
+        let id = rows
+            .first()
+            .and_then(|v| v.get("id"))
+            .map(|v| v.to_string().trim_matches('"').to_string())
+            .unwrap_or_default();
+        Ok(id)
+    }
+
+    /// Delete a signal pattern by ID.
+    pub async fn delete_signal_pattern(
+        &self,
+        id: &str,
+    ) -> Result<bool, synapse_domain::domain::memory::MemoryError> {
+        let mut resp = self
+            .db
+            .query("DELETE FROM learning_signal_pattern WHERE id = type::thing('learning_signal_pattern', $id) RETURN BEFORE")
+            .bind(("id", id.to_string()))
+            .await
+            .map_err(|e| synapse_domain::domain::memory::MemoryError::Storage(e.to_string()))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| synapse_domain::domain::memory::MemoryError::Storage(e.to_string()))?;
+        Ok(!rows.is_empty())
+    }
+
+    /// Seed default patterns if table is empty.
+    pub async fn seed_default_signal_patterns(&self) -> Result<usize, synapse_domain::domain::memory::MemoryError> {
+        let existing = self.list_signal_patterns().await?;
+        if !existing.is_empty() {
+            return Ok(0);
+        }
+        let defaults = synapse_domain::application::services::learning_signals::default_patterns();
+        let count = defaults.len();
+        for pat in &defaults {
+            self.add_signal_pattern(pat).await?;
+        }
+        tracing::info!(count, "Seeded default learning signal patterns");
+        Ok(count)
     }
 }
 

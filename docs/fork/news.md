@@ -2,6 +2,16 @@
 
 ## 2026-04-03
 
+### Configurable Learning Signal Patterns (PR #256)
+
+- **feat**: learning signal patterns stored in SurrealDB, configurable via web UI
+- **feat**: new web page `/learning-patterns` with add/delete/filter/seed controls
+- **feat**: API: GET/POST/DELETE `/api/memory/learning-patterns` + POST `/api/memory/learning-patterns/seed`
+- **feat**: auto-seed defaults on gateway startup (only if table empty)
+- **refactor**: `learning_signals.rs` — patterns loaded from DB, fallback to built-in defaults
+- **refactor**: `classify_signal_with_patterns()` accepts loaded patterns; `classify_signal()` backward compat
+- schema: `learning_signal_pattern` table (signal_type, pattern, match_mode, language, enabled)
+
 ### Memory Learning Foundation — Phase E: Learning Events + Read-Models (PR #255)
 
 - **arch**: `LearningEvent` + `LearningEventKind` (13 canonical event types) — stable contract for UI
