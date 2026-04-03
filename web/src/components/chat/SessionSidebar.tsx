@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Sparkles, Users, Radio } from 'lucide-react';
-import type { ChatSessionInfo, StatusResponse, ChannelSessionInfo } from '@/types/api';
+import { Plus, MessageSquare, Pencil, Trash2, PanelLeftClose, PanelLeft, Check, X, Cpu, Clock, Sparkles, Users, Search } from 'lucide-react';
+import type { ChatSessionInfo, StatusResponse } from '@/types/api';
 import type { AgentEntry } from '@/lib/api';
 import { t } from '@/lib/i18n';
 
@@ -11,8 +11,6 @@ interface SessionSidebarProps {
   status: StatusResponse | null;
   agents: AgentEntry[];
   activeAgent: string | null;
-  channelSessions?: ChannelSessionInfo[];
-  activeChannelKey?: string | null;
   onToggle: () => void;
   onSelect: (key: string) => void;
   onNew: () => void;
@@ -20,8 +18,6 @@ interface SessionSidebarProps {
   onDelete: (key: string) => void;
   onSummaryModelChange: (model: string | null) => void;
   onAgentChange: (agentId: string) => void;
-  onChannelSessionSelect?: (key: string) => void;
-  onChannelSessionDelete?: (key: string) => void;
 }
 
 function timeAgo(epochSecs: number): string {
@@ -39,9 +35,26 @@ function formatUptime(secs: number): string {
 }
 
 function shortModel(model: string): string {
-  // "anthropic/claude-sonnet-4-6" → "claude-sonnet-4-6"
   const parts = model.split('/');
   return parts[parts.length - 1] ?? model;
+}
+
+const CHANNEL_BADGES: Record<string, { bg: string; text: string; label: string }> = {
+  matrix: { bg: 'bg-purple-500/15', text: 'text-purple-400', label: 'matrix' },
+  telegram: { bg: 'bg-blue-500/15', text: 'text-blue-400', label: 'tg' },
+  discord: { bg: 'bg-indigo-500/15', text: 'text-indigo-400', label: 'discord' },
+  slack: { bg: 'bg-green-500/15', text: 'text-green-400', label: 'slack' },
+  irc: { bg: 'bg-gray-500/15', text: 'text-gray-400', label: 'irc' },
+  signal: { bg: 'bg-sky-500/15', text: 'text-sky-400', label: 'signal' },
+};
+
+function ChannelBadge({ channel }: { channel: string }) {
+  const badge = CHANNEL_BADGES[channel] ?? { bg: 'bg-gray-500/15', text: 'text-gray-400', label: channel };
+  return (
+    <span className={`text-[8px] px-1 py-0.5 rounded font-semibold uppercase tracking-wide flex-shrink-0 ${badge.bg} ${badge.text}`}>
+      {badge.label}
+    </span>
+  );
 }
 
 export default function SessionSidebar({
@@ -51,8 +64,6 @@ export default function SessionSidebar({
   status,
   agents,
   activeAgent,
-  channelSessions = [],
-  activeChannelKey = null,
   onToggle,
   onSelect,
   onNew,
@@ -60,13 +71,12 @@ export default function SessionSidebar({
   onDelete,
   onSummaryModelChange,
   onAgentChange,
-  onChannelSessionSelect,
-  onChannelSessionDelete,
 }: SessionSidebarProps) {
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const [editingSummaryModel, setEditingSummaryModel] = useState(false);
   const [summaryModelInput, setSummaryModelInput] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
 
   const startRename = (key: string, currentLabel: string) => {
     setEditingKey(key);
@@ -81,6 +91,19 @@ export default function SessionSidebar({
   };
 
   const cancelRename = () => setEditingKey(null);
+
+  // Filter sessions by search query
+  const filteredSessions = searchQuery.trim()
+    ? sessions.filter((s) => {
+        const q = searchQuery.toLowerCase();
+        return (
+          (s.label ?? '').toLowerCase().includes(q) ||
+          (s.preview ?? '').toLowerCase().includes(q) ||
+          (s.channel ?? '').toLowerCase().includes(q) ||
+          s.key.toLowerCase().includes(q)
+        );
+      })
+    : sessions;
 
   if (collapsed) {
     return (
@@ -121,6 +144,20 @@ export default function SessionSidebar({
         >
           <PanelLeftClose className="h-3.5 w-3.5" />
         </button>
+      </div>
+
+      {/* Search */}
+      <div className="px-3 py-2 border-b border-[var(--border-default)]">
+        <div className="relative">
+          <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-[var(--text-placeholder)]" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search..."
+            className="w-full bg-[var(--bg-card)] border border-[var(--border-default)] rounded-lg pl-7 pr-2 py-1 text-[10px] text-[var(--text-primary)] placeholder:text-[var(--text-placeholder)] outline-none focus:border-[var(--accent-primary)]/40 transition-colors"
+          />
+        </div>
       </div>
 
       {/* Agent Selector (Phase 3.8) */}
@@ -214,14 +251,22 @@ export default function SessionSidebar({
         </div>
       )}
 
-      {/* Sessions list */}
+      {/* Unified sessions list */}
       <div className="flex-1 overflow-y-auto py-1">
-        {sessions.length === 0 && (
-          <p className="text-[10px] text-[var(--text-placeholder)] text-center mt-4 px-2">No sessions yet</p>
+        {filteredSessions.length === 0 && !searchQuery && (
+          <p className="text-[10px] text-[var(--text-placeholder)] text-center mt-4 px-2">
+            No sessions yet. Start a new chat or conversations from channels will appear here.
+          </p>
         )}
-        {sessions.map((s) => {
-          const isActive = s.key === activeKey && !activeChannelKey;
-          const label = s.label || `Session`;
+        {filteredSessions.length === 0 && searchQuery && (
+          <p className="text-[10px] text-[var(--text-placeholder)] text-center mt-4 px-2">
+            No sessions matching "{searchQuery}"
+          </p>
+        )}
+        {filteredSessions.map((s) => {
+          const isActive = s.key === activeKey;
+          const isChannel = s.kind === 'channel';
+          const label = s.label || (isChannel ? s.key : 'Session');
 
           return (
             <div
@@ -257,7 +302,11 @@ export default function SessionSidebar({
               ) : (
                 <>
                   <div className="flex items-center gap-1.5">
-                    <MessageSquare className={`h-3 w-3 flex-shrink-0 ${isActive ? 'text-[var(--accent-primary)]' : 'text-[var(--text-placeholder)]'}`} />
+                    {isChannel && s.channel ? (
+                      <ChannelBadge channel={s.channel} />
+                    ) : (
+                      <MessageSquare className={`h-3 w-3 flex-shrink-0 ${isActive ? 'text-[var(--accent-primary)]' : 'text-[var(--text-placeholder)]'}`} />
+                    )}
                     <span className={`text-[11px] font-medium truncate ${isActive ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
                       {label}
                     </span>
@@ -271,20 +320,26 @@ export default function SessionSidebar({
                   ) : null}
                   <p className="text-[9px] text-[var(--text-placeholder)] mt-0.5 pl-[18px]">
                     {timeAgo(s.last_active)}
-                    {(s.input_tokens > 0 || s.output_tokens > 0) && (
-                      <span className="ml-1">{((s.input_tokens + s.output_tokens) / 1000).toFixed(1)}k tok</span>
+                    {isChannel ? (
+                      s.message_count > 0 && <span className="ml-1">{s.message_count} msgs</span>
+                    ) : (
+                      (s.input_tokens > 0 || s.output_tokens > 0) && (
+                        <span className="ml-1">{((s.input_tokens + s.output_tokens) / 1000).toFixed(1)}k tok</span>
+                      )
                     )}
                   </p>
 
                   {/* Hover actions */}
                   <div className="absolute right-1 top-1.5 opacity-0 group-hover:opacity-100 transition-opacity flex gap-0.5">
-                    <button
-                      onClick={(e) => { e.stopPropagation(); startRename(s.key, label); }}
-                      className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[#E5E3E0]"
-                      title="Rename"
-                    >
-                      <Pencil className="h-2.5 w-2.5" />
-                    </button>
+                    {!isChannel && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); startRename(s.key, label); }}
+                        className="p-1 rounded text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[#E5E3E0]"
+                        title="Rename"
+                      >
+                        <Pencil className="h-2.5 w-2.5" />
+                      </button>
+                    )}
                     <button
                       onClick={(e) => { e.stopPropagation(); onDelete(s.key); }}
                       className="p-1 rounded text-[var(--text-muted)] hover:text-[#C73E3E] hover:bg-[#E5E3E0]"
@@ -298,67 +353,6 @@ export default function SessionSidebar({
             </div>
           );
         })}
-
-        {/* Channel Sessions (Phase 3.12) */}
-        {channelSessions.length > 0 && (
-          <>
-            <div className="flex items-center gap-1.5 px-3 pt-3 pb-1">
-              <Radio className="h-3 w-3 text-[var(--text-muted)]" />
-              <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-wide">Channels</span>
-            </div>
-            {channelSessions.map((cs) => {
-              const isActive = cs.key === activeChannelKey;
-              return (
-                <div
-                  key={cs.key}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onChannelSessionSelect?.(cs.key)}
-                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChannelSessionSelect?.(cs.key); } }}
-                  className={`group relative px-3 py-2 mx-1 rounded-lg cursor-pointer transition-colors ${
-                    isActive
-                      ? 'bg-[#D95A1E]/10 border border-[var(--accent-primary)]/20'
-                      : 'hover:bg-[#E5E3E0]/50 border border-transparent'
-                  }`}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[9px] px-1 py-0.5 rounded bg-[var(--bg-card)] text-[var(--text-muted)] font-mono flex-shrink-0">
-                      {cs.channel}
-                    </span>
-                    <span className={`text-[11px] font-medium truncate ${isActive ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
-                      {cs.sender}
-                    </span>
-                  </div>
-                  {cs.summary && (
-                    <p className="text-[10px] text-[var(--text-muted)] truncate mt-0.5 pl-[18px]" title={cs.summary}>
-                      {cs.summary}
-                    </p>
-                  )}
-                  <p className="text-[9px] text-[var(--text-placeholder)] mt-0.5 pl-[18px]">
-                    {timeAgo(cs.last_activity)} · {cs.message_count} msgs
-                  </p>
-
-                  {onChannelSessionDelete && (
-                    <div className="absolute right-1 top-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (confirm('Delete this channel session? This will clear the conversation context for this user.')) {
-                            onChannelSessionDelete(cs.key);
-                          }
-                        }}
-                        className="p-1 rounded text-[var(--text-muted)] hover:text-[#C73E3E] hover:bg-[#E5E3E0]"
-                        title="Delete channel session"
-                      >
-                        <Trash2 className="h-2.5 w-2.5" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </>
-        )}
       </div>
     </div>
   );

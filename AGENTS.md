@@ -28,6 +28,19 @@ SynapseClaw is a Rust-first autonomous agent runtime optimized for performance, 
 
 **Hexagonal architecture** — pure domain core with zero infrastructure dependencies. 12 workspace crates compile in parallel waves. Extend by implementing port traits in adapter crates.
 
+## Codex Session Init
+
+Use this as the default mental bootstrap for a new coding session:
+
+- Runtime-contract docs are English-first. Start with `docs/README.md`, `docs/SUMMARY.md`, `docs/reference/cli/commands-reference.md`, `docs/reference/api/config-reference.md`, `docs/ops/operations-runbook.md`, and `docs/ops/troubleshooting.md`.
+- Fork-specific architecture, roadmap, and deltas live in `docs/fork/README.md`, `docs/fork/delta-registry.md`, `docs/fork/ipc-plan.md`, and `docs/fork/memory-architecture.md`.
+- Repository orientation lives in `docs/maintainers/repo-map.md`.
+- English docs are canonical. Russian docs are intentionally removed for now; only selected `*.vi.md` compatibility pages remain.
+- Treat `docs/security/*` and much of `docs/fork/*` carefully: some files describe current behavior, others are roadmap/proposal material. Confirm which one you are reading before coding against it.
+- High-risk/shared-hotspot files include `crates/adapters/core/src/gateway/**`, `crates/adapters/tools/src/**`, `crates/adapters/security/src/**`, `crates/domain/src/config/schema.rs`, and `crates/adapters/core/src/agent/loop_.rs`.
+- Memory architecture is no longer the old mixed-backend model. When touching memory, think in terms of the current SurrealDB-centered design and the newer memory ports/adapters.
+- IPC is a core fork boundary: trust levels, quarantine, pairing, PromptGuard, audit, and tool allowlists are security-sensitive and should be treated as invariants, not implementation details.
+
 ## Architecture
 
 ```

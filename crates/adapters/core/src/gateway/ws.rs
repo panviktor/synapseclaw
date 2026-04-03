@@ -328,12 +328,17 @@ async fn handle_socket(
     // (sessions.list, sessions.new, etc.) is scoped per-operator, not just
     // the default session.  Direct browser connections are unaffected.
     let sid = session_id.unwrap_or_else(|| "default".to_string());
-    let token_prefix = if let Some(op) = sid.strip_prefix("op:") {
-        format!("{token_prefix}:op:{op}")
+    // Operator-proxied sessions keep token scoping for isolation.
+    // Direct browser sessions drop token_prefix so re-pairing doesn't
+    // orphan existing sessions (single-user deployment).
+    let (token_prefix, session_key) = if let Some(op) = sid.strip_prefix("op:") {
+        let tp = format!("{token_prefix}:op:{op}");
+        let key = format!("web:{tp}:{sid}");
+        (tp, key)
     } else {
-        token_prefix
+        let key = format!("web:{sid}");
+        (token_prefix, key)
     };
-    let session_key = format!("web:{token_prefix}:{sid}");
 
     // Ensure session exists in memory (create agent if needed)
     if let Err(e) = ensure_session(&state, &session_key).await {
@@ -597,6 +602,7 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
 
     // Phase 4.0 Slice 3: persist new session via conversation_service
     if need_persist {
+        tracing::info!(session_key, "ws.session.new_persist");
         if let Some(store) = state.conversation_store.as_ref() {
             let session =
                 synapse_domain::application::services::conversation_service::new_web_session(
@@ -678,7 +684,18 @@ async fn handle_rpc(
 }
 
 /// Verify that a session key belongs to the current token's namespace.
+/// Direct browser sessions use `web:{sid}` format (no token scoping).
+/// Operator-proxied sessions use `web:{token_prefix}:op:{op}:{sid}`.
 fn check_session_ownership(session_key: &str, token_prefix: &str) -> anyhow::Result<()> {
+    // Channel sessions (matrix_, telegram_, etc.) — single-user, always allow
+    if !session_key.starts_with("web:") {
+        return Ok(());
+    }
+    // Direct browser session: web:{uuid} — any authenticated token can access
+    if !session_key.contains(":op:") {
+        return Ok(());
+    }
+    // Operator-proxied session: must match token namespace
     let expected_prefix = format!("web:{token_prefix}:");
     if !session_key.starts_with(&expected_prefix) {
         return Err(anyhow::anyhow!("session key does not belong to this token"));
@@ -701,14 +718,18 @@ async fn handle_chat_history(
     check_session_ownership(&session_key, token_prefix)?;
     let limit = params["limit"].as_i64().unwrap_or(50).min(500);
 
-    // Ensure session is loaded
+    // Channel sessions live in a different table — load directly from SurrealDB.
+    if !session_key.starts_with("web:") {
+        return handle_channel_history(state, &session_key, limit).await;
+    }
+
+    // Ensure web session is loaded
     ensure_session(state, &session_key).await?;
 
     let events = if let Some(store) = state.conversation_store.as_ref() {
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         store.get_events(&session_key, limit as usize).await
     } else if let Some(db) = state.chat_db.as_ref() {
-        // Fallback: convert ChatMessageRow → ConversationEvent
         db.get_messages(&session_key, limit)
             .await
             .unwrap_or_default()
@@ -780,6 +801,95 @@ async fn handle_chat_history(
         "label": label,
         "session_summary": session_summary,
         "current_goal": current_goal,
+    }))
+}
+
+/// Load channel session messages (Matrix, Telegram, etc.) from channel_session table.
+async fn handle_channel_history(
+    state: &AppState,
+    session_key: &str,
+    limit: i64,
+) -> anyhow::Result<serde_json::Value> {
+    let surreal = state
+        .surreal
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("SurrealDB not available"))?;
+
+    // Load messages
+    let mut resp = surreal
+        .query(
+            "SELECT role, content, created_at FROM channel_session
+             WHERE session_key = $key ORDER BY created_at ASC LIMIT $limit",
+        )
+        .bind(("key", session_key.to_string()))
+        .bind(("limit", limit))
+        .await
+        .map_err(|e| anyhow::anyhow!("channel history: {e}"))?;
+
+    let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+
+    let messages: Vec<serde_json::Value> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let role = row
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("user");
+            let content = row
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let event_type = if role == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            };
+            serde_json::json!({
+                "id": i + 1,
+                "event_type": event_type,
+                "role": role,
+                "content": content,
+                "tool_name": null,
+                "run_id": null,
+                "timestamp": 0,
+                "input_tokens": null,
+                "output_tokens": null,
+            })
+        })
+        .collect();
+
+    // Load summary if available
+    let summary = match surreal
+        .query(
+            "SELECT summary FROM channel_session_summary
+             WHERE session_key = $key LIMIT 1",
+        )
+        .bind(("key", session_key.to_string()))
+        .await
+    {
+        Ok(mut sr) => {
+            let srows: Vec<serde_json::Value> = sr.take(0).unwrap_or_default();
+            srows
+                .first()
+                .and_then(|v| v.get("summary"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        }
+        Err(_) => None,
+    };
+
+    // Parse channel + sender from key
+    let (channel, sender) = session_key
+        .split_once('_')
+        .unwrap_or(("unknown", session_key));
+
+    Ok(serde_json::json!({
+        "messages": messages,
+        "session_key": session_key,
+        "label": format!("{} · {}", channel, sender),
+        "session_summary": summary,
+        "current_goal": null,
     }))
 }
 
@@ -1069,15 +1179,13 @@ fn handle_chat_abort(
 
 async fn handle_sessions_list(
     state: &AppState,
-    token_prefix: &str,
+    _token_prefix: &str,
 ) -> anyhow::Result<serde_json::Value> {
-    let prefix = format!("web:{token_prefix}:");
-
+    // List ALL sessions (web, channel, ipc) — single-user dashboard shows everything.
     let store_sessions = if let Some(store) = state.conversation_store.as_ref() {
-        store.list_sessions(Some(&prefix)).await
+        store.list_sessions(None).await
     } else if let Some(db) = state.chat_db.as_ref() {
-        // Fallback: convert ChatSessionRow → ConversationSession
-        db.list_sessions(&prefix)
+        db.list_sessions("")
             .await
             .unwrap_or_default()
             .iter()
@@ -1103,6 +1211,58 @@ async fn handle_sessions_list(
         Vec::new()
     };
 
+    // Also include channel sessions (Matrix, Telegram, etc.) from channel_session_meta.
+    let mut all_sessions = store_sessions;
+    if let Some(surreal) = state.surreal.as_ref() {
+        if let Ok(mut resp) = surreal
+            .query(
+                "SELECT session_key, message_count, created_at, last_activity
+                 FROM channel_session_meta ORDER BY last_activity DESC LIMIT 50",
+            )
+            .await
+        {
+            let rows: Vec<serde_json::Value> = resp.take(0).unwrap_or_default();
+            for row in &rows {
+                let key = row
+                    .get("session_key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
+                if key.is_empty() {
+                    continue;
+                }
+                let msg_count = row
+                    .get("message_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                // Parse ISO datetime strings to epoch seconds
+                let parse_ts = |field: &str| -> u64 {
+                    row.get(field)
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                        .map(|dt| dt.timestamp() as u64)
+                        .unwrap_or(0)
+                };
+                let created = parse_ts("created_at");
+                let last_active = parse_ts("last_activity");
+                all_sessions.push(ConversationSession {
+                    key: key.to_string(),
+                    kind: ConversationKind::Channel,
+                    label: Some(key.to_string()),
+                    summary: None,
+                    current_goal: None,
+                    created_at: created,
+                    last_active,
+                    #[allow(clippy::cast_possible_truncation)]
+                    message_count: msg_count as u32,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                });
+            }
+        }
+    }
+    // Sort all sessions by last_active descending
+    all_sessions.sort_by(|a, b| b.last_active.cmp(&a.last_active));
+
     // Snapshot in-memory run state (release lock before async work)
     let active_runs: std::collections::HashSet<String> = {
         let sessions_lock = state
@@ -1116,8 +1276,8 @@ async fn handle_sessions_list(
             .collect()
     };
 
-    let mut sessions: Vec<serde_json::Value> = Vec::with_capacity(store_sessions.len());
-    for s in &store_sessions {
+    let mut sessions: Vec<serde_json::Value> = Vec::with_capacity(all_sessions.len());
+    for s in &all_sessions {
         let has_active_run = active_runs.contains(&s.key);
 
         // Get preview from last message
@@ -1133,8 +1293,22 @@ async fn handle_sessions_list(
             None
         };
 
+        let kind_str = match s.kind {
+            ConversationKind::Web => "web",
+            ConversationKind::Channel => "channel",
+            ConversationKind::Ipc => "ipc",
+        };
+        // Parse channel type from key (e.g. "matrix_room_user" → "matrix")
+        let channel = if s.kind == ConversationKind::Channel {
+            s.key.split('_').next().map(String::from)
+        } else {
+            None
+        };
+
         sessions.push(serde_json::json!({
             "key": s.key,
+            "kind": kind_str,
+            "channel": channel,
             "label": s.label,
             "last_active": s.last_active,
             "message_count": s.message_count,
@@ -1305,6 +1479,7 @@ async fn persist_message(
     run_id: Option<&str>,
 ) {
     if let Some(store) = state.conversation_store.as_ref() {
+        tracing::info!(session_key, kind, "ws.persist_message");
         let event_type = match kind {
             "user" => EventType::User,
             "assistant" => EventType::Assistant,

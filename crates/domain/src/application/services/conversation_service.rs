@@ -27,8 +27,9 @@ const SUMMARY_MAX_CHARS: usize = 300;
 // ── Session key construction ─────────────────────────────────────
 
 /// Generate a new web session key.
-pub fn new_web_session_key(token_prefix: &str) -> String {
-    format!("web:{token_prefix}:{}", uuid::Uuid::new_v4())
+/// Direct browser sessions omit token_prefix so sessions survive re-pairing.
+pub fn new_web_session_key(_token_prefix: &str) -> String {
+    format!("web:{}", uuid::Uuid::new_v4())
 }
 
 /// Build a ConversationSession for a new web session.

@@ -138,15 +138,14 @@ Changes deferred from the project-cleanup pass. Each entry includes rationale an
 
 ### Consolidate i18n docs into `docs/i18n/<locale>/`
 
-**Why:** Vietnamese translations currently exist in three places: `docs/i18n/vi/` (canonical per CLAUDE.md), `docs/vi/` (stale duplicate with 17 files diverged), and `docs/*.vi.md` (5 scattered suffix files). Other locales (zh-CN, ja, ru, fr) have SUMMARY + README files scattered in `docs/` root.
+**Why:** Selected Vietnamese translations currently live as scattered `*.vi.md` files alongside the English sources. If localization resumes, future non-English entry points should use one consistent `docs/i18n/<locale>/` tree instead of mixed suffix files and ad hoc roots.
 
 **Plan:**
-- Keep `docs/i18n/vi/` as canonical; delete `docs/vi/` (stale duplicate)
-- Move `docs/*.vi.md` files into `docs/i18n/vi/` at matching paths
-- Move `docs/SUMMARY.*.md` and `docs/README.*.md` into `docs/i18n/<locale>/`
-- Create `docs/i18n/{zh-CN,ja,ru,fr}/` directories with their README + SUMMARY
-- Root `README.*.md` files stay (GitHub convention)
-- Update `docs/i18n/vi/` internal structure to mirror the new English docs layout after the English restructure lands
+- Keep English docs canonical until a locale has a maintained hub and TOC
+- Consolidate existing `*.vi.md` files under `docs/i18n/vi/` when active Vietnamese maintenance resumes
+- Place any future non-English docs hubs and summaries under `docs/i18n/<locale>/`
+- Keep `README.<locale>.md` only for languages with an intentionally maintained root landing page
+- Mirror the English docs layout when reviving any locale-specific tree
 
 ### TODO: Fuzz testing — upgrade stubs to real coverage
 

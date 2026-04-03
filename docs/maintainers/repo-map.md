@@ -203,7 +203,7 @@ Sandboxing: `bubblewrap.rs`, `firejail.rs`, `landlock.rs`, `docker.rs`, `detect.
 | `python/` | Python SDK / tools bridge with its own tests |
 | `dev/` | Local development: Docker Compose, CI script (`ci.sh`), config template, sandbox configs |
 | `scripts/` | CI helpers, release automation, bootstrap, contributor tier computation |
-| `docs/` | Documentation system: multilingual (en/zh-CN/ja/ru/fr/vi), runtime references, operations runbooks, security proposals |
+| `docs/` | Documentation system: English-first runtime references, operations runbooks, security/fork docs, plus selected Vietnamese compatibility pages |
 | `.github/` | CI workflows, PR templates, issue templates, automation |
 
 ---

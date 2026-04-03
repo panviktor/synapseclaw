@@ -136,6 +136,8 @@ export interface WsMessage {
 
 export interface ChatSessionInfo {
   key: string;
+  kind?: 'web' | 'channel' | 'ipc';
+  channel?: string | null;
   label: string | null;
   last_active: number;
   message_count: number;

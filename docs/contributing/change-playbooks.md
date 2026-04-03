@@ -35,8 +35,8 @@ For complete code examples of each extension trait, see [extension-examples.md](
 - Treat docs navigation as product UX: preserve clear pathing from README -> docs hub -> SUMMARY -> category index.
 - Keep top-level nav concise; avoid duplicative links across adjacent nav blocks.
 - When runtime surfaces change, update related references in `docs/reference/`.
-- Keep multilingual entry-point parity for all supported locales (`en`, `zh-CN`, `ja`, `ru`, `fr`, `vi`) when nav or key wording changes.
-- When shared docs wording changes, sync corresponding localized docs in the same PR (or explicitly document deferral and follow-up PR).
+- English docs are canonical. If localized entry points are added or restored, keep navigation parity and document coverage in `docs/maintainers/i18n-coverage.md`.
+- When shared docs wording changes, sync any still-maintained localized compatibility pages in the same PR or explicitly document the deferral.
 
 ## Architecture Boundary Rules
 

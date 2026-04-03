@@ -180,7 +180,7 @@ Domain dependencies: serde, schemars, async-trait, chrono, uuid, url, anyhow, pa
 - **Removed 29 non-EN/RU README translations** + 29 docs hub translations
 - **Deleted Vietnamese docs tree** (`docs/vi/`, ~40 files) and **Chinese docs tree** (`docs/i18n/zh-CN/`, ~60 files)
 - **README.md completely rewritten** — removed upstream donation links, social media badges, Special Thanks, benchmark table, Star History, contributor badges; updated project description to reflect Phase 4.0 architecture
-- **README.ru.md rewritten** — mirrors new EN README in Russian
+- **Temporary secondary-language README refresh** — matched the English README at that time
 - **NOTICE updated** — minimal ZeroClaw attribution (MIT/Apache requirement)
 - **Upstream sync infrastructure removed** — deleted `upstream-sync.yml` workflow, sync scripts, sync PR/issue templates
 - **CONTRIBUTING.md cleaned** — removed Branch Migration Notice (upstream artifact)
