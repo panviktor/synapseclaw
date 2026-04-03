@@ -387,3 +387,16 @@ DEFINE FIELD IF NOT EXISTS gateway_url    ON ipc_agent_gateway TYPE option<strin
 DEFINE FIELD IF NOT EXISTS proxy_token    ON ipc_agent_gateway TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS registered_at  ON ipc_agent_gateway TYPE option<int>;
 DEFINE INDEX IF NOT EXISTS idx_iag_id     ON ipc_agent_gateway FIELDS agent_id UNIQUE;
+
+-- ═══════════════════════════════════════════
+-- LEARNING SIGNAL PATTERNS (configurable via UI)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS learning_signal_pattern SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS signal_type ON learning_signal_pattern TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS pattern     ON learning_signal_pattern TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS match_mode  ON learning_signal_pattern TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS language    ON learning_signal_pattern TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS enabled     ON learning_signal_pattern TYPE option<bool> DEFAULT true;
+DEFINE FIELD IF NOT EXISTS created_at  ON learning_signal_pattern TYPE option<datetime>;
+DEFINE INDEX IF NOT EXISTS idx_lsp_type ON learning_signal_pattern FIELDS signal_type;
