@@ -53,8 +53,13 @@ export async function apiFetch<T = unknown>(
   }
 
   if (response.status === 401) {
-    clearToken();
-    window.dispatchEvent(new Event('synapseclaw-unauthorized'));
+    // Only clear token if the server explicitly says the token is invalid.
+    // Other 401s (e.g. endpoint-specific auth issues) should not log the user out.
+    const body = await response.clone().json().catch(() => ({})) as Record<string, unknown>;
+    if (body.code === 'invalid_token' || body.code === 'missing_auth') {
+      clearToken();
+      window.dispatchEvent(new Event('synapseclaw-unauthorized'));
+    }
     throw new UnauthorizedError();
   }
 
