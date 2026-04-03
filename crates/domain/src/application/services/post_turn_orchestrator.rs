@@ -31,6 +31,9 @@ pub struct PostTurnInput {
     pub assistant_response: String,
     pub tools_used: Vec<String>,
     pub auto_save_enabled: bool,
+    /// Optional SSE event sender for publishing reports to UI.
+    /// Both web and channels should pass this if available.
+    pub event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
 }
 
 /// What the orchestrator did — returned to the transport adapter for logging/UI.
@@ -150,6 +153,18 @@ pub async fn execute_post_turn_learning(
         reflection = report.reflection_started,
         "Post-turn learning complete"
     );
+
+    // Publish to SSE event stream (if available) — unified for web + channels.
+    if let Some(ref tx) = input.event_tx {
+        let _ = tx.send(serde_json::json!({
+            "type": "post_turn_report",
+            "signal": report.signal.as_str(),
+            "explicit_mutation": report.explicit_mutation.is_some(),
+            "consolidation_started": report.consolidation_started,
+            "reflection_started": report.reflection_started,
+            "timestamp": chrono::Utc::now().to_rfc3339(),
+        }));
+    }
 
     report
 }

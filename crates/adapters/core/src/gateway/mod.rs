@@ -1473,6 +1473,7 @@ pub async fn run_gateway(
         .route("/api/memory", post(api::handle_api_memory_store))
         .route("/api/memory/{key}", delete(api::handle_api_memory_delete))
         .route("/api/memory/stats", get(api::handle_api_memory_stats))
+        .route("/api/memory/context-budget", get(api::handle_api_context_budget))
         .route("/api/memory/learning-patterns", get(api::handle_api_learning_patterns_list))
         .route("/api/memory/learning-patterns", post(api::handle_api_learning_patterns_add))
         .route("/api/memory/learning-patterns/seed", post(api::handle_api_learning_patterns_seed))
