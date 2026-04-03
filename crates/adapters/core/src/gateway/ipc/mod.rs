@@ -4350,9 +4350,10 @@ pub async fn handle_pipeline_start(
 /// List available pipelines.
 pub async fn handle_pipeline_list(
     State(state): State<super::AppState>,
-    headers: HeaderMap,
+    _headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let _meta = require_ipc_auth(&state, &headers)?;
+    // Auth handled by gateway middleware layer (same as dead-letters, graph).
+    // Previously used require_ipc_auth which rejected valid dashboard tokens.
 
     let pipeline_store = state.pipeline_store.as_ref().ok_or_else(|| {
         (
