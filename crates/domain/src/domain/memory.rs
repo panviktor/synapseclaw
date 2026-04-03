@@ -376,6 +376,8 @@ pub enum MemoryEventType {
     SkillUpdated,
     /// New insight generated from reflection.
     InsightGenerated,
+    /// Memory visibility changed (private → shared/global).
+    VisibilityChanged,
 }
 
 impl fmt::Display for MemoryEventType {
@@ -387,6 +389,7 @@ impl fmt::Display for MemoryEventType {
             Self::SkillLearned => write!(f, "skill_learned"),
             Self::SkillUpdated => write!(f, "skill_updated"),
             Self::InsightGenerated => write!(f, "insight_generated"),
+            Self::VisibilityChanged => write!(f, "visibility_changed"),
         }
     }
 }

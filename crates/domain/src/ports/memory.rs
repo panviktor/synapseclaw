@@ -13,7 +13,7 @@
 use crate::domain::memory::{
     AgentId, ConsolidationReport, CoreMemoryBlock, Entity, HybridSearchResult, MemoryCategory,
     MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, SearchResult, SessionId, Skill,
-    SkillUpdate, TemporalFact,
+    SkillUpdate, TemporalFact, Visibility,
 };
 use async_trait::async_trait;
 
@@ -254,6 +254,21 @@ pub trait UnifiedMemoryPort:
 
     /// Health check.
     async fn health_check(&self) -> bool;
+
+    /// Promote the visibility of a memory entry (Private → SharedWith/Global).
+    /// Only the owning agent can promote. Use `memory_sharing::validate_promotion`
+    /// to check policy before calling this.
+    async fn promote_visibility(
+        &self,
+        _entry_id: &MemoryId,
+        _visibility: &Visibility,
+        _shared_with: &[AgentId],
+        _agent_id: &AgentId,
+    ) -> Result<(), MemoryError> {
+        Err(MemoryError::Storage(
+            "promote_visibility not supported".into(),
+        ))
+    }
 
     /// Reflect on a conversation turn for skill learning. Fire-and-forget.
     /// `tools_used`: list of tool names called during this turn.

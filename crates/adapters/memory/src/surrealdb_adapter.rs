@@ -1572,6 +1572,40 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
     async fn health_check(&self) -> bool {
         self.db.health().await.is_ok()
     }
+
+    async fn promote_visibility(
+        &self,
+        entry_id: &synapse_domain::domain::memory::MemoryId,
+        visibility: &synapse_domain::domain::memory::Visibility,
+        shared_with: &[synapse_domain::domain::memory::AgentId],
+        agent_id: &synapse_domain::domain::memory::AgentId,
+    ) -> Result<(), synapse_domain::domain::memory::MemoryError> {
+        let vis_str = match visibility {
+            synapse_domain::domain::memory::Visibility::Private => "private",
+            synapse_domain::domain::memory::Visibility::SharedWith(_) => "shared",
+            synapse_domain::domain::memory::Visibility::Global => "global",
+        };
+        self.db
+            .query(
+                "UPDATE type::thing('episode', $id) SET \
+                 visibility = $vis, shared_with = $agents \
+                 WHERE agent_id = $owner",
+            )
+            .bind(("id", entry_id.clone()))
+            .bind(("vis", vis_str.to_string()))
+            .bind(("agents", shared_with.to_vec()))
+            .bind(("owner", agent_id.clone()))
+            .await
+            .map_err(|e| synapse_domain::domain::memory::MemoryError::Storage(e.to_string()))?;
+        tracing::debug!(
+            target: "memory_sharing",
+            entry_id,
+            visibility = vis_str,
+            shared_with = ?shared_with,
+            "Visibility promoted"
+        );
+        Ok(())
+    }
 }
 
 // ── DeadLetterPort (Phase 4.5) ─────────────────────────────────
