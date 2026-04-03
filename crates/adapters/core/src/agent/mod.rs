@@ -3,8 +3,6 @@ pub mod agent;
 pub mod classifier;
 pub mod dispatcher;
 pub mod loop_;
-#[allow(deprecated)]
-pub mod memory_loader;
 pub mod prompt;
 pub mod run_context;
 pub mod runner_adapter;
