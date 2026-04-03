@@ -240,6 +240,7 @@ struct ChannelRuntimeContext {
     ack_reactions: bool,
     agent_id: Arc<String>,
     prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig,
+    signal_patterns: Vec<synapse_domain::application::services::learning_signals::SignalPattern>,
     show_tool_calls: bool,
     session_store: Option<Arc<dyn LocalSessionBackend>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
@@ -1429,6 +1430,7 @@ async fn handle_message_via_orchestrator(
             b
         },
         continuation_policy: ctx.prompt_budget_config.to_continuation_policy(),
+        signal_patterns: ctx.signal_patterns.clone(),
     };
 
     let memory_port: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>> =
@@ -3441,6 +3443,12 @@ pub async fn start_channels(
         ack_reactions: config.channels_config.ack_reactions,
         agent_id: Arc::new(crate::agent::loop_::resolve_agent_id(&config)),
         prompt_budget_config: config.memory.prompt_budget.clone(),
+        signal_patterns: if let Some(ref db) = shared_surreal {
+            let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "channels".into());
+            adapter.list_signal_patterns().await.unwrap_or_default()
+        } else {
+            synapse_domain::application::services::learning_signals::default_patterns()
+        },
         show_tool_calls: config.channels_config.show_tool_calls,
         session_store: if config.channels_config.session_persistence {
             if let Some(ref db) = shared_surreal {
@@ -3953,6 +3961,7 @@ mod tests {
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
+            signal_patterns: vec![],
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4057,6 +4066,7 @@ mod tests {
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
+            signal_patterns: vec![],
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4169,6 +4179,7 @@ mod tests {
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
+            signal_patterns: vec![],
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4292,6 +4303,7 @@ mod tests {
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
+            signal_patterns: vec![],
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),

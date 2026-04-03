@@ -1045,12 +1045,46 @@ async fn handle_chat_send_rpc(
             // ── Post-turn learning (fire-and-forget) ──
             {
                 let tools_used = extract_tool_names(&tool_history);
-                let decision = synapse_domain::application::services::post_turn::decide_post_turn(
-                    state.auto_save,
-                    &message,
-                    &response,
-                    tools_used,
-                );
+                // Load DB-backed signal patterns (best-effort; empty → built-in fallback in classify)
+                let signal_patterns = if let Some(ref db) = state.surreal {
+                    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(
+                        db.clone(), "ws".into(),
+                    );
+                    adapter.list_signal_patterns().await.unwrap_or_default()
+                } else {
+                    synapse_domain::application::services::learning_signals::default_patterns()
+                };
+                let decision =
+                    synapse_domain::application::services::post_turn::decide_post_turn_with_patterns(
+                        state.auto_save,
+                        &message,
+                        &response,
+                        tools_used,
+                        &signal_patterns,
+                    );
+
+                // Explicit signals → direct hot-path AUDN mutation (skip LLM consolidation)
+                if decision.signal.is_explicit() {
+                    let mem = state.mem.clone();
+                    let user_msg = message.clone();
+                    let signal = decision.signal.clone();
+                    tokio::spawn(async move {
+                        use synapse_domain::application::services::memory_mutation as mutation;
+                        use synapse_domain::domain::memory_mutation::{
+                            MutationCandidate, MutationSource, MutationThresholds,
+                        };
+                        let candidate = MutationCandidate {
+                            category: synapse_domain::domain::memory::MemoryCategory::Core,
+                            text: user_msg,
+                            confidence: signal.confidence(),
+                            source: MutationSource::ExplicitUser,
+                        };
+                        let decision =
+                            mutation::evaluate_candidate(mem.as_ref(), candidate, "web", &MutationThresholds::default()).await;
+                        let _ = mutation::apply_decision_with_event(mem.as_ref(), &decision, "web").await;
+                    });
+                }
+
                 if decision.should_consolidate {
                     let mem = state.mem.clone();
                     let user_msg = message.clone();

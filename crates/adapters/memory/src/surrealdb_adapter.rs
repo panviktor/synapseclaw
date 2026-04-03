@@ -719,22 +719,40 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             })
             .collect();
 
-        // Apply mild recency boost: newer entries get a small score bonus.
-        // Uses 7-day half-life so very old entries see minimal change.
-        for r in &mut results {
-            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&r.entry.timestamp) {
-                let age_hours = (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
-                    .num_hours()
-                    .max(0) as f64;
-                let recency = synapse_domain::application::services::retention::recency_factor(
-                    age_hours, 168.0, // 7-day half-life for recall boost
+        // Apply full retention scoring: relevance + recency + category importance + frequency.
+        {
+            use synapse_domain::application::services::retention::{
+                compute_retention_score, RetentionPolicy, RetentionWeights,
+            };
+            let policy = RetentionPolicy::default();
+            let weights = RetentionWeights::default();
+            for r in &mut results {
+                let age_hours = if let Ok(ts) =
+                    chrono::DateTime::parse_from_rfc3339(&r.entry.timestamp)
+                {
+                    (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
+                        .num_hours()
+                        .max(0) as f64
+                } else {
+                    0.0
+                };
+                // access_count not available in SearchResult; use 0 for now
+                let retention = compute_retention_score(
+                    r.score as f64,
+                    age_hours,
+                    0, // access_count (not yet surfaced in SearchResult)
+                    &r.entry.category,
+                    &policy,
+                    &weights,
                 );
-                // Blend: 90% original score + 10% recency
-                r.score = r.score * 0.9 + recency as f32 * 0.1;
+                r.score = retention.total as f32;
             }
+            results.sort_by(|a, b| {
+                b.score
+                    .partial_cmp(&a.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         }
-        // Re-sort by boosted score
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
         tracing::info!(
             bm25_results = bm25_rows.len(),
