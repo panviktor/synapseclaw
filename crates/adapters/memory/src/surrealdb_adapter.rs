@@ -202,6 +202,27 @@ impl SurrealMemoryAdapter {
             {
                 tracing::warn!(from = *stale, "memory: core_memory migration failed: {e}");
             }
+            // Migrate skill, reflection, and entity tables for consistent agent scoping.
+            for (table, col) in [
+                ("skill", "created_by"),
+                ("reflection", "agent_id"),
+                ("entity", "created_by"),
+            ] {
+                let q = format!("UPDATE {table} SET {col} = $new WHERE {col} = $old");
+                if let Err(e) = self
+                    .db
+                    .query(&q)
+                    .bind(("new", self.me().to_string()))
+                    .bind(("old", stale.to_string()))
+                    .await
+                {
+                    tracing::warn!(
+                        from = *stale,
+                        table,
+                        "memory: {table} agent_id migration failed: {e}"
+                    );
+                }
+            }
         }
 
         // Diagnostic: report episode count and agent_id distribution.
