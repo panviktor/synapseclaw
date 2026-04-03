@@ -353,7 +353,7 @@ async fn handle_regular_message(
                 }
             }
         }
-        HistoryEnrichment::CoreBlocksOnly => {
+        HistoryEnrichment::Continuation => {
             // Continuation turn — use ContinuationPolicy from config
             if let Some(ref mem) = ports.memory {
                 use crate::application::services::turn_context as tc;

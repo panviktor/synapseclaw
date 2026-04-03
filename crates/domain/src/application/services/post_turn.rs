@@ -45,11 +45,21 @@ pub fn decide_post_turn(
         && user_chars >= REFLECT_MIN_USER_CHARS
         && (!tools_used.is_empty() || has_errors);
 
-    PostTurnDecision {
+    let decision = PostTurnDecision {
         should_consolidate,
         should_reflect,
         tools_used,
-    }
+    };
+
+    tracing::debug!(
+        target: "post_turn",
+        consolidate = decision.should_consolidate,
+        reflect = decision.should_reflect,
+        tools = decision.tools_used.len(),
+        "Post-turn decision"
+    );
+
+    decision
 }
 
 #[cfg(test)]
@@ -108,5 +118,23 @@ mod tests {
             vec!["shell".into(), "file_read".into()],
         );
         assert_eq!(d.tools_used, vec!["shell", "file_read"]);
+    }
+
+    /// Parity invariant: web and channels get identical decisions for identical inputs.
+    /// Both paths call `decide_post_turn()` — this test documents that contract.
+    #[test]
+    fn web_and_channel_same_gates() {
+        let msg = "A long enough user message for gates";
+        let resp = &format!("{} encountered an error", "x".repeat(250));
+        let tools = vec!["shell".into(), "browser".into()];
+
+        // Simulate web path inputs
+        let web = decide_post_turn(true, msg, resp, tools.clone());
+        // Simulate channel path inputs (identical)
+        let channel = decide_post_turn(true, msg, resp, tools);
+
+        assert_eq!(web.should_consolidate, channel.should_consolidate);
+        assert_eq!(web.should_reflect, channel.should_reflect);
+        assert_eq!(web.tools_used, channel.tools_used);
     }
 }

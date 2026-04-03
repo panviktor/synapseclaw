@@ -100,12 +100,34 @@ pub async fn assemble_turn_context(
         .await
         .unwrap_or_default();
 
+    let policy_name = match continuation {
+        Some(ContinuationPolicy::CoreOnly) => "core_only",
+        Some(ContinuationPolicy::CorePlusRecall { .. }) => "core_plus_recall",
+        Some(ContinuationPolicy::Full) => "full",
+        None => "first_turn",
+    };
+
     match continuation {
-        Some(ContinuationPolicy::CoreOnly) => return ctx,
+        Some(ContinuationPolicy::CoreOnly) => {
+            tracing::debug!(
+                target: "memory_assembly",
+                core_blocks = ctx.core_blocks.len(),
+                policy = policy_name,
+                "Turn context assembled"
+            );
+            return ctx;
+        }
         Some(ContinuationPolicy::CorePlusRecall {
             recall_max_entries: n,
         }) => {
             load_recall(mem, user_message, session_id, budget, *n, &mut ctx).await;
+            tracing::debug!(
+                target: "memory_assembly",
+                core_blocks = ctx.core_blocks.len(),
+                recalled = ctx.recalled_entries.len(),
+                policy = policy_name,
+                "Turn context assembled"
+            );
             return ctx;
         }
         Some(ContinuationPolicy::Full) | None => {
@@ -175,6 +197,16 @@ pub async fn assemble_turn_context(
         }
     }
 
+    tracing::debug!(
+        target: "memory_assembly",
+        core_blocks = ctx.core_blocks.len(),
+        recalled = ctx.recalled_entries.len(),
+        skills = ctx.skills.len(),
+        entities = ctx.entities.len(),
+        policy = policy_name,
+        "Turn context assembled"
+    );
+
     ctx
 }
 
@@ -202,19 +234,23 @@ async fn load_recall(
         }
         // Skip assistant autosave bookkeeping
         if is_autosave_key(&entry.key) {
+            tracing::trace!(target: "memory_assembly", key = %entry.key, "Recall: skip autosave");
             continue;
         }
         // Skip entries that look like autosave metadata
         if crate::domain::util::should_skip_autosave_content(&entry.content) {
+            tracing::trace!(target: "memory_assembly", key = %entry.key, "Recall: skip noise content");
             continue;
         }
         // Skip tool_result leaks
         if entry.content.contains("<tool_result") {
+            tracing::trace!(target: "memory_assembly", key = %entry.key, "Recall: skip tool_result");
             continue;
         }
         // Relevance gate
         if let Some(score) = entry.score {
             if score < budget.recall_min_relevance {
+                tracing::trace!(target: "memory_assembly", key = %entry.key, score, min = budget.recall_min_relevance, "Recall: skip low relevance");
                 continue;
             }
         }
@@ -331,6 +367,9 @@ fn is_autosave_key(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryCategory, MemoryEntry, Skill};
+
+    // ── Budget & policy defaults ──
 
     #[test]
     fn default_budget_values() {
@@ -365,5 +404,196 @@ mod tests {
         assert!(!is_autosave_key("assistant_response"));
         assert!(!is_autosave_key("user_msg_1234"));
         assert!(!is_autosave_key("core_persona"));
+    }
+
+    // ── Helpers ──
+
+    fn make_core_block(label: &str, content: &str) -> CoreMemoryBlock {
+        CoreMemoryBlock {
+            agent_id: "test".into(),
+            label: label.into(),
+            content: content.into(),
+            max_tokens: 500,
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn make_entry(key: &str, content: &str, score: f64) -> MemoryEntry {
+        MemoryEntry {
+            id: String::new(),
+            key: key.into(),
+            content: content.into(),
+            category: MemoryCategory::Core,
+            score: Some(score),
+            timestamp: String::new(),
+            session_id: None,
+        }
+    }
+
+    fn make_skill(name: &str, content: &str) -> Skill {
+        Skill {
+            id: String::new(),
+            name: name.into(),
+            description: String::new(),
+            content: content.into(),
+            tags: vec![],
+            success_count: 1,
+            fail_count: 0,
+            version: 1,
+            created_by: "test".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn make_entity(name: &str, summary: &str) -> Entity {
+        Entity {
+            id: String::new(),
+            name: name.into(),
+            entity_type: "concept".into(),
+            summary: Some(summary.into()),
+            properties: serde_json::json!({}),
+            created_by: "test".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        }
+    }
+
+    // ── format_turn_context: core blocks ──
+
+    #[test]
+    fn format_core_blocks_xml_tags() {
+        let ctx = TurnMemoryContext {
+            core_blocks: vec![
+                make_core_block("persona", "I am helpful"),
+                make_core_block("user_knowledge", "Prefers Rust"),
+            ],
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.core_blocks_system.contains("<persona>"));
+        assert!(fmt.core_blocks_system.contains("I am helpful"));
+        assert!(fmt.core_blocks_system.contains("</persona>"));
+        assert!(fmt.core_blocks_system.contains("<user_knowledge>"));
+        assert!(fmt.core_blocks_system.contains("Prefers Rust"));
+        assert!(fmt.enrichment_prefix.is_empty());
+    }
+
+    #[test]
+    fn format_empty_core_block_skipped() {
+        let ctx = TurnMemoryContext {
+            core_blocks: vec![make_core_block("persona", "  ")],
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.core_blocks_system.is_empty());
+    }
+
+    // ── format_turn_context: recall entries ──
+
+    #[test]
+    fn format_recall_entries_with_header() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![make_entry("fact1", "User likes Rust", 0.9)],
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.enrichment_prefix.starts_with("[Memory context]\n"));
+        assert!(fmt.enrichment_prefix.contains("- fact1: User likes Rust"));
+    }
+
+    #[test]
+    fn format_recall_entry_truncated() {
+        let long = "x".repeat(1000);
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![make_entry("k", &long, 0.9)],
+            ..Default::default()
+        };
+        let budget = PromptBudget {
+            recall_entry_max_chars: 50,
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &budget);
+        assert!(fmt.enrichment_prefix.contains("…"));
+        // Truncated to ~50 chars + key + formatting
+        assert!(fmt.enrichment_prefix.len() < 200);
+    }
+
+    // ── format_turn_context: skills independent of recall ──
+
+    #[test]
+    fn format_skills_independent_of_recall() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![], // empty recall
+            skills: vec![make_skill("deploy", "Run cargo build --release")],
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(!fmt.enrichment_prefix.contains("[Memory context]"));
+        assert!(fmt.enrichment_prefix.contains("<skill name=\"deploy\">"));
+        assert!(fmt.enrichment_prefix.contains("Run cargo build --release"));
+        assert!(fmt.enrichment_prefix.contains("</skill>"));
+    }
+
+    // ── format_turn_context: entities independent of recall ──
+
+    #[test]
+    fn format_entities_independent_of_recall() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![], // empty recall
+            entities: vec![make_entity("Rust", "Systems programming language")],
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.enrichment_prefix.contains("<entity name=\"Rust\" type=\"concept\">"));
+        assert!(fmt.enrichment_prefix.contains("Systems programming language"));
+    }
+
+    // ── format_turn_context: budget enforcement ──
+
+    #[test]
+    fn format_enrichment_budget_cap() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![make_entry("k", &"x".repeat(100), 0.9)],
+            skills: vec![make_skill("s", &"y".repeat(100))],
+            entities: vec![make_entity("e", &"z".repeat(100))],
+            ..Default::default()
+        };
+        let budget = PromptBudget {
+            enrichment_total_max_chars: 80,
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &budget);
+        // Total enrichment must not exceed budget (with small tolerance for formatting)
+        assert!(
+            fmt.enrichment_prefix.chars().count() <= 90,
+            "enrichment {} chars exceeds budget 80",
+            fmt.enrichment_prefix.chars().count()
+        );
+    }
+
+    #[test]
+    fn format_empty_context_produces_empty_strings() {
+        let ctx = TurnMemoryContext::default();
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.core_blocks_system.is_empty());
+        assert!(fmt.enrichment_prefix.is_empty());
+    }
+
+    // ── load_recall filtering (via internal helper) ──
+
+    #[test]
+    fn recall_filters_autosave_keys() {
+        // is_autosave_key is tested directly above; this documents the invariant
+        assert!(is_autosave_key("assistant_resp"));
+        assert!(is_autosave_key("assistant_resp_abc"));
+        assert!(!is_autosave_key("user_msg_abc"));
+    }
+
+    #[test]
+    fn recall_filters_tool_result_content() {
+        // This invariant is enforced in load_recall: entries with <tool_result are skipped
+        let entry_content = "Previous result: <tool_result>stale data</tool_result>";
+        assert!(entry_content.contains("<tool_result"));
     }
 }

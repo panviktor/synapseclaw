@@ -2,6 +2,17 @@
 
 ## 2026-04-03
 
+### Memory Unification — Phase 4 Cleanup (PR #250)
+
+- refactor: rename `HistoryEnrichment::CoreBlocksOnly` → `Continuation` (name now matches behavior)
+- chore: delete dead `memory_service.rs` (recall_context, format_recall_context, should_consolidate, autosave_key — all superseded)
+- chore: remove duplicate tests from adapter `turn_context_fmt.rs` (domain tests cover all cases)
+- test: 10 new invariant tests for `format_turn_context` (core blocks XML, recall headers, skills/entities independent of recall, budget caps)
+- test: post-turn parity test (web and channels get identical decisions)
+- observability: `tracing::debug` in `assemble_turn_context` (core/recall/skills/entities counts + policy)
+- observability: `tracing::trace` in `load_recall` (filtered entry reasons: autosave, noise, tool_result, low relevance)
+- observability: `tracing::debug` in `decide_post_turn` (consolidate/reflect/tools)
+
 ### Memory Unification — Phase 1-4 (PR #248)
 
 - **arch**: unified `TurnContextAssembler` in domain layer — web + channels share one assembly path
