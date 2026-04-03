@@ -2,6 +2,15 @@
 
 ## 2026-04-03
 
+### Memory Learning Foundation — Phase C: Learning Signal Split (PR #253)
+
+- **arch**: `LearningSignal` enum (BackgroundOnly / ExplicitMemory / ExplicitCorrection / ExplicitInstruction)
+- **arch**: `classify_signal()` — cheap heuristic classifier (no LLM call on hot path)
+- **fix**: explicit signals (remember, correct, prefer) force consolidation even for short messages
+- **fix**: post-turn decision now carries `signal` field for downstream mutation source tagging
+- Patterns detected: "remember", "actually", "correction:", "i prefer", "always", "never", "from now on", "запомни"
+- 19 new tests: signal classification + post-turn signal-aware behavior
+
 ### Memory Learning Foundation — Phase B: Retention Scoring (PR #252)
 
 - **arch**: `RetentionScore` (relevance + recency + importance + frequency) composite scoring
