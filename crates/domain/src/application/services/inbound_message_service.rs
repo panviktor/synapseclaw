@@ -130,6 +130,8 @@ pub enum HistoryEnrichment {
     },
     /// First turn standalone: load relevant memory context.
     MemoryContext { conversation_key: String },
+    /// Continuation turn: re-inject core blocks only (no recall/seeding).
+    CoreBlocksOnly,
     /// Not first turn: no enrichment.
     None,
 }
@@ -145,7 +147,7 @@ pub fn decide_history_enrichment(
     envelope: &InboundEnvelope,
 ) -> HistoryEnrichment {
     if has_prior_history {
-        return HistoryEnrichment::None;
+        return HistoryEnrichment::CoreBlocksOnly;
     }
 
     match &envelope.thread_ref {
@@ -456,10 +458,10 @@ mod tests {
     }
 
     #[test]
-    fn enrichment_none_when_has_history() {
+    fn enrichment_core_blocks_only_when_has_history() {
         assert_eq!(
             decide_history_enrichment(true, &envelope(None)),
-            HistoryEnrichment::None
+            HistoryEnrichment::CoreBlocksOnly
         );
     }
 
