@@ -14,11 +14,6 @@
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> ·
-  <a href="README.ru.md">Русский</a>
-</p>
-
-<p align="center">
   <a href="#quick-start">Getting Started</a> |
   <a href="docs/README.md">Docs Hub</a> |
   <a href="docs/SUMMARY.md">Docs TOC</a> |
@@ -31,7 +26,7 @@
   <a href="docs/ops/README.md">Operations</a> ·
   <a href="docs/ops/troubleshooting.md">Troubleshoot</a> ·
   <a href="docs/security/README.md">Security</a> ·
-  <a href="docs/hardware/README.md">Hardware</a> ·
+  <a href="docs/fork/README.md">Fork Docs</a> ·
   <a href="docs/contributing/README.md">Contribute</a>
 </p>
 

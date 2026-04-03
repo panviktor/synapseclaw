@@ -2,9 +2,9 @@
 
 This page is the primary entry point for the documentation system.
 
-Last refreshed: **February 21, 2026**.
+Last refreshed: **April 3, 2026**.
 
-Also available in: [Русский](README.ru.md)
+English is currently the only maintained docs hub. Selected Vietnamese compatibility pages are tracked in [i18n/README.md](i18n/README.md).
 
 ## Start Here
 
@@ -21,6 +21,7 @@ Also available in: [Русский](README.ru.md)
 | Operate runtime (day-2 runbook) | [operations-runbook.md](ops/operations-runbook.md) |
 | Troubleshoot install/runtime/channel issues | [troubleshooting.md](ops/troubleshooting.md) |
 | Run Matrix encrypted-room setup and diagnostics | [matrix-e2ee-guide.md](security/matrix-e2ee-guide.md) |
+| Understand fork architecture, IPC plans, and deltas | [fork/README.md](fork/README.md) |
 | Browse docs by category | [SUMMARY.md](SUMMARY.md) |
 | See project PR/issue docs snapshot | [project-triage-snapshot-2026-02-18.md](maintainers/project-triage-snapshot-2026-02-18.md) |
 
@@ -31,7 +32,7 @@ Also available in: [Русский](README.ru.md)
 - Need production/service operations? → [ops/README.md](ops/README.md)
 - Seeing failures or regressions? → [troubleshooting.md](ops/troubleshooting.md)
 - Working on security hardening or roadmap? → [security/README.md](security/README.md)
-- Working with boards/peripherals? → [hardware/README.md](hardware/README.md)
+- Working on fork architecture or IPC rollout plans? → [fork/README.md](fork/README.md)
 - Contributing/reviewing/CI workflow? → [contributing/README.md](contributing/README.md)
 - Want the full map? → [SUMMARY.md](SUMMARY.md)
 
@@ -41,7 +42,7 @@ Also available in: [Русский](README.ru.md)
 - Reference catalogs: [reference/README.md](reference/README.md)
 - Operations & deployment: [ops/README.md](ops/README.md)
 - Security docs: [security/README.md](security/README.md)
-- Hardware/peripherals: [hardware/README.md](hardware/README.md)
+- Fork architecture & roadmap: [fork/README.md](fork/README.md)
 - Contributing/CI: [contributing/README.md](contributing/README.md)
 - Project snapshots: [maintainers/README.md](maintainers/README.md)
 
@@ -83,7 +84,7 @@ Also available in: [Русский](README.ru.md)
 ## System Navigation & Governance
 
 - Unified TOC: [SUMMARY.md](SUMMARY.md)
-- Docs structure map (language/part/function): [structure/README.md](maintainers/structure-README.md)
+- Docs structure map (language/part/function): [maintainers/structure-README.md](maintainers/structure-README.md)
 - Documentation inventory/classification: [docs-inventory.md](maintainers/docs-inventory.md)
 - i18n docs index: [i18n/README.md](i18n/README.md)
 - i18n coverage map: [i18n-coverage.md](maintainers/i18n-coverage.md)

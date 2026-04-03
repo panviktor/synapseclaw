@@ -25,12 +25,17 @@ const MAX_RECONNECT_DELAY = 30000;
 
 const SESSION_STORAGE_KEY = 'synapseclaw_session_id';
 
-/** Return a stable session ID, persisted in sessionStorage across reconnects. */
+/** Return a stable session ID, persisted in localStorage to survive refresh and re-login. */
 function getOrCreateSessionId(): string {
-  let id = sessionStorage.getItem(SESSION_STORAGE_KEY);
+  let id = localStorage.getItem(SESSION_STORAGE_KEY);
   if (!id) {
-    id = generateUUID();
-    sessionStorage.setItem(SESSION_STORAGE_KEY, id);
+    // Migrate from sessionStorage if exists (one-time upgrade)
+    id = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (!id) {
+      id = generateUUID();
+    }
+    localStorage.setItem(SESSION_STORAGE_KEY, id);
+    sessionStorage.removeItem(SESSION_STORAGE_KEY);
   }
   return id;
 }

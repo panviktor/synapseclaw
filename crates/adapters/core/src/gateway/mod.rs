@@ -811,6 +811,12 @@ pub async fn run_gateway(
             as Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>
     });
 
+    tracing::info!(
+        chat_db = chat_db.is_some(),
+        conversation_store = conversation_store.is_some(),
+        "web chat session persistence"
+    );
+
     // ── Phase 4.0: RunStorePort (SurrealDB-backed) ──
     let run_store: Option<Arc<dyn synapse_domain::ports::run_store::RunStorePort>> =
         shared_surreal.as_ref().map(|s| {

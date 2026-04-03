@@ -2,49 +2,32 @@
 
 This document defines the localization structure for SynapseClaw docs and tracks current coverage.
 
-Last refreshed: **February 21, 2026**.
+Last refreshed: **April 3, 2026**.
 
 ## Canonical Layout
 
 Use these i18n paths:
 
-- Root language landing: `README.<locale>.md`
-- Full localized docs tree: `docs/i18n/<locale>/...`
-- Optional compatibility shims at docs root:
-  - `docs/README.<locale>.md`
-  - `docs/commands-reference.<locale>.md`
-  - `docs/config-reference.<locale>.md`
-  - `docs/troubleshooting.<locale>.md`
+- Canonical docs entry points are English: `README.md`, `docs/README.md`, `docs/SUMMARY.md`
+- Compatibility translations may live beside the English source as `*.vi.md` when only a small operator subset is maintained
+- A full `docs/i18n/<locale>/...` tree should be introduced only when that locale has an intentionally maintained hub and TOC
 
 ## Locale Coverage Matrix
 
 | Locale | Root README | Canonical Docs Hub | Commands Ref | Config Ref | Troubleshooting | Status |
 |---|---|---|---|---|---|---|
-| `en` | `README.md` | `docs/README.md` | `docs/commands-reference.md` | `docs/config-reference.md` | `docs/troubleshooting.md` | Source of truth |
-| `zh-CN` | `README.zh-CN.md` | `docs/README.zh-CN.md` | - | - | - | Hub-level localized |
-| `ja` | `README.ja.md` | `docs/README.ja.md` | - | - | - | Hub-level localized |
-| `ru` | `README.ru.md` | `docs/README.ru.md` | - | - | - | Hub-level localized |
-| `fr` | `README.fr.md` | `docs/README.fr.md` | - | - | - | Hub-level localized |
-| `vi` | `README.vi.md` | `docs/i18n/vi/README.md` | `docs/i18n/vi/commands-reference.md` | `docs/i18n/vi/config-reference.md` | `docs/i18n/vi/troubleshooting.md` | Full tree localized |
+| `en` | `README.md` | `docs/README.md` | `docs/reference/cli/commands-reference.md` | `docs/reference/api/config-reference.md` | `docs/ops/troubleshooting.md` | Source of truth |
+| `vi` | - | - | `docs/reference/cli/commands-reference.vi.md` | `docs/reference/api/config-reference.vi.md` | `docs/ops/troubleshooting.vi.md` | Selected compatibility pages only |
 
-## Root README Completeness
+Additional compatibility translation:
 
-Not all root READMEs are full translations of `README.md`:
+- `docs/setup-guides/one-click-bootstrap.vi.md`
 
-| Locale | Style | Approximate Coverage |
-|---|---|---|
-| `en` | Full source | 100% |
-| `zh-CN` | Hub-style entry point | ~26% |
-| `ja` | Hub-style entry point | ~26% |
-| `ru` | Hub-style entry point | ~26% |
-| `fr` | Near-complete translation | ~90% |
-| `vi` | Near-complete translation | ~90% |
-
-Hub-style entry points provide quick-start orientation and language navigation but do not replicate the full English README content. This is an accurate status record, not a gap to be immediately resolved.
+No localized README or docs hub is currently maintained.
 
 ## Collection Index i18n
 
-Localized `README.md` files under collection directories (`docs/getting-started/`, `docs/reference/`, `docs/operations/`, `docs/security/`, `docs/hardware/`, `docs/contributing/`, `docs/project/`) currently exist only for English and Vietnamese. Collection index localization for other locales is deferred.
+Collection index docs are maintained in English only. Compatibility translations currently cover selected operator references, not the collection indexes.
 
 ## Localization Rules
 
@@ -54,23 +37,22 @@ Localized `README.md` files under collection directories (`docs/getting-started/
   - API paths
   - trait/type identifiers
 - Prefer concise, operator-oriented localization over literal translation.
-- Update "Last refreshed" / "Last synchronized" dates when localized pages change.
-- Ensure every localized hub has an "Other languages" section.
+- Update "Last refreshed" dates when compatibility pages change.
+- Do not advertise a localized hub or TOC unless those pages actually exist and are maintained.
 
 ## Adding a New Locale
 
 1. Create `README.<locale>.md`.
-2. Create canonical docs tree under `docs/i18n/<locale>/` (at least `README.md`, `commands-reference.md`, `config-reference.md`, `troubleshooting.md`).
+2. Create canonical docs tree under `docs/i18n/<locale>/` only if the locale will have a maintained hub and TOC.
 3. Add locale links to:
-   - root language nav in every `README*.md`
-   - localized hubs line in `docs/README.md`
-   - "Other languages" section in every `docs/README*.md`
+   - root language nav in `README.md`
+   - docs hub status line in `docs/README.md`
    - language entry section in `docs/SUMMARY.md`
-4. Optionally add docs-root shim files for backward compatibility.
+4. Add any compatibility translation pages only after the canonical English doc is stable.
 5. Update this file (`docs/i18n-coverage.md`) and run link validation.
 
 ## Review Checklist
 
-- Links resolve for all localized entry files.
-- No locale references stale filenames (for example `README.vn.md`).
-- TOC (`docs/SUMMARY.md`) and docs hub (`docs/README.md`) include the locale.
+- Links resolve for every localized or compatibility page that is advertised.
+- No docs claim a localized README or hub that does not exist.
+- TOC (`docs/SUMMARY.md`) and docs hub (`docs/README.md`) match the actual i18n footprint.

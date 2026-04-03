@@ -2,15 +2,14 @@
 
 This file is the canonical table of contents for the documentation system.
 
-Last refreshed: **February 18, 2026**.
+Last refreshed: **April 3, 2026**.
 
 ## Language Entry
 
-- Docs Structure Map: [structure/README.md](maintainers/structure-README.md)
+- Docs Structure Map: [maintainers/structure-README.md](maintainers/structure-README.md)
 - English README: [../README.md](../README.md)
-- Russian README: [../README.ru.md](../README.ru.md)
 - English Docs Hub: [README.md](README.md)
-- Russian Docs Hub: [README.ru.md](README.ru.md)
+- i18n Status: [i18n/README.md](i18n/README.md)
 
 ## Collections
 
@@ -67,3 +66,10 @@ Last refreshed: **February 18, 2026**.
 - [maintainers/README.md](maintainers/README.md)
 - [project-triage-snapshot-2026-02-18.md](maintainers/project-triage-snapshot-2026-02-18.md)
 - [docs-inventory.md](maintainers/docs-inventory.md)
+
+### 7) Fork Architecture & IPC
+
+- [fork/README.md](fork/README.md)
+- [delta-registry.md](fork/delta-registry.md)
+- [ipc-plan.md](fork/ipc-plan.md)
+- [ipc-quickstart.md](fork/ipc-quickstart.md)
