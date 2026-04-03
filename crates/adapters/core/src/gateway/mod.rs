@@ -412,6 +412,8 @@ pub struct AppState {
     pub dead_letter: Option<Arc<dyn synapse_domain::ports::dead_letter::DeadLetterPort>>,
     /// Phase 4.5: Shared SurrealDB handle for all components
     pub surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
+    /// Resolved agent identity for memory scoping.
+    pub agent_id: String,
 }
 
 /// Run the HTTP gateway using axum with proper HTTP/1.1 compliance.
@@ -960,6 +962,7 @@ pub async fn run_gateway(
         tool_middleware: None,   // initialized below if pipelines enabled
         dead_letter: shared_dead_letter,
         surreal: shared_surreal,
+        agent_id: resolved_agent_id,
     };
 
     // Seed default learning signal patterns (if table is empty).

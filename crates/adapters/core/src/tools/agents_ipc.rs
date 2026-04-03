@@ -1692,6 +1692,7 @@ mod tests {
             tool_middleware: None,
             dead_letter: None,
             surreal: None,
+            agent_id: "test-agent".into(),
         }
     }
 

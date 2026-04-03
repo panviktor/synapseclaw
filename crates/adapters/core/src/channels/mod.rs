@@ -3443,6 +3443,8 @@ pub async fn start_channels(
         ack_reactions: config.channels_config.ack_reactions,
         agent_id: Arc::new(crate::agent::loop_::resolve_agent_id(&config)),
         prompt_budget_config: config.memory.prompt_budget.clone(),
+        // Signal patterns are snapshotted at startup. Edits via /api/memory/learning-patterns
+        // take effect on next config reload / service restart. Web path loads fresh per turn.
         signal_patterns: if let Some(ref db) = shared_surreal {
             let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "channels".into());
             adapter.list_signal_patterns().await.unwrap_or_default()

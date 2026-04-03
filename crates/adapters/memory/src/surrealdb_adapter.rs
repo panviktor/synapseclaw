@@ -736,11 +736,16 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                 } else {
                     0.0
                 };
-                // access_count not available in SearchResult; use 0 for now
+                // Extract access_count from the search row (stored in episode table).
+                let access_count = row_map
+                    .get(&r.entry.id)
+                    .and_then(|row| row.get("access_count"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
                 let retention = compute_retention_score(
                     r.score as f64,
                     age_hours,
-                    0, // access_count (not yet surfaced in SearchResult)
+                    access_count,
                     &r.entry.category,
                     &policy,
                     &weights,

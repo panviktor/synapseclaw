@@ -151,12 +151,12 @@ pub async fn evaluate_candidates(
 
 /// Apply a mutation decision through memory ports.
 ///
-/// Returns `true` if a write was made, `false` for Noop.
+/// Returns the generated key if a write was made, `None` for Noop.
 pub async fn apply_decision(
     mem: &dyn UnifiedMemoryPort,
     decision: &MutationDecision,
     agent_id: &str,
-) -> Result<bool, MemoryError> {
+) -> Result<Option<String>, MemoryError> {
     match &decision.action {
         MutationAction::Add => {
             let key = format!(
@@ -173,7 +173,7 @@ pub async fn apply_decision(
             )
             .await?;
             tracing::debug!(target: "memory_mutation", key, "Memory added");
-            Ok(true)
+            Ok(Some(key))
         }
         MutationAction::Update { target_id } => {
             // Delete old, add new (atomic upsert not available via ports)
@@ -191,8 +191,8 @@ pub async fn apply_decision(
                 None,
             )
             .await?;
-            tracing::debug!(target: "memory_mutation", old_id = target_id, key, "Memory updated");
-            Ok(true)
+            tracing::debug!(target: "memory_mutation", old_key = target_id, new_key = key, "Memory updated");
+            Ok(Some(key))
         }
         MutationAction::Delete { target_id } => {
             // Delete old contradictory entry, then store the corrected one.
@@ -211,11 +211,11 @@ pub async fn apply_decision(
             )
             .await?;
             tracing::debug!(target: "memory_mutation", old_key = target_id, new_key = key, "Memory replaced (contradiction)");
-            Ok(true)
+            Ok(Some(key))
         }
         MutationAction::Noop => {
             tracing::trace!(target: "memory_mutation", reason = %decision.reason, "Mutation skipped (noop)");
-            Ok(false)
+            Ok(None)
         }
     }
 }
@@ -228,16 +228,11 @@ pub async fn apply_decision_with_event(
     decision: &MutationDecision,
     agent_id: &str,
 ) -> Result<super::learning_events::LearningEvent, MemoryError> {
-    let _wrote = apply_decision(mem, decision, agent_id).await?;
+    let result_key = apply_decision(mem, decision, agent_id).await?;
     let event = super::learning_events::LearningEvent::from_mutation(
         &decision.action,
         agent_id,
-        match &decision.action {
-            MutationAction::Update { target_id } | MutationAction::Delete { target_id } => {
-                Some(target_id.as_str())
-            }
-            _ => None,
-        },
+        result_key.as_deref(),
         &decision.reason,
     );
     Ok(event)

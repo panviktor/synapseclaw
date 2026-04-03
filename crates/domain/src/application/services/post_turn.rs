@@ -53,9 +53,10 @@ pub fn decide_post_turn_with_patterns(
     let signal = super::learning_signals::classify_signal_with_patterns(user_message, signal_patterns);
     let user_chars = user_message.chars().count();
 
-    // Explicit signals always trigger consolidation (skip length check)
+    // Explicit signals use the direct AUDN hot-path — skip background consolidation
+    // to avoid duplicate writes. Background consolidation only for non-explicit turns.
     let should_consolidate = if signal.is_explicit() {
-        auto_save_enabled
+        false
     } else {
         auto_save_enabled && user_chars >= CONSOLIDATE_MIN_CHARS
     };
@@ -161,12 +162,12 @@ mod tests {
         assert_eq!(web.tools_used, channel.tools_used);
     }
 
-    /// Explicit signals bypass length check for consolidation.
+    /// Explicit signals skip consolidation (use direct AUDN hot-path instead).
     #[test]
-    fn explicit_signal_forces_consolidation() {
+    fn explicit_signal_skips_consolidation() {
         let pats = super::super::learning_signals::default_patterns();
         let d = decide_post_turn_with_patterns(true, "Remember that I use vim", "", vec![], &pats);
-        assert!(d.should_consolidate);
+        assert!(!d.should_consolidate, "explicit signals use direct AUDN, not consolidation");
         assert!(d.signal.is_explicit());
 
         let d = decide_post_turn_with_patterns(true, "What editor?", "", vec![], &pats);
