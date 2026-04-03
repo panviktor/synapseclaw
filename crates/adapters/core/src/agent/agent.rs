@@ -1,8 +1,11 @@
 use crate::agent::dispatcher::{
     NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
-use crate::agent::memory_loader::{DefaultMemoryLoader, MemoryLoader};
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
+use crate::agent::turn_context_fmt;
+use synapse_domain::application::services::turn_context::{
+    self as tc, ContinuationPolicy, PromptBudget,
+};
 use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
 use anyhow::Result;
@@ -24,7 +27,10 @@ pub struct Agent {
     observer: Arc<dyn Observer>,
     prompt_builder: SystemPromptBuilder,
     tool_dispatcher: Box<dyn ToolDispatcher>,
-    memory_loader: Box<dyn MemoryLoader>,
+    prompt_budget: PromptBudget,
+    continuation_policy: ContinuationPolicy,
+    /// Turn counter within current session (for continuation policy).
+    turn_count: usize,
     config: synapse_domain::config::schema::AgentConfig,
     model_name: String,
     temperature: f64,
@@ -53,7 +59,8 @@ pub struct AgentBuilder {
     observer: Option<Arc<dyn Observer>>,
     prompt_builder: Option<SystemPromptBuilder>,
     tool_dispatcher: Option<Box<dyn ToolDispatcher>>,
-    memory_loader: Option<Box<dyn MemoryLoader>>,
+    prompt_budget: Option<PromptBudget>,
+    continuation_policy: Option<ContinuationPolicy>,
     config: Option<synapse_domain::config::schema::AgentConfig>,
     model_name: Option<String>,
     temperature: Option<f64>,
@@ -80,7 +87,8 @@ impl AgentBuilder {
             observer: None,
             prompt_builder: None,
             tool_dispatcher: None,
-            memory_loader: None,
+            prompt_budget: None,
+            continuation_policy: None,
             config: None,
             model_name: None,
             temperature: None,
@@ -129,8 +137,13 @@ impl AgentBuilder {
         self
     }
 
-    pub fn memory_loader(mut self, memory_loader: Box<dyn MemoryLoader>) -> Self {
-        self.memory_loader = Some(memory_loader);
+    pub fn prompt_budget(mut self, budget: PromptBudget) -> Self {
+        self.prompt_budget = Some(budget);
+        self
+    }
+
+    pub fn continuation_policy(mut self, policy: ContinuationPolicy) -> Self {
+        self.continuation_policy = Some(policy);
         self
     }
 
@@ -249,9 +262,9 @@ impl AgentBuilder {
             tool_dispatcher: self
                 .tool_dispatcher
                 .ok_or_else(|| anyhow::anyhow!("tool_dispatcher is required"))?,
-            memory_loader: self
-                .memory_loader
-                .unwrap_or_else(|| Box::new(DefaultMemoryLoader::default())),
+            prompt_budget: self.prompt_budget.unwrap_or_default(),
+            continuation_policy: self.continuation_policy.unwrap_or_default(),
+            turn_count: 0,
             config: self.config.unwrap_or_default(),
             model_name: self
                 .model_name
@@ -288,10 +301,17 @@ impl Agent {
 
     pub fn clear_history(&mut self) {
         self.history.clear();
+        self.turn_count = 0;
     }
 
     /// Push a pre-built conversation message (used for session replay from DB).
     pub fn push_history(&mut self, msg: ConversationMessage) {
+        // Track user turns for continuation policy
+        if let ConversationMessage::Chat(ref chat) = msg {
+            if chat.role == "user" {
+                self.turn_count += 1;
+            }
+        }
         self.history.push(msg);
     }
 
@@ -461,10 +481,12 @@ impl Agent {
             .observer(observer)
             .response_cache(response_cache)
             .tool_dispatcher(tool_dispatcher)
-            .memory_loader(Box::new(DefaultMemoryLoader::new(
-                5,
-                config.memory.min_relevance_score,
-            )))
+            .prompt_budget({
+                let mut b = config.memory.prompt_budget.to_prompt_budget();
+                b.recall_min_relevance = config.memory.min_relevance_score;
+                b
+            })
+            .continuation_policy(config.memory.prompt_budget.to_continuation_policy())
             .prompt_builder(SystemPromptBuilder::with_defaults())
             .config(config.agent.clone())
             .agent_id(resolved_agent_id)
@@ -649,13 +671,25 @@ impl Agent {
                 )));
         }
 
-        // ── Core memory blocks → system message (MemGPT: always in prompt) ──
-        let core_blocks = self
-            .memory_loader
-            .load_core_blocks(self.memory.as_ref(), &self.agent_id)
-            .await
-            .unwrap_or_default();
-        if !core_blocks.is_empty() {
+        // ── Unified turn context assembly ──
+        let continuation = if self.turn_count > 0 {
+            Some(&self.continuation_policy)
+        } else {
+            None
+        };
+        let turn_ctx = tc::assemble_turn_context(
+            self.memory.as_ref(),
+            user_message,
+            &self.agent_id,
+            self.memory_session_id.as_deref(),
+            &self.prompt_budget,
+            continuation,
+        )
+        .await;
+        let formatted = turn_context_fmt::format_turn_context(&turn_ctx, &self.prompt_budget);
+
+        // Core blocks → system message (MemGPT: always in prompt)
+        if !formatted.core_blocks_system.is_empty() {
             const CORE_MEMORY_MARKER: &str = "[core-memory]\n";
             // Remove previous core-memory system message if present (avoid accumulation)
             self.history.retain(|msg| {
@@ -667,7 +701,8 @@ impl Agent {
             });
             self.history
                 .push(ConversationMessage::Chat(ChatMessage::system(format!(
-                    "{CORE_MEMORY_MARKER}{core_blocks}"
+                    "{CORE_MEMORY_MARKER}{}",
+                    formatted.core_blocks_system
                 ))));
         }
 
@@ -683,31 +718,33 @@ impl Agent {
                 .await;
         }
 
-        let context = self
-            .memory_loader
-            .load_context(
-                self.memory.as_ref(),
-                user_message,
-                self.memory_session_id.as_deref(),
-                &self.agent_id,
-            )
-            .await
-            .unwrap_or_default();
-
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
-        let enriched = if context.is_empty() {
-            format!("[{now}] {user_message}")
-        } else {
-            format!("{context}[{now}] {user_message}")
-        };
-
+        // Store literal raw user message in history
         self.history
-            .push(ConversationMessage::Chat(ChatMessage::user(enriched)));
+            .push(ConversationMessage::Chat(ChatMessage::user(
+                user_message.to_string(),
+            )));
+
+        // Ephemeral prefix: enrichment + timestamp (for provider call only, not history)
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
+        let ephemeral_prefix = if formatted.enrichment_prefix.is_empty() {
+            format!("[{now}] ")
+        } else {
+            format!("{}[{now}] ", formatted.enrichment_prefix)
+        };
+        self.turn_count += 1;
 
         let effective_model = self.classify_model(user_message);
 
         for _ in 0..self.config.max_tool_iterations {
-            let messages = self.tool_dispatcher.to_provider_messages(&self.history);
+            let mut messages = self.tool_dispatcher.to_provider_messages(&self.history);
+
+            // Inject ephemeral prefix (enrichment + timestamp) on the last user
+            // message for the provider call — not persisted in history.
+            if let Some(last_user) = messages.iter_mut().rfind(|m| m.role == "user") {
+                if last_user.content == user_message {
+                    last_user.content = format!("{ephemeral_prefix}{}", last_user.content);
+                }
+            }
 
             // Response cache: check before LLM call (only for deterministic, text-only prompts)
             let cache_key = if self.temperature == 0.0 {

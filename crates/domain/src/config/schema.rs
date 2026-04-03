@@ -3306,6 +3306,11 @@ pub struct MemoryConfig {
     /// Max in-memory hot cache entries (default: 256)
     #[serde(default = "default_response_cache_hot_entries")]
     pub response_cache_hot_entries: usize,
+
+    // ── Prompt Budget ────────────────────────────────────────
+    /// Prompt budget for turn context assembly.
+    #[serde(default)]
+    pub prompt_budget: PromptBudgetConfig,
 }
 
 fn default_embedding_provider() -> String {
@@ -3352,6 +3357,119 @@ impl Default for MemoryConfig {
             response_cache_ttl_minutes: default_response_cache_ttl(),
             response_cache_max_entries: default_response_cache_max(),
             response_cache_hot_entries: default_response_cache_hot_entries(),
+            prompt_budget: PromptBudgetConfig::default(),
+        }
+    }
+}
+
+// ── Prompt Budget ────────────────────────────────────────────────
+
+/// Prompt budget configuration for turn context assembly.
+///
+/// Controls how much memory context (recall, skills, entities) is
+/// injected into each turn's prompt.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct PromptBudgetConfig {
+    /// Max recalled episodic memory entries per turn.
+    #[serde(default = "default_recall_max_entries")]
+    pub recall_max_entries: usize,
+    /// Max chars per recalled entry (truncated with ellipsis).
+    #[serde(default = "default_recall_entry_max_chars")]
+    pub recall_entry_max_chars: usize,
+    /// Max total chars for all recalled entries combined.
+    #[serde(default = "default_recall_total_max_chars")]
+    pub recall_total_max_chars: usize,
+    /// Max number of skills injected per turn.
+    #[serde(default = "default_skills_max_count")]
+    pub skills_max_count: usize,
+    /// Max total chars for all skills combined.
+    #[serde(default = "default_skills_total_max_chars")]
+    pub skills_total_max_chars: usize,
+    /// Max number of entities injected per turn.
+    #[serde(default = "default_entities_max_count")]
+    pub entities_max_count: usize,
+    /// Max total chars for all entities combined.
+    #[serde(default = "default_entities_total_max_chars")]
+    pub entities_total_max_chars: usize,
+    /// Hard cap on total enrichment chars (recall + skills + entities).
+    #[serde(default = "default_enrichment_total_max_chars")]
+    pub enrichment_total_max_chars: usize,
+    /// Continuation turn policy: "core_only", "core_plus_recall", or "full".
+    #[serde(default = "default_continuation_policy")]
+    pub continuation_policy: String,
+}
+
+fn default_recall_max_entries() -> usize {
+    5
+}
+fn default_recall_entry_max_chars() -> usize {
+    800
+}
+fn default_recall_total_max_chars() -> usize {
+    4_000
+}
+fn default_skills_max_count() -> usize {
+    3
+}
+fn default_skills_total_max_chars() -> usize {
+    2_000
+}
+fn default_entities_max_count() -> usize {
+    3
+}
+fn default_entities_total_max_chars() -> usize {
+    1_500
+}
+fn default_enrichment_total_max_chars() -> usize {
+    8_000
+}
+fn default_continuation_policy() -> String {
+    "core_plus_recall".into()
+}
+
+impl Default for PromptBudgetConfig {
+    fn default() -> Self {
+        Self {
+            recall_max_entries: default_recall_max_entries(),
+            recall_entry_max_chars: default_recall_entry_max_chars(),
+            recall_total_max_chars: default_recall_total_max_chars(),
+            skills_max_count: default_skills_max_count(),
+            skills_total_max_chars: default_skills_total_max_chars(),
+            entities_max_count: default_entities_max_count(),
+            entities_total_max_chars: default_entities_total_max_chars(),
+            enrichment_total_max_chars: default_enrichment_total_max_chars(),
+            continuation_policy: default_continuation_policy(),
+        }
+    }
+}
+
+impl PromptBudgetConfig {
+    /// Convert to domain `PromptBudget` value object.
+    pub fn to_prompt_budget(&self) -> crate::application::services::turn_context::PromptBudget {
+        crate::application::services::turn_context::PromptBudget {
+            recall_max_entries: self.recall_max_entries,
+            recall_entry_max_chars: self.recall_entry_max_chars,
+            recall_total_max_chars: self.recall_total_max_chars,
+            recall_min_relevance: 0.0, // set from MemoryConfig.min_relevance_score by caller
+            skills_max_count: self.skills_max_count,
+            skills_total_max_chars: self.skills_total_max_chars,
+            entities_max_count: self.entities_max_count,
+            entities_total_max_chars: self.entities_total_max_chars,
+            enrichment_total_max_chars: self.enrichment_total_max_chars,
+        }
+    }
+
+    /// Parse `continuation_policy` string into domain `ContinuationPolicy`.
+    pub fn to_continuation_policy(
+        &self,
+    ) -> crate::application::services::turn_context::ContinuationPolicy {
+        use crate::application::services::turn_context::ContinuationPolicy;
+        match self.continuation_policy.as_str() {
+            "core_only" => ContinuationPolicy::CoreOnly,
+            "full" => ContinuationPolicy::Full,
+            _ => ContinuationPolicy::CorePlusRecall {
+                recall_max_entries: 2,
+            },
         }
     }
 }

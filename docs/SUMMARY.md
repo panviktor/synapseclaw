@@ -73,3 +73,6 @@ Last refreshed: **April 3, 2026**.
 - [delta-registry.md](fork/delta-registry.md)
 - [ipc-plan.md](fork/ipc-plan.md)
 - [ipc-quickstart.md](fork/ipc-quickstart.md)
+- [memory-learning-foundation-plan.md](fork/memory-learning-foundation-plan.md)
+- [memory-unification-plan.md](fork/memory-unification-plan.md)
+- [multi-agent-memory-ui-plan.md](fork/multi-agent-memory-ui-plan.md)

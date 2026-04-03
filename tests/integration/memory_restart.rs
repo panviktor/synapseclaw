@@ -53,10 +53,11 @@ async fn surrealdb_store_and_forget() {
     .await
     .unwrap();
 
-    let found = mem.forget("temp_fact").await.unwrap();
+    let agent_id = "test-agent".to_string();
+    let found = mem.forget("temp_fact", &agent_id).await.unwrap();
     assert!(found, "Should find and delete the entry");
 
-    let not_found = mem.forget("temp_fact").await.unwrap();
+    let not_found = mem.forget("temp_fact", &agent_id).await.unwrap();
     assert!(!not_found, "Should not find deleted entry");
 }
 

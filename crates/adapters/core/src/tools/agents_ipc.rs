@@ -1536,7 +1536,7 @@ mod tests {
     fn agents_spawn_without_broker_has_no_ipc_client() {
         let config = Arc::new(synapse_domain::config::schema::Config::default());
         let security = Arc::new(synapse_domain::domain::security_policy::SecurityPolicy::default());
-        let tool = AgentsSpawnTool::new(config, security, 2);
+        let tool = AgentsSpawnTool::new(config, security, 2, None);
         assert!(tool.ipc_client.is_none());
     }
 
@@ -1690,6 +1690,8 @@ mod tests {
             pipeline_executor: None,
             message_router: None,
             tool_middleware: None,
+            dead_letter: None,
+            surreal: None,
         }
     }
 

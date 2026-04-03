@@ -1,8 +1,14 @@
+//! Deprecated: use `synapse_domain::application::services::turn_context` +
+//! `crate::agent::turn_context_fmt` instead.
+//!
+//! This module is retained temporarily for backward compatibility.
+
 use async_trait::async_trait;
 use std::fmt::Write;
 use synapse_domain::domain::memory::MemoryQuery;
 use synapse_memory::UnifiedMemoryPort;
 
+#[deprecated(note = "Use turn_context::assemble_turn_context + turn_context_fmt::format_turn_context instead")]
 #[async_trait]
 pub trait MemoryLoader: Send + Sync {
     async fn load_context(
@@ -88,8 +94,8 @@ impl MemoryLoader for DefaultMemoryLoader {
             }
         }
 
-        // ── Skills + entities (only if recall found relevant memories) ──
-        if has_recall {
+        // ── Skills + entities (always queried, independent of recall) ──
+        {
             let query = MemoryQuery {
                 text: user_message.to_string(),
                 embedding: None,

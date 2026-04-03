@@ -130,6 +130,8 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
         pipeline_executor: None,
         message_router: None,
         tool_middleware: None,
+        dead_letter: None,
+        surreal: None,
     };
 
     let response = handle_metrics(State(state)).await.into_response();
@@ -206,6 +208,8 @@ async fn metrics_endpoint_renders_prometheus_output() {
         pipeline_executor: None,
         message_router: None,
         tool_middleware: None,
+        dead_letter: None,
+        surreal: None,
     };
 
     let response = handle_metrics(State(state)).await.into_response();
@@ -568,12 +572,14 @@ impl synapse_domain::ports::memory::SkillMemoryPort for TrackingMemory {
         &self,
         _: &synapse_domain::domain::memory::MemoryId,
         _: synapse_domain::domain::memory::SkillUpdate,
+        _: &synapse_domain::domain::memory::AgentId,
     ) -> Result<(), MemoryError> {
         Ok(())
     }
     async fn get_skill(
         &self,
         _: &str,
+        _: &synapse_domain::domain::memory::AgentId,
     ) -> Result<Option<synapse_domain::domain::memory::Skill>, MemoryError> {
         Ok(None)
     }
@@ -650,12 +656,13 @@ impl UnifiedMemoryPort for TrackingMemory {
     async fn consolidate_turn(&self, _: &str, _: &str) -> Result<(), MemoryError> {
         Ok(())
     }
-    async fn forget(&self, _: &str) -> Result<bool, MemoryError> {
+    async fn forget(&self, _: &str, _: &synapse_domain::domain::memory::AgentId) -> Result<bool, MemoryError> {
         Ok(false)
     }
     async fn get(
         &self,
         _: &str,
+        _: &synapse_domain::domain::memory::AgentId,
     ) -> Result<Option<synapse_domain::domain::memory::MemoryEntry>, MemoryError> {
         Ok(None)
     }
@@ -741,6 +748,8 @@ async fn webhook_idempotency_skips_duplicate_provider_calls() {
         pipeline_executor: None,
         message_router: None,
         tool_middleware: None,
+        dead_letter: None,
+        surreal: None,
     };
 
     let mut headers = HeaderMap::new();
@@ -831,6 +840,8 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
         pipeline_executor: None,
         message_router: None,
         tool_middleware: None,
+        dead_letter: None,
+        surreal: None,
     };
 
     let headers = HeaderMap::new();
@@ -933,6 +944,8 @@ async fn webhook_secret_hash_rejects_missing_header() {
         pipeline_executor: None,
         message_router: None,
         tool_middleware: None,
+        dead_letter: None,
+        surreal: None,
     };
 
     let response = handle_webhook(
@@ -1007,6 +1020,8 @@ async fn webhook_secret_hash_rejects_invalid_header() {
         pipeline_executor: None,
         message_router: None,
         tool_middleware: None,
+        dead_letter: None,
+        surreal: None,
     };
 
     let mut headers = HeaderMap::new();
@@ -1086,6 +1101,8 @@ async fn webhook_secret_hash_accepts_valid_header() {
         pipeline_executor: None,
         message_router: None,
         tool_middleware: None,
+        dead_letter: None,
+        surreal: None,
     };
 
     let mut headers = HeaderMap::new();
@@ -1170,6 +1187,8 @@ async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
         pipeline_executor: None,
         message_router: None,
         tool_middleware: None,
+        dead_letter: None,
+        surreal: None,
     };
 
     let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -1250,6 +1269,8 @@ async fn nextcloud_talk_webhook_rejects_invalid_signature() {
         pipeline_executor: None,
         message_router: None,
         tool_middleware: None,
+        dead_letter: None,
+        surreal: None,
     };
 
     let mut headers = HeaderMap::new();
