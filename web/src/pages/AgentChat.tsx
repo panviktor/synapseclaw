@@ -58,6 +58,7 @@ export default function AgentChat() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [expandedMsgIds, setExpandedMsgIds] = useState<Set<string>>(new Set());
   const pendingContentRef = useRef('');
   const activeSessionRef = useRef(activeSession);
   activeSessionRef.current = activeSession;
@@ -213,6 +214,25 @@ export default function AgentChat() {
           if (msg.session_key) {
             appendCachedMessage(msg.session_key, toCache(toolResultMsg));
           }
+          break;
+        }
+
+        case 'assistant': {
+          // Assistant response pushed via same channel as tool events (FIFO order).
+          if (msg.session_key && msg.session_key !== activeSessionRef.current) break;
+          const assistantMsg: ChatMessage = {
+            id: generateUUID(),
+            role: 'agent',
+            content: msg.content ?? '',
+            timestamp: new Date(),
+            event_type: 'assistant',
+          };
+          setMessages((prev) => [...prev, assistantMsg]);
+          if (msg.session_key) {
+            appendCachedMessage(msg.session_key, toCache(assistantMsg));
+          }
+          setTyping(false);
+          pendingContentRef.current = '';
           break;
         }
 
@@ -441,20 +461,8 @@ export default function AgentChat() {
       { session: sendSession, message: trimmed },
       300000, // 5 min timeout for multi-agent delegation
     ).then((res) => {
-      if (res.response) {
-        const agentMsg: ChatMessage = {
-          id: generateUUID(),
-          role: 'agent',
-          content: res.response,
-          timestamp: new Date(),
-          event_type: 'assistant',
-        };
-        // Only append to visible messages if still on the same session
-        if (activeSessionRef.current === sendSession) {
-          setMessages((prev) => [...prev, agentMsg]);
-        }
-        appendCachedMessage(sendSession, toCache(agentMsg));
-      }
+      // Assistant message is delivered via push event (FIFO with tool events).
+      // RPC response only carries metadata.
       if (res.aborted) {
         const abortMsg: ChatMessage = {
           id: generateUUID(),
@@ -666,9 +674,36 @@ export default function AgentChat() {
                     {msg.event_type === 'tool_result' && (
                       <p className="text-[10px] text-[var(--text-muted)] mb-1 uppercase tracking-wide">Tool Result</p>
                     )}
-                    <p className={`text-sm whitespace-pre-wrap break-words ${
-                      msg.event_type === 'tool_call' || msg.event_type === 'tool_result' ? 'font-mono text-xs' : ''
-                    }`}>{msg.content}</p>
+                    {(() => {
+                      const isSystem = msg.event_type === 'tool_call' || msg.event_type === 'tool_result' || msg.event_type === 'error' || msg.event_type === 'interrupted';
+                      const lines = msg.content.split('\n');
+                      const isLong = isSystem && lines.length > 3;
+                      const isExpanded = expandedMsgIds.has(msg.id);
+                      return (
+                        <>
+                          <p className={`text-sm whitespace-pre-wrap break-words ${
+                            isSystem ? 'font-mono text-xs' : ''
+                          } ${isLong && !isExpanded ? 'line-clamp-3' : ''}`}>
+                            {msg.content}
+                          </p>
+                          {isLong && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedMsgIds((prev) => {
+                                  const next = new Set(prev);
+                                  if (next.has(msg.id)) next.delete(msg.id); else next.add(msg.id);
+                                  return next;
+                                });
+                              }}
+                              className="text-[10px] text-[var(--accent-primary)] hover:underline mt-1"
+                            >
+                              {isExpanded ? 'Collapse' : `Show all (${lines.length} lines)`}
+                            </button>
+                          )}
+                        </>
+                      );
+                    })()}
                     <p
                       className={`text-[10px] mt-1.5 ${
                         msg.role === 'user' ? 'text-white/70' : 'text-[var(--text-placeholder)]'

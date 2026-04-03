@@ -998,6 +998,16 @@ async fn handle_chat_send_rpc(
 
     match result {
         Ok(response) => {
+            // Push assistant message via the same out_tx channel as tool events.
+            // This guarantees FIFO order: tool_call → tool_result → assistant.
+            // The RPC response only carries metadata (run_id), not the message.
+            let _ = out_tx.send(serde_json::json!({
+                "type": "assistant",
+                "session_key": session_key,
+                "content": response,
+                "timestamp": now_secs(),
+            }).to_string());
+
             persist_message(
                 state,
                 &session_key,
@@ -1033,9 +1043,9 @@ async fn handle_chat_send_rpc(
                 summarize_session_if_needed(&st, &sk).await;
             });
 
+            // RPC response: metadata only (assistant message already pushed above)
             Ok(serde_json::json!({
                 "run_id": run_id,
-                "response": response,
             }))
         }
         Err(e) => {
