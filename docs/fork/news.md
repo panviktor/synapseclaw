@@ -2,6 +2,16 @@
 
 ## 2026-04-03
 
+### Memory Learning Foundation — Phase D: Multi-Agent Namespaces (PR #254)
+
+- **arch**: `memory_sharing` service — visibility promotion + deterministic conflict resolution
+- **arch**: `promote_visibility` port method on `UnifiedMemoryPort` (default no-op + SurrealDB impl)
+- **arch**: `VisibilityChanged` event type for future IPC broadcast
+- **fix**: schema migration — `shared_with` (array) + `visibility` (string) on episode, entity, fact, skill, reflection tables
+- policy: owner-only promotion, no demotion (Private→Shared→Global only), SharedWith can widen not narrow
+- policy: conflict resolution: authority > recency > confidence (deterministic, no LLM)
+- 9 new domain tests (promotion validation, conflict resolution)
+
 ### Memory Learning Foundation — Phase C: Learning Signal Split (PR #253)
 
 - **arch**: `LearningSignal` enum (BackgroundOnly / ExplicitMemory / ExplicitCorrection / ExplicitInstruction)

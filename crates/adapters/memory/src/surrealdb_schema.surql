@@ -17,6 +17,7 @@ DEFINE FIELD IF NOT EXISTS visibility  ON episode TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS embedding   ON episode TYPE option<array<float>>;
 DEFINE FIELD IF NOT EXISTS access_count ON episode TYPE option<int> DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS last_accessed ON episode TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS shared_with ON episode TYPE option<array<string>>;
 
 DEFINE INDEX IF NOT EXISTS idx_ep_agent   ON episode FIELDS agent_id;
 DEFINE INDEX IF NOT EXISTS idx_ep_session ON episode FIELDS session_id;
@@ -50,6 +51,8 @@ DEFINE FIELD IF NOT EXISTS created_by  ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at  ON entity TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS updated_at  ON entity TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS embedding   ON entity TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS visibility  ON entity TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS shared_with ON entity TYPE option<array<string>>;
 
 DEFINE INDEX IF NOT EXISTS idx_ent_name ON entity FIELDS name;
 DEFINE INDEX IF NOT EXISTS idx_ent_type ON entity FIELDS entity_type;
@@ -70,6 +73,8 @@ DEFINE FIELD IF NOT EXISTS recorded_at    ON fact TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS source_episode ON fact TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_by     ON fact TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS embedding      ON fact TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS visibility     ON fact TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS shared_with    ON fact TYPE option<array<string>>;
 
 DEFINE INDEX IF NOT EXISTS idx_fact_subj ON fact FIELDS subject;
 DEFINE INDEX IF NOT EXISTS idx_fact_obj  ON fact FIELDS object;
@@ -91,6 +96,8 @@ DEFINE FIELD IF NOT EXISTS created_by    ON skill TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at    ON skill TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS updated_at    ON skill TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS embedding     ON skill TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS visibility    ON skill TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS shared_with   ON skill TYPE option<array<string>>;
 
 DEFINE INDEX IF NOT EXISTS idx_skill_name ON skill FIELDS name;
 -- HNSW vector index created separately via apply_vector_indexes()
@@ -109,6 +116,8 @@ DEFINE FIELD IF NOT EXISTS what_failed   ON reflection TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS lesson        ON reflection TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at    ON reflection TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS embedding     ON reflection TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS visibility    ON reflection TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS shared_with   ON reflection TYPE option<array<string>>;
 
 DEFINE INDEX IF NOT EXISTS idx_refl_agent ON reflection FIELDS agent_id;
 -- HNSW vector index created separately via apply_vector_indexes()

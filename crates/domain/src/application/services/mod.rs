@@ -12,6 +12,7 @@ pub mod inbound_message_service;
 pub mod ipc_service;
 pub mod learning_signals;
 pub mod memory_mutation;
+pub mod memory_sharing;
 pub mod pipeline_service;
 pub mod retention;
 pub mod tool_filtering;
