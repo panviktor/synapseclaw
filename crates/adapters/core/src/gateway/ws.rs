@@ -1062,9 +1062,17 @@ async fn handle_chat_send_rpc(
                     auto_save_enabled: state.auto_save,
                 };
                 tokio::spawn(async move {
-                    let _report = synapse_domain::application::services::post_turn_orchestrator::execute_post_turn_learning(
+                    let report = synapse_domain::application::services::post_turn_orchestrator::execute_post_turn_learning(
                         mem.as_ref(), input,
                     ).await;
+                    tracing::info!(
+                        target: "post_turn",
+                        signal = ?report.signal,
+                        explicit = report.explicit_mutation.is_some(),
+                        consolidation = report.consolidation_started,
+                        reflection = report.reflection_started,
+                        "web: post-turn report"
+                    );
                 });
             }
 

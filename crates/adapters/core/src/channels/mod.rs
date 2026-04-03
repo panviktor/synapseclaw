@@ -1430,6 +1430,9 @@ async fn handle_message_via_orchestrator(
             b
         },
         continuation_policy: ctx.prompt_budget_config.to_continuation_policy(),
+        // Signal patterns: snapshot from startup. Edits via /api/memory/learning-patterns
+        // apply to web immediately but require service restart for channels.
+        // Future: add surreal handle to ctx for per-message reload.
         signal_patterns: ctx.signal_patterns.clone(),
     };
 

@@ -584,10 +584,18 @@ async fn execute_agent_turn(
                     auto_save_enabled: config.auto_save_memory,
                 };
                 tokio::spawn(async move {
-                    let _report =
+                    let report =
                         crate::application::services::post_turn_orchestrator::execute_post_turn_learning(
                             mem.as_ref(), input,
                         ).await;
+                    tracing::info!(
+                        target: "post_turn",
+                        signal = ?report.signal,
+                        explicit = report.explicit_mutation.is_some(),
+                        consolidation = report.consolidation_started,
+                        reflection = report.reflection_started,
+                        "channel: post-turn report"
+                    );
                 });
             }
 
