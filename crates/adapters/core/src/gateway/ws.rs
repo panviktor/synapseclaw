@@ -1044,35 +1044,28 @@ async fn handle_chat_send_rpc(
 
             // ── Post-turn learning (fire-and-forget via orchestrator) ──
             {
-                let signal_patterns = if let Some(ref db) = state.surreal {
-                    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(
-                        db.clone(), "ws".into(),
-                    );
-                    adapter.list_signal_patterns().await.unwrap_or_default()
-                } else {
-                    synapse_domain::application::services::learning_signals::default_patterns()
-                };
                 let mem = state.mem.clone();
+                let event_tx = state.event_tx.clone();
                 let input = synapse_domain::application::services::post_turn_orchestrator::PostTurnInput {
                     agent_id: state.agent_id.clone(),
                     user_message: message.clone(),
                     assistant_response: response.clone(),
                     tools_used: extract_tool_names(&tool_history),
-                    signal_patterns,
                     auto_save_enabled: state.auto_save,
                 };
                 tokio::spawn(async move {
                     let report = synapse_domain::application::services::post_turn_orchestrator::execute_post_turn_learning(
                         mem.as_ref(), input,
                     ).await;
-                    tracing::info!(
-                        target: "post_turn",
-                        signal = ?report.signal,
-                        explicit = report.explicit_mutation.is_some(),
-                        consolidation = report.consolidation_started,
-                        reflection = report.reflection_started,
-                        "web: post-turn report"
-                    );
+                    // Publish to SSE event stream for UI consumption
+                    let _ = event_tx.send(serde_json::json!({
+                        "type": "post_turn_report",
+                        "signal": report.signal.as_str(),
+                        "explicit_mutation": report.explicit_mutation.is_some(),
+                        "consolidation_started": report.consolidation_started,
+                        "reflection_started": report.reflection_started,
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                    }));
                 });
             }
 

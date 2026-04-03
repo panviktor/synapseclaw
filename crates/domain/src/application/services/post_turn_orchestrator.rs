@@ -5,7 +5,7 @@
 //! divergence between transport adapters.
 
 use crate::application::services::learning_events::LearningEvent;
-use crate::application::services::learning_signals::{self, LearningSignal, SignalPattern};
+use crate::application::services::learning_signals::{self, LearningSignal};
 use crate::application::services::memory_mutation as mutation;
 use crate::domain::memory::MemoryCategory;
 use crate::domain::memory_mutation::{MutationCandidate, MutationSource, MutationThresholds};
@@ -30,7 +30,6 @@ pub struct PostTurnInput {
     pub user_message: String,
     pub assistant_response: String,
     pub tools_used: Vec<String>,
-    pub signal_patterns: Vec<SignalPattern>,
     pub auto_save_enabled: bool,
 }
 
@@ -57,9 +56,11 @@ pub async fn execute_post_turn_learning(
     mem: &dyn UnifiedMemoryPort,
     input: PostTurnInput,
 ) -> PostTurnReport {
+    // Load signal patterns from memory port — unified for all transports.
+    let patterns = mem.list_signal_patterns().await.unwrap_or_default();
     let signal = learning_signals::classify_signal_with_patterns(
         &input.user_message,
-        &input.signal_patterns,
+        &patterns,
     );
     let user_chars = input.user_message.chars().count();
 

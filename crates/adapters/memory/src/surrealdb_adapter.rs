@@ -1606,6 +1606,13 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         self.db.health().await.is_ok()
     }
 
+    async fn list_signal_patterns(
+        &self,
+    ) -> Result<Vec<synapse_domain::application::services::learning_signals::SignalPattern>, MemoryError> {
+        // Delegate to the inherent method on SurrealMemoryAdapter
+        SurrealMemoryAdapter::list_signal_patterns(self).await
+    }
+
     async fn promote_visibility(
         &self,
         entry_id: &synapse_domain::domain::memory::MemoryId,
