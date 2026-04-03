@@ -91,7 +91,7 @@ pub async fn evaluate_candidate(
         if is_contradictory(&candidate.text, &best_entry.content) {
             (
                 MutationAction::Delete {
-                    target_id: best_entry.id.clone(),
+                    target_id: best_entry.key.clone(),
                 },
                 format!(
                     "contradictory (score {best_score:.3}), replacing: {}",
@@ -101,7 +101,7 @@ pub async fn evaluate_candidate(
         } else {
             (
                 MutationAction::Update {
-                    target_id: best_entry.id.clone(),
+                    target_id: best_entry.key.clone(),
                 },
                 format!(
                     "supersedes (score {best_score:.3}), updating: {}",
@@ -195,8 +195,22 @@ pub async fn apply_decision(
             Ok(true)
         }
         MutationAction::Delete { target_id } => {
-            mem.forget(target_id, &agent_id.to_string()).await?;
-            tracing::debug!(target: "memory_mutation", target_id, "Memory deleted");
+            // Delete old contradictory entry, then store the corrected one.
+            let _ = mem.forget(target_id, &agent_id.to_string()).await;
+            let key = format!(
+                "{}_{}_{}",
+                category_prefix(&decision.candidate.category),
+                &uuid::Uuid::new_v4().to_string()[..8],
+                source_tag(&decision.candidate.source)
+            );
+            mem.store(
+                &key,
+                &decision.candidate.text,
+                &decision.candidate.category,
+                None,
+            )
+            .await?;
+            tracing::debug!(target: "memory_mutation", old_key = target_id, new_key = key, "Memory replaced (contradiction)");
             Ok(true)
         }
         MutationAction::Noop => {

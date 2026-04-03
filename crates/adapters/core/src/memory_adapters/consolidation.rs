@@ -110,20 +110,18 @@ pub async fn consolidate_turn(
             let decision =
                 mutation::evaluate_candidate(memory, candidate, agent_id, &thresholds).await;
 
-            if decision.action.is_noop() {
-                tracing::info!(
-                    reason = %decision.reason,
-                    "memory.consolidation.core_noop"
-                );
-            } else {
-                let wrote = mutation::apply_decision(memory, &decision, agent_id)
-                    .await
-                    .unwrap_or(false);
-                if wrote {
+            match mutation::apply_decision_with_event(memory, &decision, agent_id).await {
+                Ok(event) => {
                     tracing::info!(
-                        action = ?decision.action,
+                        kind = ?event.kind,
                         reason = %decision.reason,
-                        "memory.consolidation.core_mutated"
+                        "memory.consolidation.core_event"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "memory.consolidation.core_mutation_failed"
                     );
                 }
             }
