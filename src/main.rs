@@ -784,7 +784,7 @@ async fn main() -> Result<()> {
 
         // Auto-start channels if user said yes during wizard
         if std::env::var("SYNAPSECLAW_AUTOSTART_CHANNELS").as_deref() == Ok("1") {
-            Box::pin(adapters::channels::start_channels(config, None, None, None)).await?;
+            Box::pin(adapters::channels::start_channels(config, None, None, None, None)).await?;
         }
         return Ok(());
     }
@@ -891,6 +891,7 @@ async fn main() -> Result<()> {
                         None,
                         None,
                         None,
+                        None,
                     ))
                     .await
                 }
@@ -952,6 +953,7 @@ async fn main() -> Result<()> {
                         None,
                         None,
                         None,
+                        None,
                     ))
                     .await
                 }
@@ -967,6 +969,7 @@ async fn main() -> Result<()> {
                         None,
                         None,
                         agent_runner.clone(),
+                        None,
                         None,
                         None,
                         None,
@@ -1237,7 +1240,7 @@ async fn main() -> Result<()> {
 
         Commands::Channel { channel_command } => match channel_command {
             ChannelCommands::Start => {
-                Box::pin(adapters::channels::start_channels(config, None, None, None)).await
+                Box::pin(adapters::channels::start_channels(config, None, None, None, None)).await
             }
             ChannelCommands::Doctor => Box::pin(adapters::channels::doctor_channels(config)).await,
             other => Box::pin(adapters::channels::handle_command(other, &config)).await,
