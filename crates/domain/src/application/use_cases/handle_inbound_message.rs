@@ -252,6 +252,25 @@ async fn handle_regular_message(
             parent_key,
             thread_id,
         } => {
+            // Inject core blocks before thread context
+            if let Some(ref mem) = ports.memory {
+                if let Ok(blocks) = mem.get_core_blocks(&config.agent_id).await {
+                    let mut core_ctx = String::new();
+                    for block in &blocks {
+                        if !block.content.trim().is_empty() {
+                            core_ctx.push_str(&format!(
+                                "<{}>\n{}\n</{}>\n",
+                                block.label,
+                                block.content.trim(),
+                                block.label
+                            ));
+                        }
+                    }
+                    if !core_ctx.is_empty() {
+                        history.push(ChatMessage::system(core_ctx));
+                    }
+                }
+            }
             if let Some(ref summary_port) = ports.session_summary {
                 if let Some(summary) = summary_port.load_summary(&parent_key) {
                     history.push(ChatMessage::system(format!(
@@ -319,6 +338,39 @@ async fn handle_regular_message(
                     recall_ctx.push_str(&recall);
                 }
 
+                // Enrich with skills + entities when recall found results
+                if !recall_ctx.is_empty() {
+                    let query = crate::domain::memory::MemoryQuery {
+                        text: content.to_string(),
+                        embedding: None,
+                        agent_id: config.agent_id.clone(),
+                        include_shared: false,
+                        time_range: None,
+                        limit: 3,
+                    };
+                    if let Ok(skills) = mem.find_skills(&query).await {
+                        for skill in &skills {
+                            if !skill.content.trim().is_empty() {
+                                recall_ctx.push_str(&format!(
+                                    "<skill name=\"{}\">\n{}\n</skill>\n",
+                                    skill.name,
+                                    skill.content.trim()
+                                ));
+                            }
+                        }
+                    }
+                    if let Ok(entities) = mem.search_entities(&query).await {
+                        for entity in &entities {
+                            if let Some(ref summary) = entity.summary {
+                                recall_ctx.push_str(&format!(
+                                    "<entity name=\"{}\" type=\"{}\">\n{}\n</entity>\n",
+                                    entity.name, entity.entity_type, summary
+                                ));
+                            }
+                        }
+                    }
+                }
+
                 if !core_blocks_ctx.is_empty() || !recall_ctx.is_empty() {
                     // Core blocks go into system prompt — higher priority, not user-overrideable
                     if !core_blocks_ctx.is_empty() {
@@ -345,6 +397,26 @@ async fn handle_regular_message(
                         history,
                     )
                     .await;
+                }
+            }
+        }
+        HistoryEnrichment::CoreBlocksOnly => {
+            if let Some(ref mem) = ports.memory {
+                if let Ok(blocks) = mem.get_core_blocks(&config.agent_id).await {
+                    let mut core_ctx = String::new();
+                    for block in &blocks {
+                        if !block.content.trim().is_empty() {
+                            core_ctx.push_str(&format!(
+                                "<{}>\n{}\n</{}>\n",
+                                block.label,
+                                block.content.trim(),
+                                block.label
+                            ));
+                        }
+                    }
+                    if !core_ctx.is_empty() {
+                        history.push(ChatMessage::system(core_ctx));
+                    }
                 }
             }
         }
