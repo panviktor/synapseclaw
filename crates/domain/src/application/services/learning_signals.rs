@@ -37,7 +37,7 @@ impl LearningSignal {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_type_str(s: &str) -> Self {
         match s {
             "correction" => Self::ExplicitCorrection,
             "memory" => Self::ExplicitMemory,
@@ -69,7 +69,7 @@ pub enum MatchMode {
 }
 
 impl MatchMode {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "contains" => Self::Contains,
             _ => Self::StartsWith,
@@ -123,12 +123,12 @@ pub fn classify_signal_with_patterns(message: &str, patterns: &[SignalPattern]) 
     // Check in priority order: correction > memory > instruction
     for signal_type in &["correction", "memory", "instruction"] {
         for pat in patterns.iter().filter(|p| p.enabled && p.signal_type == *signal_type) {
-            let matched = match MatchMode::from_str(&pat.match_mode) {
+            let matched = match MatchMode::parse(&pat.match_mode) {
                 MatchMode::StartsWith => trimmed.starts_with(&pat.pattern),
                 MatchMode::Contains => trimmed.contains(&pat.pattern),
             };
             if matched {
-                return LearningSignal::from_str(signal_type);
+                return LearningSignal::from_type_str(signal_type);
             }
         }
     }

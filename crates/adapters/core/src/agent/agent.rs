@@ -724,13 +724,9 @@ impl Agent {
                 user_message.to_string(),
             )));
 
-        // Ephemeral prefix: enrichment + timestamp (for provider call only, not history)
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
-        let ephemeral_prefix = if formatted.enrichment_prefix.is_empty() {
-            format!("[{now}] ")
-        } else {
-            format!("{}[{now}] ", formatted.enrichment_prefix)
-        };
+        // Ephemeral enrichment prefix (for provider call only, not history).
+        // No timestamp — it would defeat response caching and diverge from channels.
+        let ephemeral_prefix = formatted.enrichment_prefix;
         self.turn_count += 1;
 
         let effective_model = self.classify_model(user_message);
@@ -738,11 +734,14 @@ impl Agent {
         for _ in 0..self.config.max_tool_iterations {
             let mut messages = self.tool_dispatcher.to_provider_messages(&self.history);
 
-            // Inject ephemeral prefix (enrichment + timestamp) on the last user
-            // message for the provider call — not persisted in history.
-            if let Some(last_user) = messages.iter_mut().rfind(|m| m.role == "user") {
-                if last_user.content == user_message {
-                    last_user.content = format!("{ephemeral_prefix}{}", last_user.content);
+            // Inject enrichment prefix on the last user message for the provider
+            // call — not persisted in history.
+            if !ephemeral_prefix.is_empty() {
+                if let Some(last_user) = messages.iter_mut().rfind(|m| m.role == "user") {
+                    if last_user.content == user_message {
+                        last_user.content =
+                            format!("{ephemeral_prefix}{}", last_user.content);
+                    }
                 }
             }
 
