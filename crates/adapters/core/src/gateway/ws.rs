@@ -564,6 +564,9 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
             }
         };
 
+    // Bind memory recall to this web session (episodic recall is session-scoped).
+    agent.set_memory_session_id(Some(session_key.to_string()));
+
     let session = ChatSession {
         agent,
         created_at: now,
@@ -579,7 +582,7 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
         last_summary_count: 0,
     };
 
-    let need_persist = {
+    let _need_persist = {
         let mut sessions = state
             .chat_sessions
             .lock()
@@ -1039,28 +1042,30 @@ async fn handle_chat_send_rpc(
                 summarize_session_if_needed(&st, &sk).await;
             });
 
-            // ── Memory consolidation (fire-and-forget) ──
-            if state.auto_save && message.chars().count() >= 10 {
-                let mem = state.mem.clone();
-                let user_msg = message.clone();
-                let asst_resp = response.clone();
-                tokio::spawn(async move {
-                    let _ = mem.consolidate_turn(&user_msg, &asst_resp).await;
-                });
-            }
-
-            // ── Skill reflection (fire-and-forget) ──
+            // ── Post-turn learning (fire-and-forget) ──
             {
-                let resp_lower = response.to_lowercase();
-                let should_reflect = response.len() > 200
-                    && message.chars().count() >= 30
-                    && (resp_lower.contains("error") || resp_lower.contains("failed"));
-                if should_reflect {
+                let tools_used = extract_tool_names(&tool_history);
+                let decision = synapse_domain::application::services::post_turn::decide_post_turn(
+                    state.auto_save,
+                    &message,
+                    &response,
+                    tools_used,
+                );
+                if decision.should_consolidate {
                     let mem = state.mem.clone();
                     let user_msg = message.clone();
                     let asst_resp = response.clone();
                     tokio::spawn(async move {
-                        let _ = mem.reflect_on_turn(&user_msg, &asst_resp, &[]).await;
+                        let _ = mem.consolidate_turn(&user_msg, &asst_resp).await;
+                    });
+                }
+                if decision.should_reflect {
+                    let mem = state.mem.clone();
+                    let user_msg = message.clone();
+                    let asst_resp = response.clone();
+                    let tools = decision.tools_used;
+                    tokio::spawn(async move {
+                        let _ = mem.reflect_on_turn(&user_msg, &asst_resp, &tools).await;
                     });
                 }
             }
@@ -1709,7 +1714,7 @@ impl synapse_observability::Observer for WsToolNotifyObserver {
                 let _ = self.tx.send(evt.to_string());
             }
             ObserverEvent::ToolResult {
-                tool,
+                tool: _,
                 output,
                 success,
             } => {
@@ -1851,6 +1856,22 @@ fn truncate_str(s: &str, max: usize) -> String {
         let truncated: String = s.chars().take(max - 1).collect();
         format!("{truncated}…")
     }
+}
+
+/// Extract unique tool names from a conversation history snapshot.
+fn extract_tool_names(history: &[synapse_providers::ConversationMessage]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    for msg in history {
+        if let synapse_providers::ConversationMessage::AssistantToolCalls { tool_calls, .. } = msg {
+            for tc in tool_calls {
+                if seen.insert(tc.name.clone()) {
+                    names.push(tc.name.clone());
+                }
+            }
+        }
+    }
+    names
 }
 
 #[cfg(test)]

@@ -2,6 +2,21 @@
 
 ## 2026-04-03
 
+### Memory Unification — Phase 1-4 (PR #248)
+
+- **arch**: unified `TurnContextAssembler` in domain layer — web + channels share one assembly path
+- **arch**: `PromptBudget` config (`[memory.prompt_budget]`) — recall/skills/entities budgets now configurable
+- **arch**: `ContinuationPolicy` — configurable continuation turns (core_only / core_plus_recall / full)
+- **arch**: `PostTurnDecision` — unified consolidation + reflection gates for web and channels
+- **arch**: adapter-layer `TurnContextFormatter` — domain stays formatting-free (hexagonal boundary)
+- **fix**: web history now stores raw user messages, enrichment is ephemeral per provider call
+- **fix**: WS reflection passes actual tool_history instead of empty `&[]`
+- **fix**: skills/entities load independently of episodic recall (no longer gated on `has_recall`)
+- **fix**: web `memory_session_id` bound to session_key (episodic recall is now session-scoped)
+- **fix**: `turn_count` tracked on session replay for correct continuation policy on resume
+- **fix**: consolidation threshold aligned to 20 chars across all paths (was 10 in web, 20 in channels)
+- **fix**: pre-existing test failures (`web_session_key_format`, `forget()` signature, integration harness)
+
 ### Web Learning + Core Block Bugs (PR #246)
 
 - fix: WS chat now calls `consolidate_turn()` + `reflect_on_turn()` post-response (was missing — web produced zero learning data)

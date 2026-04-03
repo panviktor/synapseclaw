@@ -338,8 +338,8 @@ async fn handle_regular_message(
                     recall_ctx.push_str(&recall);
                 }
 
-                // Enrich with skills + entities when recall found results
-                if !recall_ctx.is_empty() {
+                // Enrich with skills + entities (always, independent of recall)
+                {
                     let query = crate::domain::memory::MemoryQuery {
                         text: content.to_string(),
                         embedding: None,
@@ -588,12 +588,25 @@ async fn execute_agent_turn(
                 .history
                 .append_turn(conversation_key, ChatMessage::assistant(&history_response));
 
-            // ── #18: Memory consolidation (fire-and-forget) ──────
+            // ── #18/#19: Post-turn learning (fire-and-forget) ──────
             if let Some(ref mem) = ports.memory {
-                if inbound_message_service::should_consolidate_memory(
-                    config.auto_save_memory,
-                    content,
-                ) {
+                // Parse tool names from summary: "[Used tools: foo, bar]" → vec!["foo", "bar"]
+                let tools: Vec<String> = turn_result
+                    .tool_summary
+                    .trim_start_matches("[Used tools: ")
+                    .trim_end_matches(']')
+                    .split(", ")
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+                let decision =
+                    crate::application::services::post_turn::decide_post_turn(
+                        config.auto_save_memory,
+                        content,
+                        &response_text,
+                        tools,
+                    );
+                if decision.should_consolidate {
                     let mem = Arc::clone(mem);
                     let user_msg = content.to_string();
                     let asst_resp = response_text.clone();
@@ -601,31 +614,11 @@ async fn execute_agent_turn(
                         let _ = mem.consolidate_turn(&user_msg, &asst_resp).await;
                     });
                 }
-            }
-
-            // ── #19: Skill reflection (fire-and-forget) ──────
-            // Multi-criteria gate: only reflect on high-value turns to avoid wasting LLM calls.
-            if let Some(ref mem) = ports.memory {
-                let resp_lower = response_text.to_lowercase();
-                let should_reflect = response_text.len() > 200
-                    && content.chars().count() >= 30
-                    && (turn_result.tools_used
-                        || resp_lower.contains("error")
-                        || resp_lower.contains("failed"));
-
-                if should_reflect {
+                if decision.should_reflect {
                     let mem = Arc::clone(mem);
                     let user_msg = content.to_string();
                     let asst_resp = response_text.clone();
-                    // Parse tool names from summary: "[Used tools: foo, bar]" → vec!["foo", "bar"]
-                    let tools: Vec<String> = turn_result
-                        .tool_summary
-                        .trim_start_matches("[Used tools: ")
-                        .trim_end_matches(']')
-                        .split(", ")
-                        .filter(|s| !s.is_empty())
-                        .map(String::from)
-                        .collect();
+                    let tools = decision.tools_used;
                     tokio::spawn(async move {
                         let _ = mem.reflect_on_turn(&user_msg, &asst_resp, &tools).await;
                     });

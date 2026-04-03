@@ -226,7 +226,8 @@ mod tests {
     #[test]
     fn web_session_key_format() {
         let key = new_web_session_key("abc123");
-        assert!(key.starts_with("web:abc123:"));
+        // Direct browser sessions omit token_prefix — format is "web:{uuid}"
+        assert!(key.starts_with("web:"));
         assert!(key.len() > 20); // UUID part
     }
 

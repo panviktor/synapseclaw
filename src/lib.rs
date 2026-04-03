@@ -27,3 +27,10 @@ pub use synapse_adapters::commands::{
 
 // Memory.
 pub use synapse_memory as memory;
+
+// Facade re-exports for integration tests.
+pub use synapse_adapters::channels;
+pub use synapse_adapters::hooks;
+pub use synapse_adapters::tools;
+pub use synapse_observability as observability;
+pub use synapse_providers as providers;

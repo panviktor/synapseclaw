@@ -145,6 +145,17 @@ impl Default for RecallConfig {
     }
 }
 
+impl From<&crate::application::services::turn_context::PromptBudget> for RecallConfig {
+    fn from(budget: &crate::application::services::turn_context::PromptBudget) -> Self {
+        Self {
+            max_entries: budget.recall_max_entries,
+            entry_max_chars: budget.recall_entry_max_chars,
+            total_max_chars: budget.recall_total_max_chars,
+            min_relevance_score: budget.recall_min_relevance,
+        }
+    }
+}
+
 // ── Visibility ───────────────────────────────────────────────────
 
 /// Controls who can read a memory entry.
