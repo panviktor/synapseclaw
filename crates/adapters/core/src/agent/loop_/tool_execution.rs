@@ -97,6 +97,11 @@ pub(crate) async fn execute_one_tool(
             duration,
             success: false,
         });
+        observer.record_event(&ObserverEvent::ToolResult {
+            tool: call_name.to_string(),
+            output: reason.clone(),
+            success: false,
+        });
         return Ok(ToolExecutionOutcome {
             output: reason.clone(),
             success: false,
@@ -131,6 +136,11 @@ pub(crate) async fn execute_one_tool(
                 duration,
                 success: false,
             });
+            observer.record_event(&ObserverEvent::ToolResult {
+                tool: call_name.to_string(),
+                output: format!("[blocked] {reason}"),
+                success: false,
+            });
             return Ok(ToolExecutionOutcome {
                 output: format!("[blocked] {reason}"),
                 success: false,
@@ -162,14 +172,25 @@ pub(crate) async fn execute_one_tool(
                 ctx.record_tool_call(call_name, r.success, ipc_args.as_ref());
             }
             if r.success {
+                let output = scrub_credentials(&r.output);
+                observer.record_event(&ObserverEvent::ToolResult {
+                    tool: call_name.to_string(),
+                    output: truncate_with_ellipsis(&output, 500),
+                    success: true,
+                });
                 Ok(ToolExecutionOutcome {
-                    output: scrub_credentials(&r.output),
+                    output,
                     success: true,
                     error_reason: None,
                     duration,
                 })
             } else {
                 let reason = r.error.unwrap_or(r.output);
+                observer.record_event(&ObserverEvent::ToolResult {
+                    tool: call_name.to_string(),
+                    output: truncate_with_ellipsis(&reason, 500),
+                    success: false,
+                });
                 Ok(ToolExecutionOutcome {
                     output: format!("Error: {reason}"),
                     success: false,
@@ -189,6 +210,11 @@ pub(crate) async fn execute_one_tool(
                 ctx.record_tool_call(call_name, false, ipc_args.as_ref());
             }
             let reason = format!("Error executing {call_name}: {e}");
+            observer.record_event(&ObserverEvent::ToolResult {
+                tool: call_name.to_string(),
+                output: truncate_with_ellipsis(&reason, 500),
+                success: false,
+            });
             Ok(ToolExecutionOutcome {
                 output: reason.clone(),
                 success: false,

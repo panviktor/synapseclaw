@@ -50,6 +50,12 @@ pub enum ObserverEvent {
         duration: Duration,
         success: bool,
     },
+    /// A tool call completed with its output (truncated for observability).
+    ToolResult {
+        tool: String,
+        output: String,
+        success: bool,
+    },
     /// The agent produced a final answer for the current user message.
     TurnComplete,
     /// A message was sent or received through a channel.

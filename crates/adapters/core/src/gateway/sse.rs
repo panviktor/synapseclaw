@@ -105,6 +105,17 @@ impl synapse_observability::Observer for BroadcastObserver {
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                 })
             }
+            synapse_observability::ObserverEvent::ToolResult {
+                tool,
+                output,
+                success,
+            } => serde_json::json!({
+                "type": "tool_result",
+                "tool": tool,
+                "output": output,
+                "success": success,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
             synapse_observability::ObserverEvent::Error { component, message } => {
                 serde_json::json!({
                     "type": "error",

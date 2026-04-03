@@ -968,8 +968,8 @@ async fn handle_chat_send_rpc(
             .map_or(0, |s| s.agent.history().len())
     };
 
-    // Run agent turn with abort support
-    let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx).await;
+    // Run agent turn with abort support + real-time tool event push
+    let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx, out_tx).await;
 
     // Clear run_id + abort_tx, extract usage + collect tool history for async persist
     let (usage, tool_history) = {
@@ -981,8 +981,7 @@ async fn handle_chat_send_rpc(
             s.run_id = None;
             s.abort_tx = None;
             s.last_active = Instant::now();
-            // Push tool events to WS (live)
-            push_tool_events(out_tx, &session_key, s.agent.history(), history_len_before);
+            // Tool events already pushed in real-time via WsToolNotifyObserver.
             // Snapshot history for async persist (after lock release)
             s.agent.history()[history_len_before..].to_vec()
         } else {
@@ -1105,6 +1104,7 @@ async fn run_agent_turn_with_abort(
     session_key: &str,
     message: &str,
     mut abort_rx: tokio::sync::watch::Receiver<bool>,
+    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
 ) -> anyhow::Result<String> {
     // Clone config before await to avoid holding MutexGuard across await.
     let config_snapshot = state.config.lock().clone();
@@ -1121,6 +1121,15 @@ async fn run_agent_turn_with_abort(
             .ok_or_else(|| anyhow::anyhow!("session not found"))?;
         std::mem::replace(&mut session.agent, replacement_agent)
     };
+
+    // Wrap the agent's observer to push real-time tool events through WS.
+    let ws_observer: std::sync::Arc<dyn synapse_observability::Observer> =
+        std::sync::Arc::new(WsToolNotifyObserver {
+            inner: agent.observer_arc(),
+            tx: out_tx.clone(),
+            session_key: session_key.to_string(),
+        });
+    agent.set_observer(ws_observer);
 
     // Race: agent.turn vs abort signal
     let result = tokio::select! {
@@ -1648,42 +1657,63 @@ fn emit_run_event(state: &AppState, event_type: &str, session_key: &str, run_id:
     }));
 }
 
-/// Push tool events from the agent's history delta via WS before the RPC response.
-fn push_tool_events(
-    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
-    session_key: &str,
-    history: &[synapse_providers::ConversationMessage],
-    start_idx: usize,
-) {
-    use synapse_providers::ConversationMessage;
+/// Observer wrapper that pushes real-time tool events to a WebSocket client.
+/// Events are sent through the same `out_tx` channel as the assistant response,
+/// guaranteeing FIFO order: tool_call → tool_result → assistant.
+struct WsToolNotifyObserver {
+    inner: std::sync::Arc<dyn synapse_observability::Observer>,
+    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    session_key: String,
+}
 
-    for msg in history.iter().skip(start_idx) {
-        match msg {
-            ConversationMessage::AssistantToolCalls { tool_calls, .. } => {
-                for tc in tool_calls {
-                    let evt = serde_json::json!({
-                        "type": "tool_call",
-                        "session_key": session_key,
-                        "tool_name": tc.name,
-                        "content": format!("{}({})", tc.name, tc.arguments),
-                        "timestamp": now_secs(),
-                    });
-                    let _ = out_tx.send(evt.to_string());
-                }
+impl synapse_observability::Observer for WsToolNotifyObserver {
+    fn record_event(&self, event: &synapse_observability::traits::ObserverEvent) {
+        use synapse_observability::traits::ObserverEvent;
+        match event {
+            ObserverEvent::ToolCallStart { tool, arguments } => {
+                let content = if let Some(args) = arguments {
+                    format!("{tool}({args})")
+                } else {
+                    tool.clone()
+                };
+                let evt = serde_json::json!({
+                    "type": "tool_call",
+                    "session_key": self.session_key,
+                    "tool_name": tool,
+                    "content": content,
+                    "timestamp": now_secs(),
+                });
+                let _ = self.tx.send(evt.to_string());
             }
-            ConversationMessage::ToolResults(results) => {
-                for tr in results {
-                    let evt = serde_json::json!({
-                        "type": "tool_result",
-                        "session_key": session_key,
-                        "content": truncate_str(&tr.content, 500),
-                        "timestamp": now_secs(),
-                    });
-                    let _ = out_tx.send(evt.to_string());
-                }
+            ObserverEvent::ToolResult { tool, output, success } => {
+                let content = if *success {
+                    truncate_str(output, 500)
+                } else {
+                    format!("Error: {}", truncate_str(output, 500))
+                };
+                let evt = serde_json::json!({
+                    "type": "tool_result",
+                    "session_key": self.session_key,
+                    "content": content,
+                    "timestamp": now_secs(),
+                });
+                let _ = self.tx.send(evt.to_string());
             }
-            ConversationMessage::Chat(_) => {}
+            _ => {}
         }
+        self.inner.record_event(event);
+    }
+    fn record_metric(&self, metric: &synapse_observability::traits::ObserverMetric) {
+        self.inner.record_metric(metric);
+    }
+    fn flush(&self) {
+        self.inner.flush();
+    }
+    fn name(&self) -> &str {
+        "ws-tool-notify"
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 

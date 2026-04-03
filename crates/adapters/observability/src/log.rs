@@ -30,6 +30,9 @@ impl Observer for LogObserver {
             ObserverEvent::ToolCallStart { tool, .. } => {
                 info!(tool = %tool, "tool.start");
             }
+            ObserverEvent::ToolResult { tool, success, .. } => {
+                info!(tool = %tool, success, "tool.result");
+            }
             ObserverEvent::ToolCall {
                 tool,
                 duration,

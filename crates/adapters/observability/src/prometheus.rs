@@ -302,6 +302,7 @@ impl Observer for PrometheusObserver {
                 }
             }
             ObserverEvent::ToolCallStart { .. }
+            | ObserverEvent::ToolResult { .. }
             | ObserverEvent::TurnComplete
             | ObserverEvent::LlmRequest { .. } => {}
             ObserverEvent::ToolCall {

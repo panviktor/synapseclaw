@@ -285,6 +285,16 @@ impl Agent {
         self.history.push(msg);
     }
 
+    /// Get a clone of the observer Arc (for wrapping).
+    pub fn observer_arc(&self) -> Arc<dyn synapse_observability::Observer> {
+        Arc::clone(&self.observer)
+    }
+
+    /// Replace the observer (e.g. to wrap with per-request event forwarding).
+    pub fn set_observer(&mut self, observer: Arc<dyn synapse_observability::Observer>) {
+        self.observer = observer;
+    }
+
     /// Token usage reported by the provider during the last turn (if any).
     pub fn last_turn_usage(&self) -> Option<&synapse_providers::traits::TokenUsage> {
         self.last_turn_usage.as_ref()
