@@ -718,17 +718,19 @@ impl Agent {
                 .await;
         }
 
-        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
-        let raw_user_msg = format!("[{now}] {user_message}");
-
-        // Store raw user message in history (no recall/skills/entities baked in)
+        // Store literal raw user message in history
         self.history
             .push(ConversationMessage::Chat(ChatMessage::user(
-                raw_user_msg.clone(),
+                user_message.to_string(),
             )));
 
-        // Enrichment prefix for provider call only (not persisted in history)
-        let enrichment_prefix = formatted.enrichment_prefix;
+        // Ephemeral prefix: enrichment + timestamp (for provider call only, not history)
+        let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
+        let ephemeral_prefix = if formatted.enrichment_prefix.is_empty() {
+            format!("[{now}] ")
+        } else {
+            format!("{}[{now}] ", formatted.enrichment_prefix)
+        };
         self.turn_count += 1;
 
         let effective_model = self.classify_model(user_message);
@@ -736,14 +738,11 @@ impl Agent {
         for _ in 0..self.config.max_tool_iterations {
             let mut messages = self.tool_dispatcher.to_provider_messages(&self.history);
 
-            // Inject recall/skills/entities as ephemeral prefix on the user
+            // Inject ephemeral prefix (enrichment + timestamp) on the last user
             // message for the provider call — not persisted in history.
-            if !enrichment_prefix.is_empty() {
-                if let Some(last_user) = messages.iter_mut().rfind(|m| m.role == "user") {
-                    if last_user.content == raw_user_msg {
-                        last_user.content =
-                            format!("{enrichment_prefix}{}", last_user.content);
-                    }
+            if let Some(last_user) = messages.iter_mut().rfind(|m| m.role == "user") {
+                if last_user.content == user_message {
+                    last_user.content = format!("{ephemeral_prefix}{}", last_user.content);
                 }
             }
 
