@@ -12,6 +12,7 @@ pub mod inbound_message_service;
 pub mod ipc_service;
 pub mod memory_mutation;
 pub mod pipeline_service;
+pub mod retention;
 pub mod tool_filtering;
 pub mod post_turn;
 pub mod tool_middleware_service;

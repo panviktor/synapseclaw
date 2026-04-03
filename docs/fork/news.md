@@ -2,6 +2,17 @@
 
 ## 2026-04-03
 
+### Memory Learning Foundation — Phase B: Retention Scoring (PR #252)
+
+- **arch**: `RetentionScore` (relevance + recency + importance + frequency) composite scoring
+- **arch**: `RetentionPolicy` — category-aware decay half-lives (conversation=2d, daily=7d, reflection=30d, core=90d, skill=180d)
+- **arch**: `RetentionWeights` — configurable blend (relevance=0.4, recency=0.25, importance=0.25, frequency=0.1)
+- **fix**: recalculate_importance now uses category-aware exponential decay instead of flat 0.95 multiplier
+- **fix**: recall results now track `access_count` + `last_accessed` (fire-and-forget bump on every recall)
+- **fix**: recall ranking includes 10% recency boost (7-day half-life) on top of BM25/vector RRF
+- schema: `access_count` (int, default 0) and `last_accessed` (datetime) fields added to episode table
+- `EVICTION_PRIORITY` constant: conversation → daily → reflection → entity → skill (core never auto-evicted)
+
 ### Memory Learning Foundation — Phase A: AUDN-lite Mutation (PR #251)
 
 - **arch**: `MemoryMutationAction` (Add/Update/Delete/Noop) + `MutationCandidate` + `MutationDecision` domain types

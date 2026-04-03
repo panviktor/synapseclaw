@@ -696,7 +696,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             row_map.entry(id).or_insert(row);
         }
 
-        let results: Vec<SearchResult> = fused
+        let mut results: Vec<SearchResult> = fused
             .into_iter()
             .filter_map(|scored| {
                 let row = row_map.get(&scored.id)?;
@@ -708,6 +708,23 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                 })
             })
             .collect();
+
+        // Apply mild recency boost: newer entries get a small score bonus.
+        // Uses 7-day half-life so very old entries see minimal change.
+        for r in &mut results {
+            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&r.entry.timestamp) {
+                let age_hours = (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
+                    .num_hours()
+                    .max(0) as f64;
+                let recency = synapse_domain::application::services::retention::recency_factor(
+                    age_hours, 168.0, // 7-day half-life for recall boost
+                );
+                // Blend: 90% original score + 10% recency
+                r.score = r.score * 0.9 + recency as f32 * 0.1;
+            }
+        }
+        // Re-sort by boosted score
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
 
         tracing::info!(
             bm25_results = bm25_rows.len(),
@@ -1249,13 +1266,30 @@ impl ConsolidationPort for SurrealMemoryAdapter {
             .and_then(|v| v.as_u64())
             .unwrap_or(0) as u32;
 
-        self.db
-            .query(
-                "UPDATE episode SET importance = importance * 0.95
-                 WHERE created_at < time::now() - 7d AND importance > 0.1",
-            )
-            .await
-            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        // Category-aware decay: each category has its own decay rate
+        // derived from half-life. Decay per hourly cycle = 0.5^(1/half_life_hours).
+        use synapse_domain::application::services::retention::RetentionPolicy;
+        let policy = RetentionPolicy::default();
+        let categories = [
+            ("conversation", policy.conversation_half_life_hours),
+            ("daily", policy.daily_half_life_hours),
+            ("reflection", policy.reflection_half_life_hours),
+            ("core", policy.core_half_life_hours),
+            ("skill", policy.skill_half_life_hours),
+            ("entity", policy.core_half_life_hours),
+        ];
+        for (cat, half_life) in &categories {
+            let decay_factor = (0.5_f64).powf(1.0 / half_life);
+            let q = format!(
+                "UPDATE episode SET importance = importance * {decay_factor}
+                 WHERE category = '{cat}' AND created_at < time::now() - 1d AND importance > 0.05"
+            );
+            let _ = self
+                .db
+                .query(&q)
+                .await
+                .map_err(|e| MemoryError::Storage(e.to_string()));
+        }
 
         Ok(affected)
     }
@@ -1362,7 +1396,7 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
 
         let results = self.search_episodes(&mq).await?;
 
-        Ok(results
+        let entries: Vec<MemoryEntry> = results
             .into_iter()
             .filter(|r| session_id.map_or(true, |sid| r.entry.session_id.as_deref() == Some(sid)))
             .map(|r| {
@@ -1370,7 +1404,27 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
                 entry.score = Some(r.score as f64);
                 entry
             })
-            .collect())
+            .collect();
+
+        // Bump access_count + last_accessed for returned entries (fire-and-forget).
+        if !entries.is_empty() {
+            let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
+            let db = self.db.clone();
+            tokio::spawn(async move {
+                for id in ids {
+                    let _ = db
+                        .query(
+                            "UPDATE type::thing('episode', $id) SET \
+                             access_count = (access_count ?? 0) + 1, \
+                             last_accessed = time::now()",
+                        )
+                        .bind(("id", id))
+                        .await;
+                }
+            });
+        }
+
+        Ok(entries)
     }
 
     async fn forget(&self, key: &str, agent_id: &AgentId) -> Result<bool, MemoryError> {
