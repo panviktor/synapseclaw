@@ -600,18 +600,9 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
         db_session.is_none()
     }; // MutexGuard dropped here
 
-    // Phase 4.0 Slice 3: persist new session via conversation_service
-    if need_persist {
-        tracing::info!(session_key, "ws.session.new_persist");
-        if let Some(store) = state.conversation_store.as_ref() {
-            let session =
-                synapse_domain::application::services::conversation_service::new_web_session(
-                    session_key,
-                    None,
-                );
-            let _ = store.upsert_session(&session).await;
-        }
-    }
+    // Don't persist empty sessions on WS connect — only persist when
+    // the first message is sent (in handle_chat_send_rpc).
+    // This prevents phantom empty sessions from appearing on every page visit.
 
     Ok(())
 }
@@ -950,6 +941,18 @@ async fn handle_chat_send_rpc(
 
     // Emit run_started lifecycle event
     emit_run_event(state, "session.run_started", &session_key, &run_id);
+
+    // Ensure session is persisted to DB on first message (lazy creation).
+    if let Some(store) = state.conversation_store.as_ref() {
+        if store.get_session(&session_key).await.is_none() {
+            let session =
+                synapse_domain::application::services::conversation_service::new_web_session(
+                    &session_key,
+                    None,
+                );
+            let _ = store.upsert_session(&session).await;
+        }
+    }
 
     // Persist user message + auto-label
     persist_message(
