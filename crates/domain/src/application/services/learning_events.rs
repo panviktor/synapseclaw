@@ -5,7 +5,7 @@
 //!
 //! Read-models aggregate events into UI-friendly summaries.
 
-use crate::domain::memory::{AgentId, MemoryCategory, MemoryEventType, MemoryId};
+use crate::domain::memory::{AgentId, MemoryEventType, MemoryId};
 use crate::domain::memory_mutation::MutationAction;
 
 // ── Canonical learning events ────────────────────────────────────

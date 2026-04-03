@@ -214,7 +214,7 @@ pub async fn apply_decision_with_event(
     decision: &MutationDecision,
     agent_id: &str,
 ) -> Result<super::learning_events::LearningEvent, MemoryError> {
-    let wrote = apply_decision(mem, decision, agent_id).await?;
+    let _wrote = apply_decision(mem, decision, agent_id).await?;
     let event = super::learning_events::LearningEvent::from_mutation(
         &decision.action,
         agent_id,

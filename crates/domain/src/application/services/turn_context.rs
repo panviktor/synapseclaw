@@ -1,8 +1,12 @@
 //! Turn context assembly — unified memory enrichment for all paths.
 //!
-//! Owns the policy of *what* memory data to load for a given turn.
-//! Returns structured data; formatting into prompt strings is the
-//! adapter layer's responsibility (hexagonal boundary).
+//! Owns the policy of *what* memory data to load for a given turn,
+//! and provides canonical formatting into prompt strings.
+//!
+//! Formatting lives here (not in the adapter layer) because both
+//! web (`agent.rs`) and channels (`handle_inbound_message.rs`) need
+//! the same format, and the channel use case can't call adapters.
+//! The adapter `turn_context_fmt` re-exports these functions.
 
 use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryEntry, MemoryQuery, Skill};
 use crate::ports::memory::UnifiedMemoryPort;
@@ -92,13 +96,13 @@ pub async fn assemble_turn_context(
     budget: &PromptBudget,
     continuation: Option<&ContinuationPolicy>,
 ) -> TurnMemoryContext {
-    let mut ctx = TurnMemoryContext::default();
-
-    // Core blocks: always loaded regardless of continuation policy.
-    ctx.core_blocks = mem
-        .get_core_blocks(&agent_id.to_string())
-        .await
-        .unwrap_or_default();
+    let mut ctx = TurnMemoryContext {
+        core_blocks: mem
+            .get_core_blocks(&agent_id.to_string())
+            .await
+            .unwrap_or_default(),
+        ..Default::default()
+    };
 
     let policy_name = match continuation {
         Some(ContinuationPolicy::CoreOnly) => "core_only",
@@ -264,7 +268,12 @@ async fn load_recall(
     }
 }
 
-// ── Domain-level formatting ──────────────────────────────────────
+// ── Formatting ───────────────────────────────────────────────────
+//
+// Formatting lives here (not in the adapter layer) because both
+// web (agent.rs) and channels (handle_inbound_message.rs) need it,
+// and the channel path is a domain use case that can't call adapters.
+// The adapter `turn_context_fmt` re-exports this as its public API.
 
 /// Formatted prompt strings from turn context.
 #[derive(Debug, Default)]
@@ -277,9 +286,8 @@ pub struct FormattedTurnContext {
 
 /// Format `TurnMemoryContext` into prompt-injectable strings.
 ///
-/// Domain-level formatting — both web and channel paths can use this.
-/// The adapter layer (`turn_context_fmt`) can override with richer formatting
-/// if needed, but this function provides the canonical format.
+/// Canonical formatter used by both web and channel paths.
+/// The adapter layer (`turn_context_fmt`) re-exports this function.
 pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> FormattedTurnContext {
     use std::fmt::Write;
 
