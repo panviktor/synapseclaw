@@ -242,6 +242,14 @@ export default function SessionSidebar({
               </span>
             )}
           </div>
+          {status.embedding_model && (
+            <div className="flex items-center gap-1.5">
+              <Search className="h-3 w-3 text-[#7C6BAF] flex-shrink-0" />
+              <span className="text-[10px] text-[var(--text-muted)] truncate" title={`${status.embedding_provider ?? ''} / ${status.embedding_model}`}>
+                {shortModel(status.embedding_model)}
+              </span>
+            </div>
+          )}
           <div className="flex items-center gap-1.5">
             <Clock className="h-3 w-3 text-[var(--text-placeholder)] flex-shrink-0" />
             <span className="text-[10px] text-[var(--text-placeholder)]">

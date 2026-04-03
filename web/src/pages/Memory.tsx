@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   Brain,
   Search,
@@ -6,6 +7,8 @@ import {
   Trash2,
   X,
   Filter,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 import type { MemoryEntry } from '@/types/api';
 import { getMemory, storeMemory, deleteMemory } from '@/lib/api';
@@ -21,6 +24,9 @@ function formatDate(iso: string): string {
   return d.toLocaleString();
 }
 
+type SortField = 'key' | 'category' | 'timestamp';
+type SortDir = 'asc' | 'desc';
+
 export default function Memory() {
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -29,6 +35,9 @@ export default function Memory() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [sortField, setSortField] = useState<SortField>('timestamp');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
 
   // Form state
   const [formKey, setFormKey] = useState('');
@@ -49,6 +58,19 @@ export default function Memory() {
     fetchEntries();
   }, []);
 
+  // Escape key closes modal
+  useEffect(() => {
+    if (!showForm) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowForm(false);
+        setFormError(null);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [showForm]);
+
   const handleSearch = () => {
     fetchEntries(search, categoryFilter);
   };
@@ -58,6 +80,28 @@ export default function Memory() {
   };
 
   const categories = Array.from(new Set(entries.map((e) => e.category))).sort();
+  const hasScores = entries.some((e) => e.score !== null && e.score !== undefined);
+  const colCount = hasScores ? 6 : 5;
+
+  // Client-side sorting
+  const sortedEntries = useMemo(() => {
+    const sorted = [...entries].sort((a, b) => {
+      if (sortField === 'timestamp') {
+        return new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime();
+      }
+      return (a[sortField] ?? '').localeCompare(b[sortField] ?? '');
+    });
+    return sortDir === 'desc' ? sorted.reverse() : sorted;
+  }, [entries, sortField, sortDir]);
+
+  const toggleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDir(field === 'timestamp' ? 'desc' : 'asc');
+    }
+  };
 
   const handleAdd = async () => {
     if (!formKey.trim() || !formContent.trim()) {
@@ -94,6 +138,26 @@ export default function Memory() {
       setConfirmDelete(null);
     }
   };
+
+  const SortHeader = ({ field, label }: { field: SortField; label: string }) => (
+    <th
+      className="text-left cursor-pointer select-none hover:text-[var(--text-primary)] transition-colors"
+      onClick={() => toggleSort(field)}
+    >
+      <div className="flex items-center gap-1">
+        {label}
+        {sortField === field ? (
+          sortDir === 'asc' ? (
+            <ChevronUp className="h-3 w-3 text-[var(--accent-primary)]" />
+          ) : (
+            <ChevronDown className="h-3 w-3 text-[var(--accent-primary)]" />
+          )
+        ) : (
+          <ChevronDown className="h-3 w-3 text-[var(--text-placeholder)] opacity-0 group-hover:opacity-50" />
+        )}
+      </div>
+    </th>
+  );
 
   if (error && entries.length === 0) {
     return (
@@ -171,8 +235,8 @@ export default function Memory() {
         </div>
       )}
 
-      {/* Add Memory Form Modal */}
-      {showForm && (
+      {/* Add Memory Form Modal — portaled to body to escape layout stacking context */}
+      {showForm && createPortal(
         <div className="fixed inset-0 pl-60 z-[9999] flex items-center justify-center">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setShowForm(false); setFormError(null); }} />
           <div className="relative glass-card p-6 w-full max-w-md mx-4 animate-fade-in-scale">
@@ -206,6 +270,7 @@ export default function Memory() {
                   onChange={(e) => setFormKey(e.target.value)}
                   placeholder="e.g. user_preferences"
                   className="input-warm w-full px-3 py-2.5 text-sm"
+                  autoFocus
                 />
               </div>
               <div>
@@ -253,7 +318,8 @@ export default function Memory() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* Memory Table */}
@@ -270,60 +336,81 @@ export default function Memory() {
         <div className="glass-card overflow-x-auto">
           <table className="table-warm">
             <thead>
-              <tr>
-                <th className="text-left">{t('memory.key')}</th>
+              <tr className="group">
+                <SortHeader field="key" label={t('memory.key')} />
                 <th className="text-left">{t('memory.content')}</th>
-                <th className="text-left">{t('memory.category')}</th>
-                <th className="text-left">{t('memory.timestamp')}</th>
+                <SortHeader field="category" label={t('memory.category')} />
+                <SortHeader field="timestamp" label={t('memory.timestamp')} />
+                {hasScores && <th className="text-left">Score</th>}
                 <th className="text-right">{t('common.actions')}</th>
               </tr>
             </thead>
             <tbody>
-              {entries.map((entry) => (
-                <tr key={entry.id}>
-                  <td className="px-4 py-3 text-[var(--text-primary)] font-medium font-mono text-xs">
-                    {entry.key}
-                  </td>
-                  <td className="px-4 py-3 text-[var(--text-muted)] max-w-[300px] text-sm">
-                    <span title={entry.content}>
-                      {truncate(entry.content, 80)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-semibold capitalize border border-[var(--bg-secondary)] text-[var(--text-muted)]" style={{ background: 'var(--glow-primary)' }}>
-                      {entry.category}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-[var(--text-secondary)] text-xs whitespace-nowrap">
-                    {formatDate(entry.timestamp)}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    {confirmDelete === entry.key ? (
-                      <div className="flex items-center justify-end gap-2 animate-fade-in">
-                        <span className="text-xs text-[#ff4466]">{t('memory.delete_confirm')}</span>
-                        <button
-                          onClick={() => handleDelete(entry.key)}
-                          className="text-[#ff4466] hover:text-[#ff6680] text-xs font-medium"
-                        >
-                          {t('memory.yes')}
-                        </button>
-                        <button
-                          onClick={() => setConfirmDelete(null)}
-                          className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium"
-                        >
-                          {t('memory.no')}
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setConfirmDelete(entry.key)}
-                        className="text-[var(--text-secondary)] hover:text-[#ff4466] transition-all duration-300"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+              {sortedEntries.map((entry) => (
+                <>
+                  <tr
+                    key={entry.id}
+                    className="cursor-pointer hover:bg-[var(--bg-secondary)]/50 transition-colors"
+                    onClick={() => setExpandedId(expandedId === entry.id ? null : entry.id)}
+                  >
+                    <td className="px-4 py-3 text-[var(--text-primary)] font-medium font-mono text-xs">
+                      {entry.key}
+                    </td>
+                    <td className="px-4 py-3 text-[var(--text-muted)] max-w-[300px] text-sm">
+                      <span title={entry.content}>
+                        {truncate(entry.content, 80)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-semibold capitalize border border-[var(--bg-secondary)] text-[var(--text-muted)]" style={{ background: 'var(--glow-primary)' }}>
+                        {entry.category || 'uncategorized'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-[var(--text-secondary)] text-xs whitespace-nowrap">
+                      {formatDate(entry.timestamp)}
+                    </td>
+                    {hasScores && (
+                      <td className="px-4 py-3 text-[var(--text-muted)] text-xs font-mono">
+                        {entry.score != null ? `${(entry.score * 100).toFixed(0)}%` : '—'}
+                      </td>
                     )}
-                  </td>
-                </tr>
+                    <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                      {confirmDelete === entry.key ? (
+                        <div className="flex items-center justify-end gap-2 animate-fade-in">
+                          <span className="text-xs text-[#ff4466]">{t('memory.delete_confirm')}</span>
+                          <button
+                            onClick={() => handleDelete(entry.key)}
+                            className="text-[#ff4466] hover:text-[#ff6680] text-xs font-medium"
+                          >
+                            {t('memory.yes')}
+                          </button>
+                          <button
+                            onClick={() => setConfirmDelete(null)}
+                            className="text-[var(--text-secondary)] hover:text-[var(--text-primary)] text-xs font-medium"
+                          >
+                            {t('memory.no')}
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmDelete(entry.key)}
+                          className="text-[var(--text-secondary)] hover:text-[#ff4466] transition-all duration-300"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {expandedId === entry.id && (
+                    <tr key={`${entry.id}-expanded`} className="animate-fade-in">
+                      <td colSpan={colCount} className="px-4 py-3 bg-[var(--bg-primary)]">
+                        <pre className="whitespace-pre-wrap break-words text-sm text-[var(--text-primary)] font-mono leading-relaxed max-h-64 overflow-y-auto">
+                          {entry.content}
+                        </pre>
+                      </td>
+                    </tr>
+                  )}
+                </>
               ))}
             </tbody>
           </table>
