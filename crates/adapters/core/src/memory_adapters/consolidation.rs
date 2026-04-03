@@ -92,14 +92,41 @@ pub async fn consolidate_turn(
 
     tracing::info!(key = %history_key, "memory.consolidation.daily_stored");
 
-    // Phase 2: Write memory update to Core category (if present).
+    // Phase 2: Evaluate memory update via AUDN-lite mutation service.
     if let Some(ref update) = result.memory_update {
         if !update.trim().is_empty() {
-            let mem_key = format!("core_{}", uuid::Uuid::new_v4());
-            memory
-                .store(&mem_key, update, &MemoryCategory::Core, None)
-                .await?;
-            tracing::info!(key = %mem_key, "memory.consolidation.core_stored");
+            use synapse_domain::application::services::memory_mutation as mutation;
+            use synapse_domain::domain::memory_mutation::{
+                MutationCandidate, MutationSource, MutationThresholds,
+            };
+
+            let candidate = MutationCandidate {
+                category: MemoryCategory::Core,
+                text: update.clone(),
+                confidence: 0.7,
+                source: MutationSource::Consolidation,
+            };
+            let thresholds = MutationThresholds::default();
+            let decision =
+                mutation::evaluate_candidate(memory, candidate, agent_id, &thresholds).await;
+
+            if decision.action.is_noop() {
+                tracing::info!(
+                    reason = %decision.reason,
+                    "memory.consolidation.core_noop"
+                );
+            } else {
+                let wrote = mutation::apply_decision(memory, &decision, agent_id)
+                    .await
+                    .unwrap_or(false);
+                if wrote {
+                    tracing::info!(
+                        action = ?decision.action,
+                        reason = %decision.reason,
+                        "memory.consolidation.core_mutated"
+                    );
+                }
+            }
         }
     }
 

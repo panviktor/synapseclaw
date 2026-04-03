@@ -7,6 +7,7 @@ pub mod conversation;
 pub mod implementation;
 pub mod ipc;
 pub mod memory;
+pub mod memory_mutation;
 pub mod message;
 pub mod pipeline;
 pub mod pipeline_context;
