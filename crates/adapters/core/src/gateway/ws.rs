@@ -813,14 +813,8 @@ async fn handle_channel_history(
         .iter()
         .enumerate()
         .map(|(i, row)| {
-            let role = row
-                .get("role")
-                .and_then(|v| v.as_str())
-                .unwrap_or("user");
-            let content = row
-                .get("content")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let role = row.get("role").and_then(|v| v.as_str()).unwrap_or("user");
+            let content = row.get("content").and_then(|v| v.as_str()).unwrap_or("");
             let event_type = if role == "assistant" {
                 "assistant"
             } else {
@@ -1000,12 +994,15 @@ async fn handle_chat_send_rpc(
             // Push assistant message via the same out_tx channel as tool events.
             // This guarantees FIFO order: tool_call → tool_result → assistant.
             // The RPC response only carries metadata (run_id), not the message.
-            let _ = out_tx.send(serde_json::json!({
-                "type": "assistant",
-                "session_key": session_key,
-                "content": response,
-                "timestamp": now_secs(),
-            }).to_string());
+            let _ = out_tx.send(
+                serde_json::json!({
+                    "type": "assistant",
+                    "session_key": session_key,
+                    "content": response,
+                    "timestamp": now_secs(),
+                })
+                .to_string(),
+            );
 
             persist_message(
                 state,
@@ -1041,6 +1038,32 @@ async fn handle_chat_send_rpc(
             tokio::spawn(async move {
                 summarize_session_if_needed(&st, &sk).await;
             });
+
+            // ── Memory consolidation (fire-and-forget) ──
+            if state.auto_save && message.chars().count() >= 10 {
+                let mem = state.mem.clone();
+                let user_msg = message.clone();
+                let asst_resp = response.clone();
+                tokio::spawn(async move {
+                    let _ = mem.consolidate_turn(&user_msg, &asst_resp).await;
+                });
+            }
+
+            // ── Skill reflection (fire-and-forget) ──
+            {
+                let resp_lower = response.to_lowercase();
+                let should_reflect = response.len() > 200
+                    && message.chars().count() >= 30
+                    && (resp_lower.contains("error") || resp_lower.contains("failed"));
+                if should_reflect {
+                    let mem = state.mem.clone();
+                    let user_msg = message.clone();
+                    let asst_resp = response.clone();
+                    tokio::spawn(async move {
+                        let _ = mem.reflect_on_turn(&user_msg, &asst_resp, &[]).await;
+                    });
+                }
+            }
 
             // RPC response: metadata only (assistant message already pushed above)
             Ok(serde_json::json!({
@@ -1685,7 +1708,11 @@ impl synapse_observability::Observer for WsToolNotifyObserver {
                 });
                 let _ = self.tx.send(evt.to_string());
             }
-            ObserverEvent::ToolResult { tool, output, success } => {
+            ObserverEvent::ToolResult {
+                tool,
+                output,
+                success,
+            } => {
                 let content = if *success {
                     truncate_str(output, 500)
                 } else {
