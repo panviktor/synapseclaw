@@ -239,6 +239,7 @@ struct ChannelRuntimeContext {
     query_classification: synapse_domain::config::schema::QueryClassificationConfig,
     ack_reactions: bool,
     agent_id: Arc<String>,
+    prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig,
     show_tool_calls: bool,
     session_store: Option<Arc<dyn LocalSessionBackend>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
@@ -1422,6 +1423,12 @@ async fn handle_message_via_orchestrator(
         min_relevance_score: ctx.min_relevance_score,
         ack_reactions: ctx.ack_reactions,
         agent_id: ctx.agent_id.to_string(),
+        prompt_budget: {
+            let mut b = ctx.prompt_budget_config.to_prompt_budget();
+            b.recall_min_relevance = ctx.min_relevance_score;
+            b
+        },
+        continuation_policy: ctx.prompt_budget_config.to_continuation_policy(),
     };
 
     let memory_port: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>> =
@@ -3433,6 +3440,7 @@ pub async fn start_channels(
         query_classification: config.query_classification.clone(),
         ack_reactions: config.channels_config.ack_reactions,
         agent_id: Arc::new(crate::agent::loop_::resolve_agent_id(&config)),
+        prompt_budget_config: config.memory.prompt_budget.clone(),
         show_tool_calls: config.channels_config.show_tool_calls,
         session_store: if config.channels_config.session_persistence {
             if let Some(ref db) = shared_surreal {
@@ -3944,6 +3952,7 @@ mod tests {
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
+            prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4047,6 +4056,7 @@ mod tests {
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
+            prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4158,6 +4168,7 @@ mod tests {
             interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: true },
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
+            prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4280,6 +4291,7 @@ mod tests {
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
+            prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),

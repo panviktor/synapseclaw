@@ -228,6 +228,98 @@ async fn load_recall(
     }
 }
 
+// ── Domain-level formatting ──────────────────────────────────────
+
+/// Formatted prompt strings from turn context.
+#[derive(Debug, Default)]
+pub struct FormattedTurnContext {
+    /// Core memory blocks for system prompt.
+    pub core_blocks_system: String,
+    /// Recall + skills + entities as enrichment prefix.
+    pub enrichment_prefix: String,
+}
+
+/// Format `TurnMemoryContext` into prompt-injectable strings.
+///
+/// Domain-level formatting — both web and channel paths can use this.
+/// The adapter layer (`turn_context_fmt`) can override with richer formatting
+/// if needed, but this function provides the canonical format.
+pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> FormattedTurnContext {
+    use std::fmt::Write;
+
+    let mut result = FormattedTurnContext::default();
+    let max_chars = budget.enrichment_total_max_chars;
+
+    // Core blocks → system prompt
+    for block in &ctx.core_blocks {
+        if block.content.trim().is_empty() {
+            continue;
+        }
+        let _ = writeln!(result.core_blocks_system, "<{}>", block.label);
+        let _ = writeln!(result.core_blocks_system, "{}", block.content.trim());
+        let _ = writeln!(result.core_blocks_system, "</{}>", block.label);
+    }
+
+    // Recall entries
+    if !ctx.recalled_entries.is_empty() {
+        let header = "[Memory context]\n";
+        let mut section = String::from(header);
+        let mut added = false;
+        for entry in &ctx.recalled_entries {
+            let content = if entry.content.chars().count() > budget.recall_entry_max_chars {
+                let truncated: String = entry.content.chars().take(budget.recall_entry_max_chars).collect();
+                format!("{truncated}…")
+            } else {
+                entry.content.clone()
+            };
+            let line = format!("- {}: {content}\n", entry.key);
+            if result.enrichment_prefix.chars().count() + section.chars().count() + line.chars().count() > max_chars {
+                break;
+            }
+            section.push_str(&line);
+            added = true;
+        }
+        if added {
+            section.push('\n');
+            result.enrichment_prefix.push_str(&section);
+        }
+    }
+
+    // Skills
+    for skill in &ctx.skills {
+        if skill.content.trim().is_empty() {
+            continue;
+        }
+        let block = format!(
+            "<skill name=\"{}\">\n{}\n</skill>\n",
+            skill.name,
+            skill.content.trim()
+        );
+        if result.enrichment_prefix.chars().count() + block.chars().count() > max_chars {
+            break;
+        }
+        result.enrichment_prefix.push_str(&block);
+    }
+
+    // Entities
+    for entity in &ctx.entities {
+        if let Some(ref summary) = entity.summary {
+            let block = format!(
+                "<entity name=\"{}\" type=\"{}\">\n{}\n</entity>\n",
+                entity.name, entity.entity_type, summary
+            );
+            if result.enrichment_prefix.chars().count() + block.chars().count() > max_chars {
+                break;
+            }
+            result.enrichment_prefix.push_str(&block);
+        }
+    }
+
+    result
+}
+
+// ── Internal helpers ─────────────────────────────────────────────
+
 /// Check if a memory key is an assistant-generated autosave key.
 ///
 /// Must match `synapse_memory::is_assistant_autosave_key` logic.

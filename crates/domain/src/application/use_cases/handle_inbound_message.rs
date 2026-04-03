@@ -52,6 +52,10 @@ pub struct InboundMessageConfig {
     /// Agent identity for memory operations (core blocks, consolidation).
     #[allow(dead_code)]
     pub agent_id: String,
+    /// Prompt budget for turn context assembly.
+    pub prompt_budget: crate::application::services::turn_context::PromptBudget,
+    /// What to load on continuation turns (turn N>1).
+    pub continuation_policy: crate::application::services::turn_context::ContinuationPolicy,
 }
 
 impl std::fmt::Debug for InboundMessageConfig {
@@ -303,86 +307,35 @@ async fn handle_regular_message(
         HistoryEnrichment::MemoryContext {
             conversation_key: conv_key,
         } => {
-            // #8: Memory context enrichment (core blocks → system, recall → user)
+            // #8: Memory context enrichment via unified assembler
             if let Some(ref mem) = ports.memory {
-                let mut core_blocks_ctx = String::new();
-                let mut recall_ctx = String::new();
-
-                // Core memory blocks (MemGPT: always in system prompt)
-                if let Ok(blocks) = mem.get_core_blocks(&config.agent_id).await {
-                    for block in &blocks {
-                        if !block.content.trim().is_empty() {
-                            core_blocks_ctx.push_str(&format!(
-                                "<{}>\n{}\n</{}>\n",
-                                block.label,
-                                block.content.trim(),
-                                block.label
-                            ));
-                        }
-                    }
-                }
-
-                // Keyword/vector recall
-                let recall_cfg = crate::domain::memory::RecallConfig {
-                    min_relevance_score: config.min_relevance_score,
-                    ..Default::default()
-                };
-                let recall = crate::application::services::memory_service::recall_context(
+                use crate::application::services::turn_context as tc;
+                let turn_ctx = tc::assemble_turn_context(
                     mem.as_ref(),
                     content,
+                    &config.agent_id,
                     Some(&conv_key),
-                    &recall_cfg,
+                    &config.prompt_budget,
+                    None, // first turn → full context
                 )
                 .await;
-                if !recall.is_empty() {
-                    recall_ctx.push_str(&recall);
-                }
+                let formatted = tc::format_turn_context(&turn_ctx, &config.prompt_budget);
 
-                // Enrich with skills + entities (always, independent of recall)
+                if !formatted.core_blocks_system.is_empty()
+                    || !formatted.enrichment_prefix.is_empty()
                 {
-                    let query = crate::domain::memory::MemoryQuery {
-                        text: content.to_string(),
-                        embedding: None,
-                        agent_id: config.agent_id.clone(),
-                        include_shared: false,
-                        time_range: None,
-                        limit: 3,
-                    };
-                    if let Ok(skills) = mem.find_skills(&query).await {
-                        for skill in &skills {
-                            if !skill.content.trim().is_empty() {
-                                recall_ctx.push_str(&format!(
-                                    "<skill name=\"{}\">\n{}\n</skill>\n",
-                                    skill.name,
-                                    skill.content.trim()
-                                ));
-                            }
-                        }
+                    if !formatted.core_blocks_system.is_empty() {
+                        history.push(ChatMessage::system(formatted.core_blocks_system));
                     }
-                    if let Ok(entities) = mem.search_entities(&query).await {
-                        for entity in &entities {
-                            if let Some(ref summary) = entity.summary {
-                                recall_ctx.push_str(&format!(
-                                    "<entity name=\"{}\" type=\"{}\">\n{}\n</entity>\n",
-                                    entity.name, entity.entity_type, summary
-                                ));
-                            }
-                        }
-                    }
-                }
-
-                if !core_blocks_ctx.is_empty() || !recall_ctx.is_empty() {
-                    // Core blocks go into system prompt — higher priority, not user-overrideable
-                    if !core_blocks_ctx.is_empty() {
-                        history.push(ChatMessage::system(core_blocks_ctx));
-                    }
-                    // Recall context enriches the user message
-                    if !recall_ctx.is_empty() {
-                        history.push(ChatMessage::user(format!("{recall_ctx}\n{content}")));
+                    // Enrichment as ephemeral user-prefix (raw content stored in history)
+                    if !formatted.enrichment_prefix.is_empty() {
+                        history.push(ChatMessage::user(format!(
+                            "{}{content}",
+                            formatted.enrichment_prefix
+                        )));
                     } else {
                         history.push(ChatMessage::user(content));
                     }
-                    // Skip the normal user turn append below
                     ports
                         .history
                         .append_turn(conversation_key, ChatMessage::user(content));
@@ -401,22 +354,43 @@ async fn handle_regular_message(
             }
         }
         HistoryEnrichment::CoreBlocksOnly => {
+            // Continuation turn — use ContinuationPolicy from config
             if let Some(ref mem) = ports.memory {
-                if let Ok(blocks) = mem.get_core_blocks(&config.agent_id).await {
-                    let mut core_ctx = String::new();
-                    for block in &blocks {
-                        if !block.content.trim().is_empty() {
-                            core_ctx.push_str(&format!(
-                                "<{}>\n{}\n</{}>\n",
-                                block.label,
-                                block.content.trim(),
-                                block.label
-                            ));
-                        }
-                    }
-                    if !core_ctx.is_empty() {
-                        history.push(ChatMessage::system(core_ctx));
-                    }
+                use crate::application::services::turn_context as tc;
+                let continuation = config.continuation_policy.clone();
+                let turn_ctx = tc::assemble_turn_context(
+                    mem.as_ref(),
+                    content,
+                    &config.agent_id,
+                    Some(conversation_key),
+                    &config.prompt_budget,
+                    Some(&continuation),
+                )
+                .await;
+                let formatted = tc::format_turn_context(&turn_ctx, &config.prompt_budget);
+
+                if !formatted.core_blocks_system.is_empty() {
+                    history.push(ChatMessage::system(formatted.core_blocks_system));
+                }
+                if !formatted.enrichment_prefix.is_empty() {
+                    history.push(ChatMessage::user(format!(
+                        "{}{content}",
+                        formatted.enrichment_prefix
+                    )));
+                    ports
+                        .history
+                        .append_turn(conversation_key, ChatMessage::user(content));
+                    return execute_agent_turn(
+                        envelope,
+                        content,
+                        conversation_key,
+                        caps,
+                        config,
+                        ports,
+                        &route,
+                        history,
+                    )
+                    .await;
                 }
             }
         }
@@ -942,6 +916,8 @@ mod tests {
             min_relevance_score: 0.5,
             ack_reactions: false,
             agent_id: "test-agent".into(),
+            prompt_budget: crate::application::services::turn_context::PromptBudget::default(),
+            continuation_policy: crate::application::services::turn_context::ContinuationPolicy::default(),
         }
     }
 
