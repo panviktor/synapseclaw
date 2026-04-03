@@ -656,16 +656,19 @@ impl Agent {
             .await
             .unwrap_or_default();
         if !core_blocks.is_empty() {
+            const CORE_MEMORY_MARKER: &str = "[core-memory]\n";
             // Remove previous core-memory system message if present (avoid accumulation)
             self.history.retain(|msg| {
                 if let ConversationMessage::Chat(chat) = msg {
-                    !(chat.role == "system" && chat.content.starts_with("<persona>"))
+                    !(chat.role == "system" && chat.content.starts_with(CORE_MEMORY_MARKER))
                 } else {
                     true
                 }
             });
             self.history
-                .push(ConversationMessage::Chat(ChatMessage::system(core_blocks)));
+                .push(ConversationMessage::Chat(ChatMessage::system(format!(
+                    "{CORE_MEMORY_MARKER}{core_blocks}"
+                ))));
         }
 
         if self.auto_save {
@@ -714,10 +717,18 @@ impl Agent {
                         .rfind(|m| m.role == "user")
                         .map(|m| m.content.as_str())
                         .unwrap_or("");
-                    let system = messages
+                    // Include ALL system messages (static prompt + dynamic core blocks)
+                    let system_parts: Vec<&str> = messages
                         .iter()
-                        .find(|m| m.role == "system")
-                        .map(|m| m.content.as_str());
+                        .filter(|m| m.role == "system")
+                        .map(|m| m.content.as_str())
+                        .collect();
+                    let system_concat = system_parts.join("\n---\n");
+                    let system = if system_concat.is_empty() {
+                        None
+                    } else {
+                        Some(system_concat.as_str())
+                    };
                     synapse_memory::response_cache::ResponseCache::cache_key(
                         &effective_model,
                         system,

@@ -2,6 +2,12 @@
 
 ## 2026-04-03
 
+### Web Learning + Core Block Bugs (PR #246)
+
+- fix: WS chat now calls `consolidate_turn()` + `reflect_on_turn()` post-response (was missing — web produced zero learning data)
+- fix: core block system message uses `[core-memory]` marker for dedup (was `<persona>` prefix — could accumulate if first block has different label)
+- fix: response cache key includes ALL system messages (was only first — ignored dynamic core blocks)
+
 ### Security: Memory Isolation (PR #242)
 
 - fix: scope `forget()`, `get()` by agent_id — prevents cross-agent deletion/read
