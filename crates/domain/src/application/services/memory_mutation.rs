@@ -206,6 +206,29 @@ pub async fn apply_decision(
     }
 }
 
+/// Apply a mutation decision and return a learning event.
+///
+/// Combines `apply_decision` with `LearningEvent` emission.
+pub async fn apply_decision_with_event(
+    mem: &dyn UnifiedMemoryPort,
+    decision: &MutationDecision,
+    agent_id: &str,
+) -> Result<super::learning_events::LearningEvent, MemoryError> {
+    let wrote = apply_decision(mem, decision, agent_id).await?;
+    let event = super::learning_events::LearningEvent::from_mutation(
+        &decision.action,
+        agent_id,
+        match &decision.action {
+            MutationAction::Update { target_id } | MutationAction::Delete { target_id } => {
+                Some(target_id.as_str())
+            }
+            _ => None,
+        },
+        &decision.reason,
+    );
+    Ok(event)
+}
+
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn same_category(a: &MemoryCategory, b: &MemoryCategory) -> bool {

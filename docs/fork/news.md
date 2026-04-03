@@ -2,6 +2,15 @@
 
 ## 2026-04-03
 
+### Memory Learning Foundation — Phase E: Learning Events + Read-Models (PR #255)
+
+- **arch**: `LearningEvent` + `LearningEventKind` (13 canonical event types) — stable contract for UI
+- **arch**: `TurnLearningReport` — per-turn learning summary with event recording + counters
+- **arch**: `AgentLearningStats` + `MemoryOverview` — dashboard-facing read-models
+- **arch**: `apply_decision_with_event()` — mutation service emits learning events alongside writes
+- **arch**: `from_mutation()` + `from_memory_event_type()` converters — bridge AUDN decisions to events
+- Events: MemoryAdded, MemoryUpdated, MemoryDeleted, MemoryNoop, SkillCreated, SkillUpdated, ReflectionStored, CoreBlocksUpdated, EntityDiscovered, VisibilityChanged, ConsolidationCompleted, PromptOptimized
+
 ### Memory Learning Foundation — Phase D: Multi-Agent Namespaces (PR #254)
 
 - **arch**: `memory_sharing` service — visibility promotion + deterministic conflict resolution
