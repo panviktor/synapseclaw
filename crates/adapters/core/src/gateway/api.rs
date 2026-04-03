@@ -834,6 +834,31 @@ pub async fn handle_api_memory_stats(
     .into_response()
 }
 
+/// GET /api/memory/context-budget — prompt budget config for Memory Pulse UI
+pub async fn handle_api_context_budget(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    let config = state.config.lock().clone();
+    let budget = &config.memory.prompt_budget;
+    Json(serde_json::json!({
+        "recall_max_entries": budget.recall_max_entries,
+        "recall_entry_max_chars": budget.recall_entry_max_chars,
+        "recall_total_max_chars": budget.recall_total_max_chars,
+        "skills_max_count": budget.skills_max_count,
+        "skills_total_max_chars": budget.skills_total_max_chars,
+        "entities_max_count": budget.entities_max_count,
+        "entities_total_max_chars": budget.entities_total_max_chars,
+        "enrichment_total_max_chars": budget.enrichment_total_max_chars,
+        "continuation_policy": budget.continuation_policy,
+        "min_relevance_score": config.memory.min_relevance_score,
+    }))
+    .into_response()
+}
+
 // ── Learning Signal Patterns API ──────────────────────────────────
 
 /// GET /api/memory/learning-patterns — list all signal patterns

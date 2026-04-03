@@ -579,20 +579,13 @@ async fn execute_agent_turn(
                     assistant_response: response_text.clone(),
                     tools_used: tools,
                     auto_save_enabled: config.auto_save_memory,
+                    event_tx: None, // channels: no SSE; events reach UI via /api/memory/stats
                 };
                 tokio::spawn(async move {
-                    let report =
-                        crate::application::services::post_turn_orchestrator::execute_post_turn_learning(
-                            mem.as_ref(), input,
-                        ).await;
-                    tracing::info!(
-                        target: "post_turn",
-                        signal = ?report.signal,
-                        explicit = report.explicit_mutation.is_some(),
-                        consolidation = report.consolidation_started,
-                        reflection = report.reflection_started,
-                        "channel: post-turn report"
-                    );
+                    // Orchestrator handles tracing internally
+                    crate::application::services::post_turn_orchestrator::execute_post_turn_learning(
+                        mem.as_ref(), input,
+                    ).await;
                 });
             }
 
