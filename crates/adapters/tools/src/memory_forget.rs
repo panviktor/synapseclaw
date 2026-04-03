@@ -10,11 +10,20 @@ use synapse_domain::ports::memory::UnifiedMemoryPort;
 pub struct MemoryForgetTool {
     memory: Arc<dyn UnifiedMemoryPort>,
     security: Arc<SecurityPolicy>,
+    agent_id: String,
 }
 
 impl MemoryForgetTool {
-    pub fn new(memory: Arc<dyn UnifiedMemoryPort>, security: Arc<SecurityPolicy>) -> Self {
-        Self { memory, security }
+    pub fn new(
+        memory: Arc<dyn UnifiedMemoryPort>,
+        security: Arc<SecurityPolicy>,
+        agent_id: String,
+    ) -> Self {
+        Self {
+            memory,
+            security,
+            agent_id,
+        }
     }
 }
 
@@ -58,7 +67,7 @@ impl Tool for MemoryForgetTool {
             });
         }
 
-        match self.memory.forget(key).await {
+        match self.memory.forget(key, &self.agent_id).await {
             Ok(true) => Ok(ToolResult {
                 success: true,
                 output: format!("Forgot memory: {key}"),

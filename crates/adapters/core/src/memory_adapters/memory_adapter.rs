@@ -129,11 +129,16 @@ impl SkillMemoryPort for ConsolidatingMemory {
         &self,
         skill_id: &MemoryId,
         update: SkillUpdate,
+        agent_id: &AgentId,
     ) -> Result<(), MemoryError> {
-        self.inner.update_skill(skill_id, update).await
+        self.inner.update_skill(skill_id, update, agent_id).await
     }
-    async fn get_skill(&self, name: &str) -> Result<Option<Skill>, MemoryError> {
-        self.inner.get_skill(name).await
+    async fn get_skill(
+        &self,
+        name: &str,
+        agent_id: &AgentId,
+    ) -> Result<Option<Skill>, MemoryError> {
+        self.inner.get_skill(name, agent_id).await
     }
 }
 
@@ -202,11 +207,11 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
         self.inner.recall(query, limit, session_id).await
     }
-    async fn forget(&self, key: &str) -> Result<bool, MemoryError> {
-        self.inner.forget(key).await
+    async fn forget(&self, key: &str, agent_id: &AgentId) -> Result<bool, MemoryError> {
+        self.inner.forget(key, agent_id).await
     }
-    async fn get(&self, key: &str) -> Result<Option<MemoryEntry>, MemoryError> {
-        self.inner.get(key).await
+    async fn get(&self, key: &str, agent_id: &AgentId) -> Result<Option<MemoryEntry>, MemoryError> {
+        self.inner.get(key, agent_id).await
     }
     async fn list(
         &self,

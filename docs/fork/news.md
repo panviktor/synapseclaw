@@ -1,5 +1,15 @@
 # SynapseClaw News & Changelog
 
+## 2026-04-03
+
+### Security: Memory Isolation (PR #242)
+
+- fix: scope `forget()`, `get()` by agent_id — prevents cross-agent deletion/read
+- fix: scope `search_entities()`, `find_skills()`, `get_relevant_reflections()` by agent_id
+- fix: scope `upsert_entity()` lookup by `(name, created_by)` — prevents cross-agent overwrite
+- fix: scope `get_skill()`, `update_skill()` by agent_id — prevents cross-agent skill poisoning
+- Port trait changes: `forget`, `get`, `get_skill`, `update_skill` now require `agent_id`
+
 ## 2026-04-01
 
 ### Phase 4.3: SurrealDB Memory Architecture (PR #217)

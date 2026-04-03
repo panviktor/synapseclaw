@@ -312,10 +312,15 @@ impl synapse_domain::ports::memory::SkillMemoryPort for NoopUnifiedMemory {
     async fn find_skills(&self, _: &MemoryQuery) -> Result<Vec<Skill>, MemoryError> {
         Ok(vec![])
     }
-    async fn update_skill(&self, _: &MemoryId, _: SkillUpdate) -> Result<(), MemoryError> {
+    async fn update_skill(
+        &self,
+        _: &MemoryId,
+        _: SkillUpdate,
+        _: &AgentId,
+    ) -> Result<(), MemoryError> {
         Ok(())
     }
-    async fn get_skill(&self, _: &str) -> Result<Option<Skill>, MemoryError> {
+    async fn get_skill(&self, _: &str, _: &AgentId) -> Result<Option<Skill>, MemoryError> {
         Ok(None)
     }
 }
@@ -381,10 +386,10 @@ impl synapse_domain::ports::memory::UnifiedMemoryPort for NoopUnifiedMemory {
     async fn consolidate_turn(&self, _: &str, _: &str) -> Result<(), MemoryError> {
         Ok(())
     }
-    async fn forget(&self, _: &str) -> Result<bool, MemoryError> {
+    async fn forget(&self, _: &str, _: &AgentId) -> Result<bool, MemoryError> {
         Ok(false)
     }
-    async fn get(&self, _: &str) -> Result<Option<MemoryEntry>, MemoryError> {
+    async fn get(&self, _: &str, _: &AgentId) -> Result<Option<MemoryEntry>, MemoryError> {
         Ok(None)
     }
     async fn list(

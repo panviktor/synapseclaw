@@ -118,10 +118,12 @@ pub trait SkillMemoryPort: Send + Sync {
         &self,
         skill_id: &MemoryId,
         update: SkillUpdate,
+        agent_id: &AgentId,
     ) -> Result<(), MemoryError>;
 
-    /// Get skill by name.
-    async fn get_skill(&self, name: &str) -> Result<Option<Skill>, MemoryError>;
+    /// Get skill by name, scoped to agent.
+    async fn get_skill(&self, name: &str, agent_id: &AgentId)
+        -> Result<Option<Skill>, MemoryError>;
 }
 
 // ── Reflection (self-improvement) ────────────────────────────────
@@ -217,11 +219,11 @@ pub trait UnifiedMemoryPort:
         assistant_response: &str,
     ) -> Result<(), MemoryError>;
 
-    /// Forget (delete) a memory entry by key. Returns true if found.
-    async fn forget(&self, key: &str) -> Result<bool, MemoryError>;
+    /// Forget (delete) a memory entry by key, scoped to agent. Returns true if found.
+    async fn forget(&self, key: &str, agent_id: &AgentId) -> Result<bool, MemoryError>;
 
-    /// Get a single memory entry by exact key.
-    async fn get(&self, key: &str) -> Result<Option<MemoryEntry>, MemoryError>;
+    /// Get a single memory entry by exact key, scoped to agent.
+    async fn get(&self, key: &str, agent_id: &AgentId) -> Result<Option<MemoryEntry>, MemoryError>;
 
     /// List memory entries, optionally filtered by category and/or session.
     async fn list(

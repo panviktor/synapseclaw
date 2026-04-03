@@ -753,7 +753,8 @@ pub async fn handle_api_memory_delete(
         return e.into_response();
     }
 
-    match state.mem.forget(&key).await {
+    let agent_id = crate::agent::loop_::resolve_agent_id(&state.config.lock().clone());
+    match state.mem.forget(&key, &agent_id).await {
         Ok(deleted) => {
             Json(serde_json::json!({"status": "ok", "deleted": deleted})).into_response()
         }
