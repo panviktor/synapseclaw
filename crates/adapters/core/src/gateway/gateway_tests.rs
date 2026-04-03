@@ -132,6 +132,7 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
         tool_middleware: None,
         dead_letter: None,
         surreal: None,
+        agent_id: "test-agent".into(),
     };
 
     let response = handle_metrics(State(state)).await.into_response();
@@ -210,6 +211,7 @@ async fn metrics_endpoint_renders_prometheus_output() {
         tool_middleware: None,
         dead_letter: None,
         surreal: None,
+        agent_id: "test-agent".into(),
     };
 
     let response = handle_metrics(State(state)).await.into_response();
@@ -750,6 +752,7 @@ async fn webhook_idempotency_skips_duplicate_provider_calls() {
         tool_middleware: None,
         dead_letter: None,
         surreal: None,
+        agent_id: "test-agent".into(),
     };
 
     let mut headers = HeaderMap::new();
@@ -842,6 +845,7 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
         tool_middleware: None,
         dead_letter: None,
         surreal: None,
+        agent_id: "test-agent".into(),
     };
 
     let headers = HeaderMap::new();
@@ -946,6 +950,7 @@ async fn webhook_secret_hash_rejects_missing_header() {
         tool_middleware: None,
         dead_letter: None,
         surreal: None,
+        agent_id: "test-agent".into(),
     };
 
     let response = handle_webhook(
@@ -1022,6 +1027,7 @@ async fn webhook_secret_hash_rejects_invalid_header() {
         tool_middleware: None,
         dead_letter: None,
         surreal: None,
+        agent_id: "test-agent".into(),
     };
 
     let mut headers = HeaderMap::new();
@@ -1103,6 +1109,7 @@ async fn webhook_secret_hash_accepts_valid_header() {
         tool_middleware: None,
         dead_letter: None,
         surreal: None,
+        agent_id: "test-agent".into(),
     };
 
     let mut headers = HeaderMap::new();
@@ -1189,6 +1196,7 @@ async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
         tool_middleware: None,
         dead_letter: None,
         surreal: None,
+        agent_id: "test-agent".into(),
     };
 
     let response = Box::pin(handle_nextcloud_talk_webhook(
@@ -1271,6 +1279,7 @@ async fn nextcloud_talk_webhook_rejects_invalid_signature() {
         tool_middleware: None,
         dead_letter: None,
         surreal: None,
+        agent_id: "test-agent".into(),
     };
 
     let mut headers = HeaderMap::new();

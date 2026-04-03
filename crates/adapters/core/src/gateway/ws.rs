@@ -1068,6 +1068,7 @@ async fn handle_chat_send_rpc(
                     let mem = state.mem.clone();
                     let user_msg = message.clone();
                     let signal = decision.signal.clone();
+                    let aid = state.agent_id.clone();
                     tokio::spawn(async move {
                         use synapse_domain::application::services::memory_mutation as mutation;
                         use synapse_domain::domain::memory_mutation::{
@@ -1080,8 +1081,8 @@ async fn handle_chat_send_rpc(
                             source: MutationSource::ExplicitUser,
                         };
                         let decision =
-                            mutation::evaluate_candidate(mem.as_ref(), candidate, "web", &MutationThresholds::default()).await;
-                        let _ = mutation::apply_decision_with_event(mem.as_ref(), &decision, "web").await;
+                            mutation::evaluate_candidate(mem.as_ref(), candidate, &aid, &MutationThresholds::default()).await;
+                        let _ = mutation::apply_decision_with_event(mem.as_ref(), &decision, &aid).await;
                     });
                 }
 
