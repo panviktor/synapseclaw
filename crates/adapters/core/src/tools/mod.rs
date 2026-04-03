@@ -254,7 +254,11 @@ pub fn all_tools_with_runtime(
     tool_arcs.extend([
         Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())) as Arc<dyn Tool>,
         Arc::new(MemoryRecallTool::new(memory.clone())),
-        Arc::new(MemoryForgetTool::new(memory.clone(), security.clone())),
+        Arc::new(MemoryForgetTool::new(
+            memory.clone(),
+            security.clone(),
+            crate::agent::loop_::resolve_agent_id(root_config),
+        )),
         Arc::new(CoreMemoryUpdateTool::new(
             memory.clone(),
             security.clone(),

@@ -538,10 +538,11 @@ pub async fn run_with_shared_memory(
                     history.clear();
                     history.push(ChatMessage::system(&system_prompt));
                     // Clear conversation-scoped memories for this session
+                    let agent_id = super::resolve_agent_id(&config);
                     if let Ok(entries) = mem.recall("", 100, None).await {
                         for entry in entries {
                             if entry.category == synapse_memory::MemoryCategory::Conversation {
-                                let _ = mem.forget(&entry.key).await;
+                                let _ = mem.forget(&entry.key, &agent_id).await;
                             }
                         }
                     }

@@ -121,7 +121,7 @@ pub async fn reflect_on_run(
     // Create or update skill if recommended
     if analysis.should_create_skill {
         if let (Some(name), Some(content)) = (&analysis.skill_name, &analysis.skill_content) {
-            match memory.get_skill(name).await? {
+            match memory.get_skill(name, &agent_id.to_string()).await? {
                 Some(existing) => {
                     // Update existing skill
                     let update = SkillUpdate {
@@ -129,7 +129,9 @@ pub async fn reflect_on_run(
                         increment_fail: summary.outcome == ReflectionOutcome::Failure,
                         new_content: Some(content.clone()),
                     };
-                    memory.update_skill(&existing.id, update).await?;
+                    memory
+                        .update_skill(&existing.id, update, &agent_id.to_string())
+                        .await?;
                     tracing::info!(name = %name, version = existing.version + 1, "memory.skill.updated");
                 }
                 None => {

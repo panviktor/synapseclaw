@@ -85,7 +85,8 @@ impl SurrealMemoryAdapter {
         // SurrealDB 3.0 changed syntax: SEARCH ANALYZER → FULLTEXT ANALYZER.
         // We REMOVE first (idempotent) then re-DEFINE on every startup.
         // Without this index, recall() returns empty because @1@ requires it.
-        let _ = self.db
+        let _ = self
+            .db
             .query("REMOVE INDEX IF EXISTS idx_ep_content ON episode")
             .await;
         if let Err(e) = self
@@ -121,7 +122,8 @@ impl SurrealMemoryAdapter {
                         Some(d) if d == dim => false, // dimensions match, no action needed
                         Some(d) => {
                             tracing::warn!(
-                                old_dim = d, new_dim = dim,
+                                old_dim = d,
+                                new_dim = dim,
                                 "HNSW dimension mismatch detected — recreating vector indexes"
                             );
                             true
@@ -168,7 +170,8 @@ impl SurrealMemoryAdapter {
             if *stale == self.me() {
                 continue; // current agent already uses this ID
             }
-            match self.db
+            match self
+                .db
                 .query("UPDATE episode SET agent_id = $new WHERE agent_id = $old RETURN BEFORE")
                 .bind(("new", self.me().to_string()))
                 .bind(("old", stale.to_string()))
@@ -190,7 +193,8 @@ impl SurrealMemoryAdapter {
                 }
             }
             // Also migrate core_memory blocks.
-            if let Err(e) = self.db
+            if let Err(e) = self
+                .db
                 .query("UPDATE core_memory SET agent_id = $new WHERE agent_id = $old")
                 .bind(("new", self.me().to_string()))
                 .bind(("old", stale.to_string()))
@@ -212,10 +216,10 @@ impl SurrealMemoryAdapter {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
                 let agent_rows: Vec<serde_json::Value> = r.take(1).unwrap_or_default();
-                let agents: Vec<String> = agent_rows.iter().filter_map(|v| {
+                let agents: Vec<String> = agent_rows.iter().map(|v| {
                     let aid = v.get("agent_id").and_then(|a| a.as_str()).unwrap_or("NULL");
                     let cnt = v.get("cnt").and_then(|c| c.as_u64()).unwrap_or(0);
-                    Some(format!("{}={}", aid, cnt))
+                    format!("{}={}", aid, cnt)
                 }).collect();
                 tracing::info!(
                     episode_count = count,
@@ -485,7 +489,8 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             None
         };
 
-        let mut resp = self.db
+        let mut resp = self
+            .db
             .query(
                 "CREATE episode SET
                     agent_id = $agent,
@@ -513,9 +518,16 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             .map_err(|e| MemoryError::Storage(format!("store_episode query: {e}")))?;
 
         if created.is_empty() {
-            tracing::warn!(agent = self.me(), "store_episode: CREATE returned 0 rows — data may not have been persisted");
+            tracing::warn!(
+                agent = self.me(),
+                "store_episode: CREATE returned 0 rows — data may not have been persisted"
+            );
         } else {
-            tracing::debug!(agent = self.me(), rows = created.len(), "store_episode: created");
+            tracing::debug!(
+                agent = self.me(),
+                rows = created.len(),
+                "store_episode: created"
+            );
         }
 
         Ok(id)
@@ -730,14 +742,14 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
 
         self.db
             .query(
-                "IF (SELECT count() FROM entity WHERE string::lowercase(name) = string::lowercase($name) GROUP ALL)[0].count > 0 {
+                "IF (SELECT count() FROM entity WHERE string::lowercase(name) = string::lowercase($name) AND created_by = $agent GROUP ALL)[0].count > 0 {
                     UPDATE entity SET
                         entity_type = $etype,
                         properties = $props,
                         summary = $summary,
                         embedding = $embedding,
                         updated_at = time::now()
-                    WHERE string::lowercase(name) = string::lowercase($name);
+                    WHERE string::lowercase(name) = string::lowercase($name) AND created_by = $agent;
                 } ELSE {
                     CREATE entity SET
                         name = $name,
@@ -931,10 +943,12 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             .db
             .query(
                 "SELECT * FROM entity
-                 WHERE name CONTAINS $text OR summary CONTAINS $text
+                 WHERE (name CONTAINS $text OR summary CONTAINS $text)
+                 AND created_by = $agent
                  LIMIT $limit",
             )
             .bind(("text", query.text.clone()))
+            .bind(("agent", query.agent_id.clone()))
             .bind(("limit", query.limit))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
@@ -988,11 +1002,13 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .db
             .query(
                 "SELECT * FROM skill
-                 WHERE name CONTAINS $text OR description CONTAINS $text
+                 WHERE (name CONTAINS $text OR description CONTAINS $text)
+                 AND created_by = $agent
                  ORDER BY success_count DESC
                  LIMIT $limit",
             )
             .bind(("text", query.text.clone()))
+            .bind(("agent", query.agent_id.clone()))
             .bind(("limit", query.limit))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
@@ -1005,6 +1021,7 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         &self,
         skill_id: &MemoryId,
         update: SkillUpdate,
+        agent_id: &AgentId,
     ) -> Result<(), MemoryError> {
         let mut parts = vec!["updated_at = time::now()".to_string()];
         if update.increment_success {
@@ -1018,9 +1035,16 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             parts.push("version += 1".to_string());
         }
 
-        let q = format!("UPDATE skill SET {} WHERE id = $id", parts.join(", "));
+        let q = format!(
+            "UPDATE skill SET {} WHERE id = $id AND created_by = $agent",
+            parts.join(", ")
+        );
 
-        let mut query = self.db.query(&q).bind(("id", skill_id.clone()));
+        let mut query = self
+            .db
+            .query(&q)
+            .bind(("id", skill_id.clone()))
+            .bind(("agent", agent_id.clone()));
         if let Some(ref content) = update.new_content {
             query = query.bind(("content", content.clone()));
         }
@@ -1031,11 +1055,16 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         Ok(())
     }
 
-    async fn get_skill(&self, name: &str) -> Result<Option<Skill>, MemoryError> {
+    async fn get_skill(
+        &self,
+        name: &str,
+        agent_id: &AgentId,
+    ) -> Result<Option<Skill>, MemoryError> {
         let mut resp = self
             .db
-            .query("SELECT * FROM skill WHERE name = $name LIMIT 1")
+            .query("SELECT * FROM skill WHERE name = $name AND created_by = $agent LIMIT 1")
             .bind(("name", name.to_string()))
+            .bind(("agent", agent_id.clone()))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
@@ -1088,11 +1117,13 @@ impl ReflectionPort for SurrealMemoryAdapter {
             .db
             .query(
                 "SELECT * FROM reflection
-                 WHERE lesson CONTAINS $text OR task_summary CONTAINS $text
+                 WHERE (lesson CONTAINS $text OR task_summary CONTAINS $text)
+                 AND agent_id = $agent
                  ORDER BY created_at DESC
                  LIMIT $limit",
             )
             .bind(("text", query.text.clone()))
+            .bind(("agent", query.agent_id.clone()))
             .bind(("limit", query.limit))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
@@ -1333,11 +1364,12 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
             .collect())
     }
 
-    async fn forget(&self, key: &str) -> Result<bool, MemoryError> {
+    async fn forget(&self, key: &str, agent_id: &AgentId) -> Result<bool, MemoryError> {
         let mut resp = self
             .db
-            .query("DELETE FROM episode WHERE key = $key RETURN BEFORE")
+            .query("DELETE FROM episode WHERE key = $key AND agent_id = $agent RETURN BEFORE")
             .bind(("key", key.to_string()))
+            .bind(("agent", agent_id.clone()))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
@@ -1347,11 +1379,12 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         Ok(!rows.is_empty())
     }
 
-    async fn get(&self, key: &str) -> Result<Option<MemoryEntry>, MemoryError> {
+    async fn get(&self, key: &str, agent_id: &AgentId) -> Result<Option<MemoryEntry>, MemoryError> {
         let mut resp = self
             .db
-            .query("SELECT * FROM episode WHERE key = $key LIMIT 1")
+            .query("SELECT * FROM episode WHERE key = $key AND agent_id = $agent LIMIT 1")
             .bind(("key", key.to_string()))
+            .bind(("agent", agent_id.clone()))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 

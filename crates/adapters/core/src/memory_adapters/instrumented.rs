@@ -167,15 +167,24 @@ impl SkillMemoryPort for InstrumentedMemory {
         log_op("find_skills", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
         r
     }
-    async fn update_skill(&self, id: &MemoryId, u: SkillUpdate) -> Result<(), MemoryError> {
+    async fn update_skill(
+        &self,
+        id: &MemoryId,
+        u: SkillUpdate,
+        agent_id: &AgentId,
+    ) -> Result<(), MemoryError> {
         let t = Instant::now();
-        let r = self.inner.update_skill(id, u).await;
+        let r = self.inner.update_skill(id, u, agent_id).await;
         log_op("update_skill", t, 0);
         r
     }
-    async fn get_skill(&self, name: &str) -> Result<Option<Skill>, MemoryError> {
+    async fn get_skill(
+        &self,
+        name: &str,
+        agent_id: &AgentId,
+    ) -> Result<Option<Skill>, MemoryError> {
         let t = Instant::now();
-        let r = self.inner.get_skill(name).await;
+        let r = self.inner.get_skill(name, agent_id).await;
         log_op(
             "get_skill",
             t,
@@ -295,15 +304,15 @@ impl UnifiedMemoryPort for InstrumentedMemory {
         log_op("consolidate_turn", t, 0);
         r
     }
-    async fn forget(&self, key: &str) -> Result<bool, MemoryError> {
+    async fn forget(&self, key: &str, agent_id: &AgentId) -> Result<bool, MemoryError> {
         let t = Instant::now();
-        let r = self.inner.forget(key).await;
+        let r = self.inner.forget(key, agent_id).await;
         log_op("forget", t, 0);
         r
     }
-    async fn get(&self, key: &str) -> Result<Option<MemoryEntry>, MemoryError> {
+    async fn get(&self, key: &str, agent_id: &AgentId) -> Result<Option<MemoryEntry>, MemoryError> {
         let t = Instant::now();
-        let r = self.inner.get(key).await;
+        let r = self.inner.get(key, agent_id).await;
         log_op(
             "get",
             t,

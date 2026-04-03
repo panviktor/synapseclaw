@@ -97,7 +97,8 @@ async fn handle_get(config: &Config, key: &str) -> Result<()> {
     let mem = create_cli_memory(config).await?;
 
     // Direct key lookup first, then prefix search fallback.
-    if let Some(entry) = mem.get(key).await? {
+    let agent_id = "cli".to_string();
+    if let Some(entry) = mem.get(key, &agent_id).await? {
         print_entry(&entry);
     } else {
         // Fallback: search for prefix matches
@@ -177,6 +178,7 @@ async fn handle_clear(
 
 /// Delete a single entry by key.
 async fn handle_clear_key(mem: &dyn UnifiedMemoryPort, key: &str, yes: bool) -> Result<()> {
+    let agent_id = "cli".to_string();
     if !yes {
         let confirmed = dialoguer::Confirm::new()
             .with_prompt(format!("  Delete '{key}'?"))
@@ -188,7 +190,7 @@ async fn handle_clear_key(mem: &dyn UnifiedMemoryPort, key: &str, yes: bool) -> 
         }
     }
 
-    if mem.forget(key).await? {
+    if mem.forget(key, &agent_id).await? {
         println!("{} Deleted key: {key}", style("✓").green().bold());
     } else {
         println!("No memory entry found for key: {key}");
