@@ -1293,12 +1293,23 @@ async fn handle_message_via_orchestrator(
         let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let reply_target = original_msg.reply_target.clone();
         let thread_ts = original_msg.thread_ts.clone();
+        let session_store_for_tools = ctx.session_store.clone();
+        let conversation_key = envelope.conversation_ref.clone();
         tokio::spawn(async move {
             while let Some(tool_msg) = tool_rx.recv().await {
+                // Send to channel
                 let send = SendMessage::new(&tool_msg, &reply_target)
                     .in_thread(thread_ts.clone());
                 if let Err(e) = ch.send(&send).await {
                     tracing::debug!("tool notify send failed: {e}");
+                }
+                // Persist in session history so web dashboard can see it
+                if let Some(ref store) = session_store_for_tools {
+                    let msg = ChatMessage {
+                        role: "assistant".to_string(),
+                        content: tool_msg,
+                    };
+                    let _ = store.append(&conversation_key, &msg).await;
                 }
             }
         });
