@@ -516,32 +516,66 @@ impl Agent {
 
     async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
         let start = Instant::now();
+        let args_preview = synapse_domain::domain::util::truncate_with_ellipsis(
+            &call.arguments.to_string(),
+            300,
+        );
+
+        self.observer.record_event(&ObserverEvent::ToolCallStart {
+            tool: call.name.clone(),
+            arguments: Some(args_preview),
+        });
 
         let result = if let Some(tool) = self.tools.iter().find(|t| t.name() == call.name) {
             match tool.execute(call.arguments.clone()).await {
                 Ok(r) => {
+                    let duration = start.elapsed();
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
-                        duration: start.elapsed(),
+                        duration,
                         success: r.success,
                     });
                     if r.success {
+                        self.observer.record_event(&ObserverEvent::ToolResult {
+                            tool: call.name.clone(),
+                            output: synapse_domain::domain::util::truncate_with_ellipsis(&r.output, 500),
+                            success: true,
+                        });
                         r.output
                     } else {
-                        format!("Error: {}", r.error.unwrap_or(r.output))
+                        let reason = r.error.unwrap_or(r.output);
+                        self.observer.record_event(&ObserverEvent::ToolResult {
+                            tool: call.name.clone(),
+                            output: synapse_domain::domain::util::truncate_with_ellipsis(&reason, 500),
+                            success: false,
+                        });
+                        format!("Error: {reason}")
                     }
                 }
                 Err(e) => {
+                    let duration = start.elapsed();
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
-                        duration: start.elapsed(),
+                        duration,
                         success: false,
                     });
-                    format!("Error executing {}: {e}", call.name)
+                    let reason = format!("Error executing {}: {e}", call.name);
+                    self.observer.record_event(&ObserverEvent::ToolResult {
+                        tool: call.name.clone(),
+                        output: synapse_domain::domain::util::truncate_with_ellipsis(&reason, 500),
+                        success: false,
+                    });
+                    reason
                 }
             }
         } else {
-            format!("Unknown tool: {}", call.name)
+            let reason = format!("Unknown tool: {}", call.name);
+            self.observer.record_event(&ObserverEvent::ToolResult {
+                tool: call.name.clone(),
+                output: reason.clone(),
+                success: false,
+            });
+            reason
         };
 
         ToolExecutionResult {

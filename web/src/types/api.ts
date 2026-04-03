@@ -119,6 +119,7 @@ export interface WsMessage {
     | 'session.run_interrupted'
     | 'tool_call'
     | 'tool_result'
+    | 'assistant'
     | string;
   content?: string;
   full_response?: string;
