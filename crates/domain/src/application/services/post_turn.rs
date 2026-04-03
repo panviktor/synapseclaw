@@ -39,7 +39,18 @@ pub fn decide_post_turn(
     assistant_response: &str,
     tools_used: Vec<String>,
 ) -> PostTurnDecision {
-    let signal = super::learning_signals::classify_signal(user_message);
+    decide_post_turn_with_patterns(auto_save_enabled, user_message, assistant_response, tools_used, &[])
+}
+
+/// Like `decide_post_turn` but uses DB-loaded signal patterns.
+pub fn decide_post_turn_with_patterns(
+    auto_save_enabled: bool,
+    user_message: &str,
+    assistant_response: &str,
+    tools_used: Vec<String>,
+    signal_patterns: &[super::learning_signals::SignalPattern],
+) -> PostTurnDecision {
+    let signal = super::learning_signals::classify_signal_with_patterns(user_message, signal_patterns);
     let user_chars = user_message.chars().count();
 
     // Explicit signals always trigger consolidation (skip length check)
@@ -153,13 +164,12 @@ mod tests {
     /// Explicit signals bypass length check for consolidation.
     #[test]
     fn explicit_signal_forces_consolidation() {
-        // "Remember X" is short but explicit → should consolidate
-        let d = decide_post_turn(true, "Remember that I use vim", "", vec![]);
+        let pats = super::super::learning_signals::default_patterns();
+        let d = decide_post_turn_with_patterns(true, "Remember that I use vim", "", vec![], &pats);
         assert!(d.should_consolidate);
         assert!(d.signal.is_explicit());
 
-        // Short non-explicit message → should NOT consolidate (below min length)
-        let d = decide_post_turn(true, "What editor?", "", vec![]);
+        let d = decide_post_turn_with_patterns(true, "What editor?", "", vec![], &pats);
         assert!(!d.should_consolidate);
         assert!(!d.signal.is_explicit());
     }
@@ -167,13 +177,14 @@ mod tests {
     /// Signal is classified and attached to decision.
     #[test]
     fn signal_classification_attached() {
-        let d = decide_post_turn(true, "Actually, I prefer Go not Rust", "", vec![]);
+        let pats = super::super::learning_signals::default_patterns();
+        let d = decide_post_turn_with_patterns(true, "Actually, I prefer Go not Rust", "", vec![], &pats);
         assert_eq!(d.signal, LearningSignal::ExplicitCorrection);
 
-        let d = decide_post_turn(true, "I prefer short answers", "", vec![]);
+        let d = decide_post_turn_with_patterns(true, "I prefer short answers", "", vec![], &pats);
         assert_eq!(d.signal, LearningSignal::ExplicitInstruction);
 
-        let d = decide_post_turn(true, "How does memory work?", "", vec![]);
+        let d = decide_post_turn_with_patterns(true, "How does memory work?", "", vec![], &pats);
         assert_eq!(d.signal, LearningSignal::BackgroundOnly);
     }
 }
