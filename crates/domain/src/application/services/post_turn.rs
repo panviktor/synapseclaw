@@ -3,6 +3,8 @@
 //! Both web (ws.rs) and channel (handle_inbound_message.rs) paths should
 //! call `decide_post_turn()` instead of duplicating gate logic.
 
+use super::learning_signals::LearningSignal;
+
 /// Decision output: what post-turn learning actions to perform.
 #[derive(Debug)]
 pub struct PostTurnDecision {
@@ -12,6 +14,8 @@ pub struct PostTurnDecision {
     pub should_reflect: bool,
     /// Tool names used during this turn (for reflection input).
     pub tools_used: Vec<String>,
+    /// Detected learning signal from user message.
+    pub signal: LearningSignal,
 }
 
 /// Minimum user message length (chars) for consolidation.
@@ -35,9 +39,15 @@ pub fn decide_post_turn(
     assistant_response: &str,
     tools_used: Vec<String>,
 ) -> PostTurnDecision {
+    let signal = super::learning_signals::classify_signal(user_message);
     let user_chars = user_message.chars().count();
 
-    let should_consolidate = auto_save_enabled && user_chars >= CONSOLIDATE_MIN_CHARS;
+    // Explicit signals always trigger consolidation (skip length check)
+    let should_consolidate = if signal.is_explicit() {
+        auto_save_enabled
+    } else {
+        auto_save_enabled && user_chars >= CONSOLIDATE_MIN_CHARS
+    };
 
     let resp_lower = assistant_response.to_lowercase();
     let has_errors = resp_lower.contains("error") || resp_lower.contains("failed");
@@ -49,6 +59,7 @@ pub fn decide_post_turn(
         should_consolidate,
         should_reflect,
         tools_used,
+        signal,
     };
 
     tracing::debug!(
@@ -56,6 +67,7 @@ pub fn decide_post_turn(
         consolidate = decision.should_consolidate,
         reflect = decision.should_reflect,
         tools = decision.tools_used.len(),
+        signal = ?decision.signal,
         "Post-turn decision"
     );
 
@@ -136,5 +148,32 @@ mod tests {
         assert_eq!(web.should_consolidate, channel.should_consolidate);
         assert_eq!(web.should_reflect, channel.should_reflect);
         assert_eq!(web.tools_used, channel.tools_used);
+    }
+
+    /// Explicit signals bypass length check for consolidation.
+    #[test]
+    fn explicit_signal_forces_consolidation() {
+        // "Remember X" is short but explicit → should consolidate
+        let d = decide_post_turn(true, "Remember that I use vim", "", vec![]);
+        assert!(d.should_consolidate);
+        assert!(d.signal.is_explicit());
+
+        // Short non-explicit message → should NOT consolidate (below min length)
+        let d = decide_post_turn(true, "What editor?", "", vec![]);
+        assert!(!d.should_consolidate);
+        assert!(!d.signal.is_explicit());
+    }
+
+    /// Signal is classified and attached to decision.
+    #[test]
+    fn signal_classification_attached() {
+        let d = decide_post_turn(true, "Actually, I prefer Go not Rust", "", vec![]);
+        assert_eq!(d.signal, LearningSignal::ExplicitCorrection);
+
+        let d = decide_post_turn(true, "I prefer short answers", "", vec![]);
+        assert_eq!(d.signal, LearningSignal::ExplicitInstruction);
+
+        let d = decide_post_turn(true, "How does memory work?", "", vec![]);
+        assert_eq!(d.signal, LearningSignal::BackgroundOnly);
     }
 }
