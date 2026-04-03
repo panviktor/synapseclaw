@@ -429,6 +429,7 @@ pub async fn run_gateway(
     shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
     shared_dead_letter: Option<Arc<dyn synapse_domain::ports::dead_letter::DeadLetterPort>>,
     shared_surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
+    shared_event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -543,7 +544,9 @@ pub async fn run_gateway(
     };
 
     // SSE broadcast channel for real-time events
-    let (event_tx, _event_rx) = tokio::sync::broadcast::channel::<serde_json::Value>(256);
+    let event_tx = shared_event_tx.unwrap_or_else(|| {
+        tokio::sync::broadcast::channel::<serde_json::Value>(256).0
+    });
     // Extract webhook secret for authentication
     let webhook_secret_hash: Option<Arc<str>> =
         config.channels_config.webhook.as_ref().and_then(|webhook| {

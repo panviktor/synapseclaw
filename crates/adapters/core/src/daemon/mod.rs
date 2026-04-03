@@ -226,6 +226,9 @@ pub async fn run(
         )
     };
 
+    // Shared SSE event channel — gateway and channels both publish learning events here.
+    let shared_event_tx = tokio::sync::broadcast::channel::<serde_json::Value>(256).0;
+
     {
         let gateway_cfg = config.clone();
         let gateway_host = host.clone();
@@ -236,6 +239,7 @@ pub async fn run(
         let gw_mem = shared_raw_mem.clone();
         let gw_dlq = shared_dead_letter.clone();
         let gw_surreal = shared_surreal.clone();
+        let gw_event_tx = shared_event_tx.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -250,6 +254,7 @@ pub async fn run(
                 let mem = gw_mem.clone();
                 let dlq = gw_dlq.clone();
                 let surreal = gw_surreal.clone();
+                let etx = gw_event_tx.clone();
                 async move {
                     Box::pin(crate::gateway::run_gateway(
                         &host,
@@ -262,6 +267,7 @@ pub async fn run(
                         Some(mem),
                         Some(dlq),
                         surreal,
+                        Some(etx),
                     ))
                     .await
                 }
@@ -275,6 +281,7 @@ pub async fn run(
             let ch_ipc = shared_ipc_client.clone();
             let ch_mem = shared_raw_mem.clone();
             let ch_surreal = shared_surreal.clone();
+            let ch_event_tx = shared_event_tx.clone();
             handles.push(spawn_component_supervisor(
                 "channels",
                 initial_backoff,
@@ -284,12 +291,14 @@ pub async fn run(
                     let ipc = ch_ipc.clone();
                     let mem = ch_mem.clone();
                     let surreal = ch_surreal.clone();
+                    let etx = ch_event_tx.clone();
                     async move {
                         Box::pin(crate::channels::start_channels(
                             cfg,
                             ipc,
                             Some(mem),
                             surreal,
+                            Some(etx),
                         ))
                         .await
                     }

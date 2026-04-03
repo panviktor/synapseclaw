@@ -822,6 +822,11 @@ pub async fn handle_api_memory_stats(
     };
     let entities = mem.search_entities(&entity_query).await.map(|v| v.len()).unwrap_or(0);
     let skills = mem.find_skills(&entity_query).await.map(|v| v.len()).unwrap_or(0);
+    let reflections = mem
+        .get_relevant_reflections(&entity_query)
+        .await
+        .map(|v| v.len())
+        .unwrap_or(0);
 
     Json(serde_json::json!({
         "agent_id": state.agent_id,
@@ -830,6 +835,7 @@ pub async fn handle_api_memory_stats(
         "core_blocks": core_blocks,
         "entities": entities,
         "skills": skills,
+        "reflections": reflections,
     }))
     .into_response()
 }

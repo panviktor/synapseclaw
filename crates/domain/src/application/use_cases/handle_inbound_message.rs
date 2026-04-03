@@ -81,6 +81,8 @@ pub struct InboundMessagePorts {
     pub channel_registry: Arc<dyn ChannelRegistryPort>,
     pub session_summary: Option<Arc<dyn SessionSummaryPort>>,
     pub memory: Option<Arc<dyn UnifiedMemoryPort>>,
+    /// SSE event sender for publishing learning reports to web dashboard.
+    pub event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
 }
 
 /// Result of handling an inbound message.
@@ -579,7 +581,7 @@ async fn execute_agent_turn(
                     assistant_response: response_text.clone(),
                     tools_used: tools,
                     auto_save_enabled: config.auto_save_memory,
-                    event_tx: None, // channels: no SSE; events reach UI via /api/memory/stats
+                    event_tx: ports.event_tx.clone(),
                 };
                 tokio::spawn(async move {
                     // Orchestrator handles tracing internally
@@ -939,6 +941,7 @@ mod tests {
             channel_registry: Arc::new(MockRegistry),
             session_summary: None,
             memory: None,
+            event_tx: None,
         }
     }
 
