@@ -18,5 +18,6 @@ pub mod pipeline_service;
 pub mod retention;
 pub mod tool_filtering;
 pub mod post_turn;
+pub mod post_turn_orchestrator;
 pub mod tool_middleware_service;
 pub mod turn_context;

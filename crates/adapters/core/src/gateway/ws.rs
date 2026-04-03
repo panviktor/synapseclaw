@@ -1042,10 +1042,8 @@ async fn handle_chat_send_rpc(
                 summarize_session_if_needed(&st, &sk).await;
             });
 
-            // ── Post-turn learning (fire-and-forget) ──
+            // ── Post-turn learning (fire-and-forget via orchestrator) ──
             {
-                let tools_used = extract_tool_names(&tool_history);
-                // Load DB-backed signal patterns (best-effort; empty → built-in fallback in classify)
                 let signal_patterns = if let Some(ref db) = state.surreal {
                     let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(
                         db.clone(), "ws".into(),
@@ -1054,55 +1052,20 @@ async fn handle_chat_send_rpc(
                 } else {
                     synapse_domain::application::services::learning_signals::default_patterns()
                 };
-                let decision =
-                    synapse_domain::application::services::post_turn::decide_post_turn_with_patterns(
-                        state.auto_save,
-                        &message,
-                        &response,
-                        tools_used,
-                        &signal_patterns,
-                    );
-
-                // Explicit signals → direct hot-path AUDN mutation (skip LLM consolidation)
-                if decision.signal.is_explicit() {
-                    let mem = state.mem.clone();
-                    let user_msg = message.clone();
-                    let signal = decision.signal.clone();
-                    let aid = state.agent_id.clone();
-                    tokio::spawn(async move {
-                        use synapse_domain::application::services::memory_mutation as mutation;
-                        use synapse_domain::domain::memory_mutation::{
-                            MutationCandidate, MutationSource, MutationThresholds,
-                        };
-                        let candidate = MutationCandidate {
-                            category: synapse_domain::domain::memory::MemoryCategory::Core,
-                            text: user_msg,
-                            confidence: signal.confidence(),
-                            source: MutationSource::ExplicitUser,
-                        };
-                        let decision =
-                            mutation::evaluate_candidate(mem.as_ref(), candidate, &aid, &MutationThresholds::default()).await;
-                        let _ = mutation::apply_decision_with_event(mem.as_ref(), &decision, &aid).await;
-                    });
-                }
-
-                if decision.should_consolidate {
-                    let mem = state.mem.clone();
-                    let user_msg = message.clone();
-                    let asst_resp = response.clone();
-                    tokio::spawn(async move {
-                        let _ = mem.consolidate_turn(&user_msg, &asst_resp).await;
-                    });
-                }
-                if decision.should_reflect {
-                    let mem = state.mem.clone();
-                    let user_msg = message.clone();
-                    let asst_resp = response.clone();
-                    let tools = decision.tools_used;
-                    tokio::spawn(async move {
-                        let _ = mem.reflect_on_turn(&user_msg, &asst_resp, &tools).await;
-                    });
-                }
+                let mem = state.mem.clone();
+                let input = synapse_domain::application::services::post_turn_orchestrator::PostTurnInput {
+                    agent_id: state.agent_id.clone(),
+                    user_message: message.clone(),
+                    assistant_response: response.clone(),
+                    tools_used: extract_tool_names(&tool_history),
+                    signal_patterns,
+                    auto_save_enabled: state.auto_save,
+                };
+                tokio::spawn(async move {
+                    let _report = synapse_domain::application::services::post_turn_orchestrator::execute_post_turn_learning(
+                        mem.as_ref(), input,
+                    ).await;
+                });
             }
 
             // RPC response: metadata only (assistant message already pushed above)

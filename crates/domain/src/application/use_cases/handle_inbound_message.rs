@@ -564,9 +564,8 @@ async fn execute_agent_turn(
                 .history
                 .append_turn(conversation_key, ChatMessage::assistant(&history_response));
 
-            // ── #18/#19: Post-turn learning (fire-and-forget) ──────
+            // ── #18/#19: Post-turn learning (via orchestrator, fire-and-forget) ──
             if let Some(ref mem) = ports.memory {
-                // Parse tool names from summary: "[Used tools: foo, bar]" → vec!["foo", "bar"]
                 let tools: Vec<String> = turn_result
                     .tool_summary
                     .trim_start_matches("[Used tools: ")
@@ -575,55 +574,21 @@ async fn execute_agent_turn(
                     .filter(|s| !s.is_empty())
                     .map(String::from)
                     .collect();
-                let decision =
-                    crate::application::services::post_turn::decide_post_turn_with_patterns(
-                        config.auto_save_memory,
-                        content,
-                        &response_text,
-                        tools,
-                        &config.signal_patterns,
-                    );
-
-                // Explicit signals → direct hot-path AUDN mutation
-                if decision.signal.is_explicit() {
-                    let mem = Arc::clone(mem);
-                    let user_msg = content.to_string();
-                    let signal = decision.signal.clone();
-                    let agent_id = config.agent_id.clone();
-                    tokio::spawn(async move {
-                        use crate::application::services::memory_mutation as mutation;
-                        use crate::domain::memory_mutation::{
-                            MutationCandidate, MutationSource, MutationThresholds,
-                        };
-                        let candidate = MutationCandidate {
-                            category: crate::domain::memory::MemoryCategory::Core,
-                            text: user_msg,
-                            confidence: signal.confidence(),
-                            source: MutationSource::ExplicitUser,
-                        };
-                        let decision =
-                            mutation::evaluate_candidate(mem.as_ref(), candidate, &agent_id, &MutationThresholds::default()).await;
-                        let _ = mutation::apply_decision_with_event(mem.as_ref(), &decision, &agent_id).await;
-                    });
-                }
-
-                if decision.should_consolidate {
-                    let mem = Arc::clone(mem);
-                    let user_msg = content.to_string();
-                    let asst_resp = response_text.clone();
-                    tokio::spawn(async move {
-                        let _ = mem.consolidate_turn(&user_msg, &asst_resp).await;
-                    });
-                }
-                if decision.should_reflect {
-                    let mem = Arc::clone(mem);
-                    let user_msg = content.to_string();
-                    let asst_resp = response_text.clone();
-                    let tools = decision.tools_used;
-                    tokio::spawn(async move {
-                        let _ = mem.reflect_on_turn(&user_msg, &asst_resp, &tools).await;
-                    });
-                }
+                let mem = Arc::clone(mem);
+                let input = crate::application::services::post_turn_orchestrator::PostTurnInput {
+                    agent_id: config.agent_id.clone(),
+                    user_message: content.to_string(),
+                    assistant_response: response_text.clone(),
+                    tools_used: tools,
+                    signal_patterns: config.signal_patterns.clone(),
+                    auto_save_enabled: config.auto_save_memory,
+                };
+                tokio::spawn(async move {
+                    let _report =
+                        crate::application::services::post_turn_orchestrator::execute_post_turn_learning(
+                            mem.as_ref(), input,
+                        ).await;
+                });
             }
 
             // ── #11: Swap ack reaction to done ───────────────────
