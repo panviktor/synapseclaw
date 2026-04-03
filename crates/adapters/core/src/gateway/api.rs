@@ -766,6 +766,40 @@ pub async fn handle_api_memory_delete(
     }
 }
 
+// ── Memory Stats / Learning Read-Models API ──────────────────────
+
+/// GET /api/memory/stats — memory overview for dashboard
+pub async fn handle_api_memory_stats(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+    let mem = &state.mem;
+    let total = mem.count().await.unwrap_or(0) as u64;
+
+    // Count by category via list() with category filter
+    let mut by_category = Vec::new();
+    let categories = [
+        ("core", synapse_domain::domain::memory::MemoryCategory::Core),
+        ("daily", synapse_domain::domain::memory::MemoryCategory::Daily),
+        ("conversation", synapse_domain::domain::memory::MemoryCategory::Conversation),
+        ("skill", synapse_domain::domain::memory::MemoryCategory::Skill),
+        ("reflection", synapse_domain::domain::memory::MemoryCategory::Reflection),
+    ];
+    for (name, cat) in &categories {
+        let count = mem.list(Some(cat), None, 10_000).await.map(|v| v.len()).unwrap_or(0) as u64;
+        by_category.push(serde_json::json!({"category": name, "count": count}));
+    }
+
+    Json(serde_json::json!({
+        "total": total,
+        "by_category": by_category,
+    }))
+    .into_response()
+}
+
 // ── Learning Signal Patterns API ──────────────────────────────────
 
 /// GET /api/memory/learning-patterns — list all signal patterns

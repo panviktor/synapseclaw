@@ -315,22 +315,21 @@ Use a namespace-oriented model:
 - controlled shared reads
 - explicit promotion into shared memory
 
-### New domain type
+### Implementation (delivered)
 
-**New file**: `crates/domain/src/domain/memory_namespace.rs`
+Implemented via the existing `Visibility` enum (`Private | SharedWith(Vec<AgentId>) | Global`)
+and `memory_sharing` service in `crates/domain/src/application/services/memory_sharing.rs`:
 
-```rust
-pub enum MemoryNamespace {
-    AgentPrivate { agent_id: String },
-    TeamShared { scope: String },
-    GlobalReadOnly,
-}
-```
+- **`Visibility`** enum replaces the planned `MemoryNamespace` — same semantics, reuses existing domain type
+- **`validate_promotion()`** — owner-only, no demotion, SharedWith can widen
+- **`resolve_conflict()`** — authority > recency > confidence (deterministic, no LLM)
+- **`promote_visibility()`** port method on `UnifiedMemoryPort`
+- Schema: `shared_with` + `visibility` fields on all memory tables
 
 ### Policy
 
-- default writes go to `AgentPrivate`
-- promotion to `TeamShared` is explicit
+- default writes go to `Private` (agent-scoped)
+- promotion to `SharedWith` / `Global` is explicit (owner-only)
 - cross-agent overwrite is not allowed by default
 - same-fact conflicts resolve deterministically by:
   - authority

@@ -56,6 +56,8 @@ pub struct InboundMessageConfig {
     pub prompt_budget: crate::application::services::turn_context::PromptBudget,
     /// What to load on continuation turns (turn N>1).
     pub continuation_policy: crate::application::services::turn_context::ContinuationPolicy,
+    /// DB-loaded learning signal patterns (empty → classify_signal falls back to defaults).
+    pub signal_patterns: Vec<crate::application::services::learning_signals::SignalPattern>,
 }
 
 impl std::fmt::Debug for InboundMessageConfig {
@@ -574,12 +576,37 @@ async fn execute_agent_turn(
                     .map(String::from)
                     .collect();
                 let decision =
-                    crate::application::services::post_turn::decide_post_turn(
+                    crate::application::services::post_turn::decide_post_turn_with_patterns(
                         config.auto_save_memory,
                         content,
                         &response_text,
                         tools,
+                        &config.signal_patterns,
                     );
+
+                // Explicit signals → direct hot-path AUDN mutation
+                if decision.signal.is_explicit() {
+                    let mem = Arc::clone(mem);
+                    let user_msg = content.to_string();
+                    let signal = decision.signal.clone();
+                    let agent_id = config.agent_id.clone();
+                    tokio::spawn(async move {
+                        use crate::application::services::memory_mutation as mutation;
+                        use crate::domain::memory_mutation::{
+                            MutationCandidate, MutationSource, MutationThresholds,
+                        };
+                        let candidate = MutationCandidate {
+                            category: crate::domain::memory::MemoryCategory::Core,
+                            text: user_msg,
+                            confidence: signal.confidence(),
+                            source: MutationSource::ExplicitUser,
+                        };
+                        let decision =
+                            mutation::evaluate_candidate(mem.as_ref(), candidate, &agent_id, &MutationThresholds::default()).await;
+                        let _ = mutation::apply_decision_with_event(mem.as_ref(), &decision, &agent_id).await;
+                    });
+                }
+
                 if decision.should_consolidate {
                     let mem = Arc::clone(mem);
                     let user_msg = content.to_string();
@@ -918,6 +945,7 @@ mod tests {
             agent_id: "test-agent".into(),
             prompt_budget: crate::application::services::turn_context::PromptBudget::default(),
             continuation_policy: crate::application::services::turn_context::ContinuationPolicy::default(),
+            signal_patterns: vec![],
         }
     }
 
