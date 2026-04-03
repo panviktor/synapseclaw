@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use std::fmt::Write;
+use synapse_domain::domain::memory::MemoryQuery;
 use synapse_memory::UnifiedMemoryPort;
 
 #[async_trait]
@@ -9,6 +10,7 @@ pub trait MemoryLoader: Send + Sync {
         memory: &dyn UnifiedMemoryPort,
         user_message: &str,
         session_id: Option<&str>,
+        agent_id: &str,
     ) -> anyhow::Result<String>;
 
     /// Load core memory blocks for system prompt injection.
@@ -49,34 +51,79 @@ impl MemoryLoader for DefaultMemoryLoader {
         memory: &dyn UnifiedMemoryPort,
         user_message: &str,
         session_id: Option<&str>,
+        agent_id: &str,
     ) -> anyhow::Result<String> {
         let entries = memory.recall(user_message, self.limit, session_id).await?;
-        if entries.is_empty() {
-            return Ok(String::new());
-        }
+        let mut context = String::new();
+        let mut has_recall = false;
 
-        let mut context = String::from("[Memory context]\n");
-        for entry in entries {
-            if synapse_memory::is_assistant_autosave_key(&entry.key) {
-                continue;
-            }
-            if synapse_domain::domain::util::should_skip_autosave_content(&entry.content) {
-                continue;
-            }
-            if let Some(score) = entry.score {
-                if score < self.min_relevance_score {
+        if !entries.is_empty() {
+            context.push_str("[Memory context]\n");
+            for entry in &entries {
+                if synapse_memory::is_assistant_autosave_key(&entry.key) {
                     continue;
                 }
+                if synapse_domain::domain::util::should_skip_autosave_content(&entry.content) {
+                    continue;
+                }
+                // Skip entries containing tool_result blocks — they can leak
+                // stale tool output from previous sessions.
+                if entry.content.contains("<tool_result") {
+                    continue;
+                }
+                if let Some(score) = entry.score {
+                    if score < self.min_relevance_score {
+                        continue;
+                    }
+                }
+                let _ = writeln!(context, "- {}: {}", entry.key, entry.content);
+                has_recall = true;
             }
-            let _ = writeln!(context, "- {}: {}", entry.key, entry.content);
+
+            // If all entries were filtered, clear the header
+            if !has_recall {
+                context.clear();
+            } else {
+                context.push('\n');
+            }
         }
 
-        // If all entries were below threshold, return empty
-        if context == "[Memory context]\n" {
-            return Ok(String::new());
+        // ── Skills + entities (only if recall found relevant memories) ──
+        if has_recall {
+            let query = MemoryQuery {
+                text: user_message.to_string(),
+                embedding: None,
+                agent_id: agent_id.to_string(),
+                include_shared: false,
+                time_range: None,
+                limit: 3,
+            };
+
+            if let Ok(skills) = memory.find_skills(&query).await {
+                for skill in &skills {
+                    if !skill.content.trim().is_empty() {
+                        let _ = writeln!(context, "<skill name=\"{}\">", skill.name);
+                        let _ = writeln!(context, "{}", skill.content.trim());
+                        let _ = writeln!(context, "</skill>");
+                    }
+                }
+            }
+
+            if let Ok(entities) = memory.search_entities(&query).await {
+                for entity in &entities {
+                    if let Some(ref summary) = entity.summary {
+                        let _ = writeln!(
+                            context,
+                            "<entity name=\"{}\" type=\"{}\">",
+                            entity.name, entity.entity_type
+                        );
+                        let _ = writeln!(context, "{}", summary);
+                        let _ = writeln!(context, "</entity>");
+                    }
+                }
+            }
         }
 
-        context.push('\n');
         Ok(context)
     }
 
@@ -132,7 +179,10 @@ mod tests {
     async fn default_loader_returns_empty_when_no_entries() {
         let loader = DefaultMemoryLoader::default();
         let mem = synapse_memory::NoopUnifiedMemory;
-        let context = loader.load_context(&mem, "hello", None).await.unwrap();
+        let context = loader
+            .load_context(&mem, "hello", None, "test")
+            .await
+            .unwrap();
         assert!(context.is_empty());
     }
 
@@ -149,7 +199,7 @@ mod tests {
         let loader = DefaultMemoryLoader::new(5, 0.8);
         let mem = synapse_memory::NoopUnifiedMemory;
         let context = loader
-            .load_context(&mem, "answer style", None)
+            .load_context(&mem, "answer style", None, "test")
             .await
             .unwrap();
         assert!(context.is_empty());

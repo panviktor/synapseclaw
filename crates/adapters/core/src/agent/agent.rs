@@ -42,6 +42,8 @@ pub struct Agent {
     last_turn_usage: Option<synapse_providers::traits::TokenUsage>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
+    /// Canonical agent ID for memory scoping.
+    agent_id: String,
 }
 
 pub struct AgentBuilder {
@@ -66,6 +68,7 @@ pub struct AgentBuilder {
     route_model_by_hint: Option<HashMap<String, String>>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
+    agent_id: Option<String>,
 }
 
 impl AgentBuilder {
@@ -92,6 +95,7 @@ impl AgentBuilder {
             route_model_by_hint: None,
             allowed_tools: None,
             response_cache: None,
+            agent_id: None,
         }
     }
 
@@ -212,6 +216,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn agent_id(mut self, id: String) -> Self {
+        self.agent_id = Some(id);
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let mut tools = self
             .tools
@@ -263,6 +272,7 @@ impl AgentBuilder {
             last_turn_usage: None,
             allowed_tools: allowed,
             response_cache: self.response_cache,
+            agent_id: self.agent_id.unwrap_or_else(|| "default".to_string()),
         })
     }
 }
@@ -457,6 +467,7 @@ impl Agent {
             )))
             .prompt_builder(SystemPromptBuilder::with_defaults())
             .config(config.agent.clone())
+            .agent_id(resolved_agent_id)
             .model_name(model_name)
             .temperature(config.default_temperature)
             .workspace_dir(config.workspace_dir.clone())
@@ -516,10 +527,8 @@ impl Agent {
 
     async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
         let start = Instant::now();
-        let args_preview = synapse_domain::domain::util::truncate_with_ellipsis(
-            &call.arguments.to_string(),
-            300,
-        );
+        let args_preview =
+            synapse_domain::domain::util::truncate_with_ellipsis(&call.arguments.to_string(), 300);
 
         self.observer.record_event(&ObserverEvent::ToolCallStart {
             tool: call.name.clone(),
@@ -538,7 +547,9 @@ impl Agent {
                     if r.success {
                         self.observer.record_event(&ObserverEvent::ToolResult {
                             tool: call.name.clone(),
-                            output: synapse_domain::domain::util::truncate_with_ellipsis(&r.output, 500),
+                            output: synapse_domain::domain::util::truncate_with_ellipsis(
+                                &r.output, 500,
+                            ),
                             success: true,
                         });
                         r.output
@@ -546,7 +557,9 @@ impl Agent {
                         let reason = r.error.unwrap_or(r.output);
                         self.observer.record_event(&ObserverEvent::ToolResult {
                             tool: call.name.clone(),
-                            output: synapse_domain::domain::util::truncate_with_ellipsis(&reason, 500),
+                            output: synapse_domain::domain::util::truncate_with_ellipsis(
+                                &reason, 500,
+                            ),
                             success: false,
                         });
                         format!("Error: {reason}")
@@ -636,6 +649,25 @@ impl Agent {
                 )));
         }
 
+        // ── Core memory blocks → system message (MemGPT: always in prompt) ──
+        let core_blocks = self
+            .memory_loader
+            .load_core_blocks(self.memory.as_ref(), &self.agent_id)
+            .await
+            .unwrap_or_default();
+        if !core_blocks.is_empty() {
+            // Remove previous core-memory system message if present (avoid accumulation)
+            self.history.retain(|msg| {
+                if let ConversationMessage::Chat(chat) = msg {
+                    !(chat.role == "system" && chat.content.starts_with("<persona>"))
+                } else {
+                    true
+                }
+            });
+            self.history
+                .push(ConversationMessage::Chat(ChatMessage::system(core_blocks)));
+        }
+
         if self.auto_save {
             let _ = self
                 .memory
@@ -654,6 +686,7 @@ impl Agent {
                 self.memory.as_ref(),
                 user_message,
                 self.memory_session_id.as_deref(),
+                &self.agent_id,
             )
             .await
             .unwrap_or_default();

@@ -10,6 +10,13 @@
 - fix: scope `get_skill()`, `update_skill()` by agent_id — prevents cross-agent skill poisoning
 - Port trait changes: `forget`, `get`, `get_skill`, `update_skill` now require `agent_id`
 
+### Unified Context Builder (PR #243)
+
+- fix: `Agent::turn()` now loads core memory blocks into system prompt (was missing in WS path)
+- fix: core memory blocks injected as system message, not user message (matches documented contract)
+- fix: `DefaultMemoryLoader::load_context()` now includes skills, entities, and stale tool_result filter
+- All runtime paths (CLI loop, WS chat, IPC) now get the same memory layers
+
 ## 2026-04-01
 
 ### Phase 4.3: SurrealDB Memory Architecture (PR #217)
