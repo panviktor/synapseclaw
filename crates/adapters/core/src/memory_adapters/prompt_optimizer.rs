@@ -6,9 +6,9 @@
 //! Runs as Phase 3 of the ConsolidationWorker (after importance decay + GC).
 //! Pattern: LangMem gradient (think/analyze/propose) + Letta sleep-time (background).
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use std::collections::HashMap;
-use synapse_domain::domain::memory::{AgentId, MemoryCategory, MemoryError, MemoryQuery};
+use synapse_domain::domain::memory::{MemoryCategory, MemoryError, MemoryQuery};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_providers::traits::Provider;
 
