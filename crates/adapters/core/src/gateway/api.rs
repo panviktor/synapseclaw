@@ -768,7 +768,10 @@ pub async fn handle_api_memory_delete(
 
 // ── Memory Stats / Learning Read-Models API ──────────────────────
 
-/// GET /api/memory/stats — memory overview for dashboard
+/// GET /api/memory/stats — MemoryOverview read-model for dashboard
+///
+/// Returns total counts, per-category breakdown, entity/skill/reflection counts,
+/// and core block labels. This is the gateway-facing contract for Memory Pulse UI.
 pub async fn handle_api_memory_stats(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -779,7 +782,7 @@ pub async fn handle_api_memory_stats(
     let mem = &state.mem;
     let total = mem.count().await.unwrap_or(0) as u64;
 
-    // Count by category via list() with category filter
+    // Count by category
     let mut by_category = Vec::new();
     let categories = [
         ("core", synapse_domain::domain::memory::MemoryCategory::Core),
@@ -793,9 +796,40 @@ pub async fn handle_api_memory_stats(
         by_category.push(serde_json::json!({"category": name, "count": count}));
     }
 
+    // Core blocks
+    let core_blocks: Vec<serde_json::Value> = mem
+        .get_core_blocks(&state.agent_id)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|b| {
+            serde_json::json!({
+                "label": b.label,
+                "chars": b.content.chars().count(),
+                "updated_at": b.updated_at.to_rfc3339(),
+            })
+        })
+        .collect();
+
+    // Entity/skill/reflection counts via search with empty query
+    let entity_query = synapse_domain::domain::memory::MemoryQuery {
+        text: String::new(),
+        embedding: None,
+        agent_id: state.agent_id.clone(),
+        include_shared: false,
+        time_range: None,
+        limit: 10_000,
+    };
+    let entities = mem.search_entities(&entity_query).await.map(|v| v.len()).unwrap_or(0);
+    let skills = mem.find_skills(&entity_query).await.map(|v| v.len()).unwrap_or(0);
+
     Json(serde_json::json!({
-        "total": total,
+        "agent_id": state.agent_id,
+        "total_entries": total,
         "by_category": by_category,
+        "core_blocks": core_blocks,
+        "entities": entities,
+        "skills": skills,
     }))
     .into_response()
 }

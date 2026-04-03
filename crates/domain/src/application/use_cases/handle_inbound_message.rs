@@ -56,8 +56,6 @@ pub struct InboundMessageConfig {
     pub prompt_budget: crate::application::services::turn_context::PromptBudget,
     /// What to load on continuation turns (turn N>1).
     pub continuation_policy: crate::application::services::turn_context::ContinuationPolicy,
-    /// DB-loaded learning signal patterns (empty → classify_signal falls back to defaults).
-    pub signal_patterns: Vec<crate::application::services::learning_signals::SignalPattern>,
 }
 
 impl std::fmt::Debug for InboundMessageConfig {
@@ -580,7 +578,6 @@ async fn execute_agent_turn(
                     user_message: content.to_string(),
                     assistant_response: response_text.clone(),
                     tools_used: tools,
-                    signal_patterns: config.signal_patterns.clone(),
                     auto_save_enabled: config.auto_save_memory,
                 };
                 tokio::spawn(async move {
@@ -918,7 +915,6 @@ mod tests {
             agent_id: "test-agent".into(),
             prompt_budget: crate::application::services::turn_context::PromptBudget::default(),
             continuation_policy: crate::application::services::turn_context::ContinuationPolicy::default(),
-            signal_patterns: vec![],
         }
     }
 

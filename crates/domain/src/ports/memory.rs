@@ -270,6 +270,14 @@ pub trait UnifiedMemoryPort:
         ))
     }
 
+    /// Load learning signal patterns from storage.
+    /// Returns empty vec if not supported (patterns fall back to built-in defaults).
+    async fn list_signal_patterns(
+        &self,
+    ) -> Result<Vec<crate::application::services::learning_signals::SignalPattern>, MemoryError> {
+        Ok(vec![])
+    }
+
     /// Reflect on a conversation turn for skill learning. Fire-and-forget.
     /// `tools_used`: list of tool names called during this turn.
     async fn reflect_on_turn(
