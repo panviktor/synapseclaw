@@ -85,7 +85,7 @@ build_context(mem, user_msg, min_relevance, session_id)
        |       |
        |       v  mem.recall(user_msg, 5, session_id)
        |       |
-       |       v  SurrealDB: BM25 search + HNSW vector search → RRF fusion
+       |       v  SurrealDB: delegates to search_episodes() (BM25 + HNSW vector + RRF fusion)
        |       |
        |       v  Filter: score >= min_relevance_score (default 0.4)
        |       |  Filter: skip assistant_autosave keys, cron noise, tool_result blocks

@@ -1,8 +1,8 @@
 # IPC Phase 4.4 Progress
 
-**Status**: COMPLETE (PR #226)
+**Status**: IN PROGRESS
 
-Phase 4.3: memory architecture (COMPLETE) | **Phase 4.4: prompt optimizer (COMPLETE)** | Phase 4.5: pipeline hardening
+Phase 4.3: memory architecture (COMPLETE) | **Phase 4.4: prompt optimizer (IN PROGRESS)** | Phase 4.5: pipeline hardening
 
 ---
 

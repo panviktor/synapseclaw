@@ -94,9 +94,9 @@ Replace the current flat Memory backend (SQLite key-value + optional embeddings)
 |------|--------|-----|
 | Memory loader rewrite: `DefaultMemoryLoader` → UnifiedMemoryPort | **DONE** | #217 Slice 1 |
 | `load_core_blocks()` — XML-tagged core blocks for system prompt | **DONE** | #217 Slice 2 |
-| Core memory blocks injected into every agent prompt (system message) | PARTIAL | load_core_blocks() exists, not yet wired into prompt builder |
+| Core memory blocks injected into every agent prompt (system message) | **DONE** | PR #243: Agent::turn() injects via load_core_blocks() as system msg |
 | Relevant memories injected via recall on each turn | **DONE** | Existing recall path works with new ports |
-| Relevant skills injected when task is received | DEFERRED | Needs skill learning (Slice 4) |
+| Relevant skills injected when task is received | **DONE** | PR #243: DefaultMemoryLoader loads skills + entities after recall |
 
 ### Knowledge graph + entity extraction
 
