@@ -15,6 +15,8 @@ DEFINE FIELD IF NOT EXISTS importance  ON episode TYPE option<float>;
 DEFINE FIELD IF NOT EXISTS created_at  ON episode TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS visibility  ON episode TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS embedding   ON episode TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS access_count ON episode TYPE option<int> DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS last_accessed ON episode TYPE option<datetime>;
 
 DEFINE INDEX IF NOT EXISTS idx_ep_agent   ON episode FIELDS agent_id;
 DEFINE INDEX IF NOT EXISTS idx_ep_session ON episode FIELDS session_id;
