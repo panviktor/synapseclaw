@@ -526,6 +526,7 @@ pub async fn run_gateway(
         None, // IPC tools get their own client from config
         Some(agent_runner.clone()),
         shared_surreal.clone(),
+        None, None, None, // orchestration tool ports — gateway tools are for spec listing
     );
     let tools_registry: Arc<Vec<ToolSpec>> =
         Arc::new(tools_registry_raw.iter().map(|t| t.spec()).collect());
