@@ -12,6 +12,7 @@ import {
   Plus,
   Eraser,
   BrainCircuit,
+  PanelLeftOpen,
   PanelRightOpen,
   Orbit,
   Sparkles,
@@ -89,6 +90,7 @@ export default function AgentChat() {
   const [memoryStats, setMemoryStats] = useState<MemoryStatsResponse | null>(null);
   const [contextBudget, setContextBudget] = useState<ContextBudgetResponse | null>(null);
   const [memoryPulseOpen, setMemoryPulseOpen] = useState(false);
+  const [sessionSidebarOpen, setSessionSidebarOpen] = useState(false);
   const { events: learningEvents } = useSSE({
     filterTypes: ['post_turn_report'],
     maxEvents: 50,
@@ -357,6 +359,7 @@ export default function AgentChat() {
   const handleSelectSession = useCallback(
     (key: string) => {
       if (key === activeSession) return;
+      setSessionSidebarOpen(false);
       setSearchParams({ session: key }, { replace: true });
       if (wsRef.current?.connected) {
         loadHistory(wsRef.current, key);
@@ -373,6 +376,7 @@ export default function AgentChat() {
       setSessions(listRes.sessions);
       setSearchParams({ session: res.session_key }, { replace: true });
       setMessages([]);
+      setSessionSidebarOpen(false);
     } catch {
       // ignore
     }
@@ -422,6 +426,7 @@ export default function AgentChat() {
       const newAgent = agentId || null;
       setActiveAgent(newAgent);
       setMemoryPulseOpen(false);
+      setSessionSidebarOpen(false);
       if (newAgent) {
         localStorage.setItem('synapseclaw_active_agent', newAgent);
       } else {
@@ -466,6 +471,7 @@ export default function AgentChat() {
         setSearchParams({ session: sendSession }, { replace: true });
         const listRes = await wsRef.current.rpc<{ sessions: ChatSessionInfo[] }>('sessions.list');
         setSessions(listRes.sessions);
+        setSessionSidebarOpen(false);
       } catch {
         return;
       }
@@ -604,14 +610,25 @@ export default function AgentChat() {
 
   return (
     <div className="flex h-[calc(100vh-3.5rem)] bg-[radial-gradient(circle_at_top_left,var(--glow-primary),transparent_30%),var(--bg-primary)]">
+      {sessionSidebarOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 z-30 bg-black/25 backdrop-blur-[1px] lg:hidden"
+          onClick={() => setSessionSidebarOpen(false)}
+          aria-label="Close sessions"
+        />
+      )}
+
       <SessionSidebar
         sessions={sessions}
         activeKey={activeSession}
         collapsed={sidebarCollapsed}
+        mobileOpen={sessionSidebarOpen}
         status={status}
         agents={agents}
         activeAgent={activeAgent}
         onToggle={() => setSidebarCollapsed(!sidebarCollapsed)}
+        onMobileClose={() => setSessionSidebarOpen(false)}
         onSelect={handleSelectSession}
         onNew={handleNewSession}
         onRename={handleRenameSession}
@@ -642,7 +659,7 @@ export default function AgentChat() {
         )}
 
         <div className="border-b border-[var(--border-default)] bg-[linear-gradient(180deg,var(--bg-secondary),rgba(255,255,255,0))]">
-          <div className="space-y-4 px-4 py-4 md:px-5">
+          <div className="space-y-4 px-4 py-4 md:px-5 animate-panel-reveal">
             <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
               <div>
                 <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">
@@ -679,6 +696,13 @@ export default function AgentChat() {
               </div>
 
               <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setSessionSidebarOpen(true)}
+                  className="btn-secondary inline-flex items-center gap-2 px-4 py-2 text-sm lg:hidden"
+                >
+                  <PanelLeftOpen className="h-4 w-4" />
+                  Sessions
+                </button>
                 <button
                   onClick={handleNewSession}
                   className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm font-medium"
@@ -717,7 +741,10 @@ export default function AgentChat() {
         <div className="flex min-h-0 flex-1">
           <div className="flex min-w-0 flex-1 flex-col">
             <div className="border-b border-[var(--border-default)] bg-[var(--bg-card)]/70 px-4 py-3 backdrop-blur md:px-5">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div
+                key={`${activeAgentLabel}:${activeSession ?? 'fresh'}`}
+                className="animate-scope-shift flex flex-col gap-3 md:flex-row md:items-center md:justify-between"
+              >
                 <div className="flex items-center gap-2">
                   <span className="inline-flex h-8 w-8 items-center justify-center rounded-2xl bg-[var(--glow-secondary)] text-[var(--accent-primary)]">
                     <Orbit className="h-4 w-4" />
@@ -983,7 +1010,7 @@ export default function AgentChat() {
             )}
           </div>
 
-          <div className="hidden xl:block xl:w-[360px] xl:border-l xl:border-[var(--border-default)]">
+          <div className="hidden xl:block xl:w-[360px] xl:border-l xl:border-[var(--border-default)] animate-panel-reveal">
             <MemoryPulse
               stats={memoryStats}
               budget={contextBudget}

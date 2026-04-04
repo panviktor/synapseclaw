@@ -8,10 +8,12 @@ interface SessionSidebarProps {
   sessions: ChatSessionInfo[];
   activeKey: string | null;
   collapsed: boolean;
+  mobileOpen?: boolean;
   status: StatusResponse | null;
   agents: AgentEntry[];
   activeAgent: string | null;
   onToggle: () => void;
+  onMobileClose?: () => void;
   onSelect: (key: string) => void;
   onNew: () => void;
   onRename: (key: string, label: string) => void;
@@ -61,10 +63,12 @@ export default function SessionSidebar({
   sessions,
   activeKey,
   collapsed,
+  mobileOpen = false,
   status,
   agents,
   activeAgent,
   onToggle,
+  onMobileClose,
   onSelect,
   onNew,
   onRename,
@@ -105,9 +109,9 @@ export default function SessionSidebar({
       })
     : sessions;
 
-  if (collapsed) {
+  if (collapsed && !mobileOpen) {
     return (
-      <div className="flex flex-col items-center py-3 px-1 border-r border-[var(--border-default)] w-10 bg-[var(--bg-secondary)]">
+      <div className="hidden lg:flex flex-col items-center py-3 px-1 border-r border-[var(--border-default)] w-10 bg-[var(--bg-secondary)]">
         <button
           onClick={onToggle}
           className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[#E5E3E0] transition-colors"
@@ -127,7 +131,13 @@ export default function SessionSidebar({
   }
 
   return (
-    <div className="flex flex-col w-[220px] border-r border-[var(--border-default)] overflow-hidden bg-[var(--bg-secondary)]">
+    <div
+      className={`fixed inset-y-0 left-0 z-40 flex w-[min(88vw,320px)] flex-col overflow-hidden border-r border-[var(--border-default)] bg-[var(--bg-secondary)] shadow-2xl transition-transform duration-300 ease-out lg:relative lg:inset-auto lg:z-auto lg:w-[220px] lg:translate-x-0 lg:shadow-none ${
+        mobileOpen
+          ? 'translate-x-0'
+          : '-translate-x-full pointer-events-none lg:pointer-events-auto'
+      }`}
+    >
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2.5 border-b border-[var(--border-default)]">
         <button
@@ -138,9 +148,9 @@ export default function SessionSidebar({
           New Chat
         </button>
         <button
-          onClick={onToggle}
+          onClick={mobileOpen && onMobileClose ? onMobileClose : onToggle}
           className="p-1 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[#E5E3E0] transition-colors"
-          title="Collapse sidebar"
+          title={mobileOpen ? 'Close sidebar' : 'Collapse sidebar'}
         >
           <PanelLeftClose className="h-3.5 w-3.5" />
         </button>

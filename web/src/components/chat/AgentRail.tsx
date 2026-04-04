@@ -40,14 +40,15 @@ export default function AgentRail({
   const localSelected = activeAgent === null;
 
   return (
-    <div className="flex items-center gap-3 overflow-x-auto pb-1">
+    <div className="rail-scroll flex items-stretch gap-3 overflow-x-auto pb-1 pr-1 snap-x snap-mandatory">
       <button
         onClick={() => onSelect(null)}
-        className={`group relative min-w-[210px] rounded-2xl border px-4 py-3 text-left transition-all duration-300 ${
+        className={`group relative min-w-[180px] snap-start rounded-2xl border px-3.5 py-3 text-left transition-all duration-300 sm:min-w-[198px] sm:px-4 xl:min-w-[210px] ${
           localSelected
             ? 'border-[var(--accent-primary)] bg-[linear-gradient(135deg,var(--glow-primary),transparent_65%)] shadow-[0_10px_30px_var(--glow-primary)] -translate-y-0.5'
-            : 'border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--accent-primary)]/35 hover:-translate-y-0.5'
+            : 'border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--accent-primary)]/35 hover:-translate-y-0.5 hover:shadow-[0_10px_24px_var(--glow-primary)]'
         }`}
+        aria-pressed={localSelected}
       >
         <div className="absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/60 to-transparent" />
         <div className="flex items-start justify-between gap-3">
@@ -104,11 +105,12 @@ export default function AgentRail({
           <button
             key={agent.agent_id}
             onClick={() => onSelect(agent.agent_id)}
-            className={`group relative min-w-[210px] rounded-2xl border px-4 py-3 text-left transition-all duration-300 ${
+            className={`group relative min-w-[180px] snap-start rounded-2xl border px-3.5 py-3 text-left transition-all duration-300 sm:min-w-[198px] sm:px-4 xl:min-w-[210px] ${
               selected
                 ? 'border-[var(--accent-primary)] bg-[linear-gradient(145deg,var(--glow-primary),transparent_60%)] shadow-[0_10px_30px_var(--glow-primary)] -translate-y-0.5'
-                : 'border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--accent-primary)]/35 hover:-translate-y-0.5'
+                : 'border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--accent-primary)]/35 hover:-translate-y-0.5 hover:shadow-[0_10px_24px_var(--glow-primary)]'
             }`}
+            aria-pressed={selected}
           >
             <div className="absolute inset-x-4 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/60 to-transparent" />
             <div className="flex items-start justify-between gap-3">
