@@ -522,50 +522,95 @@ export default function Fleet() {
           <div className="glass-card animate-panel-reveal overflow-hidden">
             <div className="border-b border-[var(--bg-secondary)] px-5 py-4">
               <div className="flex items-center gap-2">
-                <Sparkles className="h-4 w-4 text-[var(--accent-primary)]" />
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-primary)]">Operator Shortcuts</h2>
+                <Network className="h-4 w-4 text-[var(--accent-primary)]" />
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-primary)]">Reading The Map</h2>
               </div>
             </div>
-            <div className="space-y-3 px-5 py-5">
-              <button
-                onClick={() => navigate('/ipc/activity')}
-                className="flex w-full items-center justify-between rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-[var(--accent-primary)]/30 hover:shadow-[0_10px_24px_var(--glow-primary)]"
-              >
-                <div>
-                  <p className="text-sm font-medium text-[var(--text-primary)]">Open Activity Feed</p>
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">Inspect cross-surface movement and recent broker events.</p>
+            <div className="space-y-4 px-5 py-5">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Nodes</p>
+                  <p className="mt-2 text-sm text-[var(--text-primary)]">
+                    Ring color maps to trust level. The small status dot marks online vs offline reachability.
+                  </p>
                 </div>
-                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
-              </button>
-              <button
-                onClick={() => navigate('/agents')}
-                className="flex w-full items-center justify-between rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-[var(--accent-primary)]/30 hover:shadow-[0_10px_24px_var(--glow-primary)]"
-              >
-                <div>
-                  <p className="text-sm font-medium text-[var(--text-primary)]">Open Workbench</p>
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">Jump from fleet scope into the live agent chat workbench.</p>
+                <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Edges</p>
+                  <p className="mt-2 text-sm text-[var(--text-primary)]">
+                    Solid links are policy relationships. Dashed links mark restricted L4 destinations.
+                  </p>
                 </div>
-                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
-              </button>
+              </div>
+
+              <div className="space-y-2 rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-4">
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="inline-flex items-center gap-2 text-[var(--text-secondary)]">
+                    <span className="inline-block h-[2px] w-5 rounded-full" style={{ background: 'rgba(0,128,255,0.5)' }} />
+                    lateral policy
+                  </span>
+                  <span className="inline-flex items-center gap-2 text-[var(--text-secondary)]">
+                    <span className="inline-block h-[2px] w-5 border-t-2 border-dashed" style={{ borderColor: 'rgba(255,102,68,0.5)' }} />
+                    l4 route
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3 text-xs">
+                  <span className="inline-flex items-center gap-2 text-[var(--text-secondary)]">
+                    <span className="inline-block h-[2px] w-5 rounded-full" style={{ background: 'rgba(0,255,136,0.35)' }} />
+                    observed traffic
+                  </span>
+                  <span className="text-[var(--text-muted)]">click to inspect, drag to arrange</span>
+                </div>
+              </div>
             </div>
           </div>
 
           <div className="glass-card animate-panel-reveal overflow-hidden">
             <div className="border-b border-[var(--bg-secondary)] px-5 py-4">
               <div className="flex items-center gap-2">
-                <Shield className="h-4 w-4 text-[var(--accent-primary)]" />
-                <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-primary)]">Trust Posture</h2>
+                <Sparkles className="h-4 w-4 text-[var(--accent-primary)]" />
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-primary)]">Broker Lens</h2>
               </div>
             </div>
-            <div className="grid gap-3 px-5 py-5 md:grid-cols-2 xl:grid-cols-1">
-              {[0, 1, 2, 3, 4].map((level) => (
-                <div key={level} className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
+            <div className="space-y-3 px-5 py-5">
+              <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Current View</p>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full border border-[var(--border-default)] bg-[var(--bg-secondary)] px-2.5 py-1 text-[var(--text-secondary)]">
+                    {showTraffic ? 'observed traffic' : 'policy topology'}
+                  </span>
+                  <span className="rounded-full border border-[var(--border-default)] bg-[var(--bg-secondary)] px-2.5 py-1 text-[var(--text-secondary)]">
+                    {showEphemeral ? 'ephemeral visible' : 'ephemeral hidden'}
+                  </span>
+                </div>
+                <p className="mt-3 text-sm text-[var(--text-muted)]">
+                  This screen is the broker-wide fleet surface: topology first, agent drill-down second.
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
+                <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Window</p>
+                <div className="mt-2 grid gap-2 text-sm text-[var(--text-primary)]">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium text-[var(--text-primary)]">Trust L{level}</span>
-                    <span className="text-sm text-[var(--text-muted)]">{trustCounts[level] ?? 0}</span>
+                    <span className="text-[var(--text-muted)]">Broker</span>
+                    <span className="font-mono text-xs">{brokerUrl}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-[var(--text-muted)]">Traffic horizon</span>
+                    <span>{TRAFFIC_WINDOW_HOURS}h / ≥ {TRAFFIC_MIN_COUNT}</span>
                   </div>
                 </div>
-              ))}
+              </div>
+
+              <button
+                onClick={() => navigate('/ipc/activity')}
+                className="flex w-full items-center justify-between rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-[var(--accent-primary)]/30 hover:shadow-[0_10px_24px_var(--glow-primary)]"
+              >
+                <div>
+                  <p className="text-sm font-medium text-[var(--text-primary)]">Open Activity Feed</p>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">Switch from structural map to recent broker movement and events.</p>
+                </div>
+                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
+              </button>
             </div>
           </div>
         </div>

@@ -91,6 +91,8 @@ export default function AgentChat() {
   const [contextBudget, setContextBudget] = useState<ContextBudgetResponse | null>(null);
   const [memoryPulseOpen, setMemoryPulseOpen] = useState(false);
   const [sessionSidebarOpen, setSessionSidebarOpen] = useState(false);
+  const [localSessionCount, setLocalSessionCount] = useState(0);
+  const [localHasActiveRun, setLocalHasActiveRun] = useState(false);
   const { events: learningEvents } = useSSE({
     filterTypes: ['post_turn_report'],
     maxEvents: 50,
@@ -168,6 +170,12 @@ export default function AgentChat() {
   useEffect(() => {
     loadMemorySurface(activeAgent);
   }, [activeAgent, loadMemorySurface]);
+
+  useEffect(() => {
+    if (activeAgent !== null) return;
+    setLocalSessionCount(sessions.length);
+    setLocalHasActiveRun(typing || sessions.some((session) => session.has_active_run));
+  }, [activeAgent, sessions, typing]);
 
   useEffect(() => {
     const ws = new WebSocketClient({ agent: activeAgent });
@@ -732,7 +740,8 @@ export default function AgentChat() {
               activeAgent={activeAgent}
               connected={connected}
               typing={typing}
-              sessionCount={sessions.length}
+              localSessionCount={localSessionCount}
+              localHasActiveRun={localHasActiveRun}
               onSelect={handleAgentChange}
             />
           </div>

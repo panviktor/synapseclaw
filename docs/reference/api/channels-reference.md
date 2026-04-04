@@ -33,9 +33,15 @@ All channel settings live under `channels_config` in `~/.synapseclaw/config.toml
 ```toml
 [channels_config]
 cli = true
+show_tool_calls = false
 ```
 
 Each channel is enabled by creating its sub-table (for example, `[channels_config.telegram]`).
+
+Top-level channel UX note:
+
+- `show_tool_calls = false` keeps chats compact and human-readable. This is the recommended default.
+- `show_tool_calls = true` enables verbose raw tool trace in the channel itself and is intended for debugging or operator-only rooms.
 
 ## In-Chat Runtime Model Switching (Telegram / Discord)
 

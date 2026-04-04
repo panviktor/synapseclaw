@@ -4376,9 +4376,10 @@ pub struct ChannelsConfig {
     /// completion) to incoming channel messages. Default: `true`.
     #[serde(default = "default_true")]
     pub ack_reactions: bool,
-    /// Whether to send tool-call notification messages (e.g. `🔧 web_search_tool: …`)
-    /// to channel users. When `false`, tool calls are still logged server-side but
-    /// not forwarded as individual channel messages. Default: `false`.
+    /// Explicitly opt into verbose tool trace in messaging channels.
+    /// When `false` (default), channels stay human-first: no raw tool-call spam,
+    /// only normal replies plus compact progress/approval/error updates.
+    /// When `true`, tool calls may be rendered as individual channel messages.
     #[serde(default = "default_false")]
     pub show_tool_calls: bool,
     /// Persist channel conversation history to JSONL files so sessions survive

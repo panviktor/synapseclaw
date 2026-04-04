@@ -6,6 +6,11 @@ default_provider = "ollama"
 default_model = "llama3.2"
 default_temperature = 0.7
 
+[channels_config]
+# Human-facing default: keep messenger chats compact.
+# Set to true only if you explicitly want raw tool trace in channels.
+show_tool_calls = false
+
 [gateway]
 port = 42617
 host = "[::]"

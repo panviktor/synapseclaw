@@ -502,6 +502,7 @@ Top-level channel options are configured under `channels_config`.
 | Key | Default | Purpose |
 |---|---|---|
 | `message_timeout_secs` | `300` | Base timeout in seconds for channel message processing; runtime scales this with tool-loop depth (up to 4x) |
+| `show_tool_calls` | `false` | Explicit opt-in for verbose raw tool trace in messaging channels; keep `false` for compact human-facing chats |
 
 Examples:
 
@@ -516,6 +517,8 @@ Examples:
 Notes:
 
 - Default `300s` is optimized for on-device LLMs (Ollama) which are slower than cloud APIs.
+- `show_tool_calls = false` is the recommended default. Tool execution detail belongs in the web UI; channels should stay readable.
+- Set `show_tool_calls = true` only when you intentionally want raw per-tool trace in the channel itself for debugging or operator-only rooms.
 - Runtime timeout budget is `message_timeout_secs * scale`, where `scale = min(max_tool_iterations, 4)` and a minimum of `1`.
 - This scaling avoids false timeouts when the first LLM turn is slow/retried but later tool-loop turns still need to complete.
 - If using cloud APIs (OpenAI, Anthropic, etc.), you can reduce this to `60` or lower.
@@ -524,6 +527,14 @@ Notes:
 - Telegram-only interruption behavior is controlled with `channels_config.telegram.interrupt_on_new_message` (default `false`).
   When enabled, a newer message from the same sender in the same chat cancels the in-flight request and preserves interrupted user context.
 - While `synapseclaw channel start` is running, updates to `default_provider`, `default_model`, `default_temperature`, `api_key`, `api_url`, and `reliability.*` are hot-applied from `config.toml` on the next inbound message.
+
+Example:
+
+```toml
+[channels_config]
+message_timeout_secs = 300
+show_tool_calls = false
+```
 
 ### `[channels_config.nostr]`
 

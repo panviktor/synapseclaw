@@ -1289,10 +1289,14 @@ async fn handle_message_via_orchestrator(
             Arc::new(NullChannelOutput)
         };
 
-    // Wrap observer with ChannelNotifyObserver to deliver live tool events
-    // to the channel as threaded replies while the agent is working.
-    // Only create if we have a target channel — avoids wasted allocations.
-    let observer_for_runtime: Arc<dyn Observer> = if let Some(ch) = target_channel.clone() {
+    let presentation_mode = synapse_domain::application::services::channel_presentation::ChannelPresentationMode::from_show_tool_calls(
+        ctx.show_tool_calls,
+    );
+
+    // Raw tool trace is an explicit opt-in. Default channel UX stays compact and
+    // human-readable; full telemetry belongs in the web/operator UI.
+    let observer_for_runtime: Arc<dyn Observer> = if synapse_domain::application::services::channel_presentation::tool_trace_enabled(presentation_mode) {
+        if let Some(ch) = target_channel.clone() {
         let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let reply_target = original_msg.reply_target.clone();
         let thread_ts = original_msg.thread_ts.clone();
@@ -1321,6 +1325,9 @@ async fn handle_message_via_orchestrator(
             tx: tool_tx,
             tools_used: std::sync::atomic::AtomicBool::new(false),
         })
+        } else {
+            Arc::clone(&ctx.observer)
+        }
     } else {
         Arc::clone(&ctx.observer)
     };
@@ -1431,6 +1438,7 @@ async fn handle_message_via_orchestrator(
             b
         },
         continuation_policy: ctx.prompt_budget_config.to_continuation_policy(),
+        presentation_mode,
         // Signal patterns: snapshot from startup. Edits via /api/memory/learning-patterns
         // apply to web immediately but require service restart for channels.
         // Future: add surreal handle to ctx for per-message reload.
