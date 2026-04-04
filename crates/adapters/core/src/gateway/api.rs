@@ -204,6 +204,80 @@ pub async fn handle_api_agent_status_proxy(
     }
 }
 
+/// GET /api/agents/:agent_id/memory/stats — proxy memory overview request to a specific agent.
+pub async fn handle_api_agent_memory_stats_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => {
+            return (StatusCode::NOT_FOUND, "Agent not found").into_response();
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/memory/stats", agent.gateway_url);
+    match client.get(&url).bearer_auth(&agent.proxy_token).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// GET /api/agents/:agent_id/memory/context-budget — proxy context budget request to a specific agent.
+pub async fn handle_api_agent_context_budget_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => {
+            return (StatusCode::NOT_FOUND, "Agent not found").into_response();
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/memory/context-budget", agent.gateway_url);
+    match client.get(&url).bearer_auth(&agent.proxy_token).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
 /// PUT /api/agents/:agent_id/summary-model — proxy summary model change to a specific agent.
 pub async fn handle_api_agent_summary_model_proxy(
     State(state): State<AppState>,

@@ -1,32 +1,33 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { useState, useEffect, createContext, useContext, Component } from 'react';
+import { useState, useEffect, createContext, useContext, Component, lazy, Suspense } from 'react';
 import type { ReactNode, ErrorInfo } from 'react';
 import Layout from './components/layout/Layout';
-import Dashboard from './pages/Dashboard';
-import AgentChat from './pages/AgentChat';
-import Tools from './pages/Tools';
-import Cron from './pages/Cron';
-import Integrations from './pages/Integrations';
-import Memory from './pages/Memory';
-import LearningPatterns from './pages/LearningPatterns';
-import Config from './pages/Config';
-import Cost from './pages/Cost';
-import Logs from './pages/Logs';
-import Doctor from './pages/Doctor';
-import IpcFleet from './pages/ipc/Fleet';
-import IpcAgentDetail from './pages/ipc/AgentDetail';
-import IpcSessions from './pages/ipc/Sessions';
-import IpcSpawns from './pages/ipc/Spawns';
-import IpcQuarantine from './pages/ipc/Quarantine';
-import IpcAudit from './pages/ipc/Audit';
-import IpcActivity from './pages/ipc/Activity';
-import IpcCron from './pages/ipc/Cron';
-import IpcConversation from './pages/ipc/Conversation';
-import IpcDeadLetters from './pages/ipc/DeadLetters';
-import IpcPipelineGraph from './pages/ipc/PipelineGraph';
 import { AuthProvider, useAuth } from './hooks/useAuth';
 import { ThemeProvider } from './hooks/useTheme';
 import { setLocale, type Locale } from './lib/i18n';
+
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const AgentChat = lazy(() => import('./pages/AgentChat'));
+const Tools = lazy(() => import('./pages/Tools'));
+const Cron = lazy(() => import('./pages/Cron'));
+const Integrations = lazy(() => import('./pages/Integrations'));
+const Memory = lazy(() => import('./pages/Memory'));
+const LearningPatterns = lazy(() => import('./pages/LearningPatterns'));
+const Config = lazy(() => import('./pages/Config'));
+const Cost = lazy(() => import('./pages/Cost'));
+const Logs = lazy(() => import('./pages/Logs'));
+const Doctor = lazy(() => import('./pages/Doctor'));
+const IpcFleet = lazy(() => import('./pages/ipc/Fleet'));
+const IpcAgentDetail = lazy(() => import('./pages/ipc/AgentDetail'));
+const IpcSessions = lazy(() => import('./pages/ipc/Sessions'));
+const IpcSpawns = lazy(() => import('./pages/ipc/Spawns'));
+const IpcQuarantine = lazy(() => import('./pages/ipc/Quarantine'));
+const IpcAudit = lazy(() => import('./pages/ipc/Audit'));
+const IpcActivity = lazy(() => import('./pages/ipc/Activity'));
+const IpcCron = lazy(() => import('./pages/ipc/Cron'));
+const IpcConversation = lazy(() => import('./pages/ipc/Conversation'));
+const IpcDeadLetters = lazy(() => import('./pages/ipc/DeadLetters'));
+const IpcPipelineGraph = lazy(() => import('./pages/ipc/PipelineGraph'));
 
 // Locale context
 interface LocaleContextType {
@@ -161,6 +162,17 @@ function PairingDialog({ onPair }: { onPair: (code: string) => Promise<void> }) 
   );
 }
 
+function RouteLoading() {
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center">
+      <div className="flex flex-col items-center gap-4 animate-fade-in">
+        <div className="h-10 w-10 border-2 border-theme-accent/20 border-t-theme-accent rounded-full animate-spin" />
+        <p className="text-theme-muted text-sm">Loading page…</p>
+      </div>
+    </div>
+  );
+}
+
 function AppContent() {
   const { isAuthenticated, requiresPairing, loading, pair, logout } = useAuth();
   const [locale, setLocaleState] = useState('en');
@@ -196,36 +208,36 @@ function AppContent() {
 
   return (
     <LocaleContext.Provider value={{ locale, setAppLocale }}>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/agents" element={<AgentChat />} />
-          <Route path="/agent" element={<Navigate to="/agents" replace />} />
-          <Route path="/tools" element={<Tools />} />
-          <Route path="/cron" element={<Cron />} />
-          <Route path="/integrations" element={<Integrations />} />
-          <Route path="/memory" element={<Memory />} />
-          <Route path="/learning-patterns" element={<LearningPatterns />} />
-          <Route path="/config" element={<Config />} />
-          <Route path="/cost" element={<Cost />} />
-          <Route path="/logs" element={<Logs />} />
-          <Route path="/doctor" element={<Doctor />} />
-          {/* IPC Phase 3.5 pages */}
-          <Route path="/ipc/fleet" element={<IpcFleet />} />
-          <Route path="/ipc/fleet/:agentId" element={<IpcAgentDetail />} />
-          <Route path="/ipc/sessions" element={<IpcSessions />} />
-          <Route path="/ipc/spawns" element={<IpcSpawns />} />
-          <Route path="/ipc/quarantine" element={<IpcQuarantine />} />
-          <Route path="/ipc/audit" element={<IpcAudit />} />
-          <Route path="/ipc/activity" element={<IpcActivity />} />
-          <Route path="/ipc/cron" element={<IpcCron />} />
-          <Route path="/ipc/conversation" element={<IpcConversation />} />
-          {/* Phase 4.5: Pipeline hardening */}
-          <Route path="/ipc/dead-letters" element={<IpcDeadLetters />} />
-          <Route path="/ipc/pipelines" element={<IpcPipelineGraph />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      </Routes>
+      <Suspense fallback={<RouteLoading />}>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/agents" element={<AgentChat />} />
+            <Route path="/agent" element={<Navigate to="/agents" replace />} />
+            <Route path="/tools" element={<Tools />} />
+            <Route path="/cron" element={<Cron />} />
+            <Route path="/integrations" element={<Integrations />} />
+            <Route path="/memory" element={<Memory />} />
+            <Route path="/learning-patterns" element={<LearningPatterns />} />
+            <Route path="/config" element={<Config />} />
+            <Route path="/cost" element={<Cost />} />
+            <Route path="/logs" element={<Logs />} />
+            <Route path="/doctor" element={<Doctor />} />
+            <Route path="/ipc/fleet" element={<IpcFleet />} />
+            <Route path="/ipc/fleet/:agentId" element={<IpcAgentDetail />} />
+            <Route path="/ipc/sessions" element={<IpcSessions />} />
+            <Route path="/ipc/spawns" element={<IpcSpawns />} />
+            <Route path="/ipc/quarantine" element={<IpcQuarantine />} />
+            <Route path="/ipc/audit" element={<IpcAudit />} />
+            <Route path="/ipc/activity" element={<IpcActivity />} />
+            <Route path="/ipc/cron" element={<IpcCron />} />
+            <Route path="/ipc/conversation" element={<IpcConversation />} />
+            <Route path="/ipc/dead-letters" element={<IpcDeadLetters />} />
+            <Route path="/ipc/pipelines" element={<IpcPipelineGraph />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </Suspense>
     </LocaleContext.Provider>
   );
 }

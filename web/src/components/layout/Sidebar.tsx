@@ -22,6 +22,7 @@ import {
   Timer,
   AlertTriangle,
   GitBranch,
+  X,
 } from 'lucide-react';
 import { t } from '@/lib/i18n';
 import { checkIpcAccess, fetchMessages } from '@/lib/ipc-api';
@@ -98,7 +99,23 @@ function NavLinkItem({ to, icon: Icon, labelKey, descKey, end, idx, badge }: Nav
   );
 }
 
-export default function Sidebar() {
+interface SidebarProps {
+  isOpen: boolean;
+  onClose: () => void;
+}
+
+function NavLinkItemWithClose({
+  onNavigate,
+  ...props
+}: NavItem & { idx: number; badge?: number; onNavigate?: () => void }) {
+  return (
+    <div onClick={onNavigate}>
+      <NavLinkItem {...props} />
+    </div>
+  );
+}
+
+export default function Sidebar({ isOpen, onClose }: SidebarProps) {
   const [ipcAvailable, setIpcAvailable] = useState(false);
   const [quarantineCount, setQuarantineCount] = useState(0);
 
@@ -125,53 +142,76 @@ export default function Sidebar() {
   }, [ipcAvailable]);
 
   return (
-    <aside className="fixed top-0 left-0 h-screen w-60 z-30 flex flex-col bg-theme-sidebar border-r border-theme-default">
-      {/* Accent line on right edge */}
-      <div className="sidebar-accent-line" />
+    <>
+      <button
+        type="button"
+        aria-label="Close navigation"
+        className={`fixed inset-0 z-30 bg-black/30 backdrop-blur-[1px] transition-opacity duration-300 md:hidden ${
+          isOpen ? 'opacity-100' : 'pointer-events-none opacity-0'
+        }`}
+        onClick={onClose}
+      />
 
-      {/* Logo / Title */}
-      <div className="flex items-center gap-3 px-4 py-4 border-b border-theme-default">
-        <img
-          src="/_app/logo.png"
-          alt="SynapseClaw"
-          className="h-10 w-10 rounded-xl object-cover"
-        />
-        <span className="text-lg font-bold text-gradient tracking-wide">
-          SynapseClaw
-        </span>
-      </div>
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 flex h-screen w-[min(84vw,18rem)] flex-col border-r border-theme-default bg-theme-sidebar transition-transform duration-300 ease-out md:z-30 md:w-60 ${
+          isOpen
+            ? 'translate-x-0 shadow-2xl md:shadow-none'
+            : '-translate-x-full pointer-events-none md:pointer-events-auto md:translate-x-0 md:shadow-none'
+        }`}
+      >
+        <div className="sidebar-accent-line" />
 
-      {/* Navigation */}
-      <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
-        {navItems.map((item, idx) => (
-          <NavLinkItem key={item.to} {...item} idx={idx} />
-        ))}
+        <div className="flex items-center justify-between gap-3 border-b border-theme-default px-4 py-4">
+          <div className="flex items-center gap-3">
+            <img
+              src="/_app/logo.png"
+              alt="SynapseClaw"
+              className="h-10 w-10 rounded-xl object-cover"
+            />
+            <span className="text-lg font-bold text-gradient tracking-wide">
+              SynapseClaw
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl border border-theme-default bg-theme-card p-2 text-theme-muted transition-colors hover:bg-theme-hover hover:text-theme-primary md:hidden"
+            aria-label="Close navigation"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
 
-        {/* IPC Section */}
-        {ipcAvailable && (
-          <>
-            <div className="pt-4 pb-1 px-3">
-              <div className="flex items-center gap-2 text-[10px] text-theme-placeholder tracking-wider uppercase font-semibold">
-                <Network className="h-3 w-3" />
-                <span>{t('nav.ipc_section')}</span>
+        <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+          {navItems.map((item, idx) => (
+            <NavLinkItemWithClose key={item.to} {...item} idx={idx} onNavigate={onClose} />
+          ))}
+
+          {ipcAvailable && (
+            <>
+              <div className="pt-4 pb-1 px-3">
+                <div className="flex items-center gap-2 text-[10px] text-theme-placeholder tracking-wider uppercase font-semibold">
+                  <Network className="h-3 w-3" />
+                  <span>{t('nav.ipc_section')}</span>
+                </div>
               </div>
-            </div>
-            {ipcNavItems.map((item, idx) => (
-              <NavLinkItem
-                key={item.to}
-                {...item}
-                idx={navItems.length + idx}
-                badge={item.to === '/ipc/quarantine' ? quarantineCount : undefined}
-              />
-            ))}
-          </>
-        )}
-      </nav>
+              {ipcNavItems.map((item, idx) => (
+                <NavLinkItemWithClose
+                  key={item.to}
+                  {...item}
+                  idx={navItems.length + idx}
+                  badge={item.to === '/ipc/quarantine' ? quarantineCount : undefined}
+                  onNavigate={onClose}
+                />
+              ))}
+            </>
+          )}
+        </nav>
 
-      {/* Footer */}
-      <div className="px-5 py-4 border-t border-theme-default">
-        <p className="text-[10px] text-theme-placeholder tracking-wider uppercase">SynapseClaw Runtime</p>
-      </div>
-    </aside>
+        <div className="border-t border-theme-default px-5 py-4">
+          <p className="text-[10px] text-theme-placeholder tracking-wider uppercase">SynapseClaw Runtime</p>
+        </div>
+      </aside>
+    </>
   );
 }

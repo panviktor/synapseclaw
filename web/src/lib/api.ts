@@ -11,6 +11,8 @@ import type {
   HealthSnapshot,
   ChannelSessionInfo,
   ChannelMessageInfo,
+  MemoryStatsResponse,
+  ContextBudgetResponse,
 } from '../types/api';
 import { clearToken, getToken, setToken } from './auth';
 
@@ -289,6 +291,19 @@ export function deleteMemory(key: string): Promise<void> {
   return apiFetch<void>(`/api/memory/${encodeURIComponent(key)}`, {
     method: 'DELETE',
   });
+}
+
+function withAgentPrefix(path: string, agentId?: string | null): string {
+  if (!agentId) return path;
+  return `/api/agents/${encodeURIComponent(agentId)}${path}`;
+}
+
+export function getMemoryStats(agentId?: string | null): Promise<MemoryStatsResponse> {
+  return apiFetch<MemoryStatsResponse>(withAgentPrefix('/api/memory/stats', agentId));
+}
+
+export function getContextBudget(agentId?: string | null): Promise<ContextBudgetResponse> {
+  return apiFetch<ContextBudgetResponse>(withAgentPrefix('/api/memory/context-budget', agentId));
 }
 
 // ---------------------------------------------------------------------------

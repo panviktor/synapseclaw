@@ -1389,6 +1389,14 @@ pub async fn run_gateway(
             get(api::handle_api_agent_status_proxy),
         )
         .route(
+            "/api/agents/{agent_id}/memory/stats",
+            get(api::handle_api_agent_memory_stats_proxy),
+        )
+        .route(
+            "/api/agents/{agent_id}/memory/context-budget",
+            get(api::handle_api_agent_context_budget_proxy),
+        )
+        .route(
             "/api/agents/{agent_id}/summary-model",
             put(api::handle_api_agent_summary_model_proxy),
         )

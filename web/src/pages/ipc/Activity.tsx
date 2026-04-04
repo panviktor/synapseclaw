@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { t } from '@/lib/i18n';
+import { Activity as ActivityIcon, ArrowRight, Radio, Sparkles } from 'lucide-react';
 import { fetchActivity, fetchFleet } from '@/lib/ipc-api';
 import type { ActivityEvent, ActivityFilter, IpcAgent } from '@/types/ipc';
 import AgentLink from '@/components/ipc/AgentLink';
@@ -47,11 +47,9 @@ function traceUrl(event: ActivityEvent): string | null {
       if (r.parent_agent_id) return `/ipc/spawns?parent_id=${encodeURIComponent(r.parent_agent_id)}`;
       return '/ipc/spawns';
     case 'web_chat':
-      // Agent-scoped: pass agent= so AgentChat switches to the right agent
       if (r.chat_session_key) return `/agents?agent=${agentId}&session=${encodeURIComponent(r.chat_session_key)}`;
       return `/agents?agent=${agentId}`;
     case 'channel':
-      // Channel sessions use a different key namespace — route to read-only viewer
       if (r.channel_session_key) return `/ipc/conversation?agent=${agentId}&key=${encodeURIComponent(r.channel_session_key)}`;
       return `/ipc/fleet/${agentId}`;
     case 'cron':
@@ -72,6 +70,24 @@ function traceLabel(surface: string): string {
   }
 }
 
+function ActivityStatCard({
+  label,
+  value,
+  caption,
+}: {
+  label: string;
+  value: string;
+  caption: string;
+}) {
+  return (
+    <div className="rounded-3xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-4">
+      <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-placeholder)]">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">{value}</p>
+      <p className="mt-1 text-xs text-[var(--text-muted)]">{caption}</p>
+    </div>
+  );
+}
+
 export default function Activity() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -81,8 +97,6 @@ export default function Activity() {
   const [loaded, setLoaded] = useState(false);
   const [partial, setPartial] = useState(false);
   const [timeRange, setTimeRange] = useState('1h');
-  const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-  const userInputRef = useRef(false);
 
   const agentId = searchParams.get('agent_id') ?? '';
   const eventType = searchParams.get('event_type') ?? '';
@@ -108,12 +122,10 @@ export default function Activity() {
     }
   }, [agentId, eventType, surface, timeRange]);
 
-  // Load fleet for agent selector
   useEffect(() => {
     fetchFleet().then(setAgents).catch(() => {});
   }, []);
 
-  // Initial load + auto-refresh
   useEffect(() => {
     doSearch();
     const timer = setInterval(doSearch, REFRESH_INTERVAL);
@@ -121,7 +133,6 @@ export default function Activity() {
   }, [doSearch]);
 
   const updateParam = (key: string, value: string) => {
-    userInputRef.current = true;
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       if (value) next.set(key, value);
@@ -130,145 +141,189 @@ export default function Activity() {
     });
   };
 
+  const uniqueAgents = useMemo(() => new Set(events.map((event) => event.agent_id)).size, [events]);
+  const dominantSurface = useMemo(() => {
+    const counts = events.reduce<Record<string, number>>((acc, event) => {
+      const key = event.trace_ref.surface;
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {});
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'none';
+  }, [events]);
+
   return (
     <div className="p-6 space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-gradient">{t('nav.ipc_activity') || 'Activity Feed'}</h1>
-          <p className="text-xs text-[var(--text-secondary)] mt-1">{t('ipc.activity_subtitle')}</p>
+      <div className="relative overflow-hidden rounded-[28px] border border-[var(--border-default)] bg-[linear-gradient(135deg,var(--glow-primary),transparent_35%),var(--bg-card)] px-6 py-6">
+        <div className="absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/70 to-transparent" />
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">
+              Activity Scope
+            </p>
+            <div className="mt-2 flex items-center gap-2">
+              <ActivityIcon className="h-6 w-6 text-[var(--accent-primary)]" />
+              <h1 className="text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+                Cross-Surface Activity Feed
+              </h1>
+            </div>
+            <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
+              Watch IPC, spawn, web chat, channel, and cron events as one operator-visible stream.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {partial && (
+              <span className="rounded-full bg-yellow-500/10 px-2.5 py-1 text-xs font-semibold uppercase tracking-wide text-yellow-400">
+                partial
+              </span>
+            )}
+            <button
+              onClick={doSearch}
+              disabled={loading}
+              className="btn-secondary px-4 py-2 text-sm"
+            >
+              {loading ? 'Loading...' : 'Refresh'}
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {partial && (
-            <span className="text-xs text-yellow-400 bg-yellow-500/10 px-2 py-1 rounded-lg">
-              Partial — some agents unreachable
-            </span>
-          )}
-          <button
-            onClick={doSearch}
-            disabled={loading}
-            className="px-3 py-1.5 text-sm bg-[var(--glow-primary)] hover:bg-[var(--glow-primary)] text-[var(--accent-primary)] rounded-lg transition-colors"
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <ActivityStatCard label="Events" value={`${events.length}`} caption="visible in current filter window" />
+        <ActivityStatCard label="Agents" value={`${uniqueAgents}`} caption="participating in this slice" />
+        <ActivityStatCard label="Dominant Surface" value={surfaceLabel(dominantSurface)} caption="highest event share right now" />
+        <ActivityStatCard label="Window" value={timeRange} caption="active time range filter" />
+      </div>
+
+      <div className="glass-card overflow-hidden">
+        <div className="border-b border-[var(--bg-secondary)] px-5 py-4">
+          <div className="flex items-center gap-2">
+            <Radio className="h-4 w-4 text-[var(--accent-primary)]" />
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-primary)]">Filters</h2>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-3 px-5 py-5">
+          <select
+            value={agentId}
+            onChange={(e) => updateParam('agent_id', e.target.value)}
+            className="input-warm min-w-[160px] px-3 py-2 text-sm"
           >
-            {loading ? 'Loading...' : 'Refresh'}
-          </button>
+            <option value="">All agents</option>
+            {agents.map((a) => (
+              <option key={a.agent_id} value={a.agent_id}>{a.agent_id}</option>
+            ))}
+          </select>
+
+          <select
+            value={eventType}
+            onChange={(e) => updateParam('event_type', e.target.value)}
+            className="input-warm px-3 py-2 text-sm"
+          >
+            {EVENT_TYPES.map((et) => (
+              <option key={et} value={et}>{et || 'All types'}</option>
+            ))}
+          </select>
+
+          <select
+            value={surface}
+            onChange={(e) => updateParam('surface', e.target.value)}
+            className="input-warm px-3 py-2 text-sm"
+          >
+            {SURFACES.map((s) => (
+              <option key={s} value={s}>{s ? surfaceLabel(s) : 'All surfaces'}</option>
+            ))}
+          </select>
+
+          <select
+            value={timeRange}
+            onChange={(e) => setTimeRange(e.target.value)}
+            className="input-warm px-3 py-2 text-sm"
+          >
+            {TIME_RANGES.map((r) => (
+              <option key={r.value} value={r.value}>{r.label}</option>
+            ))}
+          </select>
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-3">
-        <select
-          value={agentId}
-          onChange={(e) => updateParam('agent_id', e.target.value)}
-          className="input-warm px-3 py-2 text-sm min-w-[160px]"
-        >
-          <option value="">All agents</option>
-          {agents.map((a) => (
-            <option key={a.agent_id} value={a.agent_id}>{a.agent_id}</option>
-          ))}
-        </select>
-
-        <select
-          value={eventType}
-          onChange={(e) => updateParam('event_type', e.target.value)}
-          className="input-warm px-3 py-2 text-sm"
-        >
-          {EVENT_TYPES.map((et) => (
-            <option key={et} value={et}>{et || 'All types'}</option>
-          ))}
-        </select>
-
-        <select
-          value={surface}
-          onChange={(e) => updateParam('surface', e.target.value)}
-          className="input-warm px-3 py-2 text-sm"
-        >
-          {SURFACES.map((s) => (
-            <option key={s} value={s}>{s ? surfaceLabel(s) : 'All surfaces'}</option>
-          ))}
-        </select>
-
-        <select
-          value={timeRange}
-          onChange={(e) => setTimeRange(e.target.value)}
-          className="input-warm px-3 py-2 text-sm"
-        >
-          {TIME_RANGES.map((r) => (
-            <option key={r.value} value={r.value}>{r.label}</option>
-          ))}
-        </select>
-      </div>
-
-      {/* Event list */}
       {!loaded && loading && (
-        <div className="text-center py-12 text-[var(--text-secondary)]">Loading activity...</div>
+        <div className="py-12 text-center text-[var(--text-secondary)]">Loading activity...</div>
       )}
 
       {loaded && events.length === 0 && (
-        <div className="text-center py-12 text-[var(--text-secondary)]">No activity events found</div>
+        <div className="glass-card px-6 py-12 text-center">
+          <Sparkles className="mx-auto mb-3 h-12 w-12 text-[var(--accent-primary)]/40" />
+          <p className="text-lg font-semibold text-[var(--text-primary)]">No activity events found</p>
+          <p className="mt-2 text-sm text-[var(--text-muted)]">Try widening the time window or clearing filters.</p>
+        </div>
       )}
 
       {loaded && events.length > 0 && (
         <div className="glass-card overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-[var(--text-secondary)] border-b border-[var(--bg-secondary)]">
-                <th className="px-4 py-3 w-[160px]">Time</th>
-                <th className="px-4 py-3 w-[120px]">Agent</th>
-                <th className="px-4 py-3 w-[100px]">Surface</th>
-                <th className="px-4 py-3 w-[130px]">Type</th>
-                <th className="px-4 py-3">Summary</th>
-                <th className="px-4 py-3 w-[120px]">Trace</th>
-              </tr>
-            </thead>
-            <tbody>
-              {events.map((event, idx) => {
-                const url = traceUrl(event);
-                const isExpanded = expandedIdx === idx;
-                return (
-                  <tr
-                    key={`${event.event_type}-${event.agent_id}-${event.timestamp}-${idx}`}
-                    className="border-b border-[var(--bg-secondary)] hover:bg-[var(--glow-secondary)] transition-colors cursor-pointer"
-                    onClick={() => setExpandedIdx(isExpanded ? null : idx)}
-                  >
-                    <td className="px-4 py-2.5 text-[var(--text-muted)] whitespace-nowrap">
-                      <TimeAbsolute timestamp={event.timestamp} />
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <AgentLink agentId={event.agent_id} />
-                    </td>
-                    <td className="px-4 py-2.5">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${surfaceColor(event.trace_ref.surface)}`}>
-                        {surfaceLabel(event.trace_ref.surface)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-[var(--text-muted)] font-mono text-xs">
-                      {event.event_type}
-                    </td>
-                    <td className="px-4 py-2.5 text-[var(--text-muted)] max-w-[400px] truncate" title={event.summary}>
-                      {event.summary}
-                    </td>
-                    <td className="px-4 py-2.5">
-                      {url && (
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            navigate(url);
-                          }}
-                          className="px-2 py-1 text-xs bg-[var(--glow-primary)] hover:bg-[var(--glow-primary)] text-[var(--accent-primary)] rounded-lg transition-colors whitespace-nowrap"
-                          title={traceLabel(event.trace_ref.surface)}
-                        >
-                          Open Trace
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="border-b border-[var(--bg-secondary)] px-5 py-4">
+            <div className="flex items-center gap-2">
+              <ActivityIcon className="h-4 w-4 text-[var(--accent-primary)]" />
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-primary)]">Event Stream</h2>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-[var(--bg-secondary)] text-left text-[var(--text-secondary)] text-xs uppercase tracking-wider">
+                  <th className="w-[160px] px-4 py-3">Time</th>
+                  <th className="w-[120px] px-4 py-3">Agent</th>
+                  <th className="w-[100px] px-4 py-3">Surface</th>
+                  <th className="w-[130px] px-4 py-3">Type</th>
+                  <th className="px-4 py-3">Summary</th>
+                  <th className="w-[120px] px-4 py-3 text-right">Trace</th>
+                </tr>
+              </thead>
+              <tbody>
+                {events.map((event, idx) => {
+                  const url = traceUrl(event);
+                  return (
+                    <tr
+                      key={`${event.event_type}-${event.agent_id}-${event.timestamp}-${idx}`}
+                      className="border-b border-[var(--bg-secondary)] transition-colors hover:bg-[var(--glow-secondary)]"
+                    >
+                      <td className="whitespace-nowrap px-4 py-3 text-[var(--text-muted)]">
+                        <TimeAbsolute timestamp={event.timestamp} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <AgentLink agentId={event.agent_id} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${surfaceColor(event.trace_ref.surface)}`}>
+                          {surfaceLabel(event.trace_ref.surface)}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 font-mono text-xs text-[var(--text-muted)]">
+                        {event.event_type}
+                      </td>
+                      <td className="max-w-[420px] px-4 py-3 text-[var(--text-muted)]">
+                        <div className="line-clamp-2" title={event.summary}>{event.summary}</div>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {url && (
+                          <button
+                            onClick={() => navigate(url)}
+                            className="inline-flex items-center gap-1 rounded-lg bg-[var(--glow-primary)] px-2.5 py-1.5 text-xs text-[var(--accent-primary)] transition-colors hover:bg-[var(--glow-primary)]"
+                            title={traceLabel(event.trace_ref.surface)}
+                          >
+                            Open
+                            <ArrowRight className="h-3 w-3" />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
-      <div className="text-xs text-[var(--text-secondary)] text-center">
+      <div className="text-center text-xs text-[var(--text-secondary)]">
         {events.length > 0 && `${events.length} event${events.length !== 1 ? 's' : ''}`}
         {partial && ' (partial results)'}
       </div>

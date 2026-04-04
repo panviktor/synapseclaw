@@ -78,6 +78,50 @@ export interface MemoryEntry {
   score: number | null;
 }
 
+export interface MemoryCategoryStat {
+  category: string;
+  count: number;
+}
+
+export interface CoreBlockStat {
+  label: string;
+  chars: number;
+  updated_at: string;
+}
+
+export interface MemoryStatsResponse {
+  agent_id: string;
+  total_entries: number;
+  by_category: MemoryCategoryStat[];
+  core_blocks: CoreBlockStat[];
+  entities: number;
+  skills: number;
+  reflections: number;
+}
+
+export interface ContextBudgetResponse {
+  recall_max_entries: number;
+  recall_entry_max_chars: number;
+  recall_total_max_chars: number;
+  skills_max_count: number;
+  skills_total_max_chars: number;
+  entities_max_count: number;
+  entities_total_max_chars: number;
+  enrichment_total_max_chars: number;
+  continuation_policy: string;
+  min_relevance_score: number;
+}
+
+export interface PostTurnReportEvent extends SSEEvent {
+  type: 'post_turn_report';
+  agent_id: string;
+  signal: string;
+  explicit_mutation: boolean;
+  consolidation_started: boolean;
+  reflection_started: boolean;
+  explicit_kind?: string | null;
+}
+
 export interface CostSummary {
   session_cost_usd: number;
   daily_cost_usd: number;

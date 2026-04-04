@@ -158,8 +158,10 @@ pub async fn execute_post_turn_learning(
     if let Some(ref tx) = input.event_tx {
         let _ = tx.send(serde_json::json!({
             "type": "post_turn_report",
+            "agent_id": input.agent_id,
             "signal": report.signal.as_str(),
             "explicit_mutation": report.explicit_mutation.is_some(),
+            "explicit_kind": report.explicit_mutation.as_ref().map(|event| format!("{:?}", event.kind)),
             "consolidation_started": report.consolidation_started,
             "reflection_started": report.reflection_started,
             "timestamp": chrono::Utc::now().to_rfc3339(),

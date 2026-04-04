@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { t } from '@/lib/i18n';
+import { ArrowRight, Network, Shield, Sparkles } from 'lucide-react';
 import { fetchTopology, deleteAgent, revokeAgent, quarantineAgent, disableAgent, downgradeAgent } from '@/lib/ipc-api';
 import type { TopologyAgent, TopologyEdge } from '@/lib/ipc-api';
 import { getStatus } from '@/lib/api';
@@ -20,7 +20,6 @@ interface PendingAction {
   level?: number;
 }
 
-// ── Trust-level colors ──────────────────────────────────────
 const TRUST_COLORS: Record<number, string> = {
   0: '#00ff88',
   1: '#00ccff',
@@ -32,7 +31,6 @@ function trustColor(level: number | null): string {
   return TRUST_COLORS[level ?? 3] ?? '#8892a8';
 }
 
-// ── Edge colors by type ─────────────────────────────────────
 function edgeColor(type: string): string {
   switch (type) {
     case 'lateral': return 'var(--glow-primary)';
@@ -51,14 +49,12 @@ function particleColor(type: string): string {
   }
 }
 
-// ── Graph node/link types ───────────────────────────────────
 interface GraphNode {
   id: string;
   role: string;
   trust_level: number;
   status: string;
   color: string;
-  // Position fields set by force simulation and position preservation
   x: number;
   y: number;
   fx?: number;
@@ -77,7 +73,6 @@ interface GraphLink {
 const TRAFFIC_WINDOW_HOURS = 24;
 const TRAFFIC_MIN_COUNT = 2;
 
-// ── Force Graph Topology ────────────────────────────────────
 function TopologyGraph({
   agents,
   edges,
@@ -94,12 +89,12 @@ function TopologyGraph({
   const [hovered, setHovered] = useState<string | null>(null);
   const [dimensions, setDimensions] = useState({ width: 700, height: 380 });
 
-  // Measure container
   useEffect(() => {
     if (!containerRef.current) return;
     const ro = new ResizeObserver((entries) => {
       const { width } = entries[0]!.contentRect;
-      setDimensions({ width, height: Math.min(380, Math.max(280, width * 0.5)) });
+      const ratio = width < 640 ? 0.78 : width < 960 ? 0.62 : 0.5;
+      setDimensions({ width, height: Math.min(400, Math.max(250, width * ratio)) });
     });
     ro.observe(containerRef.current);
     return () => ro.disconnect();
@@ -170,7 +165,6 @@ function TopologyGraph({
         width={dimensions.width}
         height={dimensions.height}
         backgroundColor="transparent"
-        // Nodes
         nodeRelSize={8}
         nodeCanvasObject={(node: GraphNode, ctx: CanvasRenderingContext2D, globalScale: number) => {
           const r = 8;
@@ -179,7 +173,6 @@ function TopologyGraph({
           const x = (node as unknown as { x: number }).x;
           const y = (node as unknown as { y: number }).y;
 
-          // Glow ring on hover
           if (isHov) {
             ctx.beginPath();
             ctx.arc(x, y, r + 4, 0, 2 * Math.PI);
@@ -190,10 +183,9 @@ function TopologyGraph({
             ctx.globalAlpha = 1;
           }
 
-          // Main circle
           ctx.beginPath();
           ctx.arc(x, y, r, 0, 2 * Math.PI);
-          ctx.fillStyle = node.color + '20';
+          ctx.fillStyle = `${node.color}20`;
           ctx.fill();
           ctx.strokeStyle = node.color;
           ctx.lineWidth = (isHov ? 2.5 : 1.5) / globalScale;
@@ -201,13 +193,11 @@ function TopologyGraph({
           ctx.stroke();
           ctx.globalAlpha = 1;
 
-          // Status dot
           ctx.beginPath();
           ctx.arc(x + r - 2, y - r + 2, 2.5, 0, 2 * Math.PI);
           ctx.fillStyle = isOnline ? '#00ff88' : '#556080';
           ctx.fill();
 
-          // Role label inside
           ctx.font = `${Math.max(3, 7 / globalScale)}px monospace`;
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
@@ -216,11 +206,10 @@ function TopologyGraph({
           ctx.fillText(node.role.slice(0, 8), x, y);
           ctx.globalAlpha = 1;
 
-          // Agent ID below
           ctx.font = `${Math.max(3, 8 / globalScale)}px monospace`;
           ctx.fillStyle = isHov ? '#ffffff' : '#8892a8';
           ctx.fillText(
-            node.id.length > 14 ? node.id.slice(0, 12) + '..' : node.id,
+            node.id.length > 14 ? `${node.id.slice(0, 12)}..` : node.id,
             x,
             y + r + 8 / globalScale,
           );
@@ -236,12 +225,10 @@ function TopologyGraph({
         onNodeClick={(node: GraphNode) => onSelect(node.id)}
         onNodeHover={(node: GraphNode | null) => setHovered(node?.id ?? null)}
         onNodeDragEnd={(node: GraphNode & { x: number; y: number }) => {
-          // Pin dragged node and save position
           (node as unknown as { fx: number }).fx = node.x;
           (node as unknown as { fy: number }).fy = node.y;
           positionsRef.current.set(node.id, { x: node.x, y: node.y, fx: node.x, fy: node.y });
         }}
-        // Links
         linkColor={(link: GraphLink) => link.color}
         linkWidth={(link: GraphLink) => {
           const src = typeof link.source === 'object' ? (link.source as GraphNode).id : link.source;
@@ -256,14 +243,13 @@ function TopologyGraph({
         linkDirectionalArrowLength={6}
         linkDirectionalArrowRelPos={0.9}
         linkDirectionalArrowColor={(link: GraphLink) => link.pColor}
-        linkLineDash={(link: GraphLink) => link.type === 'l4_destination' ? [4, 2] : null}
+        linkLineDash={(link: GraphLink) => (link.type === 'l4_destination' ? [4, 2] : null)}
         linkDirectionalParticles={() => 0}
-        enableZoomInteraction={true}
-        enablePanInteraction={true}
-        enableNodeDrag={true}
+        enableZoomInteraction
+        enablePanInteraction
+        enableNodeDrag
       />
-      {/* Legend */}
-      <div className="absolute bottom-2 left-3 flex items-center gap-4 text-[9px] text-[var(--text-secondary)] pointer-events-none">
+      <div className="pointer-events-none absolute bottom-2 left-3 flex items-center gap-4 text-[9px] text-[var(--text-secondary)]">
         <span className="flex items-center gap-1">
           <span className="inline-block w-4 h-[2px]" style={{ background: 'rgba(0,128,255,0.5)' }} /> lateral
         </span>
@@ -280,7 +266,24 @@ function TopologyGraph({
   );
 }
 
-// ── Main Fleet Page ─────────────────────────────────────────
+function FleetStatCard({
+  label,
+  value,
+  caption,
+}: {
+  label: string;
+  value: string;
+  caption: string;
+}) {
+  return (
+    <div className="rounded-3xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-4">
+      <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-placeholder)]">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">{value}</p>
+      <p className="mt-1 text-xs text-[var(--text-muted)]">{caption}</p>
+    </div>
+  );
+}
+
 export default function Fleet() {
   const navigate = useNavigate();
   const [agents, setAgents] = useState<TopologyAgent[]>([]);
@@ -349,11 +352,17 @@ export default function Fleet() {
   };
 
   const brokerUrl = `http://127.0.0.1:${gatewayPort}`;
+  const onlineAgents = agents.filter((agent) => agent.status === 'online').length;
+  const trustCounts = agents.reduce<Record<number, number>>((acc, agent) => {
+    const level = agent.trust_level ?? 3;
+    acc[level] = (acc[level] ?? 0) + 1;
+    return acc;
+  }, {});
 
   const confirmMessage = pendingAction
     ? `${pendingAction.type} agent "${pendingAction.agent.agent_id}"${
-        pendingAction.type === 'downgrade' ? ` to L${pendingAction.level}` : ''
-      }?`
+      pendingAction.type === 'downgrade' ? ` to L${pendingAction.level}` : ''
+    }?`
     : '';
 
   if (loading) {
@@ -365,107 +374,202 @@ export default function Fleet() {
   }
 
   return (
-    <div className="p-6 space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gradient">{t('ipc.fleet_title')}</h1>
-          <p className="text-xs text-[var(--text-secondary)] mt-1">{t('ipc.fleet_subtitle')}</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <span className="text-sm text-[var(--text-secondary)]">{agents.length} agents</span>
-          <button onClick={() => setShowBlueprint(true)} className="px-4 py-1.5 text-sm font-medium text-[var(--text-muted)] rounded-lg border border-[var(--bg-secondary)] hover:bg-[var(--bg-hover)] transition-colors">
-            Blueprint
-          </button>
-          <button onClick={() => setShowAddAgent(true)} className="btn-primary px-4 py-1.5 text-sm font-medium">
-            + Add Agent
-          </button>
+    <div className="space-y-6 p-4 animate-fade-in md:p-6">
+      <div className="animate-panel-reveal relative overflow-hidden rounded-[28px] border border-[var(--border-default)] bg-[linear-gradient(135deg,var(--glow-primary),transparent_35%),var(--bg-card)] px-5 py-5 md:px-6 md:py-6">
+        <div className="absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/70 to-transparent" />
+        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">
+              Fleet Scope
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <h1 className="text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+                Broker Fleet Map
+              </h1>
+              <span className="rounded-full bg-[var(--accent-primary)]/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--accent-primary)]">
+                {agents.length} agents
+              </span>
+            </div>
+            <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
+              Topology, trust posture, runtime health, and direct operator actions across the broker-connected fleet.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setShowBlueprint(true)}
+              className="btn-secondary inline-flex items-center gap-2 px-4 py-2 text-sm"
+            >
+              <Sparkles className="h-4 w-4" />
+              Blueprint
+            </button>
+            <button
+              onClick={() => setShowAddAgent(true)}
+              className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
+            >
+              + Add Agent
+            </button>
+          </div>
         </div>
       </div>
 
       {error && (
-        <div className="glass-card p-4 border-red-500/30 text-red-400 text-sm">{error}</div>
+        <div className="glass-card border-red-500/30 p-4 text-sm text-red-400">{error}</div>
       )}
 
-      {/* Communication Graph */}
+      <div className="stagger-children grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <FleetStatCard label="Online" value={`${onlineAgents}/${agents.length || 0}`} caption="reachable agents" />
+        <FleetStatCard label="Edges" value={`${edges.length}`} caption={showTraffic ? 'topology + recent traffic' : 'declared topology only'} />
+        <FleetStatCard label="Broker URL" value={`:${gatewayPort}`} caption={brokerUrl} />
+        <FleetStatCard label="Trust Mix" value={`L0:${trustCounts[0] ?? 0} L4:${trustCounts[4] ?? 0}`} caption="low and high trust edges" />
+      </div>
+
       {agents.length > 0 && (
-        <div className="glass-card p-2 overflow-hidden" style={{ minHeight: 300 }}>
-          <div className="flex items-center justify-between gap-4 px-3 py-2 border-b border-[var(--bg-hover)]">
-            <div>
-              <div className="text-sm font-medium text-[var(--text-primary)]">
-                {showTraffic ? 'Observed Traffic' : 'Policy Topology'}
+        <div className="glass-card animate-panel-reveal overflow-hidden" style={{ minHeight: 300 }}>
+          <div className="border-b border-[var(--bg-hover)] px-5 py-4">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Network className="h-4 w-4 text-[var(--accent-primary)]" />
+                  <div className="text-sm font-medium text-[var(--text-primary)]">
+                    {showTraffic ? 'Observed Traffic' : 'Policy Topology'}
+                  </div>
+                </div>
+                <div className="mt-1 text-xs text-[var(--text-secondary)]">
+                  {showTraffic
+                    ? `Recent IPC traffic, last ${TRAFFIC_WINDOW_HOURS}h, count ≥ ${TRAFFIC_MIN_COUNT}`
+                    : 'Declared communication topology only. Historical traffic hidden to keep the graph readable.'}
+                </div>
               </div>
-              <div className="text-xs text-[var(--text-secondary)]">
-                {showTraffic
-                  ? `Recent IPC traffic, last ${TRAFFIC_WINDOW_HOURS}h, count ≥ ${TRAFFIC_MIN_COUNT}`
-                  : 'Declared communication topology only. Historical traffic hidden to keep the graph readable.'}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <button
+                  onClick={() => setShowTraffic((v) => !v)}
+                  className={`rounded-full border px-3 py-1.5 font-semibold uppercase tracking-wide transition-colors ${
+                    showTraffic
+                      ? 'border-[#00ff88]/40 bg-[#00ff8815] text-[#00ff88]'
+                      : 'border-[var(--bg-secondary)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
+                  }`}
+                >
+                  {showTraffic ? 'Hide Traffic' : 'Show Traffic'}
+                </button>
+                <button
+                  onClick={() => setShowEphemeral((v) => !v)}
+                  className={`rounded-full border px-3 py-1.5 font-semibold uppercase tracking-wide transition-colors ${
+                    showEphemeral
+                      ? 'border-[#ff6644]/40 bg-[#ff664415] text-[#ff9b7a]'
+                      : 'border-[var(--bg-secondary)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
+                  }`}
+                >
+                  {showEphemeral ? 'Hide Ephemeral' : 'Show Ephemeral'}
+                </button>
               </div>
-            </div>
-            <div className="flex items-center gap-2 text-xs">
-              <button
-                onClick={() => setShowTraffic((v) => !v)}
-                className={`px-3 py-1 rounded-md border transition-colors ${
-                  showTraffic
-                    ? 'border-[#00ff88]/40 bg-[#00ff8815] text-[#00ff88]'
-                    : 'border-[var(--bg-secondary)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
-                }`}
-              >
-                {showTraffic ? 'Hide Traffic' : 'Show Traffic'}
-              </button>
-              <button
-                onClick={() => setShowEphemeral((v) => !v)}
-                className={`px-3 py-1 rounded-md border transition-colors ${
-                  showEphemeral
-                    ? 'border-[#ff6644]/40 bg-[#ff664415] text-[#ff9b7a]'
-                    : 'border-[var(--bg-secondary)] text-[var(--text-muted)] hover:bg-[var(--bg-hover)]'
-                }`}
-              >
-                {showEphemeral ? 'Hide Ephemeral' : 'Show Ephemeral'}
-              </button>
             </div>
           </div>
-          <TopologyGraph
-            agents={agents}
-            edges={edges}
-            showTraffic={showTraffic}
-            onSelect={(id) => navigate(`/ipc/fleet/${id}`)}
-          />
+          <div className="p-2 md:p-3">
+            <TopologyGraph
+              agents={agents}
+              edges={edges}
+              showTraffic={showTraffic}
+              onSelect={(id) => navigate(`/ipc/fleet/${id}`)}
+            />
+          </div>
         </div>
       )}
 
-      {/* Agent Table */}
-      {agents.length === 0 ? (
-        <div className="glass-card p-12 text-center">
-          <p className="text-[var(--text-secondary)]">No agents registered. Deploy a blueprint or add an agent to get started.</p>
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="space-y-6">
+          {agents.length === 0 ? (
+            <div className="glass-card p-12 text-center">
+              <p className="text-[var(--text-secondary)]">No agents registered. Deploy a blueprint or add an agent to get started.</p>
+            </div>
+          ) : (
+            <div className="glass-card animate-panel-reveal overflow-hidden">
+              <div className="border-b border-[var(--bg-secondary)] px-5 py-4">
+                <div className="flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-[var(--accent-primary)]" />
+                  <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-primary)]">Agent Registry</h2>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--bg-secondary)] text-[var(--text-secondary)] text-xs uppercase tracking-wider">
+                      <th className="text-left px-4 py-3">Agent</th>
+                      <th className="text-left px-4 py-3">Role</th>
+                      <th className="text-left px-4 py-3">Trust</th>
+                      <th className="text-left px-4 py-3">Status</th>
+                      <th className="text-left px-4 py-3">Model</th>
+                      <th className="text-left px-4 py-3">Last Seen</th>
+                      <th className="text-right px-4 py-3">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {agents.map((agent) => (
+                      <AgentRow
+                        key={agent.agent_id}
+                        agent={agent}
+                        onAction={setPendingAction}
+                        onClick={() => navigate(`/ipc/fleet/${agent.agent_id}`)}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="glass-card overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[var(--bg-secondary)] text-[var(--text-secondary)] text-xs uppercase tracking-wider">
-                  <th className="text-left px-4 py-3">Agent</th>
-                  <th className="text-left px-4 py-3">Role</th>
-                  <th className="text-left px-4 py-3">Trust</th>
-                  <th className="text-left px-4 py-3">Status</th>
-                  <th className="text-left px-4 py-3">Model</th>
-                  <th className="text-left px-4 py-3">Last Seen</th>
-                  <th className="text-right px-4 py-3">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {agents.map((agent) => (
-                  <AgentRow
-                    key={agent.agent_id}
-                    agent={agent}
-                    onAction={setPendingAction}
-                    onClick={() => navigate(`/ipc/fleet/${agent.agent_id}`)}
-                  />
-                ))}
-              </tbody>
-            </table>
+
+        <div className="space-y-6">
+          <div className="glass-card animate-panel-reveal overflow-hidden">
+            <div className="border-b border-[var(--bg-secondary)] px-5 py-4">
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-[var(--accent-primary)]" />
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-primary)]">Operator Shortcuts</h2>
+              </div>
+            </div>
+            <div className="space-y-3 px-5 py-5">
+              <button
+                onClick={() => navigate('/ipc/activity')}
+                className="flex w-full items-center justify-between rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-[var(--accent-primary)]/30 hover:shadow-[0_10px_24px_var(--glow-primary)]"
+              >
+                <div>
+                  <p className="text-sm font-medium text-[var(--text-primary)]">Open Activity Feed</p>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">Inspect cross-surface movement and recent broker events.</p>
+                </div>
+                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
+              </button>
+              <button
+                onClick={() => navigate('/agents')}
+                className="flex w-full items-center justify-between rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-[var(--accent-primary)]/30 hover:shadow-[0_10px_24px_var(--glow-primary)]"
+              >
+                <div>
+                  <p className="text-sm font-medium text-[var(--text-primary)]">Open Workbench</p>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">Jump from fleet scope into the live agent chat workbench.</p>
+                </div>
+                <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
+              </button>
+            </div>
+          </div>
+
+          <div className="glass-card animate-panel-reveal overflow-hidden">
+            <div className="border-b border-[var(--bg-secondary)] px-5 py-4">
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4 text-[var(--accent-primary)]" />
+                <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--text-primary)]">Trust Posture</h2>
+              </div>
+            </div>
+            <div className="grid gap-3 px-5 py-5 md:grid-cols-2 xl:grid-cols-1">
+              {[0, 1, 2, 3, 4].map((level) => (
+                <div key={level} className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-sm font-medium text-[var(--text-primary)]">Trust L{level}</span>
+                    <span className="text-sm text-[var(--text-muted)]">{trustCounts[level] ?? 0}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-      )}
+      </div>
 
       <AddAgentDialog open={showAddAgent} onClose={() => setShowAddAgent(false)} onCreated={load} brokerUrl={brokerUrl} />
       <DeployBlueprintDialog open={showBlueprint} onClose={() => setShowBlueprint(false)} onCreated={load} brokerUrl={brokerUrl} />
@@ -483,7 +587,6 @@ export default function Fleet() {
   );
 }
 
-// ── Agent Table Row ─────────────────────────────────────────
 function AgentRow({
   agent,
   onAction,
@@ -497,26 +600,33 @@ function AgentRow({
   const isActive = agent.status === 'online';
 
   return (
-    <tr className="border-b border-[var(--bg-hover)] hover:bg-[var(--glow-secondary)] transition-colors cursor-pointer" onClick={onClick}>
-      <td className="px-4 py-3 font-mono text-[var(--accent-primary)]">{agent.agent_id}</td>
+    <tr className="cursor-pointer border-b border-[var(--bg-hover)] transition-colors hover:bg-[var(--glow-secondary)]" onClick={onClick}>
+      <td className="px-4 py-3">
+        <div>
+          <div className="font-mono text-[var(--accent-primary)]">{agent.agent_id}</div>
+          <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+            {(agent.channels?.length ?? 0)} channels
+          </div>
+        </div>
+      </td>
       <td className="px-4 py-3 text-[var(--text-muted)]">{agent.role ?? '-'}</td>
       <td className="px-4 py-3"><TrustBadge level={agent.trust_level} /></td>
       <td className="px-4 py-3"><StatusBadge status={agent.status} /></td>
-      <td className="px-4 py-3 text-[var(--text-secondary)] text-xs">{agent.model ?? '-'}</td>
+      <td className="px-4 py-3 text-xs text-[var(--text-secondary)]">{agent.model ?? '-'}</td>
       <td className="px-4 py-3">
         {agent.last_seen ? <TimeAgo timestamp={agent.last_seen} staleThreshold={300} /> : '-'}
       </td>
-      <td className="px-4 py-3 text-right relative" onClick={(e) => e.stopPropagation()}>
+      <td className="relative px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
         <button
           onClick={() => setShowMenu(!showMenu)}
-          className="text-xs text-[var(--text-secondary)] hover:text-[var(--text-primary)] px-2 py-1 rounded hover:bg-[var(--bg-secondary)] transition-colors"
+          className="rounded-lg px-2 py-1 text-xs text-[var(--text-secondary)] transition-colors hover:bg-[var(--bg-secondary)] hover:text-[var(--text-primary)]"
         >
           Actions
         </button>
         {showMenu && (
           <>
             <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-            <div className="absolute right-4 top-full mt-1 z-20 glass-card py-1 min-w-[140px] shadow-lg">
+            <div className="absolute right-4 top-full z-20 mt-1 min-w-[140px] glass-card py-1 shadow-lg">
               {isActive && (
                 <>
                   <MenuButton label="Disable" onClick={() => { setShowMenu(false); onAction({ type: 'disable', agent }); }} />
@@ -526,7 +636,7 @@ function AgentRow({
                   )}
                 </>
               )}
-              <div className="border-t border-[var(--bg-hover)] my-1" />
+              <div className="my-1 border-t border-[var(--bg-hover)]" />
               <MenuButton label="Revoke" className="text-red-400 hover:text-red-300" onClick={() => { setShowMenu(false); onAction({ type: 'revoke', agent }); }} />
               <MenuButton label="Delete" className="text-red-400 hover:text-red-300" onClick={() => { setShowMenu(false); onAction({ type: 'delete', agent }); }} />
             </div>
@@ -541,7 +651,7 @@ function MenuButton({ label, onClick, className = '' }: { label: string; onClick
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-[var(--bg-secondary)] transition-colors ${className || 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}
+      className={`w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-[var(--bg-secondary)] ${className || 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}
     >
       {label}
     </button>
