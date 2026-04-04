@@ -179,6 +179,9 @@ pub fn all_tools(
         shared_ipc_client,
         None,
         None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -205,6 +208,9 @@ pub fn all_tools_with_runtime(
     shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     agent_runner: Option<Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>>,
     cron_db: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
+    conversation_context: Option<Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>>,
+    conversation_store: Option<Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>>,
+    channel_registry: Option<Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
@@ -697,6 +703,21 @@ pub fn all_tools_with_runtime(
             Arc::new(tokio::sync::RwLock::new(ws_manager)),
             security.clone(),
         )));
+    }
+
+    // ── Phase 4.6: Orchestration tools ──
+    tool_arcs.push(Arc::new(synapse_tools::clarify::ClarifyTool::new()));
+    tool_arcs.push(Arc::new(synapse_tools::todo::TodoTool::new(
+        conversation_context.clone(),
+    )));
+    if let (Some(ctx), Some(reg)) = (conversation_context.as_ref(), channel_registry.as_ref()) {
+        tool_arcs.push(Arc::new(synapse_tools::message_send::MessageSendTool::new(
+            Arc::clone(ctx),
+            Arc::clone(reg),
+        )));
+    }
+    if let Some(store) = conversation_store {
+        tool_arcs.push(Arc::new(synapse_tools::session_search::SessionSearchTool::new(store)));
     }
 
     (

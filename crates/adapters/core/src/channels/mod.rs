@@ -2993,6 +2993,8 @@ pub async fn start_channels(
     };
     // Build system prompt from workspace identity files + skills
     let workspace = config.workspace_dir.clone();
+    let shared_conversation_context: Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort> =
+        Arc::new(synapse_domain::ports::conversation_context::InMemoryConversationContext::new());
     let (mut built_tools, delegate_handle_ch, ipc_client_for_key_reg): (Vec<Box<dyn Tool>>, _, _) =
         tools::all_tools_with_runtime(
             Arc::new(config.clone()),
@@ -3011,6 +3013,9 @@ pub async fn start_channels(
             None, // IPC tools get their own client from config
             None,
             shared_surreal.clone(),
+            Some(shared_conversation_context.clone()),
+            None, // conversation_store — not available in channel context yet
+            None, // channel_registry — wired later if needed
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -3473,9 +3478,7 @@ pub async fn start_channels(
         agent_id: Arc::new(crate::agent::loop_::resolve_agent_id(&config)),
         prompt_budget_config: config.memory.prompt_budget.clone(),
         event_tx,
-        conversation_context: Some(Arc::new(
-            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
-        )),
+        conversation_context: Some(shared_conversation_context.clone()),
         show_tool_calls: config.channels_config.show_tool_calls,
         session_store: if config.channels_config.session_persistence {
             if let Some(ref db) = shared_surreal {

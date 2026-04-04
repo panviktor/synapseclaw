@@ -397,6 +397,9 @@ impl Agent {
             None,
             None,
             surreal_handle.clone(),
+            None, // conversation_context — gateway sets via ws.rs
+            None, // conversation_store
+            None, // channel_registry
         );
 
         // Bootstrap core memory blocks from workspace files (USER.md → user_knowledge).
