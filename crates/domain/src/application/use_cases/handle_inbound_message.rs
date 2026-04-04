@@ -90,6 +90,8 @@ pub struct InboundMessagePorts {
     pub event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     /// Current conversation context for tools that need "here".
     pub conversation_context: Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
+    /// Dialogue state store for session-scoped working memory.
+    pub dialogue_state_store: Option<Arc<crate::application::services::dialogue_state_service::DialogueStateStore>>,
 }
 
 /// Result of handling an inbound message.
@@ -612,6 +614,18 @@ async fn execute_agent_turn(
                 .history
                 .append_turn(conversation_key, ChatMessage::assistant(&history_response));
 
+            // ── Update dialogue state (session-scoped working memory) ──
+            if let Some(ref store) = ports.dialogue_state_store {
+                let mut state = store.get(conversation_key).unwrap_or_default();
+                crate::application::services::dialogue_state_service::update_state_from_turn(
+                    &mut state,
+                    content,
+                    &turn_result.tool_summary,
+                    &response_text,
+                );
+                store.set(conversation_key, state);
+            }
+
             // ── #18/#19: Post-turn learning (via orchestrator, fire-and-forget) ──
             if let Some(ref mem) = ports.memory {
                 let tools: Vec<String> = turn_result
@@ -992,6 +1006,7 @@ mod tests {
             memory: None,
             event_tx: None,
             conversation_context: None,
+            dialogue_state_store: None,
         }
     }
 
