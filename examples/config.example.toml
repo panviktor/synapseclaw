@@ -1,1 +1,6 @@
 # Example Config
+
+[channels_config]
+# Keep messaging channels human-first by default.
+# Set to true only if you want verbose raw tool trace in Telegram/Matrix/Slack/etc.
+show_tool_calls = false

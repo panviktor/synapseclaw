@@ -6,7 +6,8 @@ interface AgentRailProps {
   activeAgent: string | null;
   connected: boolean;
   typing: boolean;
-  sessionCount: number;
+  localSessionCount: number;
+  localHasActiveRun: boolean;
   onSelect: (agentId: string | null) => void;
 }
 
@@ -34,19 +35,20 @@ export default function AgentRail({
   activeAgent,
   connected,
   typing,
-  sessionCount,
+  localSessionCount,
+  localHasActiveRun,
   onSelect,
 }: AgentRailProps) {
   const localSelected = activeAgent === null;
 
   return (
-    <div className="rail-scroll flex items-stretch gap-3 overflow-x-auto pb-1 pr-1 snap-x snap-mandatory">
+    <div className="rail-scroll -mx-1 flex items-stretch gap-3 overflow-x-auto px-1 py-2 snap-x snap-mandatory">
       <button
         onClick={() => onSelect(null)}
-        className={`group relative min-w-[180px] snap-start rounded-2xl border px-3.5 py-3 text-left transition-all duration-300 sm:min-w-[198px] sm:px-4 xl:min-w-[210px] ${
+        className={`group relative min-w-[172px] snap-start rounded-2xl border px-3.5 py-3 text-left transition-all duration-300 sm:min-w-[188px] sm:px-4 xl:min-w-[202px] ${
           localSelected
             ? 'border-[var(--accent-primary)] bg-[linear-gradient(135deg,var(--glow-primary),transparent_65%)] shadow-[0_10px_30px_var(--glow-primary)] -translate-y-0.5'
-            : 'border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--accent-primary)]/35 hover:-translate-y-0.5 hover:shadow-[0_10px_24px_var(--glow-primary)]'
+            : 'border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--accent-primary)]/35 hover:-translate-y-px hover:shadow-[0_8px_18px_var(--glow-primary)]'
         }`}
         aria-pressed={localSelected}
       >
@@ -71,7 +73,7 @@ export default function AgentRail({
                 Local Runtime
               </p>
               <p className="truncate text-xs text-[var(--text-muted)]">
-                {sessionCount} sessions {typing ? '· active run' : '· ready'}
+                {localSessionCount} sessions {localHasActiveRun ? '· active run' : '· ready'}
               </p>
             </div>
           </div>
@@ -80,7 +82,7 @@ export default function AgentRail({
           </span>
         </div>
         <div className="mt-3 flex items-end gap-1">
-          {heatBars(Math.min(5, Math.max(1, Math.ceil(sessionCount / 2)))).map((active, idx) => (
+          {heatBars(Math.min(5, Math.max(1, Math.ceil(localSessionCount / 2)))).map((active, idx) => (
             <span
               key={idx}
               className="rounded-full transition-all duration-300"
@@ -105,10 +107,10 @@ export default function AgentRail({
           <button
             key={agent.agent_id}
             onClick={() => onSelect(agent.agent_id)}
-            className={`group relative min-w-[180px] snap-start rounded-2xl border px-3.5 py-3 text-left transition-all duration-300 sm:min-w-[198px] sm:px-4 xl:min-w-[210px] ${
+            className={`group relative min-w-[172px] snap-start rounded-2xl border px-3.5 py-3 text-left transition-all duration-300 sm:min-w-[188px] sm:px-4 xl:min-w-[202px] ${
               selected
                 ? 'border-[var(--accent-primary)] bg-[linear-gradient(145deg,var(--glow-primary),transparent_60%)] shadow-[0_10px_30px_var(--glow-primary)] -translate-y-0.5'
-                : 'border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--accent-primary)]/35 hover:-translate-y-0.5 hover:shadow-[0_10px_24px_var(--glow-primary)]'
+                : 'border-[var(--border-default)] bg-[var(--bg-card)] hover:border-[var(--accent-primary)]/35 hover:-translate-y-px hover:shadow-[0_8px_18px_var(--glow-primary)]'
             }`}
             aria-pressed={selected}
           >

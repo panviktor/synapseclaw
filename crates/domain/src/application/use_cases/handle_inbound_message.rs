@@ -8,6 +8,9 @@
 use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
+use crate::application::services::channel_presentation::{
+    self, ChannelPresentationMode, CompactProgressSurface,
+};
 use crate::domain::channel::{ChannelCapability, InboundEnvelope};
 use crate::domain::message::ChatMessage;
 use crate::ports::agent_runtime::AgentRuntimePort;
@@ -56,6 +59,8 @@ pub struct InboundMessageConfig {
     pub prompt_budget: crate::application::services::turn_context::PromptBudget,
     /// What to load on continuation turns (turn N>1).
     pub continuation_policy: crate::application::services::turn_context::ContinuationPolicy,
+    /// Human-facing rendering policy for messaging channels.
+    pub presentation_mode: ChannelPresentationMode,
 }
 
 impl std::fmt::Debug for InboundMessageConfig {
@@ -447,6 +452,30 @@ async fn execute_agent_turn(
         (None, None)
     };
 
+    let compact_progress_handle = match channel_presentation::compact_progress_surface(
+        config.presentation_mode,
+        caps,
+        use_streaming,
+    ) {
+        CompactProgressSurface::None => None,
+        CompactProgressSurface::StatusMessage => {
+            let output = ports.channel_output.clone();
+            let recipient = envelope.reply_ref.clone();
+            let thread = envelope.thread_ref.clone();
+            Some(tokio::spawn(async move {
+                tokio::time::sleep(channel_presentation::compact_progress_delay()).await;
+                output
+                    .send_message(
+                        &recipient,
+                        channel_presentation::compact_progress_text(),
+                        thread.as_deref(),
+                    )
+                    .await
+                    .is_ok()
+            }))
+        }
+    };
+
     // Spawn draft updater task if streaming
     let draft_handle = if let Some(mut rx) = delta_rx {
         let output = ports.channel_output.clone();
@@ -491,6 +520,10 @@ async fn execute_agent_turn(
             delta_tx,
         )
         .await;
+
+    if let Some(handle) = &compact_progress_handle {
+        handle.abort();
+    }
 
     // ── Stop typing ──────────────────────────────────────────────
     let _ = ports.channel_output.stop_typing(&envelope.reply_ref).await;
@@ -910,6 +943,7 @@ mod tests {
             agent_id: "test-agent".into(),
             prompt_budget: crate::application::services::turn_context::PromptBudget::default(),
             continuation_policy: crate::application::services::turn_context::ContinuationPolicy::default(),
+            presentation_mode: ChannelPresentationMode::Compact,
         }
     }
 

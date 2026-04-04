@@ -5,6 +5,7 @@
 //! adapters translate, infrastructure executes.
 
 pub mod approval_service;
+pub mod channel_presentation;
 pub mod conversation_service;
 pub mod delivery_service;
 pub mod history_compaction;
