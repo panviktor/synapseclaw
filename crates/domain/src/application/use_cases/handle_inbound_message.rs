@@ -88,6 +88,8 @@ pub struct InboundMessagePorts {
     pub memory: Option<Arc<dyn UnifiedMemoryPort>>,
     /// SSE event sender for publishing learning reports to web dashboard.
     pub event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    /// Current conversation context for tools that need "here".
+    pub conversation_context: Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
 }
 
 /// Result of handling an inbound message.
@@ -434,6 +436,19 @@ async fn execute_agent_turn(
     route: &crate::ports::route_selection::RouteSelection,
     history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
+    // ── Set current conversation context for tools that need "here" ──
+    if let Some(ref ctx_port) = ports.conversation_context {
+        ctx_port.set_current(Some(
+            crate::domain::conversation_target::CurrentConversationContext {
+                source_adapter: envelope.source_adapter.clone(),
+                conversation_ref: envelope.conversation_ref.clone(),
+                reply_ref: envelope.reply_ref.clone(),
+                thread_ref: envelope.thread_ref.clone(),
+                actor_id: envelope.actor_id.clone(),
+            },
+        ));
+    }
+
     // ── #11: Ack reaction + typing ───────────────────────────────
     if config.ack_reactions {
         let _ = ports
@@ -976,6 +991,7 @@ mod tests {
             session_summary: None,
             memory: None,
             event_tx: None,
+            conversation_context: None,
         }
     }
 

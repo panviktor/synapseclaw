@@ -242,6 +242,8 @@ struct ChannelRuntimeContext {
     prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig,
     /// SSE event sender — shared from gateway when running in daemon mode.
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    /// Current conversation context for tools.
+    conversation_context: Option<Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>>,
     show_tool_calls: bool,
     session_store: Option<Arc<dyn LocalSessionBackend>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
@@ -1457,6 +1459,7 @@ async fn handle_message_via_orchestrator(
         session_summary,
         memory: memory_port,
         event_tx: ctx.event_tx.clone(),
+        conversation_context: ctx.conversation_context.clone(),
     };
 
     // ── Phase 4.1: Check if message should trigger a pipeline ─────
@@ -3470,6 +3473,9 @@ pub async fn start_channels(
         agent_id: Arc::new(crate::agent::loop_::resolve_agent_id(&config)),
         prompt_budget_config: config.memory.prompt_budget.clone(),
         event_tx,
+        conversation_context: Some(Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        )),
         show_tool_calls: config.channels_config.show_tool_calls,
         session_store: if config.channels_config.session_persistence {
             if let Some(ref db) = shared_surreal {
@@ -3983,6 +3989,7 @@ mod tests {
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
+            conversation_context: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4088,6 +4095,7 @@ mod tests {
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
+            conversation_context: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4201,6 +4209,7 @@ mod tests {
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
+            conversation_context: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4325,6 +4334,7 @@ mod tests {
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
+            conversation_context: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
