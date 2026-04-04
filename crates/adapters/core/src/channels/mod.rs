@@ -2967,6 +2967,19 @@ pub async fn start_channels(
             .memory
         }
     };
+
+    // Bootstrap core memory blocks from workspace files (USER.md → user_knowledge).
+    {
+        use synapse_domain::application::services::bootstrap_core_memory as bootstrap;
+        let user_md = bootstrap::read_workspace_file(&config.workspace_dir, "USER.md");
+        let soul_md = bootstrap::read_workspace_file(&config.workspace_dir, "SOUL.md");
+        let files: Vec<(&str, Option<&str>)> = vec![
+            ("USER.md", user_md.as_deref()),
+            ("SOUL.md", soul_md.as_deref()),
+        ];
+        bootstrap::ensure_core_blocks_seeded(mem.as_ref(), &resolved_agent_id, &files).await;
+    }
+
     let (composio_key, composio_entity_id) = if config.composio.enabled {
         (
             config.composio.api_key.as_deref(),
