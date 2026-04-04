@@ -75,4 +75,6 @@ Last refreshed: **April 3, 2026**.
 - [ipc-quickstart.md](fork/ipc-quickstart.md)
 - [memory-learning-foundation-plan.md](fork/memory-learning-foundation-plan.md)
 - [memory-unification-plan.md](fork/memory-unification-plan.md)
+- [ipc-phase4_6-plan.md](fork/ipc-phase4_6-plan.md)
+- [ipc-phase4_6-research.md](fork/ipc-phase4_6-research.md)
 - [multi-agent-memory-ui-plan.md](fork/multi-agent-memory-ui-plan.md)
