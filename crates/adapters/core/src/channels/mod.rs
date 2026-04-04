@@ -244,6 +244,8 @@ struct ChannelRuntimeContext {
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     /// Current conversation context for tools.
     conversation_context: Option<Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>>,
+    /// Dialogue state store for session-scoped working memory.
+    dialogue_state_store: Option<Arc<synapse_domain::application::services::dialogue_state_service::DialogueStateStore>>,
     show_tool_calls: bool,
     session_store: Option<Arc<dyn LocalSessionBackend>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
@@ -1460,6 +1462,7 @@ async fn handle_message_via_orchestrator(
         memory: memory_port,
         event_tx: ctx.event_tx.clone(),
         conversation_context: ctx.conversation_context.clone(),
+        dialogue_state_store: ctx.dialogue_state_store.clone(),
     };
 
     // ── Phase 4.1: Check if message should trigger a pipeline ─────
@@ -3479,6 +3482,9 @@ pub async fn start_channels(
         prompt_budget_config: config.memory.prompt_budget.clone(),
         event_tx,
         conversation_context: Some(shared_conversation_context.clone()),
+        dialogue_state_store: Some(Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(),
+        )),
         show_tool_calls: config.channels_config.show_tool_calls,
         session_store: if config.channels_config.session_persistence {
             if let Some(ref db) = shared_surreal {
@@ -3993,6 +3999,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
             conversation_context: None,
+            dialogue_state_store: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4099,6 +4106,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
             conversation_context: None,
+            dialogue_state_store: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4213,6 +4221,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
             conversation_context: None,
+            dialogue_state_store: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4338,6 +4347,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
             conversation_context: None,
+            dialogue_state_store: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
