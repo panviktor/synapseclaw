@@ -53,6 +53,7 @@ pub mod schema;
 pub mod screenshot;
 pub mod security_ops;
 pub mod session_search;
+pub mod standing_order;
 pub mod shell;
 pub mod swarm;
 pub mod tavily_extract;

@@ -719,6 +719,9 @@ pub fn all_tools_with_runtime(
     if let Some(store) = conversation_store {
         tool_arcs.push(Arc::new(synapse_tools::session_search::SessionSearchTool::new(store)));
     }
+    tool_arcs.push(Arc::new(synapse_tools::standing_order::StandingOrderTool::new(
+        conversation_context,
+    )));
 
     (
         boxed_registry_from_arcs(tool_arcs),
