@@ -17,7 +17,7 @@ interface SessionSidebarProps {
   onRename: (key: string, label: string) => void;
   onDelete: (key: string) => void;
   onSummaryModelChange: (model: string | null) => void;
-  onAgentChange: (agentId: string) => void;
+  onAgentChange: (agentId: string | null) => void;
 }
 
 function timeAgo(epochSecs: number): string {
@@ -169,7 +169,7 @@ export default function SessionSidebar({
           </div>
           <select
             value={activeAgent ?? ''}
-            onChange={(e) => onAgentChange(e.target.value)}
+            onChange={(e) => onAgentChange(e.target.value || null)}
             className="w-full bg-[var(--bg-card)] border border-[var(--border-default)] rounded px-2 py-1 text-[11px] text-[var(--text-primary)] outline-none focus:border-[var(--accent-primary)]/40 transition-colors"
           >
             <option value="">Local (this instance)</option>
