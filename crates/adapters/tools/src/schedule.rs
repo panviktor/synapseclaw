@@ -1,4 +1,5 @@
 use super::traits::{Tool, ToolResult};
+use crate::cron_facts;
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -6,7 +7,6 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{Db, Surreal};
 use synapse_domain::config::schema::Config;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::tool::ToolExecution;
@@ -92,81 +92,6 @@ impl ScheduleTool {
                 },
                 Vec::new(),
             )),
-        }
-    }
-
-    fn schedule_kind(schedule: &synapse_cron::Schedule) -> &'static str {
-        match schedule {
-            synapse_cron::Schedule::Cron { .. } => "cron",
-            synapse_cron::Schedule::At { .. } => "at",
-            synapse_cron::Schedule::Every { .. } => "every",
-        }
-    }
-
-    fn build_job_fact(action: &str, job: &synapse_cron::CronJob) -> AgentToolFact {
-        let mut slots = vec![
-            DialogueSlot::observed("schedule_action", action.to_string()),
-            DialogueSlot::observed("job_id", job.id.clone()),
-            DialogueSlot::observed("job_type", <&'static str>::from(job.job_type.clone())),
-            DialogueSlot::observed("schedule_kind", Self::schedule_kind(&job.schedule)),
-            DialogueSlot::observed("job_enabled", job.enabled.to_string()),
-            DialogueSlot::observed("job_next_run", job.next_run.to_rfc3339()),
-            DialogueSlot::observed(
-                "session_target",
-                match job.session_target {
-                    synapse_cron::SessionTarget::Isolated => "isolated",
-                    synapse_cron::SessionTarget::Main => "main",
-                },
-            ),
-            DialogueSlot::observed("delete_after_run", job.delete_after_run.to_string()),
-        ];
-
-        if let Some(name) = &job.name {
-            slots.push(DialogueSlot::observed("job_name", name.clone()));
-        }
-        if let Some(model) = &job.model {
-            slots.push(DialogueSlot::observed("job_model", model.clone()));
-        }
-        if !job.delivery.mode.trim().is_empty() {
-            slots.push(DialogueSlot::observed("delivery_mode", job.delivery.mode.clone()));
-        }
-        if let Some(channel) = &job.delivery.channel {
-            slots.push(DialogueSlot::observed("delivery_channel", channel.clone()));
-        }
-        if let Some(to) = &job.delivery.to {
-            slots.push(DialogueSlot::observed("delivery_to", to.clone()));
-        }
-        if let Some(thread_ref) = &job.delivery.thread_ref {
-            slots.push(DialogueSlot::observed(
-                "delivery_thread_ref",
-                thread_ref.clone(),
-            ));
-        }
-
-        AgentToolFact {
-            tool_name: "schedule".to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "scheduled_job".into(),
-                name: job.id.clone(),
-                metadata: Some(Self::schedule_kind(&job.schedule).to_string()),
-            }],
-            slots,
-        }
-    }
-
-    fn build_cancel_fact(action: &str, id: &str) -> AgentToolFact {
-        AgentToolFact {
-            tool_name: "schedule".to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "scheduled_job".into(),
-                name: id.to_string(),
-                metadata: Some(action.to_string()),
-            }],
-            slots: vec![
-                DialogueSlot::observed("schedule_action", action.to_string()),
-                DialogueSlot::observed("job_id", id.to_string()),
-                DialogueSlot::observed("job_enabled", "false".to_string()),
-            ],
         }
     }
 }
@@ -314,7 +239,7 @@ impl ScheduleTool {
         let facts = jobs
             .iter()
             .take(3)
-            .map(|job| Self::build_job_fact("list", job))
+            .map(|job| cron_facts::build_job_fact(self.name(), "list", job))
             .collect();
 
         Ok((
@@ -346,7 +271,7 @@ impl ScheduleTool {
                         output: serde_json::to_string_pretty(&detail)?,
                         error: None,
                     },
-                    vec![Self::build_job_fact("get", &job)],
+                    vec![cron_facts::build_job_fact(self.name(), "get", &job)],
                 ))
             }
             Err(_) => Ok((
@@ -478,7 +403,7 @@ impl ScheduleTool {
                     ),
                     error: None,
                 },
-                vec![Self::build_job_fact(action, &job)],
+                vec![cron_facts::build_job_fact(self.name(), action, &job)],
             ));
         }
 
@@ -515,7 +440,7 @@ impl ScheduleTool {
                     ),
                     error: None,
                 },
-                vec![Self::build_job_fact(action, &job)],
+                vec![cron_facts::build_job_fact(self.name(), action, &job)],
             ));
         }
 
@@ -556,7 +481,7 @@ impl ScheduleTool {
                 ),
                 error: None,
             },
-            vec![Self::build_job_fact(action, &job)],
+            vec![cron_facts::build_job_fact(self.name(), action, &job)],
         ))
     }
 
@@ -568,7 +493,7 @@ impl ScheduleTool {
                     output: format!("Cancelled job {id}"),
                     error: None,
                 },
-                vec![Self::build_cancel_fact("cancel", id)],
+                vec![cron_facts::build_removed_job_fact(self.name(), "cancel", id)],
             ),
             Err(error) => (
                 ToolResult {
@@ -603,7 +528,8 @@ impl ScheduleTool {
                     },
                     error: None,
                 },
-                vec![Self::build_job_fact(
+                vec![cron_facts::build_job_fact(
+                    self.name(),
                     if pause { "pause" } else { "resume" },
                     &job,
                 )],
@@ -622,7 +548,7 @@ impl ScheduleTool {
 
 #[cfg(test)]
 mod tests {
-    use super::ScheduleTool;
+    use crate::cron_facts;
     use chrono::Utc;
     use std::collections::HashMap;
     use synapse_cron::{CronJob, DeliveryConfig, ExecutionMode, JobType, Schedule, SessionTarget};
@@ -663,7 +589,7 @@ mod tests {
 
     #[test]
     fn build_job_fact_emits_typed_schedule_fields() {
-        let fact = ScheduleTool::build_job_fact("create", &sample_job());
+        let fact = cron_facts::build_job_fact("schedule", "create", &sample_job());
 
         assert_eq!(fact.tool_name, "schedule");
         assert_eq!(fact.focus_entities.len(), 1);

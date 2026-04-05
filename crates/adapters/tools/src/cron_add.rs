@@ -1,10 +1,11 @@
 use super::traits::{Tool, ToolResult};
+use crate::cron_facts;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{Db, DeliveryConfig, JobType, Schedule, SessionTarget, Surreal};
 use synapse_domain::config::schema::Config;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::DialogueSlot;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
@@ -118,70 +119,6 @@ impl CronAddTool {
 
         Ok(Some(delivery))
     }
-
-    fn schedule_kind(schedule: &Schedule) -> &'static str {
-        match schedule {
-            Schedule::Cron { .. } => "cron",
-            Schedule::At { .. } => "at",
-            Schedule::Every { .. } => "every",
-        }
-    }
-
-    fn build_job_fact(&self, job: &synapse_cron::CronJob) -> AgentToolFact {
-        let mut fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "scheduled_job".into(),
-                name: job.id.clone(),
-                metadata: Some(Self::schedule_kind(&job.schedule).to_string()),
-            }],
-            slots: vec![
-                DialogueSlot::observed("job_id", job.id.clone()),
-                DialogueSlot::observed("job_type", <&'static str>::from(job.job_type.clone())),
-                DialogueSlot::observed("schedule_kind", Self::schedule_kind(&job.schedule)),
-                DialogueSlot::observed("job_enabled", job.enabled.to_string()),
-                DialogueSlot::observed("job_next_run", job.next_run.to_rfc3339()),
-                DialogueSlot::observed(
-                    "session_target",
-                    match job.session_target {
-                        SessionTarget::Isolated => "isolated",
-                        SessionTarget::Main => "main",
-                    },
-                ),
-                DialogueSlot::observed("delete_after_run", job.delete_after_run.to_string()),
-            ],
-        };
-
-        if let Some(name) = &job.name {
-            fact.slots
-                .push(DialogueSlot::observed("job_name", name.clone()));
-        }
-        if let Some(model) = &job.model {
-            fact.slots
-                .push(DialogueSlot::observed("job_model", model.clone()));
-        }
-        if !job.delivery.mode.trim().is_empty() {
-            fact.slots
-                .push(DialogueSlot::observed("delivery_mode", job.delivery.mode.clone()));
-        }
-        if let Some(channel) = &job.delivery.channel {
-            fact.slots
-                .push(DialogueSlot::observed("delivery_channel", channel.clone()));
-        }
-        if let Some(to) = &job.delivery.to {
-            fact.slots
-                .push(DialogueSlot::observed("delivery_to", to.clone()));
-        }
-        if let Some(thread_ref) = &job.delivery.thread_ref {
-            fact.slots.push(DialogueSlot::observed(
-                "delivery_thread_ref",
-                thread_ref.clone(),
-            ));
-        }
-
-        fact
-    }
-
     async fn execute_action(&self, args: &serde_json::Value) -> anyhow::Result<ToolExecution> {
         if !self.config.cron.enabled {
             return Ok(ToolExecution {
@@ -383,7 +320,7 @@ impl CronAddTool {
                     }))?,
                     error: None,
                 },
-                facts: vec![self.build_job_fact(&job)],
+                facts: vec![cron_facts::build_job_fact(self.name(), "create", &job)],
             }),
             Err(e) => Ok(ToolExecution {
                 result: ToolResult {
@@ -602,15 +539,12 @@ impl Tool for CronAddTool {
 
 #[cfg(test)]
 mod tests {
-    use super::CronAddTool;
+    use crate::cron_facts;
     use chrono::Utc;
     use std::collections::HashMap;
-    use std::sync::Arc;
     use synapse_cron::{
-        CronJob, Db, DeliveryConfig, ExecutionMode, JobType, Schedule, SessionTarget, Surreal,
+        CronJob, DeliveryConfig, ExecutionMode, JobType, Schedule, SessionTarget,
     };
-    use synapse_domain::config::schema::Config;
-    use synapse_domain::domain::security_policy::SecurityPolicy;
 
     fn sample_job() -> CronJob {
         CronJob {
@@ -648,13 +582,7 @@ mod tests {
 
     #[test]
     fn build_job_fact_emits_typed_schedule_fields() {
-        let tool = CronAddTool::new(
-            Arc::new(Config::default()),
-            Arc::new(SecurityPolicy::default()),
-            Arc::new(Surreal::<Db>::init()),
-            None,
-        );
-        let fact = tool.build_job_fact(&sample_job());
+        let fact = cron_facts::build_job_fact("cron_add", "create", &sample_job());
 
         assert_eq!(fact.tool_name, "cron_add");
         assert_eq!(fact.focus_entities.len(), 1);
