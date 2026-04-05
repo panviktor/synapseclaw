@@ -437,8 +437,11 @@ async fn build_semantic_hints(
         return Vec::new();
     }
 
-    let relevant_kinds =
-        relevant_hint_kinds(profile, current_conversation.is_some(), dialogue_state.is_some());
+    let relevant_kinds = relevant_hint_kinds(
+        profile,
+        current_conversation.is_some(),
+        dialogue_state.is_some(),
+    );
     let mut best_scores = HashMap::<InterpretationHintKind, u16>::new();
 
     for kind in relevant_kinds {
@@ -588,12 +591,7 @@ fn collect_reference_candidates(
             .chain(state.comparison_set.iter())
             .chain(state.slots.iter())
         {
-            push_reference_candidate(
-                &mut candidates,
-                kind,
-                value,
-                ReferenceSource::DialogueState,
-            );
+            push_reference_candidate(&mut candidates, kind, value, ReferenceSource::DialogueState);
         }
         for subject in &state.last_tool_subjects {
             push_reference_candidate(
@@ -712,7 +710,8 @@ async fn cached_prototype_embeddings(memory: &dyn UnifiedMemoryPort) -> Vec<Prot
         });
     }
 
-    cache.lock()
+    cache
+        .lock()
         .expect("prototype cache poisoned")
         .insert(profile_id, built.clone());
     built
@@ -859,6 +858,7 @@ fn interpretation_hint_name(kind: InterpretationHintKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::dialogue_state::{DialogueSlot, FocusEntity};
     use crate::domain::memory::{
         AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity,
         HybridSearchResult, MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery,
@@ -875,10 +875,7 @@ mod tests {
 
     #[async_trait]
     impl WorkingMemoryPort for StubMemory {
-        async fn get_core_blocks(
-            &self,
-            _: &AgentId,
-        ) -> Result<Vec<CoreMemoryBlock>, MemoryError> {
+        async fn get_core_blocks(&self, _: &AgentId) -> Result<Vec<CoreMemoryBlock>, MemoryError> {
             Ok(vec![])
         }
         async fn update_core_block(
@@ -904,11 +901,7 @@ mod tests {
         async fn store_episode(&self, _: MemoryEntry) -> Result<MemoryId, MemoryError> {
             Ok(String::new())
         }
-        async fn get_recent(
-            &self,
-            _: &AgentId,
-            _: usize,
-        ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        async fn get_recent(&self, _: &AgentId, _: usize) -> Result<Vec<MemoryEntry>, MemoryError> {
             Ok(vec![])
         }
         async fn get_session(&self, _: &SessionId) -> Result<Vec<MemoryEntry>, MemoryError> {
@@ -933,10 +926,7 @@ mod tests {
         async fn invalidate_fact(&self, _: &MemoryId) -> Result<(), MemoryError> {
             Ok(())
         }
-        async fn get_current_facts(
-            &self,
-            _: &MemoryId,
-        ) -> Result<Vec<TemporalFact>, MemoryError> {
+        async fn get_current_facts(&self, _: &MemoryId) -> Result<Vec<TemporalFact>, MemoryError> {
             Ok(vec![])
         }
         async fn traverse(
@@ -1084,9 +1074,23 @@ mod tests {
         let normalized = text.to_lowercase();
         let mut vector = vec![0.0f32; 8];
         let features = [
-            (0, &["discuss", "conversation", "past", "previous", "last week"][..]),
-            (1, &["like last time", "repeat", "same as before", "successful way"][..]),
-            (2, &["here", "this chat", "current conversation", "reply"][..]),
+            (
+                0,
+                &["discuss", "conversation", "past", "previous", "last week"][..],
+            ),
+            (
+                1,
+                &[
+                    "like last time",
+                    "repeat",
+                    "same as before",
+                    "successful way",
+                ][..],
+            ),
+            (
+                2,
+                &["here", "this chat", "current conversation", "reply"][..],
+            ),
             (3, &["second one", "that one", "this one"][..]),
             (4, &["language", "translate", "preferred language"][..]),
             (5, &["timezone", "remind", "tomorrow"][..]),
@@ -1104,11 +1108,9 @@ mod tests {
 
     #[tokio::test]
     async fn returns_none_for_empty_inputs() {
-        assert!(
-            build_turn_interpretation(None, "", None, None, None)
-                .await
-                .is_none()
-        );
+        assert!(build_turn_interpretation(None, "", None, None, None)
+            .await
+            .is_none());
     }
 
     #[tokio::test]
@@ -1147,7 +1149,10 @@ mod tests {
 
         assert!(interpretation.has_hint(InterpretationHintKind::UseDefaultLanguage));
         assert!(interpretation.has_hint(InterpretationHintKind::FollowupReference));
-        assert_eq!(interpretation.defaults_requested, vec![DefaultKind::Language]);
+        assert_eq!(
+            interpretation.defaults_requested,
+            vec![DefaultKind::Language]
+        );
         assert_eq!(
             interpretation.clarification_candidates,
             vec!["Berlin", "Tbilisi"]
@@ -1201,5 +1206,48 @@ mod tests {
         assert!(block.contains("delivery_scope: current_conversation"));
         assert!(block.contains("defaults_requested: language"));
         assert!(block.contains("semantic_hints:"));
+    }
+
+    #[tokio::test]
+    async fn dialogue_state_slots_surface_reference_candidates() {
+        let interpretation = build_turn_interpretation(
+            None,
+            "the second one",
+            None,
+            None,
+            Some(&DialogueState {
+                comparison_set: vec![
+                    FocusEntity {
+                        kind: "city".into(),
+                        name: "Berlin".into(),
+                        metadata: None,
+                    },
+                    FocusEntity {
+                        kind: "city".into(),
+                        name: "Tbilisi".into(),
+                        metadata: None,
+                    },
+                ],
+                slots: vec![
+                    DialogueSlot {
+                        name: "first_city".into(),
+                        value: "Berlin".into(),
+                    },
+                    DialogueSlot {
+                        name: "second_city".into(),
+                        value: "Tbilisi".into(),
+                    },
+                ],
+                last_tool_subjects: vec!["Berlin".into(), "Tbilisi".into()],
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(interpretation
+            .reference_candidates
+            .iter()
+            .any(|candidate| candidate.kind == "second_city" && candidate.value == "Tbilisi"));
     }
 }

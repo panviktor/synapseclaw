@@ -92,27 +92,18 @@ pub fn update_state_from_turn(
     }
 
     for slot in collect_slots(tool_facts) {
-        if let Some(existing) = state
-            .slots
-            .iter_mut()
-            .find(|existing| existing.name == slot.name)
-        {
-            *existing = slot;
-        } else {
-            state.slots.push(slot);
-        }
+        upsert_slot(state, slot);
+    }
+
+    state
+        .slots
+        .retain(|slot| !is_derived_reference_slot(&slot.name));
+    for slot in derive_reference_slots(&state.focus_entities, &state.comparison_set) {
+        upsert_slot(state, slot);
     }
 
     for slot in current_target_slots(current_conversation) {
-        if let Some(existing) = state
-            .slots
-            .iter_mut()
-            .find(|existing| existing.name == slot.name)
-        {
-            *existing = slot;
-        } else {
-            state.slots.push(slot);
-        }
+        upsert_slot(state, slot);
     }
 
     let subjects = collect_subjects(tool_facts);
@@ -127,6 +118,18 @@ pub fn should_materialize_state(
     current_conversation: Option<&CurrentConversationContext>,
 ) -> bool {
     existing.is_some() || !tool_facts.is_empty() || current_conversation.is_some()
+}
+
+fn upsert_slot(state: &mut DialogueState, slot: crate::domain::dialogue_state::DialogueSlot) {
+    if let Some(existing) = state
+        .slots
+        .iter_mut()
+        .find(|existing| existing.name == slot.name)
+    {
+        *existing = slot;
+    } else {
+        state.slots.push(slot);
+    }
 }
 
 fn collect_focus_entities(
@@ -220,6 +223,105 @@ fn current_target_slots(
     ]
 }
 
+fn derive_reference_slots(
+    focus_entities: &[crate::domain::dialogue_state::FocusEntity],
+    comparison_set: &[crate::domain::dialogue_state::FocusEntity],
+) -> Vec<crate::domain::dialogue_state::DialogueSlot> {
+    let source = if !comparison_set.is_empty() {
+        comparison_set
+    } else {
+        focus_entities
+    };
+    if source.is_empty() {
+        return Vec::new();
+    }
+
+    let mut slots = Vec::new();
+    let single_kind = source
+        .first()
+        .map(|first| source.iter().all(|entity| entity.kind == first.kind))
+        .unwrap_or(false);
+
+    if source.len() == 1 {
+        let entity = &source[0];
+        slots.push(crate::domain::dialogue_state::DialogueSlot {
+            name: "current_item".into(),
+            value: entity.name.clone(),
+        });
+        slots.push(crate::domain::dialogue_state::DialogueSlot {
+            name: format!("current_{}", entity.kind),
+            value: entity.name.clone(),
+        });
+    } else {
+        slots.push(crate::domain::dialogue_state::DialogueSlot {
+            name: "comparison_count".into(),
+            value: source.len().to_string(),
+        });
+        if single_kind {
+            slots.push(crate::domain::dialogue_state::DialogueSlot {
+                name: "comparison_kind".into(),
+                value: source[0].kind.clone(),
+            });
+        }
+
+        for (idx, entity) in source.iter().enumerate().take(4) {
+            let Some(label) = ordinal_label(idx) else {
+                continue;
+            };
+            slots.push(crate::domain::dialogue_state::DialogueSlot {
+                name: format!("{label}_item"),
+                value: entity.name.clone(),
+            });
+            slots.push(crate::domain::dialogue_state::DialogueSlot {
+                name: format!("{label}_{}", entity.kind),
+                value: entity.name.clone(),
+            });
+        }
+    }
+
+    if let Some(last) = source.last() {
+        slots.push(crate::domain::dialogue_state::DialogueSlot {
+            name: "latest_item".into(),
+            value: last.name.clone(),
+        });
+        slots.push(crate::domain::dialogue_state::DialogueSlot {
+            name: format!("latest_{}", last.kind),
+            value: last.name.clone(),
+        });
+    }
+
+    slots
+}
+
+fn ordinal_label(index: usize) -> Option<&'static str> {
+    match index {
+        0 => Some("first"),
+        1 => Some("second"),
+        2 => Some("third"),
+        3 => Some("fourth"),
+        _ => None,
+    }
+}
+
+fn is_derived_reference_slot(name: &str) -> bool {
+    matches!(
+        name,
+        "current_item"
+            | "latest_item"
+            | "comparison_count"
+            | "comparison_kind"
+            | "first_item"
+            | "second_item"
+            | "third_item"
+            | "fourth_item"
+    ) || name.starts_with("current_")
+        || name.starts_with("latest_")
+        || name.starts_with("first_")
+        || name.starts_with("second_")
+        || name.starts_with("third_")
+        || name.starts_with("fourth_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +377,97 @@ mod tests {
         assert_eq!(state.last_tool_subjects, vec!["Berlin", "Tbilisi"]);
         assert_eq!(state.focus_entities.len(), 2);
         assert_eq!(state.comparison_set.len(), 2);
+        assert!(state
+            .slots
+            .iter()
+            .any(|slot| slot.name == "first_city" && slot.value == "Berlin"));
+        assert!(state
+            .slots
+            .iter()
+            .any(|slot| slot.name == "second_city" && slot.value == "Tbilisi"));
+        assert!(state
+            .slots
+            .iter()
+            .any(|slot| slot.name == "latest_item" && slot.value == "Tbilisi"));
+    }
+
+    #[test]
+    fn derives_current_focus_slots_for_single_entity() {
+        let mut state = DialogueState::default();
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[AgentToolFact {
+                tool_name: "service_status".into(),
+                focus_entities: vec![FocusEntity {
+                    kind: "service".into(),
+                    name: "synapseclaw.service".into(),
+                    metadata: None,
+                }],
+                slots: vec![],
+            }],
+            None,
+            "",
+        );
+
+        assert!(state
+            .slots
+            .iter()
+            .any(|slot| slot.name == "current_service" && slot.value == "synapseclaw.service"));
+        assert!(state
+            .slots
+            .iter()
+            .any(|slot| slot.name == "current_item" && slot.value == "synapseclaw.service"));
+    }
+
+    #[test]
+    fn refreshes_derived_slots_when_focus_shape_changes() {
+        let mut state = DialogueState::default();
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[AgentToolFact {
+                tool_name: "weather_lookup".into(),
+                focus_entities: vec![
+                    FocusEntity {
+                        kind: "city".into(),
+                        name: "Berlin".into(),
+                        metadata: None,
+                    },
+                    FocusEntity {
+                        kind: "city".into(),
+                        name: "Tbilisi".into(),
+                        metadata: None,
+                    },
+                ],
+                slots: vec![],
+            }],
+            None,
+            "",
+        );
+        assert!(state.slots.iter().any(|slot| slot.name == "second_city"));
+
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[AgentToolFact {
+                tool_name: "service_status".into(),
+                focus_entities: vec![FocusEntity {
+                    kind: "service".into(),
+                    name: "synapseclaw.service".into(),
+                    metadata: None,
+                }],
+                slots: vec![],
+            }],
+            None,
+            "",
+        );
+
+        assert!(!state.slots.iter().any(|slot| slot.name == "second_city"));
+        assert!(state
+            .slots
+            .iter()
+            .any(|slot| slot.name == "current_service" && slot.value == "synapseclaw.service"));
     }
 
     #[test]
