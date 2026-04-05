@@ -8,8 +8,9 @@
 //! the same format, and the channel use case can't call adapters.
 //! The adapter `turn_context_fmt` re-exports these functions.
 
+use crate::application::services::resolution_router;
 use crate::application::services::retrieval_service;
-use crate::domain::dialogue_state::DialogueState;
+use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryEntry, Skill};
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
@@ -35,6 +36,8 @@ pub struct TurnMemoryContext {
     pub session_matches: Vec<retrieval_service::SessionSearchMatch>,
     /// Relevant prior successful execution recipes / precedents.
     pub run_recipes: Vec<retrieval_service::RunRecipeSearchMatch>,
+    /// Deterministic resolver ordering for this turn.
+    pub resolution_plan: Option<resolution_router::ResolutionPlan>,
 }
 
 /// Token/char budget for turn context assembly.
@@ -103,7 +106,7 @@ pub async fn assemble_turn_context(
     user_message: &str,
     agent_id: &str,
     session_id: Option<&str>,
-    dialogue_state: Option<&DialogueState>,
+    interpretation: Option<&TurnInterpretation>,
     budget: &PromptBudget,
     continuation: Option<&ContinuationPolicy>,
 ) -> TurnMemoryContext {
@@ -114,7 +117,7 @@ pub async fn assemble_turn_context(
             .unwrap_or_default(),
         ..Default::default()
     };
-    let query_text = build_query_text(user_message, dialogue_state);
+    let query_text = build_query_text(user_message, interpretation);
 
     let policy_name = match continuation {
         Some(ContinuationPolicy::CoreOnly) => "core_only",
@@ -125,6 +128,7 @@ pub async fn assemble_turn_context(
 
     match continuation {
         Some(ContinuationPolicy::CoreOnly) => {
+            apply_resolution_plan(&mut ctx, interpretation);
             tracing::debug!(
                 target: "memory_assembly",
                 core_blocks = ctx.core_blocks.len(),
@@ -137,6 +141,7 @@ pub async fn assemble_turn_context(
             recall_max_entries: n,
         }) => {
             load_recall(mem, &query_text, session_id, budget, *n, &mut ctx).await;
+            apply_resolution_plan(&mut ctx, interpretation);
             tracing::debug!(
                 target: "memory_assembly",
                 core_blocks = ctx.core_blocks.len(),
@@ -150,6 +155,8 @@ pub async fn assemble_turn_context(
             // Full context: recall + skills + entities
         }
     }
+
+    apply_resolution_plan(&mut ctx, interpretation);
 
     // Episodic recall
     let results = retrieval_service::search_turn_hybrid(
@@ -332,6 +339,8 @@ async fn load_recall(
 pub struct FormattedTurnContext {
     /// Core memory blocks for system prompt.
     pub core_blocks_system: String,
+    /// Resolution plan for system prompt.
+    pub resolution_system: String,
     /// Recall + skills + entities + sessions + recipes as enrichment prefix.
     pub enrichment_prefix: String,
 }
@@ -356,10 +365,158 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
         let _ = writeln!(result.core_blocks_system, "</{}>", block.label);
     }
 
-    // Recall entries
+    if let Some(plan) = &ctx.resolution_plan {
+        if let Some(block) = resolution_router::format_resolution_plan(plan) {
+            result.resolution_system = block;
+        }
+    }
+
+    for section in ordered_enrichment_sections(ctx, budget) {
+        if result.enrichment_prefix.chars().count() + section.chars().count() > max_chars {
+            break;
+        }
+        result.enrichment_prefix.push_str(&section);
+    }
+
+    result
+}
+
+// ── Internal helpers ─────────────────────────────────────────────
+
+/// Check if a memory key is an assistant-generated autosave key.
+///
+/// Must match `synapse_memory::is_assistant_autosave_key` logic.
+fn is_autosave_key(key: &str) -> bool {
+    let normalized = key.trim().to_ascii_lowercase();
+    normalized == "assistant_resp" || normalized.starts_with("assistant_resp_")
+}
+
+fn build_query_text(user_message: &str, interpretation: Option<&TurnInterpretation>) -> String {
+    let base = user_message.trim();
+    let Some(interpretation) = interpretation else {
+        return base.to_string();
+    };
+
+    let mut parts = vec![base.to_string()];
+
+    if let Some(profile) = interpretation.user_profile.as_ref() {
+        if let Some(city) = profile.default_city.as_deref() {
+            parts.push(format!("Default city: {city}"));
+        }
+        if let Some(language) = profile.preferred_language.as_deref() {
+            parts.push(format!("Preferred language: {language}"));
+        }
+        if let Some(timezone) = profile.timezone.as_deref() {
+            parts.push(format!("Timezone: {timezone}"));
+        }
+    }
+
+    let Some(state) = interpretation.dialogue_state.as_ref() else {
+        return parts.join("\n");
+    };
+
+    if !state.focus_entities.is_empty() {
+        let focus = state
+            .focus_entities
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !focus.is_empty() {
+            parts.push(format!("Focus: {focus}"));
+        }
+    }
+
+    if !state.comparison_set.is_empty() {
+        let comparison = state
+            .comparison_set
+            .iter()
+            .map(|(_, name)| name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !comparison.is_empty() {
+            parts.push(format!("Comparison: {comparison}"));
+        }
+    }
+
+    if !state.slots.is_empty() {
+        let slots = state
+            .slots
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !slots.is_empty() {
+            parts.push(format!("Slots: {slots}"));
+        }
+    }
+
+    if !state.last_tool_subjects.is_empty() {
+        parts.push(format!(
+            "Recent tools: {}",
+            state.last_tool_subjects.join(", ")
+        ));
+    }
+
+    parts.join("\n")
+}
+
+fn apply_resolution_plan(ctx: &mut TurnMemoryContext, interpretation: Option<&TurnInterpretation>) {
+    let plan = resolution_router::build_resolution_plan(resolution_router::ResolutionEvidence {
+        interpretation,
+        top_session_score: ctx.session_matches.first().map(|session| session.score),
+        top_recipe_score: ctx.run_recipes.first().map(|recipe| recipe.score),
+        recall_hits: ctx.recalled_entries.len(),
+        skill_hits: ctx.skills.len(),
+        entity_hits: ctx.entities.len(),
+    });
+    if !plan.source_order.is_empty() {
+        ctx.resolution_plan = Some(plan);
+    }
+}
+
+fn ordered_enrichment_sections(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Vec<String> {
+    let plan = ctx.resolution_plan.as_ref();
+    let mut sections = Vec::<(usize, String)>::new();
+
+    if let Some(section) = format_memory_section(ctx, budget) {
+        sections.push((
+            resolution_router::source_priority(
+                plan,
+                resolution_router::ResolutionSource::LongTermMemory,
+            ),
+            section,
+        ));
+    }
+    if let Some(section) = format_session_section(ctx) {
+        sections.push((
+            resolution_router::source_priority(
+                plan,
+                resolution_router::ResolutionSource::SessionHistory,
+            ),
+            section,
+        ));
+    }
+    if let Some(section) = format_recipe_section(ctx) {
+        sections.push((
+            resolution_router::source_priority(
+                plan,
+                resolution_router::ResolutionSource::RunRecipe,
+            ),
+            section,
+        ));
+    }
+
+    sections.sort_by_key(|(priority, _)| *priority);
+    sections.into_iter().map(|(_, section)| section).collect()
+}
+
+fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Option<String> {
+    let mut section = String::new();
+
     if !ctx.recalled_entries.is_empty() {
         let header = "[Memory context]\n";
-        let mut section = String::from(header);
+        let mut recall_section = String::from(header);
         let mut added = false;
         for entry in &ctx.recalled_entries {
             let content = if entry.content.chars().count() > budget.recall_entry_max_chars {
@@ -372,54 +529,47 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
             } else {
                 entry.content.clone()
             };
-            let line = format!("- {}: {content}\n", entry.key);
-            if result.enrichment_prefix.chars().count()
-                + section.chars().count()
-                + line.chars().count()
-                > max_chars
-            {
-                break;
-            }
-            section.push_str(&line);
+            recall_section.push_str(&format!("- {}: {content}\n", entry.key));
             added = true;
         }
         if added {
-            section.push('\n');
-            result.enrichment_prefix.push_str(&section);
+            recall_section.push('\n');
+            section.push_str(&recall_section);
         }
     }
 
-    // Skills
     for skill in &ctx.skills {
         if skill.content.trim().is_empty() {
             continue;
         }
-        let block = format!(
+        section.push_str(&format!(
             "<skill name=\"{}\">\n{}\n</skill>\n",
             skill.name,
             skill.content.trim()
-        );
-        if result.enrichment_prefix.chars().count() + block.chars().count() > max_chars {
-            break;
-        }
-        result.enrichment_prefix.push_str(&block);
+        ));
     }
 
-    // Entities
     for entity in &ctx.entities {
-        if let Some(ref summary) = entity.summary {
-            let block = format!(
+        if let Some(summary) = entity.summary.as_ref() {
+            section.push_str(&format!(
                 "<entity name=\"{}\" type=\"{}\">\n{}\n</entity>\n",
                 entity.name, entity.entity_type, summary
-            );
-            if result.enrichment_prefix.chars().count() + block.chars().count() > max_chars {
-                break;
-            }
-            result.enrichment_prefix.push_str(&block);
+            ));
         }
     }
 
-    // Prior session recaps / historical context
+    if section.is_empty() {
+        None
+    } else {
+        Some(section)
+    }
+}
+
+fn format_session_section(ctx: &TurnMemoryContext) -> Option<String> {
+    if ctx.session_matches.is_empty() {
+        return None;
+    }
+    let mut section = String::new();
     for session in &ctx.session_matches {
         let mut block = format!(
             "<session-recap key=\"{}\" kind=\"{}\">\n",
@@ -446,13 +596,16 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
             }
         }
         block.push_str("</session-recap>\n");
-        if result.enrichment_prefix.chars().count() + block.chars().count() > max_chars {
-            break;
-        }
-        result.enrichment_prefix.push_str(&block);
+        section.push_str(&block);
     }
+    Some(section)
+}
 
-    // Prior successful recipes / precedents
+fn format_recipe_section(ctx: &TurnMemoryContext) -> Option<String> {
+    if ctx.run_recipes.is_empty() {
+        return None;
+    }
+    let mut section = String::new();
     for recipe in &ctx.run_recipes {
         let mut block = format!(
             "<recipe task_family=\"{}\" success_count=\"{}\">\n",
@@ -473,77 +626,9 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
             block.push('\n');
         }
         block.push_str("</recipe>\n");
-        if result.enrichment_prefix.chars().count() + block.chars().count() > max_chars {
-            break;
-        }
-        result.enrichment_prefix.push_str(&block);
+        section.push_str(&block);
     }
-
-    result
-}
-
-// ── Internal helpers ─────────────────────────────────────────────
-
-/// Check if a memory key is an assistant-generated autosave key.
-///
-/// Must match `synapse_memory::is_assistant_autosave_key` logic.
-fn is_autosave_key(key: &str) -> bool {
-    let normalized = key.trim().to_ascii_lowercase();
-    normalized == "assistant_resp" || normalized.starts_with("assistant_resp_")
-}
-
-fn build_query_text(user_message: &str, dialogue_state: Option<&DialogueState>) -> String {
-    let base = user_message.trim();
-    let Some(state) = dialogue_state else {
-        return base.to_string();
-    };
-
-    let mut parts = vec![base.to_string()];
-
-    if !state.focus_entities.is_empty() {
-        let focus = state
-            .focus_entities
-            .iter()
-            .map(|entity| entity.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !focus.is_empty() {
-            parts.push(format!("Focus: {focus}"));
-        }
-    }
-
-    if !state.comparison_set.is_empty() {
-        let comparison = state
-            .comparison_set
-            .iter()
-            .map(|entity| entity.name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !comparison.is_empty() {
-            parts.push(format!("Comparison: {comparison}"));
-        }
-    }
-
-    if !state.slots.is_empty() {
-        let slots = state
-            .slots
-            .iter()
-            .map(|slot| format!("{}={}", slot.name, slot.value))
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !slots.is_empty() {
-            parts.push(format!("Slots: {slots}"));
-        }
-    }
-
-    if !state.last_tool_subjects.is_empty() {
-        parts.push(format!(
-            "Recent tools: {}",
-            state.last_tool_subjects.join(", ")
-        ));
-    }
-
-    parts.join("\n")
+    Some(section)
 }
 
 #[cfg(test)]
@@ -552,6 +637,7 @@ mod tests {
     use crate::application::services::retrieval_service::{
         RunRecipeSearchMatch, SessionSearchMatch,
     };
+    use crate::domain::dialogue_state::DialogueState;
     use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryCategory, MemoryEntry, Skill};
 
     // ── Budget & policy defaults ──
@@ -606,8 +692,20 @@ mod tests {
             last_tool_subjects: vec!["weather_lookup".into()],
             ..Default::default()
         };
-        let query = build_query_text("what's the weather?", Some(&state));
+        let interpretation =
+            crate::application::services::turn_interpretation::build_turn_interpretation(
+                Some(crate::domain::user_profile::UserProfile {
+                    default_city: Some("Berlin".into()),
+                    timezone: Some("Europe/Berlin".into()),
+                    ..Default::default()
+                }),
+                None,
+                Some(&state),
+            )
+            .unwrap();
+        let query = build_query_text("what's the weather?", Some(&interpretation));
         assert!(query.contains("what's the weather?"));
+        assert!(query.contains("Default city: Berlin"));
         assert!(query.contains("Focus: Berlin"));
         assert!(query.contains("Slots: timezone=Europe/Berlin"));
         assert!(query.contains("Recent tools: weather_lookup"));
@@ -827,6 +925,30 @@ mod tests {
             .contains("Compared Berlin and Tbilisi weather last week"));
         assert!(fmt.enrichment_prefix.contains("Recent match:"));
         assert!(fmt.enrichment_prefix.contains("</session-recap>"));
+    }
+
+    #[test]
+    fn format_resolution_plan_orders_recipe_before_memory_when_router_says_so() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![make_entry("fact1", "User likes Rust", 0.9)],
+            run_recipes: vec![make_recipe(
+                "deploy",
+                "Check staging first, then ship the release",
+            )],
+            resolution_plan: Some(resolution_router::ResolutionPlan {
+                source_order: vec![
+                    resolution_router::ResolutionSource::RunRecipe,
+                    resolution_router::ResolutionSource::LongTermMemory,
+                ],
+                clarify_after_exhaustion: true,
+            }),
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        let recipe_pos = fmt.enrichment_prefix.find("<recipe").unwrap();
+        let memory_pos = fmt.enrichment_prefix.find("[Memory context]").unwrap();
+        assert!(recipe_pos < memory_pos);
+        assert!(fmt.resolution_system.contains("[resolution-plan]"));
     }
 
     // ── format_turn_context: budget enforcement ──

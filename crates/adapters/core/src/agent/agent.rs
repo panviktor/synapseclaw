@@ -770,6 +770,26 @@ impl Agent {
                 )));
         }
 
+        let dialogue_state = self.memory_session_id.as_deref().and_then(|session_id| {
+            self.dialogue_state_store
+                .as_ref()
+                .and_then(|store| store.get(session_id))
+        });
+        let user_profile = match (
+            self.user_profile_store.as_ref(),
+            self.user_profile_key.as_deref(),
+        ) {
+            (Some(store), Some(key)) => store.load(key),
+            _ => None,
+        };
+        let turn_interpretation = turn_interpretation::build_turn_interpretation(
+            user_profile,
+            None,
+            dialogue_state.as_ref(),
+        );
+        let interpretation_block = turn_interpretation.as_ref().and_then(|interpretation| {
+            turn_interpretation::format_turn_interpretation(&interpretation)
+        });
         // ── Unified turn context assembly ──
         let continuation = if self.turn_count > 0 {
             Some(&self.continuation_policy)
@@ -783,32 +803,12 @@ impl Agent {
             user_message,
             &self.agent_id,
             self.memory_session_id.as_deref(),
-            None,
+            turn_interpretation.as_ref(),
             &self.prompt_budget,
             continuation,
         )
         .await;
         let formatted = turn_context_fmt::format_turn_context(&turn_ctx, &self.prompt_budget);
-        let dialogue_state = self.memory_session_id.as_deref().and_then(|session_id| {
-            self.dialogue_state_store
-                .as_ref()
-                .and_then(|store| store.get(session_id))
-        });
-        let user_profile = match (
-            self.user_profile_store.as_ref(),
-            self.user_profile_key.as_deref(),
-        ) {
-            (Some(store), Some(key)) => store.load(key),
-            _ => None,
-        };
-        let interpretation_block = turn_interpretation::build_turn_interpretation(
-            user_profile,
-            None,
-            dialogue_state.as_ref(),
-        )
-        .and_then(|interpretation| {
-            turn_interpretation::format_turn_interpretation(&interpretation)
-        });
 
         // Core blocks → system message (MemGPT: always in prompt)
         if !formatted.core_blocks_system.is_empty() {
@@ -838,6 +838,20 @@ impl Agent {
             });
             self.history
                 .push(ConversationMessage::Chat(ChatMessage::system(block)));
+        }
+        if !formatted.resolution_system.is_empty() {
+            const RESOLUTION_MARKER: &str = "[resolution-plan]\n";
+            self.history.retain(|msg| {
+                if let ConversationMessage::Chat(chat) = msg {
+                    !(chat.role == "system" && chat.content.starts_with(RESOLUTION_MARKER))
+                } else {
+                    true
+                }
+            });
+            self.history
+                .push(ConversationMessage::Chat(ChatMessage::system(
+                    formatted.resolution_system.clone(),
+                )));
         }
 
         if self.auto_save {

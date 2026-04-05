@@ -20,6 +20,7 @@ pub mod memory_mutation;
 pub mod memory_sharing;
 pub mod pipeline_service;
 pub mod post_turn_orchestrator;
+pub mod resolution_router;
 pub mod retention;
 pub mod retrieval_service;
 pub mod tool_filtering;

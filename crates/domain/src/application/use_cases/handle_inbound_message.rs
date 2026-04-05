@@ -266,16 +266,16 @@ async fn handle_regular_message(
     {
         history.push(ChatMessage::system(hints));
     }
-    if let Some(interpretation) =
+    let interpretation =
         crate::application::services::turn_interpretation::build_turn_interpretation(
             user_profile,
             Some(&current_conversation),
             dialogue_state.as_ref(),
-        )
-    {
+        );
+    if let Some(interpretation) = interpretation.as_ref() {
         if let Some(block) =
             crate::application::services::turn_interpretation::format_turn_interpretation(
-                &interpretation,
+                interpretation,
             )
         {
             history.push(ChatMessage::system(block));
@@ -360,10 +360,6 @@ async fn handle_regular_message(
             // #8: Memory context enrichment via unified assembler
             if let Some(ref mem) = ports.memory {
                 use crate::application::services::turn_context as tc;
-                let dialogue_state = ports
-                    .dialogue_state_store
-                    .as_ref()
-                    .and_then(|store| store.get(&conv_key));
                 let turn_ctx = tc::assemble_turn_context(
                     mem.as_ref(),
                     ports.run_recipe_store.as_ref().map(|store| store.as_ref()),
@@ -374,7 +370,7 @@ async fn handle_regular_message(
                     content,
                     &config.agent_id,
                     Some(&conv_key),
-                    dialogue_state.as_ref(),
+                    interpretation.as_ref(),
                     &config.prompt_budget,
                     None, // first turn → full context
                 )
@@ -386,6 +382,9 @@ async fn handle_regular_message(
                 {
                     if !formatted.core_blocks_system.is_empty() {
                         history.push(ChatMessage::system(formatted.core_blocks_system));
+                    }
+                    if !formatted.resolution_system.is_empty() {
+                        history.push(ChatMessage::system(formatted.resolution_system));
                     }
                     // Enrichment as ephemeral user-prefix (raw content stored in history)
                     if !formatted.enrichment_prefix.is_empty() {
@@ -418,10 +417,6 @@ async fn handle_regular_message(
             if let Some(ref mem) = ports.memory {
                 use crate::application::services::turn_context as tc;
                 let continuation = config.continuation_policy.clone();
-                let dialogue_state = ports
-                    .dialogue_state_store
-                    .as_ref()
-                    .and_then(|store| store.get(conversation_key));
                 let turn_ctx = tc::assemble_turn_context(
                     mem.as_ref(),
                     ports.run_recipe_store.as_ref().map(|store| store.as_ref()),
@@ -432,7 +427,7 @@ async fn handle_regular_message(
                     content,
                     &config.agent_id,
                     Some(conversation_key),
-                    dialogue_state.as_ref(),
+                    interpretation.as_ref(),
                     &config.prompt_budget,
                     Some(&continuation),
                 )
@@ -441,6 +436,9 @@ async fn handle_regular_message(
 
                 if !formatted.core_blocks_system.is_empty() {
                     history.push(ChatMessage::system(formatted.core_blocks_system));
+                }
+                if !formatted.resolution_system.is_empty() {
+                    history.push(ChatMessage::system(formatted.resolution_system));
                 }
                 if !formatted.enrichment_prefix.is_empty() {
                     history.push(ChatMessage::user(format!(
