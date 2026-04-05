@@ -18,6 +18,7 @@ pub mod learning_events;
 pub mod learning_signals;
 pub mod loop_detection;
 pub mod memory_mutation;
+pub mod memory_projection_service;
 pub mod memory_sharing;
 pub mod pipeline_service;
 pub mod post_turn_orchestrator;

@@ -1460,6 +1460,10 @@ pub async fn run_gateway(
             get(api::handle_api_agent_context_budget_proxy),
         )
         .route(
+            "/api/agents/{agent_id}/memory/projections",
+            get(api::handle_api_agent_memory_projections_proxy),
+        )
+        .route(
             "/api/agents/{agent_id}/summary-model",
             put(api::handle_api_agent_summary_model_proxy),
         )
@@ -1547,6 +1551,10 @@ pub async fn run_gateway(
         .route("/api/memory", post(api::handle_api_memory_store))
         .route("/api/memory/{key}", delete(api::handle_api_memory_delete))
         .route("/api/memory/stats", get(api::handle_api_memory_stats))
+        .route(
+            "/api/memory/projections",
+            get(api::handle_api_memory_projections),
+        )
         .route(
             "/api/user-profiles",
             get(api::handle_api_user_profiles_list),

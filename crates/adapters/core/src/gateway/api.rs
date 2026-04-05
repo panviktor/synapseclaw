@@ -9,7 +9,7 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Json},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use synapse_infra::config_io::ConfigIO;
 
 const MASKED_SECRET: &str = "***MASKED***";
@@ -52,6 +52,12 @@ fn require_auth(
 pub struct MemoryQuery {
     pub query: Option<String>,
     pub category: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct MemoryProjectionQuery {
+    pub session_key: Option<String>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -285,6 +291,50 @@ pub async fn handle_api_agent_context_budget_proxy(
     let url = format!("{}/api/memory/context-budget", agent.gateway_url);
     match client
         .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// GET /api/agents/:agent_id/memory/projections — proxy readable memory projections.
+pub async fn handle_api_agent_memory_projections_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Query(params): Query<MemoryProjectionQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => {
+            return (StatusCode::NOT_FOUND, "Agent not found").into_response();
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/memory/projections", agent.gateway_url);
+    match client
+        .get(&url)
+        .query(&params)
         .bearer_auth(&agent.proxy_token)
         .send()
         .await
@@ -983,6 +1033,99 @@ pub async fn handle_api_context_budget(
         "enrichment_total_max_chars": budget.enrichment_total_max_chars,
         "continuation_policy": budget.continuation_policy,
         "min_relevance_score": config.memory.min_relevance_score,
+    }))
+    .into_response()
+}
+
+/// GET /api/memory/projections — readable memory views for operators and UI.
+pub async fn handle_api_memory_projections(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<MemoryProjectionQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let limit = params.limit.unwrap_or(3).clamp(1, 10);
+
+    let core_blocks = state
+        .mem
+        .get_core_blocks(&state.agent_id)
+        .await
+        .unwrap_or_default();
+    let core_projection =
+        synapse_domain::application::services::memory_projection_service::format_core_blocks_projection(
+            &core_blocks,
+        );
+
+    let working_state = params.session_key.as_ref().and_then(|session_key| {
+        state
+            .dialogue_state_store
+            .get(session_key)
+            .and_then(|state| {
+                synapse_domain::application::services::memory_projection_service::format_dialogue_state_projection(
+                    &state,
+                )
+            })
+            .map(|projection| {
+                serde_json::json!({
+                    "session_key": session_key,
+                    "projection": projection,
+                })
+            })
+    });
+
+    let recent_sessions = if let Some(store) = state.conversation_store.as_ref() {
+        let mut sessions = store.list_sessions(None).await;
+        sessions.sort_by(|left, right| right.last_active.cmp(&left.last_active));
+        let mut projected = Vec::new();
+        for session in sessions.into_iter().take(limit) {
+            let mut session_for_projection = session.clone();
+            if session_for_projection.summary.is_none() {
+                session_for_projection.summary =
+                    store.get_summary(&session_for_projection.key).await;
+            }
+            let events = store.get_events(&session_for_projection.key, 4).await;
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_session_projection(
+                    &session_for_projection,
+                    &events,
+                );
+            projected.push(serde_json::json!({
+                "key": session_for_projection.key,
+                "kind": session_for_projection.kind.to_string(),
+                "projection": projection,
+            }));
+        }
+        projected
+    } else {
+        Vec::new()
+    };
+
+    let mut run_recipes = state.run_recipe_store.list(&state.agent_id);
+    run_recipes.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    let run_recipes = run_recipes
+        .into_iter()
+        .take(limit)
+        .map(|recipe| {
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_run_recipe_projection(
+                    &recipe,
+                );
+            serde_json::json!({
+                "task_family": recipe.task_family,
+                "projection": projection,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "core_memory": core_projection,
+        "working_state": working_state,
+        "recent_sessions": recent_sessions,
+        "run_recipes": run_recipes,
     }))
     .into_response()
 }
