@@ -2932,6 +2932,48 @@ pub async fn start_channels(
     >,
     run_recipe_store: Option<Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>>,
 ) -> Result<()> {
+    let run_recipe_store: Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort> =
+        if let Some(store) = run_recipe_store {
+            store
+        } else {
+            let store_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("run_recipes.json");
+            match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    tracing::warn!(
+                        path = %store_path.display(),
+                        %error,
+                        "Failed to initialize persistent run recipe store, falling back to memory"
+                    );
+                    Arc::new(synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new())
+                }
+            }
+        };
+    let user_profile_store: Arc<
+        dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
+    > = {
+        let store_path = config
+            .config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("user_profiles.json");
+        match synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path) {
+            Ok(store) => Arc::new(store),
+            Err(error) => {
+                tracing::warn!(
+                    path = %store_path.display(),
+                    %error,
+                    "Failed to initialize persistent user profile store, falling back to memory"
+                );
+                Arc::new(synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new())
+            }
+        }
+    };
+
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
         auth_profile_override: None,
@@ -3078,7 +3120,9 @@ pub async fn start_channels(
             channel_conversation_store,
             None, // channel_registry — wired later if needed
             standing_order_store,
-            None, // run_recipe_store — tool falls back to shared file store
+            Some(Arc::clone(&user_profile_store)),
+            None, // user_profile_context — channels derive keys from current conversation
+            Some(Arc::clone(&run_recipe_store)),
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -3492,49 +3536,6 @@ pub async fn start_channels(
             ),
         )),
     );
-
-    let run_recipe_store: Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort> =
-        if let Some(store) = run_recipe_store {
-            store
-        } else {
-            let store_path = config
-                .config_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("run_recipes.json");
-            match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path) {
-                Ok(store) => Arc::new(store),
-                Err(error) => {
-                    tracing::warn!(
-                        path = %store_path.display(),
-                        %error,
-                        "Failed to initialize persistent run recipe store, falling back to memory"
-                    );
-                    Arc::new(synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new())
-                }
-            }
-        };
-
-    let user_profile_store: Arc<
-        dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
-    > = {
-        let store_path = config
-            .config_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join("user_profiles.json");
-        match synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path) {
-            Ok(store) => Arc::new(store),
-            Err(error) => {
-                tracing::warn!(
-                    path = %store_path.display(),
-                    %error,
-                    "Failed to initialize persistent user profile store, falling back to memory"
-                );
-                Arc::new(synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new())
-            }
-        }
-    };
 
     let runtime_ctx = Arc::new(ChannelRuntimeContext {
         channels_by_name,

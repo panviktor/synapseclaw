@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 pub trait UserProfileStorePort: Send + Sync {
     fn load(&self, user_key: &str) -> Option<UserProfile>;
+    fn list(&self) -> Vec<(String, UserProfile)>;
     fn upsert(&self, user_key: &str, profile: UserProfile) -> Result<()>;
     fn remove(&self, user_key: &str) -> Result<bool>;
 }
@@ -31,6 +32,17 @@ impl Default for InMemoryUserProfileStore {
 impl UserProfileStorePort for InMemoryUserProfileStore {
     fn load(&self, user_key: &str) -> Option<UserProfile> {
         self.profiles.read().get(user_key).cloned()
+    }
+
+    fn list(&self) -> Vec<(String, UserProfile)> {
+        let mut items = self
+            .profiles
+            .read()
+            .iter()
+            .map(|(key, profile)| (key.clone(), profile.clone()))
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.0.cmp(&right.0));
+        items
     }
 
     fn upsert(&self, user_key: &str, profile: UserProfile) -> Result<()> {
@@ -73,5 +85,19 @@ mod tests {
             .unwrap();
         assert!(store.remove("matrix:alice").unwrap());
         assert!(!store.remove("matrix:alice").unwrap());
+    }
+
+    #[test]
+    fn list_profiles_returns_sorted_entries() {
+        let store = InMemoryUserProfileStore::new();
+        store.upsert("b", UserProfile::default()).unwrap();
+        store.upsert("a", UserProfile::default()).unwrap();
+
+        let keys = store
+            .list()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["a", "b"]);
     }
 }

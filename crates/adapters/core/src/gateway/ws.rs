@@ -483,6 +483,7 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
         &config,
         Some(state.mem.clone()),
         state.conversation_store.clone(),
+        Some(state.user_profile_store.clone()),
     )
     .await?;
     agent.set_dialogue_state_store(Some(Arc::clone(&state.dialogue_state_store)));
@@ -1142,6 +1143,7 @@ async fn run_agent_turn_with_abort(
         &config_snapshot,
         Some(state.mem.clone()),
         state.conversation_store.clone(),
+        Some(state.user_profile_store.clone()),
     )
     .await?;
     let mut replacement_agent = replacement_agent;

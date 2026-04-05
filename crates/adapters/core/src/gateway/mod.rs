@@ -541,6 +541,8 @@ pub async fn run_gateway(
         None,
         None,
         None, // orchestration tool ports — gateway tools are for spec listing
+        None, // user_profile_store
+        None, // user_profile_context
         None, // run_recipe_store
     );
     let tools_registry: Arc<Vec<ToolSpec>> =
@@ -1545,6 +1547,16 @@ pub async fn run_gateway(
         .route("/api/memory", post(api::handle_api_memory_store))
         .route("/api/memory/{key}", delete(api::handle_api_memory_delete))
         .route("/api/memory/stats", get(api::handle_api_memory_stats))
+        .route(
+            "/api/user-profiles",
+            get(api::handle_api_user_profiles_list),
+        )
+        .route(
+            "/api/user-profiles/{key}",
+            get(api::handle_api_user_profile_get)
+                .put(api::handle_api_user_profile_put)
+                .delete(api::handle_api_user_profile_delete),
+        )
         .route(
             "/api/memory/context-budget",
             get(api::handle_api_context_budget),

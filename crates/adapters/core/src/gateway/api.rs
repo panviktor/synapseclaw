@@ -91,6 +91,19 @@ pub struct ChatMessagesQuery {
     pub limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub struct UserProfileUpsertBody {
+    pub preferred_language: Option<String>,
+    pub timezone: Option<String>,
+    pub default_city: Option<String>,
+    pub communication_style: Option<String>,
+    pub known_environments: Option<Vec<String>>,
+    pub default_delivery_target:
+        Option<synapse_domain::domain::conversation_target::ConversationDeliveryTarget>,
+    #[serde(default)]
+    pub clear_fields: Vec<String>,
+}
+
 // ── Handlers ────────────────────────────────────────────────────
 
 /// GET /api/status — system status overview
@@ -972,6 +985,186 @@ pub async fn handle_api_context_budget(
         "min_relevance_score": config.memory.min_relevance_score,
     }))
     .into_response()
+}
+
+/// GET /api/user-profiles — list structured user profiles
+pub async fn handle_api_user_profiles_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let profiles = state
+        .user_profile_store
+        .list()
+        .into_iter()
+        .map(|(key, profile)| {
+            serde_json::json!({
+                "key": key,
+                "profile": profile,
+                "projection": synapse_domain::application::services::user_profile_service::format_profile_projection(&profile),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({ "profiles": profiles })).into_response()
+}
+
+/// GET /api/user-profiles/:key — fetch a structured user profile
+pub async fn handle_api_user_profile_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    match state.user_profile_store.load(&key) {
+        Some(profile) => Json(serde_json::json!({
+            "key": key,
+            "profile": profile,
+            "projection": synapse_domain::application::services::user_profile_service::format_profile_projection(&profile),
+        }))
+        .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "User profile not found" })),
+        )
+            .into_response(),
+    }
+}
+
+/// PUT /api/user-profiles/:key — upsert a structured user profile
+pub async fn handle_api_user_profile_put(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+    Json(body): Json<UserProfileUpsertBody>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let clear = |field: &str| body.clear_fields.iter().any(|item| item == field);
+    let patch = synapse_domain::application::services::user_profile_service::UserProfilePatch {
+        preferred_language: if clear("preferred_language") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.preferred_language {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        timezone: if clear("timezone") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.timezone {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        default_city: if clear("default_city") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.default_city {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        communication_style: if clear("communication_style") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.communication_style {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        known_environments: if clear("known_environments") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(values) = body.known_environments {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                values,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        default_delivery_target: if clear("default_delivery_target") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.default_delivery_target {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+    };
+
+    let updated = synapse_domain::application::services::user_profile_service::apply_patch(
+        state.user_profile_store.load(&key),
+        &patch,
+    );
+
+    match updated {
+        Some(profile) => match state.user_profile_store.upsert(&key, profile.clone()) {
+            Ok(()) => Json(serde_json::json!({
+                "status": "ok",
+                "key": key,
+                "profile": profile,
+                "projection": synapse_domain::application::services::user_profile_service::format_profile_projection(&profile),
+            }))
+            .into_response(),
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("User profile update failed: {error}") })),
+            )
+                .into_response(),
+        },
+        None => match state.user_profile_store.remove(&key) {
+            Ok(_) => Json(serde_json::json!({
+                "status": "ok",
+                "removed": true,
+                "key": key,
+            }))
+            .into_response(),
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("User profile update failed: {error}") })),
+            )
+                .into_response(),
+        },
+    }
+}
+
+/// DELETE /api/user-profiles/:key — delete a structured user profile
+pub async fn handle_api_user_profile_delete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    match state.user_profile_store.remove(&key) {
+        Ok(removed) => Json(serde_json::json!({
+            "status": "ok",
+            "removed": removed,
+            "key": key,
+        }))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("User profile delete failed: {error}") })),
+        )
+            .into_response(),
+    }
 }
 
 /// GET /api/cost — cost summary

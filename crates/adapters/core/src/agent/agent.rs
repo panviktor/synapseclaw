@@ -19,6 +19,9 @@ use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::config::schema::Config;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
+use synapse_domain::ports::user_profile_context::{
+    InMemoryUserProfileContext, UserProfileContextPort,
+};
 use synapse_domain::ports::user_profile_store::UserProfileStorePort;
 use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
 use synapse_observability::{self, Observer, ObserverEvent};
@@ -61,6 +64,7 @@ pub struct Agent {
     run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
     user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
     user_profile_key: Option<String>,
+    user_profile_context: Arc<dyn UserProfileContextPort>,
 }
 
 pub struct AgentBuilder {
@@ -92,6 +96,7 @@ pub struct AgentBuilder {
     run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
     user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
     user_profile_key: Option<String>,
+    user_profile_context: Option<Arc<dyn UserProfileContextPort>>,
 }
 
 impl AgentBuilder {
@@ -125,6 +130,7 @@ impl AgentBuilder {
             run_recipe_store: None,
             user_profile_store: None,
             user_profile_key: None,
+            user_profile_context: None,
         }
     }
 
@@ -280,6 +286,14 @@ impl AgentBuilder {
         self
     }
 
+    pub fn user_profile_context(
+        mut self,
+        context: Option<Arc<dyn UserProfileContextPort>>,
+    ) -> Self {
+        self.user_profile_context = context;
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let mut tools = self
             .tools
@@ -289,6 +303,10 @@ impl AgentBuilder {
             tools.retain(|t| allow_list.iter().any(|name| name == t.name()));
         }
         let tool_specs = tools.iter().map(|tool| tool.spec()).collect();
+        let user_profile_context = self
+            .user_profile_context
+            .unwrap_or_else(|| Arc::new(InMemoryUserProfileContext::new()));
+        user_profile_context.set_current_key(self.user_profile_key.clone());
 
         Ok(Agent {
             provider: self
@@ -337,6 +355,7 @@ impl AgentBuilder {
             run_recipe_store: self.run_recipe_store,
             user_profile_store: self.user_profile_store,
             user_profile_key: self.user_profile_key,
+            user_profile_context,
         })
     }
 }
@@ -403,10 +422,12 @@ impl Agent {
 
     pub fn set_user_profile_key(&mut self, key: Option<String>) {
         self.user_profile_key = key;
+        self.user_profile_context
+            .set_current_key(self.user_profile_key.clone());
     }
 
     pub async fn from_config(config: &Config) -> Result<Self> {
-        Self::from_config_with_runtime_context(config, None, None).await
+        Self::from_config_with_runtime_context(config, None, None, None).await
     }
 
     /// Create an agent from config, optionally reusing a shared memory backend.
@@ -415,7 +436,7 @@ impl Agent {
         config: &Config,
         shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
     ) -> Result<Self> {
-        Self::from_config_with_runtime_context(config, shared_memory, None).await
+        Self::from_config_with_runtime_context(config, shared_memory, None, None).await
     }
 
     /// Create an agent from config with optional shared runtime ports used by
@@ -424,6 +445,7 @@ impl Agent {
         config: &Config,
         shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
         conversation_store: Option<Arc<dyn ConversationStorePort>>,
+        user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
     ) -> Result<Self> {
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::create_observer(
             &config.observability,
@@ -460,6 +482,32 @@ impl Agent {
         } else {
             None
         };
+        let resolved_user_profile_store: Arc<dyn UserProfileStorePort> = if let Some(store) =
+            user_profile_store
+        {
+            store
+        } else {
+            let profile_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("user_profiles.json");
+            match synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    tracing::warn!(
+                        path = %profile_path.display(),
+                        %error,
+                        "Failed to initialize persistent user profile store, falling back to memory"
+                    );
+                    Arc::new(
+                        synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+                    )
+                }
+            }
+        };
+        let user_profile_context: Arc<dyn UserProfileContextPort> =
+            Arc::new(InMemoryUserProfileContext::new());
 
         let (tools, _delegate_handle, _) = tools::all_tools_with_runtime(
             Arc::new(config.clone()),
@@ -482,6 +530,8 @@ impl Agent {
             conversation_store.clone(),
             None, // channel_registry
             None, // standing_order_store
+            Some(Arc::clone(&resolved_user_profile_store)),
+            Some(Arc::clone(&user_profile_context)),
             None, // run_recipe_store
         );
 
@@ -596,6 +646,8 @@ impl Agent {
             .route_model_by_hint(route_model_by_hint)
             .identity_config(config.identity.clone())
             .conversation_store(conversation_store)
+            .user_profile_store(Some(resolved_user_profile_store))
+            .user_profile_context(Some(user_profile_context))
             .skills(crate::skills::load_skills_with_config(
                 &config.workspace_dir,
                 config,

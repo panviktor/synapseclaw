@@ -184,6 +184,8 @@ pub fn all_tools(
         None,
         None,
         None,
+        None,
+        None,
     )
 }
 
@@ -220,6 +222,12 @@ pub fn all_tools_with_runtime(
     standing_order_store: Option<
         Arc<dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort>,
     >,
+    user_profile_store: Option<
+        Arc<dyn synapse_domain::ports::user_profile_store::UserProfileStorePort>,
+    >,
+    user_profile_context: Option<
+        Arc<dyn synapse_domain::ports::user_profile_context::UserProfileContextPort>,
+    >,
     run_recipe_store: Option<Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>>,
 ) -> (
     Vec<Box<dyn Tool>>,
@@ -247,6 +255,28 @@ pub fn all_tools_with_runtime(
                 Arc::new(
                     synapse_domain::ports::standing_order_store::InMemoryStandingOrderStore::new(),
                 )
+            }
+        }
+    };
+    let user_profile_store: Arc<
+        dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
+    > = if let Some(store) = user_profile_store {
+        store
+    } else {
+        let store_path = config
+            .config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("user_profiles.json");
+        match synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path) {
+            Ok(store) => Arc::new(store),
+            Err(error) => {
+                tracing::warn!(
+                    path = %store_path.display(),
+                    %error,
+                    "Failed to initialize persistent user profile store, falling back to memory"
+                );
+                Arc::new(synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new())
             }
         }
     };
@@ -766,6 +796,12 @@ pub fn all_tools_with_runtime(
     tool_arcs.push(Arc::new(synapse_tools::clarify::ClarifyTool::new()));
     tool_arcs.push(Arc::new(synapse_tools::todo::TodoTool::new(
         conversation_context.clone(),
+    )));
+    tool_arcs.push(Arc::new(synapse_tools::user_profile::UserProfileTool::new(
+        Arc::clone(&user_profile_store),
+        security.clone(),
+        conversation_context.clone(),
+        user_profile_context,
     )));
     if let (Some(ctx), Some(reg)) = (conversation_context.as_ref(), channel_registry.as_ref()) {
         tool_arcs.push(Arc::new(synapse_tools::message_send::MessageSendTool::new(

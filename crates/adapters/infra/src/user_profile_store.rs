@@ -59,6 +59,17 @@ impl UserProfileStorePort for FileUserProfileStore {
         self.profiles.read().get(user_key).cloned()
     }
 
+    fn list(&self) -> Vec<(String, UserProfile)> {
+        let mut items = self
+            .profiles
+            .read()
+            .iter()
+            .map(|(key, profile)| (key.clone(), profile.clone()))
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| left.0.cmp(&right.0));
+        items
+    }
+
     fn upsert(&self, user_key: &str, profile: UserProfile) -> Result<()> {
         let mut profiles = self.profiles.write();
         profiles.insert(user_key.to_string(), profile);
