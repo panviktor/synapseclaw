@@ -8,6 +8,7 @@
 //! the same format, and the channel use case can't call adapters.
 //! The adapter `turn_context_fmt` re-exports these functions.
 
+use crate::application::services::clarification_policy;
 use crate::application::services::resolution_router;
 use crate::application::services::retrieval_service;
 use crate::application::services::turn_interpretation::TurnInterpretation;
@@ -38,6 +39,8 @@ pub struct TurnMemoryContext {
     pub run_recipes: Vec<retrieval_service::RunRecipeSearchMatch>,
     /// Deterministic resolver ordering for this turn.
     pub resolution_plan: Option<resolution_router::ResolutionPlan>,
+    /// Structured clarification guidance from known defaults and candidates.
+    pub clarification_guidance: Option<clarification_policy::ClarificationGuidance>,
 }
 
 /// Token/char budget for turn context assembly.
@@ -370,6 +373,11 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
             result.resolution_system = block;
         }
     }
+    if let Some(guidance) = &ctx.clarification_guidance {
+        if let Some(block) = clarification_policy::format_clarification_guidance(guidance) {
+            result.resolution_system.push_str(&block);
+        }
+    }
 
     for section in ordered_enrichment_sections(ctx, budget) {
         if result.enrichment_prefix.chars().count() + section.chars().count() > max_chars {
@@ -473,6 +481,7 @@ fn apply_resolution_plan(ctx: &mut TurnMemoryContext, interpretation: Option<&Tu
     if !plan.source_order.is_empty() {
         ctx.resolution_plan = Some(plan);
     }
+    ctx.clarification_guidance = clarification_policy::build_clarification_guidance(interpretation);
 }
 
 fn ordered_enrichment_sections(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Vec<String> {
@@ -949,6 +958,22 @@ mod tests {
         let memory_pos = fmt.enrichment_prefix.find("[Memory context]").unwrap();
         assert!(recipe_pos < memory_pos);
         assert!(fmt.resolution_system.contains("[resolution-plan]"));
+    }
+
+    #[test]
+    fn format_turn_context_includes_clarification_policy_when_available() {
+        let ctx = TurnMemoryContext {
+            clarification_guidance: Some(clarification_policy::ClarificationGuidance {
+                use_defaults_for: vec!["city".into(), "timezone".into()],
+                candidate_set: vec!["Berlin".into(), "Tbilisi".into()],
+                avoid_generic_questions: true,
+            }),
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.resolution_system.contains("[clarification-policy]"));
+        assert!(fmt.resolution_system.contains("city, timezone"));
+        assert!(fmt.resolution_system.contains("Berlin | Tbilisi"));
     }
 
     // ── format_turn_context: budget enforcement ──

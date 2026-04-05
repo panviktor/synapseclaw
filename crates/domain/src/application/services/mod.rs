@@ -7,6 +7,7 @@
 pub mod approval_service;
 pub mod bootstrap_core_memory;
 pub mod channel_presentation;
+pub mod clarification_policy;
 pub mod conversation_service;
 pub mod delivery_service;
 pub mod dialogue_state_service;
