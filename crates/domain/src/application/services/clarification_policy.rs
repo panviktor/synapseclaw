@@ -7,7 +7,6 @@ use crate::application::services::turn_interpretation::TurnInterpretation;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClarificationGuidance {
-    pub use_defaults_for: Vec<String>,
     pub candidate_set: Vec<String>,
     pub required: bool,
     pub avoid_generic_questions: bool,
@@ -27,55 +26,13 @@ pub fn build_clarification_guidance(
         ..Default::default()
     };
 
-    if let Some(profile) = interpretation.user_profile.as_ref() {
-        if interpretation.defaults_requested.iter().any(|kind| {
-            matches!(
-                kind,
-                crate::application::services::turn_interpretation::DefaultKind::City
-            )
-        }) && profile.default_city.is_some()
-        {
-            guidance.use_defaults_for.push("city".into());
-        }
-        if interpretation.defaults_requested.iter().any(|kind| {
-            matches!(
-                kind,
-                crate::application::services::turn_interpretation::DefaultKind::Language
-            )
-        }) && profile.preferred_language.is_some()
-        {
-            guidance.use_defaults_for.push("language".into());
-        }
-        if interpretation.defaults_requested.iter().any(|kind| {
-            matches!(
-                kind,
-                crate::application::services::turn_interpretation::DefaultKind::Timezone
-            )
-        }) && profile.timezone.is_some()
-        {
-            guidance.use_defaults_for.push("timezone".into());
-        }
-        if interpretation.defaults_requested.iter().any(|kind| {
-            matches!(
-                kind,
-                crate::application::services::turn_interpretation::DefaultKind::DeliveryTarget
-            )
-        }) && profile.default_delivery_target.is_some()
-        {
-            guidance.use_defaults_for.push("delivery_target".into());
-        }
-    }
-
     if !interpretation.clarification_candidates.is_empty() {
         guidance.candidate_set = interpretation.clarification_candidates.clone();
     }
 
     guidance.reason = reason.map(reason_name).map(str::to_string);
 
-    if guidance.use_defaults_for.is_empty()
-        && guidance.candidate_set.is_empty()
-        && !guidance.required
-    {
+    if guidance.candidate_set.is_empty() && !guidance.required {
         None
     } else {
         Some(guidance)
@@ -83,7 +40,7 @@ pub fn build_clarification_guidance(
 }
 
 pub fn format_clarification_guidance(guidance: &ClarificationGuidance) -> Option<String> {
-    if guidance.use_defaults_for.is_empty() && guidance.candidate_set.is_empty() {
+    if guidance.candidate_set.is_empty() {
         return None;
     }
 
@@ -93,12 +50,6 @@ pub fn format_clarification_guidance(guidance: &ClarificationGuidance) -> Option
     }
     if guidance.required {
         lines.push("- clarification_required: true".to_string());
-    }
-    if !guidance.use_defaults_for.is_empty() {
-        lines.push(format!(
-            "- use_known_defaults_for: {}",
-            guidance.use_defaults_for.join(", ")
-        ));
     }
     if !guidance.candidate_set.is_empty() {
         lines.push(format!(
@@ -125,12 +76,12 @@ fn reason_name(reason: ClarificationReason) -> &'static str {
 mod tests {
     use super::*;
     use crate::application::services::turn_interpretation::{
-        DefaultKind, DialogueStateSnapshot, TurnInterpretation,
+        DialogueStateSnapshot, TurnInterpretation,
     };
     use crate::domain::user_profile::UserProfile;
 
     #[test]
-    fn builds_guidance_from_defaults_and_candidates() {
+    fn builds_guidance_from_candidates() {
         let interpretation = TurnInterpretation {
             user_profile: Some(UserProfile {
                 preferred_language: Some("ru".into()),
@@ -148,15 +99,8 @@ mod tests {
                 reference_anchors: vec![],
                 last_tool_subjects: vec![],
             }),
-            defaults_requested: vec![
-                DefaultKind::Language,
-                DefaultKind::Timezone,
-                DefaultKind::City,
-            ],
             clarification_candidates: vec!["Berlin".into(), "Tbilisi".into()],
             reference_candidates: vec![],
-            temporal_scope: None,
-            delivery_scope: None,
             current_conversation: None,
         };
 
@@ -171,10 +115,6 @@ mod tests {
             Some(&interpretation),
         )
         .unwrap();
-        assert_eq!(
-            guidance.use_defaults_for,
-            vec!["city", "language", "timezone"]
-        );
         assert_eq!(guidance.candidate_set, vec!["Berlin", "Tbilisi"]);
         assert!(guidance.required);
         assert_eq!(guidance.reason.as_deref(), Some("ambiguous_candidates"));
@@ -183,7 +123,6 @@ mod tests {
     #[test]
     fn formats_policy_block() {
         let block = format_clarification_guidance(&ClarificationGuidance {
-            use_defaults_for: vec!["city".into(), "timezone".into()],
             candidate_set: vec!["Berlin".into(), "Tbilisi".into()],
             required: true,
             avoid_generic_questions: true,
@@ -193,7 +132,6 @@ mod tests {
 
         assert!(block.contains("[clarification-policy]"));
         assert!(block.contains("clarification_required: true"));
-        assert!(block.contains("use_known_defaults_for: city, timezone"));
         assert!(block.contains("Berlin | Tbilisi"));
         assert!(block.contains("reason: low_confidence"));
     }

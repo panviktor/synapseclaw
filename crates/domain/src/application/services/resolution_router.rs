@@ -61,13 +61,10 @@ const MEMORY_CONFIDENT_GAP: f64 = 0.08;
 
 pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan {
     let mut source_order = Vec::new();
-    let (prefer_defaults, prefer_followup) = if let Some(interpretation) = evidence.interpretation {
-        (
-            !interpretation.defaults_requested.is_empty(),
-            !interpretation.reference_candidates.is_empty(),
-        )
+    let prefer_followup = if let Some(interpretation) = evidence.interpretation {
+        !interpretation.reference_candidates.is_empty()
     } else {
-        (false, false)
+        false
     };
 
     if let Some(interpretation) = evidence.interpretation {
@@ -83,10 +80,6 @@ pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan
         if prefer_followup && interpretation.dialogue_state.is_some() {
             source_order.retain(|source| *source != ResolutionSource::DialogueState);
             source_order.insert(0, ResolutionSource::DialogueState);
-        }
-        if prefer_defaults && interpretation.user_profile.is_some() {
-            source_order.retain(|source| *source != ResolutionSource::UserProfile);
-            source_order.insert(0, ResolutionSource::UserProfile);
         }
     }
 
@@ -325,9 +318,6 @@ mod tests {
                 reference_anchors: vec![],
                 last_tool_subjects: vec![],
             }),
-            defaults_requested: vec![],
-            temporal_scope: None,
-            delivery_scope: None,
             reference_candidates: vec![],
             clarification_candidates: vec![],
         };

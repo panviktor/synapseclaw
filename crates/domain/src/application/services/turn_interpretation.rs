@@ -16,9 +16,6 @@ pub struct TurnInterpretation {
     pub current_conversation: Option<CurrentConversationSnapshot>,
     pub dialogue_state: Option<DialogueStateSnapshot>,
     pub reference_candidates: Vec<ReferenceCandidate>,
-    pub defaults_requested: Vec<DefaultKind>,
-    pub temporal_scope: Option<TemporalScope>,
-    pub delivery_scope: Option<DeliveryScope>,
     pub clarification_candidates: Vec<String>,
 }
 
@@ -56,7 +53,7 @@ pub enum ReferenceCandidateKind {
         selector: ReferenceAnchorSelector,
         entity_kind: Option<String>,
     },
-    Profile(DefaultKind),
+    Profile(ProfileReferenceKind),
     DeliveryTarget,
     RecentSubject,
 }
@@ -69,22 +66,11 @@ pub struct ReferenceCandidate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DefaultKind {
+pub enum ProfileReferenceKind {
     Language,
     Timezone,
     City,
     DeliveryTarget,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TemporalScope {
-    Historical,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryScope {
-    CurrentConversation,
-    DefaultTarget,
 }
 
 pub async fn build_turn_interpretation(
@@ -114,9 +100,6 @@ pub async fn build_turn_interpretation(
         current_conversation,
         dialogue_state,
         reference_candidates,
-        defaults_requested: Vec::new(),
-        temporal_scope: None,
-        delivery_scope: None,
         clarification_candidates,
     };
 
@@ -124,9 +107,6 @@ pub async fn build_turn_interpretation(
         && interpretation.current_conversation.is_none()
         && interpretation.dialogue_state.is_none()
         && interpretation.reference_candidates.is_empty()
-        && interpretation.defaults_requested.is_empty()
-        && interpretation.temporal_scope.is_none()
-        && interpretation.delivery_scope.is_none()
         && interpretation.clarification_candidates.is_empty()
     {
         None
@@ -215,33 +195,13 @@ pub fn format_turn_interpretation(interpretation: &TurnInterpretation) -> Option
         }
     }
 
-    if interpretation.temporal_scope.is_some()
-        || interpretation.delivery_scope.is_some()
-        || !interpretation.defaults_requested.is_empty()
-        || !interpretation.reference_candidates.is_empty()
+    if !interpretation.reference_candidates.is_empty()
         || !interpretation.clarification_candidates.is_empty()
     {
         if !lines.is_empty() {
             lines.push(String::new());
         }
         lines.push("[bounded-interpretation]".to_string());
-        if let Some(scope) = interpretation.temporal_scope {
-            lines.push(format!("- temporal_scope: {}", temporal_scope_name(scope)));
-        }
-        if let Some(scope) = interpretation.delivery_scope {
-            lines.push(format!("- delivery_scope: {}", delivery_scope_name(scope)));
-        }
-        if !interpretation.defaults_requested.is_empty() {
-            lines.push(format!(
-                "- defaults_requested: {}",
-                interpretation
-                    .defaults_requested
-                    .iter()
-                    .map(|kind| default_kind_name(*kind))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
         if !interpretation.reference_candidates.is_empty() {
             lines.push(format!(
                 "- reference_candidates: {}",
@@ -362,7 +322,7 @@ fn collect_reference_candidates(
         if let Some(city) = profile.default_city.as_deref() {
             push_reference_candidate(
                 &mut candidates,
-                ReferenceCandidateKind::Profile(DefaultKind::City),
+                ReferenceCandidateKind::Profile(ProfileReferenceKind::City),
                 city,
                 ReferenceSource::UserProfile,
             );
@@ -370,7 +330,7 @@ fn collect_reference_candidates(
         if let Some(language) = profile.preferred_language.as_deref() {
             push_reference_candidate(
                 &mut candidates,
-                ReferenceCandidateKind::Profile(DefaultKind::Language),
+                ReferenceCandidateKind::Profile(ProfileReferenceKind::Language),
                 language,
                 ReferenceSource::UserProfile,
             );
@@ -378,7 +338,7 @@ fn collect_reference_candidates(
         if let Some(timezone) = profile.timezone.as_deref() {
             push_reference_candidate(
                 &mut candidates,
-                ReferenceCandidateKind::Profile(DefaultKind::Timezone),
+                ReferenceCandidateKind::Profile(ProfileReferenceKind::Timezone),
                 timezone,
                 ReferenceSource::UserProfile,
             );
@@ -396,7 +356,7 @@ fn collect_reference_candidates(
         if profile.default_delivery_target.is_some() {
             push_reference_candidate(
                 &mut candidates,
-                ReferenceCandidateKind::Profile(DefaultKind::DeliveryTarget),
+                ReferenceCandidateKind::Profile(ProfileReferenceKind::DeliveryTarget),
                 "default_delivery_target",
                 ReferenceSource::UserProfile,
             );
@@ -525,12 +485,12 @@ fn reference_source_name(source: ReferenceSource) -> &'static str {
     }
 }
 
-fn default_kind_name(kind: DefaultKind) -> &'static str {
+fn profile_reference_kind_name(kind: ProfileReferenceKind) -> &'static str {
     match kind {
-        DefaultKind::Language => "language",
-        DefaultKind::Timezone => "timezone",
-        DefaultKind::City => "city",
-        DefaultKind::DeliveryTarget => "delivery_target",
+        ProfileReferenceKind::Language => "language",
+        ProfileReferenceKind::Timezone => "timezone",
+        ProfileReferenceKind::City => "city",
+        ProfileReferenceKind::DeliveryTarget => "delivery_target",
     }
 }
 
@@ -545,8 +505,8 @@ fn reference_candidate_kind_name(kind: &ReferenceCandidateKind) -> String {
             Some(entity_kind) => format!("anchor<{}:{}>", selector_name(selector), entity_kind),
             None => format!("anchor<{}>", selector_name(selector)),
         },
-        ReferenceCandidateKind::Profile(default_kind) => {
-            format!("profile<{}>", default_kind_name(*default_kind))
+        ReferenceCandidateKind::Profile(kind) => {
+            format!("profile<{}>", profile_reference_kind_name(*kind))
         }
         ReferenceCandidateKind::DeliveryTarget => "delivery_target".into(),
         ReferenceCandidateKind::RecentSubject => "recent_subject".into(),
@@ -567,19 +527,6 @@ fn ordinal_name(ordinal: &ReferenceOrdinal) -> &'static str {
         ReferenceOrdinal::Second => "second",
         ReferenceOrdinal::Third => "third",
         ReferenceOrdinal::Fourth => "fourth",
-    }
-}
-
-fn temporal_scope_name(scope: TemporalScope) -> &'static str {
-    match scope {
-        TemporalScope::Historical => "historical",
-    }
-}
-
-fn delivery_scope_name(scope: DeliveryScope) -> &'static str {
-    match scope {
-        DeliveryScope::CurrentConversation => "current_conversation",
-        DeliveryScope::DefaultTarget => "default_target",
     }
 }
 
@@ -843,7 +790,6 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(interpretation.defaults_requested.is_empty());
         assert!(!interpretation.reference_candidates.is_empty());
         assert_eq!(
             interpretation.clarification_candidates,

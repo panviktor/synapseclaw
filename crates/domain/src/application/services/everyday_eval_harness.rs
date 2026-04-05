@@ -33,7 +33,6 @@ pub struct EverydayEvalScenario {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClarificationShape {
     None,
-    DefaultsOnly,
     CandidateSet,
     GenericRisk,
 }
@@ -271,7 +270,6 @@ fn classify_clarification_shape(
 ) -> ClarificationShape {
     match guidance {
         Some(guidance) if !guidance.candidate_set.is_empty() => ClarificationShape::CandidateSet,
-        Some(guidance) if !guidance.use_defaults_for.is_empty() => ClarificationShape::DefaultsOnly,
         Some(guidance) if guidance.required => ClarificationShape::GenericRisk,
         Some(_) => ClarificationShape::None,
         None => ClarificationShape::None,

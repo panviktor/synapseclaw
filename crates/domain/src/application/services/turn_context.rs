@@ -419,49 +419,6 @@ fn build_query_text(user_message: &str, interpretation: Option<&TurnInterpretati
         }
     }
 
-    if let Some(scope) = interpretation.temporal_scope {
-        parts.push(format!(
-            "Temporal scope: {}",
-            match scope {
-                crate::application::services::turn_interpretation::TemporalScope::Historical => {
-                    "historical"
-                }
-            }
-        ));
-    }
-
-    if let Some(scope) = interpretation.delivery_scope {
-        parts.push(format!(
-            "Delivery scope: {}",
-            match scope {
-                crate::application::services::turn_interpretation::DeliveryScope::CurrentConversation =>
-                    "current_conversation",
-                crate::application::services::turn_interpretation::DeliveryScope::DefaultTarget =>
-                    "default_target",
-            }
-        ));
-    }
-
-    if !interpretation.defaults_requested.is_empty() {
-        parts.push(format!(
-            "Requested defaults: {}",
-            interpretation
-                .defaults_requested
-                .iter()
-                .map(|kind| match kind {
-                    crate::application::services::turn_interpretation::DefaultKind::Language =>
-                        "language",
-                    crate::application::services::turn_interpretation::DefaultKind::Timezone =>
-                        "timezone",
-                    crate::application::services::turn_interpretation::DefaultKind::City => "city",
-                    crate::application::services::turn_interpretation::DefaultKind::DeliveryTarget =>
-                        "delivery_target",
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-
     if !interpretation.reference_candidates.is_empty() {
         let references = interpretation
             .reference_candidates
@@ -1073,7 +1030,6 @@ mod tests {
     fn format_turn_context_includes_clarification_policy_when_available() {
         let ctx = TurnMemoryContext {
             clarification_guidance: Some(clarification_policy::ClarificationGuidance {
-                use_defaults_for: vec!["city".into(), "timezone".into()],
                 candidate_set: vec!["Berlin".into(), "Tbilisi".into()],
                 required: true,
                 avoid_generic_questions: true,
@@ -1086,7 +1042,6 @@ mod tests {
         assert!(fmt
             .resolution_system
             .contains("clarification_required: true"));
-        assert!(fmt.resolution_system.contains("city, timezone"));
         assert!(fmt.resolution_system.contains("Berlin | Tbilisi"));
         assert!(fmt.resolution_system.contains("reason: low_confidence"));
     }
