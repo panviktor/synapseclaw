@@ -2,22 +2,30 @@
 //!
 //! This uses typed state only. No phrase tables or locale-specific triggers.
 
+use crate::application::services::resolution_router::{
+    ClarificationReason, ResolutionPlan,
+};
 use crate::application::services::turn_interpretation::TurnInterpretation;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClarificationGuidance {
     pub use_defaults_for: Vec<String>,
     pub candidate_set: Vec<String>,
+    pub required: bool,
     pub avoid_generic_questions: bool,
+    pub reason: Option<String>,
 }
 
 pub fn build_clarification_guidance(
+    plan: Option<&ResolutionPlan>,
     interpretation: Option<&TurnInterpretation>,
 ) -> Option<ClarificationGuidance> {
     let interpretation = interpretation?;
+    let reason = plan.and_then(|plan| plan.clarification_reason);
 
     let mut guidance = ClarificationGuidance {
         avoid_generic_questions: true,
+        required: reason.is_some(),
         ..Default::default()
     };
 
@@ -60,7 +68,10 @@ pub fn build_clarification_guidance(
         guidance.candidate_set = interpretation.clarification_candidates.clone();
     }
 
-    if guidance.use_defaults_for.is_empty() && guidance.candidate_set.is_empty() {
+    guidance.reason = reason.map(reason_name).map(str::to_string);
+
+    if guidance.use_defaults_for.is_empty() && guidance.candidate_set.is_empty() && !guidance.required
+    {
         None
     } else {
         Some(guidance)
@@ -76,6 +87,9 @@ pub fn format_clarification_guidance(guidance: &ClarificationGuidance) -> Option
     if guidance.avoid_generic_questions {
         lines.push("- avoid_generic_questions: true".to_string());
     }
+    if guidance.required {
+        lines.push("- clarification_required: true".to_string());
+    }
     if !guidance.use_defaults_for.is_empty() {
         lines.push(format!(
             "- use_known_defaults_for: {}",
@@ -88,8 +102,19 @@ pub fn format_clarification_guidance(guidance: &ClarificationGuidance) -> Option
             guidance.candidate_set.join(" | ")
         ));
     }
+    if let Some(reason) = guidance.reason.as_deref() {
+        lines.push(format!("- reason: {reason}"));
+    }
 
     Some(format!("{}\n", lines.join("\n")))
+}
+
+fn reason_name(reason: ClarificationReason) -> &'static str {
+    match reason {
+        ClarificationReason::ResolverExhausted => "resolver_exhausted",
+        ClarificationReason::LowConfidence => "low_confidence",
+        ClarificationReason::AmbiguousCandidates => "ambiguous_candidates",
+    }
 }
 
 #[cfg(test)]
@@ -131,12 +156,23 @@ mod tests {
             current_conversation: None,
         };
 
-        let guidance = build_clarification_guidance(Some(&interpretation)).unwrap();
+        let guidance = build_clarification_guidance(
+            Some(&ResolutionPlan {
+                source_order: vec![],
+                confidence: crate::application::services::resolution_router::ResolutionConfidence::Low,
+                clarify_after_exhaustion: true,
+                clarification_reason: Some(ClarificationReason::AmbiguousCandidates),
+            }),
+            Some(&interpretation),
+        )
+        .unwrap();
         assert_eq!(
             guidance.use_defaults_for,
             vec!["city", "language", "timezone"]
         );
         assert_eq!(guidance.candidate_set, vec!["Berlin", "Tbilisi"]);
+        assert!(guidance.required);
+        assert_eq!(guidance.reason.as_deref(), Some("ambiguous_candidates"));
     }
 
     #[test]
@@ -144,12 +180,16 @@ mod tests {
         let block = format_clarification_guidance(&ClarificationGuidance {
             use_defaults_for: vec!["city".into(), "timezone".into()],
             candidate_set: vec!["Berlin".into(), "Tbilisi".into()],
+            required: true,
             avoid_generic_questions: true,
+            reason: Some("low_confidence".into()),
         })
         .unwrap();
 
         assert!(block.contains("[clarification-policy]"));
+        assert!(block.contains("clarification_required: true"));
         assert!(block.contains("use_known_defaults_for: city, timezone"));
         assert!(block.contains("Berlin | Tbilisi"));
+        assert!(block.contains("reason: low_confidence"));
     }
 }

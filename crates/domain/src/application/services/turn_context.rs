@@ -534,9 +534,13 @@ fn apply_resolution_plan(ctx: &mut TurnMemoryContext, interpretation: Option<&Tu
         entity_hits: ctx.entities.len(),
     });
     if !plan.source_order.is_empty() {
+        ctx.clarification_guidance =
+            clarification_policy::build_clarification_guidance(Some(&plan), interpretation);
         ctx.resolution_plan = Some(plan);
+    } else {
+        ctx.clarification_guidance =
+            clarification_policy::build_clarification_guidance(None, interpretation);
     }
-    ctx.clarification_guidance = clarification_policy::build_clarification_guidance(interpretation);
 }
 
 fn ordered_enrichment_sections(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Vec<String> {
@@ -1007,7 +1011,9 @@ mod tests {
                     resolution_router::ResolutionSource::RunRecipe,
                     resolution_router::ResolutionSource::LongTermMemory,
                 ],
+                confidence: resolution_router::ResolutionConfidence::High,
                 clarify_after_exhaustion: true,
+                clarification_reason: None,
             }),
             ..Default::default()
         };
@@ -1024,14 +1030,18 @@ mod tests {
             clarification_guidance: Some(clarification_policy::ClarificationGuidance {
                 use_defaults_for: vec!["city".into(), "timezone".into()],
                 candidate_set: vec!["Berlin".into(), "Tbilisi".into()],
+                required: true,
                 avoid_generic_questions: true,
+                reason: Some("low_confidence".into()),
             }),
             ..Default::default()
         };
         let fmt = format_turn_context(&ctx, &PromptBudget::default());
         assert!(fmt.resolution_system.contains("[clarification-policy]"));
+        assert!(fmt.resolution_system.contains("clarification_required: true"));
         assert!(fmt.resolution_system.contains("city, timezone"));
         assert!(fmt.resolution_system.contains("Berlin | Tbilisi"));
+        assert!(fmt.resolution_system.contains("reason: low_confidence"));
     }
 
     // ── format_turn_context: budget enforcement ──

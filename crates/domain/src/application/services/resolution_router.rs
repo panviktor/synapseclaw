@@ -15,10 +15,27 @@ pub enum ResolutionSource {
     LongTermMemory,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ResolutionConfidence {
+    High,
+    #[default]
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClarificationReason {
+    ResolverExhausted,
+    LowConfidence,
+    AmbiguousCandidates,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolutionPlan {
     pub source_order: Vec<ResolutionSource>,
+    pub confidence: ResolutionConfidence,
     pub clarify_after_exhaustion: bool,
+    pub clarification_reason: Option<ClarificationReason>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -128,9 +145,18 @@ pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan
 
     dedupe_source_order(&mut source_order);
 
+    let confidence = compute_confidence(source_order.first().copied(), evidence);
+    let clarification_reason = compute_clarification_reason(
+        source_order.first().copied(),
+        confidence,
+        evidence,
+    );
+
     ResolutionPlan {
         source_order,
+        confidence,
         clarify_after_exhaustion: true,
+        clarification_reason,
     }
 }
 
@@ -148,8 +174,19 @@ pub fn format_resolution_plan(plan: &ResolutionPlan) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" -> ")
     ));
+    lines.push(format!(
+        "- confidence: {}",
+        match plan.confidence {
+            ResolutionConfidence::High => "high",
+            ResolutionConfidence::Medium => "medium",
+            ResolutionConfidence::Low => "low",
+        }
+    ));
     if plan.clarify_after_exhaustion {
         lines.push("- clarify_only_after: source_exhaustion_or_low_confidence".to_string());
+    }
+    if let Some(reason) = plan.clarification_reason {
+        lines.push(format!("- clarification_reason: {}", clarification_reason_name(reason)));
     }
 
     Some(format!("{}\n", lines.join("\n")))
@@ -179,6 +216,87 @@ fn source_name(source: ResolutionSource) -> &'static str {
         ResolutionSource::RunRecipe => "run_recipe",
         ResolutionSource::LongTermMemory => "long_term_memory",
     }
+}
+
+fn clarification_reason_name(reason: ClarificationReason) -> &'static str {
+    match reason {
+        ClarificationReason::ResolverExhausted => "resolver_exhausted",
+        ClarificationReason::LowConfidence => "low_confidence",
+        ClarificationReason::AmbiguousCandidates => "ambiguous_candidates",
+    }
+}
+
+fn compute_confidence(
+    primary: Option<ResolutionSource>,
+    evidence: ResolutionEvidence<'_>,
+) -> ResolutionConfidence {
+    let Some(primary) = primary else {
+        return ResolutionConfidence::Low;
+    };
+
+    match primary {
+        ResolutionSource::CurrentConversation | ResolutionSource::UserProfile => {
+            ResolutionConfidence::High
+        }
+        ResolutionSource::DialogueState => {
+            if let Some(interpretation) = evidence.interpretation {
+                if interpretation.has_hint(InterpretationHintKind::FollowupReference)
+                    || !interpretation.reference_candidates.is_empty()
+                {
+                    ResolutionConfidence::High
+                } else {
+                    ResolutionConfidence::Medium
+                }
+            } else {
+                ResolutionConfidence::Medium
+            }
+        }
+        ResolutionSource::SessionHistory => {
+            match evidence.top_session_score.unwrap_or_default() {
+                score if score >= SESSION_PRIMARY_SCORE => ResolutionConfidence::High,
+                score if score > 0.0 => ResolutionConfidence::Medium,
+                _ => ResolutionConfidence::Low,
+            }
+        }
+        ResolutionSource::RunRecipe => match evidence.top_recipe_score.unwrap_or_default() {
+            score if score >= RECIPE_PRIMARY_SCORE => ResolutionConfidence::High,
+            score if score > 0 => ResolutionConfidence::Medium,
+            _ => ResolutionConfidence::Low,
+        },
+        ResolutionSource::LongTermMemory => {
+            let total = evidence.recall_hits + evidence.skill_hits + evidence.entity_hits;
+            if total >= 3 || (evidence.skill_hits > 0 && evidence.entity_hits > 0) {
+                ResolutionConfidence::Medium
+            } else {
+                ResolutionConfidence::Low
+            }
+        }
+    }
+}
+
+fn compute_clarification_reason(
+    primary: Option<ResolutionSource>,
+    confidence: ResolutionConfidence,
+    evidence: ResolutionEvidence<'_>,
+) -> Option<ClarificationReason> {
+    let interpretation = evidence.interpretation?;
+
+    if interpretation.clarification_candidates.len() > 1
+        && matches!(primary, Some(ResolutionSource::DialogueState))
+        && confidence != ResolutionConfidence::High
+    {
+        return Some(ClarificationReason::AmbiguousCandidates);
+    }
+
+    if primary.is_none() {
+        return Some(ClarificationReason::ResolverExhausted);
+    }
+
+    if confidence == ResolutionConfidence::Low {
+        return Some(ClarificationReason::LowConfidence);
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -234,6 +352,8 @@ mod tests {
                 ResolutionSource::LongTermMemory,
             ]
         );
+        assert_eq!(plan.confidence, ResolutionConfidence::High);
+        assert!(plan.clarification_reason.is_none());
     }
 
     #[test]
@@ -243,11 +363,15 @@ mod tests {
                 ResolutionSource::DialogueState,
                 ResolutionSource::LongTermMemory,
             ],
+            confidence: ResolutionConfidence::Medium,
             clarify_after_exhaustion: true,
+            clarification_reason: Some(ClarificationReason::LowConfidence),
         };
         let block = format_resolution_plan(&plan).unwrap();
         assert!(block.contains("[resolution-plan]"));
         assert!(block.contains("dialogue_state -> long_term_memory"));
+        assert!(block.contains("confidence: medium"));
         assert!(block.contains("clarify_only_after"));
+        assert!(block.contains("clarification_reason: low_confidence"));
     }
 }

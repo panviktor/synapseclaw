@@ -73,7 +73,10 @@ pub async fn evaluate_scenario(
         },
     );
     let clarification_guidance =
-        clarification_policy::build_clarification_guidance(interpretation.as_ref());
+        clarification_policy::build_clarification_guidance(
+            Some(&resolution_plan),
+            interpretation.as_ref(),
+        );
 
     EverydayEvalResult {
         scenario_id: scenario.id,
@@ -221,13 +224,13 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
 
 fn classify_clarification_shape(
     guidance: Option<&ClarificationGuidance>,
-    plan: &ResolutionPlan,
+    _plan: &ResolutionPlan,
 ) -> ClarificationShape {
     match guidance {
         Some(guidance) if !guidance.candidate_set.is_empty() => ClarificationShape::CandidateSet,
         Some(guidance) if !guidance.use_defaults_for.is_empty() => ClarificationShape::DefaultsOnly,
-        Some(_) => ClarificationShape::GenericRisk,
-        None if plan.clarify_after_exhaustion => ClarificationShape::GenericRisk,
+        Some(guidance) if guidance.required => ClarificationShape::GenericRisk,
+        Some(_) => ClarificationShape::None,
         None => ClarificationShape::None,
     }
 }
