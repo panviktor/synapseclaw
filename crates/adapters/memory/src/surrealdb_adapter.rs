@@ -41,6 +41,11 @@ pub struct SurrealMemoryAdapter {
 }
 
 impl SurrealMemoryAdapter {
+    fn active_embedding_profile_id(&self) -> Option<String> {
+        let profile = self.embedder.profile();
+        (profile.dimensions > 0 && profile.provider_family != "none").then_some(profile.profile_id)
+    }
+
     /// Create a new adapter, initializing the DB and applying the schema.
     pub async fn new(
         data_dir: &str,
@@ -505,6 +510,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         } else {
             entry.id.clone()
         };
+        let embedding_profile_id = self.active_embedding_profile_id();
 
         // Generate embedding if provider is available (best-effort).
         let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
@@ -534,7 +540,8 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                     importance = 0.5,
                     created_at = time::now(),
                     visibility = 'private',
-                    embedding = $embedding",
+                    embedding = $embedding,
+                    embedding_profile_id = $embedding_profile_id",
             )
             .bind(("agent", self.me().to_string()))
             .bind(("key", entry.key))
@@ -542,6 +549,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             .bind(("category", entry.category.to_string()))
             .bind(("session_id", entry.session_id))
             .bind(("embedding", embedding))
+            .bind(("embedding_profile_id", embedding_profile_id))
             .await
             .map_err(|e| MemoryError::Storage(format!("store_episode transport: {e}")))?;
 
@@ -637,6 +645,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         };
 
         let vec_rows = if let Some(ref emb) = query_embedding {
+            let embedding_profile_id = self.active_embedding_profile_id();
             let mut vec_resp = self
                 .db
                 .query(
@@ -644,11 +653,13 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                         vector::similarity::cosine(embedding, $emb) AS vec_score
                      FROM episode
                      WHERE embedding <|$limit,64|> $emb
+                     AND (embedding_profile_id = $profile OR embedding_profile_id IS NONE)
                      AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
                      ORDER BY vec_score DESC
                      LIMIT $limit",
                 )
                 .bind(("emb", emb.clone()))
+                .bind(("profile", embedding_profile_id))
                 .bind(("agent", query.agent_id.clone()))
                 .bind(("limit", query.limit))
                 .await
@@ -793,6 +804,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
         } else {
             entity.id.clone()
         };
+        let embedding_profile_id = self.active_embedding_profile_id();
 
         // Generate embedding for entity name + summary (best-effort).
         let embed_text = format!(
@@ -820,6 +832,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                         properties = $props,
                         summary = $summary,
                         embedding = $embedding,
+                        embedding_profile_id = $embedding_profile_id,
                         updated_at = time::now()
                     WHERE string::lowercase(name) = string::lowercase($name) AND created_by = $agent;
                 } ELSE {
@@ -829,6 +842,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                         properties = $props,
                         summary = $summary,
                         embedding = $embedding,
+                        embedding_profile_id = $embedding_profile_id,
                         created_by = $agent,
                         created_at = time::now(),
                         updated_at = time::now();
@@ -839,6 +853,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             .bind(("props", entity.properties))
             .bind(("summary", entity.summary))
             .bind(("embedding", embedding))
+            .bind(("embedding_profile_id", embedding_profile_id))
             .bind(("agent", entity.created_by))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
@@ -871,6 +886,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                 tracing::warn!(op = "find_entity", "Embedding failed: {e}");
             }
             if let Ok(emb) = emb_result {
+                let embedding_profile_id = self.active_embedding_profile_id();
                 let mut vec_resp = self
                     .db
                     .query(
@@ -878,10 +894,12 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                             vector::similarity::cosine(embedding, $emb) AS sim
                          FROM entity
                          WHERE embedding <|3,32|> $emb
+                         AND (embedding_profile_id = $profile OR embedding_profile_id IS NONE)
                          ORDER BY sim DESC
                          LIMIT 1",
                     )
                     .bind(("emb", emb))
+                    .bind(("profile", embedding_profile_id))
                     .await
                     .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
@@ -904,6 +922,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
         } else {
             fact.id.clone()
         };
+        let embedding_profile_id = self.active_embedding_profile_id();
 
         // Use pre-computed embedding if provided (from AUDN in entity_extractor).
         // Fallback: embed using predicate text (for knowledge_tool and other callers).
@@ -933,7 +952,8 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                     recorded_at = time::now(),
                     source_episode = $source,
                     created_by = $agent,
-                    embedding = $embedding",
+                    embedding = $embedding,
+                    embedding_profile_id = $embedding_profile_id",
             )
             .bind(("subj", fact.subject))
             .bind(("pred", fact.predicate))
@@ -942,6 +962,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             .bind(("source", fact.source_episode))
             .bind(("agent", fact.created_by))
             .bind(("embedding", embedding))
+            .bind(("embedding_profile_id", embedding_profile_id))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
@@ -1566,12 +1587,14 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
                     vector::similarity::cosine(embedding, $emb) AS sim
                  FROM fact
                  WHERE embedding <|$limit,64|> $emb
+                 AND (embedding_profile_id = $profile OR embedding_profile_id IS NONE)
                  AND valid_to IS NONE
                  AND (created_by = $agent OR created_by IS NONE)
                  ORDER BY sim DESC
                  LIMIT $limit",
             )
             .bind(("emb", embedding.to_vec()))
+            .bind(("profile", self.active_embedding_profile_id()))
             .bind(("agent", self.me().to_string()))
             .bind(("limit", limit))
             .await

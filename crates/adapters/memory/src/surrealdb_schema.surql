@@ -15,6 +15,7 @@ DEFINE FIELD IF NOT EXISTS importance  ON episode TYPE option<float>;
 DEFINE FIELD IF NOT EXISTS created_at  ON episode TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS visibility  ON episode TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS embedding   ON episode TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS embedding_profile_id ON episode TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS access_count ON episode TYPE option<int> DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS last_accessed ON episode TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS shared_with ON episode TYPE option<array<string>>;
@@ -51,6 +52,7 @@ DEFINE FIELD IF NOT EXISTS created_by  ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_at  ON entity TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS updated_at  ON entity TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS embedding   ON entity TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS embedding_profile_id ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS visibility  ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS shared_with ON entity TYPE option<array<string>>;
 
@@ -73,6 +75,7 @@ DEFINE FIELD IF NOT EXISTS recorded_at    ON fact TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS source_episode ON fact TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS created_by     ON fact TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS embedding      ON fact TYPE option<array<float>>;
+DEFINE FIELD IF NOT EXISTS embedding_profile_id ON fact TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS visibility     ON fact TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS shared_with    ON fact TYPE option<array<string>>;
 
