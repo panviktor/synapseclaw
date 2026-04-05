@@ -1,10 +1,12 @@
 use super::traits::{Tool, ToolResult};
+use crate::memory_facts;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
+use synapse_domain::ports::tool::ToolExecution;
 
 /// Let the agent forget/delete a memory entry
 pub struct MemoryForgetTool {
@@ -23,6 +25,59 @@ impl MemoryForgetTool {
             memory,
             security,
             agent_id,
+        }
+    }
+
+    async fn execute_action(&self, args: &serde_json::Value) -> anyhow::Result<ToolExecution> {
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'key' parameter"))?;
+
+        if let Err(error) = self
+            .security
+            .enforce_tool_operation(ToolOperation::Act, "memory_forget")
+        {
+            return Ok(ToolExecution {
+                result: ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(error),
+                },
+                facts: Vec::new(),
+            });
+        }
+
+        match self.memory.forget(key, &self.agent_id).await {
+            Ok(true) => Ok(ToolExecution {
+                result: ToolResult {
+                    success: true,
+                    output: format!("Forgot memory: {key}"),
+                    error: None,
+                },
+                facts: vec![memory_facts::build_memory_entry_fact(
+                    self.name(),
+                    "forget",
+                    key,
+                    None,
+                )],
+            }),
+            Ok(false) => Ok(ToolExecution {
+                result: ToolResult {
+                    success: true,
+                    output: format!("No memory found with key: {key}"),
+                    error: None,
+                },
+                facts: Vec::new(),
+            }),
+            Err(e) => Ok(ToolExecution {
+                result: ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("Failed to forget memory: {e}")),
+                },
+                facts: Vec::new(),
+            }),
         }
     }
 }
@@ -51,38 +106,13 @@ impl Tool for MemoryForgetTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        let key = args
-            .get("key")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'key' parameter"))?;
+        Ok(self.execute_action(&args).await?.result)
+    }
 
-        if let Err(error) = self
-            .security
-            .enforce_tool_operation(ToolOperation::Act, "memory_forget")
-        {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(error),
-            });
-        }
-
-        match self.memory.forget(key, &self.agent_id).await {
-            Ok(true) => Ok(ToolResult {
-                success: true,
-                output: format!("Forgot memory: {key}"),
-                error: None,
-            }),
-            Ok(false) => Ok(ToolResult {
-                success: true,
-                output: format!("No memory found with key: {key}"),
-                error: None,
-            }),
-            Err(e) => Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Failed to forget memory: {e}")),
-            }),
-        }
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<ToolExecution> {
+        self.execute_action(&args).await
     }
 }

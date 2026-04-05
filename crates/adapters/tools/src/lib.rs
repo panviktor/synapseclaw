@@ -36,6 +36,7 @@ pub mod image_info;
 pub mod knowledge_tool;
 pub mod linkedin;
 pub mod linkedin_client;
+mod memory_facts;
 pub mod memory_forget;
 pub mod memory_recall;
 pub mod memory_store;

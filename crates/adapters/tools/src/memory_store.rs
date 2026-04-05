@@ -1,4 +1,5 @@
 use super::traits::{Tool, ToolResult};
+use crate::memory_facts;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -6,6 +7,7 @@ use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::memory::MemoryCategory;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
+use synapse_domain::ports::tool::ToolExecution;
 
 /// Let the agent store memories — its own brain writes
 pub struct MemoryStoreTool {
@@ -16,6 +18,63 @@ pub struct MemoryStoreTool {
 impl MemoryStoreTool {
     pub fn new(memory: Arc<dyn UnifiedMemoryPort>, security: Arc<SecurityPolicy>) -> Self {
         Self { memory, security }
+    }
+
+    async fn execute_action(&self, args: &serde_json::Value) -> anyhow::Result<ToolExecution> {
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'key' parameter"))?;
+
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'content' parameter"))?;
+
+        let category = match args.get("category").and_then(|v| v.as_str()) {
+            Some("core") | None => MemoryCategory::Core,
+            Some("daily") => MemoryCategory::Daily,
+            Some("conversation") => MemoryCategory::Conversation,
+            Some(other) => MemoryCategory::Custom(other.to_string()),
+        };
+
+        if let Err(error) = self
+            .security
+            .enforce_tool_operation(ToolOperation::Act, "memory_store")
+        {
+            return Ok(ToolExecution {
+                result: ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(error),
+                },
+                facts: Vec::new(),
+            });
+        }
+
+        match self.memory.store(key, content, &category, None).await {
+            Ok(()) => Ok(ToolExecution {
+                result: ToolResult {
+                    success: true,
+                    output: format!("Stored memory: {key}"),
+                    error: None,
+                },
+                facts: vec![memory_facts::build_memory_entry_fact(
+                    self.name(),
+                    "store",
+                    key,
+                    Some(&category),
+                )],
+            }),
+            Err(e) => Ok(ToolExecution {
+                result: ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("Failed to store memory: {e}")),
+                },
+                facts: Vec::new(),
+            }),
+        }
     }
 }
 
@@ -51,45 +110,13 @@ impl Tool for MemoryStoreTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        let key = args
-            .get("key")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'key' parameter"))?;
+        Ok(self.execute_action(&args).await?.result)
+    }
 
-        let content = args
-            .get("content")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'content' parameter"))?;
-
-        let category = match args.get("category").and_then(|v| v.as_str()) {
-            Some("core") | None => MemoryCategory::Core,
-            Some("daily") => MemoryCategory::Daily,
-            Some("conversation") => MemoryCategory::Conversation,
-            Some(other) => MemoryCategory::Custom(other.to_string()),
-        };
-
-        if let Err(error) = self
-            .security
-            .enforce_tool_operation(ToolOperation::Act, "memory_store")
-        {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(error),
-            });
-        }
-
-        match self.memory.store(key, content, &category, None).await {
-            Ok(()) => Ok(ToolResult {
-                success: true,
-                output: format!("Stored memory: {key}"),
-                error: None,
-            }),
-            Err(e) => Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Failed to store memory: {e}")),
-            }),
-        }
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<ToolExecution> {
+        self.execute_action(&args).await
     }
 }
