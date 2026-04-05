@@ -1,6 +1,6 @@
 # Phase 4.8: Embedding-First Memory & Everyday Intelligence
 
-Phase 4.7: deterministic user context & task resolution | **Phase 4.8: embedding-first memory & everyday intelligence** | next: TBD
+Phase 4.7: deterministic user context & task resolution | **Phase 4.8: embedding-first memory & everyday intelligence** | next: Phase 4.9 self-learning, skill evolution & memory quality
 
 ---
 
