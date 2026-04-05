@@ -88,6 +88,140 @@ impl SurrealMemoryAdapter {
         Arc::clone(&self.db)
     }
 
+    async fn clear_vector_fields(&self, tables: &[&str]) {
+        for table in tables {
+            let query = format!(
+                "UPDATE {table} SET embedding = NONE, embedding_profile_id = NONE WHERE embedding IS NOT NONE"
+            );
+            if let Err(e) = self.db.query(&query).await {
+                tracing::warn!(
+                    table,
+                    "memory: failed to clear stale embeddings before reindex: {e}"
+                );
+            }
+        }
+    }
+
+    async fn reindex_profile_bound_vectors(&self) -> Result<(), MemoryError> {
+        let Some(profile_id) = self.active_embedding_profile_id() else {
+            return Ok(());
+        };
+
+        let mut reindexed = 0usize;
+
+        let mut episode_resp = self
+            .db
+            .query(
+                "SELECT id, content FROM episode
+                 WHERE content != NONE
+                 AND (embedding_profile_id != $profile OR embedding_profile_id IS NONE)",
+            )
+            .bind(("profile", profile_id.clone()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let episode_rows: Vec<serde_json::Value> = episode_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        for row in episode_rows {
+            let id = json_str(&row, "id");
+            let content = json_str(&row, "content");
+            if content.trim().is_empty() {
+                continue;
+            }
+            if let Ok(embedding) = self.embedder.embed_document(&content).await {
+                self.db
+                    .query(
+                        "UPDATE type::thing('episode', $id) SET
+                            embedding = $embedding,
+                            embedding_profile_id = $profile",
+                    )
+                    .bind(("id", id))
+                    .bind(("embedding", embedding))
+                    .bind(("profile", profile_id.clone()))
+                    .await
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                reindexed += 1;
+            }
+        }
+
+        let mut entity_resp = self
+            .db
+            .query(
+                "SELECT id, name, summary FROM entity
+                 WHERE name != NONE
+                 AND (embedding_profile_id != $profile OR embedding_profile_id IS NONE)",
+            )
+            .bind(("profile", profile_id.clone()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let entity_rows: Vec<serde_json::Value> = entity_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        for row in entity_rows {
+            let id = json_str(&row, "id");
+            let name = json_str(&row, "name");
+            let summary = row.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+            let text = format!("{name} {summary}");
+            if text.trim().is_empty() {
+                continue;
+            }
+            if let Ok(embedding) = self.embedder.embed_document(&text).await {
+                self.db
+                    .query(
+                        "UPDATE type::thing('entity', $id) SET
+                            embedding = $embedding,
+                            embedding_profile_id = $profile",
+                    )
+                    .bind(("id", id))
+                    .bind(("embedding", embedding))
+                    .bind(("profile", profile_id.clone()))
+                    .await
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                reindexed += 1;
+            }
+        }
+
+        let mut fact_resp = self
+            .db
+            .query(
+                "SELECT id, subject, predicate, object FROM fact
+                 WHERE (embedding_profile_id != $profile OR embedding_profile_id IS NONE)",
+            )
+            .bind(("profile", profile_id.clone()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let fact_rows: Vec<serde_json::Value> = fact_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        for row in fact_rows {
+            let id = json_str(&row, "id");
+            let subject = json_str(&row, "subject");
+            let predicate = json_str(&row, "predicate");
+            let object = json_str(&row, "object");
+            let text = format!("{subject} {predicate} {object}");
+            if text.trim().is_empty() {
+                continue;
+            }
+            if let Ok(embedding) = self.embedder.embed_document(&text).await {
+                self.db
+                    .query(
+                        "UPDATE type::thing('fact', $id) SET
+                            embedding = $embedding,
+                            embedding_profile_id = $profile",
+                    )
+                    .bind(("id", id))
+                    .bind(("embedding", embedding))
+                    .bind(("profile", profile_id.clone()))
+                    .await
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                reindexed += 1;
+            }
+        }
+
+        tracing::info!(profile = %profile_id, count = reindexed, "memory: embedding profile reindex complete");
+        Ok(())
+    }
+
     async fn apply_schema(&self) -> Result<(), MemoryError> {
         // Apply base schema (tables, fields, standard indexes).
         let schema = include_str!("surrealdb_schema.surql");
@@ -149,6 +283,11 @@ impl SurrealMemoryAdapter {
                 Err(_) => true, // can't probe, recreate to be safe
             };
 
+            if need_recreate {
+                self.clear_vector_fields(&["episode", "entity", "fact", "skill", "reflection"])
+                    .await;
+            }
+
             for (table, idx) in [
                 ("episode", "idx_ep_vector"),
                 ("entity", "idx_ent_vector"),
@@ -175,6 +314,8 @@ impl SurrealMemoryAdapter {
             } else {
                 tracing::debug!(dim, "HNSW vector indexes verified");
             }
+
+            self.reindex_profile_bound_vectors().await?;
         }
 
         // Migrate stale agent_ids to the current agent_id.
@@ -653,7 +794,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                         vector::similarity::cosine(embedding, $emb) AS vec_score
                      FROM episode
                      WHERE embedding <|$limit,64|> $emb
-                     AND (embedding_profile_id = $profile OR embedding_profile_id IS NONE)
+                     AND embedding_profile_id = $profile
                      AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
                      ORDER BY vec_score DESC
                      LIMIT $limit",
@@ -894,7 +1035,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                             vector::similarity::cosine(embedding, $emb) AS sim
                          FROM entity
                          WHERE embedding <|3,32|> $emb
-                         AND (embedding_profile_id = $profile OR embedding_profile_id IS NONE)
+                         AND embedding_profile_id = $profile
                          ORDER BY sim DESC
                          LIMIT 1",
                     )
@@ -1587,7 +1728,7 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
                     vector::similarity::cosine(embedding, $emb) AS sim
                  FROM fact
                  WHERE embedding <|$limit,64|> $emb
-                 AND (embedding_profile_id = $profile OR embedding_profile_id IS NONE)
+                 AND embedding_profile_id = $profile
                  AND valid_to IS NONE
                  AND (created_by = $agent OR created_by IS NONE)
                  ORDER BY sim DESC
