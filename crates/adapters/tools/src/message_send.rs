@@ -7,6 +7,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
+use synapse_domain::domain::dialogue_state::DialogueSlot;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 
@@ -23,6 +25,41 @@ impl MessageSendTool {
         Self {
             context,
             channel_registry,
+        }
+    }
+
+    fn resolve_target(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<ConversationDeliveryTarget, String> {
+        match args.get("target") {
+            Some(serde_json::Value::String(s)) if s == "current_conversation" => self
+                .context
+                .get_current()
+                .map(|ctx| ctx.to_explicit_target())
+                .ok_or_else(|| {
+                    "No current conversation context available. \
+                     Use an explicit target with channel and recipient."
+                        .to_string()
+                }),
+            Some(obj) if obj.is_object() => {
+                let channel = obj.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+                let recipient = obj.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+                let thread_ref = obj
+                    .get("thread_ref")
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                if channel.is_empty() || recipient.is_empty() {
+                    Err("Explicit target requires both 'channel' and 'recipient'".to_string())
+                } else {
+                    Ok(ConversationDeliveryTarget::Explicit {
+                        channel: channel.to_string(),
+                        recipient: recipient.to_string(),
+                        thread_ref,
+                    })
+                }
+            }
+            _ => Err("Invalid target. Use 'current_conversation' or {channel, recipient}.".into()),
         }
     }
 }
@@ -71,6 +108,47 @@ impl Tool for MessageSendTool {
         })
     }
 
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        _result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: Vec::new(),
+            slots: Vec::new(),
+        };
+
+        if let Ok(ConversationDeliveryTarget::Explicit {
+            channel,
+            recipient,
+            thread_ref,
+        }) = self.resolve_target(args)
+        {
+            fact.slots
+                .push(DialogueSlot::observed("delivery_channel", channel));
+            fact.slots
+                .push(DialogueSlot::observed("delivery_recipient", recipient));
+            if let Some(thread_ref) = thread_ref {
+                fact.slots
+                    .push(DialogueSlot::observed("delivery_thread_ref", thread_ref));
+            }
+        }
+
+        if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
+            if !content.trim().is_empty() {
+                fact.slots
+                    .push(DialogueSlot::observed("delivery_content", content.trim()));
+            }
+        }
+
+        if fact.slots.is_empty() {
+            Vec::new()
+        } else {
+            vec![fact]
+        }
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let content = args
             .get("content")
@@ -87,45 +165,11 @@ impl Tool for MessageSendTool {
         }
 
         // Resolve target
-        let target = match args.get("target") {
-            Some(serde_json::Value::String(s)) if s == "current_conversation" => {
-                match self.context.get_current() {
-                    Some(ctx) => ctx.to_explicit_target(),
-                    None => {
-                        return Ok(ToolResult {
-                            output: "No current conversation context available. \
-                                     Use an explicit target with channel and recipient."
-                                .into(),
-                            success: false,
-                            error: None,
-                        });
-                    }
-                }
-            }
-            Some(obj) if obj.is_object() => {
-                let channel = obj.get("channel").and_then(|v| v.as_str()).unwrap_or("");
-                let recipient = obj.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
-                let thread_ref = obj
-                    .get("thread_ref")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                if channel.is_empty() || recipient.is_empty() {
-                    return Ok(ToolResult {
-                        output: "Explicit target requires both 'channel' and 'recipient'".into(),
-                        success: false,
-                        error: None,
-                    });
-                }
-                ConversationDeliveryTarget::Explicit {
-                    channel: channel.to_string(),
-                    recipient: recipient.to_string(),
-                    thread_ref,
-                }
-            }
-            _ => {
+        let target = match self.resolve_target(&args) {
+            Ok(target) => target,
+            Err(output) => {
                 return Ok(ToolResult {
-                    output: "Invalid target. Use 'current_conversation' or {channel, recipient}."
-                        .into(),
+                    output,
                     success: false,
                     error: None,
                 });

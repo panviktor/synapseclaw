@@ -14,9 +14,9 @@ use async_trait::async_trait;
 pub struct AgentToolFact {
     /// Tool name that produced the fact.
     pub tool_name: String,
-    /// Entities surfaced by the tool arguments.
+    /// Explicit entities surfaced by the tool contract.
     pub focus_entities: Vec<FocusEntity>,
-    /// Structured slots surfaced by the tool arguments.
+    /// Structured slots surfaced by the tool contract or generic slot collection.
     pub slots: Vec<DialogueSlot>,
 }
 
@@ -31,7 +31,7 @@ pub struct AgentTurnResult {
     pub tools_used: bool,
     /// Structured tool names used during this turn.
     pub tool_names: Vec<String>,
-    /// Structured tool facts extracted from tool-call arguments.
+    /// Structured tool facts emitted during the turn.
     pub tool_facts: Vec<AgentToolFact>,
     /// Extracted tool context summary (for history display).
     pub tool_summary: String,

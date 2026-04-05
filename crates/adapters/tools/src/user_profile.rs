@@ -11,7 +11,9 @@ use synapse_domain::application::services::user_profile_service::{
 };
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
+use synapse_domain::domain::dialogue_state::DialogueSlot;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 use synapse_domain::ports::user_profile_context::UserProfileContextPort;
@@ -156,6 +158,128 @@ impl Tool for UserProfileTool {
                 }
             }
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        _result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        let Ok(args) = serde_json::from_value::<UserProfileArgs>(args.clone()) else {
+            return Vec::new();
+        };
+        let Ok(patch) = build_patch(
+            &args,
+            self.conversation_context
+                .as_ref()
+                .and_then(|port| port.get_current())
+                .as_ref(),
+            matches!(args.action, ProfileAction::Clear),
+        ) else {
+            return Vec::new();
+        };
+
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: Vec::new(),
+            slots: Vec::new(),
+        };
+
+        match patch.preferred_language {
+            ProfileFieldPatch::Set(value) => {
+                fact.slots
+                    .push(DialogueSlot::observed("preferred_language", value));
+            }
+            ProfileFieldPatch::Clear => {
+                fact.slots
+                    .push(DialogueSlot::observed("preferred_language", ""));
+            }
+            ProfileFieldPatch::Keep => {}
+        }
+        match patch.timezone {
+            ProfileFieldPatch::Set(value) => {
+                fact.slots.push(DialogueSlot::observed("timezone", value));
+            }
+            ProfileFieldPatch::Clear => {
+                fact.slots.push(DialogueSlot::observed("timezone", ""));
+            }
+            ProfileFieldPatch::Keep => {}
+        }
+        match patch.default_city {
+            ProfileFieldPatch::Set(value) => {
+                fact.slots
+                    .push(DialogueSlot::observed("default_city", value));
+            }
+            ProfileFieldPatch::Clear => {
+                fact.slots.push(DialogueSlot::observed("default_city", ""));
+            }
+            ProfileFieldPatch::Keep => {}
+        }
+        match patch.communication_style {
+            ProfileFieldPatch::Set(value) => {
+                fact.slots
+                    .push(DialogueSlot::observed("communication_style", value));
+            }
+            ProfileFieldPatch::Clear => {
+                fact.slots
+                    .push(DialogueSlot::observed("communication_style", ""));
+            }
+            ProfileFieldPatch::Keep => {}
+        }
+        match patch.known_environments {
+            ProfileFieldPatch::Set(values) => {
+                if !values.is_empty() {
+                    fact.slots.push(DialogueSlot::observed(
+                        "known_environments",
+                        values.join(", "),
+                    ));
+                }
+            }
+            ProfileFieldPatch::Clear => {
+                fact.slots
+                    .push(DialogueSlot::observed("known_environments", ""));
+            }
+            ProfileFieldPatch::Keep => {}
+        }
+        match patch.default_delivery_target {
+            ProfileFieldPatch::Set(target) => match target {
+                ConversationDeliveryTarget::CurrentConversation => {
+                    fact.slots.push(DialogueSlot::observed(
+                        "default_delivery_target",
+                        "current_conversation",
+                    ));
+                }
+                ConversationDeliveryTarget::Explicit {
+                    channel,
+                    recipient,
+                    thread_ref,
+                } => {
+                    fact.slots
+                        .push(DialogueSlot::observed("default_delivery_channel", channel));
+                    fact.slots.push(DialogueSlot::observed(
+                        "default_delivery_recipient",
+                        recipient,
+                    ));
+                    if let Some(thread_ref) = thread_ref {
+                        fact.slots.push(DialogueSlot::observed(
+                            "default_delivery_thread_ref",
+                            thread_ref,
+                        ));
+                    }
+                }
+            },
+            ProfileFieldPatch::Clear => {
+                fact.slots
+                    .push(DialogueSlot::observed("default_delivery_target", ""));
+            }
+            ProfileFieldPatch::Keep => {}
+        }
+
+        if fact.slots.is_empty() {
+            Vec::new()
+        } else {
+            vec![fact]
+        }
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

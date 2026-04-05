@@ -4,6 +4,7 @@
 //! The trait lives in the domain so application services can reason about tools
 //! without depending on concrete infrastructure implementations.
 
+use crate::ports::agent_runtime::AgentToolFact;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -39,6 +40,19 @@ pub trait Tool: Send + Sync {
     /// Execute the tool with given arguments.
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult>;
 
+    /// Emit explicit structured runtime facts for dialogue state / resolution.
+    ///
+    /// Generic slot collection happens outside the tool. Override this only when
+    /// the tool owns real semantic meaning and can expose it without inferring
+    /// it from arbitrary JSON key names.
+    fn extract_facts(
+        &self,
+        _args: &serde_json::Value,
+        _result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        Vec::new()
+    }
+
     /// Get the full spec for LLM registration.
     fn spec(&self) -> ToolSpec {
         ToolSpec {
@@ -68,5 +82,13 @@ impl Tool for ArcToolRef {
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.0.execute(args).await
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        self.0.extract_facts(args, result)
     }
 }

@@ -1,5 +1,5 @@
 use serde_json::Value;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::DialogueSlot;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 pub(crate) fn build_tool_fact(tool_name: &str, arguments: &Value) -> AgentToolFact {
@@ -11,9 +11,12 @@ pub(crate) fn build_tool_fact(tool_name: &str, arguments: &Value) -> AgentToolFa
 
     collect_argument_fact(None, arguments, &mut fact);
 
-    fact.focus_entities = dedupe_focus_entities(fact.focus_entities);
     fact.slots = dedupe_slots(fact.slots);
     fact
+}
+
+pub(crate) fn fact_has_payload(fact: &AgentToolFact) -> bool {
+    !fact.focus_entities.is_empty() || !fact.slots.is_empty()
 }
 
 fn collect_argument_fact(path: Option<&str>, value: &Value, fact: &mut AgentToolFact) {
@@ -38,41 +41,9 @@ fn collect_argument_fact(path: Option<&str>, value: &Value, fact: &mut AgentTool
                 return;
             };
             let normalized_key = normalize_key(path);
-            let entity_key = normalized_key
-                .rsplit('_')
-                .find(|segment| !segment.is_empty())
-                .unwrap_or(normalized_key.as_str());
-
-            if let Some(kind) = infer_entity_kind(entity_key) {
-                let scalar_values = flatten_entity_values(value);
-                if scalar_values.is_empty() {
-                    return;
-                }
-
-                for item in &scalar_values {
-                    fact.focus_entities.push(FocusEntity {
-                        kind: kind.to_string(),
-                        name: item.clone(),
-                        metadata: None,
-                    });
-                }
-
-                fact.slots.push(DialogueSlot {
-                    name: normalized_key,
-                    value: if scalar_values.len() == 1 {
-                        scalar_values[0].clone()
-                    } else {
-                        scalar_values.join(", ")
-                    },
-                });
-                return;
-            }
-
             if let Some(slot_value) = flatten_slot_value(value) {
-                fact.slots.push(DialogueSlot {
-                    name: normalized_key,
-                    value: slot_value,
-                });
+                fact.slots
+                    .push(DialogueSlot::observed(normalized_key, slot_value));
             }
         }
     }
@@ -88,43 +59,6 @@ fn normalize_key(key: &str) -> String {
     }
     let trimmed = normalized.trim_end_matches(|ch: char| ch.is_ascii_digit());
     trimmed.trim_end_matches('_').to_string()
-}
-
-fn infer_entity_kind(key: &str) -> Option<&'static str> {
-    match key {
-        "city" | "cities" => Some("city"),
-        "location" | "locations" | "place" | "places" => Some("location"),
-        "service" | "services" => Some("service"),
-        "environment" | "env" | "environments" => Some("environment"),
-        "branch" | "branches" => Some("branch"),
-        "file" | "files" => Some("file"),
-        "path" | "paths" => Some("path"),
-        "url" | "urls" => Some("url"),
-        "room" | "rooms" => Some("room"),
-        "channel" | "channels" => Some("channel"),
-        "recipient" | "recipients" => Some("recipient"),
-        "project" | "projects" => Some("project"),
-        "repo" | "repository" => Some("repository"),
-        _ => None,
-    }
-}
-
-fn flatten_entity_values(value: &Value) -> Vec<String> {
-    match value {
-        Value::String(s) if !s.trim().is_empty() => vec![s.trim().to_string()],
-        Value::Number(n) => vec![n.to_string()],
-        Value::Bool(b) => vec![b.to_string()],
-        Value::Array(items) => items
-            .iter()
-            .filter_map(|item| match item {
-                Value::String(s) if !s.trim().is_empty() => Some(s.trim().to_string()),
-                Value::Number(n) => Some(n.to_string()),
-                Value::Bool(b) => Some(b.to_string()),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
 }
 
 fn flatten_slot_value(value: &Value) -> Option<String> {
@@ -150,18 +84,6 @@ fn flatten_slot_value(value: &Value) -> Option<String> {
         }
         _ => None,
     }
-}
-
-fn dedupe_focus_entities(values: Vec<FocusEntity>) -> Vec<FocusEntity> {
-    let mut unique = Vec::new();
-    for value in values {
-        if !unique.iter().any(|existing: &FocusEntity| {
-            existing.kind == value.kind && existing.name == value.name
-        }) {
-            unique.push(value);
-        }
-    }
-    unique
 }
 
 fn dedupe_slots(values: Vec<DialogueSlot>) -> Vec<DialogueSlot> {
@@ -194,10 +116,7 @@ mod tests {
         );
 
         assert_eq!(fact.tool_name, "weather_lookup");
-        assert_eq!(fact.focus_entities.len(), 2);
-        assert_eq!(fact.focus_entities[0].kind, "city");
-        assert_eq!(fact.focus_entities[0].name, "Berlin");
-        assert_eq!(fact.focus_entities[1].name, "Tbilisi");
+        assert!(fact.focus_entities.is_empty());
         assert!(fact.slots.iter().any(|slot| slot.name == "cities"));
         assert!(fact
             .slots
@@ -220,13 +139,13 @@ mod tests {
         );
 
         assert!(fact
-            .focus_entities
+            .slots
             .iter()
-            .any(|entity| entity.kind == "channel" && entity.name == "matrix"));
+            .any(|slot| slot.name == "target_channel" && slot.value == "matrix"));
         assert!(fact
-            .focus_entities
+            .slots
             .iter()
-            .any(|entity| entity.kind == "recipient" && entity.name == "!room:example.com"));
+            .any(|slot| slot.name == "target_recipient" && slot.value == "!room:example.com"));
         assert!(fact
             .slots
             .iter()

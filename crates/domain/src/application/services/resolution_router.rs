@@ -3,7 +3,7 @@
 //! This is intentionally not a phrase-engine. It consumes typed interpretation
 //! and retrieval evidence, then decides which sources should be trusted first.
 
-use crate::application::services::turn_interpretation::{InterpretationHintKind, TurnInterpretation};
+use crate::application::services::turn_interpretation::TurnInterpretation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionSource {
@@ -61,46 +61,32 @@ const MEMORY_CONFIDENT_GAP: f64 = 0.08;
 
 pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan {
     let mut source_order = Vec::new();
-    let (prefer_defaults, prefer_followup, prefer_history, prefer_repeat_work) =
-        if let Some(interpretation) = evidence.interpretation {
-            (
-                !interpretation.defaults_requested.is_empty(),
-                interpretation.has_hint(InterpretationHintKind::FollowupReference),
-                interpretation.has_hint(InterpretationHintKind::HistoryLookup),
-                interpretation.has_hint(InterpretationHintKind::RepeatWork),
-            )
-        } else {
-            (false, false, false, false)
-        };
+    let (prefer_defaults, prefer_followup) = if let Some(interpretation) = evidence.interpretation {
+        (
+            !interpretation.defaults_requested.is_empty(),
+            !interpretation.reference_candidates.is_empty(),
+        )
+    } else {
+        (false, false)
+    };
 
     if let Some(interpretation) = evidence.interpretation {
-        let prioritize_current_conversation = matches!(
-            interpretation.delivery_scope,
-            Some(crate::application::services::turn_interpretation::DeliveryScope::CurrentConversation)
-        ) || (!prefer_history && !prefer_repeat_work && interpretation.current_conversation.is_some());
-
-        if prioritize_current_conversation && interpretation.current_conversation.is_some() {
-            source_order.push(ResolutionSource::CurrentConversation);
-        }
-        if prefer_defaults && interpretation.user_profile.is_some() {
-            source_order.push(ResolutionSource::UserProfile);
-        }
         if interpretation.dialogue_state.is_some() {
             source_order.push(ResolutionSource::DialogueState);
         }
-        if !prefer_defaults && interpretation.user_profile.is_some() {
+        if interpretation.user_profile.is_some() {
             source_order.push(ResolutionSource::UserProfile);
         }
-        if !prioritize_current_conversation && interpretation.current_conversation.is_some() {
+        if interpretation.current_conversation.is_some() {
             source_order.push(ResolutionSource::CurrentConversation);
         }
         if prefer_followup && interpretation.dialogue_state.is_some() {
             source_order.retain(|source| *source != ResolutionSource::DialogueState);
             source_order.insert(0, ResolutionSource::DialogueState);
-            if interpretation.current_conversation.is_some() {
-                source_order.retain(|source| *source != ResolutionSource::CurrentConversation);
-                source_order.push(ResolutionSource::CurrentConversation);
-            }
+        }
+        if prefer_defaults && interpretation.user_profile.is_some() {
+            source_order.retain(|source| *source != ResolutionSource::UserProfile);
+            source_order.insert(0, ResolutionSource::UserProfile);
         }
     }
 
@@ -108,22 +94,6 @@ pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan
     let recipe_primary = evidence.top_recipe_score.unwrap_or_default() >= RECIPE_PRIMARY_SCORE;
     let long_term_available =
         evidence.recall_hits > 0 || evidence.skill_hits > 0 || evidence.entity_hits > 0;
-
-    if prefer_repeat_work {
-        if recipe_primary || evidence.top_recipe_score.unwrap_or_default() > 0 {
-            source_order.push(ResolutionSource::RunRecipe);
-        }
-        if session_primary || evidence.top_session_score.unwrap_or_default() > 0.0 {
-            source_order.push(ResolutionSource::SessionHistory);
-        }
-    } else if prefer_history {
-        if session_primary || evidence.top_session_score.unwrap_or_default() > 0.0 {
-            source_order.push(ResolutionSource::SessionHistory);
-        }
-        if recipe_primary || evidence.top_recipe_score.unwrap_or_default() > 0 {
-            source_order.push(ResolutionSource::RunRecipe);
-        }
-    }
 
     match (session_primary, recipe_primary) {
         (true, true) => {
@@ -154,11 +124,8 @@ pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan
     dedupe_source_order(&mut source_order);
 
     let confidence = compute_confidence(source_order.first().copied(), evidence);
-    let clarification_reason = compute_clarification_reason(
-        source_order.first().copied(),
-        confidence,
-        evidence,
-    );
+    let clarification_reason =
+        compute_clarification_reason(source_order.first().copied(), confidence, evidence);
 
     ResolutionPlan {
         source_order,
@@ -194,7 +161,10 @@ pub fn format_resolution_plan(plan: &ResolutionPlan) -> Option<String> {
         lines.push("- clarify_only_after: source_exhaustion_or_low_confidence".to_string());
     }
     if let Some(reason) = plan.clarification_reason {
-        lines.push(format!("- clarification_reason: {}", clarification_reason_name(reason)));
+        lines.push(format!(
+            "- clarification_reason: {}",
+            clarification_reason_name(reason)
+        ));
     }
 
     Some(format!("{}\n", lines.join("\n")))
@@ -247,14 +217,11 @@ fn compute_confidence(
             ResolutionConfidence::High
         }
         ResolutionSource::DialogueState => {
-            if let Some(interpretation) = evidence.interpretation {
-                if interpretation.has_hint(InterpretationHintKind::FollowupReference)
-                    || !interpretation.reference_candidates.is_empty()
-                {
-                    ResolutionConfidence::High
-                } else {
-                    ResolutionConfidence::Medium
-                }
+            if evidence
+                .interpretation
+                .is_some_and(|interpretation| !interpretation.reference_candidates.is_empty())
+            {
+                ResolutionConfidence::High
             } else {
                 ResolutionConfidence::Medium
             }
@@ -271,8 +238,10 @@ fn compute_confidence(
             }
         }
         ResolutionSource::RunRecipe => match evidence.top_recipe_score.unwrap_or_default() {
-            score if score >= RECIPE_PRIMARY_SCORE
-                && score_gap_i64(score, evidence.second_recipe_score) >= RECIPE_CONFIDENT_GAP =>
+            score
+                if score >= RECIPE_PRIMARY_SCORE
+                    && score_gap_i64(score, evidence.second_recipe_score)
+                        >= RECIPE_CONFIDENT_GAP =>
             {
                 ResolutionConfidence::High
             }
@@ -353,6 +322,7 @@ mod tests {
                 focus_entities: vec![("city".into(), "Berlin".into())],
                 comparison_set: vec![],
                 slots: vec![],
+                reference_anchors: vec![],
                 last_tool_subjects: vec![],
             }),
             defaults_requested: vec![],
@@ -360,7 +330,6 @@ mod tests {
             delivery_scope: None,
             reference_candidates: vec![],
             clarification_candidates: vec![],
-            semantic_hints: vec![],
         };
 
         let plan = build_resolution_plan(ResolutionEvidence {
@@ -379,15 +348,15 @@ mod tests {
         assert_eq!(
             plan.source_order,
             vec![
-                ResolutionSource::CurrentConversation,
                 ResolutionSource::DialogueState,
                 ResolutionSource::UserProfile,
+                ResolutionSource::CurrentConversation,
                 ResolutionSource::RunRecipe,
                 ResolutionSource::SessionHistory,
                 ResolutionSource::LongTermMemory,
             ]
         );
-        assert_eq!(plan.confidence, ResolutionConfidence::High);
+        assert_eq!(plan.confidence, ResolutionConfidence::Medium);
         assert!(plan.clarification_reason.is_none());
     }
 

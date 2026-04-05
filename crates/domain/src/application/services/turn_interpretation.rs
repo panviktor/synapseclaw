@@ -1,15 +1,14 @@
 //! Turn interpretation — bounded typed interpretation for a single turn.
 //!
 //! This layer is intentionally narrow. It combines structured runtime facts
-//! with embedding-backed semantic hints, without turning into a phrase-engine.
+//! without turning into a phrase-engine.
 
 use crate::domain::conversation_target::{ConversationDeliveryTarget, CurrentConversationContext};
-use crate::domain::dialogue_state::DialogueState;
-use crate::domain::memory::EmbeddingProfile;
+use crate::domain::dialogue_state::{
+    DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal,
+};
 use crate::domain::user_profile::UserProfile;
 use crate::ports::memory::UnifiedMemoryPort;
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TurnInterpretation {
@@ -21,7 +20,6 @@ pub struct TurnInterpretation {
     pub temporal_scope: Option<TemporalScope>,
     pub delivery_scope: Option<DeliveryScope>,
     pub clarification_candidates: Vec<String>,
-    pub semantic_hints: Vec<InterpretationHint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +33,7 @@ pub struct DialogueStateSnapshot {
     pub focus_entities: Vec<(String, String)>,
     pub comparison_set: Vec<(String, String)>,
     pub slots: Vec<(String, String)>,
+    pub reference_anchors: Vec<ReferenceAnchor>,
     pub last_tool_subjects: Vec<String>,
 }
 
@@ -46,8 +45,25 @@ pub enum ReferenceSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReferenceCandidateKind {
+    Entity {
+        entity_kind: String,
+    },
+    Slot {
+        slot_name: String,
+    },
+    Anchor {
+        selector: ReferenceAnchorSelector,
+        entity_kind: Option<String>,
+    },
+    Profile(DefaultKind),
+    DeliveryTarget,
+    RecentSubject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferenceCandidate {
-    pub kind: String,
+    pub kind: ReferenceCandidateKind,
     pub value: String,
     pub source: ReferenceSource,
 }
@@ -71,109 +87,9 @@ pub enum DeliveryScope {
     DefaultTarget,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum InterpretationHintKind {
-    HistoryLookup,
-    RepeatWork,
-    DeliverHere,
-    FollowupReference,
-    UseDefaultLanguage,
-    UseDefaultTimezone,
-    UseDefaultCity,
-    UseDefaultDeliveryTarget,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InterpretationHint {
-    pub kind: InterpretationHintKind,
-    pub score_bps: u16,
-}
-
-#[derive(Clone, Copy)]
-struct SemanticPrototype {
-    kind: InterpretationHintKind,
-    text: &'static str,
-}
-
-#[derive(Debug, Clone)]
-struct PrototypeEmbedding {
-    kind: InterpretationHintKind,
-    embedding: Vec<f32>,
-}
-
-const HINT_THRESHOLD_BPS: u16 = 700;
-const PROTOTYPES: &[SemanticPrototype] = &[
-    SemanticPrototype {
-        kind: InterpretationHintKind::HistoryLookup,
-        text: "what did we discuss previously",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::HistoryLookup,
-        text: "summarize our past conversation",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::RepeatWork,
-        text: "do it like last time",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::RepeatWork,
-        text: "repeat the previous successful way",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::DeliverHere,
-        text: "send it to this chat",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::DeliverHere,
-        text: "reply here in the current conversation",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::FollowupReference,
-        text: "what about the second one",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::FollowupReference,
-        text: "do the same for that one",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::UseDefaultLanguage,
-        text: "translate it into my language",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::UseDefaultLanguage,
-        text: "answer in my preferred language",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::UseDefaultTimezone,
-        text: "schedule it in my timezone",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::UseDefaultTimezone,
-        text: "remind me tomorrow using my timezone",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::UseDefaultCity,
-        text: "what is the weather in my city",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::UseDefaultCity,
-        text: "use my default city",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::UseDefaultDeliveryTarget,
-        text: "send it to my default destination",
-    },
-    SemanticPrototype {
-        kind: InterpretationHintKind::UseDefaultDeliveryTarget,
-        text: "notify me in my usual chat",
-    },
-];
-
-static PROTOTYPE_CACHE: OnceLock<Mutex<HashMap<String, Vec<PrototypeEmbedding>>>> = OnceLock::new();
-
 pub async fn build_turn_interpretation(
-    memory: Option<&dyn UnifiedMemoryPort>,
-    user_message: &str,
+    _memory: Option<&dyn UnifiedMemoryPort>,
+    _user_message: &str,
     profile: Option<UserProfile>,
     current_conversation: Option<&CurrentConversationContext>,
     dialogue_state: Option<&DialogueState>,
@@ -185,21 +101,6 @@ pub async fn build_turn_interpretation(
     });
     let dialogue_state = dialogue_state.and_then(snapshot_dialogue_state);
 
-    let semantic_hints = build_semantic_hints(
-        memory,
-        user_message,
-        user_profile.as_ref(),
-        current_conversation.as_ref(),
-        dialogue_state.as_ref(),
-    )
-    .await;
-    let defaults_requested = derive_defaults_requested(&semantic_hints, user_profile.as_ref());
-    let temporal_scope = derive_temporal_scope(&semantic_hints);
-    let delivery_scope = derive_delivery_scope(
-        &semantic_hints,
-        user_profile.as_ref(),
-        current_conversation.as_ref(),
-    );
     let reference_candidates = collect_reference_candidates(
         user_profile.as_ref(),
         current_conversation.as_ref(),
@@ -213,11 +114,10 @@ pub async fn build_turn_interpretation(
         current_conversation,
         dialogue_state,
         reference_candidates,
-        defaults_requested,
-        temporal_scope,
-        delivery_scope,
+        defaults_requested: Vec::new(),
+        temporal_scope: None,
+        delivery_scope: None,
         clarification_candidates,
-        semantic_hints,
     };
 
     if interpretation.user_profile.is_none()
@@ -228,7 +128,6 @@ pub async fn build_turn_interpretation(
         && interpretation.temporal_scope.is_none()
         && interpretation.delivery_scope.is_none()
         && interpretation.clarification_candidates.is_empty()
-        && interpretation.semantic_hints.is_empty()
     {
         None
     } else {
@@ -297,6 +196,17 @@ pub fn format_turn_interpretation(interpretation: &TurnInterpretation) -> Option
         if !state.slots.is_empty() {
             lines.push(format!("- slots: {}", format_pairs(&state.slots)));
         }
+        if !state.reference_anchors.is_empty() {
+            lines.push(format!(
+                "- reference_anchors: {}",
+                state
+                    .reference_anchors
+                    .iter()
+                    .map(format_reference_anchor)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         if !state.last_tool_subjects.is_empty() {
             lines.push(format!(
                 "- last_tool_subjects: {}",
@@ -305,8 +215,7 @@ pub fn format_turn_interpretation(interpretation: &TurnInterpretation) -> Option
         }
     }
 
-    if !interpretation.semantic_hints.is_empty()
-        || interpretation.temporal_scope.is_some()
+    if interpretation.temporal_scope.is_some()
         || interpretation.delivery_scope.is_some()
         || !interpretation.defaults_requested.is_empty()
         || !interpretation.reference_candidates.is_empty()
@@ -350,33 +259,12 @@ pub fn format_turn_interpretation(interpretation: &TurnInterpretation) -> Option
                 interpretation.clarification_candidates.join(" | ")
             ));
         }
-        if !interpretation.semantic_hints.is_empty() {
-            lines.push(format!(
-                "- semantic_hints: {}",
-                interpretation
-                    .semantic_hints
-                    .iter()
-                    .map(|hint| format!(
-                        "{}({})",
-                        interpretation_hint_name(hint.kind),
-                        hint.score_bps
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
     }
 
     if lines.is_empty() {
         None
     } else {
         Some(format!("[runtime-interpretation]\n{}\n", lines.join("\n")))
-    }
-}
-
-impl TurnInterpretation {
-    pub fn has_hint(&self, kind: InterpretationHintKind) -> bool {
-        self.semantic_hints.iter().any(|hint| hint.kind == kind)
     }
 }
 
@@ -396,11 +284,13 @@ fn snapshot_dialogue_state(state: &DialogueState) -> Option<DialogueStateSnapsho
         .iter()
         .map(|slot| (slot.name.clone(), slot.value.clone()))
         .collect::<Vec<_>>();
+    let reference_anchors = state.reference_anchors.clone();
     let last_tool_subjects = state.last_tool_subjects.clone();
 
     if focus_entities.is_empty()
         && comparison_set.is_empty()
         && slots.is_empty()
+        && reference_anchors.is_empty()
         && last_tool_subjects.is_empty()
     {
         None
@@ -409,172 +299,10 @@ fn snapshot_dialogue_state(state: &DialogueState) -> Option<DialogueStateSnapsho
             focus_entities,
             comparison_set,
             slots,
+            reference_anchors,
             last_tool_subjects,
         })
     }
-}
-
-async fn build_semantic_hints(
-    memory: Option<&dyn UnifiedMemoryPort>,
-    user_message: &str,
-    profile: Option<&UserProfile>,
-    current_conversation: Option<&CurrentConversationSnapshot>,
-    dialogue_state: Option<&DialogueStateSnapshot>,
-) -> Vec<InterpretationHint> {
-    let Some(memory) = memory else {
-        return Vec::new();
-    };
-    let trimmed = user_message.trim();
-    if trimmed.is_empty() {
-        return Vec::new();
-    }
-
-    let Some(query_embedding) = embed_query_or_none(memory, trimmed).await else {
-        return Vec::new();
-    };
-    let prototypes = cached_prototype_embeddings(memory).await;
-    if prototypes.is_empty() {
-        return Vec::new();
-    }
-
-    let relevant_kinds = relevant_hint_kinds(
-        profile,
-        current_conversation.is_some(),
-        dialogue_state.is_some(),
-    );
-    let mut best_scores = HashMap::<InterpretationHintKind, u16>::new();
-
-    for kind in relevant_kinds {
-        let mut best_bps = 0u16;
-        for prototype in prototypes.iter().filter(|prototype| prototype.kind == kind) {
-            let Some(score) = cosine_similarity(&query_embedding, &prototype.embedding) else {
-                continue;
-            };
-            let score_bps = (score.clamp(0.0, 1.0) * 1000.0).round() as u16;
-            best_bps = best_bps.max(score_bps);
-        }
-        if best_bps >= HINT_THRESHOLD_BPS {
-            best_scores.insert(kind, best_bps);
-        }
-    }
-
-    let mut hints = best_scores
-        .into_iter()
-        .map(|(kind, score_bps)| InterpretationHint { kind, score_bps })
-        .collect::<Vec<_>>();
-    hints.sort_by(|left, right| right.score_bps.cmp(&left.score_bps));
-    hints
-}
-
-fn relevant_hint_kinds(
-    profile: Option<&UserProfile>,
-    has_current_conversation: bool,
-    has_dialogue_state: bool,
-) -> Vec<InterpretationHintKind> {
-    let mut kinds = vec![
-        InterpretationHintKind::HistoryLookup,
-        InterpretationHintKind::RepeatWork,
-    ];
-
-    if has_current_conversation {
-        kinds.push(InterpretationHintKind::DeliverHere);
-    }
-    if has_dialogue_state {
-        kinds.push(InterpretationHintKind::FollowupReference);
-    }
-    if let Some(profile) = profile {
-        if profile.preferred_language.is_some() {
-            kinds.push(InterpretationHintKind::UseDefaultLanguage);
-        }
-        if profile.timezone.is_some() {
-            kinds.push(InterpretationHintKind::UseDefaultTimezone);
-        }
-        if profile.default_city.is_some() {
-            kinds.push(InterpretationHintKind::UseDefaultCity);
-        }
-        if profile.default_delivery_target.is_some() {
-            kinds.push(InterpretationHintKind::UseDefaultDeliveryTarget);
-        }
-    }
-
-    kinds
-}
-
-fn derive_defaults_requested(
-    hints: &[InterpretationHint],
-    profile: Option<&UserProfile>,
-) -> Vec<DefaultKind> {
-    let Some(profile) = profile else {
-        return Vec::new();
-    };
-
-    let mut defaults = Vec::new();
-    if profile.preferred_language.is_some()
-        && hints
-            .iter()
-            .any(|hint| hint.kind == InterpretationHintKind::UseDefaultLanguage)
-    {
-        defaults.push(DefaultKind::Language);
-    }
-    if profile.timezone.is_some()
-        && hints
-            .iter()
-            .any(|hint| hint.kind == InterpretationHintKind::UseDefaultTimezone)
-    {
-        defaults.push(DefaultKind::Timezone);
-    }
-    if profile.default_city.is_some()
-        && hints
-            .iter()
-            .any(|hint| hint.kind == InterpretationHintKind::UseDefaultCity)
-    {
-        defaults.push(DefaultKind::City);
-    }
-    if profile.default_delivery_target.is_some()
-        && hints
-            .iter()
-            .any(|hint| hint.kind == InterpretationHintKind::UseDefaultDeliveryTarget)
-    {
-        defaults.push(DefaultKind::DeliveryTarget);
-    }
-    defaults
-}
-
-fn derive_temporal_scope(hints: &[InterpretationHint]) -> Option<TemporalScope> {
-    if hints.iter().any(|hint| {
-        matches!(
-            hint.kind,
-            InterpretationHintKind::HistoryLookup | InterpretationHintKind::RepeatWork
-        )
-    }) {
-        Some(TemporalScope::Historical)
-    } else {
-        None
-    }
-}
-
-fn derive_delivery_scope(
-    hints: &[InterpretationHint],
-    profile: Option<&UserProfile>,
-    current_conversation: Option<&CurrentConversationSnapshot>,
-) -> Option<DeliveryScope> {
-    if current_conversation.is_some()
-        && hints
-            .iter()
-            .any(|hint| hint.kind == InterpretationHintKind::DeliverHere)
-    {
-        return Some(DeliveryScope::CurrentConversation);
-    }
-    if profile
-        .and_then(|profile| profile.default_delivery_target.as_ref())
-        .is_some()
-        && hints
-            .iter()
-            .any(|hint| hint.kind == InterpretationHintKind::UseDefaultDeliveryTarget)
-    {
-        return Some(DeliveryScope::DefaultTarget);
-    }
-    None
 }
 
 fn collect_reference_candidates(
@@ -585,18 +313,45 @@ fn collect_reference_candidates(
     let mut candidates = Vec::new();
 
     if let Some(state) = dialogue_state {
-        for (kind, value) in state
+        for (entity_kind, value) in state
             .focus_entities
             .iter()
             .chain(state.comparison_set.iter())
-            .chain(state.slots.iter())
         {
-            push_reference_candidate(&mut candidates, kind, value, ReferenceSource::DialogueState);
+            push_reference_candidate(
+                &mut candidates,
+                ReferenceCandidateKind::Entity {
+                    entity_kind: entity_kind.clone(),
+                },
+                value,
+                ReferenceSource::DialogueState,
+            );
+        }
+        for (slot_name, value) in &state.slots {
+            push_reference_candidate(
+                &mut candidates,
+                ReferenceCandidateKind::Slot {
+                    slot_name: slot_name.clone(),
+                },
+                value,
+                ReferenceSource::DialogueState,
+            );
+        }
+        for anchor in &state.reference_anchors {
+            push_reference_candidate(
+                &mut candidates,
+                ReferenceCandidateKind::Anchor {
+                    selector: anchor.selector.clone(),
+                    entity_kind: anchor.entity_kind.clone(),
+                },
+                &anchor.value,
+                ReferenceSource::DialogueState,
+            );
         }
         for subject in &state.last_tool_subjects {
             push_reference_candidate(
                 &mut candidates,
-                "recent_subject",
+                ReferenceCandidateKind::RecentSubject,
                 subject,
                 ReferenceSource::DialogueState,
             );
@@ -605,12 +360,17 @@ fn collect_reference_candidates(
 
     if let Some(profile) = profile {
         if let Some(city) = profile.default_city.as_deref() {
-            push_reference_candidate(&mut candidates, "city", city, ReferenceSource::UserProfile);
+            push_reference_candidate(
+                &mut candidates,
+                ReferenceCandidateKind::Profile(DefaultKind::City),
+                city,
+                ReferenceSource::UserProfile,
+            );
         }
         if let Some(language) = profile.preferred_language.as_deref() {
             push_reference_candidate(
                 &mut candidates,
-                "language",
+                ReferenceCandidateKind::Profile(DefaultKind::Language),
                 language,
                 ReferenceSource::UserProfile,
             );
@@ -618,7 +378,7 @@ fn collect_reference_candidates(
         if let Some(timezone) = profile.timezone.as_deref() {
             push_reference_candidate(
                 &mut candidates,
-                "timezone",
+                ReferenceCandidateKind::Profile(DefaultKind::Timezone),
                 timezone,
                 ReferenceSource::UserProfile,
             );
@@ -626,7 +386,9 @@ fn collect_reference_candidates(
         for environment in &profile.known_environments {
             push_reference_candidate(
                 &mut candidates,
-                "environment",
+                ReferenceCandidateKind::Entity {
+                    entity_kind: "environment".into(),
+                },
                 environment,
                 ReferenceSource::UserProfile,
             );
@@ -634,7 +396,7 @@ fn collect_reference_candidates(
         if profile.default_delivery_target.is_some() {
             push_reference_candidate(
                 &mut candidates,
-                "delivery_target",
+                ReferenceCandidateKind::Profile(DefaultKind::DeliveryTarget),
                 "default_delivery_target",
                 ReferenceSource::UserProfile,
             );
@@ -644,7 +406,7 @@ fn collect_reference_candidates(
     if current_conversation.is_some() {
         push_reference_candidate(
             &mut candidates,
-            "delivery_target",
+            ReferenceCandidateKind::DeliveryTarget,
             "current_conversation",
             ReferenceSource::CurrentConversation,
         );
@@ -683,78 +445,9 @@ fn collect_clarification_candidates(
     values
 }
 
-async fn cached_prototype_embeddings(memory: &dyn UnifiedMemoryPort) -> Vec<PrototypeEmbedding> {
-    let EmbeddingProfile { profile_id, .. } = memory.embedding_profile();
-    if profile_id == EmbeddingProfile::default().profile_id {
-        return Vec::new();
-    }
-
-    let cache = PROTOTYPE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some(existing) = cache
-        .lock()
-        .expect("prototype cache poisoned")
-        .get(&profile_id)
-        .cloned()
-    {
-        return existing;
-    }
-
-    let mut built = Vec::new();
-    for prototype in PROTOTYPES {
-        let Some(embedding) = embed_document_or_none(memory, prototype.text).await else {
-            continue;
-        };
-        built.push(PrototypeEmbedding {
-            kind: prototype.kind,
-            embedding,
-        });
-    }
-
-    cache
-        .lock()
-        .expect("prototype cache poisoned")
-        .insert(profile_id, built.clone());
-    built
-}
-
-async fn embed_query_or_none(memory: &dyn UnifiedMemoryPort, text: &str) -> Option<Vec<f32>> {
-    match memory.embed_query(text).await {
-        Ok(embedding) if !embedding.is_empty() => Some(embedding),
-        _ => None,
-    }
-}
-
-async fn embed_document_or_none(memory: &dyn UnifiedMemoryPort, text: &str) -> Option<Vec<f32>> {
-    match memory.embed_document(text).await {
-        Ok(embedding) if !embedding.is_empty() => Some(embedding),
-        _ => None,
-    }
-}
-
-fn cosine_similarity(left: &[f32], right: &[f32]) -> Option<f64> {
-    if left.is_empty() || right.is_empty() || left.len() != right.len() {
-        return None;
-    }
-
-    let mut dot = 0.0f64;
-    let mut left_mag = 0.0f64;
-    let mut right_mag = 0.0f64;
-    for (l, r) in left.iter().zip(right.iter()) {
-        let l = *l as f64;
-        let r = *r as f64;
-        dot += l * r;
-        left_mag += l * l;
-        right_mag += r * r;
-    }
-    if left_mag == 0.0 || right_mag == 0.0 {
-        return None;
-    }
-    Some(dot / (left_mag.sqrt() * right_mag.sqrt()))
-}
-
 fn push_reference_candidate(
     values: &mut Vec<ReferenceCandidate>,
-    kind: &str,
+    kind: ReferenceCandidateKind,
     value: &str,
     source: ReferenceSource,
 ) {
@@ -765,7 +458,7 @@ fn push_reference_candidate(
         candidate.kind == kind && candidate.value == value && candidate.source == source
     }) {
         values.push(ReferenceCandidate {
-            kind: kind.to_string(),
+            kind,
             value: value.to_string(),
             source,
         });
@@ -790,9 +483,21 @@ fn format_reference_candidate(candidate: &ReferenceCandidate) -> String {
     format!(
         "{}:{}={}",
         reference_source_name(candidate.source),
-        candidate.kind,
+        reference_candidate_kind_name(&candidate.kind),
         candidate.value
     )
+}
+
+fn format_reference_anchor(anchor: &ReferenceAnchor) -> String {
+    let selector = match &anchor.selector {
+        ReferenceAnchorSelector::Current => "current".to_string(),
+        ReferenceAnchorSelector::Latest => "latest".to_string(),
+        ReferenceAnchorSelector::Ordinal(ordinal) => ordinal_name(ordinal).to_string(),
+    };
+    match anchor.entity_kind.as_deref() {
+        Some(entity_kind) => format!("{selector}<{entity_kind}>={}", anchor.value),
+        None => format!("{selector}={}", anchor.value),
+    }
 }
 
 fn format_delivery_target(target: &ConversationDeliveryTarget) -> String {
@@ -829,6 +534,42 @@ fn default_kind_name(kind: DefaultKind) -> &'static str {
     }
 }
 
+fn reference_candidate_kind_name(kind: &ReferenceCandidateKind) -> String {
+    match kind {
+        ReferenceCandidateKind::Entity { entity_kind } => format!("entity<{entity_kind}>"),
+        ReferenceCandidateKind::Slot { slot_name } => format!("slot<{slot_name}>"),
+        ReferenceCandidateKind::Anchor {
+            selector,
+            entity_kind,
+        } => match entity_kind.as_deref() {
+            Some(entity_kind) => format!("anchor<{}:{}>", selector_name(selector), entity_kind),
+            None => format!("anchor<{}>", selector_name(selector)),
+        },
+        ReferenceCandidateKind::Profile(default_kind) => {
+            format!("profile<{}>", default_kind_name(*default_kind))
+        }
+        ReferenceCandidateKind::DeliveryTarget => "delivery_target".into(),
+        ReferenceCandidateKind::RecentSubject => "recent_subject".into(),
+    }
+}
+
+fn selector_name(selector: &ReferenceAnchorSelector) -> &'static str {
+    match selector {
+        ReferenceAnchorSelector::Current => "current",
+        ReferenceAnchorSelector::Latest => "latest",
+        ReferenceAnchorSelector::Ordinal(ordinal) => ordinal_name(ordinal),
+    }
+}
+
+fn ordinal_name(ordinal: &ReferenceOrdinal) -> &'static str {
+    match ordinal {
+        ReferenceOrdinal::First => "first",
+        ReferenceOrdinal::Second => "second",
+        ReferenceOrdinal::Third => "third",
+        ReferenceOrdinal::Fourth => "fourth",
+    }
+}
+
 fn temporal_scope_name(scope: TemporalScope) -> &'static str {
     match scope {
         TemporalScope::Historical => "historical",
@@ -842,23 +583,10 @@ fn delivery_scope_name(scope: DeliveryScope) -> &'static str {
     }
 }
 
-fn interpretation_hint_name(kind: InterpretationHintKind) -> &'static str {
-    match kind {
-        InterpretationHintKind::HistoryLookup => "history_lookup",
-        InterpretationHintKind::RepeatWork => "repeat_work",
-        InterpretationHintKind::DeliverHere => "deliver_here",
-        InterpretationHintKind::FollowupReference => "followup_reference",
-        InterpretationHintKind::UseDefaultLanguage => "use_default_language",
-        InterpretationHintKind::UseDefaultTimezone => "use_default_timezone",
-        InterpretationHintKind::UseDefaultCity => "use_default_city",
-        InterpretationHintKind::UseDefaultDeliveryTarget => "use_default_delivery_target",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::dialogue_state::{DialogueSlot, FocusEntity};
+    use crate::domain::dialogue_state::FocusEntity;
     use crate::domain::memory::{
         AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity,
         HybridSearchResult, MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery,
@@ -1070,40 +798,8 @@ mod tests {
         }
     }
 
-    fn test_embedding(text: &str) -> Vec<f32> {
-        let normalized = text.to_lowercase();
-        let mut vector = vec![0.0f32; 8];
-        let features = [
-            (
-                0,
-                &["discuss", "conversation", "past", "previous", "last week"][..],
-            ),
-            (
-                1,
-                &[
-                    "like last time",
-                    "repeat",
-                    "same as before",
-                    "successful way",
-                ][..],
-            ),
-            (
-                2,
-                &["here", "this chat", "current conversation", "reply"][..],
-            ),
-            (3, &["second one", "that one", "this one"][..]),
-            (4, &["language", "translate", "preferred language"][..]),
-            (5, &["timezone", "remind", "tomorrow"][..]),
-            (6, &["weather", "city", "temperature"][..]),
-            (7, &["default destination", "usual chat", "notify me"][..]),
-        ];
-
-        for (idx, tokens) in features {
-            if tokens.iter().any(|token| normalized.contains(token)) {
-                vector[idx] = 1.0;
-            }
-        }
-        vector
+    fn test_embedding(_text: &str) -> Vec<f32> {
+        vec![0.0; 8]
     }
 
     #[tokio::test]
@@ -1114,7 +810,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn builds_semantic_hints_and_defaults() {
+    async fn builds_profile_and_followup_candidates_without_phrase_router() {
         let memory = StubMemory;
         let profile = UserProfile {
             preferred_language: Some("ru".into()),
@@ -1147,12 +843,8 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(interpretation.has_hint(InterpretationHintKind::UseDefaultLanguage));
-        assert!(interpretation.has_hint(InterpretationHintKind::FollowupReference));
-        assert_eq!(
-            interpretation.defaults_requested,
-            vec![DefaultKind::Language]
-        );
+        assert!(interpretation.defaults_requested.is_empty());
+        assert!(!interpretation.reference_candidates.is_empty());
         assert_eq!(
             interpretation.clarification_candidates,
             vec!["Berlin", "Tbilisi"]
@@ -1173,10 +865,10 @@ mod tests {
                 name: "Berlin".into(),
                 metadata: None,
             }],
-            slots: vec![crate::domain::dialogue_state::DialogueSlot {
-                name: "timezone".into(),
-                value: "Europe/Berlin".into(),
-            }],
+            slots: vec![crate::domain::dialogue_state::DialogueSlot::observed(
+                "timezone",
+                "Europe/Berlin",
+            )],
             last_tool_subjects: vec!["weather_lookup".into()],
             ..Default::default()
         };
@@ -1203,9 +895,8 @@ mod tests {
         assert!(block.contains("preferred_language: ru"));
         assert!(block.contains("adapter: matrix"));
         assert!(block.contains("focus_entities: city=Berlin"));
-        assert!(block.contains("delivery_scope: current_conversation"));
-        assert!(block.contains("defaults_requested: language"));
-        assert!(block.contains("semantic_hints:"));
+        assert!(block.contains("slots: timezone=Europe/Berlin"));
+        assert!(block.contains("last_tool_subjects: weather_lookup"));
     }
 
     #[tokio::test]
@@ -1228,13 +919,19 @@ mod tests {
                         metadata: None,
                     },
                 ],
-                slots: vec![
-                    DialogueSlot {
-                        name: "first_city".into(),
+                reference_anchors: vec![
+                    crate::domain::dialogue_state::ReferenceAnchor {
+                        selector: crate::domain::dialogue_state::ReferenceAnchorSelector::Ordinal(
+                            crate::domain::dialogue_state::ReferenceOrdinal::First,
+                        ),
+                        entity_kind: Some("city".into()),
                         value: "Berlin".into(),
                     },
-                    DialogueSlot {
-                        name: "second_city".into(),
+                    crate::domain::dialogue_state::ReferenceAnchor {
+                        selector: crate::domain::dialogue_state::ReferenceAnchorSelector::Ordinal(
+                            crate::domain::dialogue_state::ReferenceOrdinal::Second,
+                        ),
+                        entity_kind: Some("city".into()),
                         value: "Tbilisi".into(),
                     },
                 ],
@@ -1245,9 +942,14 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(interpretation
-            .reference_candidates
-            .iter()
-            .any(|candidate| candidate.kind == "second_city" && candidate.value == "Tbilisi"));
+        assert!(interpretation.reference_candidates.iter().any(|candidate| {
+            matches!(
+                &candidate.kind,
+                ReferenceCandidateKind::Anchor {
+                    selector: ReferenceAnchorSelector::Ordinal(ReferenceOrdinal::Second),
+                    entity_kind,
+                } if entity_kind.as_deref() == Some("city")
+            ) && candidate.value == "Tbilisi"
+        }));
     }
 }

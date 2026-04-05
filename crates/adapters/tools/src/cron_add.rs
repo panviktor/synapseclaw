@@ -4,7 +4,9 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{Db, DeliveryConfig, JobType, Schedule, SessionTarget, Surreal};
 use synapse_domain::config::schema::Config;
+use synapse_domain::domain::dialogue_state::DialogueSlot;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 
 pub struct CronAddTool {
@@ -244,6 +246,68 @@ impl Tool for CronAddTool {
             },
             "required": ["schedule"]
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        _result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: Vec::new(),
+            slots: Vec::new(),
+        };
+
+        if let Some(job_type) = args.get("job_type").and_then(serde_json::Value::as_str) {
+            fact.slots
+                .push(DialogueSlot::observed("job_type", job_type.to_string()));
+        }
+
+        if let Some(session_target) = args
+            .get("session_target")
+            .and_then(serde_json::Value::as_str)
+        {
+            fact.slots.push(DialogueSlot::observed(
+                "session_target",
+                session_target.to_string(),
+            ));
+        }
+
+        if let Some(schedule) = args.get("schedule").and_then(serde_json::Value::as_object) {
+            if let Some(kind) = schedule.get("kind").and_then(serde_json::Value::as_str) {
+                fact.slots
+                    .push(DialogueSlot::observed("schedule_kind", kind.to_string()));
+            }
+            if let Some(tz) = schedule.get("tz").and_then(serde_json::Value::as_str) {
+                fact.slots
+                    .push(DialogueSlot::observed("schedule_timezone", tz.to_string()));
+            }
+        }
+
+        if let Ok(Some(delivery)) = self.resolve_delivery_config(args) {
+            if let Some(mode) = (!delivery.mode.trim().is_empty()).then_some(delivery.mode) {
+                fact.slots
+                    .push(DialogueSlot::observed("delivery_mode", mode));
+            }
+            if let Some(channel) = delivery.channel {
+                fact.slots
+                    .push(DialogueSlot::observed("delivery_channel", channel));
+            }
+            if let Some(to) = delivery.to {
+                fact.slots.push(DialogueSlot::observed("delivery_to", to));
+            }
+            if let Some(thread_ref) = delivery.thread_ref {
+                fact.slots
+                    .push(DialogueSlot::observed("delivery_thread_ref", thread_ref));
+            }
+        }
+
+        if fact.slots.is_empty() {
+            Vec::new()
+        } else {
+            vec![fact]
+        }
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

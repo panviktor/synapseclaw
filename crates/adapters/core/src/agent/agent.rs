@@ -708,10 +708,24 @@ impl Agent {
             arguments: Some(args_preview),
         });
 
-        let result = if let Some(tool) = self.tools.iter().find(|t| t.name() == call.name) {
+        let (result, success, tool_facts) = if let Some(tool) =
+            self.tools.iter().find(|t| t.name() == call.name)
+        {
+            let generic_fact =
+                runtime::tool_fact_extraction::build_tool_fact(&call.name, &call.arguments);
+            let mut tool_facts = tool.extract_facts(&call.arguments, None);
+            if runtime::tool_fact_extraction::fact_has_payload(&generic_fact) {
+                tool_facts.push(generic_fact);
+            }
             match tool.execute(call.arguments.clone()).await {
                 Ok(r) => {
                     let duration = start.elapsed();
+                    let generic_fact =
+                        runtime::tool_fact_extraction::build_tool_fact(&call.name, &call.arguments);
+                    let mut tool_facts = tool.extract_facts(&call.arguments, Some(&r));
+                    if runtime::tool_fact_extraction::fact_has_payload(&generic_fact) {
+                        tool_facts.push(generic_fact);
+                    }
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
                         duration,
@@ -725,7 +739,7 @@ impl Agent {
                             ),
                             success: true,
                         });
-                        r.output
+                        (r.output, true, tool_facts)
                     } else {
                         let reason = r.error.unwrap_or(r.output);
                         self.observer.record_event(&ObserverEvent::ToolResult {
@@ -735,7 +749,7 @@ impl Agent {
                             ),
                             success: false,
                         });
-                        format!("Error: {reason}")
+                        (format!("Error: {reason}"), false, tool_facts)
                     }
                 }
                 Err(e) => {
@@ -751,24 +765,32 @@ impl Agent {
                         output: synapse_domain::domain::util::truncate_with_ellipsis(&reason, 500),
                         success: false,
                     });
-                    reason
+                    (reason, false, tool_facts)
                 }
             }
         } else {
             let reason = format!("Unknown tool: {}", call.name);
+            let generic_fact =
+                runtime::tool_fact_extraction::build_tool_fact(&call.name, &call.arguments);
+            let tool_facts = if runtime::tool_fact_extraction::fact_has_payload(&generic_fact) {
+                vec![generic_fact]
+            } else {
+                Vec::new()
+            };
             self.observer.record_event(&ObserverEvent::ToolResult {
                 tool: call.name.clone(),
                 output: reason.clone(),
                 success: false,
             });
-            reason
+            (reason, false, tool_facts)
         };
 
         ToolExecutionResult {
             name: call.name.clone(),
             output: result,
-            success: true,
+            success,
             tool_call_id: call.tool_call_id.clone(),
+            tool_facts,
         }
     }
 
@@ -933,7 +955,6 @@ impl Agent {
         self.turn_count += 1;
 
         let effective_model = self.classify_model(user_message);
-        let mut tools_used_this_turn: Vec<String> = Vec::new();
         let mut tool_facts_this_turn = Vec::new();
 
         for _ in 0..self.config.max_tool_iterations {
@@ -1067,14 +1088,12 @@ impl Agent {
                     if dialogue_state_service::should_materialize_state(
                         existing.as_ref(),
                         &tool_facts_this_turn,
-                        None,
                     ) {
                         let mut state = existing.unwrap_or_default();
                         dialogue_state_service::update_state_from_turn(
                             &mut state,
                             user_message,
                             &tool_facts_this_turn,
-                            None,
                             &final_text,
                         );
                         store.set(session_id, state);
@@ -1099,12 +1118,12 @@ impl Agent {
                 reasoning_content: response.reasoning_content.clone(),
             });
 
-            tools_used_this_turn.extend(calls.iter().map(|call| call.name.clone()));
-            tool_facts_this_turn.extend(calls.iter().map(|call| {
-                runtime::tool_fact_extraction::build_tool_fact(&call.name, &call.arguments)
-            }));
-
             let results = self.execute_tools(&calls).await;
+            tool_facts_this_turn.extend(
+                results
+                    .iter()
+                    .flat_map(|result| result.tool_facts.iter().cloned()),
+            );
             let formatted = self.tool_dispatcher.format_results(&results);
             self.history.push(formatted);
             self.trim_history();

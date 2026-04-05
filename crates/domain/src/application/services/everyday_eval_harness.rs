@@ -4,11 +4,9 @@
 //! model. It exercises bounded interpretation, resolution routing, and
 //! clarification guidance with deterministic inputs.
 
-use crate::application::services::clarification_policy::{
-    self, ClarificationGuidance,
-};
+use crate::application::services::clarification_policy::{self, ClarificationGuidance};
 use crate::application::services::resolution_router::{self, ResolutionPlan, ResolutionSource};
-use crate::application::services::turn_interpretation::{self, DefaultKind, TurnInterpretation};
+use crate::application::services::turn_interpretation::{self, TurnInterpretation};
 use crate::domain::conversation_target::CurrentConversationContext;
 use crate::domain::dialogue_state::DialogueState;
 use crate::domain::user_profile::UserProfile;
@@ -47,7 +45,6 @@ pub struct EverydayEvalResult {
     pub resolution_plan: ResolutionPlan,
     pub clarification_guidance: Option<ClarificationGuidance>,
     pub selected_source: Option<ResolutionSource>,
-    pub defaults_used: Vec<DefaultKind>,
     pub used_session_history: bool,
     pub used_run_recipe: bool,
     pub clarification_shape: ClarificationShape,
@@ -66,8 +63,8 @@ pub async fn evaluate_scenario(
     )
     .await;
 
-    let resolution_plan = resolution_router::build_resolution_plan(
-        resolution_router::ResolutionEvidence {
+    let resolution_plan =
+        resolution_router::build_resolution_plan(resolution_router::ResolutionEvidence {
             interpretation: interpretation.as_ref(),
             top_session_score: scenario.top_session_score,
             second_session_score: scenario.second_session_score,
@@ -78,21 +75,15 @@ pub async fn evaluate_scenario(
             recall_hits: scenario.recall_hits,
             skill_hits: scenario.skill_hits,
             entity_hits: scenario.entity_hits,
-        },
+        });
+    let clarification_guidance = clarification_policy::build_clarification_guidance(
+        Some(&resolution_plan),
+        interpretation.as_ref(),
     );
-    let clarification_guidance =
-        clarification_policy::build_clarification_guidance(
-            Some(&resolution_plan),
-            interpretation.as_ref(),
-        );
 
     EverydayEvalResult {
         scenario_id: scenario.id,
         selected_source: resolution_plan.source_order.first().copied(),
-        defaults_used: interpretation
-            .as_ref()
-            .map(|i| i.defaults_requested.clone())
-            .unwrap_or_default(),
         used_session_history: resolution_plan
             .source_order
             .contains(&ResolutionSource::SessionHistory),
@@ -242,6 +233,22 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
                 ],
                 focus_entities: vec![],
                 slots: vec![],
+                reference_anchors: vec![
+                    crate::domain::dialogue_state::ReferenceAnchor {
+                        selector: crate::domain::dialogue_state::ReferenceAnchorSelector::Ordinal(
+                            crate::domain::dialogue_state::ReferenceOrdinal::First,
+                        ),
+                        entity_kind: Some("city".into()),
+                        value: "Berlin".into(),
+                    },
+                    crate::domain::dialogue_state::ReferenceAnchor {
+                        selector: crate::domain::dialogue_state::ReferenceAnchorSelector::Ordinal(
+                            crate::domain::dialogue_state::ReferenceOrdinal::Second,
+                        ),
+                        entity_kind: Some("city".into()),
+                        value: "Tbilisi".into(),
+                    },
+                ],
                 last_tool_subjects: vec!["Berlin".into(), "Tbilisi".into()],
                 updated_at: 1,
             }),
@@ -275,12 +282,11 @@ fn classify_clarification_shape(
 mod tests {
     use super::*;
     use crate::domain::conversation_target::ConversationDeliveryTarget;
-    use crate::application::services::turn_interpretation::InterpretationHintKind;
     use crate::domain::memory::{
-        AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingDistanceMetric,
-        EmbeddingProfile, Entity, HybridSearchResult, MemoryCategory, MemoryEntry, MemoryError,
-        MemoryId, MemoryQuery, Reflection, SearchResult, SessionId, Skill, SkillUpdate,
-        TemporalFact, Visibility,
+        AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingDistanceMetric, EmbeddingProfile,
+        Entity, HybridSearchResult, MemoryCategory, MemoryEntry, MemoryError, MemoryId,
+        MemoryQuery, Reflection, SearchResult, SessionId, Skill, SkillUpdate, TemporalFact,
+        Visibility,
     };
     use crate::ports::memory::{
         ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
@@ -293,10 +299,7 @@ mod tests {
 
     #[async_trait]
     impl WorkingMemoryPort for StubMemory {
-        async fn get_core_blocks(
-            &self,
-            _: &AgentId,
-        ) -> Result<Vec<CoreMemoryBlock>, MemoryError> {
+        async fn get_core_blocks(&self, _: &AgentId) -> Result<Vec<CoreMemoryBlock>, MemoryError> {
             Ok(vec![])
         }
         async fn update_core_block(
@@ -307,7 +310,12 @@ mod tests {
         ) -> Result<(), MemoryError> {
             Ok(())
         }
-        async fn append_core_block(&self, _: &AgentId, _: &str, _: &str) -> Result<(), MemoryError> {
+        async fn append_core_block(
+            &self,
+            _: &AgentId,
+            _: &str,
+            _: &str,
+        ) -> Result<(), MemoryError> {
             Ok(())
         }
     }
@@ -317,11 +325,7 @@ mod tests {
         async fn store_episode(&self, _: MemoryEntry) -> Result<MemoryId, MemoryError> {
             Ok(String::new())
         }
-        async fn get_recent(
-            &self,
-            _: &AgentId,
-            _: usize,
-        ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        async fn get_recent(&self, _: &AgentId, _: usize) -> Result<Vec<MemoryEntry>, MemoryError> {
             Ok(vec![])
         }
         async fn get_session(&self, _: &SessionId) -> Result<Vec<MemoryEntry>, MemoryError> {
@@ -346,10 +350,7 @@ mod tests {
         async fn invalidate_fact(&self, _: &MemoryId) -> Result<(), MemoryError> {
             Ok(())
         }
-        async fn get_current_facts(
-            &self,
-            _: &MemoryId,
-        ) -> Result<Vec<TemporalFact>, MemoryError> {
+        async fn get_current_facts(&self, _: &MemoryId) -> Result<Vec<TemporalFact>, MemoryError> {
             Ok(vec![])
         }
         async fn traverse(
@@ -380,11 +381,7 @@ mod tests {
         ) -> Result<(), MemoryError> {
             Ok(())
         }
-        async fn get_skill(
-            &self,
-            _: &str,
-            _: &AgentId,
-        ) -> Result<Option<Skill>, MemoryError> {
+        async fn get_skill(&self, _: &str, _: &AgentId) -> Result<Option<Skill>, MemoryError> {
             Ok(None)
         }
     }
@@ -491,11 +488,7 @@ mod tests {
             Ok(false)
         }
 
-        async fn get(
-            &self,
-            _: &str,
-            _: &AgentId,
-        ) -> Result<Option<MemoryEntry>, MemoryError> {
+        async fn get(&self, _: &str, _: &AgentId) -> Result<Option<MemoryEntry>, MemoryError> {
             Ok(None)
         }
 
@@ -535,25 +528,8 @@ mod tests {
         }
     }
 
-    fn embed_text(text: &str) -> Vec<f32> {
-        let normalized = text.to_lowercase();
-        let mut vector = vec![0.0f32; 8];
-        let features = [
-            (0, &["discuss", "conversation", "past", "previous", "last week"][..]),
-            (1, &["like last time", "repeat", "same as before", "successful way"][..]),
-            (2, &["here", "this chat", "current conversation", "our chat"][..]),
-            (3, &["second one", "that one", "this one"][..]),
-            (4, &["language", "translate", "preferred language", "my language"][..]),
-            (5, &["timezone", "remind", "tomorrow"][..]),
-            (6, &["weather", "city", "default city"][..]),
-            (7, &["default destination", "usual chat", "send it"][..]),
-        ];
-        for (index, keywords) in features {
-            if keywords.iter().any(|keyword| normalized.contains(keyword)) {
-                vector[index] = 1.0;
-            }
-        }
-        vector
+    fn embed_text(_text: &str) -> Vec<f32> {
+        vec![0.0; 8]
     }
 
     #[tokio::test]
@@ -566,7 +542,6 @@ mod tests {
 
         let result = evaluate_scenario(&memory, &scenario).await;
         assert_eq!(result.selected_source, Some(ResolutionSource::UserProfile));
-        assert_eq!(result.defaults_used, vec![DefaultKind::City]);
         assert_ne!(result.clarification_shape, ClarificationShape::GenericRisk);
     }
 
@@ -579,12 +554,10 @@ mod tests {
             .unwrap();
 
         let result = evaluate_scenario(&memory, &scenario).await;
-        assert!(result
-            .interpretation
-            .as_ref()
-            .unwrap()
-            .has_hint(InterpretationHintKind::HistoryLookup));
-        assert_eq!(result.selected_source, Some(ResolutionSource::SessionHistory));
+        assert_eq!(
+            result.selected_source,
+            Some(ResolutionSource::SessionHistory)
+        );
         assert!(result.used_session_history);
     }
 
@@ -610,7 +583,10 @@ mod tests {
             .unwrap();
 
         let result = evaluate_scenario(&memory, &scenario).await;
-        assert_eq!(result.selected_source, Some(ResolutionSource::DialogueState));
+        assert_eq!(
+            result.selected_source,
+            Some(ResolutionSource::DialogueState)
+        );
         assert_eq!(result.clarification_shape, ClarificationShape::CandidateSet);
         assert_eq!(
             result
@@ -646,7 +622,7 @@ mod tests {
             .unwrap();
 
         let result = evaluate_scenario(&memory, &scenario).await;
-        assert!(result.defaults_used.contains(&DefaultKind::Language));
+        assert_eq!(result.selected_source, Some(ResolutionSource::UserProfile));
     }
 
     #[tokio::test]
@@ -672,6 +648,6 @@ mod tests {
         };
 
         let result = evaluate_scenario(&StubMemory, &scenario).await;
-        assert!(result.defaults_used.contains(&DefaultKind::DeliveryTarget));
+        assert_eq!(result.selected_source, Some(ResolutionSource::UserProfile));
     }
 }

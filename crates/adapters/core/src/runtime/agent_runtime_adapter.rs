@@ -83,8 +83,8 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         };
 
         let response = loop_result.response;
+        let tool_names = loop_result.tool_names;
         let tool_facts = loop_result.tool_facts;
-        let tool_names = extract_tool_names(&tool_facts);
         let tools_used = !tool_names.is_empty();
         let tool_summary = format_tool_summary(&tool_names);
 
@@ -101,21 +101,6 @@ impl AgentRuntimePort for ChannelAgentRuntime {
     fn supports_vision(&self) -> bool {
         self.provider.supports_vision()
     }
-}
-
-/// Extract unique tool names from history turns added during the tool loop.
-fn extract_tool_names(
-    facts: &[synapse_domain::ports::agent_runtime::AgentToolFact],
-) -> Vec<String> {
-    let mut names = Vec::new();
-
-    for fact in facts {
-        if !names.iter().any(|existing| existing == &fact.tool_name) {
-            names.push(fact.tool_name.clone());
-        }
-    }
-
-    names
 }
 
 fn format_tool_summary(tool_names: &[String]) -> String {

@@ -2,9 +2,7 @@
 //!
 //! This uses typed state only. No phrase tables or locale-specific triggers.
 
-use crate::application::services::resolution_router::{
-    ClarificationReason, ResolutionPlan,
-};
+use crate::application::services::resolution_router::{ClarificationReason, ResolutionPlan};
 use crate::application::services::turn_interpretation::TurnInterpretation;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -30,35 +28,39 @@ pub fn build_clarification_guidance(
     };
 
     if let Some(profile) = interpretation.user_profile.as_ref() {
-        if interpretation
-            .defaults_requested
-            .iter()
-            .any(|kind| matches!(kind, crate::application::services::turn_interpretation::DefaultKind::City))
-            && profile.default_city.is_some()
+        if interpretation.defaults_requested.iter().any(|kind| {
+            matches!(
+                kind,
+                crate::application::services::turn_interpretation::DefaultKind::City
+            )
+        }) && profile.default_city.is_some()
         {
             guidance.use_defaults_for.push("city".into());
         }
-        if interpretation
-            .defaults_requested
-            .iter()
-            .any(|kind| matches!(kind, crate::application::services::turn_interpretation::DefaultKind::Language))
-            && profile.preferred_language.is_some()
+        if interpretation.defaults_requested.iter().any(|kind| {
+            matches!(
+                kind,
+                crate::application::services::turn_interpretation::DefaultKind::Language
+            )
+        }) && profile.preferred_language.is_some()
         {
             guidance.use_defaults_for.push("language".into());
         }
-        if interpretation
-            .defaults_requested
-            .iter()
-            .any(|kind| matches!(kind, crate::application::services::turn_interpretation::DefaultKind::Timezone))
-            && profile.timezone.is_some()
+        if interpretation.defaults_requested.iter().any(|kind| {
+            matches!(
+                kind,
+                crate::application::services::turn_interpretation::DefaultKind::Timezone
+            )
+        }) && profile.timezone.is_some()
         {
             guidance.use_defaults_for.push("timezone".into());
         }
-        if interpretation
-            .defaults_requested
-            .iter()
-            .any(|kind| matches!(kind, crate::application::services::turn_interpretation::DefaultKind::DeliveryTarget))
-            && profile.default_delivery_target.is_some()
+        if interpretation.defaults_requested.iter().any(|kind| {
+            matches!(
+                kind,
+                crate::application::services::turn_interpretation::DefaultKind::DeliveryTarget
+            )
+        }) && profile.default_delivery_target.is_some()
         {
             guidance.use_defaults_for.push("delivery_target".into());
         }
@@ -70,7 +72,9 @@ pub fn build_clarification_guidance(
 
     guidance.reason = reason.map(reason_name).map(str::to_string);
 
-    if guidance.use_defaults_for.is_empty() && guidance.candidate_set.is_empty() && !guidance.required
+    if guidance.use_defaults_for.is_empty()
+        && guidance.candidate_set.is_empty()
+        && !guidance.required
     {
         None
     } else {
@@ -141,6 +145,7 @@ mod tests {
                     ("city".into(), "Tbilisi".into()),
                 ],
                 slots: vec![],
+                reference_anchors: vec![],
                 last_tool_subjects: vec![],
             }),
             defaults_requested: vec![
@@ -152,14 +157,14 @@ mod tests {
             reference_candidates: vec![],
             temporal_scope: None,
             delivery_scope: None,
-            semantic_hints: vec![],
             current_conversation: None,
         };
 
         let guidance = build_clarification_guidance(
             Some(&ResolutionPlan {
                 source_order: vec![],
-                confidence: crate::application::services::resolution_router::ResolutionConfidence::Low,
+                confidence:
+                    crate::application::services::resolution_router::ResolutionConfidence::Low,
                 clarify_after_exhaustion: true,
                 clarification_reason: Some(ClarificationReason::AmbiguousCandidates),
             }),

@@ -696,14 +696,12 @@ async fn execute_agent_turn(
                 if dialogue_state_service::should_materialize_state(
                     existing.as_ref(),
                     &turn_result.tool_facts,
-                    Some(&current_conversation),
                 ) {
                     let mut state = existing.unwrap_or_default();
                     dialogue_state_service::update_state_from_turn(
                         &mut state,
                         content,
                         &turn_result.tool_facts,
-                        Some(&current_conversation),
                         &response_text,
                     );
                     store.set(conversation_key, state);

@@ -18,6 +18,8 @@ pub struct DialogueState {
     pub comparison_set: Vec<FocusEntity>,
     /// Structured slots filled during the conversation (location, timezone, etc.).
     pub slots: Vec<DialogueSlot>,
+    /// Derived typed anchors for short follow-ups ("second", "latest", "current").
+    pub reference_anchors: Vec<ReferenceAnchor>,
     /// Structured subjects from the last tool execution.
     pub last_tool_subjects: Vec<String>,
     /// Timestamp of last update (unix secs).
@@ -36,12 +38,78 @@ pub struct FocusEntity {
 }
 
 /// A named slot filled during conversation (like Rasa slots).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum DialogueSlotProvenance {
+    /// Observed from structured runtime facts such as tool args/results.
+    #[default]
+    Observed,
+    /// System/runtime context injected by the transport layer.
+    RuntimeContext,
+    /// Derived reference anchors rebuilt from current focus/comparison state.
+    DerivedReference,
+}
+
+/// A named slot filled during conversation (like Rasa slots).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DialogueSlot {
     /// Slot name: "location", "service_name", "environment", "time_range".
     pub name: String,
     /// Slot value.
     pub value: String,
+    /// Where this slot came from.
+    #[serde(default)]
+    pub provenance: DialogueSlotProvenance,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ReferenceOrdinal {
+    First,
+    Second,
+    Third,
+    Fourth,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ReferenceAnchorSelector {
+    Current,
+    Latest,
+    Ordinal(ReferenceOrdinal),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReferenceAnchor {
+    /// Which follow-up selector this anchor satisfies.
+    pub selector: ReferenceAnchorSelector,
+    /// Optional entity kind this anchor belongs to ("city", "service", ...).
+    pub entity_kind: Option<String>,
+    /// Actual resolved value.
+    pub value: String,
+}
+
+impl DialogueSlot {
+    pub fn observed(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+            provenance: DialogueSlotProvenance::Observed,
+        }
+    }
+
+    pub fn runtime_context(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+            provenance: DialogueSlotProvenance::RuntimeContext,
+        }
+    }
+
+    pub fn derived_reference(name: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+            provenance: DialogueSlotProvenance::DerivedReference,
+        }
+    }
 }
 
 impl DialogueState {
@@ -81,6 +149,7 @@ impl DialogueState {
         self.focus_entities.clear();
         self.comparison_set.clear();
         self.slots.clear();
+        self.reference_anchors.clear();
         self.last_tool_subjects.clear();
     }
 }
@@ -149,6 +218,7 @@ mod tests {
             slots: vec![DialogueSlot {
                 name: "location".into(),
                 value: "Moscow".into(),
+                provenance: DialogueSlotProvenance::Observed,
             }],
             ..Default::default()
         };

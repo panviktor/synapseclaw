@@ -514,6 +514,47 @@ fn build_query_text(user_message: &str, interpretation: Option<&TurnInterpretati
         }
     }
 
+    if !state.reference_anchors.is_empty() {
+        let anchors = state
+            .reference_anchors
+            .iter()
+            .map(|anchor| {
+                let selector = match &anchor.selector {
+                    crate::domain::dialogue_state::ReferenceAnchorSelector::Current => {
+                        "current".to_string()
+                    }
+                    crate::domain::dialogue_state::ReferenceAnchorSelector::Latest => {
+                        "latest".to_string()
+                    }
+                    crate::domain::dialogue_state::ReferenceAnchorSelector::Ordinal(ordinal) => {
+                        match ordinal {
+                            crate::domain::dialogue_state::ReferenceOrdinal::First => {
+                                "first".to_string()
+                            }
+                            crate::domain::dialogue_state::ReferenceOrdinal::Second => {
+                                "second".to_string()
+                            }
+                            crate::domain::dialogue_state::ReferenceOrdinal::Third => {
+                                "third".to_string()
+                            }
+                            crate::domain::dialogue_state::ReferenceOrdinal::Fourth => {
+                                "fourth".to_string()
+                            }
+                        }
+                    }
+                };
+                match anchor.entity_kind.as_deref() {
+                    Some(entity_kind) => format!("{selector}<{entity_kind}>={}", anchor.value),
+                    None => format!("{selector}={}", anchor.value),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !anchors.is_empty() {
+            parts.push(format!("Reference anchors: {anchors}"));
+        }
+    }
+
     if !state.last_tool_subjects.is_empty() {
         parts.push(format!(
             "Recent tools: {}",
@@ -757,10 +798,10 @@ mod tests {
                 name: "Berlin".into(),
                 metadata: None,
             }],
-            slots: vec![crate::domain::dialogue_state::DialogueSlot {
-                name: "timezone".into(),
-                value: "Europe/Berlin".into(),
-            }],
+            slots: vec![crate::domain::dialogue_state::DialogueSlot::observed(
+                "timezone",
+                "Europe/Berlin",
+            )],
             last_tool_subjects: vec!["weather_lookup".into()],
             ..Default::default()
         };
@@ -1042,7 +1083,9 @@ mod tests {
         };
         let fmt = format_turn_context(&ctx, &PromptBudget::default());
         assert!(fmt.resolution_system.contains("[clarification-policy]"));
-        assert!(fmt.resolution_system.contains("clarification_required: true"));
+        assert!(fmt
+            .resolution_system
+            .contains("clarification_required: true"));
         assert!(fmt.resolution_system.contains("city, timezone"));
         assert!(fmt.resolution_system.contains("Berlin | Tbilisi"));
         assert!(fmt.resolution_system.contains("reason: low_confidence"));

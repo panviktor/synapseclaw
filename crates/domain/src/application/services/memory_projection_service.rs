@@ -196,10 +196,8 @@ mod tests {
                 name: "Tbilisi".into(),
                 metadata: None,
             }],
-            slots: vec![DialogueSlot {
-                name: "timezone".into(),
-                value: "Europe/Berlin".into(),
-            }],
+            slots: vec![DialogueSlot::observed("timezone", "Europe/Berlin")],
+            reference_anchors: vec![],
             last_tool_subjects: vec!["Berlin".into()],
             updated_at: 1,
         })

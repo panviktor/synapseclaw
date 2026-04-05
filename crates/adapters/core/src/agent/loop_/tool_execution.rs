@@ -71,7 +71,28 @@ pub(crate) async fn agent_turn(
 #[derive(Debug)]
 pub(crate) struct ToolLoopResult {
     pub(crate) response: String,
+    pub(crate) tool_names: Vec<String>,
     pub(crate) tool_facts: Vec<AgentToolFact>,
+}
+
+fn collect_tool_facts(
+    tool: Option<&dyn Tool>,
+    tool_name: &str,
+    args: &serde_json::Value,
+    result: Option<&crate::tools::ToolResult>,
+) -> Vec<AgentToolFact> {
+    let mut facts = Vec::new();
+
+    if let Some(tool) = tool {
+        facts.extend(tool.extract_facts(args, result));
+    }
+
+    let generic_fact = tool_fact_extraction::build_tool_fact(tool_name, args);
+    if tool_fact_extraction::fact_has_payload(&generic_fact) {
+        facts.push(generic_fact);
+    }
+
+    facts
 }
 
 pub(crate) async fn execute_one_tool(
@@ -104,10 +125,7 @@ pub(crate) async fn execute_one_tool(
     let Some(tool) = static_tool.or(activated_arc.as_deref()) else {
         let reason = format!("Unknown tool: {call_name}");
         let duration = start.elapsed();
-        let tool_facts = vec![tool_fact_extraction::build_tool_fact(
-            call_name,
-            &call_arguments,
-        )];
+        let tool_facts = collect_tool_facts(None, call_name, &call_arguments, None);
         observer.record_event(&ObserverEvent::ToolCall {
             tool: call_name.to_string(),
             duration,
@@ -126,11 +144,6 @@ pub(crate) async fn execute_one_tool(
             tool_facts,
         });
     };
-
-    let tool_facts = vec![tool_fact_extraction::build_tool_fact(
-        call_name,
-        &call_arguments,
-    )];
 
     // Snapshot IPC tool args before execute() consumes them (for per-session tracking).
     let ipc_args = if run_ctx.is_some() && matches!(call_name, "agents_reply" | "agents_send") {
@@ -163,6 +176,7 @@ pub(crate) async fn execute_one_tool(
                 output: format!("[blocked] {reason}"),
                 success: false,
             });
+            let tool_facts = collect_tool_facts(Some(tool), call_name, &call_arguments, None);
             return Ok(ToolExecutionOutcome {
                 output: format!("[blocked] {reason}"),
                 success: false,
@@ -173,7 +187,7 @@ pub(crate) async fn execute_one_tool(
         }
     }
 
-    let tool_future = tool.execute(call_arguments);
+    let tool_future = tool.execute(call_arguments.clone());
     let tool_result = if let Some(token) = cancellation_token {
         tokio::select! {
             () = token.cancelled() => return Err(ToolLoopCancelled.into()),
@@ -186,6 +200,7 @@ pub(crate) async fn execute_one_tool(
     match tool_result {
         Ok(r) => {
             let duration = start.elapsed();
+            let tool_facts = collect_tool_facts(Some(tool), call_name, &call_arguments, Some(&r));
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -226,6 +241,7 @@ pub(crate) async fn execute_one_tool(
         }
         Err(e) => {
             let duration = start.elapsed();
+            let tool_facts = collect_tool_facts(Some(tool), call_name, &call_arguments, None);
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -396,6 +412,7 @@ pub(crate) async fn run_tool_call_loop(
     let mut total_tool_calls = 0usize;
     let mut loop_detector = LoopDetector::new();
     let mut collected_tool_facts = Vec::<AgentToolFact>::new();
+    let mut collected_tool_names = Vec::<String>::new();
 
     tracing::info!(
         model,
@@ -706,6 +723,7 @@ pub(crate) async fn run_tool_call_loop(
             );
             return Ok(ToolLoopResult {
                 response: display_text,
+                tool_names: collected_tool_names,
                 tool_facts: collected_tool_facts,
             });
         }
@@ -781,9 +799,7 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(scrub_credentials(&reason)),
                                 duration: Duration::ZERO,
-                                tool_facts: vec![tool_fact_extraction::build_tool_fact(
-                                    &call.name, &tool_args,
-                                )],
+                                tool_facts: collect_tool_facts(None, &call.name, &tool_args, None),
                             },
                         ));
                         continue;
@@ -842,9 +858,7 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(denied),
                                 duration: Duration::ZERO,
-                                tool_facts: vec![tool_fact_extraction::build_tool_fact(
-                                    &tool_name, &tool_args,
-                                )],
+                                tool_facts: collect_tool_facts(None, &tool_name, &tool_args, None),
                             },
                         ));
                         continue;
@@ -886,9 +900,7 @@ pub(crate) async fn run_tool_call_loop(
                         success: false,
                         error_reason: Some(duplicate),
                         duration: Duration::ZERO,
-                        tool_facts: vec![tool_fact_extraction::build_tool_fact(
-                            &tool_name, &tool_args,
-                        )],
+                        tool_facts: collect_tool_facts(None, &tool_name, &tool_args, None),
                     },
                 ));
                 continue;
@@ -1027,6 +1039,12 @@ pub(crate) async fn run_tool_call_loop(
             }
 
             collected_tool_facts.extend(outcome.tool_facts.clone());
+            if !collected_tool_names
+                .iter()
+                .any(|existing| existing == &call.name)
+            {
+                collected_tool_names.push(call.name.clone());
+            }
             ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome));
         }
 
@@ -1085,6 +1103,7 @@ pub(crate) async fn run_tool_call_loop(
                 );
                 return Ok(ToolLoopResult {
                     response: clarify.to_string(),
+                    tool_names: collected_tool_names,
                     tool_facts: collected_tool_facts,
                 });
             }
@@ -1098,6 +1117,7 @@ pub(crate) async fn run_tool_call_loop(
                 );
                 return Ok(ToolLoopResult {
                     response: stop.to_string(),
+                    tool_names: collected_tool_names,
                     tool_facts: collected_tool_facts,
                 });
             }
