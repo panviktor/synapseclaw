@@ -1639,6 +1639,9 @@ mod tests {
             run_recipe_store: std::sync::Arc::new(
                 synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
             ),
+            user_profile_store: std::sync::Arc::new(
+                synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+            ),
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,

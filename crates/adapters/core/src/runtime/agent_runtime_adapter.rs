@@ -3,6 +3,7 @@
 //! Since `synapse_providers::ChatMessage` is now a re-export of
 //! `synapse_domain::domain::message::ChatMessage`, no conversions are needed.
 
+use super::tool_fact_extraction;
 use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -84,7 +85,9 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             fut.await?
         };
 
-        let tool_names = extract_tool_names(&history, history_before);
+        let tool_facts =
+            tool_fact_extraction::extract_tool_facts_from_chat_history(&history, history_before);
+        let tool_names = extract_tool_names(&tool_facts);
         let tools_used = !tool_names.is_empty();
         let tool_summary = format_tool_summary(&tool_names);
 
@@ -93,6 +96,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             history,
             tools_used,
             tool_names,
+            tool_facts,
             tool_summary,
         })
     }
@@ -103,22 +107,14 @@ impl AgentRuntimePort for ChannelAgentRuntime {
 }
 
 /// Extract unique tool names from history turns added during the tool loop.
-fn extract_tool_names(history: &[ChatMessage], start_idx: usize) -> Vec<String> {
+fn extract_tool_names(
+    facts: &[synapse_domain::ports::agent_runtime::AgentToolFact],
+) -> Vec<String> {
     let mut names = Vec::new();
 
-    for msg in history.iter().skip(start_idx) {
-        // Look for tool_call and tool_result patterns
-        if msg.role == "assistant" && msg.content.contains("tool_call") {
-            // Extract tool name from the content if possible
-            if let Some(name_start) = msg.content.find("\"name\":\"") {
-                let rest = &msg.content[name_start + 8..];
-                if let Some(name_end) = rest.find('"') {
-                    let tool_name = &rest[..name_end];
-                    if !names.iter().any(|existing| existing == tool_name) {
-                        names.push(tool_name.to_string());
-                    }
-                }
-            }
+    for fact in facts {
+        if !names.iter().any(|existing| existing == &fact.tool_name) {
+            names.push(fact.tool_name.clone());
         }
     }
 

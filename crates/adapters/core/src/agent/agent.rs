@@ -865,6 +865,7 @@ impl Agent {
 
         let effective_model = self.classify_model(user_message);
         let mut tools_used_this_turn: Vec<String> = Vec::new();
+        let mut tool_facts_this_turn = Vec::new();
 
         for _ in 0..self.config.max_tool_iterations {
             let mut messages = self.tool_dispatcher.to_provider_messages(&self.history);
@@ -996,13 +997,13 @@ impl Agent {
                     let existing = store.get(session_id);
                     if dialogue_state_service::should_materialize_state(
                         existing.as_ref(),
-                        &tools_used_this_turn,
+                        &tool_facts_this_turn,
                     ) {
                         let mut state = existing.unwrap_or_default();
                         dialogue_state_service::update_state_from_turn(
                             &mut state,
                             user_message,
-                            &tools_used_this_turn,
+                            &tool_facts_this_turn,
                             &final_text,
                         );
                         store.set(session_id, state);
@@ -1028,6 +1029,9 @@ impl Agent {
             });
 
             tools_used_this_turn.extend(calls.iter().map(|call| call.name.clone()));
+            tool_facts_this_turn.extend(calls.iter().map(|call| {
+                runtime::tool_fact_extraction::build_tool_fact(&call.name, &call.arguments)
+            }));
 
             let results = self.execute_tools(&calls).await;
             let formatted = self.tool_dispatcher.format_results(&results);

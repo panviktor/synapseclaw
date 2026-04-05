@@ -18,7 +18,7 @@ pub struct DialogueState {
     pub comparison_set: Vec<FocusEntity>,
     /// Structured slots filled during the conversation (location, timezone, etc.).
     pub slots: Vec<DialogueSlot>,
-    /// Subjects from the last tool execution.
+    /// Structured subjects from the last tool execution.
     pub last_tool_subjects: Vec<String>,
     /// Timestamp of last update (unix secs).
     pub updated_at: u64,

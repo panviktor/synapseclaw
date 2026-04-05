@@ -4,9 +4,21 @@
 //! so the application core can orchestrate without depending on concrete
 //! provider implementations.
 
+use crate::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use crate::domain::message::ChatMessage;
 use anyhow::Result;
 use async_trait::async_trait;
+
+/// Structured facts extracted from a tool invocation.
+#[derive(Debug, Clone, Default)]
+pub struct AgentToolFact {
+    /// Tool name that produced the fact.
+    pub tool_name: String,
+    /// Entities surfaced by the tool arguments.
+    pub focus_entities: Vec<FocusEntity>,
+    /// Structured slots surfaced by the tool arguments.
+    pub slots: Vec<DialogueSlot>,
+}
 
 /// Result of an agent execution turn.
 #[derive(Debug, Clone)]
@@ -19,6 +31,8 @@ pub struct AgentTurnResult {
     pub tools_used: bool,
     /// Structured tool names used during this turn.
     pub tool_names: Vec<String>,
+    /// Structured tool facts extracted from tool-call arguments.
+    pub tool_facts: Vec<AgentToolFact>,
     /// Extracted tool context summary (for history display).
     pub tool_summary: String,
 }

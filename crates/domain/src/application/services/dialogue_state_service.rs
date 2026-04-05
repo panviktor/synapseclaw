@@ -1,11 +1,11 @@
 //! Dialogue state service — session-scoped working memory store.
 //!
-//! This service is intentionally conservative. It does not try to infer
-//! cities/languages/timezones from free text via phrase tables. Typed
-//! state should be populated by future structured interpreters or explicit
-//! tool/runtime events.
+//! This service is intentionally conservative. It does not infer
+//! cities/languages/timezones from free text. Typed state is updated from
+//! structured runtime facts such as tool-call arguments.
 
 use crate::domain::dialogue_state::DialogueState;
+use crate::ports::agent_runtime::AgentToolFact;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 
@@ -57,12 +57,12 @@ impl Default for DialogueStateStore {
 
 /// Update dialogue state after a user turn.
 ///
-/// This only refreshes timestamps and stores structured tool subjects when
+/// This only refreshes timestamps and stores structured subjects when
 /// available. It deliberately avoids lexical extraction from user text.
 pub fn update_state_from_turn(
     state: &mut DialogueState,
     _user_message: &str,
-    tool_names: &[String],
+    tool_facts: &[AgentToolFact],
     _assistant_response: &str,
 ) {
     let now = std::time::SystemTime::now()
@@ -71,20 +71,118 @@ pub fn update_state_from_turn(
         .unwrap_or(0);
     state.updated_at = now;
 
-    // Extract entities from tool results (most reliable source)
-    if !tool_names.is_empty() {
-        state.last_tool_subjects = tool_names.to_vec();
+    if tool_facts.is_empty() {
+        return;
+    }
+
+    let focus_entities = collect_focus_entities(tool_facts);
+    if !focus_entities.is_empty() {
+        state.focus_entities = focus_entities.clone();
+        state.comparison_set = if focus_entities.len() > 1
+            && focus_entities
+                .iter()
+                .all(|entity| entity.kind == focus_entities[0].kind)
+        {
+            focus_entities
+        } else {
+            Vec::new()
+        };
+    }
+
+    for slot in collect_slots(tool_facts) {
+        if let Some(existing) = state
+            .slots
+            .iter_mut()
+            .find(|existing| existing.name == slot.name)
+        {
+            *existing = slot;
+        } else {
+            state.slots.push(slot);
+        }
+    }
+
+    let subjects = collect_subjects(tool_facts);
+    if !subjects.is_empty() {
+        state.last_tool_subjects = subjects;
     }
 }
 
-pub fn should_materialize_state(existing: Option<&DialogueState>, tool_names: &[String]) -> bool {
-    existing.is_some() || !tool_names.is_empty()
+pub fn should_materialize_state(
+    existing: Option<&DialogueState>,
+    tool_facts: &[AgentToolFact],
+) -> bool {
+    existing.is_some() || !tool_facts.is_empty()
+}
+
+fn collect_focus_entities(
+    tool_facts: &[AgentToolFact],
+) -> Vec<crate::domain::dialogue_state::FocusEntity> {
+    let mut entities = Vec::new();
+    for fact in tool_facts {
+        for entity in &fact.focus_entities {
+            if !entities
+                .iter()
+                .any(|existing: &crate::domain::dialogue_state::FocusEntity| {
+                    existing.kind == entity.kind && existing.name == entity.name
+                })
+            {
+                entities.push(entity.clone());
+            }
+        }
+    }
+    entities
+}
+
+fn collect_slots(tool_facts: &[AgentToolFact]) -> Vec<crate::domain::dialogue_state::DialogueSlot> {
+    let mut slots = Vec::new();
+    for fact in tool_facts {
+        for slot in &fact.slots {
+            if let Some(existing_idx) =
+                slots
+                    .iter()
+                    .position(|existing: &crate::domain::dialogue_state::DialogueSlot| {
+                        existing.name == slot.name
+                    })
+            {
+                slots[existing_idx] = slot.clone();
+            } else {
+                slots.push(slot.clone());
+            }
+        }
+    }
+    slots
+}
+
+fn collect_subjects(tool_facts: &[AgentToolFact]) -> Vec<String> {
+    let mut subjects = Vec::new();
+
+    for fact in tool_facts {
+        for entity in &fact.focus_entities {
+            if !subjects.iter().any(|existing| existing == &entity.name) {
+                subjects.push(entity.name.clone());
+            }
+        }
+        for slot in &fact.slots {
+            if !subjects.iter().any(|existing| existing == &slot.value) {
+                subjects.push(slot.value.clone());
+            }
+        }
+        if fact.focus_entities.is_empty()
+            && fact.slots.is_empty()
+            && !subjects.iter().any(|existing| existing == &fact.tool_name)
+        {
+            subjects.push(fact.tool_name.clone());
+        }
+    }
+
+    subjects
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::dialogue_state::FocusEntity;
+    use crate::ports::agent_runtime::AgentToolFact;
 
     #[test]
     fn update_state_keeps_existing_focus_without_lexical_extraction() {
@@ -109,14 +207,42 @@ mod tests {
     #[test]
     fn captures_tool_subjects_when_present() {
         let mut state = DialogueState::default();
-        update_state_from_turn(&mut state, "", &["shell".into(), "web_fetch".into()], "");
-        assert_eq!(state.last_tool_subjects, vec!["shell", "web_fetch"]);
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[AgentToolFact {
+                tool_name: "weather_lookup".into(),
+                focus_entities: vec![
+                    FocusEntity {
+                        kind: "city".into(),
+                        name: "Berlin".into(),
+                        metadata: None,
+                    },
+                    FocusEntity {
+                        kind: "city".into(),
+                        name: "Tbilisi".into(),
+                        metadata: None,
+                    },
+                ],
+                slots: vec![],
+            }],
+            "",
+        );
+        assert_eq!(state.last_tool_subjects, vec!["Berlin", "Tbilisi"]);
+        assert_eq!(state.focus_entities.len(), 2);
+        assert_eq!(state.comparison_set.len(), 2);
     }
 
     #[test]
     fn materialize_only_when_existing_or_tools_present() {
         assert!(!should_materialize_state(None, &[]));
-        assert!(should_materialize_state(None, &["shell".into()]));
+        assert!(should_materialize_state(
+            None,
+            &[AgentToolFact {
+                tool_name: "shell".into(),
+                ..Default::default()
+            }]
+        ));
         assert!(should_materialize_state(
             Some(&DialogueState::default()),
             &[]

@@ -694,13 +694,13 @@ async fn execute_agent_turn(
                 let existing = store.get(conversation_key);
                 if dialogue_state_service::should_materialize_state(
                     existing.as_ref(),
-                    &turn_result.tool_names,
+                    &turn_result.tool_facts,
                 ) {
                     let mut state = existing.unwrap_or_default();
                     dialogue_state_service::update_state_from_turn(
                         &mut state,
                         content,
-                        &turn_result.tool_names,
+                        &turn_result.tool_facts,
                         &response_text,
                     );
                     store.set(conversation_key, state);
@@ -983,6 +983,7 @@ mod tests {
                 history: vec![],
                 tools_used: false,
                 tool_names: vec![],
+                tool_facts: vec![],
                 tool_summary: String::new(),
             })
         }
