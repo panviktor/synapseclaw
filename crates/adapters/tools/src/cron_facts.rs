@@ -61,22 +61,104 @@ pub(crate) fn build_job_fact(tool_name: &str, action: &str, job: &CronJob) -> Ag
     }
 }
 
-pub(crate) fn build_removed_job_fact(
+pub(crate) fn build_job_reference_fact(
     tool_name: &str,
     action: &str,
     job_id: &str,
+    metadata: Option<&str>,
 ) -> AgentToolFact {
     AgentToolFact {
         tool_name: tool_name.to_string(),
         focus_entities: vec![FocusEntity {
             kind: "scheduled_job".into(),
             name: job_id.to_string(),
-            metadata: Some(action.to_string()),
+            metadata: metadata.map(str::to_string),
         }],
         slots: vec![
             DialogueSlot::observed("schedule_action", action.to_string()),
             DialogueSlot::observed("job_id", job_id.to_string()),
-            DialogueSlot::observed("job_enabled", "false".to_string()),
         ],
+    }
+}
+
+pub(crate) fn build_removed_job_fact(
+    tool_name: &str,
+    action: &str,
+    job_id: &str,
+) -> AgentToolFact {
+    let mut fact = build_job_reference_fact(tool_name, action, job_id, Some(action));
+    fact.slots
+        .push(DialogueSlot::observed("job_enabled", "false".to_string()));
+    fact
+}
+
+pub(crate) fn build_job_run_history_fact(
+    tool_name: &str,
+    job_id: &str,
+    run_count: usize,
+    latest_status: Option<&str>,
+    latest_duration_ms: Option<i64>,
+) -> AgentToolFact {
+    let mut fact = build_job_reference_fact(tool_name, "runs", job_id, Some("run_history"));
+    fact.slots.push(DialogueSlot::observed(
+        "run_history_count",
+        run_count.to_string(),
+    ));
+    if let Some(status) = latest_status {
+        fact.slots
+            .push(DialogueSlot::observed("latest_run_status", status.to_string()));
+    }
+    if let Some(duration_ms) = latest_duration_ms {
+        fact.slots.push(DialogueSlot::observed(
+            "latest_run_duration_ms",
+            duration_ms.to_string(),
+        ));
+    }
+    fact
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_job_reference_fact_keeps_reference_generic() {
+        let fact = build_job_reference_fact("cron_runs", "inspect", "job-123", Some("history"));
+
+        assert_eq!(fact.focus_entities[0].kind, "scheduled_job");
+        assert_eq!(fact.focus_entities[0].name, "job-123");
+        assert_eq!(fact.focus_entities[0].metadata.as_deref(), Some("history"));
+        assert!(
+            fact.slots
+                .iter()
+                .any(|slot| slot.name == "schedule_action" && slot.value == "inspect")
+        );
+        assert!(
+            fact.slots
+                .iter()
+                .any(|slot| slot.name == "job_id" && slot.value == "job-123")
+        );
+    }
+
+    #[test]
+    fn build_job_run_history_fact_emits_run_history_slots() {
+        let fact = build_job_run_history_fact("cron_runs", "job-123", 4, Some("ok"), Some(250));
+
+        assert_eq!(fact.focus_entities[0].metadata.as_deref(), Some("run_history"));
+        assert!(
+            fact.slots
+                .iter()
+                .any(|slot| slot.name == "run_history_count" && slot.value == "4")
+        );
+        assert!(
+            fact.slots
+                .iter()
+                .any(|slot| slot.name == "latest_run_status" && slot.value == "ok")
+        );
+        assert!(
+            fact.slots
+                .iter()
+                .any(|slot| slot.name == "latest_run_duration_ms" && slot.value == "250")
+        );
     }
 }
