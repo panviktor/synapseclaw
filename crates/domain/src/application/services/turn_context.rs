@@ -528,7 +528,11 @@ fn apply_resolution_plan(ctx: &mut TurnMemoryContext, interpretation: Option<&Tu
     let plan = resolution_router::build_resolution_plan(resolution_router::ResolutionEvidence {
         interpretation,
         top_session_score: ctx.session_matches.first().map(|session| session.score),
+        second_session_score: ctx.session_matches.get(1).map(|session| session.score),
         top_recipe_score: ctx.run_recipes.first().map(|recipe| recipe.score),
+        second_recipe_score: ctx.run_recipes.get(1).map(|recipe| recipe.score),
+        top_memory_score: ctx.recalled_entries.first().and_then(|entry| entry.score),
+        second_memory_score: ctx.recalled_entries.get(1).and_then(|entry| entry.score),
         recall_hits: ctx.recalled_entries.len(),
         skill_hits: ctx.skills.len(),
         entity_hits: ctx.entities.len(),

@@ -42,7 +42,11 @@ pub struct ResolutionPlan {
 pub struct ResolutionEvidence<'a> {
     pub interpretation: Option<&'a TurnInterpretation>,
     pub top_session_score: Option<f64>,
+    pub second_session_score: Option<f64>,
     pub top_recipe_score: Option<i64>,
+    pub second_recipe_score: Option<i64>,
+    pub top_memory_score: Option<f64>,
+    pub second_memory_score: Option<f64>,
     pub recall_hits: usize,
     pub skill_hits: usize,
     pub entity_hits: usize,
@@ -50,6 +54,10 @@ pub struct ResolutionEvidence<'a> {
 
 const SESSION_PRIMARY_SCORE: f64 = 1.9;
 const RECIPE_PRIMARY_SCORE: i64 = 180;
+const SESSION_CONFIDENT_GAP: f64 = 0.25;
+const RECIPE_CONFIDENT_GAP: i64 = 25;
+const MEMORY_CONFIDENT_SCORE: f64 = 0.78;
+const MEMORY_CONFIDENT_GAP: f64 = 0.08;
 
 pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan {
     let mut source_order = Vec::new();
@@ -252,20 +260,32 @@ fn compute_confidence(
             }
         }
         ResolutionSource::SessionHistory => {
-            match evidence.top_session_score.unwrap_or_default() {
-                score if score >= SESSION_PRIMARY_SCORE => ResolutionConfidence::High,
+            let score = evidence.top_session_score.unwrap_or_default();
+            let gap = score_gap_f64(score, evidence.second_session_score);
+            match score {
+                score if score >= SESSION_PRIMARY_SCORE && gap >= SESSION_CONFIDENT_GAP => {
+                    ResolutionConfidence::High
+                }
                 score if score > 0.0 => ResolutionConfidence::Medium,
                 _ => ResolutionConfidence::Low,
             }
         }
         ResolutionSource::RunRecipe => match evidence.top_recipe_score.unwrap_or_default() {
-            score if score >= RECIPE_PRIMARY_SCORE => ResolutionConfidence::High,
+            score if score >= RECIPE_PRIMARY_SCORE
+                && score_gap_i64(score, evidence.second_recipe_score) >= RECIPE_CONFIDENT_GAP =>
+            {
+                ResolutionConfidence::High
+            }
             score if score > 0 => ResolutionConfidence::Medium,
             _ => ResolutionConfidence::Low,
         },
         ResolutionSource::LongTermMemory => {
             let total = evidence.recall_hits + evidence.skill_hits + evidence.entity_hits;
-            if total >= 3 || (evidence.skill_hits > 0 && evidence.entity_hits > 0) {
+            let top_score = evidence.top_memory_score.unwrap_or_default();
+            let gap = score_gap_f64(top_score, evidence.second_memory_score);
+            if top_score >= MEMORY_CONFIDENT_SCORE && gap >= MEMORY_CONFIDENT_GAP {
+                ResolutionConfidence::High
+            } else if total >= 3 || (evidence.skill_hits > 0 && evidence.entity_hits > 0) {
                 ResolutionConfidence::Medium
             } else {
                 ResolutionConfidence::Low
@@ -283,9 +303,12 @@ fn compute_clarification_reason(
 
     if interpretation.clarification_candidates.len() > 1
         && matches!(primary, Some(ResolutionSource::DialogueState))
-        && confidence != ResolutionConfidence::High
     {
-        return Some(ClarificationReason::AmbiguousCandidates);
+        return Some(if confidence == ResolutionConfidence::High {
+            ClarificationReason::LowConfidence
+        } else {
+            ClarificationReason::AmbiguousCandidates
+        });
     }
 
     if primary.is_none() {
@@ -297,6 +320,14 @@ fn compute_clarification_reason(
     }
 
     None
+}
+
+fn score_gap_f64(top: f64, second: Option<f64>) -> f64 {
+    (top - second.unwrap_or_default()).max(0.0)
+}
+
+fn score_gap_i64(top: i64, second: Option<i64>) -> i64 {
+    (top - second.unwrap_or_default()).max(0)
 }
 
 #[cfg(test)]
@@ -335,7 +366,11 @@ mod tests {
         let plan = build_resolution_plan(ResolutionEvidence {
             interpretation: Some(&interpretation),
             top_session_score: Some(2.2),
+            second_session_score: Some(1.6),
             top_recipe_score: Some(245),
+            second_recipe_score: Some(180),
+            top_memory_score: Some(0.92),
+            second_memory_score: Some(0.72),
             recall_hits: 1,
             skill_hits: 0,
             entity_hits: 0,
@@ -373,5 +408,24 @@ mod tests {
         assert!(block.contains("confidence: medium"));
         assert!(block.contains("clarify_only_after"));
         assert!(block.contains("clarification_reason: low_confidence"));
+    }
+
+    #[test]
+    fn low_gap_history_only_gets_medium_confidence() {
+        let plan = build_resolution_plan(ResolutionEvidence {
+            interpretation: None,
+            top_session_score: Some(2.1),
+            second_session_score: Some(1.98),
+            top_recipe_score: None,
+            second_recipe_score: None,
+            top_memory_score: None,
+            second_memory_score: None,
+            recall_hits: 0,
+            skill_hits: 0,
+            entity_hits: 0,
+        });
+
+        assert_eq!(plan.source_order, vec![ResolutionSource::SessionHistory]);
+        assert_eq!(plan.confidence, ResolutionConfidence::Medium);
     }
 }
