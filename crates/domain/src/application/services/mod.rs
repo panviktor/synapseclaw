@@ -26,6 +26,7 @@ pub mod post_turn_orchestrator;
 pub mod resolution_router;
 pub mod retention;
 pub mod retrieval_service;
+pub mod system_event_projection_service;
 pub mod tool_filtering;
 pub mod tool_middleware_service;
 pub mod turn_context;

@@ -929,52 +929,36 @@ fn render_standing_order_report(
     >,
 ) -> String {
     let snapshot = crate::health::snapshot();
-    let component_summary = if snapshot.components.is_empty() {
-        "no components reported yet".to_string()
-    } else {
-        snapshot
-            .components
-            .iter()
-            .map(|(name, state)| format!("{name}={}", state.status))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-
-    match event {
-        SystemEvent::RuntimeRestarted => format!(
-            "[Restart Report]\nTime: {}\nAgent: {}\nUptime: {}s\nComponents: {}",
-            chrono::Utc::now().to_rfc3339(),
-            crate::agent::loop_::resolve_agent_id(config),
-            snapshot.uptime_seconds,
-            component_summary
-        ),
-        SystemEvent::HeartbeatTick => {
-            let metrics_line = metrics
-                .map(|metrics| {
-                    let metrics = metrics.lock();
-                    format!(
-                        "Ticks: {} | Success streak: {} | Failure streak: {} | Avg tick: {:.0}ms",
-                        metrics.total_ticks,
-                        metrics.consecutive_successes,
-                        metrics.consecutive_failures,
-                        metrics.avg_tick_duration_ms
-                    )
-                })
-                .unwrap_or_else(|| "Ticks: unavailable".to_string());
-            format!(
-                "[Heartbeat Report]\nTime: {}\n{}\nComponents: {}",
-                chrono::Utc::now().to_rfc3339(),
-                metrics_line,
-                component_summary
-            )
+    let components = snapshot
+        .components
+        .iter()
+        .map(|(name, state)| {
+            synapse_domain::application::services::system_event_projection_service::SystemEventComponentStatus {
+                name: name.clone(),
+                status: state.status.clone(),
+            }
+        })
+        .collect();
+    let heartbeat = metrics.map(|metrics| {
+        let metrics = metrics.lock();
+        synapse_domain::application::services::system_event_projection_service::HeartbeatProjection {
+            total_ticks: metrics.total_ticks,
+            consecutive_successes: metrics.consecutive_successes,
+            consecutive_failures: metrics.consecutive_failures,
+            avg_tick_duration_ms: metrics.avg_tick_duration_ms,
         }
-        SystemEvent::OperatorEvent { text } => format!(
-            "[System Event]\nTime: {}\nEvent: {}\nComponents: {}",
-            chrono::Utc::now().to_rfc3339(),
-            text,
-            component_summary
-        ),
-    }
+    });
+
+    synapse_domain::application::services::system_event_projection_service::render_system_event_report(
+        &synapse_domain::application::services::system_event_projection_service::SystemEventProjectionInput {
+            event: event.clone(),
+            timestamp_rfc3339: chrono::Utc::now().to_rfc3339(),
+            agent_id: Some(crate::agent::loop_::resolve_agent_id(config)),
+            uptime_seconds: Some(snapshot.uptime_seconds),
+            components,
+            heartbeat,
+        },
+    )
 }
 
 // ── Phase 4.0: OutboundIntent relay ──────────────────────────────
