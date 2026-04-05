@@ -11,6 +11,7 @@ pub mod clarification_policy;
 pub mod conversation_service;
 pub mod delivery_service;
 pub mod dialogue_state_service;
+pub mod everyday_eval_harness;
 pub mod history_compaction;
 pub mod inbound_message_service;
 pub mod ipc_service;
