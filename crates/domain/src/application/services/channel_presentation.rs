@@ -55,10 +55,7 @@ pub fn compact_progress_surface(
     caps: &[ChannelCapability],
     supports_streaming: bool,
 ) -> CompactProgressSurface {
-    if tool_trace_enabled(mode)
-        || supports_streaming
-        || caps.contains(&ChannelCapability::Typing)
-    {
+    if tool_trace_enabled(mode) || supports_streaming || caps.contains(&ChannelCapability::Typing) {
         CompactProgressSurface::None
     } else {
         CompactProgressSurface::StatusMessage

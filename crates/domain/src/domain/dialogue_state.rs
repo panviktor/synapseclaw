@@ -107,8 +107,16 @@ mod tests {
     fn no_single_focus_when_multiple() {
         let state = DialogueState {
             focus_entities: vec![
-                FocusEntity { kind: "city".into(), name: "Berlin".into(), metadata: None },
-                FocusEntity { kind: "city".into(), name: "Tbilisi".into(), metadata: None },
+                FocusEntity {
+                    kind: "city".into(),
+                    name: "Berlin".into(),
+                    metadata: None,
+                },
+                FocusEntity {
+                    kind: "city".into(),
+                    name: "Tbilisi".into(),
+                    metadata: None,
+                },
             ],
             ..Default::default()
         };
@@ -119,8 +127,16 @@ mod tests {
     fn comparison_set() {
         let state = DialogueState {
             comparison_set: vec![
-                FocusEntity { kind: "city".into(), name: "Berlin".into(), metadata: None },
-                FocusEntity { kind: "city".into(), name: "Tbilisi".into(), metadata: None },
+                FocusEntity {
+                    kind: "city".into(),
+                    name: "Berlin".into(),
+                    metadata: None,
+                },
+                FocusEntity {
+                    kind: "city".into(),
+                    name: "Tbilisi".into(),
+                    metadata: None,
+                },
             ],
             ..Default::default()
         };
@@ -130,9 +146,10 @@ mod tests {
     #[test]
     fn slot_lookup() {
         let state = DialogueState {
-            slots: vec![
-                DialogueSlot { name: "location".into(), value: "Moscow".into() },
-            ],
+            slots: vec![DialogueSlot {
+                name: "location".into(),
+                value: "Moscow".into(),
+            }],
             ..Default::default()
         };
         assert_eq!(state.slot("location"), Some("Moscow"));

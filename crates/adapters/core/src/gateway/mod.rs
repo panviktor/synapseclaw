@@ -353,6 +353,14 @@ pub struct AppState {
     pub cost_tracker: Option<Arc<CostTracker>>,
     /// SSE broadcast channel for real-time events
     pub event_tx: tokio::sync::broadcast::Sender<serde_json::Value>,
+    /// Session-scoped working memory for web chat follow-ups.
+    pub dialogue_state_store:
+        Arc<synapse_domain::application::services::dialogue_state_service::DialogueStateStore>,
+    /// Persistent successful execution patterns reused for repeat-work prompts.
+    pub run_recipe_store: Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>,
+    /// Structured user profile store for stable defaults.
+    pub user_profile_store:
+        Arc<dyn synapse_domain::ports::user_profile_store::UserProfileStorePort>,
     /// Shutdown signal sender for graceful shutdown
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Audit logger for persistent security event logging
@@ -430,6 +438,9 @@ pub async fn run_gateway(
     shared_dead_letter: Option<Arc<dyn synapse_domain::ports::dead_letter::DeadLetterPort>>,
     shared_surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
     shared_event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    shared_run_recipe_store: Option<
+        Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>,
+    >,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -526,7 +537,11 @@ pub async fn run_gateway(
         None, // IPC tools get their own client from config
         Some(agent_runner.clone()),
         shared_surreal.clone(),
-        None, None, None, // orchestration tool ports — gateway tools are for spec listing
+        None,
+        None,
+        None,
+        None, // orchestration tool ports — gateway tools are for spec listing
+        None, // run_recipe_store
     );
     let tools_registry: Arc<Vec<ToolSpec>> =
         Arc::new(tools_registry_raw.iter().map(|t| t.spec()).collect());
@@ -545,9 +560,29 @@ pub async fn run_gateway(
     };
 
     // SSE broadcast channel for real-time events
-    let event_tx = shared_event_tx.unwrap_or_else(|| {
-        tokio::sync::broadcast::channel::<serde_json::Value>(256).0
-    });
+    let event_tx = shared_event_tx
+        .unwrap_or_else(|| tokio::sync::broadcast::channel::<serde_json::Value>(256).0);
+    let run_recipe_store: Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort> =
+        if let Some(store) = shared_run_recipe_store {
+            store
+        } else {
+            let store_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("run_recipes.json");
+            match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    tracing::warn!(
+                        path = %store_path.display(),
+                        %error,
+                        "Failed to initialize persistent run recipe store, falling back to memory"
+                    );
+                    Arc::new(synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new())
+                }
+            }
+        };
     // Extract webhook secret for authentication
     let webhook_secret_hash: Option<Arc<str>> =
         config.channels_config.webhook.as_ref().and_then(|webhook| {
@@ -880,6 +915,31 @@ pub async fn run_gateway(
         tools_registry,
         cost_tracker,
         event_tx,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store,
+        user_profile_store: {
+            let profile_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("user_profiles.json");
+            match synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    tracing::warn!(
+                        path = %profile_path.display(),
+                        %error,
+                        "Failed to initialize persistent user profile store, falling back to memory"
+                    );
+                    Arc::new(
+                        synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+                    )
+                }
+            }
+        },
         shutdown_tx,
         audit_logger,
         ipc_prompt_guard,
@@ -1485,11 +1545,10 @@ pub async fn run_gateway(
         .route("/api/memory", post(api::handle_api_memory_store))
         .route("/api/memory/{key}", delete(api::handle_api_memory_delete))
         .route("/api/memory/stats", get(api::handle_api_memory_stats))
-        .route("/api/memory/context-budget", get(api::handle_api_context_budget))
-        .route("/api/memory/learning-patterns", get(api::handle_api_learning_patterns_list))
-        .route("/api/memory/learning-patterns", post(api::handle_api_learning_patterns_add))
-        .route("/api/memory/learning-patterns/seed", post(api::handle_api_learning_patterns_seed))
-        .route("/api/memory/learning-patterns/{id}", delete(api::handle_api_learning_patterns_delete))
+        .route(
+            "/api/memory/context-budget",
+            get(api::handle_api_context_budget),
+        )
         .route("/api/cost", get(api::handle_api_cost))
         .route("/api/cli-tools", get(api::handle_api_cli_tools))
         .route("/api/health", get(api::handle_api_health))

@@ -2,6 +2,9 @@
 
 use super::tool_call_parsing::*;
 use super::*;
+use synapse_domain::application::services::loop_detection::{
+    hash_args, LoopAction, LoopDetector, ToolInvocation,
+};
 
 #[derive(Debug)]
 pub(crate) struct ToolLoopCancelled;
@@ -367,6 +370,7 @@ pub(crate) async fn run_tool_call_loop(
     let turn_start = std::time::Instant::now();
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
     let mut total_tool_calls = 0usize;
+    let mut loop_detector = LoopDetector::new();
 
     tracing::info!(
         model,
@@ -701,6 +705,7 @@ pub(crate) async fn run_tool_call_loop(
         let mut individual_results: Vec<(Option<String>, String)> = Vec::new();
         let mut ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome)>> =
             (0..tool_calls.len()).map(|_| None).collect();
+        let mut loop_action = LoopAction::Continue;
         let allow_parallel_execution = should_execute_tools_in_parallel(&tool_calls, approval);
         let mut executable_indices: Vec<usize> = Vec::new();
         let mut executable_calls: Vec<ParsedToolCall> = Vec::new();
@@ -925,6 +930,19 @@ pub(crate) async fn run_tool_call_loop(
             .zip(executable_calls.iter())
             .zip(executed_outcomes.into_iter())
         {
+            let detector_action = loop_detector.record(ToolInvocation {
+                tool_name: call.name.clone(),
+                args_hash: hash_args(&call.arguments),
+                success: outcome.success,
+            });
+            loop_action = match (loop_action, detector_action) {
+                (LoopAction::ForceStop, _) | (_, LoopAction::ForceStop) => LoopAction::ForceStop,
+                (LoopAction::SuggestClarify, _) | (_, LoopAction::SuggestClarify) => {
+                    LoopAction::SuggestClarify
+                }
+                _ => LoopAction::Continue,
+            };
+
             runtime_trace::record_event(
                 "tool_call_result",
                 Some(channel_name),
@@ -1014,6 +1032,30 @@ pub(crate) async fn run_tool_call_loop(
                     "content": result,
                 });
                 history.push(ChatMessage::tool(tool_msg.to_string()));
+            }
+        }
+
+        match loop_action {
+            LoopAction::Continue => {}
+            LoopAction::SuggestClarify => {
+                let clarify = "I’m repeating the same tool steps without making progress. Please clarify the exact target or desired outcome.";
+                history.push(ChatMessage::assistant(clarify));
+                tracing::warn!(
+                    iterations = iteration + 1,
+                    tool_calls = total_tool_calls,
+                    "agent.turn.loop_detected_clarify"
+                );
+                return Ok(clarify.to_string());
+            }
+            LoopAction::ForceStop => {
+                let stop = "I hit too many tool steps without reaching a stable result. Please narrow the request or specify the exact target.";
+                history.push(ChatMessage::assistant(stop));
+                tracing::warn!(
+                    iterations = iteration + 1,
+                    tool_calls = total_tool_calls,
+                    "agent.turn.loop_detected_stop"
+                );
+                return Ok(stop.to_string());
             }
         }
     }

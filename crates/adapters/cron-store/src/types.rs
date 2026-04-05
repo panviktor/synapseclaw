@@ -96,6 +96,8 @@ pub struct DeliveryConfig {
     pub channel: Option<String>,
     #[serde(default)]
     pub to: Option<String>,
+    #[serde(default)]
+    pub thread_ref: Option<String>,
     #[serde(default = "default_true")]
     pub best_effort: bool,
 }
@@ -106,6 +108,7 @@ impl Default for DeliveryConfig {
             mode: "none".to_string(),
             channel: None,
             to: None,
+            thread_ref: None,
             best_effort: true,
         }
     }

@@ -84,15 +84,15 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             fut.await?
         };
 
-        let tools_used = history.len() > history_before + 1;
-
-        // Extract tool context summary from history
-        let tool_summary = extract_tool_summary(&history, history_before);
+        let tool_names = extract_tool_names(&history, history_before);
+        let tools_used = !tool_names.is_empty();
+        let tool_summary = format_tool_summary(&tool_names);
 
         Ok(AgentTurnResult {
             response,
             history,
             tools_used,
+            tool_names,
             tool_summary,
         })
     }
@@ -102,9 +102,9 @@ impl AgentRuntimePort for ChannelAgentRuntime {
     }
 }
 
-/// Extract a condensed tool context summary from history turns added during the tool loop.
-fn extract_tool_summary(history: &[ChatMessage], start_idx: usize) -> String {
-    let mut summary_parts = Vec::new();
+/// Extract unique tool names from history turns added during the tool loop.
+fn extract_tool_names(history: &[ChatMessage], start_idx: usize) -> Vec<String> {
+    let mut names = Vec::new();
 
     for msg in history.iter().skip(start_idx) {
         // Look for tool_call and tool_result patterns
@@ -114,17 +114,21 @@ fn extract_tool_summary(history: &[ChatMessage], start_idx: usize) -> String {
                 let rest = &msg.content[name_start + 8..];
                 if let Some(name_end) = rest.find('"') {
                     let tool_name = &rest[..name_end];
-                    if !summary_parts.contains(&tool_name.to_string()) {
-                        summary_parts.push(tool_name.to_string());
+                    if !names.iter().any(|existing| existing == tool_name) {
+                        names.push(tool_name.to_string());
                     }
                 }
             }
         }
     }
 
-    if summary_parts.is_empty() {
+    names
+}
+
+fn format_tool_summary(tool_names: &[String]) -> String {
+    if tool_names.is_empty() {
         String::new()
     } else {
-        format!("[Used tools: {}]", summary_parts.join(", "))
+        format!("[Used tools: {}]", tool_names.join(", "))
     }
 }

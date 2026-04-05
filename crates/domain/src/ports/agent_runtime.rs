@@ -17,6 +17,8 @@ pub struct AgentTurnResult {
     pub history: Vec<ChatMessage>,
     /// Whether tools were executed during this turn.
     pub tools_used: bool,
+    /// Structured tool names used during this turn.
+    pub tool_names: Vec<String>,
     /// Extracted tool context summary (for history display).
     pub tool_summary: String,
 }

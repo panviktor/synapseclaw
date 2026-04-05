@@ -63,12 +63,7 @@ impl Tool for ClarifyTool {
         let options: Vec<&str> = args
             .get("options")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .take(5)
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).take(5).collect())
             .unwrap_or_default();
 
         let recommendation = args.get("recommendation").and_then(|v| v.as_str());

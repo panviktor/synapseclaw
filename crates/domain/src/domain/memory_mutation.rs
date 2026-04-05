@@ -99,12 +99,10 @@ mod tests {
     fn noop_detected() {
         assert!(MutationAction::Noop.is_noop());
         assert!(!MutationAction::Add.is_noop());
-        assert!(
-            !MutationAction::Update {
-                target_id: "x".into()
-            }
-            .is_noop()
-        );
+        assert!(!MutationAction::Update {
+            target_id: "x".into()
+        }
+        .is_noop());
     }
 
     #[test]

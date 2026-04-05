@@ -1,9 +1,11 @@
-//! Dialogue state service — updates session-scoped working memory.
+//! Dialogue state service — session-scoped working memory store.
 //!
-//! Extracts focus entities, comparison sets, and slots from user messages
-//! and tool results. Mostly deterministic (regex/pattern), no LLM calls.
+//! This service is intentionally conservative. It does not try to infer
+//! cities/languages/timezones from free text via phrase tables. Typed
+//! state should be populated by future structured interpreters or explicit
+//! tool/runtime events.
 
-use crate::domain::dialogue_state::{DialogueSlot, DialogueState, FocusEntity};
+use crate::domain::dialogue_state::DialogueState;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 
@@ -55,13 +57,13 @@ impl Default for DialogueStateStore {
 
 /// Update dialogue state after a user turn.
 ///
-/// Extracts focus entities and comparison patterns from the user message
-/// and tool output summary. Deterministic — no LLM call.
+/// This only refreshes timestamps and stores structured tool subjects when
+/// available. It deliberately avoids lexical extraction from user text.
 pub fn update_state_from_turn(
     state: &mut DialogueState,
-    user_message: &str,
-    tool_summary: &str,
-    assistant_response: &str,
+    _user_message: &str,
+    tool_names: &[String],
+    _assistant_response: &str,
 ) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -70,175 +72,55 @@ pub fn update_state_from_turn(
     state.updated_at = now;
 
     // Extract entities from tool results (most reliable source)
-    if !tool_summary.is_empty() {
-        state.last_tool_subjects = extract_tool_subjects(tool_summary);
-    }
-
-    // Extract focus entities from user message + response
-    let new_entities = extract_entities(user_message, assistant_response);
-    if !new_entities.is_empty() {
-        // Detect comparison pattern: if 2+ entities of same kind mentioned together
-        let kinds: Vec<&str> = new_entities.iter().map(|e| e.kind.as_str()).collect();
-        let has_comparison = kinds.len() >= 2
-            && kinds.windows(2).any(|w| w[0] == w[1]);
-
-        if has_comparison {
-            state.comparison_set = new_entities.clone();
-            state.focus_entities = new_entities;
-        } else {
-            // Replace focus (new topic supersedes old)
-            state.focus_entities = new_entities;
-            state.comparison_set.clear();
-        }
-    }
-
-    // Extract slots from user message
-    extract_slots(user_message, &mut state.slots);
-}
-
-/// Extract entity-like mentions from message text.
-fn extract_entities(user_message: &str, assistant_response: &str) -> Vec<FocusEntity> {
-    let mut entities = Vec::new();
-    let combined = format!("{user_message} {assistant_response}").to_lowercase();
-
-    // Service patterns: "X.service", "service X", "restart X"
-    for word in combined.split_whitespace() {
-        if word.ends_with(".service") {
-            let name = word.trim_end_matches(".service");
-            if !name.is_empty() {
-                entities.push(FocusEntity {
-                    kind: "service".into(),
-                    name: name.to_string(),
-                    metadata: None,
-                });
-            }
-        }
-    }
-
-    // City/location detection via common weather/location patterns
-    let location_triggers = ["weather in ", "weather for ", "temperature in ", "located in "];
-    let stop_words = ["is", "are", "was", "or", "the", "today", "tomorrow", "now"];
-    for trigger in &location_triggers {
-        // Find ALL occurrences of this trigger
-        let mut search_from = 0;
-        while let Some(pos) = combined[search_from..].find(trigger) {
-            let abs_pos = search_from + pos;
-            let after = &combined[abs_pos + trigger.len()..];
-            // Take words until a stop word or punctuation
-            let words: Vec<&str> = after
-                .split_whitespace()
-                .take_while(|w| !stop_words.contains(w) && !w.contains(',') && !w.contains('.'))
-                .take(3)
-                .collect();
-            // Split on "and" to handle "Berlin and Tbilisi"
-            let raw = words.join(" ");
-            for part in raw.split(" and ") {
-                let city = part.trim().to_string();
-                if !city.is_empty() && city.len() < 50 {
-                    entities.push(FocusEntity {
-                        kind: "city".into(),
-                        name: city,
-                        metadata: None,
-                    });
-                }
-            }
-            search_from = abs_pos + trigger.len() + 1;
-            if search_from >= combined.len() { break; }
-        }
-    }
-
-    // Environment patterns: "staging", "production", "prod", "dev"
-    let envs = ["staging", "production", "prod", "dev", "development"];
-    for env in &envs {
-        if combined.contains(env) {
-            entities.push(FocusEntity {
-                kind: "environment".into(),
-                name: env.to_string(),
-                metadata: None,
-            });
-        }
-    }
-
-    entities
-}
-
-/// Extract named slots from user message.
-fn extract_slots(message: &str, slots: &mut Vec<DialogueSlot>) {
-    let lower = message.to_lowercase();
-
-    // Timezone slot
-    if lower.contains("utc") || lower.contains("timezone") {
-        if let Some(tz) = extract_timezone(&lower) {
-            upsert_slot(slots, "timezone", &tz);
-        }
+    if !tool_names.is_empty() {
+        state.last_tool_subjects = tool_names.to_vec();
     }
 }
 
-fn extract_timezone(text: &str) -> Option<String> {
-    // Match "UTC+3", "UTC-5", "UTC+03:00"
-    if let Some(pos) = text.find("utc") {
-        let after = &text[pos..];
-        let tz: String = after
-            .chars()
-            .take(10)
-            .take_while(|c| c.is_alphanumeric() || *c == '+' || *c == '-' || *c == ':')
-            .collect();
-        if tz.len() > 3 {
-            return Some(tz.to_uppercase());
-        }
-    }
-    None
-}
-
-fn upsert_slot(slots: &mut Vec<DialogueSlot>, name: &str, value: &str) {
-    if let Some(slot) = slots.iter_mut().find(|s| s.name == name) {
-        slot.value = value.to_string();
-    } else {
-        slots.push(DialogueSlot {
-            name: name.to_string(),
-            value: value.to_string(),
-        });
-    }
-}
-
-fn extract_tool_subjects(summary: &str) -> Vec<String> {
-    // Parse "[Used tools: X, Y]" format
-    summary
-        .trim_start_matches("[Used tools: ")
-        .trim_end_matches(']')
-        .split(", ")
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect()
+pub fn should_materialize_state(existing: Option<&DialogueState>, tool_names: &[String]) -> bool {
+    existing.is_some() || !tool_names.is_empty()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::dialogue_state::FocusEntity;
 
     #[test]
-    fn extract_service_entity() {
-        let entities = extract_entities("restart synapseclaw.service", "");
-        assert!(entities.iter().any(|e| e.kind == "service" && e.name == "synapseclaw"));
-    }
-
-    #[test]
-    fn extract_city_from_weather() {
-        let entities = extract_entities("", "The weather in Berlin is rainy");
-        assert!(entities.iter().any(|e| e.kind == "city" && e.name == "berlin"));
-    }
-
-    #[test]
-    fn detect_comparison_set() {
+    fn update_state_keeps_existing_focus_without_lexical_extraction() {
         let mut state = DialogueState::default();
+        state.focus_entities.push(FocusEntity {
+            kind: "service".into(),
+            name: "synapseclaw".into(),
+            metadata: None,
+        });
         update_state_from_turn(
             &mut state,
             "compare weather in Berlin and Tbilisi",
-            "",
+            &[],
             "Weather in Berlin: 12C. Weather in Tbilisi: 25C.",
         );
-        assert!(state.has_comparison());
-        assert!(state.comparison_set.len() >= 2, "expected 2+ cities, got {}", state.comparison_set.len());
+        assert_eq!(state.focus_entities.len(), 1);
+        assert_eq!(state.focus_entities[0].name, "synapseclaw");
+        assert!(state.comparison_set.is_empty());
+        assert!(state.slots.is_empty());
+    }
+
+    #[test]
+    fn captures_tool_subjects_when_present() {
+        let mut state = DialogueState::default();
+        update_state_from_turn(&mut state, "", &["shell".into(), "web_fetch".into()], "");
+        assert_eq!(state.last_tool_subjects, vec!["shell", "web_fetch"]);
+    }
+
+    #[test]
+    fn materialize_only_when_existing_or_tools_present() {
+        assert!(!should_materialize_state(None, &[]));
+        assert!(should_materialize_state(None, &["shell".into()]));
+        assert!(should_materialize_state(
+            Some(&DialogueState::default()),
+            &[]
+        ));
     }
 
     #[test]

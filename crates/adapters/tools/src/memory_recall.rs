@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::fmt::Write;
 use std::sync::Arc;
+use synapse_domain::application::services::retrieval_service;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 
 /// Let the agent search its own memory
@@ -55,7 +56,7 @@ impl Tool for MemoryRecallTool {
             .and_then(serde_json::Value::as_u64)
             .map_or(5, |v| v as usize);
 
-        match self.memory.recall(query, limit, None).await {
+        match retrieval_service::search_memory(self.memory.as_ref(), query, limit, None).await {
             Ok(entries) if entries.is_empty() => Ok(ToolResult {
                 success: true,
                 output: "No memories found matching that query.".into(),
@@ -63,7 +64,8 @@ impl Tool for MemoryRecallTool {
             }),
             Ok(entries) => {
                 let mut output = format!("Found {} memories:\n", entries.len());
-                for entry in &entries {
+                for hit in &entries {
+                    let entry = &hit.entry;
                     let score = entry
                         .score
                         .map_or_else(String::new, |s| format!(" [{s:.0}%]"));

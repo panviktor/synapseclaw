@@ -5,11 +5,12 @@
 //!
 //! All 24 behaviors from the original function are accounted for here.
 
-use crate::application::services::inbound_message_service::{
-    self, CommandEffect, HistoryEnrichment, MessageClassification,
-};
 use crate::application::services::channel_presentation::{
     self, ChannelPresentationMode, CompactProgressSurface,
+};
+use crate::application::services::dialogue_state_service::{self, DialogueStateStore};
+use crate::application::services::inbound_message_service::{
+    self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
 use crate::domain::channel::{ChannelCapability, InboundEnvelope};
 use crate::domain::message::ChatMessage;
@@ -17,10 +18,13 @@ use crate::ports::agent_runtime::AgentRuntimePort;
 use crate::ports::channel_output::ChannelOutputPort;
 use crate::ports::channel_registry::ChannelRegistryPort;
 use crate::ports::conversation_history::ConversationHistoryPort;
+use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::hooks::{HookOutcome, HooksPort};
 use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::route_selection::RouteSelectionPort;
+use crate::ports::run_recipe_store::RunRecipeStorePort;
 use crate::ports::session_summary::SessionSummaryPort;
+use crate::ports::user_profile_store::UserProfileStorePort;
 use anyhow::Result;
 use std::sync::Arc;
 
@@ -89,9 +93,13 @@ pub struct InboundMessagePorts {
     /// SSE event sender for publishing learning reports to web dashboard.
     pub event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     /// Current conversation context for tools that need "here".
-    pub conversation_context: Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
+    pub conversation_context:
+        Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
+    pub conversation_store: Option<Arc<dyn ConversationStorePort>>,
     /// Dialogue state store for session-scoped working memory.
-    pub dialogue_state_store: Option<Arc<crate::application::services::dialogue_state_service::DialogueStateStore>>,
+    pub dialogue_state_store: Option<Arc<DialogueStateStore>>,
+    pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
+    pub user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
 }
 
 /// Result of handling an inbound message.
@@ -191,6 +199,22 @@ async fn handle_regular_message(
     config: &InboundMessageConfig,
     ports: &InboundMessagePorts,
 ) -> Result<HandleResult> {
+    let current_conversation = crate::domain::conversation_target::CurrentConversationContext {
+        source_adapter: envelope.source_adapter.clone(),
+        conversation_ref: envelope.conversation_ref.clone(),
+        reply_ref: envelope.reply_ref.clone(),
+        thread_ref: envelope.thread_ref.clone(),
+        actor_id: envelope.actor_id.clone(),
+    };
+    let dialogue_state = ports
+        .dialogue_state_store
+        .as_ref()
+        .and_then(|store| store.get(conversation_key));
+    let user_profile = ports
+        .user_profile_store
+        .as_ref()
+        .and_then(|store| store.load(&channel_user_profile_key(envelope)));
+
     // ── 3. Resolve route (with query classification override) ─────
     let mut route = ports.routes.get_route(conversation_key);
 
@@ -241,6 +265,21 @@ async fn handle_regular_message(
         .delivery_hints(&envelope.source_adapter)
     {
         history.push(ChatMessage::system(hints));
+    }
+    if let Some(interpretation) =
+        crate::application::services::turn_interpretation::build_turn_interpretation(
+            user_profile,
+            Some(&current_conversation),
+            dialogue_state.as_ref(),
+        )
+    {
+        if let Some(block) =
+            crate::application::services::turn_interpretation::format_turn_interpretation(
+                &interpretation,
+            )
+        {
+            history.push(ChatMessage::system(block));
+        }
     }
 
     // #6: Add prior turns (with #23 vision normalization)
@@ -321,11 +360,21 @@ async fn handle_regular_message(
             // #8: Memory context enrichment via unified assembler
             if let Some(ref mem) = ports.memory {
                 use crate::application::services::turn_context as tc;
+                let dialogue_state = ports
+                    .dialogue_state_store
+                    .as_ref()
+                    .and_then(|store| store.get(&conv_key));
                 let turn_ctx = tc::assemble_turn_context(
                     mem.as_ref(),
+                    ports.run_recipe_store.as_ref().map(|store| store.as_ref()),
+                    ports
+                        .conversation_store
+                        .as_ref()
+                        .map(|store| store.as_ref()),
                     content,
                     &config.agent_id,
                     Some(&conv_key),
+                    dialogue_state.as_ref(),
                     &config.prompt_budget,
                     None, // first turn → full context
                 )
@@ -369,11 +418,21 @@ async fn handle_regular_message(
             if let Some(ref mem) = ports.memory {
                 use crate::application::services::turn_context as tc;
                 let continuation = config.continuation_policy.clone();
+                let dialogue_state = ports
+                    .dialogue_state_store
+                    .as_ref()
+                    .and_then(|store| store.get(conversation_key));
                 let turn_ctx = tc::assemble_turn_context(
                     mem.as_ref(),
+                    ports.run_recipe_store.as_ref().map(|store| store.as_ref()),
+                    ports
+                        .conversation_store
+                        .as_ref()
+                        .map(|store| store.as_ref()),
                     content,
                     &config.agent_id,
                     Some(conversation_key),
+                    dialogue_state.as_ref(),
                     &config.prompt_budget,
                     Some(&continuation),
                 )
@@ -438,8 +497,20 @@ async fn execute_agent_turn(
     route: &crate::ports::route_selection::RouteSelection,
     history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
+    struct ConversationContextGuard {
+        port: Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
+    }
+
+    impl Drop for ConversationContextGuard {
+        fn drop(&mut self) {
+            if let Some(port) = &self.port {
+                port.set_current(None);
+            }
+        }
+    }
+
     // ── Set current conversation context for tools that need "here" ──
-    if let Some(ref ctx_port) = ports.conversation_context {
+    let _conversation_context_guard = if let Some(ctx_port) = ports.conversation_context.clone() {
         ctx_port.set_current(Some(
             crate::domain::conversation_target::CurrentConversationContext {
                 source_adapter: envelope.source_adapter.clone(),
@@ -449,7 +520,12 @@ async fn execute_agent_turn(
                 actor_id: envelope.actor_id.clone(),
             },
         ));
-    }
+        ConversationContextGuard {
+            port: Some(ctx_port),
+        }
+    } else {
+        ConversationContextGuard { port: None }
+    };
 
     // ── #11: Ack reaction + typing ───────────────────────────────
     if config.ack_reactions {
@@ -614,34 +690,31 @@ async fn execute_agent_turn(
                 .history
                 .append_turn(conversation_key, ChatMessage::assistant(&history_response));
 
-            // ── Update dialogue state (session-scoped working memory) ──
             if let Some(ref store) = ports.dialogue_state_store {
-                let mut state = store.get(conversation_key).unwrap_or_default();
-                crate::application::services::dialogue_state_service::update_state_from_turn(
-                    &mut state,
-                    content,
-                    &turn_result.tool_summary,
-                    &response_text,
-                );
-                store.set(conversation_key, state);
+                let existing = store.get(conversation_key);
+                if dialogue_state_service::should_materialize_state(
+                    existing.as_ref(),
+                    &turn_result.tool_names,
+                ) {
+                    let mut state = existing.unwrap_or_default();
+                    dialogue_state_service::update_state_from_turn(
+                        &mut state,
+                        content,
+                        &turn_result.tool_names,
+                        &response_text,
+                    );
+                    store.set(conversation_key, state);
+                }
             }
 
             // ── #18/#19: Post-turn learning (via orchestrator, fire-and-forget) ──
             if let Some(ref mem) = ports.memory {
-                let tools: Vec<String> = turn_result
-                    .tool_summary
-                    .trim_start_matches("[Used tools: ")
-                    .trim_end_matches(']')
-                    .split(", ")
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .collect();
                 let mem = Arc::clone(mem);
                 let input = crate::application::services::post_turn_orchestrator::PostTurnInput {
                     agent_id: config.agent_id.clone(),
                     user_message: content.to_string(),
                     assistant_response: response_text.clone(),
-                    tools_used: tools,
+                    tools_used: turn_result.tool_names.clone(),
                     auto_save_enabled: config.auto_save_memory,
                     event_tx: ports.event_tx.clone(),
                 };
@@ -765,6 +838,10 @@ fn truncate_chars(s: &str, max: usize) -> String {
         let truncated: String = s.chars().take(max).collect();
         format!("{truncated}…")
     }
+}
+
+fn channel_user_profile_key(envelope: &InboundEnvelope) -> String {
+    format!("channel:{}:{}", envelope.source_adapter, envelope.actor_id)
 }
 
 /// Strip [IMAGE:...] markers from text for non-vision providers.
@@ -905,6 +982,7 @@ mod tests {
                 response: self.response.clone(),
                 history: vec![],
                 tools_used: false,
+                tool_names: vec![],
                 tool_summary: String::new(),
             })
         }
@@ -971,7 +1049,8 @@ mod tests {
             ack_reactions: false,
             agent_id: "test-agent".into(),
             prompt_budget: crate::application::services::turn_context::PromptBudget::default(),
-            continuation_policy: crate::application::services::turn_context::ContinuationPolicy::default(),
+            continuation_policy:
+                crate::application::services::turn_context::ContinuationPolicy::default(),
             presentation_mode: ChannelPresentationMode::Compact,
         }
     }
@@ -1006,7 +1085,10 @@ mod tests {
             memory: None,
             event_tx: None,
             conversation_context: None,
+            conversation_store: None,
             dialogue_state_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
         }
     }
 

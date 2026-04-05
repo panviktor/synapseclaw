@@ -1633,6 +1633,12 @@ mod tests {
             tools_registry: std::sync::Arc::new(Vec::new()),
             cost_tracker: None,
             event_tx: tokio::sync::broadcast::channel(16).0,
+            dialogue_state_store: std::sync::Arc::new(
+                synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(),
+            ),
+            run_recipe_store: std::sync::Arc::new(
+                synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+            ),
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,

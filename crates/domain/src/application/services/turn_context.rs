@@ -8,8 +8,12 @@
 //! the same format, and the channel use case can't call adapters.
 //! The adapter `turn_context_fmt` re-exports these functions.
 
-use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryEntry, MemoryQuery, Skill};
+use crate::application::services::retrieval_service;
+use crate::domain::dialogue_state::DialogueState;
+use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryEntry, Skill};
+use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
+use crate::ports::run_recipe_store::RunRecipeStorePort;
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -27,6 +31,10 @@ pub struct TurnMemoryContext {
     pub skills: Vec<Skill>,
     /// Relevant entities (semantic memory / knowledge graph).
     pub entities: Vec<Entity>,
+    /// Relevant prior session recaps / historical context.
+    pub session_matches: Vec<retrieval_service::SessionSearchMatch>,
+    /// Relevant prior successful execution recipes / precedents.
+    pub run_recipes: Vec<retrieval_service::RunRecipeSearchMatch>,
 }
 
 /// Token/char budget for turn context assembly.
@@ -90,9 +98,12 @@ impl Default for ContinuationPolicy {
 /// - `Some(Full)` → same as `None`.
 pub async fn assemble_turn_context(
     mem: &dyn UnifiedMemoryPort,
+    run_recipe_store: Option<&dyn RunRecipeStorePort>,
+    conversation_store: Option<&dyn ConversationStorePort>,
     user_message: &str,
     agent_id: &str,
     session_id: Option<&str>,
+    dialogue_state: Option<&DialogueState>,
     budget: &PromptBudget,
     continuation: Option<&ContinuationPolicy>,
 ) -> TurnMemoryContext {
@@ -103,6 +114,7 @@ pub async fn assemble_turn_context(
             .unwrap_or_default(),
         ..Default::default()
     };
+    let query_text = build_query_text(user_message, dialogue_state);
 
     let policy_name = match continuation {
         Some(ContinuationPolicy::CoreOnly) => "core_only",
@@ -124,7 +136,7 @@ pub async fn assemble_turn_context(
         Some(ContinuationPolicy::CorePlusRecall {
             recall_max_entries: n,
         }) => {
-            load_recall(mem, user_message, session_id, budget, *n, &mut ctx).await;
+            load_recall(mem, &query_text, session_id, budget, *n, &mut ctx).await;
             tracing::debug!(
                 target: "memory_assembly",
                 core_blocks = ctx.core_blocks.len(),
@@ -140,64 +152,98 @@ pub async fn assemble_turn_context(
     }
 
     // Episodic recall
-    load_recall(
+    let results = retrieval_service::search_turn_hybrid(
         mem,
-        user_message,
+        &query_text,
+        agent_id,
         session_id,
-        budget,
-        budget.recall_max_entries,
-        &mut ctx,
+        &retrieval_service::HybridTurnSearchOptions {
+            recall_max_entries: budget.recall_max_entries,
+            recall_min_relevance: budget.recall_min_relevance,
+            skills_max_count: budget.skills_max_count,
+            skills_total_max_chars: budget.skills_total_max_chars,
+            entities_max_count: budget.entities_max_count,
+            entities_total_max_chars: budget.entities_total_max_chars,
+            query_limit: budget
+                .recall_max_entries
+                .max(budget.skills_max_count)
+                .max(budget.entities_max_count)
+                .max(8)
+                + 2,
+        },
     )
     .await;
+    if let Ok(results) = results {
+        ctx.recalled_entries = results.recalled_entries;
+        ctx.skills = results.skills;
+        ctx.entities = results.entities;
+    }
 
-    // Skills (independent of recall)
-    let query = MemoryQuery {
-        text: user_message.to_string(),
-        embedding: None,
-        agent_id: agent_id.to_string(),
-        include_shared: false,
-        time_range: None,
-        limit: budget.skills_max_count,
-    };
-    if let Ok(skills) = mem.find_skills(&query).await {
-        let mut chars = 0usize;
-        for skill in skills {
-            if skill.content.trim().is_empty() {
+    if let Some(store) = conversation_store {
+        const SESSION_MAX_COUNT: usize = 2;
+        const SESSION_TOTAL_MAX_CHARS: usize = 1_200;
+        const SESSION_MIN_SCORE: f64 = 1.5;
+
+        let session_hits = retrieval_service::search_sessions(
+            mem,
+            store,
+            &query_text,
+            None,
+            SESSION_MAX_COUNT + 1,
+        )
+        .await;
+        let mut total_session_chars = 0usize;
+        for hit in session_hits {
+            if session_id.is_some_and(|current| hit.session_key == current) {
                 continue;
             }
-            let len = skill.content.chars().count();
-            if chars + len > budget.skills_total_max_chars {
+            if hit.score < SESSION_MIN_SCORE {
                 break;
             }
-            chars += len;
-            ctx.skills.push(skill);
+            let session_chars = hit.label.as_ref().map_or(0, |s| s.chars().count())
+                + hit.summary.as_ref().map_or(0, |s| s.chars().count())
+                + hit.recap.as_ref().map_or(0, |s| s.chars().count());
+            if total_session_chars + session_chars > SESSION_TOTAL_MAX_CHARS {
+                break;
+            }
+            total_session_chars += session_chars;
+            ctx.session_matches.push(hit);
+            if ctx.session_matches.len() >= SESSION_MAX_COUNT {
+                break;
+            }
         }
     }
 
-    // Entities (independent of recall)
-    let query = MemoryQuery {
-        text: user_message.to_string(),
-        embedding: None,
-        agent_id: agent_id.to_string(),
-        include_shared: false,
-        time_range: None,
-        limit: budget.entities_max_count,
-    };
-    if let Ok(entities) = mem.search_entities(&query).await {
-        let mut chars = 0usize;
-        for entity in entities {
-            let summary_len = entity
-                .summary
-                .as_ref()
-                .map_or(0, |s| s.chars().count());
-            if summary_len == 0 {
-                continue;
-            }
-            if chars + summary_len > budget.entities_total_max_chars {
+    if let Some(store) = run_recipe_store {
+        const RECIPE_MAX_COUNT: usize = 2;
+        const RECIPE_TOTAL_MAX_CHARS: usize = 1_200;
+        const RECIPE_MIN_SCORE: i64 = 150;
+
+        let recipe_hits = retrieval_service::search_run_recipes(
+            mem,
+            store,
+            agent_id,
+            &query_text,
+            RECIPE_MAX_COUNT,
+        )
+        .await;
+        let mut total_recipe_chars = 0usize;
+        for recipe in recipe_hits {
+            if recipe.score < RECIPE_MIN_SCORE {
                 break;
             }
-            chars += summary_len;
-            ctx.entities.push(entity);
+            let recipe_chars = recipe.summary.chars().count()
+                + recipe.sample_request.chars().count()
+                + recipe
+                    .tool_pattern
+                    .iter()
+                    .map(|tool| tool.chars().count())
+                    .sum::<usize>();
+            if total_recipe_chars + recipe_chars > RECIPE_TOTAL_MAX_CHARS {
+                break;
+            }
+            total_recipe_chars += recipe_chars;
+            ctx.run_recipes.push(recipe);
         }
     }
 
@@ -207,6 +253,8 @@ pub async fn assemble_turn_context(
         recalled = ctx.recalled_entries.len(),
         skills = ctx.skills.len(),
         entities = ctx.entities.len(),
+        sessions = ctx.session_matches.len(),
+        recipes = ctx.run_recipes.len(),
         policy = policy_name,
         "Turn context assembled"
     );
@@ -258,7 +306,11 @@ async fn load_recall(
                 continue;
             }
         }
-        let entry_chars = entry.content.chars().count().min(budget.recall_entry_max_chars);
+        let entry_chars = entry
+            .content
+            .chars()
+            .count()
+            .min(budget.recall_entry_max_chars);
         if total_chars + entry_chars > budget.recall_total_max_chars {
             break;
         }
@@ -280,7 +332,7 @@ async fn load_recall(
 pub struct FormattedTurnContext {
     /// Core memory blocks for system prompt.
     pub core_blocks_system: String,
-    /// Recall + skills + entities as enrichment prefix.
+    /// Recall + skills + entities + sessions + recipes as enrichment prefix.
     pub enrichment_prefix: String,
 }
 
@@ -311,13 +363,21 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
         let mut added = false;
         for entry in &ctx.recalled_entries {
             let content = if entry.content.chars().count() > budget.recall_entry_max_chars {
-                let truncated: String = entry.content.chars().take(budget.recall_entry_max_chars).collect();
+                let truncated: String = entry
+                    .content
+                    .chars()
+                    .take(budget.recall_entry_max_chars)
+                    .collect();
                 format!("{truncated}…")
             } else {
                 entry.content.clone()
             };
             let line = format!("- {}: {content}\n", entry.key);
-            if result.enrichment_prefix.chars().count() + section.chars().count() + line.chars().count() > max_chars {
+            if result.enrichment_prefix.chars().count()
+                + section.chars().count()
+                + line.chars().count()
+                > max_chars
+            {
                 break;
             }
             section.push_str(&line);
@@ -359,6 +419,66 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
         }
     }
 
+    // Prior session recaps / historical context
+    for session in &ctx.session_matches {
+        let mut block = format!(
+            "<session-recap key=\"{}\" kind=\"{}\">\n",
+            session.session_key, session.kind
+        );
+        if let Some(label) = session.label.as_deref() {
+            if !label.trim().is_empty() {
+                block.push_str("Label: ");
+                block.push_str(label.trim());
+                block.push('\n');
+            }
+        }
+        if let Some(summary) = session.summary.as_deref() {
+            if !summary.trim().is_empty() {
+                block.push_str(summary.trim());
+                block.push('\n');
+            }
+        }
+        if let Some(recap) = session.recap.as_deref() {
+            if !recap.trim().is_empty() {
+                block.push_str("Recent match: ");
+                block.push_str(recap.trim());
+                block.push('\n');
+            }
+        }
+        block.push_str("</session-recap>\n");
+        if result.enrichment_prefix.chars().count() + block.chars().count() > max_chars {
+            break;
+        }
+        result.enrichment_prefix.push_str(&block);
+    }
+
+    // Prior successful recipes / precedents
+    for recipe in &ctx.run_recipes {
+        let mut block = format!(
+            "<recipe task_family=\"{}\" success_count=\"{}\">\n",
+            recipe.task_family, recipe.success_count
+        );
+        if !recipe.summary.trim().is_empty() {
+            block.push_str(recipe.summary.trim());
+            block.push('\n');
+        }
+        if !recipe.sample_request.trim().is_empty() {
+            block.push_str("Sample request: ");
+            block.push_str(recipe.sample_request.trim());
+            block.push('\n');
+        }
+        if !recipe.tool_pattern.is_empty() {
+            block.push_str("Tool pattern: ");
+            block.push_str(&recipe.tool_pattern.join(", "));
+            block.push('\n');
+        }
+        block.push_str("</recipe>\n");
+        if result.enrichment_prefix.chars().count() + block.chars().count() > max_chars {
+            break;
+        }
+        result.enrichment_prefix.push_str(&block);
+    }
+
     result
 }
 
@@ -372,9 +492,66 @@ fn is_autosave_key(key: &str) -> bool {
     normalized == "assistant_resp" || normalized.starts_with("assistant_resp_")
 }
 
+fn build_query_text(user_message: &str, dialogue_state: Option<&DialogueState>) -> String {
+    let base = user_message.trim();
+    let Some(state) = dialogue_state else {
+        return base.to_string();
+    };
+
+    let mut parts = vec![base.to_string()];
+
+    if !state.focus_entities.is_empty() {
+        let focus = state
+            .focus_entities
+            .iter()
+            .map(|entity| entity.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !focus.is_empty() {
+            parts.push(format!("Focus: {focus}"));
+        }
+    }
+
+    if !state.comparison_set.is_empty() {
+        let comparison = state
+            .comparison_set
+            .iter()
+            .map(|entity| entity.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !comparison.is_empty() {
+            parts.push(format!("Comparison: {comparison}"));
+        }
+    }
+
+    if !state.slots.is_empty() {
+        let slots = state
+            .slots
+            .iter()
+            .map(|slot| format!("{}={}", slot.name, slot.value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !slots.is_empty() {
+            parts.push(format!("Slots: {slots}"));
+        }
+    }
+
+    if !state.last_tool_subjects.is_empty() {
+        parts.push(format!(
+            "Recent tools: {}",
+            state.last_tool_subjects.join(", ")
+        ));
+    }
+
+    parts.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::application::services::retrieval_service::{
+        RunRecipeSearchMatch, SessionSearchMatch,
+    };
     use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryCategory, MemoryEntry, Skill};
 
     // ── Budget & policy defaults ──
@@ -412,6 +589,28 @@ mod tests {
         assert!(!is_autosave_key("assistant_response"));
         assert!(!is_autosave_key("user_msg_1234"));
         assert!(!is_autosave_key("core_persona"));
+    }
+
+    #[test]
+    fn build_query_text_includes_typed_dialogue_state() {
+        let state = DialogueState {
+            focus_entities: vec![crate::domain::dialogue_state::FocusEntity {
+                kind: "city".into(),
+                name: "Berlin".into(),
+                metadata: None,
+            }],
+            slots: vec![crate::domain::dialogue_state::DialogueSlot {
+                name: "timezone".into(),
+                value: "Europe/Berlin".into(),
+            }],
+            last_tool_subjects: vec!["weather_lookup".into()],
+            ..Default::default()
+        };
+        let query = build_query_text("what's the weather?", Some(&state));
+        assert!(query.contains("what's the weather?"));
+        assert!(query.contains("Focus: Berlin"));
+        assert!(query.contains("Slots: timezone=Europe/Berlin"));
+        assert!(query.contains("Recent tools: weather_lookup"));
     }
 
     // ── Helpers ──
@@ -464,6 +663,30 @@ mod tests {
             created_by: "test".into(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+        }
+    }
+
+    fn make_recipe(task_family: &str, summary: &str) -> RunRecipeSearchMatch {
+        RunRecipeSearchMatch {
+            score: 220,
+            task_family: task_family.into(),
+            sample_request: format!("{task_family} the latest release"),
+            summary: summary.into(),
+            tool_pattern: vec!["shell".into(), "git".into()],
+            success_count: 3,
+            updated_at: 1,
+        }
+    }
+
+    fn make_session_match(label: &str, summary: &str, recap: &str) -> SessionSearchMatch {
+        SessionSearchMatch {
+            score: 2.4,
+            session_key: "channel_alice".into(),
+            label: Some(label.into()),
+            kind: crate::domain::conversation::ConversationKind::Channel,
+            message_count: 8,
+            summary: Some(summary.into()),
+            recap: Some(recap.into()),
         }
     }
 
@@ -553,8 +776,57 @@ mod tests {
             ..Default::default()
         };
         let fmt = format_turn_context(&ctx, &PromptBudget::default());
-        assert!(fmt.enrichment_prefix.contains("<entity name=\"Rust\" type=\"concept\">"));
-        assert!(fmt.enrichment_prefix.contains("Systems programming language"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("<entity name=\"Rust\" type=\"concept\">"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("Systems programming language"));
+    }
+
+    #[test]
+    fn format_recipes_independent_of_recall() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![],
+            run_recipes: vec![make_recipe(
+                "deploy",
+                "Check staging first, then ship the release",
+            )],
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt
+            .enrichment_prefix
+            .contains("<recipe task_family=\"deploy\" success_count=\"3\">"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("Check staging first, then ship the release"));
+        assert!(fmt.enrichment_prefix.contains("Sample request:"));
+        assert!(fmt.enrichment_prefix.contains("Tool pattern: shell, git"));
+        assert!(fmt.enrichment_prefix.contains("</recipe>"));
+    }
+
+    #[test]
+    fn format_session_recaps_independent_of_recall() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![],
+            session_matches: vec![make_session_match(
+                "Weather thread",
+                "Compared Berlin and Tbilisi weather last week",
+                "user: what was the weather in Tbilisi? | assistant: Tbilisi was warmer",
+            )],
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt
+            .enrichment_prefix
+            .contains("<session-recap key=\"channel_alice\" kind=\"channel\">"));
+        assert!(fmt.enrichment_prefix.contains("Label: Weather thread"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("Compared Berlin and Tbilisi weather last week"));
+        assert!(fmt.enrichment_prefix.contains("Recent match:"));
+        assert!(fmt.enrichment_prefix.contains("</session-recap>"));
     }
 
     // ── format_turn_context: budget enforcement ──

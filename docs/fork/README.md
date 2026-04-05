@@ -53,6 +53,8 @@ See [`news.md`](news.md) for the latest updates and release notes.
 | [ipc-phase4_5-plan.md](ipc-phase4_5-plan.md) | Phase 4.5: Pipeline Hardening — message filtering, DLQ, visualization | Everyone |
 | [ipc-phase4_5-progress.md](ipc-phase4_5-progress.md) | Phase 4.5 execution checklist (4 slices — NOT STARTED) | Opus |
 | [ipc-phase4_6-plan.md](ipc-phase4_6-plan.md) | Phase 4.6: Agent Product Intelligence — current-conversation targets, orchestration tools, standing orders, planner guardrails | Everyone |
+| [ipc-phase4_7-plan.md](ipc-phase4_7-plan.md) | Phase 4.7: Deterministic User Context & Task Resolution — structured user profile, reference resolution, past-work routing, recipe memory, evals | Everyone |
+| [ipc-phase4_8-plan.md](ipc-phase4_8-plan.md) | Phase 4.8: Embedding-First Memory & Everyday Intelligence — local-first hybrid retrieval, typed state, bounded interpretation, readable projections, eval harness | Everyone |
 | [channel-triage.md](channel-triage.md) | Channel port priority: 10 Tier 1 (port) + 17 Tier 2 (defer) | Everyone |
 
 ### Memory / UX Plans
@@ -69,7 +71,7 @@ See [`news.md`](news.md) for the latest updates and release notes.
 **New to the fork?** Start with `delta-registry.md` → `sync-strategy.md` → `ipc-plan.md`.
 
 **Starting IPC work?** Read the phase plans in order:
-`ipc-phase2-plan.md` → `ipc-phase3-plan.md` → `ipc-phase3_5-plan.md` → `ipc-phase3_6-plan.md` → `ipc-phase3_7-plan.md` → `ipc-phase3_7b-plan.md` → `ipc-phase3_8-plan.md` → `ipc-phase3_9-plan.md` → `ipc-phase3_10-plan.md` → `ipc-phase3_11-plan.md` → `ipc-phase3_12-plan.md` → `ipc-phase4_0-plan.md` → `ipc-phase4_3-plan.md` → `ipc-phase4_5-plan.md` → `ipc-phase4_6-plan.md` → `ipc-phase4_6-research.md`.
+`ipc-phase2-plan.md` → `ipc-phase3-plan.md` → `ipc-phase3_5-plan.md` → `ipc-phase3_6-plan.md` → `ipc-phase3_7-plan.md` → `ipc-phase3_7b-plan.md` → `ipc-phase3_8-plan.md` → `ipc-phase3_9-plan.md` → `ipc-phase3_10-plan.md` → `ipc-phase3_11-plan.md` → `ipc-phase3_12-plan.md` → `ipc-phase4_0-plan.md` → `ipc-phase4_3-plan.md` → `ipc-phase4_5-plan.md` → `ipc-phase4_6-plan.md` → `ipc-phase4_6-research.md` → `ipc-phase4_7-plan.md` → `ipc-phase4_8-plan.md`.
 
 **Starting memory/self-learning work?** Read:
 `memory-learning-foundation-plan.md` → `memory-unification-plan.md` → `multi-agent-memory-ui-plan.md`.

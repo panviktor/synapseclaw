@@ -3,9 +3,6 @@ use crate::agent::dispatcher::{
 };
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
 use crate::agent::turn_context_fmt;
-use synapse_domain::application::services::turn_context::{
-    self as tc, ContinuationPolicy, PromptBudget,
-};
 use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
 use anyhow::Result;
@@ -13,7 +10,16 @@ use std::collections::HashMap;
 use std::io::Write as IoWrite;
 use std::sync::Arc;
 use std::time::Instant;
+use synapse_domain::application::services::dialogue_state_service::DialogueStateStore;
+use synapse_domain::application::services::dialogue_state_service::{self};
+use synapse_domain::application::services::turn_context::{
+    self as tc, ContinuationPolicy, PromptBudget,
+};
+use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::config::schema::Config;
+use synapse_domain::ports::conversation_store::ConversationStorePort;
+use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
+use synapse_domain::ports::user_profile_store::UserProfileStorePort;
 use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
 use synapse_observability::{self, Observer, ObserverEvent};
 use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
@@ -50,6 +56,11 @@ pub struct Agent {
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     /// Canonical agent ID for memory scoping.
     agent_id: String,
+    dialogue_state_store: Option<Arc<DialogueStateStore>>,
+    conversation_store: Option<Arc<dyn ConversationStorePort>>,
+    run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
+    user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
+    user_profile_key: Option<String>,
 }
 
 pub struct AgentBuilder {
@@ -76,6 +87,11 @@ pub struct AgentBuilder {
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     agent_id: Option<String>,
+    dialogue_state_store: Option<Arc<DialogueStateStore>>,
+    conversation_store: Option<Arc<dyn ConversationStorePort>>,
+    run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
+    user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
+    user_profile_key: Option<String>,
 }
 
 impl AgentBuilder {
@@ -104,6 +120,11 @@ impl AgentBuilder {
             allowed_tools: None,
             response_cache: None,
             agent_id: None,
+            dialogue_state_store: None,
+            conversation_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
+            user_profile_key: None,
         }
     }
 
@@ -234,6 +255,31 @@ impl AgentBuilder {
         self
     }
 
+    pub fn dialogue_state_store(mut self, store: Option<Arc<DialogueStateStore>>) -> Self {
+        self.dialogue_state_store = store;
+        self
+    }
+
+    pub fn conversation_store(mut self, store: Option<Arc<dyn ConversationStorePort>>) -> Self {
+        self.conversation_store = store;
+        self
+    }
+
+    pub fn run_recipe_store(mut self, store: Option<Arc<dyn RunRecipeStorePort>>) -> Self {
+        self.run_recipe_store = store;
+        self
+    }
+
+    pub fn user_profile_store(mut self, store: Option<Arc<dyn UserProfileStorePort>>) -> Self {
+        self.user_profile_store = store;
+        self
+    }
+
+    pub fn user_profile_key(mut self, key: Option<String>) -> Self {
+        self.user_profile_key = key;
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let mut tools = self
             .tools
@@ -286,6 +332,11 @@ impl AgentBuilder {
             allowed_tools: allowed,
             response_cache: self.response_cache,
             agent_id: self.agent_id.unwrap_or_else(|| "default".to_string()),
+            dialogue_state_store: self.dialogue_state_store,
+            conversation_store: self.conversation_store,
+            run_recipe_store: self.run_recipe_store,
+            user_profile_store: self.user_profile_store,
+            user_profile_key: self.user_profile_key,
         })
     }
 }
@@ -334,8 +385,28 @@ impl Agent {
         self.memory_session_id = session_id;
     }
 
+    pub fn set_dialogue_state_store(&mut self, store: Option<Arc<DialogueStateStore>>) {
+        self.dialogue_state_store = store;
+    }
+
+    pub fn set_conversation_store(&mut self, store: Option<Arc<dyn ConversationStorePort>>) {
+        self.conversation_store = store;
+    }
+
+    pub fn set_run_recipe_store(&mut self, store: Option<Arc<dyn RunRecipeStorePort>>) {
+        self.run_recipe_store = store;
+    }
+
+    pub fn set_user_profile_store(&mut self, store: Option<Arc<dyn UserProfileStorePort>>) {
+        self.user_profile_store = store;
+    }
+
+    pub fn set_user_profile_key(&mut self, key: Option<String>) {
+        self.user_profile_key = key;
+    }
+
     pub async fn from_config(config: &Config) -> Result<Self> {
-        Self::from_config_with_memory(config, None).await
+        Self::from_config_with_runtime_context(config, None, None).await
     }
 
     /// Create an agent from config, optionally reusing a shared memory backend.
@@ -343,6 +414,16 @@ impl Agent {
     pub async fn from_config_with_memory(
         config: &Config,
         shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
+    ) -> Result<Self> {
+        Self::from_config_with_runtime_context(config, shared_memory, None).await
+    }
+
+    /// Create an agent from config with optional shared runtime ports used by
+    /// web/gateway paths for richer tool surfaces and turn context assembly.
+    pub async fn from_config_with_runtime_context(
+        config: &Config,
+        shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
+        conversation_store: Option<Arc<dyn ConversationStorePort>>,
     ) -> Result<Self> {
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::create_observer(
             &config.observability,
@@ -398,8 +479,10 @@ impl Agent {
             None,
             surreal_handle.clone(),
             None, // conversation_context — gateway sets via ws.rs
-            None, // conversation_store
+            conversation_store.clone(),
             None, // channel_registry
+            None, // standing_order_store
+            None, // run_recipe_store
         );
 
         // Bootstrap core memory blocks from workspace files (USER.md → user_knowledge).
@@ -411,12 +494,7 @@ impl Agent {
                 ("USER.md", user_md.as_deref()),
                 ("SOUL.md", soul_md.as_deref()),
             ];
-            bootstrap::ensure_core_blocks_seeded(
-                memory.as_ref(),
-                &resolved_agent_id,
-                &files,
-            )
-            .await;
+            bootstrap::ensure_core_blocks_seeded(memory.as_ref(), &resolved_agent_id, &files).await;
         }
 
         let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
@@ -517,6 +595,7 @@ impl Agent {
             .available_hints(available_hints)
             .route_model_by_hint(route_model_by_hint)
             .identity_config(config.identity.clone())
+            .conversation_store(conversation_store)
             .skills(crate::skills::load_skills_with_config(
                 &config.workspace_dir,
                 config,
@@ -699,14 +778,37 @@ impl Agent {
         };
         let turn_ctx = tc::assemble_turn_context(
             self.memory.as_ref(),
+            self.run_recipe_store.as_ref().map(|store| store.as_ref()),
+            self.conversation_store.as_ref().map(|store| store.as_ref()),
             user_message,
             &self.agent_id,
             self.memory_session_id.as_deref(),
+            None,
             &self.prompt_budget,
             continuation,
         )
         .await;
         let formatted = turn_context_fmt::format_turn_context(&turn_ctx, &self.prompt_budget);
+        let dialogue_state = self.memory_session_id.as_deref().and_then(|session_id| {
+            self.dialogue_state_store
+                .as_ref()
+                .and_then(|store| store.get(session_id))
+        });
+        let user_profile = match (
+            self.user_profile_store.as_ref(),
+            self.user_profile_key.as_deref(),
+        ) {
+            (Some(store), Some(key)) => store.load(key),
+            _ => None,
+        };
+        let interpretation_block = turn_interpretation::build_turn_interpretation(
+            user_profile,
+            None,
+            dialogue_state.as_ref(),
+        )
+        .and_then(|interpretation| {
+            turn_interpretation::format_turn_interpretation(&interpretation)
+        });
 
         // Core blocks → system message (MemGPT: always in prompt)
         if !formatted.core_blocks_system.is_empty() {
@@ -724,6 +826,18 @@ impl Agent {
                     "{CORE_MEMORY_MARKER}{}",
                     formatted.core_blocks_system
                 ))));
+        }
+        if let Some(block) = interpretation_block {
+            const INTERPRETATION_MARKER: &str = "[runtime-interpretation]\n";
+            self.history.retain(|msg| {
+                if let ConversationMessage::Chat(chat) = msg {
+                    !(chat.role == "system" && chat.content.starts_with(INTERPRETATION_MARKER))
+                } else {
+                    true
+                }
+            });
+            self.history
+                .push(ConversationMessage::Chat(ChatMessage::system(block)));
         }
 
         if self.auto_save {
@@ -750,6 +864,7 @@ impl Agent {
         self.turn_count += 1;
 
         let effective_model = self.classify_model(user_message);
+        let mut tools_used_this_turn: Vec<String> = Vec::new();
 
         for _ in 0..self.config.max_tool_iterations {
             let mut messages = self.tool_dispatcher.to_provider_messages(&self.history);
@@ -759,8 +874,7 @@ impl Agent {
             if !ephemeral_prefix.is_empty() {
                 if let Some(last_user) = messages.iter_mut().rfind(|m| m.role == "user") {
                     if last_user.content == user_message {
-                        last_user.content =
-                            format!("{ephemeral_prefix}{}", last_user.content);
+                        last_user.content = format!("{ephemeral_prefix}{}", last_user.content);
                     }
                 }
             }
@@ -875,6 +989,26 @@ impl Agent {
                     )));
                 self.trim_history();
 
+                if let (Some(session_id), Some(store)) = (
+                    self.memory_session_id.as_deref(),
+                    self.dialogue_state_store.as_ref(),
+                ) {
+                    let existing = store.get(session_id);
+                    if dialogue_state_service::should_materialize_state(
+                        existing.as_ref(),
+                        &tools_used_this_turn,
+                    ) {
+                        let mut state = existing.unwrap_or_default();
+                        dialogue_state_service::update_state_from_turn(
+                            &mut state,
+                            user_message,
+                            &tools_used_this_turn,
+                            &final_text,
+                        );
+                        store.set(session_id, state);
+                    }
+                }
+
                 return Ok(final_text);
             }
 
@@ -892,6 +1026,8 @@ impl Agent {
                 tool_calls: response.tool_calls.clone(),
                 reasoning_content: response.reasoning_content.clone(),
             });
+
+            tools_used_this_turn.extend(calls.iter().map(|call| call.name.clone()));
 
             let results = self.execute_tools(&calls).await;
             let formatted = self.tool_dispatcher.format_results(&results);

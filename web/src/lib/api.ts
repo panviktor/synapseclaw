@@ -307,44 +307,6 @@ export function getContextBudget(agentId?: string | null): Promise<ContextBudget
 }
 
 // ---------------------------------------------------------------------------
-// Learning Signal Patterns
-// ---------------------------------------------------------------------------
-
-export interface SignalPattern {
-  id: string;
-  signal_type: string;
-  pattern: string;
-  match_mode: string;
-  language: string;
-  enabled: boolean;
-}
-
-export function getLearningPatterns(): Promise<SignalPattern[]> {
-  return apiFetch<{ patterns: SignalPattern[] }>('/api/memory/learning-patterns').then(
-    (data) => data.patterns ?? [],
-  );
-}
-
-export function addLearningPattern(pattern: Omit<SignalPattern, 'id'>): Promise<{ id: string }> {
-  return apiFetch<{ id: string }>('/api/memory/learning-patterns', {
-    method: 'POST',
-    body: JSON.stringify(pattern),
-  });
-}
-
-export function deleteLearningPattern(id: string): Promise<void> {
-  return apiFetch<void>(`/api/memory/learning-patterns/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
-}
-
-export function seedLearningPatterns(): Promise<{ seeded: number }> {
-  return apiFetch<{ seeded: number }>('/api/memory/learning-patterns/seed', {
-    method: 'POST',
-  });
-}
-
-// ---------------------------------------------------------------------------
 // Cost
 // ---------------------------------------------------------------------------
 

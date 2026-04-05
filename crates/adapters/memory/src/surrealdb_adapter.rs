@@ -727,15 +727,14 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             let policy = RetentionPolicy::default();
             let weights = RetentionWeights::default();
             for r in &mut results {
-                let age_hours = if let Ok(ts) =
-                    chrono::DateTime::parse_from_rfc3339(&r.entry.timestamp)
-                {
-                    (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
-                        .num_hours()
-                        .max(0) as f64
-                } else {
-                    0.0
-                };
+                let age_hours =
+                    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&r.entry.timestamp) {
+                        (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
+                            .num_hours()
+                            .max(0) as f64
+                    } else {
+                        0.0
+                    };
                 // Extract access_count from the search row (stored in episode table).
                 let access_count = row_map
                     .get(&r.entry.id)
@@ -1608,7 +1607,10 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
 
     async fn list_signal_patterns(
         &self,
-    ) -> Result<Vec<synapse_domain::application::services::learning_signals::SignalPattern>, MemoryError> {
+    ) -> Result<
+        Vec<synapse_domain::application::services::learning_signals::SignalPattern>,
+        MemoryError,
+    > {
         // Delegate to the inherent method on SurrealMemoryAdapter
         SurrealMemoryAdapter::list_signal_patterns(self).await
     }
@@ -1654,8 +1656,10 @@ impl SurrealMemoryAdapter {
     /// Load all signal patterns from DB.
     pub async fn list_signal_patterns(
         &self,
-    ) -> Result<Vec<synapse_domain::application::services::learning_signals::SignalPattern>, synapse_domain::domain::memory::MemoryError>
-    {
+    ) -> Result<
+        Vec<synapse_domain::application::services::learning_signals::SignalPattern>,
+        synapse_domain::domain::memory::MemoryError,
+    > {
         use synapse_domain::application::services::learning_signals::SignalPattern;
         let mut resp = self
             .db
@@ -1672,7 +1676,11 @@ impl SurrealMemoryAdapter {
                     id: v.get("id")?.to_string().trim_matches('"').to_string(),
                     signal_type: v.get("signal_type")?.as_str()?.to_string(),
                     pattern: v.get("pattern")?.as_str()?.to_string(),
-                    match_mode: v.get("match_mode")?.as_str().unwrap_or("starts_with").to_string(),
+                    match_mode: v
+                        .get("match_mode")?
+                        .as_str()
+                        .unwrap_or("starts_with")
+                        .to_string(),
                     language: v.get("language")?.as_str().unwrap_or("en").to_string(),
                     enabled: v.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
                 })
@@ -1733,7 +1741,9 @@ impl SurrealMemoryAdapter {
     }
 
     /// Seed default patterns if table is empty.
-    pub async fn seed_default_signal_patterns(&self) -> Result<usize, synapse_domain::domain::memory::MemoryError> {
+    pub async fn seed_default_signal_patterns(
+        &self,
+    ) -> Result<usize, synapse_domain::domain::memory::MemoryError> {
         let existing = self.list_signal_patterns().await?;
         if !existing.is_empty() {
             return Ok(0);

@@ -1,46 +1,46 @@
-//! Session search tool — search past conversation sessions.
+//! Precedent search tool — search prior successful execution patterns.
 //!
-//! Uses the shared retrieval service so session search logic is not duplicated
-//! inside tools.
+//! Uses the shared retrieval backbone so recipe/precedent lookup is consistent
+//! with the rest of Phase 4.8 retrieval.
 
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::application::services::retrieval_service;
-use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
+use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 
-pub struct SessionSearchTool {
+pub struct PrecedentSearchTool {
     memory: Arc<dyn UnifiedMemoryPort>,
-    store: Arc<dyn ConversationStorePort>,
+    store: Arc<dyn RunRecipeStorePort>,
+    agent_id: String,
 }
 
-impl SessionSearchTool {
-    pub fn new(memory: Arc<dyn UnifiedMemoryPort>, store: Arc<dyn ConversationStorePort>) -> Self {
-        Self { memory, store }
+impl PrecedentSearchTool {
+    pub fn new(
+        memory: Arc<dyn UnifiedMemoryPort>,
+        store: Arc<dyn RunRecipeStorePort>,
+        agent_id: String,
+    ) -> Self {
+        Self {
+            memory,
+            store,
+            agent_id,
+        }
     }
-}
-
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let truncated: String = text.chars().take(max_chars).collect();
-    format!("{truncated}...")
 }
 
 #[async_trait]
-impl Tool for SessionSearchTool {
+impl Tool for PrecedentSearchTool {
     fn name(&self) -> &str {
-        "session_search"
+        "precedent_search"
     }
 
     fn description(&self) -> &str {
-        "Search past conversation sessions semantically. Returns matching sessions \
-         with labels, summaries, and transcript-backed recap snippets. Use this \
-         when the user references past discussions, previous decisions, or \
-         'what we talked about before'."
+        "Search prior successful execution patterns and reusable recipes. \
+         Use when the user asks to do something like before, repeat a prior \
+         approach, or find the last successful pattern for a task."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -49,16 +49,11 @@ impl Tool for SessionSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Search keywords"
+                    "description": "Task description or request to match against prior successful work"
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Max results (default 5, max 10)"
-                },
-                "kind": {
-                    "type": "string",
-                    "enum": ["web", "channel", "ipc"],
-                    "description": "Filter by session kind (optional)"
+                    "description": "Max results (default 3, max 5)"
                 }
             },
             "required": ["query"]
@@ -70,9 +65,8 @@ impl Tool for SessionSearchTool {
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
-            .unwrap_or(5)
-            .min(10) as usize;
-        let kind_filter = args.get("kind").and_then(|v| v.as_str());
+            .unwrap_or(3)
+            .min(5) as usize;
 
         if query.trim().is_empty() {
             return Ok(ToolResult {
@@ -82,46 +76,40 @@ impl Tool for SessionSearchTool {
             });
         }
 
-        let hits = retrieval_service::search_sessions(
+        let hits = retrieval_service::search_run_recipes(
             self.memory.as_ref(),
             self.store.as_ref(),
+            &self.agent_id,
             query,
-            kind_filter,
             limit,
         )
         .await;
 
         if hits.is_empty() {
             return Ok(ToolResult {
-                output: format!("No sessions found matching '{query}'"),
+                output: format!("No successful precedents found matching '{query}'"),
                 success: true,
                 error: None,
             });
         }
 
-        let mut output = format!("Found {} session(s) matching '{query}':\n\n", hits.len());
+        let mut output = format!("Found {} precedent(s) matching '{query}':\n\n", hits.len());
         for (index, hit) in hits.iter().enumerate() {
-            let label = hit.label.as_deref().unwrap_or("(untitled)");
-            let summary = hit
-                .summary
-                .as_deref()
-                .map(|summary| truncate_chars(summary, 150))
-                .unwrap_or_else(|| "(no summary)".into());
-            let kind = hit.kind.to_string();
-
             output.push_str(&format!(
-                "{}. **{}** ({})\n   {} messages | {}\n",
+                "{}. **{}** (score {}, successes {})\n",
                 index + 1,
-                label,
-                kind,
-                hit.message_count,
-                summary
+                hit.task_family,
+                hit.score,
+                hit.success_count
             ));
-
-            if let Some(ref recap) = hit.recap {
-                output.push_str(&format!("   Recent transcript match: {}\n", recap));
+            output.push_str(&format!("   Summary: {}\n", hit.summary));
+            output.push_str(&format!("   Sample request: {}\n", hit.sample_request));
+            if !hit.tool_pattern.is_empty() {
+                output.push_str(&format!(
+                    "   Tool pattern: {}\n",
+                    hit.tool_pattern.join(", ")
+                ));
             }
-
             output.push('\n');
         }
 
@@ -137,97 +125,17 @@ impl Tool for SessionSearchTool {
 mod tests {
     use super::*;
     use async_trait::async_trait;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-    use synapse_domain::domain::conversation::{
-        ConversationEvent, ConversationKind, ConversationSession, EventType,
-    };
     use synapse_domain::domain::memory::{
         AgentId, ConsolidationReport, CoreMemoryBlock, Entity, HybridSearchResult, MemoryCategory,
         MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, SearchResult, SessionId,
         Skill, SkillUpdate, TemporalFact, Visibility,
     };
+    use synapse_domain::domain::run_recipe::RunRecipe;
     use synapse_domain::ports::memory::{
         ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
         WorkingMemoryPort,
     };
-
-    #[derive(Default)]
-    struct TestStore {
-        sessions: Vec<ConversationSession>,
-        events: HashMap<String, Vec<ConversationEvent>>,
-    }
-
-    #[async_trait]
-    impl ConversationStorePort for TestStore {
-        async fn get_session(&self, key: &str) -> Option<ConversationSession> {
-            self.sessions
-                .iter()
-                .find(|session| session.key == key)
-                .cloned()
-        }
-
-        async fn list_sessions(&self, _prefix: Option<&str>) -> Vec<ConversationSession> {
-            self.sessions.clone()
-        }
-
-        async fn upsert_session(&self, _session: &ConversationSession) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn delete_session(&self, _key: &str) -> anyhow::Result<bool> {
-            Ok(false)
-        }
-
-        async fn touch_session(&self, _key: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn append_event(
-            &self,
-            _session_key: &str,
-            _event: &ConversationEvent,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn get_events(&self, session_key: &str, _limit: usize) -> Vec<ConversationEvent> {
-            self.events.get(session_key).cloned().unwrap_or_default()
-        }
-
-        async fn clear_events(&self, _session_key: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn update_label(&self, _key: &str, _label: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn update_goal(&self, _key: &str, _goal: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn increment_message_count(&self, _key: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn add_token_usage(
-            &self,
-            _key: &str,
-            _input: i64,
-            _output: i64,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        async fn get_summary(&self, _key: &str) -> Option<String> {
-            None
-        }
-
-        async fn set_summary(&self, _key: &str, _summary: &str) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
+    use synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore;
 
     #[derive(Default)]
     struct TestMemory;
@@ -419,60 +327,31 @@ mod tests {
         }
     }
 
-    fn session(key: &str, label: &str, summary: &str, last_active: u64) -> ConversationSession {
-        ConversationSession {
-            key: key.into(),
-            kind: ConversationKind::Web,
-            label: Some(label.into()),
-            summary: Some(summary.into()),
-            current_goal: None,
-            created_at: 0,
-            last_active,
-            message_count: 4,
-            input_tokens: 0,
-            output_tokens: 0,
-        }
-    }
-
-    fn event(event_type: EventType, content: &str) -> ConversationEvent {
-        ConversationEvent {
-            event_type,
-            actor: "user".into(),
-            content: content.into(),
-            tool_name: None,
-            run_id: None,
-            input_tokens: None,
-            output_tokens: None,
-            timestamp: 1,
-        }
-    }
-
     #[tokio::test]
-    async fn finds_transcript_only_match() {
-        let mut store = TestStore::default();
+    async fn finds_semantically_similar_precedent() {
+        let store = InMemoryRunRecipeStore::new();
         store
-            .sessions
-            .push(session("web:one", "Infra", "Deployment notes", 10));
-        store.events.insert(
-            "web:one".into(),
-            vec![
-                event(EventType::User, "We should move weather cache to Redis"),
-                event(
-                    EventType::Assistant,
-                    "Agreed, weather cache belongs in Redis.",
-                ),
-            ],
-        );
+            .upsert(RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "deploy".into(),
+                sample_request: "deploy the latest release to production".into(),
+                summary: "Check staging first, then ship the release".into(),
+                tool_pattern: vec!["shell".into(), "git".into()],
+                success_count: 3,
+                updated_at: 10,
+            })
+            .unwrap();
 
-        let tool = SessionSearchTool::new(Arc::new(TestMemory), Arc::new(store));
+        let tool = PrecedentSearchTool::new(Arc::new(TestMemory), Arc::new(store), "agent".into());
+
         let result = tool
-            .execute(serde_json::json!({"query": "weather cache"}))
+            .execute(serde_json::json!({"query": "ship it to prod"}))
             .await
             .unwrap();
 
         assert!(result.success);
-        assert!(result.output.contains("Recent transcript match"));
-        assert!(result.output.contains("weather cache"));
+        assert!(result.output.contains("deploy"));
+        assert!(result.output.contains("Tool pattern: shell, git"));
     }
 
     fn test_embedding(text: &str) -> Vec<f32> {
@@ -480,10 +359,10 @@ mod tests {
         let mut vec = vec![0.0f32; 4];
         for token in lowered.split(|c: char| !c.is_alphanumeric()) {
             match token {
-                "weather" | "forecast" => vec[0] += 1.0,
-                "cache" | "redis" => vec[1] += 1.0,
-                "deploy" | "release" | "ship" | "rollout" => vec[2] += 1.0,
-                "prod" | "production" => vec[3] += 1.0,
+                "deploy" | "release" | "rollout" | "ship" => vec[0] += 1.0,
+                "prod" | "production" => vec[1] += 1.0,
+                "weather" | "forecast" => vec[2] += 1.0,
+                "berlin" | "city" => vec[3] += 1.0,
                 _ => {}
             }
         }

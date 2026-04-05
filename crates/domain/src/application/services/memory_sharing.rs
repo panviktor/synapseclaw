@@ -214,8 +214,12 @@ mod tests {
     #[test]
     fn authority_wins() {
         let result = resolve_conflict(
-            &"agent-a".to_string(), 0.9, 1000,
-            &"agent-b".to_string(), 0.5, 900,
+            &"agent-a".to_string(),
+            0.9,
+            1000,
+            &"agent-b".to_string(),
+            0.5,
+            900,
             Some(&"agent-b".to_string()), // agent-b is authoritative
         );
         assert_eq!(result, ConflictResolution::ReplaceWithIncoming);
@@ -224,8 +228,12 @@ mod tests {
     #[test]
     fn recency_wins_without_authority() {
         let result = resolve_conflict(
-            &"a".to_string(), 0.8, 1000,
-            &"b".to_string(), 0.8, 2000, // much newer
+            &"a".to_string(),
+            0.8,
+            1000,
+            &"b".to_string(),
+            0.8,
+            2000, // much newer
             None,
         );
         assert_eq!(result, ConflictResolution::ReplaceWithIncoming);
@@ -234,8 +242,12 @@ mod tests {
     #[test]
     fn confidence_wins_on_tie() {
         let result = resolve_conflict(
-            &"a".to_string(), 0.5, 1000,
-            &"b".to_string(), 0.9, 1000, // same time, higher confidence
+            &"a".to_string(),
+            0.5,
+            1000,
+            &"b".to_string(),
+            0.9,
+            1000, // same time, higher confidence
             None,
         );
         assert_eq!(result, ConflictResolution::ReplaceWithIncoming);
@@ -244,8 +256,12 @@ mod tests {
     #[test]
     fn keep_both_on_full_tie() {
         let result = resolve_conflict(
-            &"a".to_string(), 0.8, 1000,
-            &"b".to_string(), 0.8, 1000, // same everything
+            &"a".to_string(),
+            0.8,
+            1000,
+            &"b".to_string(),
+            0.8,
+            1000, // same everything
             None,
         );
         assert_eq!(result, ConflictResolution::KeepBoth);

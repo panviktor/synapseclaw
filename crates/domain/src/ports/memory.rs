@@ -274,7 +274,8 @@ pub trait UnifiedMemoryPort:
     /// Returns empty vec if not supported (patterns fall back to built-in defaults).
     async fn list_signal_patterns(
         &self,
-    ) -> Result<Vec<crate::application::services::learning_signals::SignalPattern>, MemoryError> {
+    ) -> Result<Vec<crate::application::services::learning_signals::SignalPattern>, MemoryError>
+    {
         Ok(vec![])
     }
 

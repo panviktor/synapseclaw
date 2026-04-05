@@ -54,9 +54,9 @@ impl LoopDetector {
         // Check for repeated identical calls
         if self.history.len() >= self.max_repeats {
             let recent = &self.history[self.history.len() - self.max_repeats..];
-            let all_same = recent.windows(2).all(|w| {
-                w[0].tool_name == w[1].tool_name && w[0].args_hash == w[1].args_hash
-            });
+            let all_same = recent
+                .windows(2)
+                .all(|w| w[0].tool_name == w[1].tool_name && w[0].args_hash == w[1].args_hash);
             if all_same {
                 return LoopAction::SuggestClarify;
             }

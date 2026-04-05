@@ -227,7 +227,12 @@ pub async fn handle_api_agent_memory_stats_proxy(
         .unwrap_or_default();
 
     let url = format!("{}/api/memory/stats", agent.gateway_url);
-    match client.get(&url).bearer_auth(&agent.proxy_token).send().await {
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(body) => Json(body).into_response(),
             Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
@@ -264,7 +269,12 @@ pub async fn handle_api_agent_context_budget_proxy(
         .unwrap_or_default();
 
     let url = format!("{}/api/memory/context-budget", agent.gateway_url);
-    match client.get(&url).bearer_auth(&agent.proxy_token).send().await {
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(body) => Json(body).into_response(),
             Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
@@ -860,13 +870,29 @@ pub async fn handle_api_memory_stats(
     let mut by_category = Vec::new();
     let categories = [
         ("core", synapse_domain::domain::memory::MemoryCategory::Core),
-        ("daily", synapse_domain::domain::memory::MemoryCategory::Daily),
-        ("conversation", synapse_domain::domain::memory::MemoryCategory::Conversation),
-        ("skill", synapse_domain::domain::memory::MemoryCategory::Skill),
-        ("reflection", synapse_domain::domain::memory::MemoryCategory::Reflection),
+        (
+            "daily",
+            synapse_domain::domain::memory::MemoryCategory::Daily,
+        ),
+        (
+            "conversation",
+            synapse_domain::domain::memory::MemoryCategory::Conversation,
+        ),
+        (
+            "skill",
+            synapse_domain::domain::memory::MemoryCategory::Skill,
+        ),
+        (
+            "reflection",
+            synapse_domain::domain::memory::MemoryCategory::Reflection,
+        ),
     ];
     for (name, cat) in &categories {
-        let count = mem.list(Some(cat), None, 10_000).await.map(|v| v.len()).unwrap_or(0) as u64;
+        let count = mem
+            .list(Some(cat), None, 10_000)
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0) as u64;
         by_category.push(serde_json::json!({"category": name, "count": count}));
     }
 
@@ -894,8 +920,16 @@ pub async fn handle_api_memory_stats(
         time_range: None,
         limit: 10_000,
     };
-    let entities = mem.search_entities(&entity_query).await.map(|v| v.len()).unwrap_or(0);
-    let skills = mem.find_skills(&entity_query).await.map(|v| v.len()).unwrap_or(0);
+    let entities = mem
+        .search_entities(&entity_query)
+        .await
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let skills = mem
+        .find_skills(&entity_query)
+        .await
+        .map(|v| v.len())
+        .unwrap_or(0);
     let reflections = mem
         .get_relevant_reflections(&entity_query)
         .await
@@ -937,101 +971,6 @@ pub async fn handle_api_context_budget(
         "min_relevance_score": config.memory.min_relevance_score,
     }))
     .into_response()
-}
-
-// ── Learning Signal Patterns API ──────────────────────────────────
-
-/// GET /api/memory/learning-patterns — list all signal patterns
-pub async fn handle_api_learning_patterns_list(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-    let Some(ref db) = state.surreal else {
-        let defaults = synapse_domain::application::services::learning_signals::default_patterns();
-        return Json(serde_json::json!({ "patterns": defaults, "source": "builtin" }))
-            .into_response();
-    };
-    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
-    match adapter.list_signal_patterns().await {
-        Ok(patterns) => Json(serde_json::json!({ "patterns": patterns })).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        )
-            .into_response(),
-    }
-}
-
-/// POST /api/memory/learning-patterns — add a new signal pattern
-pub async fn handle_api_learning_patterns_add(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<synapse_domain::application::services::learning_signals::SignalPattern>,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-    let Some(ref db) = state.surreal else {
-        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "DB not available"}))).into_response();
-    };
-    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
-    match adapter.add_signal_pattern(&body).await {
-        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        )
-            .into_response(),
-    }
-}
-
-/// DELETE /api/memory/learning-patterns/{id} — delete a signal pattern
-pub async fn handle_api_learning_patterns_delete(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    axum::extract::Path(id): axum::extract::Path<String>,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-    let Some(ref db) = state.surreal else {
-        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "DB not available"}))).into_response();
-    };
-    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
-    match adapter.delete_signal_pattern(&id).await {
-        Ok(true) => Json(serde_json::json!({"deleted": true})).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        )
-            .into_response(),
-    }
-}
-
-/// POST /api/memory/learning-patterns/seed — seed default patterns (if empty)
-pub async fn handle_api_learning_patterns_seed(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-    let Some(ref db) = state.surreal else {
-        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "DB not available"}))).into_response();
-    };
-    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
-    match adapter.seed_default_signal_patterns().await {
-        Ok(count) => Json(serde_json::json!({"seeded": count})).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        )
-            .into_response(),
-    }
 }
 
 /// GET /api/cost — cost summary

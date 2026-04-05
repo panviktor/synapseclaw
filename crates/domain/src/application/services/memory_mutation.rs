@@ -27,10 +27,7 @@ pub async fn evaluate_candidate(
     thresholds: &MutationThresholds,
 ) -> MutationDecision {
     // Fetch shortlist of similar existing memories
-    let existing = match mem
-        .recall(&candidate.text, 3, None)
-        .await
-    {
+    let existing = match mem.recall(&candidate.text, 3, None).await {
         Ok(entries) => entries,
         Err(_) => {
             // If recall fails, default to Add (safe — no data loss)
@@ -80,10 +77,13 @@ pub async fn evaluate_candidate(
 
     // Apply AUDN thresholds
     let (action, reason) = if best_score >= thresholds.noop_threshold {
-        (MutationAction::Noop, format!(
-            "near-duplicate (score {best_score:.3}), existing: {}",
-            truncate(&best_entry.content, 80)
-        ))
+        (
+            MutationAction::Noop,
+            format!(
+                "near-duplicate (score {best_score:.3}), existing: {}",
+                truncate(&best_entry.content, 80)
+            ),
+        )
     } else if best_score >= thresholds.update_threshold
         && same_category(&candidate.category, &best_entry.category)
     {
@@ -110,9 +110,10 @@ pub async fn evaluate_candidate(
             )
         }
     } else {
-        (MutationAction::Add, format!(
-            "sufficiently distinct (best score {best_score:.3})"
-        ))
+        (
+            MutationAction::Add,
+            format!("sufficiently distinct (best score {best_score:.3})"),
+        )
     };
 
     tracing::debug!(

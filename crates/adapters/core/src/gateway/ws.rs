@@ -27,6 +27,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// The sub-protocol we support for the chat WebSocket.
@@ -478,8 +479,16 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
     // or fall back to legacy ChatDb path.
     let db_session;
     let config = state.config.lock().clone();
-    let mut agent =
-        crate::agent::Agent::from_config_with_memory(&config, Some(state.mem.clone())).await?;
+    let mut agent = crate::agent::Agent::from_config_with_runtime_context(
+        &config,
+        Some(state.mem.clone()),
+        state.conversation_store.clone(),
+    )
+    .await?;
+    agent.set_dialogue_state_store(Some(Arc::clone(&state.dialogue_state_store)));
+    agent.set_conversation_store(state.conversation_store.clone());
+    agent.set_run_recipe_store(Some(Arc::clone(&state.run_recipe_store)));
+    agent.set_user_profile_store(Some(Arc::clone(&state.user_profile_store)));
 
     let now = Instant::now();
     let _now_secs_val = now_secs();
@@ -920,6 +929,8 @@ async fn handle_chat_send_rpc(
             .lock()
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         if let Some(s) = sessions.get_mut(&session_key) {
+            s.agent
+                .set_user_profile_key(Some(format!("web:{token_prefix}")));
             s.run_id = Some(run_id.clone());
             s.abort_tx = Some(abort_tx);
             s.last_active = Instant::now();
@@ -1045,14 +1056,15 @@ async fn handle_chat_send_rpc(
             // ── Post-turn learning (fire-and-forget via orchestrator) ──
             {
                 let mem = state.mem.clone();
-                let input = synapse_domain::application::services::post_turn_orchestrator::PostTurnInput {
-                    agent_id: state.agent_id.clone(),
-                    user_message: message.clone(),
-                    assistant_response: response.clone(),
-                    tools_used: extract_tool_names(&tool_history),
-                    auto_save_enabled: state.auto_save,
-                    event_tx: Some(state.event_tx.clone()),
-                };
+                let input =
+                    synapse_domain::application::services::post_turn_orchestrator::PostTurnInput {
+                        agent_id: state.agent_id.clone(),
+                        user_message: message.clone(),
+                        assistant_response: response.clone(),
+                        tools_used: extract_tool_names(&tool_history),
+                        auto_save_enabled: state.auto_save,
+                        event_tx: Some(state.event_tx.clone()),
+                    };
                 tokio::spawn(async move {
                     synapse_domain::application::services::post_turn_orchestrator::execute_post_turn_learning(
                         mem.as_ref(), input,
@@ -1126,9 +1138,16 @@ async fn run_agent_turn_with_abort(
 ) -> anyhow::Result<String> {
     // Clone config before await to avoid holding MutexGuard across await.
     let config_snapshot = state.config.lock().clone();
-    let replacement_agent =
-        crate::agent::Agent::from_config_with_memory(&config_snapshot, Some(state.mem.clone()))
-            .await?;
+    let replacement_agent = crate::agent::Agent::from_config_with_runtime_context(
+        &config_snapshot,
+        Some(state.mem.clone()),
+        state.conversation_store.clone(),
+    )
+    .await?;
+    let mut replacement_agent = replacement_agent;
+    replacement_agent.set_dialogue_state_store(Some(Arc::clone(&state.dialogue_state_store)));
+    replacement_agent.set_conversation_store(state.conversation_store.clone());
+    replacement_agent.set_run_recipe_store(Some(Arc::clone(&state.run_recipe_store)));
     let mut agent = {
         let mut sessions = state
             .chat_sessions

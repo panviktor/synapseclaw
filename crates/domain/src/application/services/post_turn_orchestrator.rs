@@ -61,10 +61,7 @@ pub async fn execute_post_turn_learning(
 ) -> PostTurnReport {
     // Load signal patterns from memory port — unified for all transports.
     let patterns = mem.list_signal_patterns().await.unwrap_or_default();
-    let signal = learning_signals::classify_signal_with_patterns(
-        &input.user_message,
-        &patterns,
-    );
+    let signal = learning_signals::classify_signal_with_patterns(&input.user_message, &patterns);
     let user_chars = input.user_message.chars().count();
 
     let mut report = PostTurnReport {
@@ -110,9 +107,8 @@ pub async fn execute_post_turn_learning(
     }
 
     // ── 2. Background consolidation (only for non-explicit turns) ──
-    let should_consolidate = !signal.is_explicit()
-        && input.auto_save_enabled
-        && user_chars >= CONSOLIDATE_MIN_CHARS;
+    let should_consolidate =
+        !signal.is_explicit() && input.auto_save_enabled && user_chars >= CONSOLIDATE_MIN_CHARS;
 
     if should_consolidate {
         if let Err(e) = mem

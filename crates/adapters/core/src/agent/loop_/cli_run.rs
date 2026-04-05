@@ -112,7 +112,11 @@ pub async fn run_with_shared_memory(
             None, // Agents create their own IpcClient (no shared daemon client)
             None,
             surreal_handle,
-            None, None, None, // orchestration tool ports (CLI has no live conversation)
+            None,
+            None,
+            None,
+            None, // orchestration tool ports (CLI has no live conversation)
+            None,
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -738,7 +742,11 @@ pub async fn process_message(
         None,
         None,
         surreal_handle_pm,
-        None, None, None,
+        None,
+        None,
+        None,
+        None,
+        None,
     );
     // ── Wire MCP tools (non-fatal) — process_message path ────────
     // NOTE: Same ordering contract as the CLI path above — MCP tools must be

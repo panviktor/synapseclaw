@@ -291,13 +291,6 @@ export default function Memory() {
                 Back To Workbench
               </button>
             )}
-            <button
-              onClick={() => navigate('/learning-patterns')}
-              className="btn-secondary inline-flex items-center gap-2 px-4 py-2 text-sm"
-            >
-              <Sparkles className="h-4 w-4" />
-              Learning Patterns
-            </button>
             {!remoteScope && (
               <button
                 onClick={() => setShowForm(true)}
@@ -403,16 +396,6 @@ export default function Memory() {
                   <div>
                     <p className="text-sm font-medium text-[var(--text-primary)]">Agent Workbench</p>
                     <p className="mt-1 text-xs text-[var(--text-muted)]">Jump back into the live transcript and memory pulse.</p>
-                  </div>
-                  <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
-                </button>
-                <button
-                  onClick={() => navigate('/learning-patterns')}
-                  className="flex w-full items-center justify-between rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3 text-left transition-colors hover:border-[var(--accent-primary)]/30"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-[var(--text-primary)]">Learning Signals</p>
-                    <p className="mt-1 text-xs text-[var(--text-muted)]">Tune explicit learning triggers and pattern coverage.</p>
                   </div>
                   <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
                 </button>

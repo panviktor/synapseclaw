@@ -66,10 +66,7 @@ pub fn build_agent_xml(provider: Box<dyn Provider>, tools: Vec<Box<dyn Tool>>) -
 }
 
 /// Build an agent with `NativeToolDispatcher` (recording variant, no custom memory loader).
-pub fn build_recording_agent(
-    provider: Box<dyn Provider>,
-    tools: Vec<Box<dyn Tool>>,
-) -> Agent {
+pub fn build_recording_agent(provider: Box<dyn Provider>, tools: Vec<Box<dyn Tool>>) -> Agent {
     Agent::builder()
         .provider(provider)
         .tools(tools)

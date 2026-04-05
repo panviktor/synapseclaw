@@ -95,7 +95,13 @@ impl Tool for TodoTool {
                 let mut store = self.store.write();
                 let items = store.entry(key).or_default();
                 if items.len() >= MAX_ITEMS {
-                    return Ok(ToolResult { output: format!("Task list full ({MAX_ITEMS} max). Complete or remove items first."), success: false, error: None });
+                    return Ok(ToolResult {
+                        output: format!(
+                            "Task list full ({MAX_ITEMS} max). Complete or remove items first."
+                        ),
+                        success: false,
+                        error: None,
+                    });
                 }
                 let id = items.last().map_or(1, |i| i.id + 1);
                 items.push(TodoItem {
@@ -103,7 +109,11 @@ impl Tool for TodoTool {
                     text: text.clone(),
                     status: "pending".into(),
                 });
-                Ok(ToolResult { output: format!("Added task #{id}: {text}"), success: true, error: None })
+                Ok(ToolResult {
+                    output: format!("Added task #{id}: {text}"),
+                    success: true,
+                    error: None,
+                })
             }
             "list" => {
                 let store = self.store.read();
@@ -122,9 +132,17 @@ impl Tool for TodoTool {
                                 item.id, item.status, item.text
                             ));
                         }
-                        Ok(ToolResult { output: out, success: true, error: None })
+                        Ok(ToolResult {
+                            output: out,
+                            success: true,
+                            error: None,
+                        })
                     }
-                    _ => Ok(ToolResult { output: "No tasks. Use action=add to create one.".into(), success: true, error: None }),
+                    _ => Ok(ToolResult {
+                        output: "No tasks. Use action=add to create one.".into(),
+                        success: true,
+                        error: None,
+                    }),
                 }
             }
             "update" => {
@@ -136,10 +154,18 @@ impl Tool for TodoTool {
                         if !text.is_empty() {
                             item.text = text.to_string();
                         }
-                        return Ok(ToolResult { output: format!("Updated task #{id}"), success: true, error: None });
+                        return Ok(ToolResult {
+                            output: format!("Updated task #{id}"),
+                            success: true,
+                            error: None,
+                        });
                     }
                 }
-                Ok(ToolResult { output: format!("Task #{id} not found"), success: false, error: None })
+                Ok(ToolResult {
+                    output: format!("Task #{id} not found"),
+                    success: false,
+                    error: None,
+                })
             }
             "complete" => {
                 let id = args.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
@@ -147,10 +173,18 @@ impl Tool for TodoTool {
                 if let Some(items) = store.get_mut(&key) {
                     if let Some(item) = items.iter_mut().find(|i| i.id == id) {
                         item.status = "done".into();
-                        return Ok(ToolResult { output: format!("✅ Task #{id} completed"), success: true, error: None });
+                        return Ok(ToolResult {
+                            output: format!("✅ Task #{id} completed"),
+                            success: true,
+                            error: None,
+                        });
                     }
                 }
-                Ok(ToolResult { output: format!("Task #{id} not found"), success: false, error: None })
+                Ok(ToolResult {
+                    output: format!("Task #{id} not found"),
+                    success: false,
+                    error: None,
+                })
             }
             "remove" => {
                 let id = args.get("id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
@@ -159,17 +193,35 @@ impl Tool for TodoTool {
                     let before = items.len();
                     items.retain(|i| i.id != id);
                     if items.len() < before {
-                        return Ok(ToolResult { output: format!("Removed task #{id}"), success: true, error: None });
+                        return Ok(ToolResult {
+                            output: format!("Removed task #{id}"),
+                            success: true,
+                            error: None,
+                        });
                     }
                 }
-                Ok(ToolResult { output: format!("Task #{id} not found"), success: false, error: None })
+                Ok(ToolResult {
+                    output: format!("Task #{id} not found"),
+                    success: false,
+                    error: None,
+                })
             }
             "clear" => {
                 let mut store = self.store.write();
                 store.remove(&key);
-                Ok(ToolResult { output: "All tasks cleared".into(), success: true, error: None })
+                Ok(ToolResult {
+                    output: "All tasks cleared".into(),
+                    success: true,
+                    error: None,
+                })
             }
-            _ => Ok(ToolResult { output: format!("Unknown action: {action}. Use: add, list, update, complete, remove, clear"), success: false, error: None }),
+            _ => Ok(ToolResult {
+                output: format!(
+                    "Unknown action: {action}. Use: add, list, update, complete, remove, clear"
+                ),
+                success: false,
+                error: None,
+            }),
         }
     }
 }

@@ -4,6 +4,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::config::{AutoDetectCandidate, HeartbeatConfig};
+use synapse_domain::domain::standing_order::SystemEvent;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
@@ -173,6 +174,49 @@ pub async fn run(
         ),
     );
 
+    let standing_order_path = config
+        .config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("standing_orders.json");
+    let standing_order_store: std::sync::Arc<
+        dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort,
+    > = match synapse_infra::standing_order_store::FileStandingOrderStore::new(&standing_order_path)
+    {
+        Ok(store) => std::sync::Arc::new(store),
+        Err(error) => {
+            tracing::warn!(
+                path = %standing_order_path.display(),
+                %error,
+                "Failed to initialize persistent standing order store, falling back to memory"
+            );
+            std::sync::Arc::new(
+                synapse_domain::ports::standing_order_store::InMemoryStandingOrderStore::new(),
+            )
+        }
+    };
+
+    let run_recipe_path = config
+        .config_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("run_recipes.json");
+    let run_recipe_store: std::sync::Arc<
+        dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort,
+    > = match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&run_recipe_path) {
+        Ok(store) => std::sync::Arc::new(store),
+        Err(error) => {
+            tracing::warn!(
+                path = %run_recipe_path.display(),
+                %error,
+                "Failed to initialize persistent run recipe store, falling back to memory"
+            );
+            std::sync::Arc::new(
+                synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+            )
+        }
+    };
+
     // OutboundIntent bus: gateway emits intents, relay delivers via registry.
     let outbound_tx = if config.agents_ipc.push_relay_channel.is_some()
         && config.agents_ipc.push_relay_recipient.is_some()
@@ -240,6 +284,7 @@ pub async fn run(
         let gw_dlq = shared_dead_letter.clone();
         let gw_surreal = shared_surreal.clone();
         let gw_event_tx = shared_event_tx.clone();
+        let gw_run_recipes = run_recipe_store.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -255,6 +300,7 @@ pub async fn run(
                 let dlq = gw_dlq.clone();
                 let surreal = gw_surreal.clone();
                 let etx = gw_event_tx.clone();
+                let recipes = gw_run_recipes.clone();
                 async move {
                     Box::pin(crate::gateway::run_gateway(
                         &host,
@@ -268,6 +314,7 @@ pub async fn run(
                         Some(dlq),
                         surreal,
                         Some(etx),
+                        Some(recipes),
                     ))
                     .await
                 }
@@ -282,6 +329,8 @@ pub async fn run(
             let ch_mem = shared_raw_mem.clone();
             let ch_surreal = shared_surreal.clone();
             let ch_event_tx = shared_event_tx.clone();
+            let ch_standing_orders = standing_order_store.clone();
+            let ch_run_recipes = run_recipe_store.clone();
             handles.push(spawn_component_supervisor(
                 "channels",
                 initial_backoff,
@@ -292,6 +341,8 @@ pub async fn run(
                     let mem = ch_mem.clone();
                     let surreal = ch_surreal.clone();
                     let etx = ch_event_tx.clone();
+                    let standing_orders = ch_standing_orders.clone();
+                    let recipes = ch_run_recipes.clone();
                     async move {
                         Box::pin(crate::channels::start_channels(
                             cfg,
@@ -299,6 +350,8 @@ pub async fn run(
                             Some(mem),
                             surreal,
                             Some(etx),
+                            Some(standing_orders),
+                            Some(recipes),
                         ))
                         .await
                     }
@@ -315,6 +368,7 @@ pub async fn run(
         let hb_delivery = delivery_service.clone();
         let heartbeat_runner = agent_runner.clone();
         let hb_surreal = shared_surreal.clone();
+        let hb_standing_orders = standing_order_store.clone();
         handles.push(spawn_component_supervisor(
             "heartbeat",
             initial_backoff,
@@ -324,7 +378,10 @@ pub async fn run(
                 let ds = hb_delivery.clone();
                 let ar = heartbeat_runner.clone();
                 let surreal = hb_surreal.clone();
-                async move { Box::pin(run_heartbeat_worker(cfg, ds, ar, surreal)).await }
+                let standing_orders = hb_standing_orders.clone();
+                async move {
+                    Box::pin(run_heartbeat_worker(cfg, ds, ar, surreal, standing_orders)).await
+                }
             },
         ));
     }
@@ -430,6 +487,24 @@ pub async fn run(
         println!("   Pairing:    enabled (code appears in gateway output above)");
     }
     println!("   Ctrl+C or SIGTERM to stop");
+
+    {
+        let restart_delivery = delivery_service.clone();
+        let restart_orders = standing_order_store.clone();
+        let restart_config = config.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            let body =
+                render_standing_order_report(&SystemEvent::RuntimeRestarted, &restart_config, None);
+            deliver_standing_orders(
+                restart_orders.as_ref(),
+                restart_delivery.as_ref(),
+                &SystemEvent::RuntimeRestarted,
+                &body,
+            )
+            .await;
+        });
+    }
 
     // Wait for shutdown signal (SIGINT or SIGTERM)
     wait_for_shutdown_signal().await?;
@@ -556,6 +631,9 @@ async fn run_heartbeat_worker(
     >,
     agent_runner: std::sync::Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>,
     surreal: Option<std::sync::Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
+    standing_order_store: std::sync::Arc<
+        dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort,
+    >,
 ) -> Result<()> {
     use crate::heartbeat::engine::{
         compute_adaptive_interval, HeartbeatEngine, HeartbeatTask, TaskPriority, TaskStatus,
@@ -639,6 +717,18 @@ async fn run_heartbeat_worker(
                 #[allow(clippy::cast_precision_loss)]
                 let elapsed = tick_start.elapsed().as_millis() as f64;
                 metrics.lock().record_success(elapsed);
+                let body = render_standing_order_report(
+                    &SystemEvent::HeartbeatTick,
+                    &config,
+                    Some(&metrics),
+                );
+                deliver_standing_orders(
+                    standing_order_store.as_ref(),
+                    delivery_service.as_ref(),
+                    &SystemEvent::HeartbeatTick,
+                    &body,
+                )
+                .await;
                 continue;
             }
         }
@@ -667,6 +757,18 @@ async fn run_heartbeat_worker(
                         #[allow(clippy::cast_precision_loss)]
                         let elapsed = tick_start.elapsed().as_millis() as f64;
                         metrics.lock().record_success(elapsed);
+                        let body = render_standing_order_report(
+                            &SystemEvent::HeartbeatTick,
+                            &config,
+                            Some(&metrics),
+                        );
+                        deliver_standing_orders(
+                            standing_order_store.as_ref(),
+                            delivery_service.as_ref(),
+                            &SystemEvent::HeartbeatTick,
+                            &body,
+                        )
+                        .await;
                         continue;
                     }
                     tracing::info!(
@@ -782,6 +884,96 @@ async fn run_heartbeat_worker(
         } else {
             sleep_mins = base_interval;
         }
+
+        let body =
+            render_standing_order_report(&SystemEvent::HeartbeatTick, &config, Some(&metrics));
+        deliver_standing_orders(
+            standing_order_store.as_ref(),
+            delivery_service.as_ref(),
+            &SystemEvent::HeartbeatTick,
+            &body,
+        )
+        .await;
+    }
+}
+
+async fn deliver_standing_orders(
+    store: &dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort,
+    delivery_service: &synapse_domain::application::services::delivery_service::DeliveryService,
+    event: &SystemEvent,
+    body: &str,
+) {
+    for order in store.matching(event) {
+        let target = synapse_domain::application::services::delivery_service::DeliveryTarget {
+            channel: order.delivery_channel.clone(),
+            recipient: order.delivery_recipient.clone(),
+            thread_ref: order.delivery_thread.clone(),
+        };
+        if let Err(error) = delivery_service.deliver(&target, body).await {
+            tracing::warn!(
+                order_id = %order.id,
+                channel = %order.delivery_channel,
+                recipient = %order.delivery_recipient,
+                %error,
+                "standing order delivery failed"
+            );
+        }
+    }
+}
+
+fn render_standing_order_report(
+    event: &SystemEvent,
+    config: &Config,
+    metrics: Option<
+        &std::sync::Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>,
+    >,
+) -> String {
+    let snapshot = crate::health::snapshot();
+    let component_summary = if snapshot.components.is_empty() {
+        "no components reported yet".to_string()
+    } else {
+        snapshot
+            .components
+            .iter()
+            .map(|(name, state)| format!("{name}={}", state.status))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    match event {
+        SystemEvent::RuntimeRestarted => format!(
+            "[Restart Report]\nTime: {}\nAgent: {}\nUptime: {}s\nComponents: {}",
+            chrono::Utc::now().to_rfc3339(),
+            crate::agent::loop_::resolve_agent_id(config),
+            snapshot.uptime_seconds,
+            component_summary
+        ),
+        SystemEvent::HeartbeatTick => {
+            let metrics_line = metrics
+                .map(|metrics| {
+                    let metrics = metrics.lock();
+                    format!(
+                        "Ticks: {} | Success streak: {} | Failure streak: {} | Avg tick: {:.0}ms",
+                        metrics.total_ticks,
+                        metrics.consecutive_successes,
+                        metrics.consecutive_failures,
+                        metrics.avg_tick_duration_ms
+                    )
+                })
+                .unwrap_or_else(|| "Ticks: unavailable".to_string());
+            format!(
+                "[Heartbeat Report]\nTime: {}\n{}\nComponents: {}",
+                chrono::Utc::now().to_rfc3339(),
+                metrics_line,
+                component_summary
+            )
+        }
+        SystemEvent::OperatorEvent { text } => format!(
+            "[System Event]\nTime: {}\nEvent: {}\nComponents: {}",
+            chrono::Utc::now().to_rfc3339(),
+            text,
+            component_summary
+        ),
     }
 }
 

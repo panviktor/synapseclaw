@@ -75,11 +75,11 @@ pub struct RetentionPolicy {
 impl Default for RetentionPolicy {
     fn default() -> Self {
         Self {
-            conversation_half_life_hours: 48.0,     // 2 days
-            daily_half_life_hours: 168.0,           // 1 week
-            reflection_half_life_hours: 720.0,      // 30 days
-            core_half_life_hours: 2160.0,           // 90 days
-            skill_half_life_hours: 4320.0,          // 180 days
+            conversation_half_life_hours: 48.0, // 2 days
+            daily_half_life_hours: 168.0,       // 1 week
+            reflection_half_life_hours: 720.0,  // 30 days
+            core_half_life_hours: 2160.0,       // 90 days
+            skill_half_life_hours: 4320.0,      // 180 days
             min_keep_score: 0.05,
         }
     }
@@ -112,7 +112,7 @@ pub const EVICTION_PRIORITY: &[MemoryCategory] = &[
     MemoryCategory::Reflection,   // 3. lessons (higher value)
     MemoryCategory::Entity,       // 4. knowledge graph nodes
     MemoryCategory::Skill,        // 5. procedural (very durable)
-    // Core blocks are NEVER auto-evicted.
+                                  // Core blocks are NEVER auto-evicted.
 ];
 
 // ── Scoring functions ────────────────────────────────────────────
@@ -229,43 +229,73 @@ mod tests {
 
     #[test]
     fn category_importance_ordering() {
-        assert!(category_importance(&MemoryCategory::Core) > category_importance(&MemoryCategory::Skill));
-        assert!(category_importance(&MemoryCategory::Skill) > category_importance(&MemoryCategory::Entity));
-        assert!(category_importance(&MemoryCategory::Entity) > category_importance(&MemoryCategory::Reflection));
-        assert!(category_importance(&MemoryCategory::Reflection) > category_importance(&MemoryCategory::Daily));
-        assert!(category_importance(&MemoryCategory::Daily) > category_importance(&MemoryCategory::Conversation));
+        assert!(
+            category_importance(&MemoryCategory::Core)
+                > category_importance(&MemoryCategory::Skill)
+        );
+        assert!(
+            category_importance(&MemoryCategory::Skill)
+                > category_importance(&MemoryCategory::Entity)
+        );
+        assert!(
+            category_importance(&MemoryCategory::Entity)
+                > category_importance(&MemoryCategory::Reflection)
+        );
+        assert!(
+            category_importance(&MemoryCategory::Reflection)
+                > category_importance(&MemoryCategory::Daily)
+        );
+        assert!(
+            category_importance(&MemoryCategory::Daily)
+                > category_importance(&MemoryCategory::Conversation)
+        );
     }
 
     #[test]
     fn half_life_conversation_fastest() {
         let p = RetentionPolicy::default();
-        assert!(p.half_life_hours(&MemoryCategory::Conversation) < p.half_life_hours(&MemoryCategory::Daily));
-        assert!(p.half_life_hours(&MemoryCategory::Daily) < p.half_life_hours(&MemoryCategory::Reflection));
-        assert!(p.half_life_hours(&MemoryCategory::Reflection) < p.half_life_hours(&MemoryCategory::Core));
-        assert!(p.half_life_hours(&MemoryCategory::Core) < p.half_life_hours(&MemoryCategory::Skill));
+        assert!(
+            p.half_life_hours(&MemoryCategory::Conversation)
+                < p.half_life_hours(&MemoryCategory::Daily)
+        );
+        assert!(
+            p.half_life_hours(&MemoryCategory::Daily)
+                < p.half_life_hours(&MemoryCategory::Reflection)
+        );
+        assert!(
+            p.half_life_hours(&MemoryCategory::Reflection)
+                < p.half_life_hours(&MemoryCategory::Core)
+        );
+        assert!(
+            p.half_life_hours(&MemoryCategory::Core) < p.half_life_hours(&MemoryCategory::Skill)
+        );
     }
 
     #[test]
     fn retention_score_fresh_core_fact() {
         let score = compute_retention_score(
-            0.8,   // high relevance
-            1.0,   // 1 hour old
-            3,     // accessed 3 times
+            0.8, // high relevance
+            1.0, // 1 hour old
+            3,   // accessed 3 times
             &MemoryCategory::Core,
             &RetentionPolicy::default(),
             &RetentionWeights::default(),
         );
         // Fresh, relevant, important → high score
-        assert!(score.total > 0.6, "expected high score, got {}", score.total);
+        assert!(
+            score.total > 0.6,
+            "expected high score, got {}",
+            score.total
+        );
         assert!(should_keep(&score, &RetentionPolicy::default()));
     }
 
     #[test]
     fn retention_score_old_conversation_noise() {
         let score = compute_retention_score(
-            0.1,    // low relevance
-            500.0,  // ~21 days old
-            0,      // never accessed
+            0.1,   // low relevance
+            500.0, // ~21 days old
+            0,     // never accessed
             &MemoryCategory::Conversation,
             &RetentionPolicy::default(),
             &RetentionWeights::default(),

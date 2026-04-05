@@ -5,19 +5,27 @@ use std::sync::Arc;
 use synapse_cron::{Db, DeliveryConfig, JobType, Schedule, SessionTarget, Surreal};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::conversation_context::ConversationContextPort;
 
 pub struct CronAddTool {
     config: Arc<Config>,
     security: Arc<SecurityPolicy>,
     db: Arc<Surreal<Db>>,
+    conversation_context: Option<Arc<dyn ConversationContextPort>>,
 }
 
 impl CronAddTool {
-    pub fn new(config: Arc<Config>, security: Arc<SecurityPolicy>, db: Arc<Surreal<Db>>) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        security: Arc<SecurityPolicy>,
+        db: Arc<Surreal<Db>>,
+        conversation_context: Option<Arc<dyn ConversationContextPort>>,
+    ) -> Self {
         Self {
             config,
             security,
             db,
+            conversation_context,
         }
     }
 
@@ -50,6 +58,63 @@ impl CronAddTool {
 
         None
     }
+
+    fn resolve_delivery_config(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<Option<DeliveryConfig>, ToolResult> {
+        let Some(raw) = args.get("delivery") else {
+            return Ok(None);
+        };
+
+        let mut delivery =
+            serde_json::from_value::<DeliveryConfig>(raw.clone()).map_err(|e| ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(format!("Invalid delivery config: {e}")),
+            })?;
+
+        if raw
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value == "current_conversation")
+        {
+            let Some(ctx) = self
+                .conversation_context
+                .as_ref()
+                .and_then(|port| port.get_current())
+            else {
+                return Err(ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(
+                        "No current conversation context available for delivery.target='current_conversation'"
+                            .to_string(),
+                    ),
+                });
+            };
+
+            delivery.channel = Some(ctx.source_adapter);
+            delivery.to = Some(ctx.reply_ref);
+            delivery.thread_ref = ctx.thread_ref;
+        }
+
+        if delivery.mode.eq_ignore_ascii_case("announce")
+            && (delivery.channel.as_deref().unwrap_or("").trim().is_empty()
+                || delivery.to.as_deref().unwrap_or("").trim().is_empty())
+        {
+            return Err(ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some(
+                    "delivery.mode='announce' requires either {channel,to} or target='current_conversation'"
+                        .to_string(),
+                ),
+            });
+        }
+
+        Ok(Some(delivery))
+    }
 }
 
 #[async_trait]
@@ -62,7 +127,8 @@ impl Tool for CronAddTool {
         "Create a scheduled cron job (shell or agent) with cron/at/every schedules. \
          Use job_type='agent' with a prompt to run the AI agent on schedule. \
          To deliver output to a channel (Discord, Telegram, Slack, Mattermost, Matrix), set \
-         delivery={\"mode\":\"announce\",\"channel\":\"discord\",\"to\":\"<channel_id_or_chat_id>\"}. \
+         delivery={\"mode\":\"announce\",\"channel\":\"discord\",\"to\":\"<channel_id_or_chat_id>\"} \
+         or delivery={\"mode\":\"announce\",\"target\":\"current_conversation\"}. \
          This is the preferred tool for sending scheduled/delayed messages to users via channels."
     }
 
@@ -135,7 +201,7 @@ impl Tool for CronAddTool {
                 },
                 "delivery": {
                     "type": "object",
-                    "description": "Optional delivery config to send job output to a channel after each run. When provided, all three of mode, channel, and to are expected.",
+                    "description": "Optional delivery config to send job output to a channel after each run. Use explicit channel/to or target='current_conversation' to deliver back here.",
                     "properties": {
                         "mode": {
                             "type": "string",
@@ -150,6 +216,15 @@ impl Tool for CronAddTool {
                         "to": {
                             "type": "string",
                             "description": "Destination ID: Discord channel ID, Telegram chat ID, Slack channel name, etc."
+                        },
+                        "thread_ref": {
+                            "type": "string",
+                            "description": "Optional thread/topic reference for thread-capable channels"
+                        },
+                        "target": {
+                            "type": "string",
+                            "enum": ["current_conversation"],
+                            "description": "Resolve delivery back to the current live conversation at creation time"
                         },
                         "best_effort": {
                             "type": "boolean",
@@ -300,18 +375,9 @@ impl Tool for CronAddTool {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string);
 
-                let delivery = match args.get("delivery") {
-                    Some(v) => match serde_json::from_value::<DeliveryConfig>(v.clone()) {
-                        Ok(cfg) => Some(cfg),
-                        Err(e) => {
-                            return Ok(ToolResult {
-                                success: false,
-                                output: String::new(),
-                                error: Some(format!("Invalid delivery config: {e}")),
-                            });
-                        }
-                    },
-                    None => None,
+                let delivery = match self.resolve_delivery_config(&args) {
+                    Ok(cfg) => cfg,
+                    Err(result) => return Ok(result),
                 };
 
                 if let Some(blocked) = self.enforce_mutation_allowed("cron_add") {
@@ -353,5 +419,3 @@ impl Tool for CronAddTool {
         }
     }
 }
-
-// Tests removed -- require SurrealDB setup (async integration tests).
