@@ -1,10 +1,6 @@
 use serde_json::Value;
 use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
-use synapse_domain::domain::message::ChatMessage;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
-
-const TOOL_CALL_START: &str = "<tool_call>";
-const TOOL_CALL_END: &str = "</tool_call>";
 
 pub(crate) fn build_tool_fact(tool_name: &str, arguments: &Value) -> AgentToolFact {
     let mut fact = AgentToolFact {
@@ -18,86 +14,6 @@ pub(crate) fn build_tool_fact(tool_name: &str, arguments: &Value) -> AgentToolFa
     fact.focus_entities = dedupe_focus_entities(fact.focus_entities);
     fact.slots = dedupe_slots(fact.slots);
     fact
-}
-
-pub(crate) fn extract_tool_facts_from_chat_history(
-    history: &[ChatMessage],
-    start_idx: usize,
-) -> Vec<AgentToolFact> {
-    let mut facts = Vec::new();
-
-    for msg in history.iter().skip(start_idx) {
-        if msg.role != "assistant" {
-            continue;
-        }
-
-        for (tool_name, arguments) in parse_tool_calls_from_content(&msg.content) {
-            facts.push(build_tool_fact(&tool_name, &arguments));
-        }
-    }
-
-    facts
-}
-
-fn parse_tool_calls_from_content(content: &str) -> Vec<(String, Value)> {
-    if let Some(calls) = parse_native_tool_calls(content) {
-        return calls;
-    }
-
-    parse_tagged_tool_calls(content)
-}
-
-fn parse_native_tool_calls(content: &str) -> Option<Vec<(String, Value)>> {
-    let value = serde_json::from_str::<Value>(content).ok()?;
-    let calls = value.get("tool_calls")?.as_array()?;
-    let mut parsed = Vec::new();
-
-    for call in calls {
-        let Some(name) = call.get("name").and_then(Value::as_str) else {
-            continue;
-        };
-        let arguments = call
-            .get("arguments")
-            .map(parse_arguments_value)
-            .unwrap_or(Value::Null);
-        parsed.push((name.to_string(), arguments));
-    }
-
-    Some(parsed)
-}
-
-fn parse_tagged_tool_calls(content: &str) -> Vec<(String, Value)> {
-    let mut calls = Vec::new();
-    let mut rest = content;
-
-    while let Some(start_idx) = rest.find(TOOL_CALL_START) {
-        rest = &rest[start_idx + TOOL_CALL_START.len()..];
-        let Some(end_idx) = rest.find(TOOL_CALL_END) else {
-            break;
-        };
-        let payload = rest[..end_idx].trim();
-        if let Ok(value) = serde_json::from_str::<Value>(payload) {
-            if let Some(name) = value.get("name").and_then(Value::as_str) {
-                let arguments = value
-                    .get("arguments")
-                    .map(parse_arguments_value)
-                    .unwrap_or(Value::Null);
-                calls.push((name.to_string(), arguments));
-            }
-        }
-        rest = &rest[end_idx + TOOL_CALL_END.len()..];
-    }
-
-    calls
-}
-
-fn parse_arguments_value(value: &Value) -> Value {
-    match value {
-        Value::String(s) => {
-            serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()))
-        }
-        other => other.clone(),
-    }
 }
 
 fn collect_argument_fact(path: Option<&str>, value: &Value, fact: &mut AgentToolFact) {
@@ -287,36 +203,6 @@ mod tests {
             .slots
             .iter()
             .any(|slot| slot.name == "timezone" && slot.value == "Europe/Berlin"));
-    }
-
-    #[test]
-    fn extracts_facts_from_tagged_history_payload() {
-        let history = vec![ChatMessage::assistant(
-            "<tool_call>\n{\"name\":\"weather_lookup\",\"arguments\":{\"city\":\"Berlin\"}}\n</tool_call>",
-        )];
-
-        let facts = extract_tool_facts_from_chat_history(&history, 0);
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].tool_name, "weather_lookup");
-        assert_eq!(facts[0].focus_entities[0].name, "Berlin");
-    }
-
-    #[test]
-    fn extracts_facts_from_native_history_payload() {
-        let history = vec![ChatMessage::assistant(
-            serde_json::json!({
-                "content": "done",
-                "tool_calls": [
-                    {"name": "service_status", "arguments": "{\"service\":\"synapseclaw\"}"}
-                ]
-            })
-            .to_string(),
-        )];
-
-        let facts = extract_tool_facts_from_chat_history(&history, 0);
-        assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].focus_entities[0].kind, "service");
-        assert_eq!(facts[0].focus_entities[0].name, "synapseclaw");
     }
 
     #[test]

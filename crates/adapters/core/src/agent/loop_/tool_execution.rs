@@ -2,9 +2,11 @@
 
 use super::tool_call_parsing::*;
 use super::*;
+use crate::runtime::tool_fact_extraction;
 use synapse_domain::application::services::loop_detection::{
     hash_args, LoopAction, LoopDetector, ToolInvocation,
 };
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 #[derive(Debug)]
 pub(crate) struct ToolLoopCancelled;
@@ -63,6 +65,13 @@ pub(crate) async fn agent_turn(
         None,
     )
     .await
+    .map(|result| result.response)
+}
+
+#[derive(Debug)]
+pub(crate) struct ToolLoopResult {
+    pub(crate) response: String,
+    pub(crate) tool_facts: Vec<AgentToolFact>,
 }
 
 pub(crate) async fn execute_one_tool(
@@ -95,6 +104,10 @@ pub(crate) async fn execute_one_tool(
     let Some(tool) = static_tool.or(activated_arc.as_deref()) else {
         let reason = format!("Unknown tool: {call_name}");
         let duration = start.elapsed();
+        let tool_facts = vec![tool_fact_extraction::build_tool_fact(
+            call_name,
+            &call_arguments,
+        )];
         observer.record_event(&ObserverEvent::ToolCall {
             tool: call_name.to_string(),
             duration,
@@ -110,8 +123,14 @@ pub(crate) async fn execute_one_tool(
             success: false,
             error_reason: Some(scrub_credentials(&reason)),
             duration,
+            tool_facts,
         });
     };
+
+    let tool_facts = vec![tool_fact_extraction::build_tool_fact(
+        call_name,
+        &call_arguments,
+    )];
 
     // Snapshot IPC tool args before execute() consumes them (for per-session tracking).
     let ipc_args = if run_ctx.is_some() && matches!(call_name, "agents_reply" | "agents_send") {
@@ -149,6 +168,7 @@ pub(crate) async fn execute_one_tool(
                 success: false,
                 error_reason: Some(reason),
                 duration,
+                tool_facts,
             });
         }
     }
@@ -186,6 +206,7 @@ pub(crate) async fn execute_one_tool(
                     success: true,
                     error_reason: None,
                     duration,
+                    tool_facts,
                 })
             } else {
                 let reason = r.error.unwrap_or(r.output);
@@ -199,6 +220,7 @@ pub(crate) async fn execute_one_tool(
                     success: false,
                     error_reason: Some(scrub_credentials(&reason)),
                     duration,
+                    tool_facts,
                 })
             }
         }
@@ -223,6 +245,7 @@ pub(crate) async fn execute_one_tool(
                 success: false,
                 error_reason: Some(scrub_credentials(&reason)),
                 duration,
+                tool_facts,
             })
         }
     }
@@ -233,6 +256,7 @@ pub(crate) struct ToolExecutionOutcome {
     pub(crate) success: bool,
     pub(crate) error_reason: Option<String>,
     pub(crate) duration: Duration,
+    pub(crate) tool_facts: Vec<AgentToolFact>,
 }
 
 pub(crate) fn should_execute_tools_in_parallel(
@@ -359,7 +383,7 @@ pub(crate) async fn run_tool_call_loop(
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     run_ctx: Option<&std::sync::Arc<crate::agent::run_context::RunContext>>,
-) -> Result<String> {
+) -> Result<ToolLoopResult> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
     } else {
@@ -371,6 +395,7 @@ pub(crate) async fn run_tool_call_loop(
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
     let mut total_tool_calls = 0usize;
     let mut loop_detector = LoopDetector::new();
+    let mut collected_tool_facts = Vec::<AgentToolFact>::new();
 
     tracing::info!(
         model,
@@ -679,7 +704,10 @@ pub(crate) async fn run_tool_call_loop(
                 response_len = display_text.len(),
                 "agent.turn.complete"
             );
-            return Ok(display_text);
+            return Ok(ToolLoopResult {
+                response: display_text,
+                tool_facts: collected_tool_facts,
+            });
         }
 
         // Print any text the LLM produced alongside tool calls (unless silent)
@@ -753,6 +781,9 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(scrub_credentials(&reason)),
                                 duration: Duration::ZERO,
+                                tool_facts: vec![tool_fact_extraction::build_tool_fact(
+                                    &call.name, &tool_args,
+                                )],
                             },
                         ));
                         continue;
@@ -811,6 +842,9 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(denied),
                                 duration: Duration::ZERO,
+                                tool_facts: vec![tool_fact_extraction::build_tool_fact(
+                                    &tool_name, &tool_args,
+                                )],
                             },
                         ));
                         continue;
@@ -852,6 +886,9 @@ pub(crate) async fn run_tool_call_loop(
                         success: false,
                         error_reason: Some(duplicate),
                         duration: Duration::ZERO,
+                        tool_facts: vec![tool_fact_extraction::build_tool_fact(
+                            &tool_name, &tool_args,
+                        )],
                     },
                 ));
                 continue;
@@ -989,6 +1026,7 @@ pub(crate) async fn run_tool_call_loop(
                 let _ = tx.send(progress_msg).await;
             }
 
+            collected_tool_facts.extend(outcome.tool_facts.clone());
             ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome));
         }
 
@@ -1045,7 +1083,10 @@ pub(crate) async fn run_tool_call_loop(
                     tool_calls = total_tool_calls,
                     "agent.turn.loop_detected_clarify"
                 );
-                return Ok(clarify.to_string());
+                return Ok(ToolLoopResult {
+                    response: clarify.to_string(),
+                    tool_facts: collected_tool_facts,
+                });
             }
             LoopAction::ForceStop => {
                 let stop = "I hit too many tool steps without reaching a stable result. Please narrow the request or specify the exact target.";
@@ -1055,7 +1096,10 @@ pub(crate) async fn run_tool_call_loop(
                     tool_calls = total_tool_calls,
                     "agent.turn.loop_detected_stop"
                 );
-                return Ok(stop.to_string());
+                return Ok(ToolLoopResult {
+                    response: stop.to_string(),
+                    tool_facts: collected_tool_facts,
+                });
             }
         }
     }

@@ -352,9 +352,7 @@ pub(crate) use tool_call_parsing::{
     strip_tool_result_blocks,
 };
 #[cfg(test)]
-pub(crate) use tool_execution::{
-    execute_one_tool, should_execute_tools_in_parallel, ToolExecutionOutcome,
-};
+pub(crate) use tool_execution::{execute_one_tool, should_execute_tools_in_parallel};
 
 #[cfg(test)]
 mod tests;

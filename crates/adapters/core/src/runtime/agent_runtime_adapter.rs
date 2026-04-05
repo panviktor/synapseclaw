@@ -3,7 +3,6 @@
 //! Since `synapse_providers::ChatMessage` is now a re-export of
 //! `synapse_domain::domain::message::ChatMessage`, no conversions are needed.
 
-use super::tool_fact_extraction;
 use crate::tools::Tool;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -40,8 +39,6 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         timeout_secs: u64,
         on_delta: Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Result<AgentTurnResult> {
-        let history_before = history.len();
-
         // Compute timeout budget (scale by max iterations)
         let iterations = max_iterations.max(1) as u64;
         let scale = iterations.min(5);
@@ -74,7 +71,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         ));
 
         // Apply timeout if configured
-        let response = if budget_secs > 0 {
+        let loop_result = if budget_secs > 0 {
             match tokio::time::timeout(std::time::Duration::from_secs(budget_secs), fut).await {
                 Ok(result) => result?,
                 Err(_) => {
@@ -85,8 +82,8 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             fut.await?
         };
 
-        let tool_facts =
-            tool_fact_extraction::extract_tool_facts_from_chat_history(&history, history_before);
+        let response = loop_result.response;
+        let tool_facts = loop_result.tool_facts;
         let tool_names = extract_tool_names(&tool_facts);
         let tools_used = !tool_names.is_empty();
         let tool_summary = format_tool_summary(&tool_names);

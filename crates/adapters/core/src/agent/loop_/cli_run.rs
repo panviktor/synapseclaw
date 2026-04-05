@@ -462,7 +462,7 @@ pub async fn run_with_shared_memory(
         let excluded_tools =
             compute_excluded_mcp_tools(&tools_registry, &config.agent.tool_filter_groups, &msg);
 
-        let response = run_tool_call_loop(
+        let loop_result = run_tool_call_loop(
             provider.as_ref(),
             &mut history,
             &tools_registry,
@@ -484,6 +484,7 @@ pub async fn run_with_shared_memory(
             run_ctx.as_ref(),
         )
         .await?;
+        let response = loop_result.response;
         final_output = response.clone();
         println!("{response}");
         observer.record_event(&ObserverEvent::TurnComplete);
@@ -639,7 +640,7 @@ pub async fn run_with_shared_memory(
             )
             .await
             {
-                Ok(resp) => resp,
+                Ok(loop_result) => loop_result.response,
                 Err(e) => {
                     eprintln!("\nError: {e}\n");
                     continue;

@@ -431,11 +431,11 @@ impl DelegateTool {
         .await;
 
         match result {
-            Ok(Ok(response)) => {
-                let rendered = if response.trim().is_empty() {
+            Ok(Ok(loop_result)) => {
+                let rendered = if loop_result.response.trim().is_empty() {
                     "[Empty response]".to_string()
                 } else {
-                    response
+                    loop_result.response
                 };
 
                 Ok(ToolResult {
