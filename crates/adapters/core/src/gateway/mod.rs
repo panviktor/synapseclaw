@@ -1556,6 +1556,10 @@ pub async fn run_gateway(
             get(api::handle_api_memory_projections),
         )
         .route(
+            "/api/memory/evals/everyday",
+            get(api::handle_api_memory_everyday_evals),
+        )
+        .route(
             "/api/user-profiles",
             get(api::handle_api_user_profiles_list),
         )

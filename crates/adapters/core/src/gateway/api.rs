@@ -1130,6 +1130,75 @@ pub async fn handle_api_memory_projections(
     .into_response()
 }
 
+/// GET /api/memory/evals/everyday — deterministic everyday intelligence evals.
+pub async fn handle_api_memory_everyday_evals(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let scenarios =
+        synapse_domain::application::services::everyday_eval_harness::default_golden_scenarios();
+    let mut results = Vec::with_capacity(scenarios.len());
+    let mut by_confidence = serde_json::Map::new();
+    let mut clarification_required = 0usize;
+
+    for scenario in scenarios {
+        let result =
+            synapse_domain::application::services::everyday_eval_harness::evaluate_scenario(
+                state.mem.as_ref(),
+                &scenario,
+            )
+            .await;
+        let confidence_key = resolution_confidence_name(result.resolution_plan.confidence);
+        *by_confidence
+            .entry(confidence_key.to_string())
+            .or_insert_with(|| serde_json::json!(0))
+            .as_u64_mut()
+            .expect("confidence bucket is numeric") += 1;
+
+        let clarification = result
+            .clarification_guidance
+            .as_ref()
+            .map(|guidance| {
+                if guidance.required {
+                    clarification_required += 1;
+                }
+                serde_json::json!({
+                    "required": guidance.required,
+                    "candidate_set": guidance.candidate_set,
+                    "avoid_generic_questions": guidance.avoid_generic_questions,
+                    "reason": guidance.reason,
+                })
+            });
+
+        results.push(serde_json::json!({
+            "id": result.scenario_id,
+            "selected_source": result.selected_source.map(resolution_source_name),
+            "source_order": result.resolution_plan.source_order.iter().copied().map(resolution_source_name).collect::<Vec<_>>(),
+            "confidence": confidence_key,
+            "clarification_reason": result.resolution_plan.clarification_reason.map(clarification_reason_name),
+            "clarification_shape": clarification_shape_name(result.clarification_shape),
+            "used_session_history": result.used_session_history,
+            "used_run_recipe": result.used_run_recipe,
+            "clarification": clarification,
+        }));
+    }
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "summary": {
+            "scenario_count": results.len(),
+            "clarification_required": clarification_required,
+            "by_confidence": by_confidence,
+        },
+        "results": results,
+    }))
+    .into_response()
+}
+
 /// GET /api/user-profiles — list structured user profiles
 pub async fn handle_api_user_profiles_list(
     State(state): State<AppState>,
@@ -1153,6 +1222,79 @@ pub async fn handle_api_user_profiles_list(
         .collect::<Vec<_>>();
 
     Json(serde_json::json!({ "profiles": profiles })).into_response()
+}
+
+fn resolution_source_name(
+    source: synapse_domain::application::services::resolution_router::ResolutionSource,
+) -> &'static str {
+    match source {
+        synapse_domain::application::services::resolution_router::ResolutionSource::CurrentConversation => {
+            "current_conversation"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::DialogueState => {
+            "dialogue_state"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::UserProfile => {
+            "user_profile"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::SessionHistory => {
+            "session_history"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::RunRecipe => {
+            "run_recipe"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::LongTermMemory => {
+            "long_term_memory"
+        }
+    }
+}
+
+fn resolution_confidence_name(
+    confidence: synapse_domain::application::services::resolution_router::ResolutionConfidence,
+) -> &'static str {
+    match confidence {
+        synapse_domain::application::services::resolution_router::ResolutionConfidence::High => {
+            "high"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionConfidence::Medium => {
+            "medium"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionConfidence::Low => {
+            "low"
+        }
+    }
+}
+
+fn clarification_reason_name(
+    reason: synapse_domain::application::services::resolution_router::ClarificationReason,
+) -> &'static str {
+    match reason {
+        synapse_domain::application::services::resolution_router::ClarificationReason::ResolverExhausted => {
+            "resolver_exhausted"
+        }
+        synapse_domain::application::services::resolution_router::ClarificationReason::LowConfidence => {
+            "low_confidence"
+        }
+        synapse_domain::application::services::resolution_router::ClarificationReason::AmbiguousCandidates => {
+            "ambiguous_candidates"
+        }
+    }
+}
+
+fn clarification_shape_name(
+    shape: synapse_domain::application::services::everyday_eval_harness::ClarificationShape,
+) -> &'static str {
+    match shape {
+        synapse_domain::application::services::everyday_eval_harness::ClarificationShape::None => {
+            "none"
+        }
+        synapse_domain::application::services::everyday_eval_harness::ClarificationShape::CandidateSet => {
+            "candidate_set"
+        }
+        synapse_domain::application::services::everyday_eval_harness::ClarificationShape::GenericRisk => {
+            "generic_risk"
+        }
+    }
 }
 
 /// GET /api/user-profiles/:key — fetch a structured user profile
