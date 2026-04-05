@@ -22,28 +22,42 @@ pub fn build_clarification_guidance(
     };
 
     if let Some(profile) = interpretation.user_profile.as_ref() {
-        if profile.default_city.is_some() {
+        if interpretation
+            .defaults_requested
+            .iter()
+            .any(|kind| matches!(kind, crate::application::services::turn_interpretation::DefaultKind::City))
+            && profile.default_city.is_some()
+        {
             guidance.use_defaults_for.push("city".into());
         }
-        if profile.preferred_language.is_some() {
+        if interpretation
+            .defaults_requested
+            .iter()
+            .any(|kind| matches!(kind, crate::application::services::turn_interpretation::DefaultKind::Language))
+            && profile.preferred_language.is_some()
+        {
             guidance.use_defaults_for.push("language".into());
         }
-        if profile.timezone.is_some() {
+        if interpretation
+            .defaults_requested
+            .iter()
+            .any(|kind| matches!(kind, crate::application::services::turn_interpretation::DefaultKind::Timezone))
+            && profile.timezone.is_some()
+        {
             guidance.use_defaults_for.push("timezone".into());
         }
-        if profile.default_delivery_target.is_some() {
+        if interpretation
+            .defaults_requested
+            .iter()
+            .any(|kind| matches!(kind, crate::application::services::turn_interpretation::DefaultKind::DeliveryTarget))
+            && profile.default_delivery_target.is_some()
+        {
             guidance.use_defaults_for.push("delivery_target".into());
         }
     }
 
-    if let Some(state) = interpretation.dialogue_state.as_ref() {
-        if state.comparison_set.len() >= 2 {
-            guidance.candidate_set = state
-                .comparison_set
-                .iter()
-                .map(|(_, name)| name.clone())
-                .collect();
-        }
+    if !interpretation.clarification_candidates.is_empty() {
+        guidance.candidate_set = interpretation.clarification_candidates.clone();
     }
 
     if guidance.use_defaults_for.is_empty() && guidance.candidate_set.is_empty() {
@@ -82,7 +96,7 @@ pub fn format_clarification_guidance(guidance: &ClarificationGuidance) -> Option
 mod tests {
     use super::*;
     use crate::application::services::turn_interpretation::{
-        DialogueStateSnapshot, TurnInterpretation,
+        DefaultKind, DialogueStateSnapshot, TurnInterpretation,
     };
     use crate::domain::user_profile::UserProfile;
 
@@ -104,6 +118,16 @@ mod tests {
                 slots: vec![],
                 last_tool_subjects: vec![],
             }),
+            defaults_requested: vec![
+                DefaultKind::Language,
+                DefaultKind::Timezone,
+                DefaultKind::City,
+            ],
+            clarification_candidates: vec!["Berlin".into(), "Tbilisi".into()],
+            reference_candidates: vec![],
+            temporal_scope: None,
+            delivery_scope: None,
+            semantic_hints: vec![],
             current_conversation: None,
         };
 

@@ -3,7 +3,7 @@
 //! This is intentionally not a phrase-engine. It consumes typed interpretation
 //! and retrieval evidence, then decides which sources should be trusted first.
 
-use crate::application::services::turn_interpretation::TurnInterpretation;
+use crate::application::services::turn_interpretation::{InterpretationHintKind, TurnInterpretation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionSource {
@@ -36,16 +36,46 @@ const RECIPE_PRIMARY_SCORE: i64 = 180;
 
 pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan {
     let mut source_order = Vec::new();
+    let (prefer_defaults, prefer_followup, prefer_history, prefer_repeat_work) =
+        if let Some(interpretation) = evidence.interpretation {
+            (
+                !interpretation.defaults_requested.is_empty(),
+                interpretation.has_hint(InterpretationHintKind::FollowupReference),
+                interpretation.has_hint(InterpretationHintKind::HistoryLookup),
+                interpretation.has_hint(InterpretationHintKind::RepeatWork),
+            )
+        } else {
+            (false, false, false, false)
+        };
 
     if let Some(interpretation) = evidence.interpretation {
-        if interpretation.current_conversation.is_some() {
+        let prioritize_current_conversation = matches!(
+            interpretation.delivery_scope,
+            Some(crate::application::services::turn_interpretation::DeliveryScope::CurrentConversation)
+        ) || (!prefer_history && !prefer_repeat_work && interpretation.current_conversation.is_some());
+
+        if prioritize_current_conversation && interpretation.current_conversation.is_some() {
             source_order.push(ResolutionSource::CurrentConversation);
+        }
+        if prefer_defaults && interpretation.user_profile.is_some() {
+            source_order.push(ResolutionSource::UserProfile);
         }
         if interpretation.dialogue_state.is_some() {
             source_order.push(ResolutionSource::DialogueState);
         }
-        if interpretation.user_profile.is_some() {
+        if !prefer_defaults && interpretation.user_profile.is_some() {
             source_order.push(ResolutionSource::UserProfile);
+        }
+        if !prioritize_current_conversation && interpretation.current_conversation.is_some() {
+            source_order.push(ResolutionSource::CurrentConversation);
+        }
+        if prefer_followup && interpretation.dialogue_state.is_some() {
+            source_order.retain(|source| *source != ResolutionSource::DialogueState);
+            source_order.insert(0, ResolutionSource::DialogueState);
+            if interpretation.current_conversation.is_some() {
+                source_order.retain(|source| *source != ResolutionSource::CurrentConversation);
+                source_order.push(ResolutionSource::CurrentConversation);
+            }
         }
     }
 
@@ -53,6 +83,22 @@ pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan
     let recipe_primary = evidence.top_recipe_score.unwrap_or_default() >= RECIPE_PRIMARY_SCORE;
     let long_term_available =
         evidence.recall_hits > 0 || evidence.skill_hits > 0 || evidence.entity_hits > 0;
+
+    if prefer_repeat_work {
+        if recipe_primary || evidence.top_recipe_score.unwrap_or_default() > 0 {
+            source_order.push(ResolutionSource::RunRecipe);
+        }
+        if session_primary || evidence.top_session_score.unwrap_or_default() > 0.0 {
+            source_order.push(ResolutionSource::SessionHistory);
+        }
+    } else if prefer_history {
+        if session_primary || evidence.top_session_score.unwrap_or_default() > 0.0 {
+            source_order.push(ResolutionSource::SessionHistory);
+        }
+        if recipe_primary || evidence.top_recipe_score.unwrap_or_default() > 0 {
+            source_order.push(ResolutionSource::RunRecipe);
+        }
+    }
 
     match (session_primary, recipe_primary) {
         (true, true) => {
@@ -160,6 +206,12 @@ mod tests {
                 slots: vec![],
                 last_tool_subjects: vec![],
             }),
+            defaults_requested: vec![],
+            temporal_scope: None,
+            delivery_scope: None,
+            reference_candidates: vec![],
+            clarification_candidates: vec![],
+            semantic_hints: vec![],
         };
 
         let plan = build_resolution_plan(ResolutionEvidence {

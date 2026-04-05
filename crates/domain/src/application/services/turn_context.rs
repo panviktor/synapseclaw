@@ -419,6 +419,61 @@ fn build_query_text(user_message: &str, interpretation: Option<&TurnInterpretati
         }
     }
 
+    if let Some(scope) = interpretation.temporal_scope {
+        parts.push(format!(
+            "Temporal scope: {}",
+            match scope {
+                crate::application::services::turn_interpretation::TemporalScope::Historical => {
+                    "historical"
+                }
+            }
+        ));
+    }
+
+    if let Some(scope) = interpretation.delivery_scope {
+        parts.push(format!(
+            "Delivery scope: {}",
+            match scope {
+                crate::application::services::turn_interpretation::DeliveryScope::CurrentConversation =>
+                    "current_conversation",
+                crate::application::services::turn_interpretation::DeliveryScope::DefaultTarget =>
+                    "default_target",
+            }
+        ));
+    }
+
+    if !interpretation.defaults_requested.is_empty() {
+        parts.push(format!(
+            "Requested defaults: {}",
+            interpretation
+                .defaults_requested
+                .iter()
+                .map(|kind| match kind {
+                    crate::application::services::turn_interpretation::DefaultKind::Language =>
+                        "language",
+                    crate::application::services::turn_interpretation::DefaultKind::Timezone =>
+                        "timezone",
+                    crate::application::services::turn_interpretation::DefaultKind::City => "city",
+                    crate::application::services::turn_interpretation::DefaultKind::DeliveryTarget =>
+                        "delivery_target",
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    if !interpretation.reference_candidates.is_empty() {
+        let references = interpretation
+            .reference_candidates
+            .iter()
+            .map(|candidate| candidate.value.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !references.is_empty() {
+            parts.push(format!("Reference candidates: {references}"));
+        }
+    }
+
     let Some(state) = interpretation.dialogue_state.as_ref() else {
         return parts.join("\n");
     };
@@ -686,8 +741,8 @@ mod tests {
         assert!(!is_autosave_key("core_persona"));
     }
 
-    #[test]
-    fn build_query_text_includes_typed_dialogue_state() {
+    #[tokio::test]
+    async fn build_query_text_includes_typed_dialogue_state() {
         let state = DialogueState {
             focus_entities: vec![crate::domain::dialogue_state::FocusEntity {
                 kind: "city".into(),
@@ -703,6 +758,8 @@ mod tests {
         };
         let interpretation =
             crate::application::services::turn_interpretation::build_turn_interpretation(
+                None,
+                "what's the weather?",
                 Some(crate::domain::user_profile::UserProfile {
                     default_city: Some("Berlin".into()),
                     timezone: Some("Europe/Berlin".into()),
@@ -711,6 +768,7 @@ mod tests {
                 None,
                 Some(&state),
             )
+            .await
             .unwrap();
         let query = build_query_text("what's the weather?", Some(&interpretation));
         assert!(query.contains("what's the weather?"));

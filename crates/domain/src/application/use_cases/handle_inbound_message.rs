@@ -268,10 +268,13 @@ async fn handle_regular_message(
     }
     let interpretation =
         crate::application::services::turn_interpretation::build_turn_interpretation(
+            ports.memory.as_ref().map(|memory| memory.as_ref()),
+            content,
             user_profile,
             Some(&current_conversation),
             dialogue_state.as_ref(),
-        );
+        )
+        .await;
     if let Some(interpretation) = interpretation.as_ref() {
         if let Some(block) =
             crate::application::services::turn_interpretation::format_turn_interpretation(

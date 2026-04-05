@@ -835,10 +835,13 @@ impl Agent {
             _ => None,
         };
         let turn_interpretation = turn_interpretation::build_turn_interpretation(
+            Some(self.memory.as_ref()),
+            user_message,
             user_profile,
             None,
             dialogue_state.as_ref(),
-        );
+        )
+        .await;
         let interpretation_block = turn_interpretation.as_ref().and_then(|interpretation| {
             turn_interpretation::format_turn_interpretation(&interpretation)
         });
