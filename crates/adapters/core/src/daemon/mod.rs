@@ -720,7 +720,7 @@ async fn run_heartbeat_worker(
                 let body = render_standing_order_report(
                     &SystemEvent::HeartbeatTick,
                     &config,
-                    Some(&metrics),
+                    Some((&metrics, 0, 0, 0)),
                 );
                 deliver_standing_orders(
                     standing_order_store.as_ref(),
@@ -732,6 +732,12 @@ async fn run_heartbeat_worker(
                 continue;
             }
         }
+
+        let active_task_count = tasks.len();
+        let high_priority_task_count = tasks
+            .iter()
+            .filter(|task| task.priority == TaskPriority::High)
+            .count();
 
         // ── Phase 1: LLM decision (two-phase mode) ──────────────
         let tasks_to_run = if two_phase {
@@ -760,7 +766,7 @@ async fn run_heartbeat_worker(
                         let body = render_standing_order_report(
                             &SystemEvent::HeartbeatTick,
                             &config,
-                            Some(&metrics),
+                            Some((&metrics, active_task_count, 0, high_priority_task_count)),
                         );
                         deliver_standing_orders(
                             standing_order_store.as_ref(),
@@ -886,7 +892,16 @@ async fn run_heartbeat_worker(
         }
 
         let body =
-            render_standing_order_report(&SystemEvent::HeartbeatTick, &config, Some(&metrics));
+            render_standing_order_report(
+                &SystemEvent::HeartbeatTick,
+                &config,
+                Some((
+                    &metrics,
+                    active_task_count,
+                    tasks_to_run.len(),
+                    high_priority_task_count,
+                )),
+            );
         deliver_standing_orders(
             standing_order_store.as_ref(),
             delivery_service.as_ref(),
@@ -921,11 +936,34 @@ async fn deliver_standing_orders(
     }
 }
 
+fn heartbeat_projection(
+    metrics: &std::sync::Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>,
+    active_task_count: usize,
+    executed_task_count: usize,
+    high_priority_task_count: usize,
+) -> synapse_domain::application::services::system_event_projection_service::HeartbeatProjection {
+    let metrics = metrics.lock();
+    synapse_domain::application::services::system_event_projection_service::HeartbeatProjection {
+        total_ticks: metrics.total_ticks,
+        consecutive_successes: metrics.consecutive_successes,
+        consecutive_failures: metrics.consecutive_failures,
+        avg_tick_duration_ms: metrics.avg_tick_duration_ms,
+        active_task_count,
+        executed_task_count,
+        high_priority_task_count,
+    }
+}
+
 fn render_standing_order_report(
     event: &SystemEvent,
     config: &Config,
-    metrics: Option<
-        &std::sync::Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>,
+    heartbeat: Option<
+        (
+            &std::sync::Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>,
+            usize,
+            usize,
+            usize,
+        ),
     >,
 ) -> String {
     let snapshot = crate::health::snapshot();
@@ -939,15 +977,16 @@ fn render_standing_order_report(
             }
         })
         .collect();
-    let heartbeat = metrics.map(|metrics| {
-        let metrics = metrics.lock();
-        synapse_domain::application::services::system_event_projection_service::HeartbeatProjection {
-            total_ticks: metrics.total_ticks,
-            consecutive_successes: metrics.consecutive_successes,
-            consecutive_failures: metrics.consecutive_failures,
-            avg_tick_duration_ms: metrics.avg_tick_duration_ms,
-        }
-    });
+    let heartbeat = heartbeat.map(
+        |(metrics, active_task_count, executed_task_count, high_priority_task_count)| {
+            heartbeat_projection(
+                metrics,
+                active_task_count,
+                executed_task_count,
+                high_priority_task_count,
+            )
+        },
+    );
 
     synapse_domain::application::services::system_event_projection_service::render_system_event_report(
         &synapse_domain::application::services::system_event_projection_service::SystemEventProjectionInput {

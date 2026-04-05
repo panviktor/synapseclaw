@@ -12,6 +12,9 @@ pub struct HeartbeatProjection {
     pub consecutive_successes: u64,
     pub consecutive_failures: u64,
     pub avg_tick_duration_ms: f64,
+    pub active_task_count: usize,
+    pub executed_task_count: usize,
+    pub high_priority_task_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -49,11 +52,14 @@ pub fn render_system_event_report(input: &SystemEventProjectionInput) -> String 
                 .as_ref()
                 .map(|metrics| {
                     format!(
-                        "Ticks: {} | Success streak: {} | Failure streak: {} | Avg tick: {:.0}ms",
+                        "Ticks: {} | Success streak: {} | Failure streak: {} | Avg tick: {:.0}ms | Tasks: {}/{} | High priority: {}",
                         metrics.total_ticks,
                         metrics.consecutive_successes,
                         metrics.consecutive_failures,
-                        metrics.avg_tick_duration_ms
+                        metrics.avg_tick_duration_ms,
+                        metrics.executed_task_count,
+                        metrics.active_task_count,
+                        metrics.high_priority_task_count
                     )
                 })
                 .unwrap_or_else(|| "Ticks: unavailable".to_string());
@@ -110,6 +116,9 @@ mod tests {
                 consecutive_successes: 3,
                 consecutive_failures: 0,
                 avg_tick_duration_ms: 125.4,
+                active_task_count: 4,
+                executed_task_count: 2,
+                high_priority_task_count: 1,
             }),
         });
 
@@ -117,6 +126,8 @@ mod tests {
         assert!(report.contains("Ticks: 7"));
         assert!(report.contains("Success streak: 3"));
         assert!(report.contains("Avg tick: 125ms"));
+        assert!(report.contains("Tasks: 2/4"));
+        assert!(report.contains("High priority: 1"));
     }
 
     #[test]
