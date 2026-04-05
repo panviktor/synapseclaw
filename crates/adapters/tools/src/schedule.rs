@@ -6,7 +6,10 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{Db, Surreal};
 use synapse_domain::config::schema::Config;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::ports::tool::ToolExecution;
 
 /// Tool that lets the agent manage recurring and one-shot scheduled tasks.
 pub struct ScheduleTool {
@@ -21,6 +24,149 @@ impl ScheduleTool {
             security,
             config,
             db,
+        }
+    }
+
+    async fn execute_action(
+        &self,
+        args: &serde_json::Value,
+    ) -> Result<(ToolResult, Vec<AgentToolFact>)> {
+        let action = args
+            .get("action")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'action' parameter"))?;
+
+        match action {
+            "list" => self.handle_list().await,
+            "get" => {
+                let id = args
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter for get action"))?;
+                self.handle_get(id).await
+            }
+            "create" | "add" | "once" => {
+                let approved = args
+                    .get("approved")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                self.handle_create_like(action, args, approved).await
+            }
+            "cancel" | "remove" => {
+                if let Some(blocked) = self.enforce_mutation_allowed(action) {
+                    return Ok((blocked, Vec::new()));
+                }
+                let id = args
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter for cancel action"))?;
+                Ok(self.handle_cancel(id).await)
+            }
+            "pause" => {
+                if let Some(blocked) = self.enforce_mutation_allowed(action) {
+                    return Ok((blocked, Vec::new()));
+                }
+                let id = args
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter for pause action"))?;
+                Ok(self.handle_pause_resume(id, true).await)
+            }
+            "resume" => {
+                if let Some(blocked) = self.enforce_mutation_allowed(action) {
+                    return Ok((blocked, Vec::new()));
+                }
+                let id = args
+                    .get("id")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter for resume action"))?;
+                Ok(self.handle_pause_resume(id, false).await)
+            }
+            other => Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!(
+                        "Unknown action '{other}'. Use create/add/once/list/get/cancel/remove/pause/resume."
+                    )),
+                },
+                Vec::new(),
+            )),
+        }
+    }
+
+    fn schedule_kind(schedule: &synapse_cron::Schedule) -> &'static str {
+        match schedule {
+            synapse_cron::Schedule::Cron { .. } => "cron",
+            synapse_cron::Schedule::At { .. } => "at",
+            synapse_cron::Schedule::Every { .. } => "every",
+        }
+    }
+
+    fn build_job_fact(action: &str, job: &synapse_cron::CronJob) -> AgentToolFact {
+        let mut slots = vec![
+            DialogueSlot::observed("schedule_action", action.to_string()),
+            DialogueSlot::observed("job_id", job.id.clone()),
+            DialogueSlot::observed("job_type", <&'static str>::from(job.job_type.clone())),
+            DialogueSlot::observed("schedule_kind", Self::schedule_kind(&job.schedule)),
+            DialogueSlot::observed("job_enabled", job.enabled.to_string()),
+            DialogueSlot::observed("job_next_run", job.next_run.to_rfc3339()),
+            DialogueSlot::observed(
+                "session_target",
+                match job.session_target {
+                    synapse_cron::SessionTarget::Isolated => "isolated",
+                    synapse_cron::SessionTarget::Main => "main",
+                },
+            ),
+            DialogueSlot::observed("delete_after_run", job.delete_after_run.to_string()),
+        ];
+
+        if let Some(name) = &job.name {
+            slots.push(DialogueSlot::observed("job_name", name.clone()));
+        }
+        if let Some(model) = &job.model {
+            slots.push(DialogueSlot::observed("job_model", model.clone()));
+        }
+        if !job.delivery.mode.trim().is_empty() {
+            slots.push(DialogueSlot::observed("delivery_mode", job.delivery.mode.clone()));
+        }
+        if let Some(channel) = &job.delivery.channel {
+            slots.push(DialogueSlot::observed("delivery_channel", channel.clone()));
+        }
+        if let Some(to) = &job.delivery.to {
+            slots.push(DialogueSlot::observed("delivery_to", to.clone()));
+        }
+        if let Some(thread_ref) = &job.delivery.thread_ref {
+            slots.push(DialogueSlot::observed(
+                "delivery_thread_ref",
+                thread_ref.clone(),
+            ));
+        }
+
+        AgentToolFact {
+            tool_name: "schedule".to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "scheduled_job".into(),
+                name: job.id.clone(),
+                metadata: Some(Self::schedule_kind(&job.schedule).to_string()),
+            }],
+            slots,
+        }
+    }
+
+    fn build_cancel_fact(action: &str, id: &str) -> AgentToolFact {
+        AgentToolFact {
+            tool_name: "schedule".to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "scheduled_job".into(),
+                name: id.to_string(),
+                metadata: Some(action.to_string()),
+            }],
+            slots: vec![
+                DialogueSlot::observed("schedule_action", action.to_string()),
+                DialogueSlot::observed("job_id", id.to_string()),
+                DialogueSlot::observed("job_enabled", "false".to_string()),
+            ],
         }
     }
 }
@@ -78,65 +224,15 @@ impl Tool for ScheduleTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> Result<ToolResult> {
-        let action = args
-            .get("action")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'action' parameter"))?;
+        Ok(self.execute_action(&args).await?.0)
+    }
 
-        match action {
-            "list" => self.handle_list().await,
-            "get" => {
-                let id = args
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter for get action"))?;
-                self.handle_get(id).await
-            }
-            "create" | "add" | "once" => {
-                let approved = args
-                    .get("approved")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                self.handle_create_like(action, &args, approved).await
-            }
-            "cancel" | "remove" => {
-                if let Some(blocked) = self.enforce_mutation_allowed(action) {
-                    return Ok(blocked);
-                }
-                let id = args
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter for cancel action"))?;
-                Ok(self.handle_cancel(id).await)
-            }
-            "pause" => {
-                if let Some(blocked) = self.enforce_mutation_allowed(action) {
-                    return Ok(blocked);
-                }
-                let id = args
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter for pause action"))?;
-                Ok(self.handle_pause_resume(id, true).await)
-            }
-            "resume" => {
-                if let Some(blocked) = self.enforce_mutation_allowed(action) {
-                    return Ok(blocked);
-                }
-                let id = args
-                    .get("id")
-                    .and_then(|value| value.as_str())
-                    .ok_or_else(|| anyhow::anyhow!("Missing 'id' parameter for resume action"))?;
-                Ok(self.handle_pause_resume(id, false).await)
-            }
-            other => Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!(
-                    "Unknown action '{other}'. Use create/add/once/list/get/cancel/remove/pause/resume."
-                )),
-            }),
-        }
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> Result<ToolExecution> {
+        let (result, facts) = self.execute_action(&args).await?;
+        Ok(ToolExecution { result, facts })
     }
 }
 
@@ -173,20 +269,23 @@ impl ScheduleTool {
         None
     }
 
-    async fn handle_list(&self) -> Result<ToolResult> {
+    async fn handle_list(&self) -> Result<(ToolResult, Vec<AgentToolFact>)> {
         let jobs = synapse_cron::list_jobs(&self.db).await?;
         if jobs.is_empty() {
-            return Ok(ToolResult {
-                success: true,
-                output: "No scheduled jobs.".to_string(),
-                error: None,
-            });
+            return Ok((
+                ToolResult {
+                    success: true,
+                    output: "No scheduled jobs.".to_string(),
+                    error: None,
+                },
+                Vec::new(),
+            ));
         }
 
         let mut lines = Vec::with_capacity(jobs.len());
-        for job in jobs {
+        for job in &jobs {
             let paused = !job.enabled;
-            let one_shot = matches!(job.schedule, synapse_cron::Schedule::At { .. });
+            let one_shot = matches!(&job.schedule, synapse_cron::Schedule::At { .. });
             let flags = match (paused, one_shot) {
                 (true, true) => " [disabled, one-shot]",
                 (true, false) => " [disabled]",
@@ -196,7 +295,10 @@ impl ScheduleTool {
             let last_run = job
                 .last_run
                 .map_or_else(|| "never".to_string(), |value| value.to_rfc3339());
-            let last_status = job.last_status.unwrap_or_else(|| "n/a".to_string());
+            let last_status = job
+                .last_status
+                .clone()
+                .unwrap_or_else(|| "n/a".to_string());
             lines.push(format!(
                 "- {} | {} | next={} | last={} ({}){} | cmd: {}",
                 job.id,
@@ -209,14 +311,23 @@ impl ScheduleTool {
             ));
         }
 
-        Ok(ToolResult {
-            success: true,
-            output: format!("Scheduled jobs ({}):\n{}", lines.len(), lines.join("\n")),
-            error: None,
-        })
+        let facts = jobs
+            .iter()
+            .take(3)
+            .map(|job| Self::build_job_fact("list", job))
+            .collect();
+
+        Ok((
+            ToolResult {
+                success: true,
+                output: format!("Scheduled jobs ({}):\n{}", lines.len(), lines.join("\n")),
+                error: None,
+            },
+            facts,
+        ))
     }
 
-    async fn handle_get(&self, id: &str) -> Result<ToolResult> {
+    async fn handle_get(&self, id: &str) -> Result<(ToolResult, Vec<AgentToolFact>)> {
         match synapse_cron::get_job(&self.db, id).await {
             Ok(job) => {
                 let detail = json!({
@@ -229,17 +340,23 @@ impl ScheduleTool {
                     "enabled": job.enabled,
                     "one_shot": matches!(job.schedule, synapse_cron::Schedule::At { .. }),
                 });
-                Ok(ToolResult {
-                    success: true,
-                    output: serde_json::to_string_pretty(&detail)?,
-                    error: None,
-                })
+                Ok((
+                    ToolResult {
+                        success: true,
+                        output: serde_json::to_string_pretty(&detail)?,
+                        error: None,
+                    },
+                    vec![Self::build_job_fact("get", &job)],
+                ))
             }
-            Err(_) => Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Job '{id}' not found")),
-            }),
+            Err(_) => Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("Job '{id}' not found")),
+                },
+                Vec::new(),
+            )),
         }
     }
 
@@ -248,7 +365,7 @@ impl ScheduleTool {
         action: &str,
         args: &serde_json::Value,
         approved: bool,
-    ) -> Result<ToolResult> {
+    ) -> Result<(ToolResult, Vec<AgentToolFact>)> {
         let command = args
             .get("command")
             .and_then(|value| value.as_str())
@@ -262,27 +379,36 @@ impl ScheduleTool {
         match action {
             "add" => {
                 if expression.is_none() || delay.is_some() || run_at.is_some() {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("'add' requires 'expression' and forbids delay/run_at".into()),
-                    });
+                    return Ok((
+                        ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some("'add' requires 'expression' and forbids delay/run_at".into()),
+                        },
+                        Vec::new(),
+                    ));
                 }
             }
             "once" => {
                 if expression.is_some() || (delay.is_none() && run_at.is_none()) {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("'once' requires exactly one of 'delay' or 'run_at'".into()),
-                    });
+                    return Ok((
+                        ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some("'once' requires exactly one of 'delay' or 'run_at'".into()),
+                        },
+                        Vec::new(),
+                    ));
                 }
                 if delay.is_some() && run_at.is_some() {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some("'once' supports either delay or run_at, not both".into()),
-                    });
+                    return Ok((
+                        ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some("'once' supports either delay or run_at, not both".into()),
+                        },
+                        Vec::new(),
+                    ));
                 }
             }
             _ => {
@@ -291,14 +417,17 @@ impl ScheduleTool {
                     .filter(|value| *value)
                     .count();
                 if count != 1 {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(
-                            "Exactly one of 'expression', 'delay', or 'run_at' must be provided"
-                                .into(),
-                        ),
-                    });
+                    return Ok((
+                        ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(
+                                "Exactly one of 'expression', 'delay', or 'run_at' must be provided"
+                                    .into(),
+                            ),
+                        },
+                        Vec::new(),
+                    ));
                 }
             }
         }
@@ -306,7 +435,7 @@ impl ScheduleTool {
         // Enforce rate-limiting AFTER command/args validation so that invalid
         // requests do not consume the action budget.  (Fixes #3699)
         if let Some(blocked) = self.enforce_mutation_allowed(action) {
-            return Ok(blocked);
+            return Ok((blocked, Vec::new()));
         }
 
         // All job creation routes through validated cron helpers, which enforce
@@ -327,24 +456,30 @@ impl ScheduleTool {
             {
                 Ok(job) => job,
                 Err(error) => {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(error.to_string()),
-                    });
+                    return Ok((
+                        ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(error.to_string()),
+                        },
+                        Vec::new(),
+                    ));
                 }
             };
-            return Ok(ToolResult {
-                success: true,
-                output: format!(
-                    "Created recurring job {} (expr: {}, next: {}, cmd: {})",
-                    job.id,
-                    job.expression,
-                    job.next_run.to_rfc3339(),
-                    job.command
-                ),
-                error: None,
-            });
+            return Ok((
+                ToolResult {
+                    success: true,
+                    output: format!(
+                        "Created recurring job {} (expr: {}, next: {}, cmd: {})",
+                        job.id,
+                        job.expression,
+                        job.next_run.to_rfc3339(),
+                        job.command
+                    ),
+                    error: None,
+                },
+                vec![Self::build_job_fact(action, &job)],
+            ));
         }
 
         if let Some(value) = delay {
@@ -359,23 +494,29 @@ impl ScheduleTool {
             {
                 Ok(job) => job,
                 Err(error) => {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(error.to_string()),
-                    });
+                    return Ok((
+                        ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(error.to_string()),
+                        },
+                        Vec::new(),
+                    ));
                 }
             };
-            return Ok(ToolResult {
-                success: true,
-                output: format!(
-                    "Created one-shot job {} (runs at: {}, cmd: {})",
-                    job.id,
-                    job.next_run.to_rfc3339(),
-                    job.command
-                ),
-                error: None,
-            });
+            return Ok((
+                ToolResult {
+                    success: true,
+                    output: format!(
+                        "Created one-shot job {} (runs at: {}, cmd: {})",
+                        job.id,
+                        job.next_run.to_rfc3339(),
+                        job.command
+                    ),
+                    error: None,
+                },
+                vec![Self::build_job_fact(action, &job)],
+            ));
         }
 
         let run_at_raw = run_at.ok_or_else(|| anyhow::anyhow!("Missing scheduling parameters"))?;
@@ -394,41 +535,57 @@ impl ScheduleTool {
         {
             Ok(job) => job,
             Err(error) => {
-                return Ok(ToolResult {
+                return Ok((
+                    ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(error.to_string()),
+                    },
+                    Vec::new(),
+                ));
+            }
+        };
+        Ok((
+            ToolResult {
+                success: true,
+                output: format!(
+                    "Created one-shot job {} (runs at: {}, cmd: {})",
+                    job.id,
+                    job.next_run.to_rfc3339(),
+                    job.command
+                ),
+                error: None,
+            },
+            vec![Self::build_job_fact(action, &job)],
+        ))
+    }
+
+    async fn handle_cancel(&self, id: &str) -> (ToolResult, Vec<AgentToolFact>) {
+        match synapse_cron::remove_job(&self.db, id).await {
+            Ok(()) => (
+                ToolResult {
+                    success: true,
+                    output: format!("Cancelled job {id}"),
+                    error: None,
+                },
+                vec![Self::build_cancel_fact("cancel", id)],
+            ),
+            Err(error) => (
+                ToolResult {
                     success: false,
                     output: String::new(),
                     error: Some(error.to_string()),
-                });
-            }
-        };
-        Ok(ToolResult {
-            success: true,
-            output: format!(
-                "Created one-shot job {} (runs at: {}, cmd: {})",
-                job.id,
-                job.next_run.to_rfc3339(),
-                job.command
+                },
+                Vec::new(),
             ),
-            error: None,
-        })
-    }
-
-    async fn handle_cancel(&self, id: &str) -> ToolResult {
-        match synapse_cron::remove_job(&self.db, id).await {
-            Ok(()) => ToolResult {
-                success: true,
-                output: format!("Cancelled job {id}"),
-                error: None,
-            },
-            Err(error) => ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(error.to_string()),
-            },
         }
     }
 
-    async fn handle_pause_resume(&self, id: &str, pause: bool) -> ToolResult {
+    async fn handle_pause_resume(
+        &self,
+        id: &str,
+        pause: bool,
+    ) -> (ToolResult, Vec<AgentToolFact>) {
         let operation = if pause {
             synapse_cron::pause_job(&self.db, id).await
         } else {
@@ -436,22 +593,88 @@ impl ScheduleTool {
         };
 
         match operation {
-            Ok(_) => ToolResult {
-                success: true,
-                output: if pause {
-                    format!("Paused job {id}")
-                } else {
-                    format!("Resumed job {id}")
+            Ok(job) => (
+                ToolResult {
+                    success: true,
+                    output: if pause {
+                        format!("Paused job {id}")
+                    } else {
+                        format!("Resumed job {id}")
+                    },
+                    error: None,
                 },
-                error: None,
-            },
-            Err(error) => ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(error.to_string()),
-            },
+                vec![Self::build_job_fact(
+                    if pause { "pause" } else { "resume" },
+                    &job,
+                )],
+            ),
+            Err(error) => (
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(error.to_string()),
+                },
+                Vec::new(),
+            ),
         }
     }
 }
 
-// Tests removed -- require SurrealDB setup (async integration tests).
+#[cfg(test)]
+mod tests {
+    use super::ScheduleTool;
+    use chrono::Utc;
+    use std::collections::HashMap;
+    use synapse_cron::{CronJob, DeliveryConfig, ExecutionMode, JobType, Schedule, SessionTarget};
+
+    fn sample_job() -> CronJob {
+        CronJob {
+            id: "job_123".into(),
+            expression: "0 9 * * *".into(),
+            schedule: Schedule::Cron {
+                expr: "0 9 * * *".into(),
+                tz: Some("Europe/Berlin".into()),
+            },
+            command: "echo hi".into(),
+            prompt: None,
+            name: Some("morning".into()),
+            job_type: JobType::Agent,
+            session_target: SessionTarget::Main,
+            model: Some("openai/gpt-5.4".into()),
+            enabled: true,
+            delivery: DeliveryConfig {
+                mode: "announce".into(),
+                channel: Some("matrix".into()),
+                to: Some("!room:example.org".into()),
+                thread_ref: Some("thread-1".into()),
+                best_effort: true,
+            },
+            delete_after_run: false,
+            execution_mode: ExecutionMode::InProcess,
+            env_overlay: HashMap::new(),
+            allowed_tools: None,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            last_output: None,
+        }
+    }
+
+    #[test]
+    fn build_job_fact_emits_typed_schedule_fields() {
+        let fact = ScheduleTool::build_job_fact("create", &sample_job());
+
+        assert_eq!(fact.tool_name, "schedule");
+        assert_eq!(fact.focus_entities.len(), 1);
+        assert_eq!(fact.focus_entities[0].kind, "scheduled_job");
+        assert_eq!(fact.focus_entities[0].name, "job_123");
+        assert_eq!(fact.focus_entities[0].metadata.as_deref(), Some("cron"));
+
+        assert!(fact.slots.iter().any(|slot| slot.name == "schedule_action" && slot.value == "create"));
+        assert!(fact.slots.iter().any(|slot| slot.name == "job_type" && slot.value == "agent"));
+        assert!(fact.slots.iter().any(|slot| slot.name == "session_target" && slot.value == "main"));
+        assert!(fact.slots.iter().any(|slot| slot.name == "delivery_channel" && slot.value == "matrix"));
+        assert!(fact.slots.iter().any(|slot| slot.name == "delivery_thread_ref" && slot.value == "thread-1"));
+    }
+}
