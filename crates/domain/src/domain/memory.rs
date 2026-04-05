@@ -23,6 +23,54 @@ pub type AgentId = String;
 pub type MemoryId = String;
 pub type SessionId = String;
 
+// ── Embedding Profile ───────────────────────────────────────────
+
+/// Distance metric expected by an embedding family.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingDistanceMetric {
+    #[default]
+    Cosine,
+    Dot,
+    Euclidean,
+}
+
+/// Retrieval calibration metadata for an embedding model/profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddingProfile {
+    pub profile_id: String,
+    pub provider_family: String,
+    pub model_id: String,
+    pub dimensions: usize,
+    pub distance_metric: EmbeddingDistanceMetric,
+    pub normalize_output: bool,
+    pub query_prefix: Option<String>,
+    pub document_prefix: Option<String>,
+    pub supports_multilingual: bool,
+    pub supports_code: bool,
+    pub recommended_chunk_chars: usize,
+    pub recommended_top_k: usize,
+}
+
+impl Default for EmbeddingProfile {
+    fn default() -> Self {
+        Self {
+            profile_id: "none:none:0".into(),
+            provider_family: "none".into(),
+            model_id: "none".into(),
+            dimensions: 0,
+            distance_metric: EmbeddingDistanceMetric::Cosine,
+            normalize_output: false,
+            query_prefix: None,
+            document_prefix: None,
+            supports_multilingual: false,
+            supports_code: false,
+            recommended_chunk_chars: 800,
+            recommended_top_k: 8,
+        }
+    }
+}
+
 // ── Memory Category (backward-compatible + extended) ─────────────
 
 /// Memory category — determines storage tier and retrieval scope.

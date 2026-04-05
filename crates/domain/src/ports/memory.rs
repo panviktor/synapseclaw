@@ -11,9 +11,9 @@
 //! - [`UnifiedMemoryPort`] — facade for cross-tier hybrid search + convenience ops
 
 use crate::domain::memory::{
-    AgentId, ConsolidationReport, CoreMemoryBlock, Entity, HybridSearchResult, MemoryCategory,
-    MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, SearchResult, SessionId, Skill,
-    SkillUpdate, TemporalFact, Visibility,
+    AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity, HybridSearchResult,
+    MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, SearchResult,
+    SessionId, Skill, SkillUpdate, TemporalFact, Visibility,
 };
 use async_trait::async_trait;
 
@@ -192,6 +192,21 @@ pub trait UnifiedMemoryPort:
 
     /// Generate an embedding vector for text.
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError>;
+
+    /// Generate a query embedding, applying model-specific calibration if needed.
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embed(text).await
+    }
+
+    /// Generate a document embedding, applying model-specific calibration if needed.
+    async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embed(text).await
+    }
+
+    /// Retrieval calibration metadata for the active embedding model.
+    fn embedding_profile(&self) -> EmbeddingProfile {
+        EmbeddingProfile::default()
+    }
 
     // ── Convenience methods for inbound message flow ─────────────
 

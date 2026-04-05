@@ -275,6 +275,25 @@ impl UnifiedMemoryPort for InstrumentedMemory {
         log_op("embed", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
         r
     }
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        let t = Instant::now();
+        let r = self.inner.embed_query(text).await;
+        log_op("embed_query", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
+        r
+    }
+    async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        let t = Instant::now();
+        let r = self.inner.embed_document(text).await;
+        log_op(
+            "embed_document",
+            t,
+            r.as_ref().map(|v| v.len()).unwrap_or(0),
+        );
+        r
+    }
+    fn embedding_profile(&self) -> EmbeddingProfile {
+        self.inner.embedding_profile()
+    }
     async fn store(
         &self,
         key: &str,

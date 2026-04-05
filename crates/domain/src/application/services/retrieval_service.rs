@@ -210,7 +210,7 @@ pub async fn search_sessions_with_options(
     }
 
     let mut hits = Vec::new();
-    let query_embedding = embed_or_none(memory, query).await;
+    let query_embedding = embed_query_or_none(memory, query).await;
     let now = current_unix_seconds();
     for session in shortlisted {
         let base_score = metadata_hits
@@ -222,7 +222,7 @@ pub async fn search_sessions_with_options(
         let (transcript_score, recap) = transcript_recap(&events, &keywords);
         let document = build_session_document(&session, &events);
         let document_embedding = if query_embedding.is_some() {
-            embed_or_none(memory, &document).await
+            embed_document_or_none(memory, &document).await
         } else {
             None
         };
@@ -299,7 +299,7 @@ pub async fn search_run_recipes_with_options(
 ) -> Vec<RunRecipeSearchMatch> {
     let query_lower = query.to_lowercase();
     let keywords: Vec<&str> = query_lower.split_whitespace().collect();
-    let query_embedding = embed_or_none(memory, query).await;
+    let query_embedding = embed_query_or_none(memory, query).await;
     let now = current_unix_seconds();
 
     let mut hits = Vec::new();
@@ -307,7 +307,7 @@ pub async fn search_run_recipes_with_options(
         let lexical = score_recipe_keywords(&recipe, &keywords) * options.weights.lexical;
         let document = build_recipe_document(&recipe);
         let document_embedding = if query_embedding.is_some() {
-            embed_or_none(memory, &document).await
+            embed_document_or_none(memory, &document).await
         } else {
             None
         };
@@ -640,8 +640,15 @@ fn select_with_mmr<T>(
     selected
 }
 
-async fn embed_or_none(memory: &dyn UnifiedMemoryPort, text: &str) -> Option<Vec<f32>> {
-    match memory.embed(text).await {
+async fn embed_query_or_none(memory: &dyn UnifiedMemoryPort, text: &str) -> Option<Vec<f32>> {
+    match memory.embed_query(text).await {
+        Ok(embedding) if !embedding.is_empty() => Some(embedding),
+        _ => None,
+    }
+}
+
+async fn embed_document_or_none(memory: &dyn UnifiedMemoryPort, text: &str) -> Option<Vec<f32>> {
+    match memory.embed_document(text).await {
         Ok(embedding) if !embedding.is_empty() => Some(embedding),
         _ => None,
     }

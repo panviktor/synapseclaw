@@ -190,6 +190,15 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         self.inner.embed(text).await
     }
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.inner.embed_query(text).await
+    }
+    async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.inner.embed_document(text).await
+    }
+    fn embedding_profile(&self) -> EmbeddingProfile {
+        self.inner.embedding_profile()
+    }
     async fn store(
         &self,
         key: &str,

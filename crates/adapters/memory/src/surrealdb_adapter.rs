@@ -11,9 +11,9 @@ use surrealdb::engine::local::{Db, SurrealKv};
 use surrealdb::Surreal;
 
 use synapse_domain::domain::memory::{
-    AgentId, ConsolidationReport, CoreMemoryBlock, Entity, HybridSearchResult, MemoryCategory,
-    MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, ReflectionOutcome, SearchResult,
-    SessionId, Skill, SkillUpdate, TemporalFact,
+    AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity, HybridSearchResult,
+    MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, ReflectionOutcome,
+    SearchResult, SessionId, Skill, SkillUpdate, TemporalFact,
 };
 use synapse_domain::ports::memory::{
     ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
@@ -508,7 +508,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
 
         // Generate embedding if provider is available (best-effort).
         let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
-            match self.embedder.embed_one(&entry.content).await {
+            match self.embedder.embed_document(&entry.content).await {
                 Ok(emb) => {
                     tracing::info!(dims = emb.len(), "memory.embedding.stored");
                     Some(emb)
@@ -624,7 +624,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         let query_embedding = if self.embedder.dimensions() > 0 {
             match &query.embedding {
                 Some(emb) => Some(emb.clone()),
-                None => match self.embedder.embed_one(&query.text).await {
+                None => match self.embedder.embed_query(&query.text).await {
                     Ok(emb) => Some(emb),
                     Err(e) => {
                         tracing::warn!(op = "search_episodes", "Embedding failed: {e}");
@@ -801,7 +801,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             entity.summary.as_deref().unwrap_or("")
         );
         let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
-            match self.embedder.embed_one(&embed_text).await {
+            match self.embedder.embed_document(&embed_text).await {
                 Ok(emb) => Some(emb),
                 Err(e) => {
                     tracing::warn!(op = "upsert_entity", "Embedding failed: {e}");
@@ -866,7 +866,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
 
         // 2. Embedding similarity fallback (>0.85 threshold)
         if self.embedder.dimensions() > 0 {
-            let emb_result = self.embedder.embed_one(name).await;
+            let emb_result = self.embedder.embed_document(name).await;
             if let Err(ref e) = emb_result {
                 tracing::warn!(op = "find_entity", "Embedding failed: {e}");
             }
@@ -911,7 +911,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             fact.embedding.clone()
         } else if self.embedder.dimensions() > 0 {
             let fact_text = format!("{} {} {}", fact.subject, fact.predicate, fact.object);
-            match self.embedder.embed_one(&fact_text).await {
+            match self.embedder.embed_document(&fact_text).await {
                 Ok(emb) => Some(emb),
                 Err(e) => {
                     tracing::warn!(op = "add_fact", "Embedding failed: {e}");
@@ -1389,6 +1389,24 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
             .embed_one(text)
             .await
             .map_err(|e| MemoryError::Embedding(e.to_string()))
+    }
+
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embedder
+            .embed_query(text)
+            .await
+            .map_err(|e| MemoryError::Embedding(e.to_string()))
+    }
+
+    async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embedder
+            .embed_document(text)
+            .await
+            .map_err(|e| MemoryError::Embedding(e.to_string()))
+    }
+
+    fn embedding_profile(&self) -> EmbeddingProfile {
+        self.embedder.profile()
     }
 
     async fn store(

@@ -117,6 +117,7 @@ pub async fn handle_api_status(
         "summary_model": config.summary.model.as_ref().or(config.summary_model.as_ref()),
         "embedding_provider": config.memory.embedding_provider,
         "embedding_model": config.memory.embedding_model,
+        "embedding_profile": state.mem.embedding_profile(),
         "temperature": state.temperature,
         "uptime_seconds": health.uptime_seconds,
         "gateway_port": config.gateway.port,
