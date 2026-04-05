@@ -4,10 +4,11 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{Db, DeliveryConfig, JobType, Schedule, SessionTarget, Surreal};
 use synapse_domain::config::schema::Config;
-use synapse_domain::domain::dialogue_state::DialogueSlot;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
+use synapse_domain::ports::tool::ToolExecution;
 
 pub struct CronAddTool {
     config: Arc<Config>,
@@ -116,6 +117,283 @@ impl CronAddTool {
         }
 
         Ok(Some(delivery))
+    }
+
+    fn schedule_kind(schedule: &Schedule) -> &'static str {
+        match schedule {
+            Schedule::Cron { .. } => "cron",
+            Schedule::At { .. } => "at",
+            Schedule::Every { .. } => "every",
+        }
+    }
+
+    fn build_job_fact(&self, job: &synapse_cron::CronJob) -> AgentToolFact {
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "scheduled_job".into(),
+                name: job.id.clone(),
+                metadata: Some(Self::schedule_kind(&job.schedule).to_string()),
+            }],
+            slots: vec![
+                DialogueSlot::observed("job_id", job.id.clone()),
+                DialogueSlot::observed("job_type", <&'static str>::from(job.job_type.clone())),
+                DialogueSlot::observed("schedule_kind", Self::schedule_kind(&job.schedule)),
+                DialogueSlot::observed("job_enabled", job.enabled.to_string()),
+                DialogueSlot::observed("job_next_run", job.next_run.to_rfc3339()),
+                DialogueSlot::observed(
+                    "session_target",
+                    match job.session_target {
+                        SessionTarget::Isolated => "isolated",
+                        SessionTarget::Main => "main",
+                    },
+                ),
+                DialogueSlot::observed("delete_after_run", job.delete_after_run.to_string()),
+            ],
+        };
+
+        if let Some(name) = &job.name {
+            fact.slots
+                .push(DialogueSlot::observed("job_name", name.clone()));
+        }
+        if let Some(model) = &job.model {
+            fact.slots
+                .push(DialogueSlot::observed("job_model", model.clone()));
+        }
+        if !job.delivery.mode.trim().is_empty() {
+            fact.slots
+                .push(DialogueSlot::observed("delivery_mode", job.delivery.mode.clone()));
+        }
+        if let Some(channel) = &job.delivery.channel {
+            fact.slots
+                .push(DialogueSlot::observed("delivery_channel", channel.clone()));
+        }
+        if let Some(to) = &job.delivery.to {
+            fact.slots
+                .push(DialogueSlot::observed("delivery_to", to.clone()));
+        }
+        if let Some(thread_ref) = &job.delivery.thread_ref {
+            fact.slots.push(DialogueSlot::observed(
+                "delivery_thread_ref",
+                thread_ref.clone(),
+            ));
+        }
+
+        fact
+    }
+
+    async fn execute_action(&self, args: &serde_json::Value) -> anyhow::Result<ToolExecution> {
+        if !self.config.cron.enabled {
+            return Ok(ToolExecution {
+                result: ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("cron is disabled by config (cron.enabled=false)".to_string()),
+                },
+                facts: Vec::new(),
+            });
+        }
+
+        let schedule = match args.get("schedule") {
+            Some(v) => match serde_json::from_value::<Schedule>(v.clone()) {
+                Ok(schedule) => schedule,
+                Err(e) => {
+                    return Ok(ToolExecution {
+                        result: ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(format!("Invalid schedule: {e}")),
+                        },
+                        facts: Vec::new(),
+                    });
+                }
+            },
+            None => {
+                return Ok(ToolExecution {
+                    result: ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("Missing 'schedule' parameter".to_string()),
+                    },
+                    facts: Vec::new(),
+                });
+            }
+        };
+
+        let name = args
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+
+        let job_type = match args.get("job_type").and_then(serde_json::Value::as_str) {
+            Some("agent") => JobType::Agent,
+            Some("shell") => JobType::Shell,
+            Some(other) => {
+                return Ok(ToolExecution {
+                    result: ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Invalid job_type: {other}")),
+                    },
+                    facts: Vec::new(),
+                });
+            }
+            None => {
+                if args.get("prompt").is_some() {
+                    JobType::Agent
+                } else {
+                    JobType::Shell
+                }
+            }
+        };
+
+        let default_delete_after_run = matches!(schedule, Schedule::At { .. });
+        let delete_after_run = args
+            .get("delete_after_run")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(default_delete_after_run);
+        let approved = args
+            .get("approved")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        let result = match job_type {
+            JobType::Shell => {
+                let command = match args.get("command").and_then(serde_json::Value::as_str) {
+                    Some(command) if !command.trim().is_empty() => command,
+                    _ => {
+                        return Ok(ToolExecution {
+                            result: ToolResult {
+                                success: false,
+                                output: String::new(),
+                                error: Some("Missing 'command' for shell job".to_string()),
+                            },
+                            facts: Vec::new(),
+                        });
+                    }
+                };
+
+                if let Err(reason) = self.security.validate_command_execution(command, approved) {
+                    return Ok(ToolExecution {
+                        result: ToolResult {
+                            success: false,
+                            output: String::new(),
+                            error: Some(reason),
+                        },
+                        facts: Vec::new(),
+                    });
+                }
+
+                if let Some(blocked) = self.enforce_mutation_allowed("cron_add") {
+                    return Ok(ToolExecution {
+                        result: blocked,
+                        facts: Vec::new(),
+                    });
+                }
+
+                synapse_cron::add_shell_job_with_approval(
+                    &self.db,
+                    &self.config,
+                    name,
+                    schedule,
+                    command,
+                    approved,
+                )
+                .await
+            }
+            JobType::Agent => {
+                let prompt = match args.get("prompt").and_then(serde_json::Value::as_str) {
+                    Some(prompt) if !prompt.trim().is_empty() => prompt,
+                    _ => {
+                        return Ok(ToolExecution {
+                            result: ToolResult {
+                                success: false,
+                                output: String::new(),
+                                error: Some("Missing 'prompt' for agent job".to_string()),
+                            },
+                            facts: Vec::new(),
+                        });
+                    }
+                };
+
+                let session_target = match args.get("session_target") {
+                    Some(v) => match serde_json::from_value::<SessionTarget>(v.clone()) {
+                        Ok(target) => target,
+                        Err(e) => {
+                            return Ok(ToolExecution {
+                                result: ToolResult {
+                                    success: false,
+                                    output: String::new(),
+                                    error: Some(format!("Invalid session_target: {e}")),
+                                },
+                                facts: Vec::new(),
+                            });
+                        }
+                    },
+                    None => SessionTarget::Isolated,
+                };
+
+                let model = args
+                    .get("model")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string);
+
+                let delivery = match self.resolve_delivery_config(args) {
+                    Ok(cfg) => cfg,
+                    Err(result) => {
+                        return Ok(ToolExecution {
+                            result,
+                            facts: Vec::new(),
+                        });
+                    }
+                };
+
+                if let Some(blocked) = self.enforce_mutation_allowed("cron_add") {
+                    return Ok(ToolExecution {
+                        result: blocked,
+                        facts: Vec::new(),
+                    });
+                }
+
+                synapse_cron::add_agent_job(
+                    &self.db,
+                    name,
+                    schedule,
+                    prompt,
+                    session_target,
+                    model,
+                    delivery,
+                    delete_after_run,
+                )
+                .await
+            }
+        };
+
+        match result {
+            Ok(job) => Ok(ToolExecution {
+                result: ToolResult {
+                    success: true,
+                    output: serde_json::to_string_pretty(&json!({
+                        "id": job.id,
+                        "name": job.name,
+                        "job_type": job.job_type,
+                        "schedule": job.schedule,
+                        "next_run": job.next_run,
+                        "enabled": job.enabled
+                    }))?,
+                    error: None,
+                },
+                facts: vec![self.build_job_fact(&job)],
+            }),
+            Err(e) => Ok(ToolExecution {
+                result: ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(e.to_string()),
+                },
+                facts: Vec::new(),
+            }),
+        }
     }
 }
 
@@ -311,175 +589,89 @@ impl Tool for CronAddTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        if !self.config.cron.enabled {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("cron is disabled by config (cron.enabled=false)".to_string()),
-            });
-        }
+        Ok(self.execute_action(&args).await?.result)
+    }
 
-        let schedule = match args.get("schedule") {
-            Some(v) => match serde_json::from_value::<Schedule>(v.clone()) {
-                Ok(schedule) => schedule,
-                Err(e) => {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(format!("Invalid schedule: {e}")),
-                    });
-                }
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<ToolExecution> {
+        self.execute_action(&args).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CronAddTool;
+    use chrono::Utc;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use synapse_cron::{
+        CronJob, Db, DeliveryConfig, ExecutionMode, JobType, Schedule, SessionTarget, Surreal,
+    };
+    use synapse_domain::config::schema::Config;
+    use synapse_domain::domain::security_policy::SecurityPolicy;
+
+    fn sample_job() -> CronJob {
+        CronJob {
+            id: "job_123".into(),
+            expression: "0 9 * * *".into(),
+            schedule: Schedule::Cron {
+                expr: "0 9 * * *".into(),
+                tz: Some("Europe/Berlin".into()),
             },
-            None => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some("Missing 'schedule' parameter".to_string()),
-                });
-            }
-        };
-
-        let name = args
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string);
-
-        let job_type = match args.get("job_type").and_then(serde_json::Value::as_str) {
-            Some("agent") => JobType::Agent,
-            Some("shell") => JobType::Shell,
-            Some(other) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Invalid job_type: {other}")),
-                });
-            }
-            None => {
-                if args.get("prompt").is_some() {
-                    JobType::Agent
-                } else {
-                    JobType::Shell
-                }
-            }
-        };
-
-        let default_delete_after_run = matches!(schedule, Schedule::At { .. });
-        let delete_after_run = args
-            .get("delete_after_run")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(default_delete_after_run);
-        let approved = args
-            .get("approved")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-
-        let result = match job_type {
-            JobType::Shell => {
-                let command = match args.get("command").and_then(serde_json::Value::as_str) {
-                    Some(command) if !command.trim().is_empty() => command,
-                    _ => {
-                        return Ok(ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some("Missing 'command' for shell job".to_string()),
-                        });
-                    }
-                };
-
-                if let Err(reason) = self.security.validate_command_execution(command, approved) {
-                    return Ok(ToolResult {
-                        success: false,
-                        output: String::new(),
-                        error: Some(reason),
-                    });
-                }
-
-                if let Some(blocked) = self.enforce_mutation_allowed("cron_add") {
-                    return Ok(blocked);
-                }
-
-                synapse_cron::add_shell_job_with_approval(
-                    &self.db,
-                    &self.config,
-                    name,
-                    schedule,
-                    command,
-                    approved,
-                )
-                .await
-            }
-            JobType::Agent => {
-                let prompt = match args.get("prompt").and_then(serde_json::Value::as_str) {
-                    Some(prompt) if !prompt.trim().is_empty() => prompt,
-                    _ => {
-                        return Ok(ToolResult {
-                            success: false,
-                            output: String::new(),
-                            error: Some("Missing 'prompt' for agent job".to_string()),
-                        });
-                    }
-                };
-
-                let session_target = match args.get("session_target") {
-                    Some(v) => match serde_json::from_value::<SessionTarget>(v.clone()) {
-                        Ok(target) => target,
-                        Err(e) => {
-                            return Ok(ToolResult {
-                                success: false,
-                                output: String::new(),
-                                error: Some(format!("Invalid session_target: {e}")),
-                            });
-                        }
-                    },
-                    None => SessionTarget::Isolated,
-                };
-
-                let model = args
-                    .get("model")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string);
-
-                let delivery = match self.resolve_delivery_config(&args) {
-                    Ok(cfg) => cfg,
-                    Err(result) => return Ok(result),
-                };
-
-                if let Some(blocked) = self.enforce_mutation_allowed("cron_add") {
-                    return Ok(blocked);
-                }
-
-                synapse_cron::add_agent_job(
-                    &self.db,
-                    name,
-                    schedule,
-                    prompt,
-                    session_target,
-                    model,
-                    delivery,
-                    delete_after_run,
-                )
-                .await
-            }
-        };
-
-        match result {
-            Ok(job) => Ok(ToolResult {
-                success: true,
-                output: serde_json::to_string_pretty(&json!({
-                    "id": job.id,
-                    "name": job.name,
-                    "job_type": job.job_type,
-                    "schedule": job.schedule,
-                    "next_run": job.next_run,
-                    "enabled": job.enabled
-                }))?,
-                error: None,
-            }),
-            Err(e) => Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(e.to_string()),
-            }),
+            command: "echo hi".into(),
+            prompt: Some("Report status".into()),
+            name: Some("report".into()),
+            job_type: JobType::Agent,
+            session_target: SessionTarget::Main,
+            model: Some("openai/gpt-5.4".into()),
+            enabled: true,
+            delivery: DeliveryConfig {
+                mode: "announce".into(),
+                channel: Some("matrix".into()),
+                to: Some("!room:example.org".into()),
+                thread_ref: Some("thread-1".into()),
+                best_effort: true,
+            },
+            delete_after_run: false,
+            execution_mode: ExecutionMode::InProcess,
+            env_overlay: HashMap::new(),
+            allowed_tools: None,
+            created_at: Utc::now(),
+            next_run: Utc::now(),
+            last_run: None,
+            last_status: None,
+            last_output: None,
         }
+    }
+
+    #[test]
+    fn build_job_fact_emits_typed_schedule_fields() {
+        let tool = CronAddTool::new(
+            Arc::new(Config::default()),
+            Arc::new(SecurityPolicy::default()),
+            Arc::new(Surreal::<Db>::init()),
+            None,
+        );
+        let fact = tool.build_job_fact(&sample_job());
+
+        assert_eq!(fact.tool_name, "cron_add");
+        assert_eq!(fact.focus_entities.len(), 1);
+        assert_eq!(fact.focus_entities[0].kind, "scheduled_job");
+        assert_eq!(fact.focus_entities[0].name, "job_123");
+        assert_eq!(fact.focus_entities[0].metadata.as_deref(), Some("cron"));
+        assert!(fact
+            .slots
+            .iter()
+            .any(|slot| slot.name == "job_type" && slot.value == "agent"));
+        assert!(fact
+            .slots
+            .iter()
+            .any(|slot| slot.name == "session_target" && slot.value == "main"));
+        assert!(fact
+            .slots
+            .iter()
+            .any(|slot| slot.name == "delivery_channel" && slot.value == "matrix"));
     }
 }
