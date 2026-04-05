@@ -13,11 +13,7 @@ pub(crate) fn build_tool_fact(tool_name: &str, arguments: &Value) -> AgentToolFa
         slots: Vec::new(),
     };
 
-    if let Value::Object(map) = arguments {
-        for (raw_key, value) in map {
-            collect_argument_fact(raw_key, value, &mut fact);
-        }
-    }
+    collect_argument_fact(None, arguments, &mut fact);
 
     fact.focus_entities = dedupe_focus_entities(fact.focus_entities);
     fact.slots = dedupe_slots(fact.slots);
@@ -104,41 +100,65 @@ fn parse_arguments_value(value: &Value) -> Value {
     }
 }
 
-fn collect_argument_fact(key: &str, value: &Value, fact: &mut AgentToolFact) {
-    let normalized_key = normalize_key(key);
-    let Some(kind) = infer_entity_kind(&normalized_key) else {
-        if let Some(slot_value) = flatten_slot_value(value) {
-            fact.slots.push(DialogueSlot {
-                name: normalized_key,
-                value: slot_value,
-            });
+fn collect_argument_fact(path: Option<&str>, value: &Value, fact: &mut AgentToolFact) {
+    match value {
+        Value::Object(map) => {
+            for (raw_key, nested) in map {
+                let normalized = normalize_key(raw_key);
+                let next_path = match path {
+                    Some(prefix) if !prefix.is_empty() => format!("{prefix}_{normalized}"),
+                    _ => normalized,
+                };
+                collect_argument_fact(Some(&next_path), nested, fact);
+            }
         }
-        return;
-    };
+        Value::Array(items) => {
+            for item in items {
+                collect_argument_fact(path, item, fact);
+            }
+        }
+        _ => {
+            let Some(path) = path else {
+                return;
+            };
+            let normalized_key = normalize_key(path);
+            let entity_key = normalized_key
+                .rsplit('_')
+                .find(|segment| !segment.is_empty())
+                .unwrap_or(normalized_key.as_str());
 
-    let scalar_values = flatten_entity_values(value);
-    if scalar_values.is_empty() {
-        return;
-    }
+            if let Some(kind) = infer_entity_kind(entity_key) {
+                let scalar_values = flatten_entity_values(value);
+                if scalar_values.is_empty() {
+                    return;
+                }
 
-    for item in &scalar_values {
-        fact.focus_entities.push(FocusEntity {
-            kind: kind.to_string(),
-            name: item.clone(),
-            metadata: None,
-        });
-    }
+                for item in &scalar_values {
+                    fact.focus_entities.push(FocusEntity {
+                        kind: kind.to_string(),
+                        name: item.clone(),
+                        metadata: None,
+                    });
+                }
 
-    if scalar_values.len() == 1 {
-        fact.slots.push(DialogueSlot {
-            name: normalized_key,
-            value: scalar_values[0].clone(),
-        });
-    } else {
-        fact.slots.push(DialogueSlot {
-            name: normalized_key,
-            value: scalar_values.join(", "),
-        });
+                fact.slots.push(DialogueSlot {
+                    name: normalized_key,
+                    value: if scalar_values.len() == 1 {
+                        scalar_values[0].clone()
+                    } else {
+                        scalar_values.join(", ")
+                    },
+                });
+                return;
+            }
+
+            if let Some(slot_value) = flatten_slot_value(value) {
+                fact.slots.push(DialogueSlot {
+                    name: normalized_key,
+                    value: slot_value,
+                });
+            }
+        }
     }
 }
 
@@ -297,5 +317,33 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].focus_entities[0].kind, "service");
         assert_eq!(facts[0].focus_entities[0].name, "synapseclaw");
+    }
+
+    #[test]
+    fn extracts_nested_target_fields_from_structured_args() {
+        let fact = build_tool_fact(
+            "message_send",
+            &serde_json::json!({
+                "content": "hello",
+                "target": {
+                    "channel": "matrix",
+                    "recipient": "!room:example.com",
+                    "thread_ref": "$thread"
+                }
+            }),
+        );
+
+        assert!(fact
+            .focus_entities
+            .iter()
+            .any(|entity| entity.kind == "channel" && entity.name == "matrix"));
+        assert!(fact
+            .focus_entities
+            .iter()
+            .any(|entity| entity.kind == "recipient" && entity.name == "!room:example.com"));
+        assert!(fact
+            .slots
+            .iter()
+            .any(|slot| slot.name == "target_thread_ref" && slot.value == "$thread"));
     }
 }

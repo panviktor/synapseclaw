@@ -507,17 +507,17 @@ async fn execute_agent_turn(
         }
     }
 
+    let current_conversation = crate::domain::conversation_target::CurrentConversationContext {
+        source_adapter: envelope.source_adapter.clone(),
+        conversation_ref: envelope.conversation_ref.clone(),
+        reply_ref: envelope.reply_ref.clone(),
+        thread_ref: envelope.thread_ref.clone(),
+        actor_id: envelope.actor_id.clone(),
+    };
+
     // ── Set current conversation context for tools that need "here" ──
     let _conversation_context_guard = if let Some(ctx_port) = ports.conversation_context.clone() {
-        ctx_port.set_current(Some(
-            crate::domain::conversation_target::CurrentConversationContext {
-                source_adapter: envelope.source_adapter.clone(),
-                conversation_ref: envelope.conversation_ref.clone(),
-                reply_ref: envelope.reply_ref.clone(),
-                thread_ref: envelope.thread_ref.clone(),
-                actor_id: envelope.actor_id.clone(),
-            },
-        ));
+        ctx_port.set_current(Some(current_conversation.clone()));
         ConversationContextGuard {
             port: Some(ctx_port),
         }
@@ -693,12 +693,14 @@ async fn execute_agent_turn(
                 if dialogue_state_service::should_materialize_state(
                     existing.as_ref(),
                     &turn_result.tool_facts,
+                    Some(&current_conversation),
                 ) {
                     let mut state = existing.unwrap_or_default();
                     dialogue_state_service::update_state_from_turn(
                         &mut state,
                         content,
                         &turn_result.tool_facts,
+                        Some(&current_conversation),
                         &response_text,
                     );
                     store.set(conversation_key, state);

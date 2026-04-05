@@ -4,6 +4,7 @@
 //! cities/languages/timezones from free text. Typed state is updated from
 //! structured runtime facts such as tool-call arguments.
 
+use crate::domain::conversation_target::CurrentConversationContext;
 use crate::domain::dialogue_state::DialogueState;
 use crate::ports::agent_runtime::AgentToolFact;
 use parking_lot::RwLock;
@@ -63,6 +64,7 @@ pub fn update_state_from_turn(
     state: &mut DialogueState,
     _user_message: &str,
     tool_facts: &[AgentToolFact],
+    current_conversation: Option<&CurrentConversationContext>,
     _assistant_response: &str,
 ) {
     let now = std::time::SystemTime::now()
@@ -71,7 +73,7 @@ pub fn update_state_from_turn(
         .unwrap_or(0);
     state.updated_at = now;
 
-    if tool_facts.is_empty() {
+    if tool_facts.is_empty() && current_conversation.is_none() {
         return;
     }
 
@@ -101,6 +103,18 @@ pub fn update_state_from_turn(
         }
     }
 
+    for slot in current_target_slots(current_conversation) {
+        if let Some(existing) = state
+            .slots
+            .iter_mut()
+            .find(|existing| existing.name == slot.name)
+        {
+            *existing = slot;
+        } else {
+            state.slots.push(slot);
+        }
+    }
+
     let subjects = collect_subjects(tool_facts);
     if !subjects.is_empty() {
         state.last_tool_subjects = subjects;
@@ -110,8 +124,9 @@ pub fn update_state_from_turn(
 pub fn should_materialize_state(
     existing: Option<&DialogueState>,
     tool_facts: &[AgentToolFact],
+    current_conversation: Option<&CurrentConversationContext>,
 ) -> bool {
-    existing.is_some() || !tool_facts.is_empty()
+    existing.is_some() || !tool_facts.is_empty() || current_conversation.is_some()
 }
 
 fn collect_focus_entities(
@@ -178,6 +193,33 @@ fn collect_subjects(tool_facts: &[AgentToolFact]) -> Vec<String> {
     subjects
 }
 
+fn current_target_slots(
+    current_conversation: Option<&CurrentConversationContext>,
+) -> Vec<crate::domain::dialogue_state::DialogueSlot> {
+    let Some(ctx) = current_conversation else {
+        return Vec::new();
+    };
+
+    vec![
+        crate::domain::dialogue_state::DialogueSlot {
+            name: "current_delivery_target".into(),
+            value: "current_conversation".into(),
+        },
+        crate::domain::dialogue_state::DialogueSlot {
+            name: "current_adapter".into(),
+            value: ctx.source_adapter.clone(),
+        },
+        crate::domain::dialogue_state::DialogueSlot {
+            name: "current_reply_mode".into(),
+            value: if ctx.thread_ref.is_some() {
+                "thread".into()
+            } else {
+                "conversation".into()
+            },
+        },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +238,7 @@ mod tests {
             &mut state,
             "compare weather in Berlin and Tbilisi",
             &[],
+            None,
             "Weather in Berlin: 12C. Weather in Tbilisi: 25C.",
         );
         assert_eq!(state.focus_entities.len(), 1);
@@ -226,6 +269,7 @@ mod tests {
                 ],
                 slots: vec![],
             }],
+            None,
             "",
         );
         assert_eq!(state.last_tool_subjects, vec!["Berlin", "Tbilisi"]);
@@ -235,17 +279,30 @@ mod tests {
 
     #[test]
     fn materialize_only_when_existing_or_tools_present() {
-        assert!(!should_materialize_state(None, &[]));
+        assert!(!should_materialize_state(None, &[], None));
         assert!(should_materialize_state(
             None,
             &[AgentToolFact {
                 tool_name: "shell".into(),
                 ..Default::default()
-            }]
+            }],
+            None
         ));
         assert!(should_materialize_state(
             Some(&DialogueState::default()),
-            &[]
+            &[],
+            None
+        ));
+        assert!(should_materialize_state(
+            None,
+            &[],
+            Some(&CurrentConversationContext {
+                source_adapter: "matrix".into(),
+                conversation_ref: "matrix_room".into(),
+                reply_ref: "!room:example.com".into(),
+                thread_ref: Some("$thread".into()),
+                actor_id: "alice".into(),
+            })
         ));
     }
 
@@ -266,5 +323,30 @@ mod tests {
         let loaded = store.get("conv1");
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().focus_entities[0].name, "Moscow");
+    }
+
+    #[test]
+    fn adds_current_target_slots_without_tool_facts() {
+        let mut state = DialogueState::default();
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[],
+            Some(&CurrentConversationContext {
+                source_adapter: "matrix".into(),
+                conversation_ref: "matrix_room".into(),
+                reply_ref: "!room:example.com".into(),
+                thread_ref: Some("$thread".into()),
+                actor_id: "alice".into(),
+            }),
+            "",
+        );
+
+        assert_eq!(
+            state.slot("current_delivery_target"),
+            Some("current_conversation")
+        );
+        assert_eq!(state.slot("current_adapter"), Some("matrix"));
+        assert_eq!(state.slot("current_reply_mode"), Some("thread"));
     }
 }

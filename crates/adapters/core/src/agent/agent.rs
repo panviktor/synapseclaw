@@ -1064,12 +1064,14 @@ impl Agent {
                     if dialogue_state_service::should_materialize_state(
                         existing.as_ref(),
                         &tool_facts_this_turn,
+                        None,
                     ) {
                         let mut state = existing.unwrap_or_default();
                         dialogue_state_service::update_state_from_turn(
                             &mut state,
                             user_message,
                             &tool_facts_this_turn,
+                            None,
                             &final_text,
                         );
                         store.set(session_id, state);
