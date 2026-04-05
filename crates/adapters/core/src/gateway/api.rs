@@ -1142,7 +1142,7 @@ pub async fn handle_api_memory_everyday_evals(
     let scenarios =
         synapse_domain::application::services::everyday_eval_harness::default_golden_scenarios();
     let mut results = Vec::with_capacity(scenarios.len());
-    let mut by_confidence = serde_json::Map::new();
+    let mut by_confidence = std::collections::BTreeMap::<String, usize>::new();
     let mut clarification_required = 0usize;
 
     for scenario in scenarios {
@@ -1153,11 +1153,7 @@ pub async fn handle_api_memory_everyday_evals(
             )
             .await;
         let confidence_key = resolution_confidence_name(result.resolution_plan.confidence);
-        *by_confidence
-            .entry(confidence_key.to_string())
-            .or_insert_with(|| serde_json::json!(0))
-            .as_u64_mut()
-            .expect("confidence bucket is numeric") += 1;
+        *by_confidence.entry(confidence_key.to_string()).or_default() += 1;
 
         let clarification = result
             .clarification_guidance

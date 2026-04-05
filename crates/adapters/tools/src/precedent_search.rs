@@ -7,9 +7,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::application::services::retrieval_service;
+use synapse_domain::domain::dialogue_state::FocusEntity;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
-use synapse_domain::ports::tool::{Tool, ToolResult};
+use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
 
 pub struct PrecedentSearchTool {
     memory: Arc<dyn UnifiedMemoryPort>,
@@ -28,6 +30,106 @@ impl PrecedentSearchTool {
             store,
             agent_id,
         }
+    }
+
+    async fn execute_query(
+        &self,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<(ToolResult, Vec<retrieval_service::RunRecipeSearchMatch>)> {
+        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3)
+            .min(5) as usize;
+
+        if query.trim().is_empty() {
+            return Ok((
+                ToolResult {
+                    output: "Query cannot be empty".into(),
+                    success: false,
+                    error: None,
+                },
+                Vec::new(),
+            ));
+        }
+
+        let hits = retrieval_service::search_run_recipes(
+            self.memory.as_ref(),
+            self.store.as_ref(),
+            &self.agent_id,
+            query,
+            limit,
+        )
+        .await;
+
+        if hits.is_empty() {
+            return Ok((
+                ToolResult {
+                    output: format!("No successful precedents found matching '{query}'"),
+                    success: true,
+                    error: None,
+                },
+                hits,
+            ));
+        }
+
+        let mut output = format!("Found {} precedent(s) matching '{query}':\n\n", hits.len());
+        for (index, hit) in hits.iter().enumerate() {
+            output.push_str(&format!(
+                "{}. **{}** (score {}, successes {})\n",
+                index + 1,
+                hit.task_family,
+                hit.score,
+                hit.success_count
+            ));
+            output.push_str(&format!("   Summary: {}\n", hit.summary));
+            output.push_str(&format!("   Sample request: {}\n", hit.sample_request));
+            if !hit.tool_pattern.is_empty() {
+                output.push_str(&format!(
+                    "   Tool pattern: {}\n",
+                    hit.tool_pattern.join(", ")
+                ));
+            }
+            output.push('\n');
+        }
+
+        Ok((
+            ToolResult {
+                output,
+                success: true,
+                error: None,
+            },
+            hits,
+        ))
+    }
+
+    fn build_result_facts(
+        &self,
+        hits: &[retrieval_service::RunRecipeSearchMatch],
+    ) -> Vec<AgentToolFact> {
+        if hits.is_empty() {
+            return Vec::new();
+        }
+
+        vec![AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: hits
+                .iter()
+                .take(3)
+                .map(|hit| FocusEntity {
+                    kind: "run_recipe".into(),
+                    name: hit.task_family.clone(),
+                    metadata: Some(format!(
+                        "successes={};score={};tools={}",
+                        hit.success_count,
+                        hit.score,
+                        hit.tool_pattern.join(",")
+                    )),
+                })
+                .collect(),
+            slots: Vec::new(),
+        }]
     }
 }
 
@@ -61,62 +163,18 @@ impl Tool for PrecedentSearchTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(3)
-            .min(5) as usize;
+        let (result, _) = self.execute_query(&args).await?;
+        Ok(result)
+    }
 
-        if query.trim().is_empty() {
-            return Ok(ToolResult {
-                output: "Query cannot be empty".into(),
-                success: false,
-                error: None,
-            });
-        }
-
-        let hits = retrieval_service::search_run_recipes(
-            self.memory.as_ref(),
-            self.store.as_ref(),
-            &self.agent_id,
-            query,
-            limit,
-        )
-        .await;
-
-        if hits.is_empty() {
-            return Ok(ToolResult {
-                output: format!("No successful precedents found matching '{query}'"),
-                success: true,
-                error: None,
-            });
-        }
-
-        let mut output = format!("Found {} precedent(s) matching '{query}':\n\n", hits.len());
-        for (index, hit) in hits.iter().enumerate() {
-            output.push_str(&format!(
-                "{}. **{}** (score {}, successes {})\n",
-                index + 1,
-                hit.task_family,
-                hit.score,
-                hit.success_count
-            ));
-            output.push_str(&format!("   Summary: {}\n", hit.summary));
-            output.push_str(&format!("   Sample request: {}\n", hit.sample_request));
-            if !hit.tool_pattern.is_empty() {
-                output.push_str(&format!(
-                    "   Tool pattern: {}\n",
-                    hit.tool_pattern.join(", ")
-                ));
-            }
-            output.push('\n');
-        }
-
-        Ok(ToolResult {
-            output,
-            success: true,
-            error: None,
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<ToolExecution> {
+        let (result, hits) = self.execute_query(&args).await?;
+        Ok(ToolExecution {
+            result,
+            facts: self.build_result_facts(&hits),
         })
     }
 }
@@ -352,6 +410,36 @@ mod tests {
         assert!(result.success);
         assert!(result.output.contains("deploy"));
         assert!(result.output.contains("Tool pattern: shell, git"));
+    }
+
+    #[tokio::test]
+    async fn execute_with_facts_emits_recipe_entities() {
+        let store = InMemoryRunRecipeStore::new();
+        store
+            .upsert(RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "deploy".into(),
+                sample_request: "deploy the latest release to production".into(),
+                summary: "Check staging first, then ship the release".into(),
+                tool_pattern: vec!["shell".into(), "git".into()],
+                success_count: 3,
+                updated_at: 10,
+            })
+            .unwrap();
+
+        let tool = PrecedentSearchTool::new(Arc::new(TestMemory), Arc::new(store), "agent".into());
+        let execution = tool
+            .execute_with_facts(serde_json::json!({"query": "ship it to prod"}))
+            .await
+            .unwrap();
+
+        assert!(execution.result.success);
+        assert_eq!(execution.facts.len(), 1);
+        assert_eq!(execution.facts[0].tool_name, "precedent_search");
+        assert!(execution.facts[0]
+            .focus_entities
+            .iter()
+            .any(|entity| entity.kind == "run_recipe" && entity.name == "deploy"));
     }
 
     fn test_embedding(text: &str) -> Vec<f32> {

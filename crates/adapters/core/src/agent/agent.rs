@@ -711,21 +711,16 @@ impl Agent {
         let (result, success, tool_facts) = if let Some(tool) =
             self.tools.iter().find(|t| t.name() == call.name)
         {
-            let generic_fact =
-                runtime::tool_fact_extraction::build_tool_fact(&call.name, &call.arguments);
-            let mut tool_facts = tool.extract_facts(&call.arguments, None);
-            if runtime::tool_fact_extraction::fact_has_payload(&generic_fact) {
-                tool_facts.push(generic_fact);
-            }
-            match tool.execute(call.arguments.clone()).await {
-                Ok(r) => {
+            match tool.execute_with_facts(call.arguments.clone()).await {
+                Ok(execution) => {
                     let duration = start.elapsed();
+                    let mut tool_facts = execution.facts;
                     let generic_fact =
                         runtime::tool_fact_extraction::build_tool_fact(&call.name, &call.arguments);
-                    let mut tool_facts = tool.extract_facts(&call.arguments, Some(&r));
                     if runtime::tool_fact_extraction::fact_has_payload(&generic_fact) {
                         tool_facts.push(generic_fact);
                     }
+                    let r = execution.result;
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
                         duration,
@@ -765,6 +760,14 @@ impl Agent {
                         output: synapse_domain::domain::util::truncate_with_ellipsis(&reason, 500),
                         success: false,
                     });
+                    let mut tool_facts = Vec::new();
+                    let generic_fact = runtime::tool_fact_extraction::build_tool_fact(
+                        &call.name,
+                        &call.arguments,
+                    );
+                    if runtime::tool_fact_extraction::fact_has_payload(&generic_fact) {
+                        tool_facts.push(generic_fact);
+                    }
                     (reason, false, tool_facts)
                 }
             }

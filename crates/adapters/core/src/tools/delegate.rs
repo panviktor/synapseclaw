@@ -491,6 +491,13 @@ impl Tool for ToolArcRef {
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.inner.execute(args).await
     }
+
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<synapse_domain::ports::tool::ToolExecution> {
+        self.inner.execute_with_facts(args).await
+    }
 }
 
 struct NoopObserver;

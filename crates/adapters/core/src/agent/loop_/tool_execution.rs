@@ -76,23 +76,16 @@ pub(crate) struct ToolLoopResult {
 }
 
 fn collect_tool_facts(
-    tool: Option<&dyn Tool>,
     tool_name: &str,
     args: &serde_json::Value,
-    result: Option<&crate::tools::ToolResult>,
+    mut explicit_facts: Vec<AgentToolFact>,
 ) -> Vec<AgentToolFact> {
-    let mut facts = Vec::new();
-
-    if let Some(tool) = tool {
-        facts.extend(tool.extract_facts(args, result));
-    }
-
     let generic_fact = tool_fact_extraction::build_tool_fact(tool_name, args);
     if tool_fact_extraction::fact_has_payload(&generic_fact) {
-        facts.push(generic_fact);
+        explicit_facts.push(generic_fact);
     }
 
-    facts
+    explicit_facts
 }
 
 pub(crate) async fn execute_one_tool(
@@ -125,7 +118,7 @@ pub(crate) async fn execute_one_tool(
     let Some(tool) = static_tool.or(activated_arc.as_deref()) else {
         let reason = format!("Unknown tool: {call_name}");
         let duration = start.elapsed();
-        let tool_facts = collect_tool_facts(None, call_name, &call_arguments, None);
+        let tool_facts = collect_tool_facts(call_name, &call_arguments, Vec::new());
         observer.record_event(&ObserverEvent::ToolCall {
             tool: call_name.to_string(),
             duration,
@@ -176,7 +169,7 @@ pub(crate) async fn execute_one_tool(
                 output: format!("[blocked] {reason}"),
                 success: false,
             });
-            let tool_facts = collect_tool_facts(Some(tool), call_name, &call_arguments, None);
+            let tool_facts = collect_tool_facts(call_name, &call_arguments, Vec::new());
             return Ok(ToolExecutionOutcome {
                 output: format!("[blocked] {reason}"),
                 success: false,
@@ -187,7 +180,7 @@ pub(crate) async fn execute_one_tool(
         }
     }
 
-    let tool_future = tool.execute(call_arguments.clone());
+    let tool_future = tool.execute_with_facts(call_arguments.clone());
     let tool_result = if let Some(token) = cancellation_token {
         tokio::select! {
             () = token.cancelled() => return Err(ToolLoopCancelled.into()),
@@ -198,9 +191,10 @@ pub(crate) async fn execute_one_tool(
     };
 
     match tool_result {
-        Ok(r) => {
+        Ok(execution) => {
             let duration = start.elapsed();
-            let tool_facts = collect_tool_facts(Some(tool), call_name, &call_arguments, Some(&r));
+            let tool_facts = collect_tool_facts(call_name, &call_arguments, execution.facts);
+            let r = execution.result;
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -241,7 +235,7 @@ pub(crate) async fn execute_one_tool(
         }
         Err(e) => {
             let duration = start.elapsed();
-            let tool_facts = collect_tool_facts(Some(tool), call_name, &call_arguments, None);
+            let tool_facts = collect_tool_facts(call_name, &call_arguments, Vec::new());
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -799,7 +793,11 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(scrub_credentials(&reason)),
                                 duration: Duration::ZERO,
-                                tool_facts: collect_tool_facts(None, &call.name, &tool_args, None),
+                                tool_facts: collect_tool_facts(
+                                    &call.name,
+                                    &tool_args,
+                                    Vec::new(),
+                                ),
                             },
                         ));
                         continue;
@@ -858,7 +856,11 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(denied),
                                 duration: Duration::ZERO,
-                                tool_facts: collect_tool_facts(None, &tool_name, &tool_args, None),
+                                tool_facts: collect_tool_facts(
+                                    &tool_name,
+                                    &tool_args,
+                                    Vec::new(),
+                                ),
                             },
                         ));
                         continue;
@@ -900,7 +902,7 @@ pub(crate) async fn run_tool_call_loop(
                         success: false,
                         error_reason: Some(duplicate),
                         duration: Duration::ZERO,
-                        tool_facts: collect_tool_facts(None, &tool_name, &tool_args, None),
+                        tool_facts: collect_tool_facts(&tool_name, &tool_args, Vec::new()),
                     },
                 ));
                 continue;

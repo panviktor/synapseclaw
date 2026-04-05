@@ -4,7 +4,7 @@
 //! This module re-exports them so existing `crate::tools::traits::*` and
 //! `crate::tools::{Tool, ToolSpec, ToolResult}` imports continue to work.
 
-pub use synapse_domain::ports::tool::{Tool, ToolResult, ToolSpec};
+pub use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult, ToolSpec};
 
 #[cfg(test)]
 mod tests {

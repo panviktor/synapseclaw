@@ -7,9 +7,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::application::services::retrieval_service;
+use synapse_domain::domain::dialogue_state::FocusEntity;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
-use synapse_domain::ports::tool::{Tool, ToolResult};
+use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
 
 pub struct SessionSearchTool {
     memory: Arc<dyn UnifiedMemoryPort>,
@@ -19,6 +21,115 @@ pub struct SessionSearchTool {
 impl SessionSearchTool {
     pub fn new(memory: Arc<dyn UnifiedMemoryPort>, store: Arc<dyn ConversationStorePort>) -> Self {
         Self { memory, store }
+    }
+
+    async fn execute_query(
+        &self,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<(ToolResult, Vec<retrieval_service::SessionSearchMatch>)> {
+        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(5)
+            .min(10) as usize;
+        let kind_filter = args.get("kind").and_then(|v| v.as_str());
+
+        if query.trim().is_empty() {
+            return Ok((
+                ToolResult {
+                    output: "Query cannot be empty".into(),
+                    success: false,
+                    error: None,
+                },
+                Vec::new(),
+            ));
+        }
+
+        let hits = retrieval_service::search_sessions(
+            self.memory.as_ref(),
+            self.store.as_ref(),
+            query,
+            kind_filter,
+            limit,
+        )
+        .await;
+
+        if hits.is_empty() {
+            return Ok((
+                ToolResult {
+                    output: format!("No sessions found matching '{query}'"),
+                    success: true,
+                    error: None,
+                },
+                hits,
+            ));
+        }
+
+        let mut output = format!("Found {} session(s) matching '{query}':\n\n", hits.len());
+        for (index, hit) in hits.iter().enumerate() {
+            let label = hit.label.as_deref().unwrap_or("(untitled)");
+            let summary = hit
+                .summary
+                .as_deref()
+                .map(|summary| truncate_chars(summary, 150))
+                .unwrap_or_else(|| "(no summary)".into());
+            let kind = hit.kind.to_string();
+
+            output.push_str(&format!(
+                "{}. **{}** ({})\n   {} messages | {}\n",
+                index + 1,
+                label,
+                kind,
+                hit.message_count,
+                summary
+            ));
+
+            if let Some(ref recap) = hit.recap {
+                output.push_str(&format!("   Recent transcript match: {}\n", recap));
+            }
+
+            output.push('\n');
+        }
+
+        Ok((
+            ToolResult {
+                output,
+                success: true,
+                error: None,
+            },
+            hits,
+        ))
+    }
+
+    fn build_result_facts(
+        &self,
+        hits: &[retrieval_service::SessionSearchMatch],
+    ) -> Vec<AgentToolFact> {
+        if hits.is_empty() {
+            return Vec::new();
+        }
+
+        vec![AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: hits
+                .iter()
+                .take(3)
+                .map(|hit| FocusEntity {
+                    kind: "session".into(),
+                    name: hit
+                        .label
+                        .clone()
+                        .filter(|label| !label.trim().is_empty())
+                        .unwrap_or_else(|| hit.session_key.clone()),
+                    metadata: Some(format!(
+                        "key={};kind={};messages={};score={:.2}",
+                        hit.session_key, hit.kind, hit.message_count, hit.score
+                    )),
+                })
+                .collect(),
+            slots: Vec::new(),
+        }]
     }
 }
 
@@ -66,69 +177,18 @@ impl Tool for SessionSearchTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-        let limit = args
-            .get("limit")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(5)
-            .min(10) as usize;
-        let kind_filter = args.get("kind").and_then(|v| v.as_str());
+        let (result, _) = self.execute_query(&args).await?;
+        Ok(result)
+    }
 
-        if query.trim().is_empty() {
-            return Ok(ToolResult {
-                output: "Query cannot be empty".into(),
-                success: false,
-                error: None,
-            });
-        }
-
-        let hits = retrieval_service::search_sessions(
-            self.memory.as_ref(),
-            self.store.as_ref(),
-            query,
-            kind_filter,
-            limit,
-        )
-        .await;
-
-        if hits.is_empty() {
-            return Ok(ToolResult {
-                output: format!("No sessions found matching '{query}'"),
-                success: true,
-                error: None,
-            });
-        }
-
-        let mut output = format!("Found {} session(s) matching '{query}':\n\n", hits.len());
-        for (index, hit) in hits.iter().enumerate() {
-            let label = hit.label.as_deref().unwrap_or("(untitled)");
-            let summary = hit
-                .summary
-                .as_deref()
-                .map(|summary| truncate_chars(summary, 150))
-                .unwrap_or_else(|| "(no summary)".into());
-            let kind = hit.kind.to_string();
-
-            output.push_str(&format!(
-                "{}. **{}** ({})\n   {} messages | {}\n",
-                index + 1,
-                label,
-                kind,
-                hit.message_count,
-                summary
-            ));
-
-            if let Some(ref recap) = hit.recap {
-                output.push_str(&format!("   Recent transcript match: {}\n", recap));
-            }
-
-            output.push('\n');
-        }
-
-        Ok(ToolResult {
-            output,
-            success: true,
-            error: None,
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<ToolExecution> {
+        let (result, hits) = self.execute_query(&args).await?;
+        Ok(ToolExecution {
+            facts: self.build_result_facts(&hits),
+            result,
         })
     }
 }
@@ -473,6 +533,35 @@ mod tests {
         assert!(result.success);
         assert!(result.output.contains("Recent transcript match"));
         assert!(result.output.contains("weather cache"));
+    }
+
+    #[tokio::test]
+    async fn execute_with_facts_emits_session_entities() {
+        let mut store = TestStore::default();
+        store
+            .sessions
+            .push(session("web:one", "Weather Thread", "Compared Berlin and Tbilisi", 10));
+        store.events.insert(
+            "web:one".into(),
+            vec![event(
+                EventType::Assistant,
+                "We compared Berlin and Tbilisi weather forecasts.",
+            )],
+        );
+
+        let tool = SessionSearchTool::new(Arc::new(TestMemory), Arc::new(store));
+        let execution = tool
+            .execute_with_facts(serde_json::json!({"query": "weather forecast"}))
+            .await
+            .unwrap();
+
+        assert!(execution.result.success);
+        assert_eq!(execution.facts.len(), 1);
+        assert_eq!(execution.facts[0].tool_name, "session_search");
+        assert!(execution.facts[0]
+            .focus_entities
+            .iter()
+            .any(|entity| entity.kind == "session" && entity.name == "Weather Thread"));
     }
 
     fn test_embedding(text: &str) -> Vec<f32> {
