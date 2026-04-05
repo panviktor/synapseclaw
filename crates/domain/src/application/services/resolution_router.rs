@@ -1,9 +1,11 @@
-//! Resolution router — deterministic source ordering for a turn.
+//! Resolution router — typed, score-based source ranking for a turn.
 //!
 //! This is intentionally not a phrase-engine. It consumes typed interpretation
 //! and retrieval evidence, then decides which sources should be trusted first.
 
-use crate::application::services::turn_interpretation::TurnInterpretation;
+use crate::application::services::turn_interpretation::{
+    ReferenceSource, TurnInterpretation,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionSource {
@@ -52,73 +54,22 @@ pub struct ResolutionEvidence<'a> {
     pub entity_hits: usize,
 }
 
-const SESSION_PRIMARY_SCORE: f64 = 1.9;
-const RECIPE_PRIMARY_SCORE: i64 = 180;
-const SESSION_CONFIDENT_GAP: f64 = 0.25;
-const RECIPE_CONFIDENT_GAP: i64 = 25;
-const MEMORY_CONFIDENT_SCORE: f64 = 0.78;
-const MEMORY_CONFIDENT_GAP: f64 = 0.08;
+const MIN_INCLUDED_SCORE: f64 = 0.35;
+const HIGH_CONFIDENCE_SCORE: f64 = 0.86;
+const HIGH_CONFIDENCE_GAP: f64 = 0.16;
+const MEDIUM_CONFIDENCE_SCORE: f64 = 0.68;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct RankedSource {
+    source: ResolutionSource,
+    score: f64,
+}
 
 pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan {
-    let mut source_order = Vec::new();
-    let prefer_followup = if let Some(interpretation) = evidence.interpretation {
-        !interpretation.reference_candidates.is_empty()
-    } else {
-        false
-    };
-
-    if let Some(interpretation) = evidence.interpretation {
-        if interpretation.dialogue_state.is_some() {
-            source_order.push(ResolutionSource::DialogueState);
-        }
-        if interpretation.user_profile.is_some() {
-            source_order.push(ResolutionSource::UserProfile);
-        }
-        if interpretation.current_conversation.is_some() {
-            source_order.push(ResolutionSource::CurrentConversation);
-        }
-        if prefer_followup && interpretation.dialogue_state.is_some() {
-            source_order.retain(|source| *source != ResolutionSource::DialogueState);
-            source_order.insert(0, ResolutionSource::DialogueState);
-        }
-    }
-
-    let session_primary = evidence.top_session_score.unwrap_or_default() >= SESSION_PRIMARY_SCORE;
-    let recipe_primary = evidence.top_recipe_score.unwrap_or_default() >= RECIPE_PRIMARY_SCORE;
-    let long_term_available =
-        evidence.recall_hits > 0 || evidence.skill_hits > 0 || evidence.entity_hits > 0;
-
-    match (session_primary, recipe_primary) {
-        (true, true) => {
-            if evidence.top_recipe_score.unwrap_or_default() >= RECIPE_PRIMARY_SCORE + 40 {
-                source_order.push(ResolutionSource::RunRecipe);
-                source_order.push(ResolutionSource::SessionHistory);
-            } else {
-                source_order.push(ResolutionSource::SessionHistory);
-                source_order.push(ResolutionSource::RunRecipe);
-            }
-        }
-        (true, false) => source_order.push(ResolutionSource::SessionHistory),
-        (false, true) => source_order.push(ResolutionSource::RunRecipe),
-        (false, false) => {}
-    }
-
-    if long_term_available {
-        source_order.push(ResolutionSource::LongTermMemory);
-    }
-
-    if !session_primary && evidence.top_session_score.unwrap_or_default() > 0.0 {
-        source_order.push(ResolutionSource::SessionHistory);
-    }
-    if !recipe_primary && evidence.top_recipe_score.unwrap_or_default() > 0 {
-        source_order.push(ResolutionSource::RunRecipe);
-    }
-
-    dedupe_source_order(&mut source_order);
-
-    let confidence = compute_confidence(source_order.first().copied(), evidence);
-    let clarification_reason =
-        compute_clarification_reason(source_order.first().copied(), confidence, evidence);
+    let ranked = rank_sources(evidence);
+    let source_order = ranked.iter().map(|ranked| ranked.source).collect::<Vec<_>>();
+    let confidence = compute_confidence(&ranked);
+    let clarification_reason = compute_clarification_reason(&ranked, confidence, evidence);
 
     ResolutionPlan {
         source_order,
@@ -163,16 +114,6 @@ pub fn format_resolution_plan(plan: &ResolutionPlan) -> Option<String> {
     Some(format!("{}\n", lines.join("\n")))
 }
 
-fn dedupe_source_order(source_order: &mut Vec<ResolutionSource>) {
-    let mut deduped = Vec::new();
-    for source in source_order.drain(..) {
-        if !deduped.contains(&source) {
-            deduped.push(source);
-        }
-    }
-    *source_order = deduped;
-}
-
 pub fn source_priority(plan: Option<&ResolutionPlan>, source: ResolutionSource) -> usize {
     plan.and_then(|plan| plan.source_order.iter().position(|item| *item == source))
         .unwrap_or(usize::MAX)
@@ -197,83 +138,247 @@ fn clarification_reason_name(reason: ClarificationReason) -> &'static str {
     }
 }
 
-fn compute_confidence(
-    primary: Option<ResolutionSource>,
-    evidence: ResolutionEvidence<'_>,
-) -> ResolutionConfidence {
-    let Some(primary) = primary else {
+fn rank_sources(evidence: ResolutionEvidence<'_>) -> Vec<RankedSource> {
+    let mut ranked = Vec::new();
+
+    push_ranked(
+        &mut ranked,
+        ResolutionSource::DialogueState,
+        score_dialogue_state(evidence.interpretation),
+    );
+    push_ranked(
+        &mut ranked,
+        ResolutionSource::UserProfile,
+        score_user_profile(evidence.interpretation),
+    );
+    push_ranked(
+        &mut ranked,
+        ResolutionSource::CurrentConversation,
+        score_current_conversation(evidence.interpretation),
+    );
+    push_ranked(
+        &mut ranked,
+        ResolutionSource::SessionHistory,
+        score_session_history(evidence),
+    );
+    push_ranked(
+        &mut ranked,
+        ResolutionSource::RunRecipe,
+        score_run_recipe(evidence),
+    );
+    push_ranked(
+        &mut ranked,
+        ResolutionSource::LongTermMemory,
+        score_long_term_memory(evidence),
+    );
+
+    ranked.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| source_tie_breaker(left.source).cmp(&source_tie_breaker(right.source)))
+    });
+
+    ranked
+}
+
+fn push_ranked(
+    ranked: &mut Vec<RankedSource>,
+    source: ResolutionSource,
+    score: Option<f64>,
+) {
+    let Some(score) = score else {
+        return;
+    };
+    if score < MIN_INCLUDED_SCORE {
+        return;
+    }
+    ranked.push(RankedSource { source, score });
+}
+
+fn source_tie_breaker(source: ResolutionSource) -> usize {
+    match source {
+        ResolutionSource::DialogueState => 0,
+        ResolutionSource::UserProfile => 1,
+        ResolutionSource::CurrentConversation => 2,
+        ResolutionSource::RunRecipe => 3,
+        ResolutionSource::SessionHistory => 4,
+        ResolutionSource::LongTermMemory => 5,
+    }
+}
+
+fn score_dialogue_state(interpretation: Option<&TurnInterpretation>) -> Option<f64> {
+    let interpretation = interpretation?;
+    let state = interpretation.dialogue_state.as_ref()?;
+    let reference_count =
+        count_reference_candidates(interpretation, ReferenceSource::DialogueState) as f64;
+    let anchor_count = state.reference_anchors.len().min(4) as f64;
+    let focus_count = state.focus_entities.len().min(3) as f64;
+    let slot_count = state.slots.len().min(3) as f64;
+    let comparison_bonus = if state.comparison_set.len() >= 2 {
+        0.12
+    } else {
+        0.0
+    };
+    let subject_bonus = if state.last_tool_subjects.is_empty() {
+        0.0
+    } else {
+        0.05
+    };
+
+    Some(
+        (0.42
+            + reference_count.min(4.0) * 0.08
+            + anchor_count * 0.05
+            + focus_count * 0.04
+            + slot_count * 0.02
+            + comparison_bonus
+            + subject_bonus)
+            .min(0.96),
+    )
+}
+
+fn score_user_profile(interpretation: Option<&TurnInterpretation>) -> Option<f64> {
+    let interpretation = interpretation?;
+    let profile = interpretation.user_profile.as_ref()?;
+    let reference_count = count_reference_candidates(interpretation, ReferenceSource::UserProfile);
+    let mut field_count = 0usize;
+    if profile.preferred_language.is_some() {
+        field_count += 1;
+    }
+    if profile.timezone.is_some() {
+        field_count += 1;
+    }
+    if profile.default_city.is_some() {
+        field_count += 1;
+    }
+    if profile.communication_style.is_some() {
+        field_count += 1;
+    }
+    if !profile.known_environments.is_empty() {
+        field_count += 1;
+    }
+    if profile.default_delivery_target.is_some() {
+        field_count += 1;
+    }
+
+    Some(
+        (0.76
+            + (reference_count.min(4) as f64) * 0.06
+            + (field_count.min(4) as f64) * 0.02)
+            .min(0.94),
+    )
+}
+
+fn score_current_conversation(interpretation: Option<&TurnInterpretation>) -> Option<f64> {
+    let interpretation = interpretation?;
+    let conversation = interpretation.current_conversation.as_ref()?;
+    let reference_count =
+        count_reference_candidates(interpretation, ReferenceSource::CurrentConversation);
+    Some(
+        (0.62_f64
+            + if conversation.has_thread {
+                0.04_f64
+            } else {
+                0.0_f64
+            }
+            + if reference_count > 0 {
+                0.08_f64
+            } else {
+                0.0_f64
+            })
+        .min(0.82_f64),
+    )
+}
+
+fn score_session_history(evidence: ResolutionEvidence<'_>) -> Option<f64> {
+    let top = evidence.top_session_score?;
+    if top <= 0.0 {
+        return None;
+    }
+    let gap = score_gap_f64(top, evidence.second_session_score);
+    Some(((top / 3.0).min(0.82) + (gap / 0.8).min(0.14)).min(0.96))
+}
+
+fn score_run_recipe(evidence: ResolutionEvidence<'_>) -> Option<f64> {
+    let top = evidence.top_recipe_score?;
+    if top <= 0 {
+        return None;
+    }
+    let gap = score_gap_i64(top, evidence.second_recipe_score) as f64;
+    Some(
+        (((top as f64) / 260.0).min(0.82)
+            + (gap / 80.0).min(0.14)
+            + if top >= 200 { 0.03 } else { 0.0 })
+            .min(0.96),
+    )
+}
+
+fn score_long_term_memory(evidence: ResolutionEvidence<'_>) -> Option<f64> {
+    let total_hits = evidence.recall_hits + evidence.skill_hits + evidence.entity_hits;
+    if total_hits == 0 {
+        return None;
+    }
+
+    let top = evidence.top_memory_score.unwrap_or_default().clamp(0.0, 1.0);
+    let gap = score_gap_f64(top, evidence.second_memory_score);
+    let density_bonus = ((total_hits.min(5) as f64) / 5.0) * 0.14;
+    let structured_bonus = match (evidence.skill_hits > 0, evidence.entity_hits > 0) {
+        (true, true) => 0.06,
+        (true, false) | (false, true) => 0.03,
+        (false, false) => 0.0,
+    };
+
+    Some((0.24 + top * 0.42 + density_bonus + structured_bonus + (gap / 0.2).min(0.10)).min(0.94))
+}
+
+fn count_reference_candidates(
+    interpretation: &TurnInterpretation,
+    source: ReferenceSource,
+) -> usize {
+    interpretation
+        .reference_candidates
+        .iter()
+        .filter(|candidate| candidate.source == source)
+        .count()
+}
+
+fn compute_confidence(ranked: &[RankedSource]) -> ResolutionConfidence {
+    let Some(primary) = ranked.first() else {
         return ResolutionConfidence::Low;
     };
 
-    match primary {
-        ResolutionSource::CurrentConversation | ResolutionSource::UserProfile => {
-            ResolutionConfidence::High
-        }
-        ResolutionSource::DialogueState => {
-            if evidence
-                .interpretation
-                .is_some_and(|interpretation| !interpretation.reference_candidates.is_empty())
-            {
-                ResolutionConfidence::High
-            } else {
-                ResolutionConfidence::Medium
-            }
-        }
-        ResolutionSource::SessionHistory => {
-            let score = evidence.top_session_score.unwrap_or_default();
-            let gap = score_gap_f64(score, evidence.second_session_score);
-            match score {
-                score if score >= SESSION_PRIMARY_SCORE && gap >= SESSION_CONFIDENT_GAP => {
-                    ResolutionConfidence::High
-                }
-                score if score > 0.0 => ResolutionConfidence::Medium,
-                _ => ResolutionConfidence::Low,
-            }
-        }
-        ResolutionSource::RunRecipe => match evidence.top_recipe_score.unwrap_or_default() {
-            score
-                if score >= RECIPE_PRIMARY_SCORE
-                    && score_gap_i64(score, evidence.second_recipe_score)
-                        >= RECIPE_CONFIDENT_GAP =>
-            {
-                ResolutionConfidence::High
-            }
-            score if score > 0 => ResolutionConfidence::Medium,
-            _ => ResolutionConfidence::Low,
-        },
-        ResolutionSource::LongTermMemory => {
-            let total = evidence.recall_hits + evidence.skill_hits + evidence.entity_hits;
-            let top_score = evidence.top_memory_score.unwrap_or_default();
-            let gap = score_gap_f64(top_score, evidence.second_memory_score);
-            if top_score >= MEMORY_CONFIDENT_SCORE && gap >= MEMORY_CONFIDENT_GAP {
-                ResolutionConfidence::High
-            } else if total >= 3 || (evidence.skill_hits > 0 && evidence.entity_hits > 0) {
-                ResolutionConfidence::Medium
-            } else {
-                ResolutionConfidence::Low
-            }
-        }
+    let gap = score_gap_f64(primary.score, ranked.get(1).map(|item| item.score));
+
+    if primary.score >= HIGH_CONFIDENCE_SCORE && gap >= HIGH_CONFIDENCE_GAP {
+        ResolutionConfidence::High
+    } else if primary.score >= MEDIUM_CONFIDENCE_SCORE {
+        ResolutionConfidence::Medium
+    } else {
+        ResolutionConfidence::Low
     }
 }
 
 fn compute_clarification_reason(
-    primary: Option<ResolutionSource>,
+    ranked: &[RankedSource],
     confidence: ResolutionConfidence,
     evidence: ResolutionEvidence<'_>,
 ) -> Option<ClarificationReason> {
     let interpretation = evidence.interpretation?;
+    let primary = ranked.first().map(|item| item.source);
+    let ambiguity_gap = score_gap_f64(
+        ranked.first().map(|item| item.score).unwrap_or_default(),
+        ranked.get(1).map(|item| item.score),
+    );
 
     if interpretation.clarification_candidates.len() > 1
-        && matches!(primary, Some(ResolutionSource::DialogueState))
+        && (matches!(primary, Some(ResolutionSource::DialogueState)) || ambiguity_gap < 0.16)
     {
-        return Some(if confidence == ResolutionConfidence::High {
-            ClarificationReason::LowConfidence
-        } else {
-            ClarificationReason::AmbiguousCandidates
-        });
+        return Some(ClarificationReason::AmbiguousCandidates);
     }
 
-    if primary.is_none() {
+    if ranked.is_empty() {
         return Some(ClarificationReason::ResolverExhausted);
     }
 
@@ -301,7 +406,7 @@ mod tests {
     use crate::domain::user_profile::UserProfile;
 
     #[test]
-    fn prioritizes_structured_state_then_specialized_retrieval() {
+    fn ranks_sources_from_typed_evidence_without_fixed_order_branches() {
         let interpretation = TurnInterpretation {
             user_profile: Some(UserProfile {
                 preferred_language: Some("ru".into()),
@@ -335,16 +440,15 @@ mod tests {
             entity_hits: 0,
         });
 
-        assert_eq!(
-            plan.source_order,
-            vec![
-                ResolutionSource::DialogueState,
-                ResolutionSource::UserProfile,
-                ResolutionSource::CurrentConversation,
-                ResolutionSource::RunRecipe,
-                ResolutionSource::SessionHistory,
-                ResolutionSource::LongTermMemory,
-            ]
+        assert_eq!(plan.source_order.first(), Some(&ResolutionSource::RunRecipe));
+        assert!(plan.source_order.contains(&ResolutionSource::DialogueState));
+        assert!(plan.source_order.contains(&ResolutionSource::UserProfile));
+        assert!(plan.source_order.contains(&ResolutionSource::CurrentConversation));
+        assert!(plan.source_order.contains(&ResolutionSource::SessionHistory));
+        assert!(plan.source_order.contains(&ResolutionSource::LongTermMemory));
+        assert!(
+            source_priority(Some(&plan), ResolutionSource::SessionHistory)
+                < source_priority(Some(&plan), ResolutionSource::LongTermMemory)
         );
         assert_eq!(plan.confidence, ResolutionConfidence::Medium);
         assert!(plan.clarification_reason.is_none());

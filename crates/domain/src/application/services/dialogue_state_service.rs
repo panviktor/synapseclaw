@@ -173,12 +173,6 @@ fn collect_subjects(tool_facts: &[AgentToolFact]) -> Vec<String> {
                 subjects.push(slot.value.clone());
             }
         }
-        if fact.focus_entities.is_empty()
-            && fact.slots.is_empty()
-            && !subjects.iter().any(|existing| existing == &fact.tool_name)
-        {
-            subjects.push(fact.tool_name.clone());
-        }
     }
 
     subjects
