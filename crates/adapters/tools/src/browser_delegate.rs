@@ -13,7 +13,9 @@
 use async_trait::async_trait;
 use regex::Regex;
 use std::sync::Arc;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 use tokio::time::{timeout, Duration};
 
@@ -303,6 +305,69 @@ impl Tool for BrowserDelegateTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let task = match args.get("task").and_then(serde_json::Value::as_str) {
+            Some(task) if !task.trim().is_empty() => task.trim(),
+            _ => return Vec::new(),
+        };
+
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: Vec::new(),
+            slots: vec![DialogueSlot::observed(
+                "browser_delegate_task_bytes",
+                task.len().to_string(),
+            )],
+        };
+
+        if let Some(url) = args
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if self.validate_url(url).is_ok() {
+                let host = url
+                    .parse::<reqwest::Url>()
+                    .ok()
+                    .and_then(|parsed| parsed.host_str().map(str::to_string));
+                fact.focus_entities.push(FocusEntity {
+                    kind: "browser_page".into(),
+                    name: url.to_string(),
+                    metadata: host.clone(),
+                });
+                fact.slots
+                    .push(DialogueSlot::observed("browser_delegate_url", url.to_string()));
+                if let Some(host) = host {
+                    fact.slots
+                        .push(DialogueSlot::observed("browser_delegate_host", host));
+                }
+            }
+        }
+
+        if let Some(extract_format) = args
+            .get("extract_format")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            fact.slots.push(DialogueSlot::observed(
+                "browser_delegate_extract_format",
+                extract_format.to_string(),
+            ));
+        }
+
+        vec![fact]
+    }
 }
 
 /// Pre-built task templates for common corporate tools.
@@ -453,6 +518,39 @@ mod tests {
     fn validate_url_rejects_invalid_url() {
         let tool = test_tool(default_test_config());
         assert!(tool.validate_url("not-a-url").is_err());
+    }
+
+    #[test]
+    fn extract_facts_emits_browser_delegate_context() {
+        let tool = test_tool(config_with_domains(vec!["example.com".into()], vec![]));
+        let facts = tool.extract_facts(
+            &serde_json::json!({
+                "task": "Open the dashboard and summarize errors",
+                "url": "https://example.com/dashboard",
+                "extract_format": "summary"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "browser_delegate_extract_format" && slot.value == "summary"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "browser_delegate_url"
+                && slot.value == "https://example.com/dashboard"));
+        assert!(facts[0]
+            .focus_entities
+            .iter()
+            .any(|entity| entity.kind == "browser_page"
+                && entity.name == "https://example.com/dashboard"));
     }
 
     // ── Command building ────────────────────────────────────────────

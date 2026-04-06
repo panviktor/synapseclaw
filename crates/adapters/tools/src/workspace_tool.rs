@@ -8,7 +8,9 @@ use serde_json::json;
 use std::fmt::Write;
 use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_infra::workspace::WorkspaceManager;
 use tokio::sync::RwLock;
 
@@ -252,6 +254,44 @@ impl Tool for WorkspaceTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let action = match args.get("action").and_then(|value| value.as_str()) {
+            Some(action) if !action.trim().is_empty() => action.trim(),
+            _ => return Vec::new(),
+        };
+
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: Vec::new(),
+            slots: vec![DialogueSlot::observed(
+                "workspace_action",
+                action.to_string(),
+            )],
+        };
+
+        if let Some(name) = args.get("name").and_then(|value| value.as_str()) {
+            if !name.trim().is_empty() {
+                fact.focus_entities.push(FocusEntity {
+                    kind: "workspace".into(),
+                    name: name.trim().to_string(),
+                    metadata: Some(action.to_string()),
+                });
+                fact.slots
+                    .push(DialogueSlot::observed("workspace_name", name.trim().to_string()));
+            }
+        }
+
+        vec![fact]
+    }
 }
 
 #[cfg(test)]
@@ -352,5 +392,33 @@ mod tests {
             .unwrap();
         assert!(!result.success);
         assert!(result.error.unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn extract_facts_emits_workspace_context() {
+        let tmp = TempDir::new().unwrap();
+        let tool = test_tool(&tmp);
+        let facts = tool.extract_facts(
+            &json!({"action": "switch", "name": "client_a"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "workspace_action" && slot.value == "switch"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "workspace_name" && slot.value == "client_a"));
+        assert!(facts[0]
+            .focus_entities
+            .iter()
+            .any(|entity| entity.kind == "workspace" && entity.name == "client_a"));
     }
 }

@@ -2,7 +2,9 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 /// Maximum PDF file size (50 MB).
 const MAX_PDF_BYTES: u64 = 50 * 1024 * 1024;
@@ -226,6 +228,39 @@ impl Tool for PdfReadTool {
             })
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let path = match args.get("path").and_then(|value| value.as_str()) {
+            Some(path) if !path.trim().is_empty() => path.trim().to_string(),
+            _ => return Vec::new(),
+        };
+
+        let mut slots = vec![DialogueSlot::observed("resource_path", path.clone())];
+        if let Some(max_chars) = args.get("max_chars").and_then(|value| value.as_u64()) {
+            slots.push(DialogueSlot::observed(
+                "pdf_max_chars",
+                max_chars.to_string(),
+            ));
+        }
+
+        vec![AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "pdf_document".into(),
+                name: path,
+                metadata: Some("read".into()),
+            }],
+            slots,
+        }]
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +411,31 @@ mod tests {
             "expected rate limit, got: {:?}",
             r3.error
         );
+    }
+
+    #[test]
+    fn extract_facts_emits_pdf_document() {
+        let tool = PdfReadTool::new(test_security(std::env::temp_dir()));
+        let facts = tool.extract_facts(
+            &json!({"path": "docs/spec.pdf", "max_chars": 1234}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].focus_entities[0].kind, "pdf_document");
+        assert_eq!(facts[0].focus_entities[0].name, "docs/spec.pdf");
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "resource_path" && slot.value == "docs/spec.pdf"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "pdf_max_chars" && slot.value == "1234"));
     }
 
     #[cfg(unix)]
