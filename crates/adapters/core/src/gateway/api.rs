@@ -72,6 +72,11 @@ pub struct CronRunsQuery {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct HeartbeatRunsQuery {
+    pub limit: Option<u32>,
+}
+
 #[derive(Deserialize)]
 pub struct CronAddBody {
     pub name: Option<String>,
@@ -332,6 +337,83 @@ pub async fn handle_api_agent_memory_projections_proxy(
         .unwrap_or_default();
 
     let url = format!("{}/api/memory/projections", agent.gateway_url);
+    match client
+        .get(&url)
+        .query(&params)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// GET /api/agents/:agent_id/heartbeat — proxy heartbeat overview from a specific agent.
+pub async fn handle_api_agent_heartbeat_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(agent) => agent,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/heartbeat", agent.gateway_url);
+    match client.get(&url).bearer_auth(&agent.proxy_token).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// GET /api/agents/:agent_id/heartbeat/runs — proxy recent heartbeat runs.
+pub async fn handle_api_agent_heartbeat_runs_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Query(params): Query<HeartbeatRunsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(agent) => agent,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/heartbeat/runs", agent.gateway_url);
     match client
         .get(&url)
         .query(&params)
@@ -718,6 +800,170 @@ pub async fn handle_api_cron_delete(
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": format!("Failed to remove cron job: {e}")})),
+        )
+            .into_response(),
+    }
+}
+
+fn heartbeat_report_payload(
+    state: &AppState,
+) -> (
+    Option<synapse_domain::application::services::system_event_projection_service::HeartbeatProjection>,
+    serde_json::Value,
+) {
+    let snapshot = crate::health::snapshot();
+    let components = snapshot
+        .components
+        .iter()
+        .map(|(name, status)| {
+            synapse_domain::application::services::system_event_projection_service::SystemEventComponentStatus {
+                name: name.clone(),
+                status: status.status.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let heartbeat = state.heartbeat_metrics.as_ref().map(|metrics| {
+        let metrics = metrics.lock();
+        synapse_domain::application::services::system_event_projection_service::HeartbeatProjection {
+            total_ticks: metrics.total_ticks,
+            consecutive_successes: metrics.consecutive_successes,
+            consecutive_failures: metrics.consecutive_failures,
+            avg_tick_duration_ms: metrics.avg_tick_duration_ms,
+            active_task_count: metrics.active_task_count,
+            executed_task_count: metrics.executed_task_count,
+            high_priority_task_count: metrics.high_priority_task_count,
+        }
+    });
+
+    let report = synapse_domain::application::services::system_event_projection_service::render_system_event_report(
+        &synapse_domain::application::services::system_event_projection_service::SystemEventProjectionInput {
+            event: synapse_domain::domain::standing_order::SystemEvent::HeartbeatTick,
+            timestamp_rfc3339: chrono::Utc::now().to_rfc3339(),
+            agent_id: Some(state.agent_id.clone()),
+            uptime_seconds: Some(snapshot.uptime_seconds),
+            components,
+            heartbeat: heartbeat.clone(),
+        },
+    );
+
+    let heartbeat_json = heartbeat.as_ref().map(|heartbeat| {
+        serde_json::json!({
+            "total_ticks": heartbeat.total_ticks,
+            "consecutive_successes": heartbeat.consecutive_successes,
+            "consecutive_failures": heartbeat.consecutive_failures,
+            "avg_tick_duration_ms": heartbeat.avg_tick_duration_ms,
+            "active_task_count": heartbeat.active_task_count,
+            "executed_task_count": heartbeat.executed_task_count,
+            "high_priority_task_count": heartbeat.high_priority_task_count,
+        })
+    });
+
+    (heartbeat, serde_json::json!({
+        "heartbeat": heartbeat_json,
+        "report": report,
+        "uptime_seconds": snapshot.uptime_seconds,
+        "components": snapshot.components,
+    }))
+}
+
+/// GET /api/heartbeat — heartbeat live metrics plus recent aggregate stats.
+pub async fn handle_api_heartbeat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let (_heartbeat, base) = heartbeat_report_payload(&state);
+    let stats = if let Some(ref db) = state.surreal {
+        match crate::heartbeat::store::run_stats(db).await {
+            Ok((total, ok, error)) => serde_json::json!({
+                "total_runs": total,
+                "ok_runs": ok,
+                "error_runs": error,
+            }),
+            Err(err) => serde_json::json!({
+                "error": err.to_string(),
+            }),
+        }
+    } else {
+        serde_json::Value::Null
+    };
+
+    Json(serde_json::json!({
+        "enabled": config.heartbeat.enabled,
+        "agent_id": state.agent_id,
+        "live": base,
+        "stats": stats,
+    }))
+    .into_response()
+}
+
+/// GET /api/heartbeat/runs — recent heartbeat run history.
+pub async fn handle_api_heartbeat_runs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HeartbeatRunsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let db = match &state.surreal {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "SurrealDB not available for heartbeat"})),
+            )
+                .into_response();
+        }
+    };
+
+    let limit = params.limit.unwrap_or(20).clamp(1, 100) as usize;
+    let (_heartbeat, base) = heartbeat_report_payload(&state);
+    let stats = match crate::heartbeat::store::run_stats(db).await {
+        Ok((total, ok, error)) => serde_json::json!({
+            "total_runs": total,
+            "ok_runs": ok,
+            "error_runs": error,
+        }),
+        Err(err) => serde_json::json!({
+            "error": err.to_string(),
+        }),
+    };
+
+    match crate::heartbeat::store::list_runs(db, limit).await {
+        Ok(runs) => {
+            let runs_json: Vec<serde_json::Value> = runs
+                .into_iter()
+                .map(|run| {
+                    serde_json::json!({
+                        "id": run.id,
+                        "task_text": run.task_text,
+                        "task_priority": run.task_priority,
+                        "started_at": run.started_at.to_rfc3339(),
+                        "finished_at": run.finished_at.to_rfc3339(),
+                        "status": run.status,
+                        "output": run.output,
+                        "duration_ms": run.duration_ms,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({
+                "agent_id": state.agent_id,
+                "live": base,
+                "stats": stats,
+                "runs": runs_json,
+            }))
+            .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to list heartbeat runs: {err}")})),
         )
             .into_response(),
     }

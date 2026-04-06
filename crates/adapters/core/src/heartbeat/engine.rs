@@ -90,6 +90,12 @@ pub struct HeartbeatMetrics {
     pub avg_tick_duration_ms: f64,
     /// Total number of ticks executed since startup.
     pub total_ticks: u64,
+    /// Runnable tasks seen on the last tick.
+    pub active_task_count: usize,
+    /// Tasks actually executed on the last tick.
+    pub executed_task_count: usize,
+    /// High-priority tasks seen on the last tick.
+    pub high_priority_task_count: usize,
 }
 
 impl Default for HeartbeatMetrics {
@@ -101,6 +107,9 @@ impl Default for HeartbeatMetrics {
             last_tick_at: None,
             avg_tick_duration_ms: 0.0,
             total_ticks: 0,
+            active_task_count: 0,
+            executed_task_count: 0,
+            high_priority_task_count: 0,
         }
     }
 }
@@ -184,6 +193,20 @@ impl HeartbeatEngine {
             workspace_dir,
             observer,
             metrics: Arc::new(ParkingMutex::new(HeartbeatMetrics::default())),
+        }
+    }
+
+    pub fn with_metrics(
+        config: HeartbeatConfig,
+        workspace_dir: std::path::PathBuf,
+        observer: Arc<dyn Observer>,
+        metrics: Arc<ParkingMutex<HeartbeatMetrics>>,
+    ) -> Self {
+        Self {
+            config,
+            workspace_dir,
+            observer,
+            metrics,
         }
     }
 

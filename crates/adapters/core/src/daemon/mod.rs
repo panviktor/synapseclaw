@@ -272,6 +272,13 @@ pub async fn run(
 
     // Shared SSE event channel — gateway and channels both publish learning events here.
     let shared_event_tx = tokio::sync::broadcast::channel::<serde_json::Value>(256).0;
+    let shared_heartbeat_metrics = if config.heartbeat.enabled {
+        Some(std::sync::Arc::new(parking_lot::Mutex::new(
+            crate::heartbeat::engine::HeartbeatMetrics::default(),
+        )))
+    } else {
+        None
+    };
 
     {
         let gateway_cfg = config.clone();
@@ -285,6 +292,7 @@ pub async fn run(
         let gw_surreal = shared_surreal.clone();
         let gw_event_tx = shared_event_tx.clone();
         let gw_run_recipes = run_recipe_store.clone();
+        let gw_heartbeat_metrics = shared_heartbeat_metrics.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -301,6 +309,7 @@ pub async fn run(
                 let surreal = gw_surreal.clone();
                 let etx = gw_event_tx.clone();
                 let recipes = gw_run_recipes.clone();
+                let heartbeat_metrics = gw_heartbeat_metrics.clone();
                 async move {
                     Box::pin(crate::gateway::run_gateway(
                         &host,
@@ -315,6 +324,7 @@ pub async fn run(
                         surreal,
                         Some(etx),
                         Some(recipes),
+                        heartbeat_metrics,
                     ))
                     .await
                 }
@@ -369,6 +379,11 @@ pub async fn run(
         let heartbeat_runner = agent_runner.clone();
         let hb_surreal = shared_surreal.clone();
         let hb_standing_orders = standing_order_store.clone();
+        let hb_metrics = shared_heartbeat_metrics.clone().unwrap_or_else(|| {
+            std::sync::Arc::new(parking_lot::Mutex::new(
+                crate::heartbeat::engine::HeartbeatMetrics::default(),
+            ))
+        });
         handles.push(spawn_component_supervisor(
             "heartbeat",
             initial_backoff,
@@ -379,8 +394,17 @@ pub async fn run(
                 let ar = heartbeat_runner.clone();
                 let surreal = hb_surreal.clone();
                 let standing_orders = hb_standing_orders.clone();
+                let metrics = hb_metrics.clone();
                 async move {
-                    Box::pin(run_heartbeat_worker(cfg, ds, ar, surreal, standing_orders)).await
+                    Box::pin(run_heartbeat_worker(
+                        cfg,
+                        ds,
+                        ar,
+                        surreal,
+                        standing_orders,
+                        metrics,
+                    ))
+                    .await
                 }
             },
         ));
@@ -634,6 +658,7 @@ async fn run_heartbeat_worker(
     standing_order_store: std::sync::Arc<
         dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort,
     >,
+    shared_metrics: std::sync::Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>,
 ) -> Result<()> {
     use crate::heartbeat::engine::{
         compute_adaptive_interval, HeartbeatEngine, HeartbeatTask, TaskPriority, TaskStatus,
@@ -643,10 +668,11 @@ async fn run_heartbeat_worker(
     let observer: std::sync::Arc<dyn synapse_observability::Observer> = std::sync::Arc::from(
         synapse_observability::create_observer(&config.observability),
     );
-    let engine = HeartbeatEngine::new(
+    let engine = HeartbeatEngine::with_metrics(
         config.heartbeat.clone(),
         config.workspace_dir.clone(),
         observer,
+        shared_metrics,
     );
     let metrics = engine.metrics();
     let hb_config = heartbeat_config_from(&config);
@@ -716,7 +742,13 @@ async fn run_heartbeat_worker(
             } else {
                 #[allow(clippy::cast_precision_loss)]
                 let elapsed = tick_start.elapsed().as_millis() as f64;
-                metrics.lock().record_success(elapsed);
+                {
+                    let mut heartbeat_metrics = metrics.lock();
+                    heartbeat_metrics.active_task_count = 0;
+                    heartbeat_metrics.executed_task_count = 0;
+                    heartbeat_metrics.high_priority_task_count = 0;
+                    heartbeat_metrics.record_success(elapsed);
+                }
                 let body = render_standing_order_report(
                     &SystemEvent::HeartbeatTick,
                     &config,
@@ -762,7 +794,13 @@ async fn run_heartbeat_worker(
                         crate::health::mark_component_ok("heartbeat");
                         #[allow(clippy::cast_precision_loss)]
                         let elapsed = tick_start.elapsed().as_millis() as f64;
-                        metrics.lock().record_success(elapsed);
+                        {
+                            let mut heartbeat_metrics = metrics.lock();
+                            heartbeat_metrics.active_task_count = active_task_count;
+                            heartbeat_metrics.executed_task_count = 0;
+                            heartbeat_metrics.high_priority_task_count = high_priority_task_count;
+                            heartbeat_metrics.record_success(elapsed);
+                        }
                         let body = render_standing_order_report(
                             &SystemEvent::HeartbeatTick,
                             &config,
@@ -870,6 +908,9 @@ async fn run_heartbeat_worker(
         let tick_elapsed = tick_start.elapsed().as_millis() as f64;
         {
             let mut m = metrics.lock();
+            m.active_task_count = active_task_count;
+            m.executed_task_count = tasks_to_run.len();
+            m.high_priority_task_count = high_priority_task_count;
             if tick_had_error {
                 m.record_failure(tick_elapsed);
             } else {

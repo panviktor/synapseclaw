@@ -361,6 +361,9 @@ pub struct AppState {
     /// Structured user profile store for stable defaults.
     pub user_profile_store:
         Arc<dyn synapse_domain::ports::user_profile_store::UserProfileStorePort>,
+    /// Shared live heartbeat metrics when daemon heartbeat is enabled.
+    pub heartbeat_metrics:
+        Option<Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>>,
     /// Shutdown signal sender for graceful shutdown
     pub shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// Audit logger for persistent security event logging
@@ -441,6 +444,8 @@ pub async fn run_gateway(
     shared_run_recipe_store: Option<
         Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>,
     >,
+    shared_heartbeat_metrics:
+        Option<Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>>,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -942,6 +947,7 @@ pub async fn run_gateway(
                 }
             }
         },
+        heartbeat_metrics: shared_heartbeat_metrics,
         shutdown_tx,
         audit_logger,
         ipc_prompt_guard,
@@ -1464,6 +1470,14 @@ pub async fn run_gateway(
             get(api::handle_api_agent_memory_projections_proxy),
         )
         .route(
+            "/api/agents/{agent_id}/heartbeat",
+            get(api::handle_api_agent_heartbeat_proxy),
+        )
+        .route(
+            "/api/agents/{agent_id}/heartbeat/runs",
+            get(api::handle_api_agent_heartbeat_runs_proxy),
+        )
+        .route(
             "/api/agents/{agent_id}/summary-model",
             put(api::handle_api_agent_summary_model_proxy),
         )
@@ -1492,6 +1506,8 @@ pub async fn run_gateway(
             get(api::handle_api_agent_chat_messages_proxy),
         )
         .route("/api/status", get(api::handle_api_status))
+        .route("/api/heartbeat", get(api::handle_api_heartbeat))
+        .route("/api/heartbeat/runs", get(api::handle_api_heartbeat_runs))
         .route("/api/summary-model", put(api::handle_api_summary_model_put))
         .route("/api/config", get(api::handle_api_config_get))
         .route("/api/tools", get(api::handle_api_tools))
