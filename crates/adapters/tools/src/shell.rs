@@ -4,7 +4,9 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::runtime::RuntimeAdapter;
 
 /// Maximum shell command execution time before kill.
@@ -226,6 +228,37 @@ impl Tool for ShellTool {
                 )),
             }),
         }
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let command = match args.get("command").and_then(|value| value.as_str()) {
+            Some(command) if !command.trim().is_empty() => command.trim(),
+            _ => return Vec::new(),
+        };
+
+        vec![AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "workspace_directory".into(),
+                name: self.security.workspace_dir.display().to_string(),
+                metadata: Some("shell_cwd".into()),
+            }],
+            slots: vec![
+                DialogueSlot::observed("shell_command", command.to_string()),
+                DialogueSlot::observed(
+                    "shell_cwd",
+                    self.security.workspace_dir.display().to_string(),
+                ),
+            ],
+        }]
     }
 }
 
@@ -544,6 +577,28 @@ mod tests {
         assert!(vars.contains(&"ALSO_VALID".to_string()));
         assert!(!vars.contains(&"BAD-NAME".to_string()));
         assert!(!vars.contains(&"1NOPE".to_string()));
+    }
+
+    #[test]
+    fn extract_facts_emits_shell_context() {
+        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime());
+        let facts = tool.extract_facts(
+            &json!({"command": "cargo test -q"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].focus_entities[0].kind, "workspace_directory");
+        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("shell_cwd"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "shell_command" && slot.value == "cargo test -q"));
+        assert!(facts[0].slots.iter().any(|slot| slot.name == "shell_cwd"));
     }
 
     #[tokio::test]

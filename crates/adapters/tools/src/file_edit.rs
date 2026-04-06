@@ -2,7 +2,9 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 /// Edit a file by replacing an exact string match with new content.
 ///
@@ -220,6 +222,43 @@ impl Tool for FileEditTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let path = match args.get("path").and_then(|value| value.as_str()) {
+            Some(path) if !path.trim().is_empty() => path.trim().to_string(),
+            _ => return Vec::new(),
+        };
+        let old_string = args
+            .get("old_string")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let new_string = args
+            .get("new_string")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+
+        vec![AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "workspace_file".into(),
+                name: path.clone(),
+                metadata: Some("edit".into()),
+            }],
+            slots: vec![
+                DialogueSlot::observed("resource_path", path),
+                DialogueSlot::observed("edit_old_bytes", old_string.len().to_string()),
+                DialogueSlot::observed("edit_new_bytes", new_string.len().to_string()),
+            ],
+        }]
+    }
 }
 
 #[cfg(test)]
@@ -362,6 +401,32 @@ mod tests {
         assert_eq!(content, "aaa bbb aaa");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[test]
+    fn extract_facts_emits_workspace_file_edit() {
+        let tool = FileEditTool::new(test_security(std::env::temp_dir()));
+        let facts = tool.extract_facts(
+            &json!({
+                "path": "src/main.rs",
+                "old_string": "fn old() {}",
+                "new_string": "fn new() {}"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].focus_entities[0].kind, "workspace_file");
+        assert_eq!(facts[0].focus_entities[0].name, "src/main.rs");
+        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("edit"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "resource_path" && slot.value == "src/main.rs"));
     }
 
     #[tokio::test]
