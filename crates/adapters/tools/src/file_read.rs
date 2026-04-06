@@ -2,7 +2,9 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 const MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -214,6 +216,39 @@ impl Tool for FileReadTool {
             }
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let path = match args.get("path").and_then(|value| value.as_str()) {
+            Some(path) if !path.trim().is_empty() => path,
+            _ => return Vec::new(),
+        };
+
+        let mut slots = vec![DialogueSlot::observed("resource_path", path.to_string())];
+        if let Some(offset) = args.get("offset").and_then(|value| value.as_u64()) {
+            slots.push(DialogueSlot::observed("read_offset", offset.to_string()));
+        }
+        if let Some(limit) = args.get("limit").and_then(|value| value.as_u64()) {
+            slots.push(DialogueSlot::observed("read_limit", limit.to_string()));
+        }
+
+        vec![AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "file_resource".into(),
+                name: path.to_string(),
+                metadata: Some("read".into()),
+            }],
+            slots,
+        }]
+    }
 }
 
 #[cfg(feature = "rag-pdf")]
@@ -301,6 +336,31 @@ mod tests {
         assert!(result.error.is_none());
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[test]
+    fn extract_facts_emits_file_resource() {
+        let tool = FileReadTool::new(test_security(std::env::temp_dir()));
+        let facts = tool.extract_facts(
+            &json!({"path": "notes/todo.txt", "offset": 10, "limit": 20}),
+            Some(&ToolResult {
+                success: true,
+                output: String::new(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].focus_entities[0].kind, "file_resource");
+        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("read"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "read_offset" && slot.value == "10"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "read_limit" && slot.value == "20"));
     }
 
     #[tokio::test]

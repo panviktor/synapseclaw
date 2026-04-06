@@ -2,7 +2,9 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 /// Open approved HTTPS URLs in the system default browser (no scraping, no DOM automation).
 pub struct BrowserOpenTool {
@@ -121,6 +123,42 @@ impl Tool for BrowserOpenTool {
                 error: Some(format!("Failed to open system browser: {e}")),
             }),
         }
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let raw_url = match args.get("url").and_then(|value| value.as_str()) {
+            Some(url) => url,
+            None => return Vec::new(),
+        };
+        let validated_url = match self.validate_url(raw_url) {
+            Ok(url) => url,
+            Err(_) => return Vec::new(),
+        };
+        let host = match extract_host(&validated_url) {
+            Ok(host) => host,
+            Err(_) => return Vec::new(),
+        };
+
+        vec![AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "browser_page".into(),
+                name: validated_url.clone(),
+                metadata: Some(host.clone()),
+            }],
+            slots: vec![
+                DialogueSlot::observed("browser_url", validated_url),
+                DialogueSlot::observed("browser_host", host),
+            ],
+        }]
     }
 }
 
@@ -499,6 +537,27 @@ mod tests {
         assert_eq!(parse_ipv4("1.2.3"), None);
         assert_eq!(parse_ipv4("1.2.3.999"), None);
         assert_eq!(parse_ipv4("not-an-ip"), None);
+    }
+
+    #[test]
+    fn extract_facts_emits_browser_page() {
+        let tool = test_tool(vec!["example.com"]);
+        let facts = tool.extract_facts(
+            &json!({"url": "https://docs.example.com/guide"}),
+            Some(&ToolResult {
+                success: true,
+                output: String::new(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].focus_entities[0].kind, "browser_page");
+        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("docs.example.com"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "browser_host" && slot.value == "docs.example.com"));
     }
 
     #[tokio::test]
