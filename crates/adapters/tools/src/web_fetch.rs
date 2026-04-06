@@ -4,7 +4,9 @@ use futures_util::StreamExt;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 /// Web fetch tool: fetches a web page and converts HTML to plain text for LLM consumption.
 ///
@@ -262,6 +264,42 @@ impl Tool for WebFetchTool {
             output,
             error: None,
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let raw_url = match args.get("url").and_then(|value| value.as_str()) {
+            Some(url) => url,
+            None => return Vec::new(),
+        };
+        let validated_url = match self.validate_url(raw_url) {
+            Ok(url) => url,
+            Err(_) => return Vec::new(),
+        };
+        let host = match extract_host(&validated_url) {
+            Ok(host) => host,
+            Err(_) => return Vec::new(),
+        };
+
+        vec![AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "web_resource".into(),
+                name: validated_url.clone(),
+                metadata: Some(host.clone()),
+            }],
+            slots: vec![
+                DialogueSlot::observed("fetch_url", validated_url),
+                DialogueSlot::observed("fetch_host", host),
+            ],
+        }]
     }
 }
 
@@ -825,6 +863,32 @@ mod tests {
         assert!(!append_chunk_with_cap(&mut buffer, b"hello", 8));
         assert!(append_chunk_with_cap(&mut buffer, b"world", 8));
         assert_eq!(buffer, b"hellowor");
+    }
+
+    #[test]
+    fn extract_facts_emits_web_resource() {
+        let tool = test_tool(vec!["example.com"]);
+        let facts = tool.extract_facts(
+            &json!({"url": "https://example.com/docs"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].focus_entities[0].kind, "web_resource");
+        assert_eq!(facts[0].focus_entities[0].name, "https://example.com/docs");
+        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("example.com"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "fetch_url" && slot.value == "https://example.com/docs"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "fetch_host" && slot.value == "example.com"));
     }
 
     #[test]

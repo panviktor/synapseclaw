@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 /// HTTP request tool for API interactions.
 /// Supports GET, POST, PUT, DELETE methods with configurable security.
@@ -302,6 +304,54 @@ impl Tool for HttpRequestTool {
                 error: Some(format!("HTTP request failed: {e}")),
             }),
         }
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let raw_url = match args.get("url").and_then(|value| value.as_str()) {
+            Some(url) => url,
+            None => return Vec::new(),
+        };
+        let validated_url = match self.validate_url(raw_url) {
+            Ok(url) => url,
+            Err(_) => return Vec::new(),
+        };
+        let host = match extract_host(&validated_url) {
+            Ok(host) => host,
+            Err(_) => return Vec::new(),
+        };
+        let method = args
+            .get("method")
+            .and_then(|value| value.as_str())
+            .unwrap_or("GET")
+            .trim()
+            .to_uppercase();
+
+        let mut slots = vec![
+            DialogueSlot::observed("request_url", validated_url.clone()),
+            DialogueSlot::observed("request_host", host.clone()),
+            DialogueSlot::observed("request_method", method),
+        ];
+        if args.get("body").and_then(|value| value.as_str()).is_some() {
+            slots.push(DialogueSlot::observed("request_has_body", "true".to_string()));
+        }
+
+        vec![AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "network_resource".into(),
+                name: validated_url,
+                metadata: Some(host),
+            }],
+            slots,
+        }]
     }
 }
 
@@ -756,6 +806,39 @@ mod tests {
         );
         let text = "a".repeat(10_000_000);
         assert_eq!(tool.truncate_response(&text), text);
+    }
+
+    #[test]
+    fn extract_facts_emits_network_resource() {
+        let tool = test_tool(vec!["example.com"]);
+        let facts = tool.extract_facts(
+            &json!({
+                "url": "https://api.example.com/v1/tasks",
+                "method": "post",
+                "body": "{\"name\":\"ship\"}"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].focus_entities[0].kind, "network_resource");
+        assert_eq!(
+            facts[0].focus_entities[0].name,
+            "https://api.example.com/v1/tasks"
+        );
+        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("api.example.com"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "request_method" && slot.value == "POST"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "request_has_body" && slot.value == "true"));
     }
 
     #[test]
