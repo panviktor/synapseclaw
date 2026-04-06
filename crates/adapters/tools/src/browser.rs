@@ -14,7 +14,9 @@ use std::net::ToSocketAddrs;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use tokio::process::Command;
 use tracing::debug;
 
@@ -1089,6 +1091,164 @@ impl Tool for BrowserTool {
         };
 
         self.execute_action(action, backend).await
+    }
+
+    fn extract_facts(&self, args: &Value, result: Option<&ToolResult>) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let action_name = match args.get("action").and_then(Value::as_str) {
+            Some(action) if !action.trim().is_empty() => action.trim(),
+            _ => return Vec::new(),
+        };
+
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: Vec::new(),
+            slots: vec![DialogueSlot::observed(
+                "browser_action",
+                action_name.to_string(),
+            )],
+        };
+
+        match parse_browser_action(action_name, args) {
+            Ok(BrowserAction::Open { url }) => {
+                if self.validate_url(&url).is_err() {
+                    return Vec::new();
+                }
+                let host = match extract_host(&url) {
+                    Ok(host) => host,
+                    Err(_) => return Vec::new(),
+                };
+                fact.focus_entities.push(FocusEntity {
+                    kind: "browser_page".into(),
+                    name: url.clone(),
+                    metadata: Some(host.clone()),
+                });
+                fact.slots.push(DialogueSlot::observed("browser_url", url));
+                fact.slots
+                    .push(DialogueSlot::observed("browser_host", host));
+            }
+            Ok(BrowserAction::Click { selector })
+            | Ok(BrowserAction::GetText { selector })
+            | Ok(BrowserAction::Hover { selector })
+            | Ok(BrowserAction::IsVisible { selector }) => {
+                fact.slots
+                    .push(DialogueSlot::observed("browser_selector", selector));
+            }
+            Ok(BrowserAction::Fill { selector, value }) => {
+                fact.slots
+                    .push(DialogueSlot::observed("browser_selector", selector));
+                fact.slots.push(DialogueSlot::observed(
+                    "browser_input_bytes",
+                    value.len().to_string(),
+                ));
+            }
+            Ok(BrowserAction::Type { selector, text }) => {
+                fact.slots
+                    .push(DialogueSlot::observed("browser_selector", selector));
+                fact.slots.push(DialogueSlot::observed(
+                    "browser_input_bytes",
+                    text.len().to_string(),
+                ));
+            }
+            Ok(BrowserAction::Snapshot {
+                interactive_only,
+                compact,
+                depth,
+            }) => {
+                fact.slots.push(DialogueSlot::observed(
+                    "browser_snapshot_interactive_only",
+                    interactive_only.to_string(),
+                ));
+                fact.slots.push(DialogueSlot::observed(
+                    "browser_snapshot_compact",
+                    compact.to_string(),
+                ));
+                if let Some(depth) = depth {
+                    fact.slots.push(DialogueSlot::observed(
+                        "browser_snapshot_depth",
+                        depth.to_string(),
+                    ));
+                }
+            }
+            Ok(BrowserAction::Screenshot { path, full_page }) => {
+                fact.slots.push(DialogueSlot::observed(
+                    "browser_screenshot_full_page",
+                    full_page.to_string(),
+                ));
+                if let Some(path) = path {
+                    fact.slots
+                        .push(DialogueSlot::observed("resource_path", path));
+                }
+            }
+            Ok(BrowserAction::Wait { selector, ms, text }) => {
+                if let Some(selector) = selector {
+                    fact.slots
+                        .push(DialogueSlot::observed("browser_selector", selector));
+                }
+                if let Some(ms) = ms {
+                    fact.slots
+                        .push(DialogueSlot::observed("browser_wait_ms", ms.to_string()));
+                }
+                if text.is_some() {
+                    fact.slots
+                        .push(DialogueSlot::observed("browser_waits_for_text", "true"));
+                }
+            }
+            Ok(BrowserAction::Press { key }) => {
+                fact.slots.push(DialogueSlot::observed("browser_key", key));
+            }
+            Ok(BrowserAction::Scroll { direction, pixels }) => {
+                fact.slots
+                    .push(DialogueSlot::observed("browser_scroll_direction", direction));
+                if let Some(pixels) = pixels {
+                    fact.slots.push(DialogueSlot::observed(
+                        "browser_scroll_pixels",
+                        pixels.to_string(),
+                    ));
+                }
+            }
+            Ok(BrowserAction::Find {
+                by,
+                value,
+                action,
+                fill_value,
+            }) => {
+                fact.slots
+                    .push(DialogueSlot::observed("browser_find_by", by));
+                fact.slots
+                    .push(DialogueSlot::observed("browser_find_value", value));
+                fact.slots
+                    .push(DialogueSlot::observed("browser_find_action", action));
+                if let Some(fill_value) = fill_value {
+                    fact.slots.push(DialogueSlot::observed(
+                        "browser_input_bytes",
+                        fill_value.len().to_string(),
+                    ));
+                }
+            }
+            Ok(BrowserAction::GetTitle | BrowserAction::GetUrl | BrowserAction::Close) => {}
+            Err(_) => {
+                if let Some(x) = args.get("x").and_then(Value::as_i64) {
+                    fact.slots
+                        .push(DialogueSlot::observed("computer_use_x", x.to_string()));
+                }
+                if let Some(y) = args.get("y").and_then(Value::as_i64) {
+                    fact.slots
+                        .push(DialogueSlot::observed("computer_use_y", y.to_string()));
+                }
+                if let Some(button) = args.get("button").and_then(Value::as_str) {
+                    fact.slots.push(DialogueSlot::observed(
+                        "computer_use_button",
+                        button.to_string(),
+                    ));
+                }
+            }
+        }
+
+        vec![fact]
     }
 }
 
@@ -2471,6 +2631,57 @@ mod tests {
 
         // file:// URLs blocked (local file exfiltration risk)
         assert!(tool.validate_url("file:///tmp/test.html").is_err());
+    }
+
+    #[test]
+    fn extract_facts_emits_browser_page_for_open() {
+        let security = Arc::new(SecurityPolicy::default());
+        let tool = BrowserTool::new(security, vec!["example.com".into()], None);
+        let facts = tool.extract_facts(
+            &json!({"action": "open", "url": "https://example.com/docs"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].focus_entities[0].kind, "browser_page");
+        assert_eq!(facts[0].focus_entities[0].name, "https://example.com/docs");
+        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("example.com"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "browser_action" && slot.value == "open"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "browser_url" && slot.value == "https://example.com/docs"));
+    }
+
+    #[test]
+    fn extract_facts_emits_selector_for_click() {
+        let security = Arc::new(SecurityPolicy::default());
+        let tool = BrowserTool::new(security, vec!["example.com".into()], None);
+        let facts = tool.extract_facts(
+            &json!({"action": "click", "selector": "@e2"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "browser_action" && slot.value == "click"));
+        assert!(facts[0]
+            .slots
+            .iter()
+            .any(|slot| slot.name == "browser_selector" && slot.value == "@e2"));
     }
 
     #[test]
