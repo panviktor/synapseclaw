@@ -10,6 +10,8 @@ use std::path::PathBuf;
 
 use super::traits::{Tool, ToolResult};
 use synapse_domain::config::schema::SecurityOpsConfig;
+use synapse_domain::domain::dialogue_state::FocusEntity;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_security::playbook::{
     evaluate_step, load_playbooks, severity_level, Playbook, StepStatus,
 };
@@ -406,6 +408,78 @@ impl Tool for SecurityOpsTool {
                 }
             }
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let action = match args.get("action").and_then(|value| value.as_str()) {
+            Some(action) if !action.trim().is_empty() => action.trim(),
+            _ => return Vec::new(),
+        };
+
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: Vec::new(),
+            slots: Vec::new(),
+        };
+
+        match action {
+            "triage_alert" => {
+                if let Some(alert) = args.get("alert").and_then(|value| value.as_object()) {
+                    let alert_type = alert
+                        .get("type")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty());
+                    let severity = alert
+                        .get("severity")
+                        .and_then(|value| value.as_str())
+                        .filter(|value| !value.trim().is_empty());
+                    if let Some(alert_type) = alert_type {
+                        fact.focus_entities.push(FocusEntity {
+                            kind: "security_alert".into(),
+                            name: alert_type.trim().to_string(),
+                            metadata: severity.map(|value| value.trim().to_string()),
+                        });
+                    }
+                }
+            }
+            "run_playbook" => {
+                if let Some(playbook) = args.get("playbook").and_then(|value| value.as_str()) {
+                    if !playbook.trim().is_empty() {
+                        fact.focus_entities.push(FocusEntity {
+                            kind: "security_playbook".into(),
+                            name: playbook.trim().to_string(),
+                            metadata: Some(action.to_string()),
+                        });
+                    }
+                }
+            }
+            "parse_vulnerability" => {}
+            "generate_report" => {
+                if let Some(client_name) = args
+                    .get("client_name")
+                    .and_then(|value| value.as_str())
+                    .filter(|value| !value.trim().is_empty())
+                {
+                    fact.focus_entities.push(FocusEntity {
+                        kind: "client".into(),
+                        name: client_name.trim().to_string(),
+                        metadata: Some("security_report".into()),
+                    });
+                }
+            }
+            "alert_stats" => {}
+            _ => {}
+        }
+
+        vec![fact]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

@@ -217,21 +217,95 @@ The main work should run on:
 Cloud LLMs remain useful, but should not be the only thing making the system
 look intelligent.
 
+### 6. Token and model budget is a first-class constraint
+
+Phase 4.8 must not "solve" everyday intelligence by running multiple large-model
+passes on every turn.
+
+The correct economic model is:
+
+- cheap deterministic state lookup on every turn
+- embedding-backed candidate retrieval on every turn
+- bounded small-model interpretation only when gates fire
+- one main response-model call per turn
+- heavy consolidation / reflection / skill evolution only in background paths
+
+This means:
+
+- working state must compress context instead of duplicating transcript tokens
+- retrieval must be shortlist-based and budgeted
+- prompt assembly must remain context-budget-aware
+- self-learning must be tiered: immediate cheap updates first, expensive
+  promotion/rewrite later
+
+### 7. Typed facts, not string slot contracts
+
+Phase 4.8 must not settle on `slot.name == "..."` or similar stringly runtime
+contracts as the long-term design.
+
+The correct target is:
+
+- tools emit **typed fact payloads** from tool-owned semantics
+- embeddings retrieve candidate context
+- a bounded interpreter decides what should update working state
+- strings are produced only in projection / logging / UI layers
+
+String slot names may exist temporarily in transitional paths, but they are not
+the canonical Phase 4.8 architecture.
+
 ---
 
 ## Desired Architecture
 
 ```text
 Inbound turn
-  -> typed runtime facts
-  -> bounded turn interpretation
-  -> resolution router
   -> embedding-backed retrieval
+  -> typed runtime facts
+  -> gated bounded turn interpretation
+  -> resolution router
   -> deterministic resolver choice
-  -> prompt assembly
+  -> budgeted prompt assembly
   -> response
-  -> post-turn typed updates + memory projections
+  -> cheap immediate typed updates
+  -> background learning / projections / compaction
 ```
+
+### Canonical cost pipeline
+
+```text
+Always:
+  runtime context
+  + working-state lookup
+  + user-profile lookup
+  + embedding shortlist retrieval
+
+Conditionally:
+  + small bounded interpreter
+  + extra session / precedent lookup
+  + narrow clarification planning
+
+Rare / background only:
+  + reflection
+  + skill promotion / rewrite
+  + heavy compaction
+  + cross-session consolidation
+```
+
+### Canonical execution gates
+
+The bounded interpreter should run only when one or more gates fire:
+
+- likely continuation / follow-up turn
+- explicit or likely reference to prior entities
+- ambiguity between multiple candidates
+- probable use of durable defaults
+- post-tool turn where structured result subjects matter
+
+If none of these gates fire, the system should stay on the cheap path:
+
+- retrieval shortlist
+- deterministic resolution
+- main response call
 
 ### Canonical resolution ladder
 

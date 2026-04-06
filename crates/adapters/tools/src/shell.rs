@@ -4,7 +4,7 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::runtime::RuntimeAdapter;
@@ -246,18 +246,19 @@ impl Tool for ShellTool {
 
         vec![AgentToolFact {
             tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "workspace_directory".into(),
-                name: self.security.workspace_dir.display().to_string(),
-                metadata: Some("shell_cwd".into()),
-            }],
-            slots: vec![
-                DialogueSlot::observed("shell_command", command.to_string()),
-                DialogueSlot::observed(
-                    "shell_cwd",
-                    self.security.workspace_dir.display().to_string(),
-                ),
+            focus_entities: vec![
+                FocusEntity {
+                    kind: "workspace_directory".into(),
+                    name: self.security.workspace_dir.display().to_string(),
+                    metadata: Some("shell_cwd".into()),
+                },
+                FocusEntity {
+                    kind: "shell_command".into(),
+                    name: command.to_string(),
+                    metadata: Some(self.security.workspace_dir.display().to_string()),
+                },
             ],
+            slots: Vec::new(),
         }]
     }
 }
@@ -593,12 +594,15 @@ mod tests {
 
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].focus_entities[0].kind, "workspace_directory");
-        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("shell_cwd"));
+        assert_eq!(
+            facts[0].focus_entities[0].metadata.as_deref(),
+            Some("shell_cwd")
+        );
         assert!(facts[0]
-            .slots
+            .focus_entities
             .iter()
-            .any(|slot| slot.name == "shell_command" && slot.value == "cargo test -q"));
-        assert!(facts[0].slots.iter().any(|slot| slot.name == "shell_cwd"));
+            .any(|entity| entity.kind == "shell_command" && entity.name == "cargo test -q"));
+        assert!(facts[0].slots.is_empty());
     }
 
     #[tokio::test]

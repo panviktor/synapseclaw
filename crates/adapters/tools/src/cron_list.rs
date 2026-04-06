@@ -76,10 +76,7 @@ impl Tool for CronListTool {
         Ok(self.execute_action().await?.result)
     }
 
-    async fn execute_with_facts(
-        &self,
-        _args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, _args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         self.execute_action().await
     }
 }

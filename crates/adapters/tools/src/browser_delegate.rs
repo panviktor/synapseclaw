@@ -13,7 +13,7 @@
 use async_trait::async_trait;
 use regex::Regex;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::tool::{Tool, ToolResult};
@@ -323,10 +323,7 @@ impl Tool for BrowserDelegateTool {
         let mut fact = AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities: Vec::new(),
-            slots: vec![DialogueSlot::observed(
-                "browser_delegate_task_bytes",
-                task.len().to_string(),
-            )],
+            slots: Vec::new(),
         };
 
         if let Some(url) = args
@@ -345,25 +342,7 @@ impl Tool for BrowserDelegateTool {
                     name: url.to_string(),
                     metadata: host.clone(),
                 });
-                fact.slots
-                    .push(DialogueSlot::observed("browser_delegate_url", url.to_string()));
-                if let Some(host) = host {
-                    fact.slots
-                        .push(DialogueSlot::observed("browser_delegate_host", host));
-                }
             }
-        }
-
-        if let Some(extract_format) = args
-            .get("extract_format")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            fact.slots.push(DialogueSlot::observed(
-                "browser_delegate_extract_format",
-                extract_format.to_string(),
-            ));
         }
 
         vec![fact]
@@ -537,15 +516,6 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "browser_delegate_extract_format" && slot.value == "summary"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "browser_delegate_url"
-                && slot.value == "https://example.com/dashboard"));
         assert!(facts[0]
             .focus_entities
             .iter()

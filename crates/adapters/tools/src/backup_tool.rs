@@ -4,6 +4,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use synapse_domain::domain::dialogue_state::FocusEntity;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use tokio::fs;
 
 /// Workspace backup tool: create, list, verify, and restore timestamped backups
@@ -254,6 +256,43 @@ impl Tool for BackupTool {
             },
             "required": ["command"]
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let command = match args.get("command").and_then(|value| value.as_str()) {
+            Some(command) if !command.trim().is_empty() => command.trim(),
+            _ => return Vec::new(),
+        };
+
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "workspace_directory".into(),
+                name: self.workspace_dir.display().to_string(),
+                metadata: Some("backup".into()),
+            }],
+            slots: Vec::new(),
+        };
+
+        if let Some(name) = args.get("backup_name").and_then(|value| value.as_str()) {
+            if !name.trim().is_empty() {
+                fact.focus_entities.push(FocusEntity {
+                    kind: "backup_snapshot".into(),
+                    name: name.trim().to_string(),
+                    metadata: Some(command.to_string()),
+                });
+            }
+        }
+
+        vec![fact]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

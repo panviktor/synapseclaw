@@ -95,7 +95,6 @@ mod tests {
                     ("city".into(), "Berlin".into()),
                     ("city".into(), "Tbilisi".into()),
                 ],
-                slots: vec![],
                 reference_anchors: vec![],
                 last_tool_subjects: vec![],
             }),

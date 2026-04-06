@@ -53,10 +53,7 @@ pub trait Tool: Send + Sync {
     /// `execute()` and then `extract_facts()`. Tools that know result semantics
     /// should override this to emit facts directly from structured results
     /// instead of reconstructing them afterward.
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         let result = self.execute(args.clone()).await?;
         let facts = self.extract_facts(&args, Some(&result));
         Ok(ToolExecution { result, facts })
@@ -106,10 +103,7 @@ impl Tool for ArcToolRef {
         self.0.execute(args).await
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         self.0.execute_with_facts(args).await
     }
 

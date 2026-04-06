@@ -167,10 +167,7 @@ impl Tool for PrecedentSearchTool {
         Ok(result)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         let (result, hits) = self.execute_query(&args).await?;
         Ok(ToolExecution {
             result,

@@ -5,7 +5,9 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 /// Maximum time to wait for a screenshot command to complete.
 const SCREENSHOT_TIMEOUT_SECS: u64 = 15;
@@ -239,6 +241,39 @@ impl Tool for ScreenshotTool {
                 }
             }
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let filename = args
+            .get("filename")
+            .and_then(|value| value.as_str())
+            .map_or_else(|| format!("screenshot_{timestamp}.png"), String::from);
+        let safe_name = PathBuf::from(&filename).file_name().map_or_else(
+            || format!("screenshot_{timestamp}.png"),
+            |name| name.to_string_lossy().to_string(),
+        );
+        let output_path = self.security.workspace_dir.join(&safe_name);
+
+        let fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "image_file".into(),
+                name: output_path.display().to_string(),
+                metadata: Some("screenshot".into()),
+            }],
+            slots: Vec::new(),
+        };
+
+        vec![fact]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

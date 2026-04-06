@@ -152,10 +152,7 @@ impl Tool for ScheduleTool {
         Ok(self.execute_action(&args).await?.0)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> Result<ToolExecution> {
         let (result, facts) = self.execute_action(&args).await?;
         Ok(ToolExecution { result, facts })
     }
@@ -220,10 +217,7 @@ impl ScheduleTool {
             let last_run = job
                 .last_run
                 .map_or_else(|| "never".to_string(), |value| value.to_rfc3339());
-            let last_status = job
-                .last_status
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string());
+            let last_status = job.last_status.clone().unwrap_or_else(|| "n/a".to_string());
             lines.push(format!(
                 "- {} | {} | next={} | last={} ({}){} | cmd: {}",
                 job.id,
@@ -308,7 +302,9 @@ impl ScheduleTool {
                         ToolResult {
                             success: false,
                             output: String::new(),
-                            error: Some("'add' requires 'expression' and forbids delay/run_at".into()),
+                            error: Some(
+                                "'add' requires 'expression' and forbids delay/run_at".into(),
+                            ),
                         },
                         Vec::new(),
                     ));
@@ -320,7 +316,9 @@ impl ScheduleTool {
                         ToolResult {
                             success: false,
                             output: String::new(),
-                            error: Some("'once' requires exactly one of 'delay' or 'run_at'".into()),
+                            error: Some(
+                                "'once' requires exactly one of 'delay' or 'run_at'".into(),
+                            ),
                         },
                         Vec::new(),
                     ));
@@ -493,7 +491,11 @@ impl ScheduleTool {
                     output: format!("Cancelled job {id}"),
                     error: None,
                 },
-                vec![cron_facts::build_removed_job_fact(self.name(), "cancel", id)],
+                vec![cron_facts::build_removed_job_fact(
+                    self.name(),
+                    "cancel",
+                    id,
+                )],
             ),
             Err(error) => (
                 ToolResult {
@@ -506,11 +508,7 @@ impl ScheduleTool {
         }
     }
 
-    async fn handle_pause_resume(
-        &self,
-        id: &str,
-        pause: bool,
-    ) -> (ToolResult, Vec<AgentToolFact>) {
+    async fn handle_pause_resume(&self, id: &str, pause: bool) -> (ToolResult, Vec<AgentToolFact>) {
         let operation = if pause {
             synapse_cron::pause_job(&self.db, id).await
         } else {
@@ -595,12 +593,10 @@ mod tests {
         assert_eq!(fact.focus_entities.len(), 1);
         assert_eq!(fact.focus_entities[0].kind, "scheduled_job");
         assert_eq!(fact.focus_entities[0].name, "job_123");
-        assert_eq!(fact.focus_entities[0].metadata.as_deref(), Some("cron"));
-
-        assert!(fact.slots.iter().any(|slot| slot.name == "schedule_action" && slot.value == "create"));
-        assert!(fact.slots.iter().any(|slot| slot.name == "job_type" && slot.value == "agent"));
-        assert!(fact.slots.iter().any(|slot| slot.name == "session_target" && slot.value == "main"));
-        assert!(fact.slots.iter().any(|slot| slot.name == "delivery_channel" && slot.value == "matrix"));
-        assert!(fact.slots.iter().any(|slot| slot.name == "delivery_thread_ref" && slot.value == "thread-1"));
+        assert!(fact.slots.is_empty());
+        assert_eq!(
+            fact.focus_entities[0].metadata.as_deref(),
+            Some("create:cron:main")
+        );
     }
 }

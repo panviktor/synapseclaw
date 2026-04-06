@@ -2,7 +2,6 @@
 
 use super::tool_call_parsing::*;
 use super::*;
-use crate::runtime::tool_fact_extraction;
 use synapse_domain::application::services::loop_detection::{
     hash_args, LoopAction, LoopDetector, ToolInvocation,
 };
@@ -75,16 +74,7 @@ pub(crate) struct ToolLoopResult {
     pub(crate) tool_facts: Vec<AgentToolFact>,
 }
 
-fn collect_tool_facts(
-    tool_name: &str,
-    args: &serde_json::Value,
-    mut explicit_facts: Vec<AgentToolFact>,
-) -> Vec<AgentToolFact> {
-    let generic_fact = tool_fact_extraction::build_tool_fact(tool_name, args);
-    if tool_fact_extraction::fact_has_payload(&generic_fact) {
-        explicit_facts.push(generic_fact);
-    }
-
+fn collect_tool_facts(explicit_facts: Vec<AgentToolFact>) -> Vec<AgentToolFact> {
     explicit_facts
 }
 
@@ -118,7 +108,7 @@ pub(crate) async fn execute_one_tool(
     let Some(tool) = static_tool.or(activated_arc.as_deref()) else {
         let reason = format!("Unknown tool: {call_name}");
         let duration = start.elapsed();
-        let tool_facts = collect_tool_facts(call_name, &call_arguments, Vec::new());
+        let tool_facts = collect_tool_facts(Vec::new());
         observer.record_event(&ObserverEvent::ToolCall {
             tool: call_name.to_string(),
             duration,
@@ -169,7 +159,7 @@ pub(crate) async fn execute_one_tool(
                 output: format!("[blocked] {reason}"),
                 success: false,
             });
-            let tool_facts = collect_tool_facts(call_name, &call_arguments, Vec::new());
+            let tool_facts = collect_tool_facts(Vec::new());
             return Ok(ToolExecutionOutcome {
                 output: format!("[blocked] {reason}"),
                 success: false,
@@ -193,7 +183,7 @@ pub(crate) async fn execute_one_tool(
     match tool_result {
         Ok(execution) => {
             let duration = start.elapsed();
-            let tool_facts = collect_tool_facts(call_name, &call_arguments, execution.facts);
+            let tool_facts = collect_tool_facts(execution.facts);
             let r = execution.result;
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
@@ -235,7 +225,7 @@ pub(crate) async fn execute_one_tool(
         }
         Err(e) => {
             let duration = start.elapsed();
-            let tool_facts = collect_tool_facts(call_name, &call_arguments, Vec::new());
+            let tool_facts = collect_tool_facts(Vec::new());
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -793,11 +783,7 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(scrub_credentials(&reason)),
                                 duration: Duration::ZERO,
-                                tool_facts: collect_tool_facts(
-                                    &call.name,
-                                    &tool_args,
-                                    Vec::new(),
-                                ),
+                                tool_facts: collect_tool_facts(Vec::new()),
                             },
                         ));
                         continue;
@@ -856,11 +842,7 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(denied),
                                 duration: Duration::ZERO,
-                                tool_facts: collect_tool_facts(
-                                    &tool_name,
-                                    &tool_args,
-                                    Vec::new(),
-                                ),
+                                tool_facts: collect_tool_facts(Vec::new()),
                             },
                         ));
                         continue;
@@ -902,7 +884,7 @@ pub(crate) async fn run_tool_call_loop(
                         success: false,
                         error_reason: Some(duplicate),
                         duration: Duration::ZERO,
-                        tool_facts: collect_tool_facts(&tool_name, &tool_args, Vec::new()),
+                        tool_facts: collect_tool_facts(Vec::new()),
                     },
                 ));
                 continue;

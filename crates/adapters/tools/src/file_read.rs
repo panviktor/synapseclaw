@@ -2,7 +2,7 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
@@ -231,14 +231,6 @@ impl Tool for FileReadTool {
             _ => return Vec::new(),
         };
 
-        let mut slots = vec![DialogueSlot::observed("resource_path", path.to_string())];
-        if let Some(offset) = args.get("offset").and_then(|value| value.as_u64()) {
-            slots.push(DialogueSlot::observed("read_offset", offset.to_string()));
-        }
-        if let Some(limit) = args.get("limit").and_then(|value| value.as_u64()) {
-            slots.push(DialogueSlot::observed("read_limit", limit.to_string()));
-        }
-
         vec![AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities: vec![FocusEntity {
@@ -246,7 +238,7 @@ impl Tool for FileReadTool {
                 name: path.to_string(),
                 metadata: Some("read".into()),
             }],
-            slots,
+            slots: Vec::new(),
         }]
     }
 }
@@ -353,14 +345,7 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].focus_entities[0].kind, "file_resource");
         assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("read"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "read_offset" && slot.value == "10"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "read_limit" && slot.value == "20"));
+        assert!(facts[0].slots.is_empty());
     }
 
     #[tokio::test]

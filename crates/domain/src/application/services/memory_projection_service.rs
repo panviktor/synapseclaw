@@ -32,7 +32,6 @@ pub fn format_core_blocks_projection(blocks: &[CoreMemoryBlock]) -> Option<Strin
 pub fn format_dialogue_state_projection(state: &DialogueState) -> Option<String> {
     if state.focus_entities.is_empty()
         && state.comparison_set.is_empty()
-        && state.slots.is_empty()
         && state.last_tool_subjects.is_empty()
     {
         return None;
@@ -57,17 +56,6 @@ pub fn format_dialogue_state_projection(state: &DialogueState) -> Option<String>
                 .comparison_set
                 .iter()
                 .map(|entity| format!("{}={}", entity.kind, entity.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    if !state.slots.is_empty() {
-        lines.push(format!(
-            "- slots: {}",
-            state
-                .slots
-                .iter()
-                .map(|slot| format!("{}={}", slot.name, slot.value))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
@@ -180,7 +168,7 @@ fn truncate_line(value: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use crate::domain::conversation::{ConversationKind, EventType};
-    use crate::domain::dialogue_state::{DialogueSlot, FocusEntity};
+    use crate::domain::dialogue_state::FocusEntity;
     use chrono::Utc;
 
     #[test]
@@ -196,7 +184,7 @@ mod tests {
                 name: "Tbilisi".into(),
                 metadata: None,
             }],
-            slots: vec![DialogueSlot::observed("timezone", "Europe/Berlin")],
+            slots: vec![],
             reference_anchors: vec![],
             last_tool_subjects: vec!["Berlin".into()],
             updated_at: 1,
@@ -205,7 +193,7 @@ mod tests {
 
         assert!(projection.contains("[working-state]"));
         assert!(projection.contains("focus_entities: city=Berlin"));
-        assert!(projection.contains("slots: timezone=Europe/Berlin"));
+        assert!(projection.contains("last_tool_subjects: Berlin"));
     }
 
     #[test]

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::config::AutonomyLevel;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
@@ -589,24 +589,9 @@ impl Tool for GitOperationsTool {
                 name: self.workspace_dir.display().to_string(),
                 metadata: Some(operation.to_string()),
             }],
-            slots: vec![DialogueSlot::observed(
-                "git_operation",
-                operation.to_string(),
-            )],
+            slots: Vec::new(),
         };
 
-        if let Some(paths) = args.get("paths").and_then(|value| value.as_str()) {
-            if !paths.trim().is_empty() {
-                fact.slots
-                    .push(DialogueSlot::observed("git_paths", paths.trim().to_string()));
-            }
-        }
-        if let Some(files) = args.get("files").and_then(|value| value.as_str()) {
-            if !files.trim().is_empty() {
-                fact.slots
-                    .push(DialogueSlot::observed("git_diff_target", files.trim().to_string()));
-            }
-        }
         if let Some(branch) = args.get("branch").and_then(|value| value.as_str()) {
             if !branch.trim().is_empty() {
                 fact.focus_entities.push(FocusEntity {
@@ -614,22 +599,6 @@ impl Tool for GitOperationsTool {
                     name: branch.trim().to_string(),
                     metadata: Some("target".into()),
                 });
-                fact.slots
-                    .push(DialogueSlot::observed("git_branch", branch.trim().to_string()));
-            }
-        }
-        if let Some(action) = args.get("action").and_then(|value| value.as_str()) {
-            if !action.trim().is_empty() {
-                fact.slots
-                    .push(DialogueSlot::observed("git_action", action.trim().to_string()));
-            }
-        }
-        if let Some(message) = args.get("message").and_then(|value| value.as_str()) {
-            if !message.trim().is_empty() {
-                fact.slots.push(DialogueSlot::observed(
-                    "git_message_bytes",
-                    message.trim().len().to_string(),
-                ));
             }
         }
 
@@ -891,14 +860,6 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "git_operation" && slot.value == "checkout"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "git_branch" && slot.value == "feature/x"));
         assert!(facts[0]
             .focus_entities
             .iter()

@@ -4,7 +4,9 @@ use serde_json::json;
 use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 /// Maximum file size we will read and base64-encode (5 MB).
 const MAX_IMAGE_BYTES: u64 = 5_242_880;
@@ -143,6 +145,33 @@ impl Tool for ImageInfoTool {
             },
             "required": ["path"]
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let path = match args.get("path").and_then(|value| value.as_str()) {
+            Some(path) if !path.trim().is_empty() => path.trim().to_string(),
+            _ => return Vec::new(),
+        };
+
+        let fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "image_file".into(),
+                name: path.clone(),
+                metadata: Some("inspect".into()),
+            }],
+            slots: Vec::new(),
+        };
+
+        vec![fact]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

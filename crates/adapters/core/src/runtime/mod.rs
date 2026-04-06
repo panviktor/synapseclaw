@@ -4,7 +4,6 @@ pub mod agent_runtime_adapter;
 pub mod docker;
 pub mod hooks_adapter;
 pub mod native;
-pub(crate) mod tool_fact_extraction;
 
 use synapse_domain::config::schema::RuntimeConfig;
 pub use synapse_domain::ports::runtime::RuntimeAdapter;

@@ -24,6 +24,7 @@ pub mod security_types;
 pub mod spawn;
 pub mod standing_order;
 pub mod tool_audit;
+pub mod tool_fact;
 pub mod tool_middleware;
 pub mod user_profile;
 pub mod util;

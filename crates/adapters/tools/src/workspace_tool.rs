@@ -8,7 +8,7 @@ use serde_json::json;
 use std::fmt::Write;
 use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_infra::workspace::WorkspaceManager;
@@ -272,10 +272,7 @@ impl Tool for WorkspaceTool {
         let mut fact = AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities: Vec::new(),
-            slots: vec![DialogueSlot::observed(
-                "workspace_action",
-                action.to_string(),
-            )],
+            slots: Vec::new(),
         };
 
         if let Some(name) = args.get("name").and_then(|value| value.as_str()) {
@@ -285,8 +282,6 @@ impl Tool for WorkspaceTool {
                     name: name.trim().to_string(),
                     metadata: Some(action.to_string()),
                 });
-                fact.slots
-                    .push(DialogueSlot::observed("workspace_name", name.trim().to_string()));
             }
         }
 
@@ -408,14 +403,7 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "workspace_action" && slot.value == "switch"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "workspace_name" && slot.value == "client_a"));
+        assert!(facts[0].slots.is_empty());
         assert!(facts[0]
             .focus_entities
             .iter()

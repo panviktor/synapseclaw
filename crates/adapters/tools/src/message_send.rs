@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
-use synapse_domain::domain::dialogue_state::DialogueSlot;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::{Tool, ToolResult};
@@ -110,43 +109,10 @@ impl Tool for MessageSendTool {
 
     fn extract_facts(
         &self,
-        args: &serde_json::Value,
+        _args: &serde_json::Value,
         _result: Option<&ToolResult>,
     ) -> Vec<AgentToolFact> {
-        let mut fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: Vec::new(),
-            slots: Vec::new(),
-        };
-
-        if let Ok(ConversationDeliveryTarget::Explicit {
-            channel,
-            recipient,
-            thread_ref,
-        }) = self.resolve_target(args)
-        {
-            fact.slots
-                .push(DialogueSlot::observed("delivery_channel", channel));
-            fact.slots
-                .push(DialogueSlot::observed("delivery_recipient", recipient));
-            if let Some(thread_ref) = thread_ref {
-                fact.slots
-                    .push(DialogueSlot::observed("delivery_thread_ref", thread_ref));
-            }
-        }
-
-        if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
-            if !content.trim().is_empty() {
-                fact.slots
-                    .push(DialogueSlot::observed("delivery_content", content.trim()));
-            }
-        }
-
-        if fact.slots.is_empty() {
-            Vec::new()
-        } else {
-            vec![fact]
-        }
+        Vec::new()
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

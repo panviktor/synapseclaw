@@ -444,8 +444,9 @@ pub async fn run_gateway(
     shared_run_recipe_store: Option<
         Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>,
     >,
-    shared_heartbeat_metrics:
-        Option<Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>>,
+    shared_heartbeat_metrics: Option<
+        Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>,
+    >,
 ) -> Result<()> {
     // ── Security: refuse public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind

@@ -135,10 +135,7 @@ impl Tool for MemoryRecallTool {
         Ok(result)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         let (result, entries) = self.execute_query(&args).await?;
         Ok(ToolExecution {
             result,

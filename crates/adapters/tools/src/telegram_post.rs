@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
@@ -242,27 +242,6 @@ impl Tool for TelegramPostTool {
             None => return Vec::new(),
         };
 
-        let mut slots = vec![
-            DialogueSlot::observed("delivery_channel", "telegram"),
-            DialogueSlot::observed("delivery_recipient", chat_id.to_string()),
-        ];
-
-        if let Some(parse_mode) = args.get("parse_mode").and_then(|value| value.as_str()) {
-            slots.push(DialogueSlot::observed(
-                "delivery_parse_mode",
-                parse_mode.to_string(),
-            ));
-        }
-        if let Some(disable_preview) = args
-            .get("disable_web_page_preview")
-            .and_then(|value| value.as_bool())
-        {
-            slots.push(DialogueSlot::observed(
-                "delivery_disable_preview",
-                disable_preview.to_string(),
-            ));
-        }
-
         vec![AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities: vec![FocusEntity {
@@ -270,7 +249,7 @@ impl Tool for TelegramPostTool {
                 name: chat_id.to_string(),
                 metadata: Some("telegram".into()),
             }],
-            slots,
+            slots: Vec::new(),
         }]
     }
 }
@@ -408,10 +387,10 @@ mod tests {
 
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].focus_entities[0].kind, "delivery_target");
-        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("telegram"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "delivery_recipient" && slot.value == "@synapseclaw"));
+        assert_eq!(
+            facts[0].focus_entities[0].metadata.as_deref(),
+            Some("telegram")
+        );
+        assert!(facts[0].slots.is_empty());
     }
 }

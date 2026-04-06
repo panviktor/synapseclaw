@@ -4,7 +4,7 @@ use regex::Regex;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::tool::ToolExecution;
 
@@ -284,7 +284,12 @@ impl WebSearchTool {
 
         let json: serde_json::Value = response.json().await?;
         let (answer, hits) = self.parse_tavily_hits(&json)?;
-        Ok(format_search_results("Tavily", query, answer.as_deref(), &hits))
+        Ok(format_search_results(
+            "Tavily",
+            query,
+            answer.as_deref(),
+            &hits,
+        ))
     }
 
     fn parse_tavily_results(
@@ -293,7 +298,12 @@ impl WebSearchTool {
         query: &str,
     ) -> anyhow::Result<String> {
         let (answer, hits) = self.parse_tavily_hits(json)?;
-        Ok(format_search_results("Tavily", query, answer.as_deref(), &hits))
+        Ok(format_search_results(
+            "Tavily",
+            query,
+            answer.as_deref(),
+            &hits,
+        ))
     }
 
     fn parse_tavily_hits(
@@ -399,10 +409,7 @@ impl WebSearchTool {
             .collect())
     }
 
-    async fn execute_query(
-        &self,
-        query: &str,
-    ) -> anyhow::Result<(ToolResult, Vec<SearchHit>)> {
+    async fn execute_query(&self, query: &str) -> anyhow::Result<(ToolResult, Vec<SearchHit>)> {
         let (provider_name, answer, hits) = match self.provider.as_str() {
             "duckduckgo" | "ddg" => {
                 let encoded_query = urlencoding::encode(query);
@@ -565,10 +572,7 @@ impl Tool for WebSearchTool {
         Ok(self.execute_query(query).await?.0)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         let query = args
             .get("query")
             .and_then(|q| q.as_str())
@@ -592,7 +596,7 @@ impl Tool for WebSearchTool {
                         metadata: Some(hit.url.clone()),
                     })
                     .collect(),
-                slots: vec![DialogueSlot::observed("search_query", query.to_string())],
+                slots: Vec::new(),
             }],
         })
     }
@@ -608,7 +612,10 @@ fn format_search_results(
         return format!("No results found for: {}", query);
     }
 
-    let mut lines = vec![format!("Search results for: {} (via {})", query, provider_name)];
+    let mut lines = vec![format!(
+        "Search results for: {} (via {})",
+        query, provider_name
+    )];
 
     if let Some(answer) = answer {
         lines.push(String::new());

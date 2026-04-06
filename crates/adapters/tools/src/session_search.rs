@@ -181,10 +181,7 @@ impl Tool for SessionSearchTool {
         Ok(result)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         let (result, hits) = self.execute_query(&args).await?;
         Ok(ToolExecution {
             facts: self.build_result_facts(&hits),
@@ -538,9 +535,12 @@ mod tests {
     #[tokio::test]
     async fn execute_with_facts_emits_session_entities() {
         let mut store = TestStore::default();
-        store
-            .sessions
-            .push(session("web:one", "Weather Thread", "Compared Berlin and Tbilisi", 10));
+        store.sessions.push(session(
+            "web:one",
+            "Weather Thread",
+            "Compared Berlin and Tbilisi",
+            10,
+        ));
         store.events.insert(
             "web:one".into(),
             vec![event(

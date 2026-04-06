@@ -29,7 +29,6 @@ pub struct CurrentConversationSnapshot {
 pub struct DialogueStateSnapshot {
     pub focus_entities: Vec<(String, String)>,
     pub comparison_set: Vec<(String, String)>,
-    pub slots: Vec<(String, String)>,
     pub reference_anchors: Vec<ReferenceAnchor>,
     pub last_tool_subjects: Vec<String>,
 }
@@ -45,9 +44,6 @@ pub enum ReferenceSource {
 pub enum ReferenceCandidateKind {
     Entity {
         entity_kind: String,
-    },
-    Slot {
-        slot_name: String,
     },
     Anchor {
         selector: ReferenceAnchorSelector,
@@ -173,9 +169,6 @@ pub fn format_turn_interpretation(interpretation: &TurnInterpretation) -> Option
                 format_pairs(&state.comparison_set)
             ));
         }
-        if !state.slots.is_empty() {
-            lines.push(format!("- slots: {}", format_pairs(&state.slots)));
-        }
         if !state.reference_anchors.is_empty() {
             lines.push(format!(
                 "- reference_anchors: {}",
@@ -239,17 +232,11 @@ fn snapshot_dialogue_state(state: &DialogueState) -> Option<DialogueStateSnapsho
         .iter()
         .map(|entity| (entity.kind.clone(), entity.name.clone()))
         .collect::<Vec<_>>();
-    let slots = state
-        .slots
-        .iter()
-        .map(|slot| (slot.name.clone(), slot.value.clone()))
-        .collect::<Vec<_>>();
     let reference_anchors = state.reference_anchors.clone();
     let last_tool_subjects = state.last_tool_subjects.clone();
 
     if focus_entities.is_empty()
         && comparison_set.is_empty()
-        && slots.is_empty()
         && reference_anchors.is_empty()
         && last_tool_subjects.is_empty()
     {
@@ -258,7 +245,6 @@ fn snapshot_dialogue_state(state: &DialogueState) -> Option<DialogueStateSnapsho
         Some(DialogueStateSnapshot {
             focus_entities,
             comparison_set,
-            slots,
             reference_anchors,
             last_tool_subjects,
         })
@@ -282,16 +268,6 @@ fn collect_reference_candidates(
                 &mut candidates,
                 ReferenceCandidateKind::Entity {
                     entity_kind: entity_kind.clone(),
-                },
-                value,
-                ReferenceSource::DialogueState,
-            );
-        }
-        for (slot_name, value) in &state.slots {
-            push_reference_candidate(
-                &mut candidates,
-                ReferenceCandidateKind::Slot {
-                    slot_name: slot_name.clone(),
                 },
                 value,
                 ReferenceSource::DialogueState,
@@ -497,7 +473,6 @@ fn profile_reference_kind_name(kind: ProfileReferenceKind) -> &'static str {
 fn reference_candidate_kind_name(kind: &ReferenceCandidateKind) -> String {
     match kind {
         ReferenceCandidateKind::Entity { entity_kind } => format!("entity<{entity_kind}>"),
-        ReferenceCandidateKind::Slot { slot_name } => format!("slot<{slot_name}>"),
         ReferenceCandidateKind::Anchor {
             selector,
             entity_kind,
@@ -811,10 +786,6 @@ mod tests {
                 name: "Berlin".into(),
                 metadata: None,
             }],
-            slots: vec![crate::domain::dialogue_state::DialogueSlot::observed(
-                "timezone",
-                "Europe/Berlin",
-            )],
             last_tool_subjects: vec!["weather_lookup".into()],
             ..Default::default()
         };
@@ -841,7 +812,6 @@ mod tests {
         assert!(block.contains("preferred_language: ru"));
         assert!(block.contains("adapter: matrix"));
         assert!(block.contains("focus_entities: city=Berlin"));
-        assert!(block.contains("slots: timezone=Europe/Berlin"));
         assert!(block.contains("last_tool_subjects: weather_lookup"));
     }
 

@@ -168,6 +168,13 @@ Phase 4.8 made the system better at **resolving a turn**.
 
 Phase 4.9 should make the system better at **becoming better after many turns**.
 
+Phase 4.9 must inherit two constraints from Phase 4.8:
+
+- **typed fact payloads are the canonical learning input**, not string slot
+  names and not regex over assistant text
+- **learning must respect turn budgets and execution gates**, so expensive
+  reflection / promotion / rewrite work stays off the critical path
+
 We should aim for this position:
 
 - more inspectable than opaque auto-memory systems
@@ -223,6 +230,19 @@ Embeddings should not decide:
 - whether the user explicitly corrected a fact
 
 Those should be typed or inferred through bounded contracts.
+
+### 2a. Learning must stay economically bounded
+
+The system should not run heavy learning passes on every turn.
+
+Phase 4.9 should follow a tiered model:
+
+- cheap immediate typed updates after the turn
+- deferred consolidation on idle / heartbeat / thresholds
+- rare heavy skill promotion or rewrite only when evidence accumulates
+
+This keeps self-learning real without turning every reply into a multi-model
+pipeline.
 
 ### 3. Learning must distinguish memory kinds
 

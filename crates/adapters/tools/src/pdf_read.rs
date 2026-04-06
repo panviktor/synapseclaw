@@ -2,7 +2,7 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
@@ -243,14 +243,6 @@ impl Tool for PdfReadTool {
             _ => return Vec::new(),
         };
 
-        let mut slots = vec![DialogueSlot::observed("resource_path", path.clone())];
-        if let Some(max_chars) = args.get("max_chars").and_then(|value| value.as_u64()) {
-            slots.push(DialogueSlot::observed(
-                "pdf_max_chars",
-                max_chars.to_string(),
-            ));
-        }
-
         vec![AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities: vec![FocusEntity {
@@ -258,7 +250,7 @@ impl Tool for PdfReadTool {
                 name: path,
                 metadata: Some("read".into()),
             }],
-            slots,
+            slots: Vec::new(),
         }]
     }
 }
@@ -428,14 +420,7 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].focus_entities[0].kind, "pdf_document");
         assert_eq!(facts[0].focus_entities[0].name, "docs/spec.pdf");
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "resource_path" && slot.value == "docs/spec.pdf"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "pdf_max_chars" && slot.value == "1234"));
+        assert!(facts[0].slots.is_empty());
     }
 
     #[cfg(unix)]

@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::tool::ToolExecution;
@@ -205,8 +205,7 @@ impl ContentSearchTool {
                     success: false,
                     output: String::new(),
                     error: Some(
-                        "Multiline matching requires ripgrep (rg), which is not available."
-                            .into(),
+                        "Multiline matching requires ripgrep (rg), which is not available.".into(),
                     ),
                 },
                 None,
@@ -389,67 +388,23 @@ impl Tool for ContentSearchTool {
         Ok(self.execute_search(&args).await?.0)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         let (result, summary) = self.execute_search(&args).await?;
         let facts = summary
             .filter(|_| result.success)
-            .map(|summary| {
-                let pattern = args
-                    .get("pattern")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                let output_mode = args
-                    .get("output_mode")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("content")
-                    .to_string();
-                let search_path = args
-                    .get("path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(".")
-                    .to_string();
-
-                AgentToolFact {
-                    tool_name: self.name().to_string(),
-                    focus_entities: summary
-                        .matched_paths
-                        .iter()
-                        .take(5)
-                        .map(|path| FocusEntity {
-                            kind: "workspace_file".into(),
-                            name: path.clone(),
-                            metadata: Some("content_match".into()),
-                        })
-                        .collect(),
-                    slots: {
-                        let mut slots = vec![
-                            DialogueSlot::observed("content_search_pattern", pattern),
-                            DialogueSlot::observed("content_search_mode", output_mode),
-                            DialogueSlot::observed("content_search_path", search_path),
-                            DialogueSlot::observed(
-                                "content_search_file_count",
-                                summary.matched_paths.len().to_string(),
-                            ),
-                            DialogueSlot::observed(
-                                "content_search_match_count",
-                                summary.total_matches.to_string(),
-                            ),
-                        ];
-                        if let Some(include) = args.get("include").and_then(|v| v.as_str()) {
-                            if !include.trim().is_empty() {
-                                slots.push(DialogueSlot::observed(
-                                    "content_search_include",
-                                    include.trim().to_string(),
-                                ));
-                            }
-                        }
-                        slots
-                    },
-                }
+            .map(|summary| AgentToolFact {
+                tool_name: self.name().to_string(),
+                focus_entities: summary
+                    .matched_paths
+                    .iter()
+                    .take(5)
+                    .map(|path| FocusEntity {
+                        kind: "workspace_file".into(),
+                        name: path.clone(),
+                        metadata: Some("content_match".into()),
+                    })
+                    .collect(),
+                slots: Vec::new(),
             })
             .map(|fact| vec![fact])
             .unwrap_or_default();

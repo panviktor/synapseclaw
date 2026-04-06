@@ -275,10 +275,7 @@ impl Tool for CronUpdateTool {
         Ok(self.execute_action(&args).await?.result)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         self.execute_action(&args).await
     }
 }

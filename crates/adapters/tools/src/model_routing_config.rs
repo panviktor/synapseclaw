@@ -7,8 +7,10 @@ use std::sync::Arc;
 use synapse_domain::config::schema::{
     ClassificationRule, Config, DelegateAgentConfig, ModelRouteConfig,
 };
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::util::MaybeSet;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_infra::config_io::ConfigIO;
 
 const DEFAULT_AGENT_MAX_DEPTH: u32 = 3;
@@ -919,6 +921,44 @@ impl Tool for ModelRoutingConfigTool {
             },
             "additionalProperties": false
         })
+    }
+
+    fn extract_facts(&self, args: &Value, result: Option<&ToolResult>) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: vec![FocusEntity {
+                kind: "config_file".into(),
+                name: self.config.config_path.display().to_string(),
+                metadata: Some("model_routing".into()),
+            }],
+            slots: Vec::new(),
+        };
+
+        if let Some(hint) = args.get("hint").and_then(Value::as_str) {
+            if !hint.trim().is_empty() {
+                fact.focus_entities.push(FocusEntity {
+                    kind: "routing_hint".into(),
+                    name: hint.trim().to_string(),
+                    metadata: Some("routing_hint".into()),
+                });
+            }
+        }
+
+        if let Some(name) = args.get("name").and_then(Value::as_str) {
+            if !name.trim().is_empty() {
+                fact.focus_entities.push(FocusEntity {
+                    kind: "delegate_agent".into(),
+                    name: name.trim().to_string(),
+                    metadata: Some("routing_agent".into()),
+                });
+            }
+        }
+
+        vec![fact]
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {

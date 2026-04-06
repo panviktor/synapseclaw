@@ -714,12 +714,7 @@ impl Agent {
             match tool.execute_with_facts(call.arguments.clone()).await {
                 Ok(execution) => {
                     let duration = start.elapsed();
-                    let mut tool_facts = execution.facts;
-                    let generic_fact =
-                        runtime::tool_fact_extraction::build_tool_fact(&call.name, &call.arguments);
-                    if runtime::tool_fact_extraction::fact_has_payload(&generic_fact) {
-                        tool_facts.push(generic_fact);
-                    }
+                    let tool_facts = execution.facts;
                     let r = execution.result;
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
@@ -760,32 +755,17 @@ impl Agent {
                         output: synapse_domain::domain::util::truncate_with_ellipsis(&reason, 500),
                         success: false,
                     });
-                    let mut tool_facts = Vec::new();
-                    let generic_fact = runtime::tool_fact_extraction::build_tool_fact(
-                        &call.name,
-                        &call.arguments,
-                    );
-                    if runtime::tool_fact_extraction::fact_has_payload(&generic_fact) {
-                        tool_facts.push(generic_fact);
-                    }
-                    (reason, false, tool_facts)
+                    (reason, false, Vec::new())
                 }
             }
         } else {
             let reason = format!("Unknown tool: {}", call.name);
-            let generic_fact =
-                runtime::tool_fact_extraction::build_tool_fact(&call.name, &call.arguments);
-            let tool_facts = if runtime::tool_fact_extraction::fact_has_payload(&generic_fact) {
-                vec![generic_fact]
-            } else {
-                Vec::new()
-            };
             self.observer.record_event(&ObserverEvent::ToolResult {
                 tool: call.name.clone(),
                 output: reason.clone(),
                 success: false,
             });
-            (reason, false, tool_facts)
+            (reason, false, Vec::new())
         };
 
         ToolExecutionResult {

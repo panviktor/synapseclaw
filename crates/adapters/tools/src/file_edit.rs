@@ -2,7 +2,7 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
@@ -236,15 +236,6 @@ impl Tool for FileEditTool {
             Some(path) if !path.trim().is_empty() => path.trim().to_string(),
             _ => return Vec::new(),
         };
-        let old_string = args
-            .get("old_string")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-        let new_string = args
-            .get("new_string")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default();
-
         vec![AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities: vec![FocusEntity {
@@ -252,11 +243,7 @@ impl Tool for FileEditTool {
                 name: path.clone(),
                 metadata: Some("edit".into()),
             }],
-            slots: vec![
-                DialogueSlot::observed("resource_path", path),
-                DialogueSlot::observed("edit_old_bytes", old_string.len().to_string()),
-                DialogueSlot::observed("edit_new_bytes", new_string.len().to_string()),
-            ],
+            slots: Vec::new(),
         }]
     }
 }
@@ -423,10 +410,7 @@ mod tests {
         assert_eq!(facts[0].focus_entities[0].kind, "workspace_file");
         assert_eq!(facts[0].focus_entities[0].name, "src/main.rs");
         assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("edit"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "resource_path" && slot.value == "src/main.rs"));
+        assert!(facts[0].slots.is_empty());
     }
 
     #[tokio::test]

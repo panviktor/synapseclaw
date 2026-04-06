@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::standing_order::{StandingOrder, StandingOrderKind};
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
@@ -107,24 +107,7 @@ impl StandingOrderTool {
                             name: id,
                             metadata: Some(kind_str.to_string()),
                         }],
-                        slots: vec![
-                            DialogueSlot::observed("delivery_channel", channel),
-                            DialogueSlot::observed("delivery_recipient", recipient),
-                            DialogueSlot::observed("standing_order_kind", kind_str.to_string()),
-                            DialogueSlot::observed(
-                                "standing_order_enabled",
-                                "true".to_string(),
-                            ),
-                        ]
-                        .into_iter()
-                        .chain(
-                            thread
-                                .into_iter()
-                                .map(|thread_ref| {
-                                    DialogueSlot::observed("delivery_thread_ref", thread_ref)
-                                }),
-                        )
-                        .collect(),
+                        slots: Vec::new(),
                     }],
                 ))
             }
@@ -197,10 +180,7 @@ impl StandingOrderTool {
                                 name: id.to_string(),
                                 metadata: Some("cancelled".into()),
                             }],
-                            slots: vec![DialogueSlot::observed(
-                                "standing_order_enabled",
-                                "false".to_string(),
-                            )],
+                            slots: Vec::new(),
                         }],
                     ))
                 } else {
@@ -266,10 +246,7 @@ impl Tool for StandingOrderTool {
         Ok(result)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         let (result, facts) = self.execute_action(&args).await?;
         Ok(ToolExecution { result, facts })
     }

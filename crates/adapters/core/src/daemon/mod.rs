@@ -932,17 +932,16 @@ async fn run_heartbeat_worker(
             sleep_mins = base_interval;
         }
 
-        let body =
-            render_standing_order_report(
-                &SystemEvent::HeartbeatTick,
-                &config,
-                Some((
-                    &metrics,
-                    active_task_count,
-                    tasks_to_run.len(),
-                    high_priority_task_count,
-                )),
-            );
+        let body = render_standing_order_report(
+            &SystemEvent::HeartbeatTick,
+            &config,
+            Some((
+                &metrics,
+                active_task_count,
+                tasks_to_run.len(),
+                high_priority_task_count,
+            )),
+        );
         deliver_standing_orders(
             standing_order_store.as_ref(),
             delivery_service.as_ref(),
@@ -998,14 +997,12 @@ fn heartbeat_projection(
 fn render_standing_order_report(
     event: &SystemEvent,
     config: &Config,
-    heartbeat: Option<
-        (
-            &std::sync::Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>,
-            usize,
-            usize,
-            usize,
-        ),
-    >,
+    heartbeat: Option<(
+        &std::sync::Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>,
+        usize,
+        usize,
+        usize,
+    )>,
 ) -> String {
     let snapshot = crate::health::snapshot();
     let components = snapshot

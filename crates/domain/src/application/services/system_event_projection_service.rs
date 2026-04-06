@@ -31,7 +31,8 @@ pub fn render_system_event_report(input: &SystemEventProjectionInput) -> String 
     let component_summary = if input.components.is_empty() {
         "no components reported yet".to_string()
     } else {
-        input.components
+        input
+            .components
             .iter()
             .map(|component| format!("{}={}", component.name, component.status))
             .collect::<Vec<_>>()

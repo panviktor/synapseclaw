@@ -2,7 +2,7 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
@@ -154,10 +154,7 @@ impl Tool for BrowserOpenTool {
                 name: validated_url.clone(),
                 metadata: Some(host.clone()),
             }],
-            slots: vec![
-                DialogueSlot::observed("browser_url", validated_url),
-                DialogueSlot::observed("browser_host", host),
-            ],
+            slots: Vec::new(),
         }]
     }
 }
@@ -553,11 +550,11 @@ mod tests {
 
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].focus_entities[0].kind, "browser_page");
-        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("docs.example.com"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "browser_host" && slot.value == "docs.example.com"));
+        assert_eq!(
+            facts[0].focus_entities[0].metadata.as_deref(),
+            Some("docs.example.com")
+        );
+        assert!(facts[0].slots.is_empty());
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::{
-    domain::dialogue_state::{DialogueSlot, FocusEntity},
+    domain::dialogue_state::FocusEntity,
     ports::{
         agent_runtime::AgentToolFact,
         tool::{Tool, ToolExecution, ToolResult},
@@ -51,16 +51,11 @@ impl TodoTool {
 
     fn build_fact(
         &self,
-        action: &str,
-        session_key: &str,
+        _action: &str,
+        _session_key: &str,
         item: Option<&TodoItem>,
-        count: usize,
+        _count: usize,
     ) -> AgentToolFact {
-        let mut slots = vec![
-            DialogueSlot::observed("todo_action", action.to_string()),
-            DialogueSlot::observed("todo_count", count.to_string()),
-            DialogueSlot::observed("todo_session", session_key.to_string()),
-        ];
         let mut focus_entities = Vec::new();
 
         if let Some(item) = item {
@@ -69,14 +64,12 @@ impl TodoTool {
                 name: item.id.to_string(),
                 metadata: Some(item.status.clone()),
             });
-            slots.push(DialogueSlot::observed("todo_item_id", item.id.to_string()));
-            slots.push(DialogueSlot::observed("todo_status", item.status.clone()));
         }
 
         AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities,
-            slots,
+            slots: Vec::new(),
         }
     }
 
@@ -159,11 +152,7 @@ impl TodoTool {
                             facts: vec![AgentToolFact {
                                 tool_name: self.name().to_string(),
                                 focus_entities,
-                                slots: vec![
-                                    DialogueSlot::observed("todo_action", action.to_string()),
-                                    DialogueSlot::observed("todo_count", items.len().to_string()),
-                                    DialogueSlot::observed("todo_session", key.clone()),
-                                ],
+                                slots: Vec::new(),
                             }],
                         })
                     }
@@ -252,12 +241,7 @@ impl TodoTool {
                                     name: id.to_string(),
                                     metadata: Some("removed".into()),
                                 }],
-                                slots: vec![
-                                    DialogueSlot::observed("todo_action", action.to_string()),
-                                    DialogueSlot::observed("todo_item_id", id.to_string()),
-                                    DialogueSlot::observed("todo_count", items.len().to_string()),
-                                    DialogueSlot::observed("todo_session", key.clone()),
-                                ],
+                                slots: Vec::new(),
                             }],
                         });
                     }
@@ -335,10 +319,7 @@ impl Tool for TodoTool {
         Ok(self.execute_action(args).await?.result)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         self.execute_action(args).await
     }
 }
@@ -358,22 +339,28 @@ mod tests {
         assert!(exec.result.success);
         assert_eq!(exec.facts.len(), 1);
         assert_eq!(exec.facts[0].focus_entities[0].kind, "todo_item");
-        assert_eq!(exec.facts[0].focus_entities[0].metadata.as_deref(), Some("pending"));
+        assert_eq!(
+            exec.facts[0].focus_entities[0].metadata.as_deref(),
+            Some("pending")
+        );
     }
 
     #[tokio::test]
-    async fn execute_with_facts_lists_todo_count() {
+    async fn execute_with_facts_lists_todo_entities() {
         let tool = TodoTool::new(None);
         let _ = tool
             .execute_with_facts(json!({"action": "add", "text": "One"}))
             .await
             .unwrap();
-        let exec = tool.execute_with_facts(json!({"action": "list"})).await.unwrap();
+        let exec = tool
+            .execute_with_facts(json!({"action": "list"}))
+            .await
+            .unwrap();
 
         assert!(exec.result.success);
         assert!(exec.facts[0]
-            .slots
+            .focus_entities
             .iter()
-            .any(|slot| slot.name == "todo_count" && slot.value == "1"));
+            .any(|entity| entity.kind == "todo_item" && entity.name == "1"));
     }
 }

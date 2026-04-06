@@ -3,9 +3,7 @@
 //! This is intentionally not a phrase-engine. It consumes typed interpretation
 //! and retrieval evidence, then decides which sources should be trusted first.
 
-use crate::application::services::turn_interpretation::{
-    ReferenceSource, TurnInterpretation,
-};
+use crate::application::services::turn_interpretation::{ReferenceSource, TurnInterpretation};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionSource {
@@ -67,7 +65,10 @@ struct RankedSource {
 
 pub fn build_resolution_plan(evidence: ResolutionEvidence<'_>) -> ResolutionPlan {
     let ranked = rank_sources(evidence);
-    let source_order = ranked.iter().map(|ranked| ranked.source).collect::<Vec<_>>();
+    let source_order = ranked
+        .iter()
+        .map(|ranked| ranked.source)
+        .collect::<Vec<_>>();
     let confidence = compute_confidence(&ranked);
     let clarification_reason = compute_clarification_reason(&ranked, confidence, evidence);
 
@@ -183,11 +184,7 @@ fn rank_sources(evidence: ResolutionEvidence<'_>) -> Vec<RankedSource> {
     ranked
 }
 
-fn push_ranked(
-    ranked: &mut Vec<RankedSource>,
-    source: ResolutionSource,
-    score: Option<f64>,
-) {
+fn push_ranked(ranked: &mut Vec<RankedSource>, source: ResolutionSource, score: Option<f64>) {
     let Some(score) = score else {
         return;
     };
@@ -215,7 +212,6 @@ fn score_dialogue_state(interpretation: Option<&TurnInterpretation>) -> Option<f
         count_reference_candidates(interpretation, ReferenceSource::DialogueState) as f64;
     let anchor_count = state.reference_anchors.len().min(4) as f64;
     let focus_count = state.focus_entities.len().min(3) as f64;
-    let slot_count = state.slots.len().min(3) as f64;
     let comparison_bonus = if state.comparison_set.len() >= 2 {
         0.12
     } else {
@@ -232,7 +228,6 @@ fn score_dialogue_state(interpretation: Option<&TurnInterpretation>) -> Option<f
             + reference_count.min(4.0) * 0.08
             + anchor_count * 0.05
             + focus_count * 0.04
-            + slot_count * 0.02
             + comparison_bonus
             + subject_bonus)
             .min(0.96),
@@ -264,9 +259,7 @@ fn score_user_profile(interpretation: Option<&TurnInterpretation>) -> Option<f64
     }
 
     Some(
-        (0.76
-            + (reference_count.min(4) as f64) * 0.06
-            + (field_count.min(4) as f64) * 0.02)
+        (0.76 + (reference_count.min(4) as f64) * 0.06 + (field_count.min(4) as f64) * 0.02)
             .min(0.94),
     )
 }
@@ -311,7 +304,7 @@ fn score_run_recipe(evidence: ResolutionEvidence<'_>) -> Option<f64> {
         (((top as f64) / 260.0).min(0.82)
             + (gap / 80.0).min(0.14)
             + if top >= 200 { 0.03 } else { 0.0 })
-            .min(0.96),
+        .min(0.96),
     )
 }
 
@@ -321,7 +314,10 @@ fn score_long_term_memory(evidence: ResolutionEvidence<'_>) -> Option<f64> {
         return None;
     }
 
-    let top = evidence.top_memory_score.unwrap_or_default().clamp(0.0, 1.0);
+    let top = evidence
+        .top_memory_score
+        .unwrap_or_default()
+        .clamp(0.0, 1.0);
     let gap = score_gap_f64(top, evidence.second_memory_score);
     let density_bonus = ((total_hits.min(5) as f64) / 5.0) * 0.14;
     let structured_bonus = match (evidence.skill_hits > 0, evidence.entity_hits > 0) {
@@ -419,7 +415,6 @@ mod tests {
             dialogue_state: Some(DialogueStateSnapshot {
                 focus_entities: vec![("city".into(), "Berlin".into())],
                 comparison_set: vec![],
-                slots: vec![],
                 reference_anchors: vec![],
                 last_tool_subjects: vec![],
             }),
@@ -440,12 +435,21 @@ mod tests {
             entity_hits: 0,
         });
 
-        assert_eq!(plan.source_order.first(), Some(&ResolutionSource::RunRecipe));
+        assert_eq!(
+            plan.source_order.first(),
+            Some(&ResolutionSource::RunRecipe)
+        );
         assert!(plan.source_order.contains(&ResolutionSource::DialogueState));
         assert!(plan.source_order.contains(&ResolutionSource::UserProfile));
-        assert!(plan.source_order.contains(&ResolutionSource::CurrentConversation));
-        assert!(plan.source_order.contains(&ResolutionSource::SessionHistory));
-        assert!(plan.source_order.contains(&ResolutionSource::LongTermMemory));
+        assert!(plan
+            .source_order
+            .contains(&ResolutionSource::CurrentConversation));
+        assert!(plan
+            .source_order
+            .contains(&ResolutionSource::SessionHistory));
+        assert!(plan
+            .source_order
+            .contains(&ResolutionSource::LongTermMemory));
         assert!(
             source_priority(Some(&plan), ResolutionSource::SessionHistory)
                 < source_priority(Some(&plan), ResolutionSource::LongTermMemory)

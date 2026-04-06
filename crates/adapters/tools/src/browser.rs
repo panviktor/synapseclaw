@@ -14,7 +14,7 @@ use std::net::ToSocketAddrs;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use tokio::process::Command;
@@ -1106,10 +1106,7 @@ impl Tool for BrowserTool {
         let mut fact = AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities: Vec::new(),
-            slots: vec![DialogueSlot::observed(
-                "browser_action",
-                action_name.to_string(),
-            )],
+            slots: Vec::new(),
         };
 
         match parse_browser_action(action_name, args) {
@@ -1126,89 +1123,72 @@ impl Tool for BrowserTool {
                     name: url.clone(),
                     metadata: Some(host.clone()),
                 });
-                fact.slots.push(DialogueSlot::observed("browser_url", url));
-                fact.slots
-                    .push(DialogueSlot::observed("browser_host", host));
             }
             Ok(BrowserAction::Click { selector })
             | Ok(BrowserAction::GetText { selector })
             | Ok(BrowserAction::Hover { selector })
             | Ok(BrowserAction::IsVisible { selector }) => {
-                fact.slots
-                    .push(DialogueSlot::observed("browser_selector", selector));
+                fact.focus_entities.push(FocusEntity {
+                    kind: "browser_selector".into(),
+                    name: selector,
+                    metadata: Some(action_name.to_string()),
+                });
             }
             Ok(BrowserAction::Fill { selector, value }) => {
-                fact.slots
-                    .push(DialogueSlot::observed("browser_selector", selector));
-                fact.slots.push(DialogueSlot::observed(
-                    "browser_input_bytes",
-                    value.len().to_string(),
-                ));
+                fact.focus_entities.push(FocusEntity {
+                    kind: "browser_selector".into(),
+                    name: selector,
+                    metadata: Some(format!("fill:{}b", value.len())),
+                });
             }
             Ok(BrowserAction::Type { selector, text }) => {
-                fact.slots
-                    .push(DialogueSlot::observed("browser_selector", selector));
-                fact.slots.push(DialogueSlot::observed(
-                    "browser_input_bytes",
-                    text.len().to_string(),
-                ));
+                fact.focus_entities.push(FocusEntity {
+                    kind: "browser_selector".into(),
+                    name: selector,
+                    metadata: Some(format!("type:{}b", text.len())),
+                });
             }
-            Ok(BrowserAction::Snapshot {
-                interactive_only,
-                compact,
-                depth,
-            }) => {
-                fact.slots.push(DialogueSlot::observed(
-                    "browser_snapshot_interactive_only",
-                    interactive_only.to_string(),
-                ));
-                fact.slots.push(DialogueSlot::observed(
-                    "browser_snapshot_compact",
-                    compact.to_string(),
-                ));
-                if let Some(depth) = depth {
-                    fact.slots.push(DialogueSlot::observed(
-                        "browser_snapshot_depth",
-                        depth.to_string(),
-                    ));
-                }
-            }
+            Ok(BrowserAction::Snapshot { .. }) => {}
             Ok(BrowserAction::Screenshot { path, full_page }) => {
-                fact.slots.push(DialogueSlot::observed(
-                    "browser_screenshot_full_page",
-                    full_page.to_string(),
-                ));
                 if let Some(path) = path {
-                    fact.slots
-                        .push(DialogueSlot::observed("resource_path", path));
+                    fact.focus_entities.push(FocusEntity {
+                        kind: "image_file".into(),
+                        name: path,
+                        metadata: Some(if full_page {
+                            "browser_screenshot_full_page".into()
+                        } else {
+                            "browser_screenshot".into()
+                        }),
+                    });
                 }
             }
             Ok(BrowserAction::Wait { selector, ms, text }) => {
                 if let Some(selector) = selector {
-                    fact.slots
-                        .push(DialogueSlot::observed("browser_selector", selector));
-                }
-                if let Some(ms) = ms {
-                    fact.slots
-                        .push(DialogueSlot::observed("browser_wait_ms", ms.to_string()));
-                }
-                if text.is_some() {
-                    fact.slots
-                        .push(DialogueSlot::observed("browser_waits_for_text", "true"));
+                    fact.focus_entities.push(FocusEntity {
+                        kind: "browser_selector".into(),
+                        name: selector,
+                        metadata: Some(match (ms, text.is_some()) {
+                            (Some(wait_ms), true) => format!("wait:{}ms:text", wait_ms),
+                            (Some(wait_ms), false) => format!("wait:{}ms", wait_ms),
+                            (None, true) => "wait:text".into(),
+                            (None, false) => "wait".into(),
+                        }),
+                    });
                 }
             }
             Ok(BrowserAction::Press { key }) => {
-                fact.slots.push(DialogueSlot::observed("browser_key", key));
+                fact.focus_entities.push(FocusEntity {
+                    kind: "browser_key".into(),
+                    name: key,
+                    metadata: Some("press".into()),
+                });
             }
             Ok(BrowserAction::Scroll { direction, pixels }) => {
-                fact.slots
-                    .push(DialogueSlot::observed("browser_scroll_direction", direction));
-                if let Some(pixels) = pixels {
-                    fact.slots.push(DialogueSlot::observed(
-                        "browser_scroll_pixels",
-                        pixels.to_string(),
-                    ));
-                }
+                fact.focus_entities.push(FocusEntity {
+                    kind: "browser_scroll".into(),
+                    name: direction,
+                    metadata: pixels.map(|value| value.to_string()),
+                });
             }
             Ok(BrowserAction::Find {
                 by,
@@ -1216,34 +1196,30 @@ impl Tool for BrowserTool {
                 action,
                 fill_value,
             }) => {
-                fact.slots
-                    .push(DialogueSlot::observed("browser_find_by", by));
-                fact.slots
-                    .push(DialogueSlot::observed("browser_find_value", value));
-                fact.slots
-                    .push(DialogueSlot::observed("browser_find_action", action));
-                if let Some(fill_value) = fill_value {
-                    fact.slots.push(DialogueSlot::observed(
-                        "browser_input_bytes",
-                        fill_value.len().to_string(),
-                    ));
-                }
+                fact.focus_entities.push(FocusEntity {
+                    kind: "browser_find".into(),
+                    name: format!("{by}:{value}"),
+                    metadata: Some(match fill_value {
+                        Some(text) => format!("{action}:{}b", text.len()),
+                        None => action,
+                    }),
+                });
             }
             Ok(BrowserAction::GetTitle | BrowserAction::GetUrl | BrowserAction::Close) => {}
             Err(_) => {
                 if let Some(x) = args.get("x").and_then(Value::as_i64) {
-                    fact.slots
-                        .push(DialogueSlot::observed("computer_use_x", x.to_string()));
-                }
-                if let Some(y) = args.get("y").and_then(Value::as_i64) {
-                    fact.slots
-                        .push(DialogueSlot::observed("computer_use_y", y.to_string()));
-                }
-                if let Some(button) = args.get("button").and_then(Value::as_str) {
-                    fact.slots.push(DialogueSlot::observed(
-                        "computer_use_button",
-                        button.to_string(),
-                    ));
+                    let name = match args.get("y").and_then(Value::as_i64) {
+                        Some(y) => format!("{x},{y}"),
+                        None => x.to_string(),
+                    };
+                    fact.focus_entities.push(FocusEntity {
+                        kind: "computer_coordinate".into(),
+                        name,
+                        metadata: args
+                            .get("button")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    });
                 }
             }
         }
@@ -2649,15 +2625,11 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].focus_entities[0].kind, "browser_page");
         assert_eq!(facts[0].focus_entities[0].name, "https://example.com/docs");
-        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("example.com"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "browser_action" && slot.value == "open"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "browser_url" && slot.value == "https://example.com/docs"));
+        assert_eq!(
+            facts[0].focus_entities[0].metadata.as_deref(),
+            Some("example.com")
+        );
+        assert!(facts[0].slots.is_empty());
     }
 
     #[test]
@@ -2675,13 +2647,9 @@ mod tests {
 
         assert_eq!(facts.len(), 1);
         assert!(facts[0]
-            .slots
+            .focus_entities
             .iter()
-            .any(|slot| slot.name == "browser_action" && slot.value == "click"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "browser_selector" && slot.value == "@e2"));
+            .any(|entity| entity.kind == "browser_selector" && entity.name == "@e2"));
     }
 
     #[test]

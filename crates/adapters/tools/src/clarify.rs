@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use serde_json::json;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 
@@ -111,24 +111,6 @@ impl Tool for ClarifyTool {
             .and_then(|value| value.as_array())
             .map_or(0usize, |options| options.len().min(5));
 
-        let mut slots = vec![
-            DialogueSlot::observed("clarification_question", question.to_string()),
-            DialogueSlot::observed("clarification_option_count", option_count.to_string()),
-        ];
-
-        if let Some(recommendation) = args.get("recommendation").and_then(|value| value.as_str()) {
-            slots.push(DialogueSlot::observed(
-                "clarification_recommendation",
-                recommendation.to_string(),
-            ));
-        }
-        if let Some(context) = args.get("context").and_then(|value| value.as_str()) {
-            slots.push(DialogueSlot::observed(
-                "clarification_context",
-                context.to_string(),
-            ));
-        }
-
         vec![AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities: vec![FocusEntity {
@@ -140,7 +122,7 @@ impl Tool for ClarifyTool {
                     "open_ended".to_string()
                 }),
             }],
-            slots,
+            slots: Vec::new(),
         }]
     }
 }
@@ -163,10 +145,10 @@ mod tests {
 
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].focus_entities[0].kind, "clarification_request");
-        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("multiple_choice"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "clarification_option_count" && slot.value == "2"));
+        assert_eq!(
+            facts[0].focus_entities[0].metadata.as_deref(),
+            Some("multiple_choice")
+        );
+        assert!(facts[0].slots.is_empty());
     }
 }

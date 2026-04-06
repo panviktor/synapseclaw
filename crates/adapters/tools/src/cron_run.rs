@@ -6,8 +6,8 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{Db, JobType, Surreal};
 use synapse_domain::config::schema::Config;
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::domain::dialogue_state::DialogueSlot;
 use synapse_domain::ports::tool::ToolExecution;
 
 pub struct CronRunTool {
@@ -67,7 +67,9 @@ impl CronRunTool {
                 result: ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some("Security policy: read-only mode, cannot perform 'cron_run'".into()),
+                    error: Some(
+                        "Security policy: read-only mode, cannot perform 'cron_run'".into(),
+                    ),
                 },
                 facts: Vec::new(),
             });
@@ -151,12 +153,11 @@ impl CronRunTool {
             synapse_cron::record_last_run(&self.db, &job.id, finished_at, success, &output).await;
 
         let mut fact = cron_facts::build_job_fact(self.name(), "run", &job);
-        fact.slots
-            .push(DialogueSlot::observed("run_status", status.to_string()));
-        fact.slots.push(DialogueSlot::observed(
-            "run_duration_ms",
-            duration_ms.to_string(),
-        ));
+        fact.focus_entities.push(FocusEntity {
+            kind: "job_run".into(),
+            name: status.to_string(),
+            metadata: Some(duration_ms.to_string()),
+        });
 
         Ok(ToolExecution {
             result: ToolResult {
@@ -207,10 +208,7 @@ impl Tool for CronRunTool {
         Ok(self.execute_action(&args).await?.result)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         self.execute_action(&args).await
     }
 }

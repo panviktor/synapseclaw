@@ -5,7 +5,7 @@
 //! structured runtime facts such as tool-call arguments and results.
 
 use crate::domain::dialogue_state::{
-    DialogueSlot, DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal,
+    DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal,
 };
 use crate::ports::agent_runtime::AgentToolFact;
 use parking_lot::RwLock;
@@ -91,10 +91,6 @@ pub fn update_state_from_turn(
         };
     }
 
-    for slot in collect_slots(tool_facts) {
-        upsert_slot(state, slot);
-    }
-
     state.reference_anchors =
         derive_reference_anchors(&state.focus_entities, &state.comparison_set);
 
@@ -109,18 +105,6 @@ pub fn should_materialize_state(
     tool_facts: &[AgentToolFact],
 ) -> bool {
     existing.is_some() || !tool_facts.is_empty()
-}
-
-fn upsert_slot(state: &mut DialogueState, slot: DialogueSlot) {
-    if let Some(existing) = state
-        .slots
-        .iter_mut()
-        .find(|existing| existing.name == slot.name)
-    {
-        *existing = slot;
-    } else {
-        state.slots.push(slot);
-    }
 }
 
 fn collect_focus_entities(
@@ -142,23 +126,6 @@ fn collect_focus_entities(
     entities
 }
 
-fn collect_slots(tool_facts: &[AgentToolFact]) -> Vec<DialogueSlot> {
-    let mut slots = Vec::new();
-    for fact in tool_facts {
-        for slot in &fact.slots {
-            if let Some(existing_idx) = slots
-                .iter()
-                .position(|existing: &DialogueSlot| existing.name == slot.name)
-            {
-                slots[existing_idx] = slot.clone();
-            } else {
-                slots.push(slot.clone());
-            }
-        }
-    }
-    slots
-}
-
 fn collect_subjects(tool_facts: &[AgentToolFact]) -> Vec<String> {
     let mut subjects = Vec::new();
 
@@ -166,11 +133,6 @@ fn collect_subjects(tool_facts: &[AgentToolFact]) -> Vec<String> {
         for entity in &fact.focus_entities {
             if !subjects.iter().any(|existing| existing == &entity.name) {
                 subjects.push(entity.name.clone());
-            }
-        }
-        for slot in &fact.slots {
-            if !subjects.iter().any(|existing| existing == &slot.value) {
-                subjects.push(slot.value.clone());
             }
         }
     }

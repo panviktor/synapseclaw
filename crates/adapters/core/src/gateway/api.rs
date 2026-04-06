@@ -378,7 +378,12 @@ pub async fn handle_api_agent_heartbeat_proxy(
         .unwrap_or_default();
 
     let url = format!("{}/api/heartbeat", agent.gateway_url);
-    match client.get(&url).bearer_auth(&agent.proxy_token).send().await {
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(body) => Json(body).into_response(),
             Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
@@ -808,7 +813,9 @@ pub async fn handle_api_cron_delete(
 fn heartbeat_report_payload(
     state: &AppState,
 ) -> (
-    Option<synapse_domain::application::services::system_event_projection_service::HeartbeatProjection>,
+    Option<
+        synapse_domain::application::services::system_event_projection_service::HeartbeatProjection,
+    >,
     serde_json::Value,
 ) {
     let snapshot = crate::health::snapshot();
@@ -859,12 +866,15 @@ fn heartbeat_report_payload(
         })
     });
 
-    (heartbeat, serde_json::json!({
-        "heartbeat": heartbeat_json,
-        "report": report,
-        "uptime_seconds": snapshot.uptime_seconds,
-        "components": snapshot.components,
-    }))
+    (
+        heartbeat,
+        serde_json::json!({
+            "heartbeat": heartbeat_json,
+            "report": report,
+            "uptime_seconds": snapshot.uptime_seconds,
+            "components": snapshot.components,
+        }),
+    )
 }
 
 /// GET /api/heartbeat — heartbeat live metrics plus recent aggregate stats.
@@ -1401,20 +1411,17 @@ pub async fn handle_api_memory_everyday_evals(
         let confidence_key = resolution_confidence_name(result.resolution_plan.confidence);
         *by_confidence.entry(confidence_key.to_string()).or_default() += 1;
 
-        let clarification = result
-            .clarification_guidance
-            .as_ref()
-            .map(|guidance| {
-                if guidance.required {
-                    clarification_required += 1;
-                }
-                serde_json::json!({
-                    "required": guidance.required,
-                    "candidate_set": guidance.candidate_set,
-                    "avoid_generic_questions": guidance.avoid_generic_questions,
-                    "reason": guidance.reason,
-                })
-            });
+        let clarification = result.clarification_guidance.as_ref().map(|guidance| {
+            if guidance.required {
+                clarification_required += 1;
+            }
+            serde_json::json!({
+                "required": guidance.required,
+                "candidate_set": guidance.candidate_set,
+                "avoid_generic_questions": guidance.avoid_generic_questions,
+                "reason": guidance.reason,
+            })
+        });
 
         results.push(serde_json::json!({
             "id": result.scenario_id,

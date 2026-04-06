@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
@@ -295,10 +295,7 @@ impl Tool for WebFetchTool {
                 name: validated_url.clone(),
                 metadata: Some(host.clone()),
             }],
-            slots: vec![
-                DialogueSlot::observed("fetch_url", validated_url),
-                DialogueSlot::observed("fetch_host", host),
-            ],
+            slots: Vec::new(),
         }]
     }
 }
@@ -880,15 +877,11 @@ mod tests {
         assert_eq!(facts.len(), 1);
         assert_eq!(facts[0].focus_entities[0].kind, "web_resource");
         assert_eq!(facts[0].focus_entities[0].name, "https://example.com/docs");
-        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("example.com"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "fetch_url" && slot.value == "https://example.com/docs"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "fetch_host" && slot.value == "example.com"));
+        assert_eq!(
+            facts[0].focus_entities[0].metadata.as_deref(),
+            Some("example.com")
+        );
+        assert!(facts[0].slots.is_empty());
     }
 
     #[test]

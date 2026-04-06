@@ -1,4 +1,4 @@
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::memory::MemoryCategory;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
@@ -16,21 +16,11 @@ fn category_name(category: &MemoryCategory) -> String {
 
 pub(crate) fn build_memory_entry_fact(
     tool_name: &str,
-    action: &str,
+    _action: &str,
     key: &str,
     category: Option<&MemoryCategory>,
 ) -> AgentToolFact {
-    let mut slots = vec![
-        DialogueSlot::observed("memory_action", action.to_string()),
-        DialogueSlot::observed("memory_key", key.to_string()),
-    ];
     let metadata = category.map(category_name);
-    if let Some(category) = category {
-        slots.push(DialogueSlot::observed(
-            "memory_category",
-            category_name(category),
-        ));
-    }
 
     AgentToolFact {
         tool_name: tool_name.to_string(),
@@ -39,7 +29,7 @@ pub(crate) fn build_memory_entry_fact(
             name: key.to_string(),
             metadata,
         }],
-        slots,
+        slots: Vec::new(),
     }
 }
 
@@ -51,10 +41,7 @@ pub(crate) fn build_core_block_fact(tool_name: &str, action: &str, label: &str) 
             name: label.to_string(),
             metadata: Some(action.to_string()),
         }],
-        slots: vec![
-            DialogueSlot::observed("memory_action", action.to_string()),
-            DialogueSlot::observed("core_memory_label", label.to_string()),
-        ],
+        slots: Vec::new(),
     }
 }
 
@@ -74,11 +61,7 @@ mod tests {
         assert_eq!(fact.focus_entities[0].kind, "memory_entry");
         assert_eq!(fact.focus_entities[0].name, "user_lang");
         assert_eq!(fact.focus_entities[0].metadata.as_deref(), Some("core"));
-        assert!(
-            fact.slots
-                .iter()
-                .any(|slot| slot.name == "memory_category" && slot.value == "core")
-        );
+        assert!(fact.slots.is_empty());
     }
 
     #[test]
@@ -88,10 +71,6 @@ mod tests {
         assert_eq!(fact.focus_entities[0].kind, "core_memory_block");
         assert_eq!(fact.focus_entities[0].name, "user_knowledge");
         assert_eq!(fact.focus_entities[0].metadata.as_deref(), Some("append"));
-        assert!(
-            fact.slots
-                .iter()
-                .any(|slot| slot.name == "core_memory_label" && slot.value == "user_knowledge")
-        );
+        assert!(fact.slots.is_empty());
     }
 }

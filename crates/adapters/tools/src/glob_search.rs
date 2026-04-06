@@ -2,7 +2,7 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::tool::ToolExecution;
@@ -48,7 +48,9 @@ impl GlobSearchTool {
                 ToolResult {
                     success: false,
                     output: String::new(),
-                    error: Some("Absolute paths are not allowed. Use a relative glob pattern.".into()),
+                    error: Some(
+                        "Absolute paths are not allowed. Use a relative glob pattern.".into(),
+                    ),
                 },
                 None,
             ));
@@ -215,10 +217,7 @@ impl Tool for GlobSearchTool {
         Ok(self.execute_search(pattern).await?.0)
     }
 
-    async fn execute_with_facts(
-        &self,
-        args: serde_json::Value,
-    ) -> anyhow::Result<ToolExecution> {
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         let pattern = args
             .get("pattern")
             .and_then(|v| v.as_str())
@@ -243,13 +242,7 @@ impl Tool for GlobSearchTool {
                             metadata: Some("glob_match".into()),
                         })
                         .collect(),
-                    slots: vec![
-                        DialogueSlot::observed("glob_pattern", pattern.to_string()),
-                        DialogueSlot::observed(
-                            "glob_match_count",
-                            outcome.matched_paths.len().to_string(),
-                        ),
-                    ],
+                    slots: Vec::new(),
                 }]
             }
         } else {

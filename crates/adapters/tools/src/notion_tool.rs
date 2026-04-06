@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 const NOTION_API_BASE: &str = "https://api.notion.com/v1";
 const NOTION_VERSION: &str = "2022-06-28";
@@ -213,6 +215,49 @@ impl Tool for NotionTool {
             },
             "required": ["action"]
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<AgentToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let action = match args.get("action").and_then(|value| value.as_str()) {
+            Some(action) if !action.trim().is_empty() => action.trim(),
+            _ => return Vec::new(),
+        };
+
+        let mut fact = AgentToolFact {
+            tool_name: self.name().to_string(),
+            focus_entities: Vec::new(),
+            slots: Vec::new(),
+        };
+
+        if let Some(database_id) = args.get("database_id").and_then(|value| value.as_str()) {
+            if !database_id.trim().is_empty() {
+                fact.focus_entities.push(FocusEntity {
+                    kind: "notion_database".into(),
+                    name: database_id.trim().to_string(),
+                    metadata: Some(action.to_string()),
+                });
+            }
+        }
+
+        if let Some(page_id) = args.get("page_id").and_then(|value| value.as_str()) {
+            if !page_id.trim().is_empty() {
+                fact.focus_entities.push(FocusEntity {
+                    kind: "notion_page".into(),
+                    name: page_id.trim().to_string(),
+                    metadata: Some(action.to_string()),
+                });
+            }
+        }
+
+        vec![fact]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

@@ -11,6 +11,7 @@
 use crate::application::services::clarification_policy;
 use crate::application::services::resolution_router;
 use crate::application::services::retrieval_service;
+use crate::application::services::turn_budget_policy;
 use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryEntry, Skill};
 use crate::ports::conversation_store::ConversationStorePort;
@@ -41,6 +42,8 @@ pub struct TurnMemoryContext {
     pub resolution_plan: Option<resolution_router::ResolutionPlan>,
     /// Structured clarification guidance from known defaults and candidates.
     pub clarification_guidance: Option<clarification_policy::ClarificationGuidance>,
+    /// Cheap-path gating and retrieval limits for this turn.
+    pub execution_budget: Option<turn_budget_policy::TurnExecutionBudget>,
 }
 
 /// Token/char budget for turn context assembly.
@@ -120,6 +123,7 @@ pub async fn assemble_turn_context(
             .unwrap_or_default(),
         ..Default::default()
     };
+    ctx.execution_budget = build_execution_budget(interpretation);
     let query_text = build_query_text(user_message, interpretation);
 
     let policy_name = match continuation {
@@ -143,7 +147,13 @@ pub async fn assemble_turn_context(
         Some(ContinuationPolicy::CorePlusRecall {
             recall_max_entries: n,
         }) => {
-            load_recall(mem, &query_text, session_id, budget, *n, &mut ctx).await;
+            let recall_limit = ctx
+                .execution_budget
+                .as_ref()
+                .map_or(*n, |execution_budget| {
+                    (*n).min(execution_budget.retrieval_budget.max_memory_candidates)
+                });
+            load_recall(mem, &query_text, session_id, budget, recall_limit, &mut ctx).await;
             apply_resolution_plan(&mut ctx, interpretation);
             tracing::debug!(
                 target: "memory_assembly",
@@ -159,16 +169,22 @@ pub async fn assemble_turn_context(
         }
     }
 
-    apply_resolution_plan(&mut ctx, interpretation);
-
     // Episodic recall
+    let recall_limit =
+        ctx.execution_budget
+            .as_ref()
+            .map_or(budget.recall_max_entries, |execution_budget| {
+                budget
+                    .recall_max_entries
+                    .min(execution_budget.retrieval_budget.max_memory_candidates)
+            });
     let results = retrieval_service::search_turn_hybrid(
         mem,
         &query_text,
         agent_id,
         session_id,
         &retrieval_service::HybridTurnSearchOptions {
-            recall_max_entries: budget.recall_max_entries,
+            recall_max_entries: recall_limit,
             recall_min_relevance: budget.recall_min_relevance,
             skills_max_count: budget.skills_max_count,
             skills_total_max_chars: budget.skills_total_max_chars,
@@ -189,73 +205,94 @@ pub async fn assemble_turn_context(
         ctx.entities = results.entities;
     }
 
-    if let Some(store) = conversation_store {
-        const SESSION_MAX_COUNT: usize = 2;
-        const SESSION_TOTAL_MAX_CHARS: usize = 1_200;
-        const SESSION_MIN_SCORE: f64 = 1.5;
+    let allow_historical_context = ctx
+        .execution_budget
+        .as_ref()
+        .is_some_and(|execution_budget| {
+            execution_budget.interpreter_mode != turn_budget_policy::InterpreterMode::Skip
+        });
 
-        let session_hits = retrieval_service::search_sessions(
-            mem,
-            store,
-            &query_text,
-            None,
-            SESSION_MAX_COUNT + 1,
-        )
-        .await;
-        let mut total_session_chars = 0usize;
-        for hit in session_hits {
-            if session_id.is_some_and(|current| hit.session_key == current) {
-                continue;
-            }
-            if hit.score < SESSION_MIN_SCORE {
-                break;
-            }
-            let session_chars = hit.label.as_ref().map_or(0, |s| s.chars().count())
-                + hit.summary.as_ref().map_or(0, |s| s.chars().count())
-                + hit.recap.as_ref().map_or(0, |s| s.chars().count());
-            if total_session_chars + session_chars > SESSION_TOTAL_MAX_CHARS {
-                break;
-            }
-            total_session_chars += session_chars;
-            ctx.session_matches.push(hit);
-            if ctx.session_matches.len() >= SESSION_MAX_COUNT {
-                break;
+    if allow_historical_context {
+        if let Some(store) = conversation_store {
+            let session_max_count = ctx.execution_budget.as_ref().map_or(2, |execution_budget| {
+                execution_budget.retrieval_budget.max_session_candidates
+            });
+            if session_max_count > 0 {
+                const SESSION_TOTAL_MAX_CHARS: usize = 1_200;
+                const SESSION_MIN_SCORE: f64 = 1.5;
+
+                let session_hits = retrieval_service::search_sessions(
+                    mem,
+                    store,
+                    &query_text,
+                    None,
+                    session_max_count + 1,
+                )
+                .await;
+                let mut total_session_chars = 0usize;
+                for hit in session_hits {
+                    if session_id.is_some_and(|current| hit.session_key == current) {
+                        continue;
+                    }
+                    if hit.score < SESSION_MIN_SCORE {
+                        break;
+                    }
+                    let session_chars = hit.label.as_ref().map_or(0, |s| s.chars().count())
+                        + hit.summary.as_ref().map_or(0, |s| s.chars().count())
+                        + hit.recap.as_ref().map_or(0, |s| s.chars().count());
+                    if total_session_chars + session_chars > SESSION_TOTAL_MAX_CHARS {
+                        break;
+                    }
+                    total_session_chars += session_chars;
+                    ctx.session_matches.push(hit);
+                    if ctx.session_matches.len() >= session_max_count {
+                        break;
+                    }
+                }
             }
         }
     }
 
-    if let Some(store) = run_recipe_store {
-        const RECIPE_MAX_COUNT: usize = 2;
-        const RECIPE_TOTAL_MAX_CHARS: usize = 1_200;
-        const RECIPE_MIN_SCORE: i64 = 150;
+    if allow_historical_context {
+        if let Some(store) = run_recipe_store {
+            let recipe_max_count = ctx.execution_budget.as_ref().map_or(2, |execution_budget| {
+                execution_budget.retrieval_budget.max_precedent_candidates
+            });
+            if recipe_max_count > 0 {
+                const RECIPE_TOTAL_MAX_CHARS: usize = 1_200;
+                const RECIPE_MIN_SCORE: i64 = 150;
 
-        let recipe_hits = retrieval_service::search_run_recipes(
-            mem,
-            store,
-            agent_id,
-            &query_text,
-            RECIPE_MAX_COUNT,
-        )
-        .await;
-        let mut total_recipe_chars = 0usize;
-        for recipe in recipe_hits {
-            if recipe.score < RECIPE_MIN_SCORE {
-                break;
+                let recipe_hits = retrieval_service::search_run_recipes(
+                    mem,
+                    store,
+                    agent_id,
+                    &query_text,
+                    recipe_max_count,
+                )
+                .await;
+                let mut total_recipe_chars = 0usize;
+                for recipe in recipe_hits {
+                    if recipe.score < RECIPE_MIN_SCORE {
+                        break;
+                    }
+                    let recipe_chars = recipe.summary.chars().count()
+                        + recipe.sample_request.chars().count()
+                        + recipe
+                            .tool_pattern
+                            .iter()
+                            .map(|tool| tool.chars().count())
+                            .sum::<usize>();
+                    if total_recipe_chars + recipe_chars > RECIPE_TOTAL_MAX_CHARS {
+                        break;
+                    }
+                    total_recipe_chars += recipe_chars;
+                    ctx.run_recipes.push(recipe);
+                }
             }
-            let recipe_chars = recipe.summary.chars().count()
-                + recipe.sample_request.chars().count()
-                + recipe
-                    .tool_pattern
-                    .iter()
-                    .map(|tool| tool.chars().count())
-                    .sum::<usize>();
-            if total_recipe_chars + recipe_chars > RECIPE_TOTAL_MAX_CHARS {
-                break;
-            }
-            total_recipe_chars += recipe_chars;
-            ctx.run_recipes.push(recipe);
         }
     }
+
+    apply_resolution_plan(&mut ctx, interpretation);
 
     tracing::debug!(
         target: "memory_assembly",
@@ -265,6 +302,10 @@ pub async fn assemble_turn_context(
         entities = ctx.entities.len(),
         sessions = ctx.session_matches.len(),
         recipes = ctx.run_recipes.len(),
+        interpreter_mode = ?ctx
+            .execution_budget
+            .as_ref()
+            .map(|budget| budget.interpreter_mode),
         policy = policy_name,
         "Turn context assembled"
     );
@@ -459,18 +500,6 @@ fn build_query_text(user_message: &str, interpretation: Option<&TurnInterpretati
         }
     }
 
-    if !state.slots.is_empty() {
-        let slots = state
-            .slots
-            .iter()
-            .map(|(name, value)| format!("{name}={value}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        if !slots.is_empty() {
-            parts.push(format!("Slots: {slots}"));
-        }
-    }
-
     if !state.reference_anchors.is_empty() {
         let anchors = state
             .reference_anchors
@@ -520,6 +549,33 @@ fn build_query_text(user_message: &str, interpretation: Option<&TurnInterpretati
     }
 
     parts.join("\n")
+}
+
+fn build_execution_budget(
+    interpretation: Option<&TurnInterpretation>,
+) -> Option<turn_budget_policy::TurnExecutionBudget> {
+    let interpretation = interpretation?;
+    let dialogue_state = interpretation.dialogue_state.as_ref();
+    let user_profile = interpretation.user_profile.as_ref();
+    let signals = turn_budget_policy::TurnExecutionSignals {
+        has_working_state: dialogue_state.is_some_and(|state| {
+            !state.focus_entities.is_empty()
+                || !state.comparison_set.is_empty()
+                || !state.reference_anchors.is_empty()
+                || !state.last_tool_subjects.is_empty()
+        }),
+        has_profile_defaults: user_profile.is_some_and(|profile| {
+            profile.preferred_language.is_some()
+                || profile.timezone.is_some()
+                || profile.default_city.is_some()
+                || profile.default_delivery_target.is_some()
+        }),
+        has_reference_candidates: !interpretation.reference_candidates.is_empty(),
+        ambiguity_candidate_count: interpretation.clarification_candidates.len(),
+        recent_tool_fact_count: dialogue_state.map_or(0, |state| state.last_tool_subjects.len()),
+        explicit_user_correction: false,
+    };
+    Some(turn_budget_policy::build_turn_execution_budget(signals))
 }
 
 fn apply_resolution_plan(ctx: &mut TurnMemoryContext, interpretation: Option<&TurnInterpretation>) {
@@ -707,6 +763,7 @@ mod tests {
     use crate::application::services::retrieval_service::{
         RunRecipeSearchMatch, SessionSearchMatch,
     };
+    use crate::application::services::turn_budget_policy::InterpreterMode;
     use crate::domain::dialogue_state::DialogueState;
     use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryCategory, MemoryEntry, Skill};
 
@@ -755,10 +812,6 @@ mod tests {
                 name: "Berlin".into(),
                 metadata: None,
             }],
-            slots: vec![crate::domain::dialogue_state::DialogueSlot::observed(
-                "timezone",
-                "Europe/Berlin",
-            )],
             last_tool_subjects: vec!["weather_lookup".into()],
             ..Default::default()
         };
@@ -780,8 +833,38 @@ mod tests {
         assert!(query.contains("what's the weather?"));
         assert!(query.contains("Default city: Berlin"));
         assert!(query.contains("Focus: Berlin"));
-        assert!(query.contains("Slots: timezone=Europe/Berlin"));
         assert!(query.contains("Recent tools: weather_lookup"));
+    }
+
+    #[test]
+    fn execution_budget_uses_interpretation_signals() {
+        let interpretation =
+            crate::application::services::turn_interpretation::TurnInterpretation {
+                user_profile: Some(crate::domain::user_profile::UserProfile {
+                    default_city: Some("Berlin".into()),
+                    ..Default::default()
+                }),
+                dialogue_state: Some(
+                    crate::application::services::turn_interpretation::DialogueStateSnapshot {
+                        focus_entities: vec![("city".into(), "Berlin".into())],
+                        comparison_set: vec![
+                            ("city".into(), "Berlin".into()),
+                            ("city".into(), "Tbilisi".into()),
+                        ],
+                        reference_anchors: vec![],
+                        last_tool_subjects: vec!["weather_lookup".into()],
+                    },
+                ),
+                clarification_candidates: vec!["Berlin".into(), "Tbilisi".into()],
+                ..Default::default()
+            };
+
+        let execution_budget = build_execution_budget(Some(&interpretation)).unwrap();
+        assert_eq!(
+            execution_budget.interpreter_mode,
+            InterpreterMode::Lightweight
+        );
+        assert_eq!(execution_budget.retrieval_budget.max_session_candidates, 2);
     }
 
     // ── Helpers ──

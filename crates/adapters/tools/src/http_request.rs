@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
-use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 
@@ -327,22 +327,6 @@ impl Tool for HttpRequestTool {
             Ok(host) => host,
             Err(_) => return Vec::new(),
         };
-        let method = args
-            .get("method")
-            .and_then(|value| value.as_str())
-            .unwrap_or("GET")
-            .trim()
-            .to_uppercase();
-
-        let mut slots = vec![
-            DialogueSlot::observed("request_url", validated_url.clone()),
-            DialogueSlot::observed("request_host", host.clone()),
-            DialogueSlot::observed("request_method", method),
-        ];
-        if args.get("body").and_then(|value| value.as_str()).is_some() {
-            slots.push(DialogueSlot::observed("request_has_body", "true".to_string()));
-        }
-
         vec![AgentToolFact {
             tool_name: self.name().to_string(),
             focus_entities: vec![FocusEntity {
@@ -350,7 +334,7 @@ impl Tool for HttpRequestTool {
                 name: validated_url,
                 metadata: Some(host),
             }],
-            slots,
+            slots: Vec::new(),
         }]
     }
 }
@@ -830,15 +814,11 @@ mod tests {
             facts[0].focus_entities[0].name,
             "https://api.example.com/v1/tasks"
         );
-        assert_eq!(facts[0].focus_entities[0].metadata.as_deref(), Some("api.example.com"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "request_method" && slot.value == "POST"));
-        assert!(facts[0]
-            .slots
-            .iter()
-            .any(|slot| slot.name == "request_has_body" && slot.value == "true"));
+        assert_eq!(
+            facts[0].focus_entities[0].metadata.as_deref(),
+            Some("api.example.com")
+        );
+        assert!(facts[0].slots.is_empty());
     }
 
     #[test]
