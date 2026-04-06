@@ -3,11 +3,20 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::ports::tool::ToolExecution;
 
 const MAX_RESULTS: usize = 1000;
 const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MB
 const TIMEOUT_SECS: u64 = 30;
+
+struct ContentSearchSummary {
+    output: String,
+    matched_paths: Vec<String>,
+    total_matches: usize,
+}
 
 /// Search file contents by regex pattern within the workspace.
 ///
@@ -27,6 +36,285 @@ impl ContentSearchTool {
     #[cfg(test)]
     fn new_with_backend(security: Arc<SecurityPolicy>, has_rg: bool) -> Self {
         Self { security, has_rg }
+    }
+
+    async fn execute_search(
+        &self,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<(ToolResult, Option<ContentSearchSummary>)> {
+        // --- Parse parameters ---
+        let pattern = args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' parameter"))?;
+
+        if pattern.is_empty() {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("Empty pattern is not allowed.".into()),
+                },
+                None,
+            ));
+        }
+
+        let search_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+
+        let output_mode = args
+            .get("output_mode")
+            .and_then(|v| v.as_str())
+            .unwrap_or("content");
+
+        if !matches!(output_mode, "content" | "files_with_matches" | "count") {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!(
+                        "Invalid output_mode '{output_mode}'. Allowed values: content, files_with_matches, count."
+                    )),
+                },
+                None,
+            ));
+        }
+
+        let include = args.get("include").and_then(|v| v.as_str());
+
+        let case_sensitive = args
+            .get("case_sensitive")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+
+        #[allow(clippy::cast_possible_truncation)]
+        let context_before = args
+            .get("context_before")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+
+        #[allow(clippy::cast_possible_truncation)]
+        let context_after = args
+            .get("context_after")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
+
+        let multiline = args
+            .get("multiline")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        #[allow(clippy::cast_possible_truncation)]
+        let max_results = args
+            .get("max_results")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize)
+            .unwrap_or(MAX_RESULTS)
+            .min(MAX_RESULTS);
+
+        if self.security.is_rate_limited() {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("Rate limit exceeded: too many actions in the last hour".into()),
+                },
+                None,
+            ));
+        }
+
+        if std::path::Path::new(search_path).is_absolute()
+            && !self.security.is_under_allowed_root(search_path)
+        {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("Absolute paths are not allowed. Use a relative path.".into()),
+                },
+                None,
+            ));
+        }
+
+        if search_path.contains("../") || search_path.contains("..\\") || search_path == ".." {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("Path traversal ('..') is not allowed.".into()),
+                },
+                None,
+            ));
+        }
+
+        if !self.security.is_path_allowed(search_path) {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!(
+                        "Path '{search_path}' is not allowed by security policy."
+                    )),
+                },
+                None,
+            ));
+        }
+
+        if !self.security.record_action() {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("Rate limit exceeded: action budget exhausted".into()),
+                },
+                None,
+            ));
+        }
+
+        let resolved_path = self.security.resolve_tool_path(search_path);
+
+        let resolved_canon = match std::fs::canonicalize(&resolved_path) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok((
+                    ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Cannot resolve path '{search_path}': {e}")),
+                    },
+                    None,
+                ));
+            }
+        };
+
+        if !self.security.is_resolved_path_allowed(&resolved_canon) {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!(
+                        "Resolved path for '{search_path}' is outside the allowed workspace."
+                    )),
+                },
+                None,
+            ));
+        }
+
+        if multiline && !self.has_rg {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(
+                        "Multiline matching requires ripgrep (rg), which is not available."
+                            .into(),
+                    ),
+                },
+                None,
+            ));
+        }
+
+        let mut cmd = if self.has_rg {
+            build_rg_command(
+                pattern,
+                &resolved_canon,
+                output_mode,
+                include,
+                case_sensitive,
+                context_before,
+                context_after,
+                multiline,
+            )
+        } else {
+            build_grep_command(
+                pattern,
+                &resolved_canon,
+                output_mode,
+                include,
+                case_sensitive,
+                context_before,
+                context_after,
+            )
+        };
+
+        cmd.env_clear();
+        for key in &["PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE"] {
+            if let Ok(val) = std::env::var(key) {
+                cmd.env(key, val);
+            }
+        }
+
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        let output = match tokio::time::timeout(
+            std::time::Duration::from_secs(TIMEOUT_SECS),
+            tokio::process::Command::from(cmd).output(),
+        )
+        .await
+        {
+            Ok(Ok(out)) => out,
+            Ok(Err(e)) => {
+                return Ok((
+                    ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Failed to execute search command: {e}")),
+                    },
+                    None,
+                ));
+            }
+            Err(_) => {
+                return Ok((
+                    ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Search timed out after {TIMEOUT_SECS} seconds.")),
+                    },
+                    None,
+                ));
+            }
+        };
+
+        let exit_code = output.status.code().unwrap_or(-1);
+        if exit_code >= 2 {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(format!("Search error: {}", stderr.trim())),
+                },
+                None,
+            ));
+        }
+
+        let raw_stdout = String::from_utf8_lossy(&output.stdout);
+        let workspace = &self.security.workspace_dir;
+        let workspace_canon =
+            std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.clone());
+
+        let summary = if self.has_rg {
+            format_rg_output(&raw_stdout, &workspace_canon, output_mode, max_results)
+        } else {
+            format_grep_output(&raw_stdout, &workspace_canon, output_mode, max_results)
+        };
+
+        let final_output = if summary.output.len() > MAX_OUTPUT_BYTES {
+            let mut truncated = truncate_utf8(&summary.output, MAX_OUTPUT_BYTES).to_string();
+            truncated.push_str("\n\n[Output truncated: exceeded 1 MB limit]");
+            truncated
+        } else {
+            summary.output.clone()
+        };
+
+        Ok((
+            ToolResult {
+                success: true,
+                output: final_output,
+                error: None,
+            },
+            Some(summary),
+        ))
     }
 }
 
@@ -98,248 +386,75 @@ impl Tool for ContentSearchTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        // --- Parse parameters ---
-        let pattern = args
-            .get("pattern")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' parameter"))?;
+        Ok(self.execute_search(&args).await?.0)
+    }
 
-        if pattern.is_empty() {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Empty pattern is not allowed.".into()),
-            });
-        }
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<ToolExecution> {
+        let (result, summary) = self.execute_search(&args).await?;
+        let facts = summary
+            .filter(|_| result.success)
+            .map(|summary| {
+                let pattern = args
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let output_mode = args
+                    .get("output_mode")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("content")
+                    .to_string();
+                let search_path = args
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(".")
+                    .to_string();
 
-        let search_path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+                AgentToolFact {
+                    tool_name: self.name().to_string(),
+                    focus_entities: summary
+                        .matched_paths
+                        .iter()
+                        .take(5)
+                        .map(|path| FocusEntity {
+                            kind: "workspace_file".into(),
+                            name: path.clone(),
+                            metadata: Some("content_match".into()),
+                        })
+                        .collect(),
+                    slots: {
+                        let mut slots = vec![
+                            DialogueSlot::observed("content_search_pattern", pattern),
+                            DialogueSlot::observed("content_search_mode", output_mode),
+                            DialogueSlot::observed("content_search_path", search_path),
+                            DialogueSlot::observed(
+                                "content_search_file_count",
+                                summary.matched_paths.len().to_string(),
+                            ),
+                            DialogueSlot::observed(
+                                "content_search_match_count",
+                                summary.total_matches.to_string(),
+                            ),
+                        ];
+                        if let Some(include) = args.get("include").and_then(|v| v.as_str()) {
+                            if !include.trim().is_empty() {
+                                slots.push(DialogueSlot::observed(
+                                    "content_search_include",
+                                    include.trim().to_string(),
+                                ));
+                            }
+                        }
+                        slots
+                    },
+                }
+            })
+            .map(|fact| vec![fact])
+            .unwrap_or_default();
 
-        let output_mode = args
-            .get("output_mode")
-            .and_then(|v| v.as_str())
-            .unwrap_or("content");
-
-        if !matches!(output_mode, "content" | "files_with_matches" | "count") {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!(
-                    "Invalid output_mode '{output_mode}'. Allowed values: content, files_with_matches, count."
-                )),
-            });
-        }
-
-        let include = args.get("include").and_then(|v| v.as_str());
-
-        let case_sensitive = args
-            .get("case_sensitive")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
-
-        #[allow(clippy::cast_possible_truncation)]
-        let context_before = args
-            .get("context_before")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-
-        #[allow(clippy::cast_possible_truncation)]
-        let context_after = args
-            .get("context_after")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as usize;
-
-        let multiline = args
-            .get("multiline")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        #[allow(clippy::cast_possible_truncation)]
-        let max_results = args
-            .get("max_results")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .unwrap_or(MAX_RESULTS)
-            .min(MAX_RESULTS);
-
-        // --- Rate limit check ---
-        if self.security.is_rate_limited() {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Rate limit exceeded: too many actions in the last hour".into()),
-            });
-        }
-
-        // --- Path security checks ---
-        // Reject absolute paths unless they fall under an explicit allowed root.
-        if std::path::Path::new(search_path).is_absolute()
-            && !self.security.is_under_allowed_root(search_path)
-        {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Absolute paths are not allowed. Use a relative path.".into()),
-            });
-        }
-
-        if search_path.contains("../") || search_path.contains("..\\") || search_path == ".." {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Path traversal ('..') is not allowed.".into()),
-            });
-        }
-
-        if !self.security.is_path_allowed(search_path) {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!(
-                    "Path '{search_path}' is not allowed by security policy."
-                )),
-            });
-        }
-
-        // Record action to consume rate limit budget
-        if !self.security.record_action() {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Rate limit exceeded: action budget exhausted".into()),
-            });
-        }
-
-        // --- Resolve search directory ---
-        let resolved_path = self.security.resolve_tool_path(search_path);
-
-        let resolved_canon = match std::fs::canonicalize(&resolved_path) {
-            Ok(p) => p,
-            Err(e) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Cannot resolve path '{search_path}': {e}")),
-                });
-            }
-        };
-
-        if !self.security.is_resolved_path_allowed(&resolved_canon) {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!(
-                    "Resolved path for '{search_path}' is outside the allowed workspace."
-                )),
-            });
-        }
-
-        // --- Multiline check for grep fallback ---
-        if multiline && !self.has_rg {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(
-                    "Multiline matching requires ripgrep (rg), which is not available.".into(),
-                ),
-            });
-        }
-
-        // --- Build and execute command ---
-        let mut cmd = if self.has_rg {
-            build_rg_command(
-                pattern,
-                &resolved_canon,
-                output_mode,
-                include,
-                case_sensitive,
-                context_before,
-                context_after,
-                multiline,
-            )
-        } else {
-            build_grep_command(
-                pattern,
-                &resolved_canon,
-                output_mode,
-                include,
-                case_sensitive,
-                context_before,
-                context_after,
-            )
-        };
-
-        // Security: clear environment, keep only safe variables
-        cmd.env_clear();
-        for key in &["PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE"] {
-            if let Ok(val) = std::env::var(key) {
-                cmd.env(key, val);
-            }
-        }
-
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-
-        let output = match tokio::time::timeout(
-            std::time::Duration::from_secs(TIMEOUT_SECS),
-            tokio::process::Command::from(cmd).output(),
-        )
-        .await
-        {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Failed to execute search command: {e}")),
-                });
-            }
-            Err(_) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Search timed out after {TIMEOUT_SECS} seconds.")),
-                });
-            }
-        };
-
-        // Exit code: 0 = matches found, 1 = no matches (grep/rg), 2 = error
-        let exit_code = output.status.code().unwrap_or(-1);
-        if exit_code >= 2 {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(format!("Search error: {}", stderr.trim())),
-            });
-        }
-
-        let raw_stdout = String::from_utf8_lossy(&output.stdout);
-
-        // --- Parse and format output ---
-        let workspace = &self.security.workspace_dir;
-        let workspace_canon =
-            std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.clone());
-
-        let formatted = if self.has_rg {
-            format_rg_output(&raw_stdout, &workspace_canon, output_mode, max_results)
-        } else {
-            format_grep_output(&raw_stdout, &workspace_canon, output_mode, max_results)
-        };
-
-        // Truncate output if too large
-        let final_output = if formatted.len() > MAX_OUTPUT_BYTES {
-            let mut truncated = truncate_utf8(&formatted, MAX_OUTPUT_BYTES).to_string();
-            truncated.push_str("\n\n[Output truncated: exceeded 1 MB limit]");
-            truncated
-        } else {
-            formatted
-        };
-
-        Ok(ToolResult {
-            success: true,
-            output: final_output,
-            error: None,
-        })
+        Ok(ToolExecution { result, facts })
     }
 }
 
@@ -453,7 +568,7 @@ fn format_rg_output(
     workspace_canon: &std::path::Path,
     output_mode: &str,
     max_results: usize,
-) -> String {
+) -> ContentSearchSummary {
     format_line_output(raw, workspace_canon, output_mode, max_results)
 }
 
@@ -462,7 +577,7 @@ fn format_grep_output(
     workspace_canon: &std::path::Path,
     output_mode: &str,
     max_results: usize,
-) -> String {
+) -> ContentSearchSummary {
     format_line_output(raw, workspace_canon, output_mode, max_results)
 }
 
@@ -477,9 +592,13 @@ fn format_line_output(
     workspace_canon: &std::path::Path,
     output_mode: &str,
     max_results: usize,
-) -> String {
+) -> ContentSearchSummary {
     if raw.trim().is_empty() {
-        return "No matches found.".to_string();
+        return ContentSearchSummary {
+            output: "No matches found.".to_string(),
+            matched_paths: Vec::new(),
+            total_matches: 0,
+        };
     }
 
     let workspace_prefix = workspace_canon.to_string_lossy();
@@ -552,7 +671,11 @@ fn format_line_output(
     }
 
     if lines.is_empty() {
-        return "No matches found.".to_string();
+        return ContentSearchSummary {
+            output: "No matches found.".to_string(),
+            matched_paths: Vec::new(),
+            total_matches: 0,
+        };
     }
 
     use std::fmt::Write;
@@ -588,7 +711,14 @@ fn format_line_output(
         }
     }
 
-    buf
+    let mut matched_paths = file_set.into_iter().collect::<Vec<_>>();
+    matched_paths.sort();
+
+    ContentSearchSummary {
+        output: buf,
+        matched_paths,
+        total_matches,
+    }
 }
 
 /// Strip workspace prefix from a line, converting absolute paths to relative.
@@ -985,7 +1115,7 @@ mod tests {
     fn format_line_output_content_counts_match_lines_only() {
         let raw = "src/main.rs-1-use std::fmt;\nsrc/main.rs:2:fn main() {}\n--\nsrc/lib.rs:10:pub fn f() {}";
         let output = format_line_output(raw, std::path::Path::new("/workspace"), "content", 100);
-        assert!(output.contains("Total: 2 matching lines in 2 files"));
+        assert!(output.output.contains("Total: 2 matching lines in 2 files"));
     }
 
     #[test]

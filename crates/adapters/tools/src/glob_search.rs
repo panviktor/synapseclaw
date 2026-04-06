@@ -2,9 +2,17 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_domain::domain::dialogue_state::{DialogueSlot, FocusEntity};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::ports::tool::ToolExecution;
 
 const MAX_RESULTS: usize = 1000;
+
+struct GlobSearchOutcome {
+    output: String,
+    matched_paths: Vec<String>,
+}
 
 /// Search for files by glob pattern within the workspace.
 pub struct GlobSearchTool {
@@ -14,6 +22,162 @@ pub struct GlobSearchTool {
 impl GlobSearchTool {
     pub fn new(security: Arc<SecurityPolicy>) -> Self {
         Self { security }
+    }
+
+    async fn execute_search(
+        &self,
+        pattern: &str,
+    ) -> anyhow::Result<(ToolResult, Option<GlobSearchOutcome>)> {
+        // Rate limit check (fast path)
+        if self.security.is_rate_limited() {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("Rate limit exceeded: too many actions in the last hour".into()),
+                },
+                None,
+            ));
+        }
+
+        // Security: reject absolute paths unless under an explicit allowed root.
+        if (pattern.starts_with('/') || pattern.starts_with('\\'))
+            && !self.security.is_under_allowed_root(pattern)
+        {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("Absolute paths are not allowed. Use a relative glob pattern.".into()),
+                },
+                None,
+            ));
+        }
+
+        // Security: reject path traversal
+        if pattern.contains("../") || pattern.contains("..\\") || pattern == ".." {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("Path traversal ('..') is not allowed in glob patterns.".into()),
+                },
+                None,
+            ));
+        }
+
+        // Record action to consume rate limit budget
+        if !self.security.record_action() {
+            return Ok((
+                ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("Rate limit exceeded: action budget exhausted".into()),
+                },
+                None,
+            ));
+        }
+
+        // Build full pattern: use resolve_tool_path to handle tilde expansion
+        // and absolute paths correctly.
+        let full_pattern = self
+            .security
+            .resolve_tool_path(pattern)
+            .to_string_lossy()
+            .to_string();
+
+        let entries = match glob::glob(&full_pattern) {
+            Ok(paths) => paths,
+            Err(e) => {
+                return Ok((
+                    ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Invalid glob pattern: {e}")),
+                    },
+                    None,
+                ));
+            }
+        };
+
+        let workspace = &self.security.workspace_dir;
+        let workspace_canon = match std::fs::canonicalize(workspace) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok((
+                    ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Cannot resolve workspace directory: {e}")),
+                    },
+                    None,
+                ));
+            }
+        };
+
+        let mut results = Vec::new();
+        let mut truncated = false;
+
+        for entry in entries {
+            let path = match entry {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            let resolved = match std::fs::canonicalize(&path) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            if !self.security.is_resolved_path_allowed(&resolved) {
+                continue;
+            }
+
+            if resolved.is_dir() {
+                continue;
+            }
+
+            if let Ok(rel) = resolved.strip_prefix(&workspace_canon) {
+                results.push(rel.to_string_lossy().to_string());
+            } else {
+                results.push(resolved.to_string_lossy().to_string());
+            }
+
+            if results.len() >= MAX_RESULTS {
+                truncated = true;
+                break;
+            }
+        }
+
+        results.sort();
+
+        let output = if results.is_empty() {
+            format!("No files matching pattern '{pattern}' found in workspace.")
+        } else {
+            use std::fmt::Write;
+            let mut buf = results.join("\n");
+            if truncated {
+                let _ = write!(
+                    buf,
+                    "\n\n[Results truncated: showing first {MAX_RESULTS} of more matches]"
+                );
+            }
+            let _ = write!(buf, "\n\nTotal: {} files", results.len());
+            buf
+        };
+
+        let outcome = GlobSearchOutcome {
+            output,
+            matched_paths: results,
+        };
+        Ok((
+            ToolResult {
+                success: true,
+                output: outcome.output.clone(),
+                error: None,
+            },
+            Some(outcome),
+        ))
     }
 }
 
@@ -48,135 +212,51 @@ impl Tool for GlobSearchTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' parameter"))?;
 
-        // Rate limit check (fast path)
-        if self.security.is_rate_limited() {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Rate limit exceeded: too many actions in the last hour".into()),
-            });
-        }
+        Ok(self.execute_search(pattern).await?.0)
+    }
 
-        // Security: reject absolute paths unless under an explicit allowed root.
-        if (pattern.starts_with('/') || pattern.starts_with('\\'))
-            && !self.security.is_under_allowed_root(pattern)
-        {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Absolute paths are not allowed. Use a relative glob pattern.".into()),
-            });
-        }
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<ToolExecution> {
+        let pattern = args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'pattern' parameter"))?;
 
-        // Security: reject path traversal
-        if pattern.contains("../") || pattern.contains("..\\") || pattern == ".." {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Path traversal ('..') is not allowed in glob patterns.".into()),
-            });
-        }
-
-        // Record action to consume rate limit budget
-        if !self.security.record_action() {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("Rate limit exceeded: action budget exhausted".into()),
-            });
-        }
-
-        // Build full pattern: use resolve_tool_path to handle tilde expansion
-        // and absolute paths correctly.
-        let full_pattern = self
-            .security
-            .resolve_tool_path(pattern)
-            .to_string_lossy()
-            .to_string();
-
-        let entries = match glob::glob(&full_pattern) {
-            Ok(paths) => paths,
-            Err(e) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Invalid glob pattern: {e}")),
-                });
-            }
-        };
-
-        let workspace = &self.security.workspace_dir;
-        let workspace_canon = match std::fs::canonicalize(workspace) {
-            Ok(p) => p,
-            Err(e) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Cannot resolve workspace directory: {e}")),
-                });
-            }
-        };
-
-        let mut results = Vec::new();
-        let mut truncated = false;
-
-        for entry in entries {
-            let path = match entry {
-                Ok(p) => p,
-                Err(_) => continue, // skip unreadable entries
-            };
-
-            // Canonicalize to resolve symlinks, then verify still inside workspace
-            let resolved = match std::fs::canonicalize(&path) {
-                Ok(p) => p,
-                Err(_) => continue, // skip broken symlinks / unresolvable paths
-            };
-
-            if !self.security.is_resolved_path_allowed(&resolved) {
-                continue; // silently filter symlink escapes
-            }
-
-            // Only include files, not directories
-            if resolved.is_dir() {
-                continue;
-            }
-
-            // Convert to workspace-relative path, or use absolute path for allowed roots
-            if let Ok(rel) = resolved.strip_prefix(&workspace_canon) {
-                results.push(rel.to_string_lossy().to_string());
+        let (result, outcome) = self.execute_search(pattern).await?;
+        let facts = if !result.success {
+            Vec::new()
+        } else if let Some(outcome) = outcome {
+            if outcome.matched_paths.is_empty() {
+                Vec::new()
             } else {
-                // Path is in an allowed root outside workspace — show absolute path
-                results.push(resolved.to_string_lossy().to_string());
+                vec![AgentToolFact {
+                    tool_name: self.name().to_string(),
+                    focus_entities: outcome
+                        .matched_paths
+                        .iter()
+                        .take(5)
+                        .map(|path| FocusEntity {
+                            kind: "workspace_file".into(),
+                            name: path.clone(),
+                            metadata: Some("glob_match".into()),
+                        })
+                        .collect(),
+                    slots: vec![
+                        DialogueSlot::observed("glob_pattern", pattern.to_string()),
+                        DialogueSlot::observed(
+                            "glob_match_count",
+                            outcome.matched_paths.len().to_string(),
+                        ),
+                    ],
+                }]
             }
-
-            if results.len() >= MAX_RESULTS {
-                truncated = true;
-                break;
-            }
-        }
-
-        results.sort();
-
-        let output = if results.is_empty() {
-            format!("No files matching pattern '{pattern}' found in workspace.")
         } else {
-            use std::fmt::Write;
-            let mut buf = results.join("\n");
-            if truncated {
-                let _ = write!(
-                    buf,
-                    "\n\n[Results truncated: showing first {MAX_RESULTS} of more matches]"
-                );
-            }
-            let _ = write!(buf, "\n\nTotal: {} files", results.len());
-            buf
+            Vec::new()
         };
 
-        Ok(ToolResult {
-            success: true,
-            output,
-            error: None,
-        })
+        Ok(ToolExecution { result, facts })
     }
 }
 
