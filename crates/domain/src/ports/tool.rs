@@ -4,6 +4,7 @@
 //! The trait lives in the domain so application services can reason about tools
 //! without depending on concrete infrastructure implementations.
 
+use crate::domain::tool_fact::TypedToolFact;
 use crate::ports::agent_runtime::AgentToolFact;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -72,6 +73,15 @@ pub trait Tool: Send + Sync {
         Vec::new()
     }
 
+    /// Emit typed facts for the new non-string runtime path.
+    fn extract_typed_facts(
+        &self,
+        _args: &serde_json::Value,
+        _result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        Vec::new()
+    }
+
     /// Get the full spec for LLM registration.
     fn spec(&self) -> ToolSpec {
         ToolSpec {
@@ -113,5 +123,13 @@ impl Tool for ArcToolRef {
         result: Option<&ToolResult>,
     ) -> Vec<AgentToolFact> {
         self.0.extract_facts(args, result)
+    }
+
+    fn extract_typed_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.0.extract_typed_facts(args, result)
     }
 }

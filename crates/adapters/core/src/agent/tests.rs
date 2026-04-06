@@ -1140,6 +1140,7 @@ fn xml_format_results_includes_status_and_output() {
             success: true,
             tool_call_id: None,
             tool_facts: vec![],
+            typed_tool_facts: vec![],
         },
         ToolExecutionResult {
             name: "file_read".into(),
@@ -1147,6 +1148,7 @@ fn xml_format_results_includes_status_and_output() {
             success: false,
             tool_call_id: None,
             tool_facts: vec![],
+            typed_tool_facts: vec![],
         },
     ];
 
@@ -1173,6 +1175,7 @@ fn native_format_results_maps_tool_call_ids() {
             success: true,
             tool_call_id: Some("tc-001".into()),
             tool_facts: vec![],
+            typed_tool_facts: vec![],
         },
         ToolExecutionResult {
             name: "b".into(),
@@ -1180,6 +1183,7 @@ fn native_format_results_maps_tool_call_ids() {
             success: true,
             tool_call_id: Some("tc-002".into()),
             tool_facts: vec![],
+            typed_tool_facts: vec![],
         },
     ];
 

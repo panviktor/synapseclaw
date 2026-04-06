@@ -985,6 +985,7 @@ mod tests {
                 tools_used: false,
                 tool_names: vec![],
                 tool_facts: vec![],
+                typed_tool_facts: vec![],
                 tool_summary: String::new(),
             })
         }

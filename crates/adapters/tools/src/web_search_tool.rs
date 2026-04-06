@@ -5,6 +5,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use synapse_domain::domain::dialogue_state::FocusEntity;
+use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::tool::ToolExecution;
 
@@ -570,6 +571,37 @@ impl Tool for WebSearchTool {
 
         tracing::info!("Searching web for: {}", query);
         Ok(self.execute_query(query).await?.0)
+    }
+
+    fn extract_typed_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let query = args
+            .get("query")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        if query.is_none() {
+            return Vec::new();
+        }
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Search(SearchFact {
+                domain: SearchDomain::Web,
+                query,
+                result_count: None,
+                primary_locator: None,
+            }),
+        }]
     }
 
     async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {

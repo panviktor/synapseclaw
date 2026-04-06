@@ -5,7 +5,11 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{Db, DeliveryConfig, JobType, Schedule, SessionTarget, Surreal};
 use synapse_domain::config::schema::Config;
+use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ScheduleAction, ScheduleFact, ScheduleJobType, ScheduleTarget, ToolFactPayload, TypedToolFact,
+};
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::ToolExecution;
@@ -346,6 +350,64 @@ impl Tool for CronAddTool {
          delivery={\"mode\":\"announce\",\"channel\":\"discord\",\"to\":\"<channel_id_or_chat_id>\"} \
          or delivery={\"mode\":\"announce\",\"target\":\"current_conversation\"}. \
          This is the preferred tool for sending scheduled/delayed messages to users via channels."
+    }
+
+    fn extract_typed_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let job_type = match args.get("job_type").and_then(serde_json::Value::as_str) {
+            Some("agent") => Some(ScheduleJobType::Agent),
+            Some("shell") => Some(ScheduleJobType::Shell),
+            None if args.get("prompt").is_some() => Some(ScheduleJobType::Agent),
+            None if args.get("command").is_some() => Some(ScheduleJobType::Shell),
+            _ => None,
+        };
+
+        let timezone = args
+            .get("schedule")
+            .and_then(|value| value.get("tz"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+
+        let session = args
+            .get("session_target")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+
+        let delivery = args.get("delivery").and_then(|value| {
+            value
+                .get("channel")
+                .and_then(serde_json::Value::as_str)
+                .zip(value.get("to").and_then(serde_json::Value::as_str))
+                .map(|(channel, recipient)| ConversationDeliveryTarget::Explicit {
+                    channel: channel.to_string(),
+                    recipient: recipient.to_string(),
+                    thread_ref: value
+                        .get("thread_ref")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string),
+                })
+        });
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Schedule(ScheduleFact {
+                action: ScheduleAction::Create,
+                job_type,
+                timezone,
+                target: if session.is_some() || delivery.is_some() {
+                    Some(ScheduleTarget { session, delivery })
+                } else {
+                    None
+                },
+            }),
+        }]
     }
 
     fn parameters_schema(&self) -> serde_json::Value {

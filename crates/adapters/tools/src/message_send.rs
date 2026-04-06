@@ -7,6 +7,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
+use synapse_domain::domain::tool_fact::{
+    DeliveryFact, DeliveryTargetKind, ToolFactPayload, TypedToolFact,
+};
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::{Tool, ToolResult};
@@ -113,6 +116,50 @@ impl Tool for MessageSendTool {
         _result: Option<&ToolResult>,
     ) -> Vec<AgentToolFact> {
         Vec::new()
+    }
+
+    fn extract_typed_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let target = match args.get("target") {
+            Some(serde_json::Value::String(s)) if s == "current_conversation" => {
+                DeliveryTargetKind::CurrentConversation
+            }
+            Some(obj) if obj.is_object() => {
+                let channel = obj.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+                let recipient = obj.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+                let thread_ref = obj
+                    .get("thread_ref")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                if channel.is_empty() || recipient.is_empty() {
+                    return Vec::new();
+                }
+                DeliveryTargetKind::Explicit(ConversationDeliveryTarget::Explicit {
+                    channel: channel.to_string(),
+                    recipient: recipient.to_string(),
+                    thread_ref,
+                })
+            }
+            _ => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Delivery(DeliveryFact {
+                target,
+                content_bytes: args
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .map(str::len),
+            }),
+        }]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

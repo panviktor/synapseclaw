@@ -85,6 +85,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         let response = loop_result.response;
         let tool_names = loop_result.tool_names;
         let tool_facts = loop_result.tool_facts;
+        let typed_tool_facts = loop_result.typed_tool_facts;
         let tools_used = !tool_names.is_empty();
         let tool_summary = format_tool_summary(&tool_names);
 
@@ -94,6 +95,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             tools_used,
             tool_names,
             tool_facts,
+            typed_tool_facts,
             tool_summary,
         })
     }

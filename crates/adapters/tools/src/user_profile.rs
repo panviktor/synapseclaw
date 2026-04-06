@@ -12,6 +12,9 @@ use synapse_domain::application::services::user_profile_service::{
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
+};
 use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::{Tool, ToolResult};
@@ -167,6 +170,137 @@ impl Tool for UserProfileTool {
         Vec::new()
     }
 
+    fn extract_typed_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let Ok(args) = serde_json::from_value::<UserProfileArgs>(args.clone()) else {
+            return Vec::new();
+        };
+
+        if matches!(args.action, ProfileAction::Get) {
+            return Vec::new();
+        }
+
+        if matches!(args.action, ProfileAction::Delete) {
+            return [
+                UserProfileField::PreferredLanguage,
+                UserProfileField::Timezone,
+                UserProfileField::DefaultCity,
+                UserProfileField::CommunicationStyle,
+                UserProfileField::KnownEnvironments,
+                UserProfileField::DefaultDeliveryTarget,
+            ]
+            .into_iter()
+            .map(|field| TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::UserProfile(UserProfileFact {
+                    field,
+                    operation: ProfileOperation::Clear,
+                    value: None,
+                }),
+            })
+            .collect();
+        }
+
+        let clear =
+            |field: &str, args: &UserProfileArgs| args.clear_fields.iter().any(|item| item == field);
+        let clear_only = matches!(args.action, ProfileAction::Clear);
+        let mut facts = Vec::new();
+
+        collect_profile_fact(
+            &mut facts,
+            self.name(),
+            UserProfileField::PreferredLanguage,
+            args.preferred_language.as_deref(),
+            clear_only || clear("preferred_language", &args),
+        );
+        collect_profile_fact(
+            &mut facts,
+            self.name(),
+            UserProfileField::Timezone,
+            args.timezone.as_deref(),
+            clear_only || clear("timezone", &args),
+        );
+        collect_profile_fact(
+            &mut facts,
+            self.name(),
+            UserProfileField::DefaultCity,
+            args.default_city.as_deref(),
+            clear_only || clear("default_city", &args),
+        );
+        collect_profile_fact(
+            &mut facts,
+            self.name(),
+            UserProfileField::CommunicationStyle,
+            args.communication_style.as_deref(),
+            clear_only || clear("communication_style", &args),
+        );
+
+        if clear_only || clear("known_environments", &args) {
+            facts.push(TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::UserProfile(UserProfileFact {
+                    field: UserProfileField::KnownEnvironments,
+                    operation: ProfileOperation::Clear,
+                    value: None,
+                }),
+            });
+        } else if let Some(values) = args.known_environments.as_ref() {
+            facts.push(TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::UserProfile(UserProfileFact {
+                    field: UserProfileField::KnownEnvironments,
+                    operation: ProfileOperation::Set,
+                    value: Some(values.join(", ")),
+                }),
+            });
+        }
+
+        if clear_only || clear("default_delivery_target", &args) {
+            facts.push(TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::UserProfile(UserProfileFact {
+                    field: UserProfileField::DefaultDeliveryTarget,
+                    operation: ProfileOperation::Clear,
+                    value: None,
+                }),
+            });
+        } else if let Some(target) = args.default_delivery_target.as_ref() {
+            let value = match target {
+                DeliveryTargetInput::Keyword(value) => value.clone(),
+                DeliveryTargetInput::Explicit {
+                    channel,
+                    recipient,
+                    thread_ref,
+                } => format!(
+                    "{}:{}{}",
+                    channel,
+                    recipient,
+                    thread_ref
+                        .as_deref()
+                        .map(|value| format!("#{value}"))
+                        .unwrap_or_default()
+                ),
+            };
+            facts.push(TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::UserProfile(UserProfileFact {
+                    field: UserProfileField::DefaultDeliveryTarget,
+                    operation: ProfileOperation::Set,
+                    value: Some(value),
+                }),
+            });
+        }
+
+        facts
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let args: UserProfileArgs = serde_json::from_value(args)?;
 
@@ -259,6 +393,34 @@ impl Tool for UserProfileTool {
                 }
             }
         }
+    }
+}
+
+fn collect_profile_fact(
+    facts: &mut Vec<TypedToolFact>,
+    tool_name: &str,
+    field: UserProfileField,
+    value: Option<&str>,
+    clear: bool,
+) {
+    if clear {
+        facts.push(TypedToolFact {
+            tool_id: tool_name.to_string(),
+            payload: ToolFactPayload::UserProfile(UserProfileFact {
+                field,
+                operation: ProfileOperation::Clear,
+                value: None,
+            }),
+        });
+    } else if let Some(value) = value {
+        facts.push(TypedToolFact {
+            tool_id: tool_name.to_string(),
+            payload: ToolFactPayload::UserProfile(UserProfileFact {
+                field,
+                operation: ProfileOperation::Set,
+                value: Some(value.to_string()),
+            }),
+        });
     }
 }
 

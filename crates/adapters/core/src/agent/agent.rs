@@ -708,7 +708,7 @@ impl Agent {
             arguments: Some(args_preview),
         });
 
-        let (result, success, tool_facts) = if let Some(tool) =
+        let (result, success, tool_facts, typed_tool_facts) = if let Some(tool) =
             self.tools.iter().find(|t| t.name() == call.name)
         {
             match tool.execute_with_facts(call.arguments.clone()).await {
@@ -716,6 +716,7 @@ impl Agent {
                     let duration = start.elapsed();
                     let tool_facts = execution.facts;
                     let r = execution.result;
+                    let typed_tool_facts = tool.extract_typed_facts(&call.arguments, Some(&r));
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
                         duration,
@@ -729,7 +730,7 @@ impl Agent {
                             ),
                             success: true,
                         });
-                        (r.output, true, tool_facts)
+                        (r.output, true, tool_facts, typed_tool_facts)
                     } else {
                         let reason = r.error.unwrap_or(r.output);
                         self.observer.record_event(&ObserverEvent::ToolResult {
@@ -739,7 +740,12 @@ impl Agent {
                             ),
                             success: false,
                         });
-                        (format!("Error: {reason}"), false, tool_facts)
+                        (
+                            format!("Error: {reason}"),
+                            false,
+                            tool_facts,
+                            typed_tool_facts,
+                        )
                     }
                 }
                 Err(e) => {
@@ -755,7 +761,7 @@ impl Agent {
                         output: synapse_domain::domain::util::truncate_with_ellipsis(&reason, 500),
                         success: false,
                     });
-                    (reason, false, Vec::new())
+                    (reason, false, Vec::new(), Vec::new())
                 }
             }
         } else {
@@ -765,7 +771,7 @@ impl Agent {
                 output: reason.clone(),
                 success: false,
             });
-            (reason, false, Vec::new())
+            (reason, false, Vec::new(), Vec::new())
         };
 
         ToolExecutionResult {
@@ -774,6 +780,7 @@ impl Agent {
             success,
             tool_call_id: call.tool_call_id.clone(),
             tool_facts,
+            typed_tool_facts,
         }
     }
 
