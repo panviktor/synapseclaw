@@ -4,6 +4,7 @@
 //! for operators and UI inspection, not as the canonical source of truth.
 
 use crate::application::services::learning_maintenance_service::LearningMaintenancePlan;
+use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::domain::conversation::{ConversationEvent, ConversationSession, EventType};
 use crate::domain::dialogue_state::DialogueState;
 use crate::domain::memory::{CoreMemoryBlock, MemoryEntry, Skill};
@@ -17,7 +18,9 @@ pub struct LearningDigestProjectionInput {
     pub shadowed_skill_count: usize,
     pub run_recipe_families: Vec<String>,
     pub precedent_count: usize,
+    pub precedent_cluster_count: usize,
     pub failure_pattern_count: usize,
+    pub failure_pattern_cluster_count: usize,
 }
 
 pub fn format_core_blocks_projection(blocks: &[CoreMemoryBlock]) -> Option<String> {
@@ -235,7 +238,9 @@ pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) 
         && input.shadowed_skill_count == 0
         && input.run_recipe_families.is_empty()
         && input.precedent_count == 0
+        && input.precedent_cluster_count == 0
         && input.failure_pattern_count == 0
+        && input.failure_pattern_cluster_count == 0
     {
         return None;
     }
@@ -271,11 +276,33 @@ pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) 
     }
     lines.push(format!("- precedent_count: {}", input.precedent_count));
     lines.push(format!(
+        "- precedent_cluster_count: {}",
+        input.precedent_cluster_count
+    ));
+    lines.push(format!(
         "- failure_pattern_count: {}",
         input.failure_pattern_count
     ));
+    lines.push(format!(
+        "- failure_pattern_cluster_count: {}",
+        input.failure_pattern_cluster_count
+    ));
 
     Some(format!("{}\n", lines.join("\n")))
+}
+
+pub fn format_procedural_cluster_projection(section: &str, cluster: &ProceduralCluster) -> String {
+    let mut lines = vec![
+        format!("[{section}]"),
+        format!("- representative_key: {}", cluster.representative.key),
+        format!("- member_count: {}", cluster.member_count()),
+        format!("- member_keys: {}", cluster.member_keys.join(", ")),
+    ];
+    if !cluster.representative.content.trim().is_empty() {
+        lines.push("- representative_content:".to_string());
+        lines.push(indent_multiline(cluster.representative.content.trim(), 2));
+    }
+    format!("{}\n", lines.join("\n"))
 }
 
 pub fn format_learning_maintenance_projection(plan: &LearningMaintenancePlan) -> Option<String> {
@@ -532,14 +559,18 @@ mod tests {
             shadowed_skill_count: 1,
             run_recipe_families: vec!["search_delivery".into()],
             precedent_count: 2,
+            precedent_cluster_count: 1,
             failure_pattern_count: 1,
+            failure_pattern_cluster_count: 1,
         })
         .unwrap();
 
         assert!(projection.contains("[learning-digest]"));
         assert!(projection.contains("effective_skills: manual-deploy, search_delivery"));
         assert!(projection.contains("candidate_skill_count: 1"));
+        assert!(projection.contains("precedent_cluster_count: 1"));
         assert!(projection.contains("failure_pattern_count: 1"));
+        assert!(projection.contains("failure_pattern_cluster_count: 1"));
     }
 
     #[test]

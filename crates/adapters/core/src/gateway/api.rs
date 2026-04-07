@@ -1577,6 +1577,56 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
+    let precedent_clusters =
+        synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters(
+            state.mem.as_ref(),
+            &state.agent_id,
+            synapse_domain::application::services::procedural_cluster_service::ProceduralClusterKind::Precedent,
+            limit,
+            6,
+            0.95,
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|cluster| {
+            serde_json::json!({
+                "representative_key": cluster.representative.key,
+                "member_count": cluster.member_count(),
+                "member_keys": cluster.member_keys,
+                "projection": synapse_domain::application::services::memory_projection_service::format_procedural_cluster_projection(
+                    "precedent-cluster",
+                    &cluster,
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let failure_pattern_clusters =
+        synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters(
+            state.mem.as_ref(),
+            &state.agent_id,
+            synapse_domain::application::services::procedural_cluster_service::ProceduralClusterKind::FailurePattern,
+            limit,
+            6,
+            0.96,
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|cluster| {
+            serde_json::json!({
+                "representative_key": cluster.representative.key,
+                "member_count": cluster.member_count(),
+                "member_keys": cluster.member_keys,
+                "projection": synapse_domain::application::services::memory_projection_service::format_procedural_cluster_projection(
+                    "failure-pattern-cluster",
+                    &cluster,
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+
     let learning_digest = synapse_domain::application::services::memory_projection_service::format_learning_digest_projection(
         &synapse_domain::application::services::memory_projection_service::LearningDigestProjectionInput {
             has_current_profile: current_user_profile.is_some(),
@@ -1599,7 +1649,9 @@ pub async fn handle_api_memory_projections(
                 .map(ToString::to_string)
                 .collect(),
             precedent_count: recent_precedents.len(),
+            precedent_cluster_count: precedent_clusters.len(),
             failure_pattern_count: recent_failure_patterns.len(),
+            failure_pattern_cluster_count: failure_pattern_clusters.len(),
         },
     );
     let learning_maintenance_plan =
@@ -1637,8 +1689,10 @@ pub async fn handle_api_memory_projections(
         "effective_skills": effective_skills,
         "run_recipes": run_recipes,
         "recent_precedents": recent_precedents,
+        "precedent_clusters": precedent_clusters,
         "recent_reflections": recent_reflections,
         "recent_failure_patterns": recent_failure_patterns,
+        "failure_pattern_clusters": failure_pattern_clusters,
     }))
     .into_response()
 }
