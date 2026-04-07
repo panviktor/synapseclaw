@@ -13,6 +13,7 @@ pub struct PrecedentSimilarityThresholds {
     pub shortlist_limit: usize,
     pub noop_threshold: f64,
     pub update_threshold: f64,
+    pub ambiguity_margin: f64,
 }
 
 impl Default for PrecedentSimilarityThresholds {
@@ -21,6 +22,7 @@ impl Default for PrecedentSimilarityThresholds {
             shortlist_limit: 8,
             noop_threshold: 0.95,
             update_threshold: 0.82,
+            ambiguity_margin: 0.05,
         }
     }
 }
@@ -100,6 +102,8 @@ pub fn decide_precedent_mutation(
     let best_score = best.score.unwrap_or(0.0);
     let candidate_shape = parse_precedent_summary(&candidate.text);
     let best_shape = parse_precedent_summary(&best.content);
+    let ambiguous_cluster = best_score < thresholds.noop_threshold
+        && has_ambiguous_precedent_cluster(best, existing, thresholds);
     let (action, reason) = if best_score >= thresholds.noop_threshold {
         (
             MutationAction::Noop,
@@ -107,6 +111,11 @@ pub fn decide_precedent_mutation(
                 "near-duplicate precedent (score {best_score:.3}), existing: {}",
                 truncate(&best.content, 80)
             ),
+        )
+    } else if ambiguous_cluster {
+        (
+            MutationAction::Add,
+            format!("ambiguous precedent cluster near score {best_score:.3}"),
         )
     } else if best_score >= thresholds.update_threshold
         && is_distinct_precedent_shape(&candidate_shape, &best_shape)
@@ -138,6 +147,24 @@ pub fn decide_precedent_mutation(
         reason,
         similarity: Some(best_score),
     }
+}
+
+fn has_ambiguous_precedent_cluster(
+    best: &MemoryEntry,
+    existing: &[MemoryEntry],
+    thresholds: &PrecedentSimilarityThresholds,
+) -> bool {
+    let best_score = best.score.unwrap_or(0.0);
+    existing
+        .iter()
+        .filter(|entry| entry.key != best.key)
+        .filter(|entry| is_precedent_category(&entry.category))
+        .filter_map(|entry| entry.score.map(|score| (entry, score)))
+        .any(|(entry, score)| {
+            score >= thresholds.update_threshold
+                && (best_score - score).abs() <= thresholds.ambiguity_margin
+                && precedent_contents_have_distinct_shape(&best.content, &entry.content)
+        })
 }
 
 pub fn merge_precedent_text(existing_content: &str, candidate_text: &str) -> String {
@@ -402,6 +429,37 @@ mod tests {
 
         assert!(matches!(decision.action, MutationAction::Add));
         assert!(decision.reason.contains("distinct procedure shape"));
+    }
+
+    #[test]
+    fn ambiguous_precedent_clusters_prefer_safe_add() {
+        let decision = decide_precedent_mutation(
+            candidate(),
+            &[
+                MemoryEntry {
+                    id: "1".into(),
+                    key: "custom_precedent_1".into(),
+                    content: "tools=web_search -> message_send | subjects=status".into(),
+                    category: MemoryCategory::Custom("precedent".into()),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: None,
+                    score: Some(0.88),
+                },
+                MemoryEntry {
+                    id: "2".into(),
+                    key: "custom_precedent_2".into(),
+                    content: "tools=shell -> message_send | subjects=status".into(),
+                    category: MemoryCategory::Custom("precedent".into()),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: None,
+                    score: Some(0.86),
+                },
+            ],
+            &PrecedentSimilarityThresholds::default(),
+        );
+
+        assert!(matches!(decision.action, MutationAction::Add));
+        assert!(decision.reason.contains("ambiguous precedent cluster"));
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub struct FailureSimilarityThresholds {
     pub shortlist_limit: usize,
     pub noop_threshold: f64,
     pub update_threshold: f64,
+    pub ambiguity_margin: f64,
 }
 
 impl Default for FailureSimilarityThresholds {
@@ -21,6 +22,7 @@ impl Default for FailureSimilarityThresholds {
             shortlist_limit: 8,
             noop_threshold: 0.96,
             update_threshold: 0.84,
+            ambiguity_margin: 0.05,
         }
     }
 }
@@ -100,6 +102,8 @@ pub fn decide_failure_mutation(
     let best_score = best.score.unwrap_or(0.0);
     let candidate_shape = parse_failure_summary(&candidate.text);
     let best_shape = parse_failure_summary(&best.content);
+    let ambiguous_cluster = best_score < thresholds.noop_threshold
+        && has_ambiguous_failure_cluster(best, existing, thresholds);
     let (action, reason) = if best_score >= thresholds.noop_threshold {
         (
             MutationAction::Noop,
@@ -107,6 +111,11 @@ pub fn decide_failure_mutation(
                 "near-duplicate failure pattern (score {best_score:.3}), existing: {}",
                 truncate(&best.content, 80)
             ),
+        )
+    } else if ambiguous_cluster {
+        (
+            MutationAction::Add,
+            format!("ambiguous failure cluster near score {best_score:.3}"),
         )
     } else if best_score >= thresholds.update_threshold
         && is_distinct_failure_shape(&candidate_shape, &best_shape)
@@ -138,6 +147,24 @@ pub fn decide_failure_mutation(
         reason,
         similarity: Some(best_score),
     }
+}
+
+fn has_ambiguous_failure_cluster(
+    best: &MemoryEntry,
+    existing: &[MemoryEntry],
+    thresholds: &FailureSimilarityThresholds,
+) -> bool {
+    let best_score = best.score.unwrap_or(0.0);
+    existing
+        .iter()
+        .filter(|entry| entry.key != best.key)
+        .filter(|entry| is_failure_category(&entry.category))
+        .filter_map(|entry| entry.score.map(|score| (entry, score)))
+        .any(|(entry, score)| {
+            score >= thresholds.update_threshold
+                && (best_score - score).abs() <= thresholds.ambiguity_margin
+                && failure_contents_have_distinct_shape(&best.content, &entry.content)
+        })
 }
 
 pub fn merge_failure_text(existing_content: &str, candidate_text: &str) -> String {
@@ -343,6 +370,37 @@ mod tests {
 
         assert!(matches!(decision.action, MutationAction::Add));
         assert!(decision.reason.contains("distinct failed tools"));
+    }
+
+    #[test]
+    fn ambiguous_failure_clusters_prefer_safe_add() {
+        let decision = decide_failure_mutation(
+            candidate(),
+            &[
+                MemoryEntry {
+                    id: "1".into(),
+                    key: "custom_failure_1".into(),
+                    content: "failed_tools=web_fetch | outcomes=runtime_error".into(),
+                    category: MemoryCategory::Custom("failure_pattern".into()),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: None,
+                    score: Some(0.88),
+                },
+                MemoryEntry {
+                    id: "2".into(),
+                    key: "custom_failure_2".into(),
+                    content: "failed_tools=shell | outcomes=runtime_error".into(),
+                    category: MemoryCategory::Custom("failure_pattern".into()),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: None,
+                    score: Some(0.85),
+                },
+            ],
+            &FailureSimilarityThresholds::default(),
+        );
+
+        assert!(matches!(decision.action, MutationAction::Add));
+        assert!(decision.reason.contains("ambiguous failure cluster"));
     }
 
     #[test]
