@@ -351,6 +351,7 @@ pub struct MemoryQuery {
     pub text: String,
     pub embedding: Option<Vec<f32>>,
     pub agent_id: AgentId,
+    pub categories: Vec<MemoryCategory>,
     pub include_shared: bool,
     pub time_range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     pub limit: usize,

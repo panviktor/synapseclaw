@@ -751,17 +751,25 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
     }
 
     async fn search_episodes(&self, query: &MemoryQuery) -> Result<Vec<SearchResult>, MemoryError> {
+        let category_filters = query
+            .categories
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
         // BM25 keyword search
         let mut bm25_resp = self
             .db
             .query(
                 "SELECT *, search::score(1) AS bm25_score FROM episode
                  WHERE content @1@ $text
+                 AND (array::len($categories) = 0 OR category INSIDE $categories)
                  AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
                  ORDER BY bm25_score DESC
                  LIMIT $limit",
             )
             .bind(("text", query.text.clone()))
+            .bind(("categories", category_filters.clone()))
             .bind(("agent", query.agent_id.clone()))
             .bind(("limit", query.limit))
             .await
@@ -795,12 +803,14 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                      FROM episode
                      WHERE embedding <|$limit,64|> $emb
                      AND embedding_profile_id = $profile
+                     AND (array::len($categories) = 0 OR category INSIDE $categories)
                      AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
                      ORDER BY vec_score DESC
                      LIMIT $limit",
                 )
                 .bind(("emb", emb.clone()))
                 .bind(("profile", embedding_profile_id))
+                .bind(("categories", category_filters.clone()))
                 .bind(("agent", query.agent_id.clone()))
                 .bind(("limit", query.limit))
                 .await
@@ -1601,6 +1611,7 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
             text: query.to_string(),
             embedding: None,
             agent_id: self.me().to_string(),
+            categories: Vec::new(),
             include_shared: true,
             time_range: None,
             limit,

@@ -47,6 +47,7 @@ async fn fetch_precedent_shortlist(
         text: query_text.to_string(),
         embedding: None,
         agent_id: agent_id.to_string(),
+        categories: vec![MemoryCategory::Custom("precedent".into())],
         include_shared: true,
         time_range: None,
         limit: limit.saturating_mul(2).max(limit),
@@ -61,7 +62,6 @@ async fn fetch_precedent_shortlist(
 
     Ok(episodes
         .into_iter()
-        .filter(|result| is_precedent_category(&result.entry.category))
         .take(limit)
         .map(|result| {
             let mut entry = result.entry;

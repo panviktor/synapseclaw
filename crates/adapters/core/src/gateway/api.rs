@@ -1236,6 +1236,7 @@ pub async fn handle_api_memory_stats(
         text: String::new(),
         embedding: None,
         agent_id: state.agent_id.clone(),
+        categories: Vec::new(),
         include_shared: false,
         time_range: None,
         limit: 10_000,

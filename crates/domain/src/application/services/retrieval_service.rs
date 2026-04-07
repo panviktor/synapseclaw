@@ -358,6 +358,7 @@ pub async fn search_turn_hybrid(
         text: query_text.to_string(),
         embedding: None,
         agent_id: agent_id.to_string(),
+        categories: Vec::new(),
         include_shared: false,
         time_range: None,
         limit: options.query_limit,

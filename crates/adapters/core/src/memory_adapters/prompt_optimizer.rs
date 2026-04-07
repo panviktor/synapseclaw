@@ -114,6 +114,7 @@ pub async fn optimize_prompt(
         text: String::new(),
         embedding: None,
         agent_id: agent_id.to_string(),
+        categories: Vec::new(),
         include_shared: false,
         time_range: None,
         limit: 50,
