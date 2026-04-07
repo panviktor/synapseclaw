@@ -9,6 +9,7 @@ use crate::application::services::learning_conflict_service;
 use crate::application::services::learning_evidence_service;
 use crate::application::services::learning_quality_service;
 use crate::application::services::learning_strength_service;
+use crate::application::services::precedent_similarity_service;
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::application::services::recipe_evolution_service;
 use crate::application::services::skill_feedback_service;
@@ -31,6 +32,8 @@ pub struct SelfLearningEvalScenario {
     pub user_message: &'static str,
     pub assistant_response: &'static str,
     pub current_profile: Option<UserProfile>,
+    pub existing_precedents: Vec<MemoryEntry>,
+    pub existing_failure_patterns: Vec<MemoryEntry>,
     pub existing_recipes: Vec<RunRecipe>,
     pub existing_skills: Vec<Skill>,
     pub tool_facts: Vec<TypedToolFact>,
@@ -55,6 +58,8 @@ pub struct SelfLearningEvalResult {
     pub accepted_skill_review_count: usize,
     pub skill_feedback_reasons: Vec<&'static str>,
     pub accepted_skill_feedback_count: usize,
+    pub precedent_mutation_actions: Vec<&'static str>,
+    pub precedent_mutation_reasons: Vec<String>,
     pub mutation_candidate_count: usize,
     pub profile_patch_is_noop: bool,
     pub profile_projection: Option<String>,
@@ -83,7 +88,9 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         learning_candidate_service::build_mutation_candidates_from_assessments(&assessments);
     let skill_promotion_assessments = build_skill_promotion_assessments(scenario, &assessments);
     let resulting_recipes = build_resulting_recipes(scenario, &assessments);
-    let resulting_failure_clusters = build_resulting_failure_clusters(&assessments);
+    let resulting_failure_clusters = build_resulting_failure_clusters(scenario, &assessments);
+    let precedent_mutation_decisions =
+        build_precedent_mutation_decisions(scenario, &assessments, &resulting_failure_clusters);
     let skill_review_decisions = skill_review_service::review_learned_skills_with_failures(
         &scenario.existing_skills,
         &resulting_recipes,
@@ -133,6 +140,11 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         accepted_skill_review_count: skill_review_decisions.len(),
         skill_feedback_reasons: skill_feedback_reason_names(&skill_feedback),
         accepted_skill_feedback_count: skill_feedback.len(),
+        precedent_mutation_actions: precedent_mutation_action_names(&precedent_mutation_decisions),
+        precedent_mutation_reasons: precedent_mutation_decisions
+            .iter()
+            .map(|decision| decision.reason.clone())
+            .collect(),
         mutation_candidate_count: mutation_candidates.len(),
         profile_patch_is_noop: patch.is_noop(),
         profile_projection: projected_profile
@@ -148,6 +160,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Remember my timezone",
             assistant_response: "Saved your timezone.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: Vec::new(),
             existing_skills: Vec::new(),
             tool_facts: vec![TypedToolFact {
@@ -164,6 +178,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Find the status page and send it to the chat",
             assistant_response: "Fetched the page and sent it.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: Vec::new(),
             existing_skills: Vec::new(),
             tool_facts: vec![
@@ -204,6 +220,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 known_environments: vec!["prod".into()],
                 ..Default::default()
             }),
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: Vec::new(),
             existing_skills: Vec::new(),
             tool_facts: vec![TypedToolFact {
@@ -220,6 +238,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Remember both of these timezones",
             assistant_response: "I captured conflicting timezone updates.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: Vec::new(),
             existing_skills: Vec::new(),
             tool_facts: vec![
@@ -246,6 +266,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Find the status page and send it again",
             assistant_response: "Fetched the page and sent it again.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: vec![RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "search_delivery".into(),
@@ -280,6 +302,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Send the latest backup report",
             assistant_response: "Created a shell backup and sent it.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: vec![RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "resource_delivery".into(),
@@ -315,6 +339,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Fetch the status page",
             assistant_response: "I could not complete that.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: Vec::new(),
             existing_skills: Vec::new(),
             tool_facts: vec![
@@ -336,6 +362,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Fetch the page and send it",
             assistant_response: "The fetch failed.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: Vec::new(),
             existing_skills: vec![Skill {
                 id: "sk1".into(),
@@ -370,6 +398,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Find the status page and send it again",
             assistant_response: "Fetched the page and sent it again.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: vec![RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "search_delivery".into(),
@@ -404,6 +434,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Find the status page and send it again",
             assistant_response: "Fetched the page and sent it again.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: vec![RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "search_delivery".into(),
@@ -454,6 +486,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "No-op turn",
             assistant_response: "No procedural work happened.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: vec![RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "backup_delivery".into(),
@@ -487,6 +521,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "No-op turn",
             assistant_response: "No procedural work happened.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: vec![
                 RunRecipe {
                     agent_id: "agent".into(),
@@ -535,6 +571,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Fetch the page",
             assistant_response: "The fetch failed.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: Vec::new(),
             existing_skills: vec![Skill {
                 id: "sk-learned".into(),
@@ -572,6 +610,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Fetch the page",
             assistant_response: "The fetch failed.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: vec![RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "fetch_page".into(),
@@ -617,6 +657,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             user_message: "Fetch the page",
             assistant_response: "The fetch failed.",
             current_profile: None,
+            existing_precedents: Vec::new(),
+            existing_failure_patterns: Vec::new(),
             existing_recipes: vec![RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "fetch_page".into(),
@@ -655,6 +697,50 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                     }),
                 },
                 TypedToolFact::outcome("web_fetch", OutcomeStatus::RuntimeError, Some(220)),
+            ],
+        },
+        SelfLearningEvalScenario {
+            id: "contradicted_similar_precedent_keeps_new_branch",
+            user_message: "Find the status page and send it",
+            assistant_response: "Found it and sent it.",
+            current_profile: None,
+            existing_precedents: vec![MemoryEntry {
+                id: "p1".into(),
+                key: "precedent_1".into(),
+                content: "tools=web_search -> message_send | subjects=status".into(),
+                category: MemoryCategory::Custom("precedent".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: Some(0.88),
+            }],
+            existing_failure_patterns: vec![MemoryEntry {
+                id: "f1".into(),
+                key: "failure_1".into(),
+                content: "failed_tools=web_search -> message_send | outcomes=runtime_error".into(),
+                category: MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            }],
+            existing_recipes: Vec::new(),
+            existing_skills: Vec::new(),
+            tool_facts: vec![
+                TypedToolFact {
+                    tool_id: "web_search".into(),
+                    payload: ToolFactPayload::Search(SearchFact {
+                        domain: SearchDomain::Web,
+                        query: Some("status page".into()),
+                        result_count: Some(2),
+                        primary_locator: Some("https://status.example.com".into()),
+                    }),
+                },
+                TypedToolFact {
+                    tool_id: "message_send".into(),
+                    payload: ToolFactPayload::Delivery(DeliveryFact {
+                        target: DeliveryTargetKind::CurrentConversation,
+                        content_bytes: Some(24),
+                    }),
+                },
             ],
         },
     ]
@@ -699,7 +785,7 @@ fn build_skill_promotion_assessments(
     scenario: &SelfLearningEvalScenario,
     assessments: &[learning_quality_service::LearningCandidateAssessment],
 ) -> Vec<skill_promotion_service::SkillPromotionAssessment> {
-    let failure_clusters = build_resulting_failure_clusters(assessments);
+    let failure_clusters = build_resulting_failure_clusters(scenario, assessments);
     assessments
         .iter()
         .filter(|assessment| assessment.accepted)
@@ -759,29 +845,68 @@ fn build_skill_feedback(
 }
 
 fn build_resulting_failure_clusters(
+    scenario: &SelfLearningEvalScenario,
     assessments: &[learning_quality_service::LearningCandidateAssessment],
 ) -> Vec<ProceduralCluster> {
+    let mut clusters = scenario
+        .existing_failure_patterns
+        .iter()
+        .map(|entry| ProceduralCluster {
+            representative: entry.clone(),
+            member_keys: vec![entry.key.clone()],
+        })
+        .collect::<Vec<_>>();
+
+    clusters.extend(
+        assessments
+            .iter()
+            .enumerate()
+            .filter(|(_, assessment)| assessment.accepted)
+            .filter_map(|(index, assessment)| {
+                let LearningCandidate::FailurePattern(failure) = &assessment.candidate else {
+                    return None;
+                };
+                let key = format!("eval-failure-{index}");
+                Some(ProceduralCluster {
+                    representative: MemoryEntry {
+                        id: key.clone(),
+                        key: key.clone(),
+                        content: failure.summary.clone(),
+                        category: MemoryCategory::Custom("failure_pattern".into()),
+                        timestamp: "2026-01-01T00:00:00Z".into(),
+                        session_id: None,
+                        score: None,
+                    },
+                    member_keys: vec![key],
+                })
+            }),
+    );
+
+    clusters
+}
+
+fn build_precedent_mutation_decisions(
+    scenario: &SelfLearningEvalScenario,
+    assessments: &[learning_quality_service::LearningCandidateAssessment],
+    failure_clusters: &[ProceduralCluster],
+) -> Vec<crate::domain::memory_mutation::MutationDecision> {
     assessments
         .iter()
-        .enumerate()
-        .filter(|(_, assessment)| assessment.accepted)
-        .filter_map(|(index, assessment)| {
-            let LearningCandidate::FailurePattern(failure) = &assessment.candidate else {
-                return None;
-            };
-            let key = format!("eval-failure-{index}");
-            Some(ProceduralCluster {
-                representative: MemoryEntry {
-                    id: key.clone(),
-                    key: key.clone(),
-                    content: failure.summary.clone(),
-                    category: MemoryCategory::Custom("failure_pattern".into()),
-                    timestamp: "2026-01-01T00:00:00Z".into(),
-                    session_id: None,
-                    score: None,
-                },
-                member_keys: vec![key],
-            })
+        .filter(|assessment| assessment.accepted)
+        .filter_map(learning_candidate_service::build_mutation_candidate_from_assessment)
+        .filter(|candidate| {
+            matches!(
+                candidate.category,
+                MemoryCategory::Custom(ref name) if name == "precedent"
+            )
+        })
+        .map(|candidate| {
+            precedent_similarity_service::decide_precedent_mutation_with_failures(
+                candidate,
+                &scenario.existing_precedents,
+                &precedent_similarity_service::PrecedentSimilarityThresholds::default(),
+                failure_clusters,
+            )
         })
         .collect()
 }
@@ -895,6 +1020,24 @@ fn skill_review_reason_names(
         }
     }
     reasons
+}
+
+fn precedent_mutation_action_names(
+    decisions: &[crate::domain::memory_mutation::MutationDecision],
+) -> Vec<&'static str> {
+    let mut actions = Vec::new();
+    for decision in decisions {
+        let action = match decision.action {
+            crate::domain::memory_mutation::MutationAction::Add => "add",
+            crate::domain::memory_mutation::MutationAction::Update { .. } => "update",
+            crate::domain::memory_mutation::MutationAction::Delete { .. } => "delete",
+            crate::domain::memory_mutation::MutationAction::Noop => "noop",
+        };
+        if !actions.contains(&action) {
+            actions.push(action);
+        }
+    }
+    actions
 }
 
 #[cfg(test)]
@@ -1139,5 +1282,22 @@ mod tests {
         assert!(result
             .skill_review_reasons
             .contains(&"active_supported_recipe_cluster_contradicted_by_failure_clusters"));
+    }
+
+    #[test]
+    fn contradicted_similar_precedent_keeps_new_branch() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "contradicted_similar_precedent_keeps_new_branch")
+            .expect("scenario present");
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.precedent_candidate_count, 1);
+        assert_eq!(result.mutation_candidate_count, 1);
+        assert!(result.precedent_mutation_actions.contains(&"add"));
+        assert!(result
+            .precedent_mutation_reasons
+            .iter()
+            .any(|reason| reason.contains("contradicted by failure clusters")));
     }
 }
