@@ -158,6 +158,7 @@ pub fn build_new_skill(
 }
 
 pub fn build_skill_update(
+    existing: Option<&Skill>,
     recipe: &RunRecipe,
     assessment: &SkillPromotionAssessment,
 ) -> SkillUpdate {
@@ -168,7 +169,7 @@ pub fn build_skill_update(
         new_content: Some(build_skill_content(recipe)),
         new_task_family: Some(Some(recipe.task_family.clone())),
         new_tool_pattern: Some(recipe.tool_pattern.clone()),
-        new_lineage_task_families: Some(recipe_lineage_task_families(recipe)),
+        new_lineage_task_families: Some(merged_skill_lineage_task_families(existing, recipe)),
         new_status: Some(assessment.target_status.clone()),
     }
 }
@@ -178,6 +179,33 @@ fn recipe_lineage_task_families(recipe: &RunRecipe) -> Vec<String> {
     for value in std::iter::once(&recipe.task_family).chain(recipe.lineage_task_families.iter()) {
         if !value.trim().is_empty() && !lineage.iter().any(|current| current == value) {
             lineage.push(value.clone());
+        }
+    }
+    lineage
+}
+
+fn skill_lineage_task_families(skill: &Skill) -> Vec<String> {
+    let mut lineage = Vec::new();
+    if let Some(task_family) = &skill.task_family {
+        if !task_family.trim().is_empty() {
+            lineage.push(task_family.clone());
+        }
+    }
+    for value in &skill.lineage_task_families {
+        if !value.trim().is_empty() && !lineage.iter().any(|current| current == value) {
+            lineage.push(value.clone());
+        }
+    }
+    lineage
+}
+
+fn merged_skill_lineage_task_families(existing: Option<&Skill>, recipe: &RunRecipe) -> Vec<String> {
+    let mut lineage = existing
+        .map(skill_lineage_task_families)
+        .unwrap_or_default();
+    for value in recipe_lineage_task_families(recipe) {
+        if !lineage.iter().any(|current| current == &value) {
+            lineage.push(value);
         }
     }
     lineage
@@ -217,15 +245,21 @@ fn find_shadowing_higher_origin_skill<'a>(
     skill_name: &str,
     all_skills: &'a [Skill],
 ) -> Option<&'a Skill> {
+    let recipe_families = recipe_lineage_task_families(recipe);
     all_skills.iter().find(|skill| {
         skill.status == SkillStatus::Active
             && matches!(skill.origin, SkillOrigin::Manual | SkillOrigin::Imported)
             && !skill.name.eq_ignore_ascii_case(skill_name)
-            && (skill
-                .task_family
-                .as_deref()
-                .is_some_and(|task_family| task_family.eq_ignore_ascii_case(&recipe.task_family))
+            && (families_overlap(&skill_lineage_task_families(skill), &recipe_families)
                 || tool_pattern_overlap(&skill.tool_pattern, &recipe.tool_pattern) >= 0.75)
+    })
+}
+
+fn families_overlap(left: &[String], right: &[String]) -> bool {
+    left.iter().any(|left_value| {
+        right
+            .iter()
+            .any(|right_value| left_value.eq_ignore_ascii_case(right_value))
     })
 }
 
@@ -352,6 +386,71 @@ mod tests {
             assess_recipe_for_skill_promotion(&sample_recipe(6), None, &[manual_skill]);
         assert!(!assessment.accepted);
         assert_eq!(assessment.reason, "shadowed_by_higher_origin_skill");
+    }
+
+    #[test]
+    fn rejects_recipe_shadowed_by_manual_skill_lineage() {
+        let mut recipe = sample_recipe(6);
+        recipe.task_family = "status_delivery".into();
+        recipe.lineage_task_families = vec!["status_delivery".into(), "delivery_search".into()];
+
+        let manual_skill = Skill {
+            id: "sk2".into(),
+            name: "manual_delivery_search".into(),
+            description: "Manual skill".into(),
+            content: "Use a fixed manual process.".into(),
+            task_family: Some("manual_alias".into()),
+            lineage_task_families: vec!["delivery_search".into()],
+            tool_pattern: vec!["shell".into(), "message_send".into()],
+            tags: vec![],
+            success_count: 1,
+            fail_count: 0,
+            version: 1,
+            origin: SkillOrigin::Manual,
+            status: SkillStatus::Active,
+            created_by: "agent".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let assessment = assess_recipe_for_skill_promotion(&recipe, None, &[manual_skill]);
+        assert!(!assessment.accepted);
+        assert_eq!(assessment.reason, "shadowed_by_higher_origin_skill");
+    }
+
+    #[test]
+    fn build_skill_update_preserves_existing_lineage() {
+        let mut recipe = sample_recipe(6);
+        recipe.lineage_task_families = vec!["search_delivery".into(), "delivery_search".into()];
+        let assessment = assess_recipe_for_skill_promotion(&recipe, None, &[]);
+        let existing = Skill {
+            id: "sk1".into(),
+            name: "search_delivery".into(),
+            description: "Learned skill".into(),
+            content: "existing".into(),
+            task_family: Some("search_delivery".into()),
+            lineage_task_families: vec!["legacy_delivery".into()],
+            tool_pattern: vec!["web_search".into(), "message_send".into()],
+            tags: vec![],
+            success_count: 3,
+            fail_count: 0,
+            version: 2,
+            origin: SkillOrigin::Learned,
+            status: SkillStatus::Candidate,
+            created_by: "agent".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let update = build_skill_update(Some(&existing), &recipe, &assessment);
+        assert_eq!(
+            update.new_lineage_task_families,
+            Some(vec![
+                "search_delivery".into(),
+                "legacy_delivery".into(),
+                "delivery_search".into(),
+            ])
+        );
     }
 
     #[test]

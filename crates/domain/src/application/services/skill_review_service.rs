@@ -265,24 +265,55 @@ fn recipe_cluster_supports_skill(skill: &Skill, cluster: &RunRecipeCluster) -> b
 }
 
 fn recipe_cluster_exactly_supports_skill(skill: &Skill, cluster: &RunRecipeCluster) -> bool {
-    skill.task_family.as_deref().is_some_and(|task_family| {
-        cluster
-            .member_task_families
-            .iter()
-            .any(|member| member.eq_ignore_ascii_case(task_family))
-    })
+    families_overlap(
+        &skill_lineage_task_families(skill),
+        &recipe_cluster_task_families(cluster),
+    )
 }
 
 fn skills_overlap(left: &Skill, right: &Skill) -> bool {
     left.name.eq_ignore_ascii_case(&right.name)
-        || left
-            .task_family
-            .as_deref()
-            .zip(right.task_family.as_deref())
-            .is_some_and(|(left_family, right_family)| {
-                left_family.eq_ignore_ascii_case(right_family)
-            })
+        || families_overlap(
+            &skill_lineage_task_families(left),
+            &skill_lineage_task_families(right),
+        )
         || tool_pattern_overlap(&left.tool_pattern, &right.tool_pattern) >= 0.75
+}
+
+fn recipe_cluster_task_families(cluster: &RunRecipeCluster) -> Vec<String> {
+    let mut families = Vec::new();
+    for value in std::iter::once(&cluster.representative.task_family)
+        .chain(cluster.representative.lineage_task_families.iter())
+        .chain(cluster.member_task_families.iter())
+    {
+        if !value.trim().is_empty() && !families.iter().any(|current| current == value) {
+            families.push(value.clone());
+        }
+    }
+    families
+}
+
+fn skill_lineage_task_families(skill: &Skill) -> Vec<String> {
+    let mut families = Vec::new();
+    if let Some(task_family) = &skill.task_family {
+        if !task_family.trim().is_empty() {
+            families.push(task_family.clone());
+        }
+    }
+    for value in &skill.lineage_task_families {
+        if !value.trim().is_empty() && !families.iter().any(|current| current == value) {
+            families.push(value.clone());
+        }
+    }
+    families
+}
+
+fn families_overlap(left: &[String], right: &[String]) -> bool {
+    left.iter().any(|left_family| {
+        right
+            .iter()
+            .any(|right_family| left_family.eq_ignore_ascii_case(right_family))
+    })
 }
 
 fn tool_pattern_overlap(left: &[String], right: &[String]) -> f64 {
@@ -498,6 +529,36 @@ mod tests {
 
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].reason, "unsupported_by_recipe_clusters");
+    }
+
+    #[test]
+    fn keeps_candidate_with_lineage_backed_recipe_cluster_support() {
+        let mut skill = sample_skill(
+            "sk1",
+            "status_delivery",
+            SkillOrigin::Learned,
+            SkillStatus::Candidate,
+            3,
+            0,
+        );
+        skill.task_family = Some("status_delivery".into());
+        skill.lineage_task_families = vec!["status_delivery".into(), "delivery_search".into()];
+
+        let decisions = review_learned_skills(
+            &[skill],
+            &[RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                lineage_task_families: vec!["search_delivery".into(), "delivery_search".into()],
+                sample_request: "find and send".into(),
+                summary: "Use web_search and message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 4,
+                updated_at: 1,
+            }],
+        );
+
+        assert!(decisions.is_empty());
     }
 
     #[test]

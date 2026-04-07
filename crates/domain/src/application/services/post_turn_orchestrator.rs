@@ -550,7 +550,11 @@ pub async fn execute_post_turn_learning(
                 let result = if let Some(existing_skill) = existing_skill {
                     mem.update_skill(
                         &existing_skill.id,
-                        skill_promotion_service::build_skill_update(&recipe, &promotion),
+                        skill_promotion_service::build_skill_update(
+                            Some(&existing_skill),
+                            &recipe,
+                            &promotion,
+                        ),
                         &input.agent_id,
                     )
                     .await
