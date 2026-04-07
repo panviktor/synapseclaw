@@ -13,6 +13,9 @@ use synapse_domain::application::services::learning_compaction_service::{
 use synapse_domain::application::services::learning_maintenance_service::{
     build_learning_maintenance_plan, LearningMaintenancePolicy, LearningMaintenanceSnapshot,
 };
+use synapse_domain::application::services::procedural_cluster_review_service::{
+    review_failure_pattern_clusters, review_precedent_clusters, ProceduralClusterReviewAction,
+};
 use synapse_domain::application::services::procedural_cluster_service::{
     plan_recent_clusters, ProceduralClusterKind,
 };
@@ -345,6 +348,10 @@ pub(crate) async fn sample_learning_maintenance_snapshot(
     let recipe_clusters = plan_recipe_clusters(&recent_run_recipes, 0.9);
     let procedural_contradictions =
         find_recipe_failure_contradictions(&recipe_clusters, &failure_pattern_clusters, 0.75);
+    let precedent_cluster_reviews =
+        review_precedent_clusters(&precedent_clusters, &failure_pattern_clusters);
+    let failure_pattern_cluster_reviews =
+        review_failure_pattern_clusters(&failure_pattern_clusters, &procedural_contradictions);
 
     LearningMaintenanceSnapshot {
         recent_run_recipe_count: recent_run_recipes.len(),
@@ -352,9 +359,37 @@ pub(crate) async fn sample_learning_maintenance_snapshot(
         procedural_contradiction_count: procedural_contradictions.len(),
         recent_precedent_count: count_recent_entries(&recent_precedents, recent_cutoff),
         precedent_cluster_count: precedent_clusters.len(),
+        precedent_compact_candidate_count: precedent_cluster_reviews
+            .iter()
+            .filter(|review| {
+                review.action == ProceduralClusterReviewAction::CompactCandidate
+                    && review.kind == "precedent"
+            })
+            .count(),
+        precedent_preserve_branch_count: precedent_cluster_reviews
+            .iter()
+            .filter(|review| {
+                review.action == ProceduralClusterReviewAction::PreserveBranch
+                    && review.kind == "precedent"
+            })
+            .count(),
         recent_reflection_count: count_recent_entries(&recent_reflections, recent_cutoff),
         recent_failure_pattern_count: count_recent_entries(&recent_failure_patterns, recent_cutoff),
         failure_pattern_cluster_count: failure_pattern_clusters.len(),
+        failure_pattern_compact_candidate_count: failure_pattern_cluster_reviews
+            .iter()
+            .filter(|review| {
+                review.action == ProceduralClusterReviewAction::CompactCandidate
+                    && review.kind == "failure_pattern"
+            })
+            .count(),
+        failure_pattern_blocking_count: failure_pattern_cluster_reviews
+            .iter()
+            .filter(|review| {
+                review.action == ProceduralClusterReviewAction::BlocksProceduralPaths
+                    && review.kind == "failure_pattern"
+            })
+            .count(),
         recent_skill_count: recent_learned_skills.len(),
         candidate_skill_count: recent_learned_skills
             .iter()
