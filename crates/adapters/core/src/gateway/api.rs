@@ -1304,6 +1304,17 @@ pub async fn handle_api_memory_projections(
     }
 
     let limit = params.limit.unwrap_or(3).clamp(1, 10);
+    let current_user_profile = extract_bearer_token(&headers)
+        .map(super::ws::token_hash_prefix)
+        .and_then(|token_prefix| {
+            let key = format!("web:{token_prefix}");
+            state.user_profile_store.load(&key).map(|profile| {
+                serde_json::json!({
+                    "key": key,
+                    "projection": synapse_domain::application::services::user_profile_service::format_profile_projection(&profile),
+                })
+            })
+        });
 
     let core_blocks = state
         .mem
@@ -1378,6 +1389,7 @@ pub async fn handle_api_memory_projections(
 
     Json(serde_json::json!({
         "agent_id": state.agent_id,
+        "current_user_profile": current_user_profile,
         "core_memory": core_projection,
         "working_state": working_state,
         "recent_sessions": recent_sessions,
