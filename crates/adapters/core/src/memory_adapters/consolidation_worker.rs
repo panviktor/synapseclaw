@@ -240,6 +240,7 @@ pub fn spawn_consolidation_worker(
                     run_recipe_store.as_ref(),
                     &agent_id,
                     config.activity_probe_limit * 4,
+                    config.activity_window,
                 )
                 .await
                 {
@@ -437,10 +438,13 @@ async fn run_skill_review(
     run_recipe_store: &dyn RunRecipeStorePort,
     agent_id: &str,
     limit: usize,
+    activity_window: Duration,
 ) -> Result<usize, synapse_domain::domain::memory::MemoryError> {
     let agent_id = agent_id.to_string();
     let skills = memory.list_skills(&agent_id, limit).await?;
-    let recipes = run_recipe_store.list(&agent_id);
+    let recent_cutoff =
+        (chrono::Utc::now().timestamp().max(0) as u64).saturating_sub(activity_window.as_secs());
+    let recipes = run_recipe_store.list_recent(&agent_id, recent_cutoff);
     let failure_clusters = plan_recent_clusters(
         memory,
         &agent_id,
