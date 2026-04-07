@@ -142,6 +142,21 @@ pub trait SkillMemoryPort: Send + Sync {
         })
         .await
     }
+
+    /// List skills updated recently for an agent.
+    async fn list_recent_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        Ok(self
+            .list_skills(agent_id, limit)
+            .await?
+            .into_iter()
+            .filter(|skill| skill.updated_at >= updated_since)
+            .collect())
+    }
 }
 
 // ── Reflection (self-improvement) ────────────────────────────────

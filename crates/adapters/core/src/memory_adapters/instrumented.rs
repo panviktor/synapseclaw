@@ -202,6 +202,24 @@ impl SkillMemoryPort for InstrumentedMemory {
         log_op("list_skills", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
         r
     }
+    async fn list_recent_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .list_recent_skills(agent_id, limit, updated_since)
+            .await;
+        log_op(
+            "list_recent_skills",
+            t,
+            r.as_ref().map(|v| v.len()).unwrap_or(0),
+        );
+        r
+    }
 }
 
 #[async_trait]

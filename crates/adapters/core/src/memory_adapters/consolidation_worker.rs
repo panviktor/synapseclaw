@@ -332,16 +332,16 @@ pub(crate) async fn sample_learning_maintenance_snapshot(
     )
     .await
     .unwrap_or_default();
+    let recent_cutoff =
+        chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
     let recent_skills = memory
-        .list_skills(&agent_id.to_string(), probe_limit)
+        .list_recent_skills(&agent_id.to_string(), probe_limit, recent_cutoff)
         .await
         .unwrap_or_default();
     let recent_learned_skills = recent_skills
         .iter()
         .filter(|skill| skill.origin == synapse_domain::domain::memory::SkillOrigin::Learned)
         .collect::<Vec<_>>();
-    let recent_cutoff =
-        chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
     let recipe_clusters = plan_recipe_clusters(&recent_run_recipes, 0.9);
     let procedural_contradictions =
         find_recipe_failure_contradictions(&recipe_clusters, &failure_pattern_clusters, 0.75);
@@ -441,10 +441,14 @@ async fn run_skill_review(
     activity_window: Duration,
 ) -> Result<usize, synapse_domain::domain::memory::MemoryError> {
     let agent_id = agent_id.to_string();
-    let skills = memory.list_skills(&agent_id, limit).await?;
     let recent_cutoff =
+        chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
+    let skills = memory
+        .list_recent_skills(&agent_id, limit, recent_cutoff)
+        .await?;
+    let recent_recipe_cutoff =
         (chrono::Utc::now().timestamp().max(0) as u64).saturating_sub(activity_window.as_secs());
-    let recipes = run_recipe_store.list_recent(&agent_id, recent_cutoff);
+    let recipes = run_recipe_store.list_recent(&agent_id, recent_recipe_cutoff);
     let failure_clusters = plan_recent_clusters(
         memory,
         &agent_id,

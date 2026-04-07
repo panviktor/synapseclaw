@@ -147,6 +147,16 @@ impl SkillMemoryPort for ConsolidatingMemory {
     ) -> Result<Vec<Skill>, MemoryError> {
         self.inner.list_skills(agent_id, limit).await
     }
+    async fn list_recent_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        self.inner
+            .list_recent_skills(agent_id, limit, updated_since)
+            .await
+    }
 }
 
 #[async_trait]

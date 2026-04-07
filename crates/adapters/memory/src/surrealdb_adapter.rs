@@ -1428,6 +1428,32 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         let rows = take_json!(resp, 0);
         Ok(rows.iter().filter_map(row_to_skill).collect())
     }
+
+    async fn list_recent_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM skill
+                 WHERE created_by = $agent
+                 AND (status IS NONE OR status != 'deprecated')
+                 AND updated_at >= $updated_since
+                 ORDER BY updated_at DESC, success_count DESC
+                 LIMIT $limit",
+            )
+            .bind(("agent", agent_id.clone()))
+            .bind(("updated_since", updated_since))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(rows.iter().filter_map(row_to_skill).collect())
+    }
 }
 
 // ── ReflectionPort ───────────────────────────────────────────────
