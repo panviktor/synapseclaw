@@ -412,6 +412,12 @@ pub fn format_run_recipe_cluster_projection(cluster: &RunRecipeCluster) -> Strin
             cluster.member_task_families.join(", ")
         ),
     ];
+    if !cluster.representative.lineage_task_families.is_empty() {
+        lines.push(format!(
+            "- lineage_task_families: {}",
+            cluster.representative.lineage_task_families.join(", ")
+        ));
+    }
     if !cluster.representative.tool_pattern.is_empty() {
         lines.push(format!(
             "- representative_tool_pattern: {}",
@@ -899,6 +905,26 @@ mod tests {
         assert!(projection.contains("delivery_search"));
         assert!(projection.contains("lineage=[search_delivery, delivery_search]"));
         assert!(projection.contains("promotion_blocked"));
+    }
+
+    #[test]
+    fn formats_run_recipe_cluster_projection_with_lineage() {
+        let projection = format_run_recipe_cluster_projection(&RunRecipeCluster {
+            representative: RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                lineage_task_families: vec!["search_delivery".into(), "delivery_search".into()],
+                sample_request: "find and send".into(),
+                summary: "summary".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 5,
+                updated_at: 1,
+            },
+            member_task_families: vec!["delivery_search".into(), "search_delivery".into()],
+        });
+
+        assert!(projection.contains("[run-recipe-cluster]"));
+        assert!(projection.contains("lineage_task_families: search_delivery, delivery_search"));
     }
 
     #[test]

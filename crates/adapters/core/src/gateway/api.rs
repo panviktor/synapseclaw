@@ -1454,6 +1454,7 @@ pub async fn handle_api_memory_projections(
     .map(|cluster| {
         serde_json::json!({
             "representative_task_family": cluster.representative.task_family,
+            "lineage_task_families": cluster.representative.lineage_task_families,
             "member_count": cluster.member_count(),
             "member_task_families": cluster.member_task_families,
             "projection": synapse_domain::application::services::memory_projection_service::format_run_recipe_cluster_projection(
