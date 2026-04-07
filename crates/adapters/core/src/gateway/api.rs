@@ -1487,17 +1487,6 @@ pub async fn handle_api_memory_projections(
         .list_skills(&state.agent_id, limit)
         .await
         .unwrap_or_default();
-    let learned_skill_count = learned_skills
-        .iter()
-        .filter(|skill| skill.origin == synapse_domain::domain::memory::SkillOrigin::Learned)
-        .count();
-    let candidate_learned_skill_count = learned_skills
-        .iter()
-        .filter(|skill| {
-            skill.origin == synapse_domain::domain::memory::SkillOrigin::Learned
-                && skill.status == synapse_domain::domain::memory::SkillStatus::Candidate
-        })
-        .count();
     let recent_skills = learned_skills
         .clone()
         .into_iter()
@@ -1736,22 +1725,22 @@ pub async fn handle_api_memory_projections(
             failure_pattern_cluster_count: failure_pattern_clusters.len(),
         },
     );
+    let maintenance_config =
+        crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default();
+    let learning_maintenance_snapshot =
+        crate::memory_adapters::consolidation_worker::sample_learning_maintenance_snapshot(
+            state.mem.as_ref(),
+            state.run_recipe_store.as_ref(),
+            &state.agent_id,
+            maintenance_config.activity_probe_limit,
+            maintenance_config.activity_window,
+            0,
+            false,
+        )
+        .await;
     let learning_maintenance_plan =
         synapse_domain::application::services::learning_maintenance_service::build_learning_maintenance_plan(
-            &synapse_domain::application::services::learning_maintenance_service::LearningMaintenanceSnapshot {
-                recent_run_recipe_count: run_recipes.len(),
-                run_recipe_cluster_count: recipe_clusters.len(),
-                procedural_contradiction_count: procedural_contradiction_entries.len(),
-                recent_precedent_count: recent_precedents.len(),
-                precedent_cluster_count: precedent_clusters.len(),
-                recent_reflection_count: recent_reflections.len(),
-                recent_failure_pattern_count: recent_failure_patterns.len(),
-                failure_pattern_cluster_count: failure_pattern_clusters.len(),
-                recent_skill_count: learned_skill_count,
-                candidate_skill_count: candidate_learned_skill_count,
-                skipped_cycles_since_maintenance: 0,
-                prompt_optimization_due: false,
-            },
+            &learning_maintenance_snapshot,
             &synapse_domain::application::services::learning_maintenance_service::LearningMaintenancePolicy::default(),
         );
     let learning_maintenance = synapse_domain::application::services::memory_projection_service::format_learning_maintenance_projection(

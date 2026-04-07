@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 use synapse_domain::application::services::learning_compaction_service::{
-    compact_near_duplicates, DuplicateCompactionThresholds,
+    compact_near_duplicates, compact_near_duplicates_with_failures, DuplicateCompactionThresholds,
 };
 use synapse_domain::application::services::learning_maintenance_service::{
     build_learning_maintenance_plan, LearningMaintenancePolicy, LearningMaintenanceSnapshot,
@@ -181,12 +181,31 @@ pub fn spawn_consolidation_worker(
             }
 
             if plan.run_precedent_compaction {
-                match compact_near_duplicates(
+                let recent_failure_clusters = match plan_recent_clusters(
+                    memory.as_ref(),
+                    &agent_id,
+                    ProceduralClusterKind::FailurePattern,
+                    config.activity_probe_limit * 4,
+                    6,
+                    0.96,
+                )
+                .await
+                {
+                    Ok(clusters) => clusters,
+                    Err(e) => {
+                        tracing::debug!(
+                            "Failed to load failure clusters for precedent compaction: {e}"
+                        );
+                        Vec::new()
+                    }
+                };
+                match compact_near_duplicates_with_failures(
                     memory.as_ref(),
                     &agent_id,
                     MemoryCategory::Custom("precedent".into()),
                     config.activity_probe_limit * 4,
                     &DuplicateCompactionThresholds::precedent_defaults(),
+                    &recent_failure_clusters,
                 )
                 .await
                 {
@@ -265,7 +284,7 @@ pub fn spawn_consolidation_worker(
     })
 }
 
-async fn sample_learning_maintenance_snapshot(
+pub(crate) async fn sample_learning_maintenance_snapshot(
     memory: &dyn UnifiedMemoryPort,
     run_recipe_store: &dyn RunRecipeStorePort,
     agent_id: &str,

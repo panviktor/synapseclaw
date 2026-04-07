@@ -220,6 +220,14 @@ pub fn precedent_summary_tools(value: &str) -> Vec<String> {
     parse_precedent_summary(value).tools
 }
 
+pub fn precedent_is_contradicted_by_failures(
+    precedent_content: &str,
+    failure_clusters: &[ProceduralCluster],
+    min_overlap: f64,
+) -> bool {
+    precedent_conflicts_with_failure_clusters(precedent_content, failure_clusters, min_overlap)
+}
+
 fn is_precedent_category(category: &MemoryCategory) -> bool {
     matches!(category, MemoryCategory::Custom(name) if name == "precedent")
 }

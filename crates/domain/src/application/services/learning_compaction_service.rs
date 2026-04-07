@@ -6,6 +6,7 @@
 
 use crate::application::services::failure_similarity_service;
 use crate::application::services::precedent_similarity_service;
+use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::domain::memory::{MemoryCategory, MemoryEntry, MemoryError, MemoryQuery};
 use crate::ports::memory::UnifiedMemoryPort;
 use std::collections::{HashMap, HashSet};
@@ -39,6 +40,17 @@ pub async fn compact_near_duplicates(
     limit: usize,
     thresholds: &DuplicateCompactionThresholds,
 ) -> Result<usize, MemoryError> {
+    compact_near_duplicates_with_failures(mem, agent_id, category, limit, thresholds, &[]).await
+}
+
+pub async fn compact_near_duplicates_with_failures(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    category: MemoryCategory,
+    limit: usize,
+    thresholds: &DuplicateCompactionThresholds,
+    failure_clusters: &[ProceduralCluster],
+) -> Result<usize, MemoryError> {
     let entries = mem.list_scoped(Some(&category), None, limit, false).await?;
     if entries.len() < 2 {
         return Ok(0);
@@ -58,6 +70,7 @@ pub async fn compact_near_duplicates(
         &similarity_lookup,
         &category,
         thresholds.duplicate_threshold,
+        failure_clusters,
     );
     let mut removed = 0;
     for key in duplicate_keys {
@@ -107,6 +120,7 @@ pub fn plan_duplicate_removals(
     similarity_lookup: &HashMap<String, Vec<MemoryEntry>>,
     category: &MemoryCategory,
     duplicate_threshold: f64,
+    failure_clusters: &[ProceduralCluster],
 ) -> Vec<String> {
     let mut ordered = entries.to_vec();
     ordered.sort_by(|left, right| {
@@ -138,6 +152,14 @@ pub fn plan_duplicate_removals(
             if distinct_procedural_shape(category, &entry.content, &similar.content) {
                 continue;
             }
+            if distinct_contradiction_state(
+                category,
+                &entry.content,
+                &similar.content,
+                failure_clusters,
+            ) {
+                continue;
+            }
             if kept.contains(&similar.key) {
                 removed.insert(entry.key.clone());
                 break;
@@ -162,6 +184,32 @@ fn distinct_procedural_shape(category: &MemoryCategory, left: &str, right: &str)
         }
         MemoryCategory::Custom(name) if name == "failure_pattern" => {
             failure_similarity_service::failure_contents_have_distinct_shape(left, right)
+        }
+        _ => false,
+    }
+}
+
+fn distinct_contradiction_state(
+    category: &MemoryCategory,
+    left: &str,
+    right: &str,
+    failure_clusters: &[ProceduralCluster],
+) -> bool {
+    match category {
+        MemoryCategory::Custom(name) if name == "precedent" && !failure_clusters.is_empty() => {
+            let left_contradicted =
+                precedent_similarity_service::precedent_is_contradicted_by_failures(
+                    left,
+                    failure_clusters,
+                    0.75,
+                );
+            let right_contradicted =
+                precedent_similarity_service::precedent_is_contradicted_by_failures(
+                    right,
+                    failure_clusters,
+                    0.75,
+                );
+            left_contradicted != right_contradicted
         }
         _ => false,
     }
@@ -201,6 +249,21 @@ mod tests {
         }
     }
 
+    fn failure_cluster(summary: &str) -> ProceduralCluster {
+        ProceduralCluster {
+            representative: MemoryEntry {
+                id: "f1".into(),
+                key: "f1".into(),
+                content: summary.into(),
+                category: MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            member_keys: vec!["f1".into()],
+        }
+    }
+
     #[test]
     fn removes_older_duplicate_when_newer_entry_kept() {
         let entries = vec![
@@ -223,6 +286,7 @@ mod tests {
             &similarity_lookup,
             &MemoryCategory::Custom("precedent".into()),
             0.95,
+            &[],
         );
         assert_eq!(removed, vec!["older".to_string()]);
     }
@@ -251,6 +315,7 @@ mod tests {
             &similarity_lookup,
             &MemoryCategory::Custom("precedent".into()),
             0.95,
+            &[],
         );
         assert_eq!(removed, vec!["second".to_string()]);
     }
@@ -326,6 +391,7 @@ mod tests {
             &similarity_lookup,
             &MemoryCategory::Custom("precedent".into()),
             0.95,
+            &[],
         );
         assert!(removed.is_empty());
     }
@@ -406,6 +472,69 @@ mod tests {
             &similarity_lookup,
             &MemoryCategory::Custom("failure_pattern".into()),
             0.95,
+            &[],
+        );
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn keeps_precedent_duplicates_when_contradiction_state_differs() {
+        let supported = MemoryEntry {
+            id: "supported".into(),
+            key: "supported".into(),
+            content: "tools=web_search -> message_send -> file_write | subjects=status.example.com"
+                .into(),
+            category: MemoryCategory::Custom("precedent".into()),
+            timestamp: "2026-03-01T00:00:00Z".into(),
+            session_id: None,
+            score: None,
+        };
+        let contradicted = MemoryEntry {
+            id: "contradicted".into(),
+            key: "contradicted".into(),
+            content: "tools=web_search -> message_send | subjects=status.example.com".into(),
+            category: MemoryCategory::Custom("precedent".into()),
+            timestamp: "2026-02-01T00:00:00Z".into(),
+            session_id: None,
+            score: None,
+        };
+        let similarity_lookup = HashMap::from([
+            (
+                "supported".into(),
+                vec![
+                    MemoryEntry {
+                        score: Some(1.0),
+                        ..supported.clone()
+                    },
+                    MemoryEntry {
+                        score: Some(0.98),
+                        ..contradicted.clone()
+                    },
+                ],
+            ),
+            (
+                "contradicted".into(),
+                vec![
+                    MemoryEntry {
+                        score: Some(1.0),
+                        ..contradicted.clone()
+                    },
+                    MemoryEntry {
+                        score: Some(0.98),
+                        ..supported.clone()
+                    },
+                ],
+            ),
+        ]);
+
+        let removed = plan_duplicate_removals(
+            &[supported, contradicted],
+            &similarity_lookup,
+            &MemoryCategory::Custom("precedent".into()),
+            0.95,
+            &[failure_cluster(
+                "failed_tools=web_search -> message_send | outcomes=runtime_error",
+            )],
         );
         assert!(removed.is_empty());
     }
