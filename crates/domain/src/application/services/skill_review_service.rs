@@ -1,10 +1,11 @@
-//! Deferred review for candidate learned skills.
+//! Deferred review and compaction for learned skills.
 //!
 //! This keeps the skill surface clean without invoking another model:
-//! repeated successful candidates can become active, while weak or shadowed
-//! candidates get deprecated.
+//! repeated successful candidates can become active, while weak, shadowed, or
+//! duplicate learned skills get deprecated.
 
 use crate::domain::memory::{MemoryId, Skill, SkillOrigin, SkillStatus};
+use std::cmp::Ordering;
 
 const ACTIVE_SUCCESS_THRESHOLD: u32 = 5;
 const FAILURE_DOMINANT_THRESHOLD: u32 = 2;
@@ -24,19 +25,16 @@ pub struct SkillReviewDecision {
     pub reason: &'static str,
 }
 
-pub fn review_candidate_skills(skills: &[Skill]) -> Vec<SkillReviewDecision> {
+pub fn review_learned_skills(skills: &[Skill]) -> Vec<SkillReviewDecision> {
     skills
         .iter()
-        .filter(|skill| skill.status == SkillStatus::Candidate)
-        .filter_map(|skill| review_candidate_skill(skill, skills))
+        .filter(|skill| skill.origin == SkillOrigin::Learned)
+        .filter(|skill| skill.status != SkillStatus::Deprecated)
+        .filter_map(|skill| review_learned_skill(skill, skills))
         .collect()
 }
 
-fn review_candidate_skill(skill: &Skill, all_skills: &[Skill]) -> Option<SkillReviewDecision> {
-    if skill.origin != SkillOrigin::Learned {
-        return None;
-    }
-
+fn review_learned_skill(skill: &Skill, all_skills: &[Skill]) -> Option<SkillReviewDecision> {
     if is_shadowed_by_higher_priority_active_skill(skill, all_skills) {
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
@@ -47,7 +45,20 @@ fn review_candidate_skill(skill: &Skill, all_skills: &[Skill]) -> Option<SkillRe
         });
     }
 
-    if skill.success_count >= ACTIVE_SUCCESS_THRESHOLD && skill.success_count > skill.fail_count {
+    if is_duplicate_of_preferred_learned_skill(skill, all_skills) {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "duplicate_learned_skill",
+        });
+    }
+
+    if skill.status == SkillStatus::Candidate
+        && skill.success_count >= ACTIVE_SUCCESS_THRESHOLD
+        && skill.success_count > skill.fail_count
+    {
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
@@ -57,7 +68,10 @@ fn review_candidate_skill(skill: &Skill, all_skills: &[Skill]) -> Option<SkillRe
         });
     }
 
-    if skill.fail_count >= FAILURE_DOMINANT_THRESHOLD && skill.fail_count > skill.success_count {
+    if skill.status == SkillStatus::Candidate
+        && skill.fail_count >= FAILURE_DOMINANT_THRESHOLD
+        && skill.fail_count > skill.success_count
+    {
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
@@ -74,9 +88,72 @@ fn is_shadowed_by_higher_priority_active_skill(skill: &Skill, all_skills: &[Skil
     all_skills.iter().any(|other| {
         other.id != skill.id
             && other.status == SkillStatus::Active
-            && other.name.eq_ignore_ascii_case(&skill.name)
             && skill_priority(other) > skill_priority(skill)
+            && skills_overlap(skill, other)
     })
+}
+
+fn is_duplicate_of_preferred_learned_skill(skill: &Skill, all_skills: &[Skill]) -> bool {
+    all_skills.iter().any(|other| {
+        other.id != skill.id
+            && other.origin == SkillOrigin::Learned
+            && other.status != SkillStatus::Deprecated
+            && skills_overlap(skill, other)
+            && preferred_skill_cmp(other, skill) == Ordering::Greater
+    })
+}
+
+fn skills_overlap(left: &Skill, right: &Skill) -> bool {
+    left.name.eq_ignore_ascii_case(&right.name)
+        || left
+            .task_family
+            .as_deref()
+            .zip(right.task_family.as_deref())
+            .is_some_and(|(left_family, right_family)| {
+                left_family.eq_ignore_ascii_case(right_family)
+            })
+        || tool_pattern_overlap(&left.tool_pattern, &right.tool_pattern) >= 0.75
+}
+
+fn tool_pattern_overlap(left: &[String], right: &[String]) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let shared = left
+        .iter()
+        .filter(|tool| right.iter().any(|other| other.eq_ignore_ascii_case(tool)))
+        .count() as f64;
+    let mut union = Vec::new();
+    for tool in left.iter().chain(right.iter()) {
+        if !union
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(tool))
+        {
+            union.push(tool.clone());
+        }
+    }
+    if union.is_empty() {
+        0.0
+    } else {
+        shared / union.len() as f64
+    }
+}
+
+fn preferred_skill_cmp(left: &Skill, right: &Skill) -> Ordering {
+    skill_status_rank(&left.status)
+        .cmp(&skill_status_rank(&right.status))
+        .then(left.success_count.cmp(&right.success_count))
+        .then(right.fail_count.cmp(&left.fail_count))
+        .then(left.updated_at.cmp(&right.updated_at))
+        .then_with(|| right.id.cmp(&left.id))
+}
+
+fn skill_status_rank(status: &SkillStatus) -> u8 {
+    match status {
+        SkillStatus::Active => 2,
+        SkillStatus::Candidate => 1,
+        SkillStatus::Deprecated => 0,
+    }
 }
 
 fn skill_priority(skill: &Skill) -> u8 {
@@ -121,7 +198,7 @@ mod tests {
 
     #[test]
     fn promotes_repeated_candidate_skill() {
-        let decisions = review_candidate_skills(&[sample_skill(
+        let decisions = review_learned_skills(&[sample_skill(
             "sk1",
             "search_delivery",
             SkillOrigin::Learned,
@@ -137,7 +214,7 @@ mod tests {
 
     #[test]
     fn deprecates_candidate_shadowed_by_manual_skill() {
-        let decisions = review_candidate_skills(&[
+        let decisions = review_learned_skills(&[
             sample_skill(
                 "sk1",
                 "search_delivery",
@@ -166,7 +243,7 @@ mod tests {
 
     #[test]
     fn deprecates_failure_dominant_candidate() {
-        let decisions = review_candidate_skills(&[sample_skill(
+        let decisions = review_learned_skills(&[sample_skill(
             "sk1",
             "search_delivery",
             SkillOrigin::Learned,
@@ -179,5 +256,31 @@ mod tests {
         assert_eq!(decisions[0].action, SkillReviewAction::Deprecate);
         assert_eq!(decisions[0].target_status, SkillStatus::Deprecated);
         assert_eq!(decisions[0].reason, "failure_dominant_candidate");
+    }
+
+    #[test]
+    fn deprecates_duplicate_weaker_learned_skill() {
+        let older_candidate = sample_skill(
+            "sk1",
+            "search_delivery_candidate",
+            SkillOrigin::Learned,
+            SkillStatus::Candidate,
+            3,
+            0,
+        );
+        let mut stronger_active = sample_skill(
+            "sk2",
+            "search_delivery",
+            SkillOrigin::Learned,
+            SkillStatus::Active,
+            7,
+            1,
+        );
+        stronger_active.task_family = Some("search_delivery".into());
+
+        let decisions = review_learned_skills(&[older_candidate, stronger_active]);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].action, SkillReviewAction::Deprecate);
+        assert_eq!(decisions[0].reason, "duplicate_learned_skill");
     }
 }

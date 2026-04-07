@@ -13,7 +13,7 @@ use synapse_domain::application::services::learning_compaction_service::{
 use synapse_domain::application::services::learning_maintenance_service::{
     build_learning_maintenance_plan, LearningMaintenancePolicy, LearningMaintenanceSnapshot,
 };
-use synapse_domain::application::services::skill_review_service::review_candidate_skills;
+use synapse_domain::application::services::skill_review_service::review_learned_skills;
 use synapse_domain::domain::memory::{MemoryCategory, MemoryEntry, SkillUpdate};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 
@@ -288,7 +288,7 @@ async fn run_skill_review(
 ) -> Result<usize, synapse_domain::domain::memory::MemoryError> {
     let agent_id = agent_id.to_string();
     let skills = memory.list_skills(&agent_id, limit).await?;
-    let decisions = review_candidate_skills(&skills);
+    let decisions = review_learned_skills(&skills);
     let mut applied = 0;
 
     for decision in decisions {

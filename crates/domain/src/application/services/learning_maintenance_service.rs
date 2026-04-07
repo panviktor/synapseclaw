@@ -27,6 +27,7 @@ pub enum LearningMaintenanceReason {
     RecentLearningActivity,
     PrecedentBacklog,
     FailurePatternBacklog,
+    SkillBacklog,
     CandidateSkillBacklog,
     PromptOptimizationDue,
     ForcedMaintenanceInterval,
@@ -63,6 +64,7 @@ pub struct LearningMaintenancePolicy {
     pub min_recent_learning_activity: usize,
     pub min_precedents_for_compaction: usize,
     pub min_failure_patterns_for_compaction: usize,
+    pub min_skills_for_review: usize,
     pub min_candidate_skills_for_review: usize,
     pub max_skipped_cycles_before_forced_maintenance: u32,
     pub min_reflections_for_prompt_optimization: usize,
@@ -74,6 +76,7 @@ impl Default for LearningMaintenancePolicy {
             min_recent_learning_activity: 1,
             min_precedents_for_compaction: 3,
             min_failure_patterns_for_compaction: 2,
+            min_skills_for_review: 3,
             min_candidate_skills_for_review: 2,
             max_skipped_cycles_before_forced_maintenance: 6,
             min_reflections_for_prompt_optimization: 3,
@@ -90,6 +93,7 @@ pub fn build_learning_maintenance_plan(
     let precedent_backlog = snapshot.recent_precedent_count >= policy.min_precedents_for_compaction;
     let failure_backlog =
         snapshot.recent_failure_pattern_count >= policy.min_failure_patterns_for_compaction;
+    let skill_backlog = snapshot.recent_skill_count >= policy.min_skills_for_review;
     let candidate_skill_backlog =
         snapshot.candidate_skill_count >= policy.min_candidate_skills_for_review;
     let forced_maintenance = snapshot.skipped_cycles_since_maintenance
@@ -101,7 +105,7 @@ pub fn build_learning_maintenance_plan(
     let run_gc = run_importance_decay;
     let run_precedent_compaction = precedent_backlog;
     let run_failure_pattern_compaction = failure_backlog;
-    let run_skill_review = candidate_skill_backlog;
+    let run_skill_review = skill_backlog || candidate_skill_backlog;
 
     let mut reasons = Vec::new();
     if recent_learning_activity {
@@ -112,6 +116,9 @@ pub fn build_learning_maintenance_plan(
     }
     if failure_backlog {
         reasons.push(LearningMaintenanceReason::FailurePatternBacklog);
+    }
+    if skill_backlog {
+        reasons.push(LearningMaintenanceReason::SkillBacklog);
     }
     if candidate_skill_backlog {
         reasons.push(LearningMaintenanceReason::CandidateSkillBacklog);
@@ -231,6 +238,9 @@ mod tests {
         assert!(plan
             .reasons
             .contains(&LearningMaintenanceReason::FailurePatternBacklog));
+        assert!(plan
+            .reasons
+            .contains(&LearningMaintenanceReason::SkillBacklog));
         assert!(plan
             .reasons
             .contains(&LearningMaintenanceReason::CandidateSkillBacklog));
