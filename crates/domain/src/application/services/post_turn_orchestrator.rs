@@ -7,6 +7,9 @@
 use crate::application::services::learning_candidate_service::{self, LearningCandidate};
 use crate::application::services::learning_events::LearningEvent;
 use crate::application::services::learning_evidence_service::{self, LearningEvidenceEnvelope};
+use crate::application::services::learning_quality_service::{
+    self, LearningCandidateAssessment,
+};
 use crate::application::services::learning_signals::{self, LearningSignal};
 use crate::application::services::memory_mutation as mutation;
 use crate::application::services::user_profile_service;
@@ -63,6 +66,8 @@ pub struct PostTurnReport {
     pub learning_evidence: LearningEvidenceEnvelope,
     /// Structured low-cost candidates for downstream learning.
     pub learning_candidates: Vec<LearningCandidate>,
+    /// Quality-gated assessments for those candidates.
+    pub learning_assessments: Vec<LearningCandidateAssessment>,
     /// Applied mutation events derived from low-cost learning candidates.
     pub candidate_mutations: Vec<LearningEvent>,
     /// Count of run recipes upserted from low-cost candidates.
@@ -92,8 +97,20 @@ pub async fn execute_post_turn_learning(
         &input.tool_facts,
         &learning_evidence,
     );
+    let existing_recipes = input
+        .run_recipe_store
+        .as_ref()
+        .map(|store| store.list(&input.agent_id))
+        .unwrap_or_default();
+    let learning_assessments = learning_quality_service::assess_learning_candidates(
+        &learning_candidates,
+        &learning_evidence,
+        &existing_recipes,
+    );
     let mutation_candidates =
-        learning_candidate_service::build_mutation_candidates(&learning_candidates);
+        learning_candidate_service::build_mutation_candidates_from_assessments(
+            &learning_assessments,
+        );
 
     let mut report = PostTurnReport {
         signal: signal.clone(),
@@ -102,6 +119,7 @@ pub async fn execute_post_turn_learning(
         reflection_started: false,
         learning_evidence: learning_evidence.clone(),
         learning_candidates: learning_candidates.clone(),
+        learning_assessments: learning_assessments.clone(),
         candidate_mutations: Vec::new(),
         run_recipes_upserted: 0,
         user_profile_updated: false,
@@ -168,8 +186,11 @@ pub async fn execute_post_turn_learning(
     // ── 1c. Cheap procedural candidate path ──
     if !signal.is_explicit() && input.auto_save_enabled {
         if let Some(store) = input.run_recipe_store.as_ref() {
-            for candidate in &learning_candidates {
-                let LearningCandidate::RunRecipe(recipe_candidate) = candidate else {
+            for assessment in &learning_assessments {
+                if !assessment.accepted {
+                    continue;
+                }
+                let LearningCandidate::RunRecipe(recipe_candidate) = &assessment.candidate else {
                     continue;
                 };
                 let updated_at = chrono::Utc::now().timestamp().max(0) as u64;
@@ -295,6 +316,8 @@ pub async fn execute_post_turn_learning(
             "learning_facets": report.learning_evidence.facets,
             "learning_candidate_count": report.learning_candidates.len(),
             "learning_candidates": report.learning_candidates,
+            "learning_assessment_count": report.learning_assessments.len(),
+            "learning_assessments": report.learning_assessments,
             "candidate_mutation_count": report.candidate_mutations.len(),
             "run_recipes_upserted": report.run_recipes_upserted,
             "user_profile_updated": report.user_profile_updated,

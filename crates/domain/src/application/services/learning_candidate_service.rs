@@ -7,6 +7,7 @@
 use crate::application::services::learning_evidence_service::{
     LearningEvidenceEnvelope, LearningEvidenceFacet,
 };
+use crate::application::services::learning_quality_service::LearningCandidateAssessment;
 use crate::application::services::user_profile_service::{ProfileFieldPatch, UserProfilePatch};
 use crate::domain::memory::MemoryCategory;
 use crate::domain::memory_mutation::{MutationCandidate, MutationSource};
@@ -98,6 +99,26 @@ pub fn build_mutation_candidates(candidates: &[LearningCandidate]) -> Vec<Mutati
                 category: MemoryCategory::Conversation,
                 text: format!("precedent: {}", precedent.summary),
                 confidence: 0.72,
+                source: MutationSource::ToolOutput,
+            });
+        }
+    }
+    mutations
+}
+
+pub fn build_mutation_candidates_from_assessments(
+    assessments: &[LearningCandidateAssessment],
+) -> Vec<MutationCandidate> {
+    let mut mutations = Vec::new();
+    for assessment in assessments {
+        if !assessment.accepted {
+            continue;
+        }
+        if let LearningCandidate::Precedent(precedent) = &assessment.candidate {
+            mutations.push(MutationCandidate {
+                category: MemoryCategory::Conversation,
+                text: format!("precedent: {}", precedent.summary),
+                confidence: assessment.confidence,
                 source: MutationSource::ToolOutput,
             });
         }
@@ -424,6 +445,36 @@ mod tests {
         assert_eq!(mutations[0].category, MemoryCategory::Conversation);
         assert_eq!(mutations[0].source, MutationSource::ToolOutput);
         assert!(mutations[0].text.contains("precedent:"));
+    }
+
+    #[test]
+    fn builds_mutation_candidates_only_from_accepted_assessments() {
+        let assessments = vec![
+            LearningCandidateAssessment {
+                candidate: LearningCandidate::Precedent(PrecedentLearningCandidate {
+                    summary: "tools=web_search".into(),
+                    tool_pattern: vec!["web_search".into()],
+                    subjects: vec!["Berlin".into()],
+                }),
+                confidence: 0.81,
+                accepted: true,
+                reason: "procedural_precedent",
+            },
+            LearningCandidateAssessment {
+                candidate: LearningCandidate::Precedent(PrecedentLearningCandidate {
+                    summary: "tools=shell".into(),
+                    tool_pattern: vec!["shell".into()],
+                    subjects: vec![],
+                }),
+                confidence: 0.41,
+                accepted: false,
+                reason: "weak_precedent_signal",
+            },
+        ];
+
+        let mutations = build_mutation_candidates_from_assessments(&assessments);
+        assert_eq!(mutations.len(), 1);
+        assert!((mutations[0].confidence - 0.81).abs() < f32::EPSILON);
     }
 
     #[test]
