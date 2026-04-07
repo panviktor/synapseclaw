@@ -70,6 +70,7 @@ pub struct SelfLearningEvalResult {
     pub run_recipe_review_decisions: Vec<run_recipe_review_service::RunRecipeReviewDecision>,
     pub run_recipe_review_items: Vec<String>,
     pub procedural_contradictions: Vec<procedural_contradiction_service::ProceduralContradiction>,
+    pub precedent_mutation_decisions: Vec<SelfLearningEvalMutationItem>,
     pub precedent_mutation_actions: Vec<&'static str>,
     pub precedent_mutation_reasons: Vec<String>,
     pub precedent_cluster_reviews: Vec<procedural_cluster_review_service::ProceduralClusterReview>,
@@ -84,6 +85,16 @@ pub struct SelfLearningEvalResult {
     pub mutation_candidate_count: usize,
     pub profile_patch_is_noop: bool,
     pub profile_projection: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SelfLearningEvalMutationItem {
+    pub action: &'static str,
+    pub source: &'static str,
+    pub target_id: Option<String>,
+    pub reason: String,
+    pub similarity: Option<f64>,
+    pub text: String,
 }
 
 pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEvalResult {
@@ -245,6 +256,7 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         run_recipe_review_decisions: run_recipe_review_decisions.clone(),
         run_recipe_review_items: run_recipe_review_items(&run_recipe_review_decisions),
         procedural_contradictions: procedural_contradictions.clone(),
+        precedent_mutation_decisions: precedent_mutation_items(&precedent_mutation_decisions),
         precedent_mutation_actions: precedent_mutation_action_names(&precedent_mutation_decisions),
         precedent_mutation_reasons: precedent_mutation_decisions
             .iter()
@@ -1247,17 +1259,60 @@ fn precedent_mutation_action_names(
 ) -> Vec<&'static str> {
     let mut actions = Vec::new();
     for decision in decisions {
-        let action = match decision.action {
-            crate::domain::memory_mutation::MutationAction::Add => "add",
-            crate::domain::memory_mutation::MutationAction::Update { .. } => "update",
-            crate::domain::memory_mutation::MutationAction::Delete { .. } => "delete",
-            crate::domain::memory_mutation::MutationAction::Noop => "noop",
-        };
+        let action = mutation_action_name(&decision.action);
         if !actions.contains(&action) {
             actions.push(action);
         }
     }
     actions
+}
+
+fn precedent_mutation_items(
+    decisions: &[crate::domain::memory_mutation::MutationDecision],
+) -> Vec<SelfLearningEvalMutationItem> {
+    decisions
+        .iter()
+        .map(|decision| {
+            let target_id = match &decision.action {
+                crate::domain::memory_mutation::MutationAction::Update { target_id }
+                | crate::domain::memory_mutation::MutationAction::Delete { target_id } => {
+                    Some(target_id.clone())
+                }
+                crate::domain::memory_mutation::MutationAction::Add
+                | crate::domain::memory_mutation::MutationAction::Noop => None,
+            };
+            SelfLearningEvalMutationItem {
+                action: mutation_action_name(&decision.action),
+                source: mutation_source_name(&decision.candidate.source),
+                target_id,
+                reason: decision.reason.clone(),
+                similarity: decision.similarity,
+                text: decision.candidate.text.clone(),
+            }
+        })
+        .collect()
+}
+
+fn mutation_action_name(
+    action: &crate::domain::memory_mutation::MutationAction,
+) -> &'static str {
+    match action {
+        crate::domain::memory_mutation::MutationAction::Add => "add",
+        crate::domain::memory_mutation::MutationAction::Update { .. } => "update",
+        crate::domain::memory_mutation::MutationAction::Delete { .. } => "delete",
+        crate::domain::memory_mutation::MutationAction::Noop => "noop",
+    }
+}
+
+fn mutation_source_name(
+    source: &crate::domain::memory_mutation::MutationSource,
+) -> &'static str {
+    match source {
+        crate::domain::memory_mutation::MutationSource::Consolidation => "consolidation",
+        crate::domain::memory_mutation::MutationSource::ExplicitUser => "explicit_user",
+        crate::domain::memory_mutation::MutationSource::ToolOutput => "tool_output",
+        crate::domain::memory_mutation::MutationSource::Reflection => "reflection",
+    }
 }
 
 fn cluster_review_items(
@@ -1647,6 +1702,11 @@ mod tests {
         assert_eq!(result.precedent_candidate_count, 1);
         assert_eq!(result.mutation_candidate_count, 1);
         assert!(result.precedent_mutation_actions.contains(&"add"));
+        assert!(result.precedent_mutation_decisions.iter().any(|decision| {
+            decision.action == "add"
+                && decision.source == "tool_output"
+                && decision.reason.contains("contradicted by failure clusters")
+        }));
         assert!(result
             .precedent_mutation_reasons
             .iter()

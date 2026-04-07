@@ -2039,6 +2039,7 @@ pub async fn handle_api_memory_learning_evals(
             "run_recipe_review_decisions": result.run_recipe_review_decisions,
             "run_recipe_review_items": result.run_recipe_review_items,
             "procedural_contradictions": result.procedural_contradictions,
+            "precedent_mutation_decisions": result.precedent_mutation_decisions,
             "precedent_mutation_actions": result.precedent_mutation_actions,
             "precedent_mutation_reasons": result.precedent_mutation_reasons,
             "precedent_cluster_reviews": result.precedent_cluster_reviews,
