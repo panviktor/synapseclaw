@@ -1989,12 +1989,12 @@ pub async fn handle_api_memory_learning_evals(
         }
         for review in &result.precedent_cluster_reviews {
             *by_precedent_cluster_review_action
-                .entry(format!("{:?}", review.action))
+                .entry(procedural_cluster_review_action_name(&review.action).to_string())
                 .or_default() += 1;
         }
         for review in &result.failure_cluster_reviews {
             *by_failure_cluster_review_action
-                .entry(format!("{:?}", review.action))
+                .entry(procedural_cluster_review_action_name(&review.action).to_string())
                 .or_default() += 1;
         }
         for reason in &result.maintenance_reasons {
@@ -2150,6 +2150,25 @@ fn skill_review_action_name(
         }
         synapse_domain::application::services::skill_review_service::SkillReviewAction::Deprecate => {
             "deprecate"
+        }
+    }
+}
+
+fn procedural_cluster_review_action_name(
+    action: &synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction,
+) -> &'static str {
+    match action {
+        synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction::Stable => {
+            "stable"
+        }
+        synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction::CompactCandidate => {
+            "compact_candidate"
+        }
+        synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction::PreserveBranch => {
+            "preserve_branch"
+        }
+        synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction::BlocksProceduralPaths => {
+            "blocks_procedural_paths"
         }
     }
 }
