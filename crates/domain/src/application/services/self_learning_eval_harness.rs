@@ -48,6 +48,8 @@ pub struct SelfLearningEvalScenario {
 pub struct SelfLearningEvalResult {
     pub scenario_id: &'static str,
     pub typed_fact_count: usize,
+    pub learning_evidence: learning_evidence_service::LearningEvidenceEnvelope,
+    pub learning_candidates: Vec<learning_candidate_service::LearningCandidate>,
     pub candidate_kinds: Vec<&'static str>,
     pub learning_assessments: Vec<learning_quality_service::LearningCandidateAssessment>,
     pub assessment_reasons: Vec<&'static str>,
@@ -220,6 +222,8 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
     SelfLearningEvalResult {
         scenario_id: scenario.id,
         typed_fact_count: evidence.typed_fact_count,
+        learning_evidence: evidence.clone(),
+        learning_candidates: candidates.clone(),
         candidate_kinds: candidate_kind_names(&candidates),
         learning_assessments: assessments.clone(),
         assessment_reasons: assessment_reason_names(&assessments),
@@ -1414,6 +1418,12 @@ mod tests {
             .unwrap();
 
         let result = evaluate_scenario(&scenario);
+        assert_eq!(result.learning_evidence.typed_fact_count, 1);
+        assert_eq!(result.learning_candidates.len(), 1);
+        assert!(matches!(
+            result.learning_candidates[0],
+            learning_candidate_service::LearningCandidate::UserProfile(_)
+        ));
         assert_eq!(result.user_profile_candidate_count, 1);
         assert_eq!(result.precedent_candidate_count, 0);
         assert_eq!(result.run_recipe_candidate_count, 0);
