@@ -69,6 +69,7 @@ pub fn spawn_consolidation_worker(
             max_skipped_cycles_before_forced_maintenance: config
                 .max_idle_cycles_before_forced_maintenance,
             min_reflections_for_prompt_optimization: config.min_reflections_for_optimization,
+            ..LearningMaintenancePolicy::default()
         };
 
         loop {
@@ -77,6 +78,7 @@ pub fn spawn_consolidation_worker(
                 provider.is_some() && last_optimization.elapsed() >= config.optimization_interval;
             let snapshot = sample_learning_maintenance_snapshot(
                 memory.as_ref(),
+                &agent_id,
                 config.activity_probe_limit,
                 config.activity_window,
                 skipped_cycles_since_maintenance,
@@ -86,6 +88,12 @@ pub fn spawn_consolidation_worker(
             let plan = build_learning_maintenance_plan(&snapshot, &maintenance_policy);
 
             if !plan.should_run_any() {
+                if plan.has_any_advisory_action() {
+                    tracing::debug!(
+                        reasons = ?plan.reasons,
+                        "Memory consolidation advisory backlog present; no executable maintenance step registered yet"
+                    );
+                }
                 skipped_cycles_since_maintenance =
                     skipped_cycles_since_maintenance.saturating_add(1);
                 tracing::debug!(
@@ -157,6 +165,7 @@ pub fn spawn_consolidation_worker(
 
 async fn sample_learning_maintenance_snapshot(
     memory: &dyn UnifiedMemoryPort,
+    agent_id: &str,
     probe_limit: usize,
     activity_window: Duration,
     skipped_cycles_since_maintenance: u32,
@@ -176,6 +185,10 @@ async fn sample_learning_maintenance_snapshot(
         probe_limit,
     )
     .await;
+    let recent_skills = memory
+        .list_skills(&agent_id.to_string(), probe_limit)
+        .await
+        .unwrap_or_default();
     let recent_cutoff =
         chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
 
@@ -183,6 +196,11 @@ async fn sample_learning_maintenance_snapshot(
         recent_precedent_count: count_recent_entries(&recent_precedents, recent_cutoff),
         recent_reflection_count: count_recent_entries(&recent_reflections, recent_cutoff),
         recent_failure_pattern_count: count_recent_entries(&recent_failure_patterns, recent_cutoff),
+        recent_skill_count: recent_skills.len(),
+        candidate_skill_count: recent_skills
+            .iter()
+            .filter(|skill| skill.status == synapse_domain::domain::memory::SkillStatus::Candidate)
+            .count(),
         skipped_cycles_since_maintenance,
         prompt_optimization_due,
     }

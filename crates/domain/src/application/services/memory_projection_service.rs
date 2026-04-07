@@ -3,6 +3,7 @@
 //! These are cheap, regenerable views over structured state. They are meant
 //! for operators and UI inspection, not as the canonical source of truth.
 
+use crate::application::services::learning_maintenance_service::LearningMaintenancePlan;
 use crate::domain::conversation::{ConversationEvent, ConversationSession, EventType};
 use crate::domain::dialogue_state::DialogueState;
 use crate::domain::memory::{CoreMemoryBlock, MemoryEntry, Skill};
@@ -268,6 +269,44 @@ pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) 
     Some(format!("{}\n", lines.join("\n")))
 }
 
+pub fn format_learning_maintenance_projection(plan: &LearningMaintenancePlan) -> Option<String> {
+    if !plan.has_any_advisory_action() {
+        return None;
+    }
+
+    let mut lines = vec!["[learning-maintenance]".to_string()];
+    lines.push(format!(
+        "- run_importance_decay: {}",
+        plan.run_importance_decay
+    ));
+    lines.push(format!("- run_gc: {}", plan.run_gc));
+    lines.push(format!(
+        "- run_precedent_compaction: {}",
+        plan.run_precedent_compaction
+    ));
+    lines.push(format!(
+        "- run_failure_pattern_compaction: {}",
+        plan.run_failure_pattern_compaction
+    ));
+    lines.push(format!("- run_skill_review: {}", plan.run_skill_review));
+    lines.push(format!(
+        "- run_prompt_optimization: {}",
+        plan.run_prompt_optimization
+    ));
+    if !plan.reasons.is_empty() {
+        lines.push(format!(
+            "- reasons: {}",
+            plan.reasons
+                .iter()
+                .map(|reason| format!("{reason:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    Some(format!("{}\n", lines.join("\n")))
+}
+
 fn format_recap_events(events: &[ConversationEvent]) -> Option<String> {
     let lines = events
         .iter()
@@ -490,5 +529,28 @@ mod tests {
         assert!(projection.contains("effective_skills: manual-deploy, search_delivery"));
         assert!(projection.contains("candidate_skill_count: 1"));
         assert!(projection.contains("failure_pattern_count: 1"));
+    }
+
+    #[test]
+    fn formats_learning_maintenance_projection() {
+        let projection = format_learning_maintenance_projection(
+            &crate::application::services::learning_maintenance_service::LearningMaintenancePlan {
+                run_importance_decay: true,
+                run_gc: true,
+                run_precedent_compaction: true,
+                run_failure_pattern_compaction: false,
+                run_skill_review: true,
+                run_prompt_optimization: false,
+                reasons: vec![
+                    crate::application::services::learning_maintenance_service::LearningMaintenanceReason::RecentLearningActivity,
+                    crate::application::services::learning_maintenance_service::LearningMaintenanceReason::CandidateSkillBacklog,
+                ],
+            },
+        )
+        .unwrap();
+
+        assert!(projection.contains("[learning-maintenance]"));
+        assert!(projection.contains("run_precedent_compaction: true"));
+        assert!(projection.contains("run_skill_review: true"));
     }
 }

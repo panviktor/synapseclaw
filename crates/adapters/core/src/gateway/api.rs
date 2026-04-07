@@ -1602,11 +1602,31 @@ pub async fn handle_api_memory_projections(
             failure_pattern_count: recent_failure_patterns.len(),
         },
     );
+    let learning_maintenance_plan =
+        synapse_domain::application::services::learning_maintenance_service::build_learning_maintenance_plan(
+            &synapse_domain::application::services::learning_maintenance_service::LearningMaintenanceSnapshot {
+                recent_precedent_count: recent_precedents.len(),
+                recent_reflection_count: recent_reflections.len(),
+                recent_failure_pattern_count: recent_failure_patterns.len(),
+                recent_skill_count: recent_skills.len(),
+                candidate_skill_count: skill_surface
+                    .iter()
+                    .filter(|entry| entry.status == "candidate")
+                    .count(),
+                skipped_cycles_since_maintenance: 0,
+                prompt_optimization_due: false,
+            },
+            &synapse_domain::application::services::learning_maintenance_service::LearningMaintenancePolicy::default(),
+        );
+    let learning_maintenance = synapse_domain::application::services::memory_projection_service::format_learning_maintenance_projection(
+        &learning_maintenance_plan,
+    );
 
     Json(serde_json::json!({
         "agent_id": state.agent_id,
         "current_user_profile": current_user_profile,
         "learning_digest": learning_digest,
+        "learning_maintenance": learning_maintenance,
         "core_memory": core_projection,
         "working_state": working_state,
         "recent_sessions": recent_sessions,
