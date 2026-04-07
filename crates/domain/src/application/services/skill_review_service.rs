@@ -7,6 +7,9 @@
 use crate::application::services::run_recipe_cluster_service::{
     plan_recipe_clusters, RunRecipeCluster,
 };
+use crate::application::services::{
+    failure_similarity_service, procedural_cluster_service::ProceduralCluster,
+};
 use crate::domain::memory::{MemoryId, Skill, SkillOrigin, SkillStatus};
 use crate::domain::run_recipe::RunRecipe;
 use std::cmp::Ordering;
@@ -31,12 +34,20 @@ pub struct SkillReviewDecision {
 }
 
 pub fn review_learned_skills(skills: &[Skill], recipes: &[RunRecipe]) -> Vec<SkillReviewDecision> {
+    review_learned_skills_with_failures(skills, recipes, &[])
+}
+
+pub fn review_learned_skills_with_failures(
+    skills: &[Skill],
+    recipes: &[RunRecipe],
+    failure_clusters: &[ProceduralCluster],
+) -> Vec<SkillReviewDecision> {
     let recipe_clusters = plan_recipe_clusters(recipes, 0.9);
     skills
         .iter()
         .filter(|skill| skill.origin == SkillOrigin::Learned)
         .filter(|skill| skill.status != SkillStatus::Deprecated)
-        .filter_map(|skill| review_learned_skill(skill, skills, &recipe_clusters))
+        .filter_map(|skill| review_learned_skill(skill, skills, &recipe_clusters, failure_clusters))
         .collect()
 }
 
@@ -44,6 +55,7 @@ fn review_learned_skill(
     skill: &Skill,
     all_skills: &[Skill],
     recipe_clusters: &[RunRecipeCluster],
+    failure_clusters: &[ProceduralCluster],
 ) -> Option<SkillReviewDecision> {
     if is_shadowed_by_higher_priority_active_skill(skill, all_skills) {
         return Some(SkillReviewDecision {
@@ -62,6 +74,19 @@ fn review_learned_skill(
             action: SkillReviewAction::Deprecate,
             target_status: SkillStatus::Deprecated,
             reason: "duplicate_learned_skill",
+        });
+    }
+
+    if skill.status == SkillStatus::Candidate
+        && !has_exact_recipe_cluster_support(skill, recipe_clusters)
+        && conflicting_failure_cluster_count(skill, failure_clusters) > 0
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "contradicted_by_failure_clusters",
         });
     }
 
@@ -151,6 +176,22 @@ fn has_exact_recipe_cluster_support(skill: &Skill, recipe_clusters: &[RunRecipeC
     recipe_clusters
         .iter()
         .any(|cluster| recipe_cluster_exactly_supports_skill(skill, cluster))
+}
+
+fn conflicting_failure_cluster_count(
+    skill: &Skill,
+    failure_clusters: &[ProceduralCluster],
+) -> usize {
+    failure_clusters
+        .iter()
+        .filter(|cluster| failure_cluster_conflicts_with_skill(skill, cluster))
+        .count()
+}
+
+fn failure_cluster_conflicts_with_skill(skill: &Skill, cluster: &ProceduralCluster) -> bool {
+    let failed_tools =
+        failure_similarity_service::failure_summary_failed_tools(&cluster.representative.content);
+    !failed_tools.is_empty() && tool_pattern_overlap(&skill.tool_pattern, &failed_tools) >= 0.75
 }
 
 fn recipe_cluster_supports_skill(skill: &Skill, cluster: &RunRecipeCluster) -> bool {
@@ -435,5 +476,35 @@ mod tests {
 
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].reason, "ambiguous_recipe_cluster_support");
+    }
+
+    #[test]
+    fn deprecates_candidate_contradicted_by_failure_clusters() {
+        let mut skill = sample_skill(
+            "sk1",
+            "search_delivery",
+            SkillOrigin::Learned,
+            SkillStatus::Candidate,
+            3,
+            0,
+        );
+        skill.tool_pattern = vec!["web_fetch".into(), "message_send".into()];
+
+        let failure_cluster = ProceduralCluster {
+            representative: crate::domain::memory::MemoryEntry {
+                id: "m1".into(),
+                key: "m1".into(),
+                content: "failed_tools=web_fetch -> message_send | outcomes=runtime_error".into(),
+                category: crate::domain::memory::MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            member_keys: vec!["m1".into()],
+        };
+
+        let decisions = review_learned_skills_with_failures(&[skill], &[], &[failure_cluster]);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].reason, "contradicted_by_failure_clusters");
     }
 }

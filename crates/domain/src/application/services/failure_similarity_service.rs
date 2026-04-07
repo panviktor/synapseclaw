@@ -182,6 +182,10 @@ pub fn failure_contents_have_distinct_shape(left: &str, right: &str) -> bool {
     is_distinct_failure_shape(&parse_failure_summary(left), &parse_failure_summary(right))
 }
 
+pub fn failure_summary_failed_tools(value: &str) -> Vec<String> {
+    parse_failure_summary(value).failed_tools
+}
+
 fn is_failure_category(category: &MemoryCategory) -> bool {
     matches!(category, MemoryCategory::Custom(name) if name == "failure_pattern")
 }

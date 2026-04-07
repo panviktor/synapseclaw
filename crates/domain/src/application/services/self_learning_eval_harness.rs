@@ -9,13 +9,14 @@ use crate::application::services::learning_conflict_service;
 use crate::application::services::learning_evidence_service;
 use crate::application::services::learning_quality_service;
 use crate::application::services::learning_strength_service;
+use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::application::services::recipe_evolution_service;
 use crate::application::services::skill_feedback_service;
 use crate::application::services::skill_promotion_service;
 use crate::application::services::skill_review_service;
 use crate::application::services::user_profile_service;
 use crate::domain::dialogue_state::FocusEntity;
-use crate::domain::memory::Skill;
+use crate::domain::memory::{MemoryCategory, MemoryEntry, Skill};
 use crate::domain::run_recipe::RunRecipe;
 use crate::domain::tool_fact::{
     DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation, ResourceFact,
@@ -82,8 +83,12 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         learning_candidate_service::build_mutation_candidates_from_assessments(&assessments);
     let skill_promotion_assessments = build_skill_promotion_assessments(scenario, &assessments);
     let resulting_recipes = build_resulting_recipes(scenario, &assessments);
-    let skill_review_decisions =
-        skill_review_service::review_learned_skills(&scenario.existing_skills, &resulting_recipes);
+    let resulting_failure_clusters = build_resulting_failure_clusters(&assessments);
+    let skill_review_decisions = skill_review_service::review_learned_skills_with_failures(
+        &scenario.existing_skills,
+        &resulting_recipes,
+        &resulting_failure_clusters,
+    );
     let skill_feedback = build_skill_feedback(scenario, &assessments);
     let patch = learning_candidate_service::build_user_profile_patch_from_assessments(
         &assessments,
@@ -525,6 +530,43 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             }],
             tool_facts: Vec::new(),
         },
+        SelfLearningEvalScenario {
+            id: "candidate_skill_contradicted_by_failure_pattern_is_deprecated",
+            user_message: "Fetch the page",
+            assistant_response: "The fetch failed.",
+            current_profile: None,
+            existing_recipes: Vec::new(),
+            existing_skills: vec![Skill {
+                id: "sk-learned".into(),
+                name: "fetch_page".into(),
+                description: "Learned skill".into(),
+                content: "content".into(),
+                task_family: Some("fetch_page".into()),
+                tool_pattern: vec!["web_fetch".into()],
+                tags: vec!["recipe-promotion".into()],
+                success_count: 3,
+                fail_count: 0,
+                version: 1,
+                origin: crate::domain::memory::SkillOrigin::Learned,
+                status: crate::domain::memory::SkillStatus::Candidate,
+                created_by: "agent".into(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }],
+            tool_facts: vec![
+                TypedToolFact {
+                    tool_id: "web_fetch".into(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::WebResource,
+                        operation: ResourceOperation::Fetch,
+                        locator: "https://status.example.com".into(),
+                        host: Some("status.example.com".into()),
+                        metadata: ResourceMetadata::default(),
+                    }),
+                },
+                TypedToolFact::outcome("web_fetch", OutcomeStatus::RuntimeError, Some(220)),
+            ],
+        },
     ]
 }
 
@@ -619,6 +661,34 @@ fn build_skill_feedback(
             ))
         })
         .flatten()
+        .collect()
+}
+
+fn build_resulting_failure_clusters(
+    assessments: &[learning_quality_service::LearningCandidateAssessment],
+) -> Vec<ProceduralCluster> {
+    assessments
+        .iter()
+        .enumerate()
+        .filter(|(_, assessment)| assessment.accepted)
+        .filter_map(|(index, assessment)| {
+            let LearningCandidate::FailurePattern(failure) = &assessment.candidate else {
+                return None;
+            };
+            let key = format!("eval-failure-{index}");
+            Some(ProceduralCluster {
+                representative: MemoryEntry {
+                    id: key.clone(),
+                    key: key.clone(),
+                    content: failure.summary.clone(),
+                    category: MemoryCategory::Custom("failure_pattern".into()),
+                    timestamp: "2026-01-01T00:00:00Z".into(),
+                    session_id: None,
+                    score: None,
+                },
+                member_keys: vec![key],
+            })
+        })
         .collect()
 }
 
@@ -923,5 +993,22 @@ mod tests {
         assert!(result
             .skill_review_reasons
             .contains(&"ambiguous_recipe_cluster_support"));
+    }
+
+    #[test]
+    fn candidate_skill_contradicted_by_failure_pattern_is_deprecated() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| {
+                scenario.id == "candidate_skill_contradicted_by_failure_pattern_is_deprecated"
+            })
+            .unwrap();
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.accepted_failure_pattern_count, 1);
+        assert_eq!(result.accepted_skill_review_count, 1);
+        assert!(result
+            .skill_review_reasons
+            .contains(&"contradicted_by_failure_clusters"));
     }
 }

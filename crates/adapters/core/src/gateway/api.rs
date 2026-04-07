@@ -1503,15 +1503,6 @@ pub async fn handle_api_memory_projections(
             }
         })
         .collect::<Vec<_>>();
-    let skill_review_decisions =
-        synapse_domain::application::services::skill_review_service::review_learned_skills(
-            &learned_skills,
-            &all_run_recipes,
-        );
-    let skill_review = synapse_domain::application::services::memory_projection_service::format_skill_review_projection(
-        &skill_review_decisions,
-    );
-
     let mut skill_surface = configured_skills
         .iter()
         .cloned()
@@ -1631,7 +1622,7 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
-    let failure_pattern_clusters =
+    let failure_pattern_clusters_raw =
         synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters(
             state.mem.as_ref(),
             &state.agent_id,
@@ -1641,7 +1632,19 @@ pub async fn handle_api_memory_projections(
             0.96,
         )
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+
+    let skill_review_decisions =
+        synapse_domain::application::services::skill_review_service::review_learned_skills_with_failures(
+            &learned_skills,
+            &all_run_recipes,
+            &failure_pattern_clusters_raw,
+        );
+    let skill_review = synapse_domain::application::services::memory_projection_service::format_skill_review_projection(
+        &skill_review_decisions,
+    );
+
+    let failure_pattern_clusters = failure_pattern_clusters_raw
         .into_iter()
         .map(|cluster| {
             serde_json::json!({

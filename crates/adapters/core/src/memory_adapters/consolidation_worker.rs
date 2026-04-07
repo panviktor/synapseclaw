@@ -20,7 +20,7 @@ use synapse_domain::application::services::run_recipe_cluster_service::plan_reci
 use synapse_domain::application::services::run_recipe_review_service::{
     review_run_recipes, RunRecipeReviewThresholds,
 };
-use synapse_domain::application::services::skill_review_service::review_learned_skills;
+use synapse_domain::application::services::skill_review_service::review_learned_skills_with_failures;
 use synapse_domain::domain::memory::{MemoryCategory, MemoryEntry, SkillUpdate};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
@@ -365,7 +365,16 @@ async fn run_skill_review(
     let agent_id = agent_id.to_string();
     let skills = memory.list_skills(&agent_id, limit).await?;
     let recipes = run_recipe_store.list(&agent_id);
-    let decisions = review_learned_skills(&skills, &recipes);
+    let failure_clusters = plan_recent_clusters(
+        memory,
+        &agent_id,
+        ProceduralClusterKind::FailurePattern,
+        limit,
+        6,
+        0.96,
+    )
+    .await?;
+    let decisions = review_learned_skills_with_failures(&skills, &recipes, &failure_clusters);
     let mut applied = 0;
 
     for decision in decisions {
