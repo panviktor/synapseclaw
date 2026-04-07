@@ -719,3 +719,53 @@ It should become:
 
 That is the point where “self-learning” starts to be a product reality,
 not just an architectural aspiration.
+
+---
+
+## Post-4.9 Follow-Up: SurrealDB Upgrades For Phase 4.8
+
+After the main Phase 4.9 learning work is complete, we should explicitly return
+to the Phase 4.8 runtime path and push more shortlist/retrieval work down into
+SurrealDB-native queries.
+
+This follow-up is intentionally **after** the core 4.9 work, so we do not mix:
+
+- learning architecture completion
+- runtime retrieval optimization
+
+The main 4.8 areas to improve through SurrealDB are:
+
+- `session_search` shortlist generation via richer hybrid/vector/full-text queries
+- `precedent_search` and `memory_recall` over-fetch + re-rank inside SurrealDB
+- graph + temporal expansion for related sessions, precedents, and run context
+- contradiction / nearby-memory shortlist generation before Rust-side resolution
+- retrieval-side grouping for episodic compaction candidates
+- better neighborhood search for recent working-context recap support
+
+The intended split should stay:
+
+```text
+SurrealDB = shortlist, similarity, graph expansion, temporal filtering
+Rust = final resolution, state transitions, budgeting, clarification, safety
+```
+
+This means the post-4.9 optimization work should improve:
+
+- retrieval quality
+- latency
+- fewer application-side full-list scans
+- better use of SurrealDB's vector/graph/temporal capabilities
+
+But it should **not** move into SurrealDB:
+
+- hard-fact arbitration
+- clarification policy
+- final prompt/context budgeting
+- dialogue state transitions
+- security and scope boundaries
+
+This follow-up should be treated as:
+
+- a Phase 4.8 optimization pass
+- enabled by Phase 4.9
+- but not required to declare the core 4.9 learning architecture finished
