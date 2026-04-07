@@ -1460,6 +1460,61 @@ pub async fn handle_api_memory_everyday_evals(
     .into_response()
 }
 
+/// GET /api/memory/evals/learning — deterministic self-learning evals.
+pub async fn handle_api_memory_learning_evals(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let scenarios =
+        synapse_domain::application::services::self_learning_eval_harness::default_golden_scenarios();
+    let mut results = Vec::with_capacity(scenarios.len());
+    let mut by_candidate_kind = std::collections::BTreeMap::<String, usize>::new();
+    let mut profile_updates = 0usize;
+    let mut recipe_candidates = 0usize;
+
+    for scenario in scenarios {
+        let result =
+            synapse_domain::application::services::self_learning_eval_harness::evaluate_scenario(
+                &scenario,
+            );
+        for kind in &result.candidate_kinds {
+            *by_candidate_kind.entry((*kind).to_string()).or_default() += 1;
+        }
+        if !result.profile_patch_is_noop {
+            profile_updates += 1;
+        }
+        recipe_candidates += result.run_recipe_candidate_count;
+
+        results.push(serde_json::json!({
+            "id": result.scenario_id,
+            "typed_fact_count": result.typed_fact_count,
+            "candidate_kinds": result.candidate_kinds,
+            "user_profile_candidate_count": result.user_profile_candidate_count,
+            "precedent_candidate_count": result.precedent_candidate_count,
+            "run_recipe_candidate_count": result.run_recipe_candidate_count,
+            "mutation_candidate_count": result.mutation_candidate_count,
+            "profile_patch_is_noop": result.profile_patch_is_noop,
+            "profile_projection": result.profile_projection,
+        }));
+    }
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "summary": {
+            "scenario_count": results.len(),
+            "candidate_kinds": by_candidate_kind,
+            "profile_updates": profile_updates,
+            "recipe_candidates": recipe_candidates,
+        },
+        "results": results,
+    }))
+    .into_response()
+}
+
 /// GET /api/user-profiles — list structured user profiles
 pub async fn handle_api_user_profiles_list(
     State(state): State<AppState>,
