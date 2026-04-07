@@ -7,8 +7,11 @@
 use crate::application::services::learning_candidate_service::{self, LearningCandidate};
 use crate::application::services::learning_evidence_service;
 use crate::application::services::learning_quality_service;
+use crate::application::services::recipe_evolution_service;
+use crate::application::services::skill_promotion_service;
 use crate::application::services::user_profile_service;
 use crate::domain::dialogue_state::FocusEntity;
+use crate::domain::memory::Skill;
 use crate::domain::run_recipe::RunRecipe;
 use crate::domain::tool_fact::{
     DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation, ResourceFact,
@@ -24,6 +27,7 @@ pub struct SelfLearningEvalScenario {
     pub assistant_response: &'static str,
     pub current_profile: Option<UserProfile>,
     pub existing_recipes: Vec<RunRecipe>,
+    pub existing_skills: Vec<Skill>,
     pub tool_facts: Vec<TypedToolFact>,
 }
 
@@ -40,6 +44,8 @@ pub struct SelfLearningEvalResult {
     pub accepted_candidate_kinds: Vec<&'static str>,
     pub accepted_run_recipe_count: usize,
     pub accepted_failure_pattern_count: usize,
+    pub skill_promotion_reasons: Vec<&'static str>,
+    pub accepted_skill_promotion_count: usize,
     pub mutation_candidate_count: usize,
     pub profile_patch_is_noop: bool,
     pub profile_projection: Option<String>,
@@ -60,6 +66,7 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
     );
     let mutation_candidates =
         learning_candidate_service::build_mutation_candidates_from_assessments(&assessments);
+    let skill_promotion_assessments = build_skill_promotion_assessments(scenario, &assessments);
     let patch = learning_candidate_service::build_user_profile_patch(
         &candidates,
         scenario.current_profile.as_ref(),
@@ -94,6 +101,11 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
                     && matches!(assessment.candidate, LearningCandidate::FailurePattern(_))
             })
             .count(),
+        skill_promotion_reasons: skill_promotion_reason_names(&skill_promotion_assessments),
+        accepted_skill_promotion_count: skill_promotion_assessments
+            .iter()
+            .filter(|assessment| assessment.accepted)
+            .count(),
         mutation_candidate_count: mutation_candidates.len(),
         profile_patch_is_noop: patch.is_noop(),
         profile_projection: projected_profile
@@ -110,6 +122,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             assistant_response: "Saved your timezone.",
             current_profile: None,
             existing_recipes: Vec::new(),
+            existing_skills: Vec::new(),
             tool_facts: vec![TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
@@ -125,6 +138,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             assistant_response: "Fetched the page and sent it.",
             current_profile: None,
             existing_recipes: Vec::new(),
+            existing_skills: Vec::new(),
             tool_facts: vec![
                 TypedToolFact {
                     tool_id: "web_search".into(),
@@ -164,6 +178,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 ..Default::default()
             }),
             existing_recipes: Vec::new(),
+            existing_skills: Vec::new(),
             tool_facts: vec![TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
@@ -184,9 +199,10 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 sample_request: "find the status page and send it".into(),
                 summary: "pattern=web_search -> message_send".into(),
                 tool_pattern: vec!["web_search".into(), "message_send".into()],
-                success_count: 3,
+                success_count: 2,
                 updated_at: 1,
             }],
+            existing_skills: Vec::new(),
             tool_facts: vec![
                 TypedToolFact {
                     tool_id: "web_search".into(),
@@ -220,6 +236,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 success_count: 4,
                 updated_at: 1,
             }],
+            existing_skills: Vec::new(),
             tool_facts: vec![
                 TypedToolFact {
                     tool_id: "shell".into(),
@@ -246,6 +263,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             assistant_response: "I could not complete that.",
             current_profile: None,
             existing_recipes: Vec::new(),
+            existing_skills: Vec::new(),
             tool_facts: vec![
                 TypedToolFact {
                     tool_id: "web_fetch".into(),
@@ -260,7 +278,79 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 TypedToolFact::outcome("web_fetch", OutcomeStatus::RuntimeError, Some(220)),
             ],
         },
+        SelfLearningEvalScenario {
+            id: "strong_repeated_recipe_promotes_skill_candidate",
+            user_message: "Find the status page and send it again",
+            assistant_response: "Fetched the page and sent it again.",
+            current_profile: None,
+            existing_recipes: vec![RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                sample_request: "find the status page and send it".into(),
+                summary: "pattern=web_search -> message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 2,
+                updated_at: 1,
+            }],
+            existing_skills: Vec::new(),
+            tool_facts: vec![
+                TypedToolFact {
+                    tool_id: "web_search".into(),
+                    payload: ToolFactPayload::Search(SearchFact {
+                        domain: SearchDomain::Web,
+                        query: Some("status page".into()),
+                        result_count: Some(2),
+                        primary_locator: Some("https://status.example.com".into()),
+                    }),
+                },
+                TypedToolFact {
+                    tool_id: "message_send".into(),
+                    payload: ToolFactPayload::Delivery(DeliveryFact {
+                        target: DeliveryTargetKind::CurrentConversation,
+                        content_bytes: Some(24),
+                    }),
+                },
+            ],
+        },
     ]
+}
+
+fn build_skill_promotion_assessments(
+    scenario: &SelfLearningEvalScenario,
+    assessments: &[learning_quality_service::LearningCandidateAssessment],
+) -> Vec<skill_promotion_service::SkillPromotionAssessment> {
+    assessments
+        .iter()
+        .filter(|assessment| assessment.accepted)
+        .filter_map(|assessment| {
+            let LearningCandidate::RunRecipe(candidate) = &assessment.candidate else {
+                return None;
+            };
+            let recipe = if assessment.reason == "merge_existing_recipe" {
+                scenario
+                    .existing_recipes
+                    .iter()
+                    .find(|existing| existing.task_family == candidate.task_family_hint)
+                    .map(|existing| {
+                        recipe_evolution_service::merge_existing_recipe(existing, candidate, 1)
+                    })
+                    .unwrap_or_else(|| {
+                        recipe_evolution_service::build_new_recipe("agent", candidate, 1)
+                    })
+            } else {
+                recipe_evolution_service::build_new_recipe("agent", candidate, 1)
+            };
+            let skill_name = skill_promotion_service::build_skill_name(&recipe);
+            let existing_skill = scenario
+                .existing_skills
+                .iter()
+                .find(|skill| skill.name == skill_name);
+            Some(skill_promotion_service::assess_recipe_for_skill_promotion(
+                &recipe,
+                existing_skill,
+            ))
+        })
+        .collect()
 }
 
 fn candidate_kind_names(candidates: &[LearningCandidate]) -> Vec<&'static str> {
@@ -338,6 +428,18 @@ fn assessment_reason_names(
     reasons
 }
 
+fn skill_promotion_reason_names(
+    assessments: &[skill_promotion_service::SkillPromotionAssessment],
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    for assessment in assessments {
+        if !reasons.contains(&assessment.reason) {
+            reasons.push(assessment.reason);
+        }
+    }
+    reasons
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +503,10 @@ mod tests {
         assert_eq!(result.accepted_run_recipe_count, 1);
         assert!(result.accepted_candidate_kinds.contains(&"run_recipe"));
         assert!(result.assessment_reasons.contains(&"merge_existing_recipe"));
+        assert_eq!(result.accepted_skill_promotion_count, 1);
+        assert!(result
+            .skill_promotion_reasons
+            .contains(&"create_candidate_skill"));
     }
 
     #[test]
@@ -432,5 +538,20 @@ mod tests {
         assert!(result.assessment_reasons.contains(&"typed_failure_pattern"));
         assert_eq!(result.accepted_failure_pattern_count, 1);
         assert_eq!(result.mutation_candidate_count, 1);
+    }
+
+    #[test]
+    fn repeated_recipe_promotes_candidate_skill() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "strong_repeated_recipe_promotes_skill_candidate")
+            .unwrap();
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.accepted_run_recipe_count, 1);
+        assert_eq!(result.accepted_skill_promotion_count, 1);
+        assert!(result
+            .skill_promotion_reasons
+            .contains(&"create_candidate_skill"));
     }
 }

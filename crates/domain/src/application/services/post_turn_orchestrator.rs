@@ -12,6 +12,7 @@ use crate::application::services::learning_signals::{self, LearningSignal};
 use crate::application::services::memory_mutation as mutation;
 use crate::application::services::precedent_similarity_service;
 use crate::application::services::recipe_evolution_service;
+use crate::application::services::skill_promotion_service::{self, SkillPromotionAssessment};
 use crate::application::services::user_profile_service;
 use crate::domain::memory::MemoryCategory;
 use crate::domain::memory_mutation::{MutationCandidate, MutationSource, MutationThresholds};
@@ -71,6 +72,10 @@ pub struct PostTurnReport {
     pub candidate_mutations: Vec<LearningEvent>,
     /// Count of run recipes upserted from low-cost candidates.
     pub run_recipes_upserted: usize,
+    /// Candidate/active skill assessments derived from repeated recipes.
+    pub skill_promotion_assessments: Vec<SkillPromotionAssessment>,
+    /// Count of learned skills created or refreshed from recipe promotion.
+    pub skills_upserted: usize,
     /// Whether a structured user profile patch was applied.
     pub user_profile_updated: bool,
 }
@@ -132,6 +137,8 @@ pub async fn execute_post_turn_learning(
         learning_assessments: learning_assessments.clone(),
         candidate_mutations: Vec::new(),
         run_recipes_upserted: 0,
+        skill_promotion_assessments: Vec::new(),
+        skills_upserted: 0,
         user_profile_updated: false,
     };
 
@@ -224,6 +231,7 @@ pub async fn execute_post_turn_learning(
     // ── 1d. Cheap procedural candidate path ──
     if !signal.is_explicit() && input.auto_save_enabled {
         if let Some(store) = input.run_recipe_store.as_ref() {
+            let mut promoted_recipes = Vec::new();
             for assessment in &learning_assessments {
                 if !assessment.accepted {
                     continue;
@@ -257,13 +265,69 @@ pub async fn execute_post_turn_learning(
                         updated_at,
                     )
                 };
-                match store.upsert(recipe) {
-                    Ok(()) => report.run_recipes_upserted += 1,
+                match store.upsert(recipe.clone()) {
+                    Ok(()) => {
+                        report.run_recipes_upserted += 1;
+                        promoted_recipes.push(recipe);
+                    }
                     Err(e) => {
                         tracing::warn!(
                             target: "post_turn",
                             error = %e,
                             "Run recipe upsert failed"
+                        );
+                    }
+                }
+            }
+
+            for recipe in promoted_recipes {
+                let skill_name = skill_promotion_service::build_skill_name(&recipe);
+                let existing_skill = match mem.get_skill(&skill_name, &input.agent_id).await {
+                    Ok(skill) => skill,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "post_turn",
+                            error = %e,
+                            skill = %skill_name,
+                            "Skill lookup failed during recipe promotion"
+                        );
+                        None
+                    }
+                };
+                let promotion = skill_promotion_service::assess_recipe_for_skill_promotion(
+                    &recipe,
+                    existing_skill.as_ref(),
+                );
+                report.skill_promotion_assessments.push(promotion.clone());
+                if !promotion.accepted {
+                    continue;
+                }
+
+                let result = if let Some(existing_skill) = existing_skill {
+                    mem.update_skill(
+                        &existing_skill.id,
+                        skill_promotion_service::build_skill_update(&recipe, &promotion),
+                        &input.agent_id,
+                    )
+                    .await
+                } else {
+                    mem.store_skill(skill_promotion_service::build_new_skill(
+                        &input.agent_id,
+                        &recipe,
+                        &promotion,
+                    ))
+                    .await
+                    .map(|_| ())
+                };
+
+                match result {
+                    Ok(()) => report.skills_upserted += 1,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "post_turn",
+                            error = %e,
+                            skill = %promotion.skill_name,
+                            "Skill promotion failed"
                         );
                     }
                 }
@@ -370,6 +434,9 @@ pub async fn execute_post_turn_learning(
             "learning_assessments": report.learning_assessments,
             "candidate_mutation_count": report.candidate_mutations.len(),
             "run_recipes_upserted": report.run_recipes_upserted,
+            "skill_promotion_count": report.skill_promotion_assessments.len(),
+            "skill_promotion_assessments": report.skill_promotion_assessments,
+            "skills_upserted": report.skills_upserted,
             "user_profile_updated": report.user_profile_updated,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
@@ -388,8 +455,8 @@ mod tests {
         Visibility,
     };
     use crate::domain::tool_fact::{
-        OutcomeStatus, ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileFact,
-        UserProfileField,
+        OutcomeStatus, ProfileOperation, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact,
+        UserProfileFact, UserProfileField,
     };
     use crate::domain::user_profile::UserProfile;
     use crate::ports::memory::{
@@ -407,7 +474,10 @@ mod tests {
         assert_eq!(REFLECT_MIN_RESPONSE_LEN, 200);
     }
 
-    struct StubMemory;
+    #[derive(Default)]
+    struct StubMemory {
+        skills: parking_lot::RwLock<Vec<Skill>>,
+    }
 
     #[async_trait]
     impl WorkingMemoryPort for StubMemory {
@@ -490,25 +560,63 @@ mod tests {
 
     #[async_trait]
     impl SkillMemoryPort for StubMemory {
-        async fn store_skill(&self, _: Skill) -> Result<MemoryId, MemoryError> {
-            Err(MemoryError::Storage("not used in test".into()))
+        async fn store_skill(&self, mut skill: Skill) -> Result<MemoryId, MemoryError> {
+            if skill.id.is_empty() {
+                skill.id = format!("skill_{}", self.skills.read().len() + 1);
+            }
+            let id = skill.id.clone();
+            self.skills.write().push(skill);
+            Ok(id)
         }
 
         async fn find_skills(&self, _: &MemoryQuery) -> Result<Vec<Skill>, MemoryError> {
-            Ok(vec![])
+            Ok(self.skills.read().clone())
         }
 
         async fn update_skill(
             &self,
-            _: &MemoryId,
-            _: SkillUpdate,
+            skill_id: &MemoryId,
+            update: SkillUpdate,
             _: &AgentId,
         ) -> Result<(), MemoryError> {
+            if let Some(existing) = self
+                .skills
+                .write()
+                .iter_mut()
+                .find(|skill| skill.id == *skill_id)
+            {
+                if update.increment_success {
+                    existing.success_count = existing.success_count.saturating_add(1);
+                }
+                if update.increment_fail {
+                    existing.fail_count = existing.fail_count.saturating_add(1);
+                }
+                let should_bump_version = update.new_description.is_some()
+                    || update.new_content.is_some()
+                    || update.new_status.is_some();
+                if let Some(description) = update.new_description {
+                    existing.description = description;
+                }
+                if let Some(content) = update.new_content {
+                    existing.content = content;
+                }
+                if let Some(status) = update.new_status {
+                    existing.status = status;
+                }
+                if should_bump_version {
+                    existing.version = existing.version.saturating_add(1);
+                }
+            }
             Ok(())
         }
 
-        async fn get_skill(&self, _: &str, _: &AgentId) -> Result<Option<Skill>, MemoryError> {
-            Ok(None)
+        async fn get_skill(&self, name: &str, _: &AgentId) -> Result<Option<Skill>, MemoryError> {
+            Ok(self
+                .skills
+                .read()
+                .iter()
+                .find(|skill| skill.name == name)
+                .cloned())
         }
     }
 
@@ -652,7 +760,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_updates_structured_user_profile_from_learning_candidates() {
-        let memory = StubMemory;
+        let memory = StubMemory::default();
         let store = Arc::new(InMemoryUserProfileStore::new());
 
         let report = execute_post_turn_learning(
@@ -688,7 +796,7 @@ mod tests {
 
     #[tokio::test]
     async fn skips_user_profile_write_when_learning_patch_changes_nothing() {
-        let memory = StubMemory;
+        let memory = StubMemory::default();
         let store = Arc::new(InMemoryUserProfileStore::new());
         store
             .upsert(
@@ -729,7 +837,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_failure_outcomes_trigger_reflection_without_string_matching() {
-        let memory = StubMemory;
+        let memory = StubMemory::default();
         let report = execute_post_turn_learning(
             &memory,
             PostTurnInput {
@@ -753,5 +861,76 @@ mod tests {
         .await;
 
         assert!(report.reflection_started);
+    }
+
+    #[tokio::test]
+    async fn repeated_recipe_promotes_skill_candidate() {
+        let memory = StubMemory::default();
+        let run_recipe_store =
+            Arc::new(crate::ports::run_recipe_store::InMemoryRunRecipeStore::new());
+        run_recipe_store
+            .upsert(crate::domain::run_recipe::RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                sample_request: "find the status page and send it".into(),
+                summary: "Use web search and deliver the result.".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 2,
+                updated_at: 1,
+            })
+            .unwrap();
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message: "Find the status page and send it again".into(),
+                assistant_response: "Fetched the page and sent it again.".into(),
+                tools_used: vec!["web_search".into(), "message_send".into()],
+                tool_facts: vec![
+                    TypedToolFact {
+                        tool_id: "web_search".into(),
+                        payload: ToolFactPayload::Search(SearchFact {
+                            domain: SearchDomain::Web,
+                            query: Some("status page".into()),
+                            result_count: Some(2),
+                            primary_locator: Some("https://status.example.com".into()),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "message_send".into(),
+                        payload: ToolFactPayload::Delivery(
+                            crate::domain::tool_fact::DeliveryFact {
+                                target: crate::domain::tool_fact::DeliveryTargetKind::CurrentConversation,
+                                content_bytes: Some(24),
+                            },
+                        ),
+                    },
+                ],
+                run_recipe_store: Some(run_recipe_store),
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+            },
+        )
+        .await;
+
+        assert_eq!(report.run_recipes_upserted, 1);
+        assert_eq!(report.skills_upserted, 1);
+        assert!(report
+            .skill_promotion_assessments
+            .iter()
+            .any(|assessment| assessment.reason == "create_candidate_skill"));
+        let stored_skills = memory.skills.read().clone();
+        assert_eq!(stored_skills.len(), 1);
+        assert_eq!(
+            stored_skills[0].status,
+            crate::domain::memory::SkillStatus::Candidate
+        );
+        assert_eq!(
+            stored_skills[0].origin,
+            crate::domain::memory::SkillOrigin::Learned
+        );
     }
 }

@@ -127,7 +127,9 @@ pub async fn reflect_on_run(
                     let update = SkillUpdate {
                         increment_success: summary.outcome == ReflectionOutcome::Success,
                         increment_fail: summary.outcome == ReflectionOutcome::Failure,
+                        new_description: None,
                         new_content: Some(content.clone()),
+                        new_status: None,
                     };
                     memory
                         .update_skill(&existing.id, update, &agent_id.to_string())

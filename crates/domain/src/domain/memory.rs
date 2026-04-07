@@ -368,7 +368,9 @@ pub struct Skill {
 pub struct SkillUpdate {
     pub increment_success: bool,
     pub increment_fail: bool,
+    pub new_description: Option<String>,
     pub new_content: Option<String>,
+    pub new_status: Option<SkillStatus>,
 }
 
 // ── Reflection ───────────────────────────────────────────────────

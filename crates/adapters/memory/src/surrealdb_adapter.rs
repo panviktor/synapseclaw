@@ -1289,8 +1289,19 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         if update.increment_fail {
             parts.push("fail_count += 1".to_string());
         }
+        if update.new_description.is_some() {
+            parts.push("description = $description".to_string());
+        }
         if update.new_content.is_some() {
             parts.push("content = $content".to_string());
+        }
+        if update.new_status.is_some() {
+            parts.push("status = $status".to_string());
+        }
+        if update.new_description.is_some()
+            || update.new_content.is_some()
+            || update.new_status.is_some()
+        {
             parts.push("version += 1".to_string());
         }
 
@@ -1304,8 +1315,14 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .query(&q)
             .bind(("id", skill_id.clone()))
             .bind(("agent", agent_id.clone()));
+        if let Some(ref description) = update.new_description {
+            query = query.bind(("description", description.clone()));
+        }
         if let Some(ref content) = update.new_content {
             query = query.bind(("content", content.clone()));
+        }
+        if let Some(ref status) = update.new_status {
+            query = query.bind(("status", status.to_string()));
         }
 
         query

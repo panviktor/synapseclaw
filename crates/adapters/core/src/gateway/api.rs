@@ -1674,11 +1674,13 @@ pub async fn handle_api_memory_learning_evals(
     let mut by_candidate_kind = std::collections::BTreeMap::<String, usize>::new();
     let mut by_accepted_candidate_kind = std::collections::BTreeMap::<String, usize>::new();
     let mut by_assessment_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_skill_promotion_reason = std::collections::BTreeMap::<String, usize>::new();
     let mut profile_updates = 0usize;
     let mut recipe_candidates = 0usize;
     let mut accepted_recipe_candidates = 0usize;
     let mut failure_pattern_candidates = 0usize;
     let mut accepted_failure_pattern_candidates = 0usize;
+    let mut accepted_skill_promotions = 0usize;
 
     for scenario in scenarios {
         let result =
@@ -1698,6 +1700,11 @@ pub async fn handle_api_memory_learning_evals(
                 .entry((*reason).to_string())
                 .or_default() += 1;
         }
+        for reason in &result.skill_promotion_reasons {
+            *by_skill_promotion_reason
+                .entry((*reason).to_string())
+                .or_default() += 1;
+        }
         if !result.profile_patch_is_noop {
             profile_updates += 1;
         }
@@ -1705,6 +1712,7 @@ pub async fn handle_api_memory_learning_evals(
         accepted_recipe_candidates += result.accepted_run_recipe_count;
         failure_pattern_candidates += result.failure_pattern_candidate_count;
         accepted_failure_pattern_candidates += result.accepted_failure_pattern_count;
+        accepted_skill_promotions += result.accepted_skill_promotion_count;
 
         results.push(serde_json::json!({
             "id": result.scenario_id,
@@ -1718,6 +1726,8 @@ pub async fn handle_api_memory_learning_evals(
             "accepted_run_recipe_count": result.accepted_run_recipe_count,
             "failure_pattern_candidate_count": result.failure_pattern_candidate_count,
             "accepted_failure_pattern_count": result.accepted_failure_pattern_count,
+            "skill_promotion_reasons": result.skill_promotion_reasons,
+            "accepted_skill_promotion_count": result.accepted_skill_promotion_count,
             "mutation_candidate_count": result.mutation_candidate_count,
             "profile_patch_is_noop": result.profile_patch_is_noop,
             "profile_projection": result.profile_projection,
@@ -1731,11 +1741,13 @@ pub async fn handle_api_memory_learning_evals(
             "candidate_kinds": by_candidate_kind,
             "accepted_candidate_kinds": by_accepted_candidate_kind,
             "assessment_reasons": by_assessment_reason,
+            "skill_promotion_reasons": by_skill_promotion_reason,
             "profile_updates": profile_updates,
             "recipe_candidates": recipe_candidates,
             "accepted_recipe_candidates": accepted_recipe_candidates,
             "failure_pattern_candidates": failure_pattern_candidates,
             "accepted_failure_pattern_candidates": accepted_failure_pattern_candidates,
+            "accepted_skill_promotions": accepted_skill_promotions,
         },
         "results": results,
     }))
