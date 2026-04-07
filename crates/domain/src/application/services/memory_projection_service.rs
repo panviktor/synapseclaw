@@ -6,6 +6,7 @@
 use crate::application::services::learning_maintenance_service::LearningMaintenancePlan;
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::application::services::run_recipe_cluster_service::RunRecipeCluster;
+use crate::application::services::skill_review_service::SkillReviewDecision;
 use crate::domain::conversation::{ConversationEvent, ConversationSession, EventType};
 use crate::domain::dialogue_state::DialogueState;
 use crate::domain::memory::{CoreMemoryBlock, MemoryEntry, Skill};
@@ -211,6 +212,22 @@ pub fn format_skill_conflict_policy_projection() -> String {
     ]
     .join("\n")
         + "\n"
+}
+
+pub fn format_skill_review_projection(decisions: &[SkillReviewDecision]) -> Option<String> {
+    if decisions.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec!["[skill-review]".to_string()];
+    for decision in decisions {
+        lines.push(format!(
+            "- {} -> {:?} ({})",
+            decision.skill_name, decision.action, decision.reason
+        ));
+    }
+
+    Some(format!("{}\n", lines.join("\n")))
 }
 
 pub fn format_memory_entry_projection(section: &str, entry: &MemoryEntry) -> String {
@@ -637,5 +654,22 @@ mod tests {
         assert!(projection.contains("run_run_recipe_review: true"));
         assert!(projection.contains("run_precedent_compaction: true"));
         assert!(projection.contains("run_skill_review: true"));
+    }
+
+    #[test]
+    fn formats_skill_review_projection() {
+        let projection = format_skill_review_projection(&[SkillReviewDecision {
+            skill_id: "sk1".into(),
+            skill_name: "search_delivery".into(),
+            action:
+                crate::application::services::skill_review_service::SkillReviewAction::Deprecate,
+            target_status: crate::domain::memory::SkillStatus::Deprecated,
+            reason: "unsupported_by_recipe_clusters",
+        }])
+        .unwrap();
+
+        assert!(projection.contains("[skill-review]"));
+        assert!(projection.contains("search_delivery"));
+        assert!(projection.contains("unsupported_by_recipe_clusters"));
     }
 }

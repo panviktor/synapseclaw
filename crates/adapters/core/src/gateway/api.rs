@@ -1416,11 +1416,13 @@ pub async fn handle_api_memory_projections(
         Vec::new()
     };
 
-    let mut run_recipes = state.run_recipe_store.list(&state.agent_id);
-    run_recipes.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
-    let run_recipes = run_recipes
-        .into_iter()
+    let mut all_run_recipes = state.run_recipe_store.list(&state.agent_id);
+    all_run_recipes.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    let run_recipes = all_run_recipes
+        .iter()
         .take(limit)
+        .cloned()
+        .into_iter()
         .map(|recipe| {
             let projection =
                 synapse_domain::application::services::memory_projection_service::format_run_recipe_projection(
@@ -1434,7 +1436,7 @@ pub async fn handle_api_memory_projections(
         .collect::<Vec<_>>();
 
     let recipe_clusters = synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters(
-        &state.run_recipe_store.list(&state.agent_id),
+        &all_run_recipes,
         0.9,
     )
     .into_iter()
@@ -1477,11 +1479,13 @@ pub async fn handle_api_memory_projections(
             .then_with(|| left.name.cmp(&right.name))
     });
 
-    let recent_skills = state
+    let learned_skills = state
         .mem
         .list_skills(&state.agent_id, limit)
         .await
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let recent_skills = learned_skills
+        .clone()
         .into_iter()
         .map(|skill| {
             let origin = skill.origin.to_string();
@@ -1499,6 +1503,14 @@ pub async fn handle_api_memory_projections(
             }
         })
         .collect::<Vec<_>>();
+    let skill_review_decisions =
+        synapse_domain::application::services::skill_review_service::review_learned_skills(
+            &learned_skills,
+            &all_run_recipes,
+        );
+    let skill_review = synapse_domain::application::services::memory_projection_service::format_skill_review_projection(
+        &skill_review_decisions,
+    );
 
     let mut skill_surface = configured_skills
         .iter()
@@ -1705,6 +1717,8 @@ pub async fn handle_api_memory_projections(
         "working_state": working_state,
         "recent_sessions": recent_sessions,
         "skill_conflict_policy": synapse_domain::application::services::memory_projection_service::format_skill_conflict_policy_projection(),
+        "skill_review": skill_review,
+        "skill_review_decisions": skill_review_decisions,
         "configured_skills": configured_skills,
         "recent_skills": recent_skills,
         "skill_surface": skill_surface,

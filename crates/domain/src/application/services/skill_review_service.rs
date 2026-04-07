@@ -15,13 +15,13 @@ const ACTIVE_SUCCESS_THRESHOLD: u32 = 5;
 const FAILURE_DOMINANT_THRESHOLD: u32 = 2;
 const SKILL_RECIPE_SUPPORT_THRESHOLD: f64 = 0.66;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum SkillReviewAction {
     PromoteToActive,
     Deprecate,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SkillReviewDecision {
     pub skill_id: MemoryId,
     pub skill_name: String,
