@@ -463,6 +463,10 @@ pub async fn execute_post_turn_learning(
                                             skill_name: skill_promotion_service::build_skill_name(
                                                 &decision.canonical_recipe,
                                             ),
+                                            lineage_task_families: decision
+                                                .canonical_recipe
+                                                .lineage_task_families
+                                                .clone(),
                                             accepted: false,
                                             reason: decision
                                                 .promotion_block_reason

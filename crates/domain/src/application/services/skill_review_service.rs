@@ -29,6 +29,7 @@ pub enum SkillReviewAction {
 pub struct SkillReviewDecision {
     pub skill_id: MemoryId,
     pub skill_name: String,
+    pub lineage_task_families: Vec<String>,
     pub action: SkillReviewAction,
     pub target_status: SkillStatus,
     pub reason: &'static str,
@@ -62,6 +63,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::Deprecate,
             target_status: SkillStatus::Deprecated,
             reason: "shadowed_by_higher_priority_active_skill",
@@ -72,6 +74,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::Deprecate,
             target_status: SkillStatus::Deprecated,
             reason: "duplicate_learned_skill",
@@ -85,6 +88,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::DowngradeToCandidate,
             target_status: SkillStatus::Candidate,
             reason: "active_supported_recipe_cluster_contradicted_by_failure_clusters",
@@ -97,6 +101,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::DowngradeToCandidate,
             target_status: SkillStatus::Candidate,
             reason: "active_skill_contradicted_by_failure_clusters",
@@ -110,6 +115,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::Deprecate,
             target_status: SkillStatus::Deprecated,
             reason: "supported_recipe_cluster_contradicted_by_failure_clusters",
@@ -123,6 +129,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::Deprecate,
             target_status: SkillStatus::Deprecated,
             reason: "contradicted_by_failure_clusters",
@@ -137,6 +144,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::Deprecate,
             target_status: SkillStatus::Deprecated,
             reason: "unsupported_by_recipe_clusters",
@@ -150,6 +158,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::Deprecate,
             target_status: SkillStatus::Deprecated,
             reason: "ambiguous_recipe_cluster_support",
@@ -163,6 +172,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::PromoteToActive,
             target_status: SkillStatus::Active,
             reason: "repeated_successes",
@@ -176,6 +186,7 @@ fn review_learned_skill(
         return Some(SkillReviewDecision {
             skill_id: skill.id.clone(),
             skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
             action: SkillReviewAction::Deprecate,
             target_status: SkillStatus::Deprecated,
             reason: "failure_dominant_candidate",

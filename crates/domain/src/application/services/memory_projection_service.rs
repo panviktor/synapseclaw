@@ -241,9 +241,17 @@ pub fn format_skill_review_projection(decisions: &[SkillReviewDecision]) -> Opti
 
     let mut lines = vec!["[skill-review]".to_string()];
     for decision in decisions {
+        let lineage = if decision.lineage_task_families.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " lineage=[{}]",
+                decision.lineage_task_families.join(", ")
+            )
+        };
         lines.push(format!(
-            "- {} -> {:?} ({})",
-            decision.skill_name, decision.action, decision.reason
+            "- {} -> {:?} ({}){}",
+            decision.skill_name, decision.action, decision.reason, lineage
         ));
     }
 
@@ -906,6 +914,7 @@ mod tests {
         let projection = format_skill_review_projection(&[SkillReviewDecision {
             skill_id: "sk1".into(),
             skill_name: "search_delivery".into(),
+            lineage_task_families: vec!["search_delivery".into(), "delivery_search".into()],
             action:
                 crate::application::services::skill_review_service::SkillReviewAction::Deprecate,
             target_status: crate::domain::memory::SkillStatus::Deprecated,
@@ -916,5 +925,6 @@ mod tests {
         assert!(projection.contains("[skill-review]"));
         assert!(projection.contains("search_delivery"));
         assert!(projection.contains("unsupported_by_recipe_clusters"));
+        assert!(projection.contains("lineage=[search_delivery, delivery_search]"));
     }
 }

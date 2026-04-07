@@ -18,6 +18,7 @@ const SKILL_PROMOTION_CONTRADICTION_OVERLAP_THRESHOLD: f64 = 0.75;
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillPromotionAssessment {
     pub skill_name: String,
+    pub lineage_task_families: Vec<String>,
     pub accepted: bool,
     pub reason: &'static str,
     pub target_status: SkillStatus,
@@ -38,10 +39,12 @@ pub fn assess_recipe_for_skill_promotion_with_failures(
     failure_clusters: &[ProceduralCluster],
 ) -> SkillPromotionAssessment {
     let skill_name = build_skill_name(recipe);
+    let lineage_task_families = recipe_lineage_task_families(recipe);
 
     if recipe.success_count < SKILL_CANDIDATE_SUCCESS_THRESHOLD {
         return SkillPromotionAssessment {
             skill_name,
+            lineage_task_families,
             accepted: false,
             reason: "insufficient_repetition",
             target_status: SkillStatus::Candidate,
@@ -51,6 +54,7 @@ pub fn assess_recipe_for_skill_promotion_with_failures(
     if recipe.tool_pattern.len() < 2 || recipe.summary.trim().is_empty() {
         return SkillPromotionAssessment {
             skill_name,
+            lineage_task_families,
             accepted: false,
             reason: "weak_recipe_shape",
             target_status: SkillStatus::Candidate,
@@ -62,6 +66,7 @@ pub fn assess_recipe_for_skill_promotion_with_failures(
     {
         return SkillPromotionAssessment {
             skill_name,
+            lineage_task_families,
             accepted: false,
             reason: "shadowed_by_higher_origin_skill",
             target_status: shadowing_skill.status.clone(),
@@ -75,6 +80,7 @@ pub fn assess_recipe_for_skill_promotion_with_failures(
         ) {
             return SkillPromotionAssessment {
                 skill_name,
+                lineage_task_families,
                 accepted: false,
                 reason: "manual_or_imported_skill_exists",
                 target_status: existing_skill.status.clone(),
@@ -89,6 +95,7 @@ pub fn assess_recipe_for_skill_promotion_with_failures(
     ) {
         return SkillPromotionAssessment {
             skill_name,
+            lineage_task_families,
             accepted: false,
             reason: "contradicted_by_failure_clusters",
             target_status: SkillStatus::Candidate,
@@ -121,6 +128,7 @@ pub fn assess_recipe_for_skill_promotion_with_failures(
 
     SkillPromotionAssessment {
         skill_name,
+        lineage_task_families,
         accepted: true,
         reason,
         target_status,

@@ -16,6 +16,7 @@ use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::application::services::procedural_contradiction_service;
 use crate::application::services::recipe_evolution_service;
 use crate::application::services::run_recipe_cluster_service;
+use crate::application::services::run_recipe_review_service;
 use crate::application::services::skill_feedback_service;
 use crate::application::services::skill_promotion_service;
 use crate::application::services::skill_review_service;
@@ -57,11 +58,14 @@ pub struct SelfLearningEvalResult {
     pub accepted_run_recipe_count: usize,
     pub accepted_failure_pattern_count: usize,
     pub skill_promotion_reasons: Vec<&'static str>,
+    pub skill_promotion_items: Vec<String>,
     pub accepted_skill_promotion_count: usize,
     pub skill_review_reasons: Vec<&'static str>,
+    pub skill_review_items: Vec<String>,
     pub accepted_skill_review_count: usize,
     pub skill_feedback_reasons: Vec<&'static str>,
     pub accepted_skill_feedback_count: usize,
+    pub run_recipe_review_items: Vec<String>,
     pub precedent_mutation_actions: Vec<&'static str>,
     pub precedent_mutation_reasons: Vec<String>,
     pub precedent_cluster_review_items: Vec<String>,
@@ -112,6 +116,11 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         build_resulting_precedent_clusters(scenario, &precedent_mutation_decisions);
     let resulting_recipe_clusters =
         run_recipe_cluster_service::plan_recipe_clusters(&resulting_recipes, 0.9);
+    let run_recipe_review_decisions = run_recipe_review_service::review_run_recipes_with_failures(
+        &resulting_recipes,
+        &resulting_failure_clusters,
+        &run_recipe_review_service::RunRecipeReviewThresholds::default(),
+    );
     let procedural_contradictions =
         procedural_contradiction_service::find_recipe_failure_contradictions(
             &resulting_recipe_clusters,
@@ -215,14 +224,17 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
             })
             .count(),
         skill_promotion_reasons: skill_promotion_reason_names(&skill_promotion_assessments),
+        skill_promotion_items: skill_promotion_items(&skill_promotion_assessments),
         accepted_skill_promotion_count: skill_promotion_assessments
             .iter()
             .filter(|assessment| assessment.accepted)
             .count(),
         skill_review_reasons: skill_review_reason_names(&skill_review_decisions),
+        skill_review_items: skill_review_items(&skill_review_decisions),
         accepted_skill_review_count: skill_review_decisions.len(),
         skill_feedback_reasons: skill_feedback_reason_names(&skill_feedback),
         accepted_skill_feedback_count: skill_feedback.len(),
+        run_recipe_review_items: run_recipe_review_items(&run_recipe_review_decisions),
         precedent_mutation_actions: precedent_mutation_action_names(&precedent_mutation_decisions),
         precedent_mutation_reasons: precedent_mutation_decisions
             .iter()
@@ -1148,6 +1160,22 @@ fn skill_promotion_reason_names(
     reasons
 }
 
+fn skill_promotion_items(
+    assessments: &[skill_promotion_service::SkillPromotionAssessment],
+) -> Vec<String> {
+    assessments
+        .iter()
+        .map(|assessment| {
+            format!(
+                "{}:{}:[{}]",
+                assessment.reason,
+                assessment.skill_name,
+                assessment.lineage_task_families.join(", ")
+            )
+        })
+        .collect()
+}
+
 fn skill_feedback_reason_names(
     feedback: &[skill_feedback_service::SkillFailureFeedback],
 ) -> Vec<&'static str> {
@@ -1170,6 +1198,36 @@ fn skill_review_reason_names(
         }
     }
     reasons
+}
+
+fn skill_review_items(decisions: &[skill_review_service::SkillReviewDecision]) -> Vec<String> {
+    decisions
+        .iter()
+        .map(|decision| {
+            format!(
+                "{}:{}:[{}]",
+                decision.reason,
+                decision.skill_name,
+                decision.lineage_task_families.join(", ")
+            )
+        })
+        .collect()
+}
+
+fn run_recipe_review_items(
+    decisions: &[run_recipe_review_service::RunRecipeReviewDecision],
+) -> Vec<String> {
+    decisions
+        .iter()
+        .map(|decision| {
+            format!(
+                "{}:{}:[{}]",
+                decision.reason,
+                decision.canonical_recipe.task_family,
+                decision.canonical_recipe.lineage_task_families.join(", ")
+            )
+        })
+        .collect()
 }
 
 fn precedent_mutation_action_names(
@@ -1353,6 +1411,10 @@ mod tests {
         assert!(result
             .skill_promotion_reasons
             .contains(&"create_candidate_skill"));
+        assert!(result
+            .skill_promotion_items
+            .iter()
+            .any(|item| item.contains("[search_delivery]")));
     }
 
     #[test]
@@ -1446,6 +1508,10 @@ mod tests {
         assert!(result
             .skill_review_reasons
             .contains(&"unsupported_by_recipe_clusters"));
+        assert!(result
+            .skill_review_items
+            .iter()
+            .any(|item| item.contains("[search_delivery]")));
     }
 
     #[test]
@@ -1514,6 +1580,10 @@ mod tests {
         assert!(result
             .skill_review_reasons
             .contains(&"active_supported_recipe_cluster_contradicted_by_failure_clusters"));
+        assert!(result
+            .skill_review_items
+            .iter()
+            .any(|item| item.contains("[fetch_page]")));
     }
 
     #[test]
