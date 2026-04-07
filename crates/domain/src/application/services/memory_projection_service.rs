@@ -7,6 +7,7 @@ use crate::application::services::learning_maintenance_service::LearningMaintena
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::application::services::procedural_contradiction_service::ProceduralContradiction;
 use crate::application::services::run_recipe_cluster_service::RunRecipeCluster;
+use crate::application::services::run_recipe_review_service::RunRecipeReviewDecision;
 use crate::application::services::skill_review_service::SkillReviewDecision;
 use crate::domain::conversation::{ConversationEvent, ConversationSession, EventType};
 use crate::domain::dialogue_state::DialogueState;
@@ -362,6 +363,34 @@ pub fn format_run_recipe_cluster_projection(cluster: &RunRecipeCluster) -> Strin
     format!("{}\n", lines.join("\n"))
 }
 
+pub fn format_run_recipe_review_projection(
+    decisions: &[RunRecipeReviewDecision],
+) -> Option<String> {
+    if decisions.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec!["[run-recipe-review]".to_string()];
+    for decision in decisions {
+        let blocked = if decision.promotion_blocked {
+            format!(
+                ", promotion_blocked ({})",
+                decision.promotion_block_reason.unwrap_or("unknown")
+            )
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "- {} -> remove [{}]{}",
+            decision.canonical_recipe.task_family,
+            decision.removed_task_families.join(", "),
+            blocked
+        ));
+    }
+
+    Some(format!("{}\n", lines.join("\n")))
+}
+
 pub fn format_procedural_contradiction_projection(
     contradictions: &[ProceduralContradiction],
 ) -> Option<String> {
@@ -704,6 +733,32 @@ mod tests {
         assert!(projection.contains("[procedural-contradictions]"));
         assert!(projection.contains("search_delivery"));
         assert!(projection.contains("failure=f1"));
+    }
+
+    #[test]
+    fn formats_run_recipe_review_projection() {
+        let projection = format_run_recipe_review_projection(&[RunRecipeReviewDecision {
+            canonical_recipe: RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                sample_request: "find and send".into(),
+                summary: "summary".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 5,
+                updated_at: 1,
+            },
+            removed_task_families: vec!["delivery_search".into()],
+            cluster_task_families: vec!["delivery_search".into(), "search_delivery".into()],
+            reason: "redundant_recipe_cluster",
+            promotion_blocked: true,
+            promotion_block_reason: Some("contradicted_by_failure_clusters"),
+        }])
+        .unwrap();
+
+        assert!(projection.contains("[run-recipe-review]"));
+        assert!(projection.contains("search_delivery"));
+        assert!(projection.contains("delivery_search"));
+        assert!(projection.contains("promotion_blocked"));
     }
 
     #[test]

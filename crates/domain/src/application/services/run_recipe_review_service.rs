@@ -24,7 +24,7 @@ impl Default for RunRecipeReviewThresholds {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct RunRecipeReviewDecision {
     pub canonical_recipe: RunRecipe,
     pub removed_task_families: Vec<String>,

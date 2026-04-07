@@ -1646,6 +1646,15 @@ pub async fn handle_api_memory_projections(
     let skill_review = synapse_domain::application::services::memory_projection_service::format_skill_review_projection(
         &skill_review_decisions,
     );
+    let run_recipe_review_decisions =
+        synapse_domain::application::services::run_recipe_review_service::review_run_recipes_with_failures(
+            &all_run_recipes,
+            &failure_pattern_clusters_raw,
+            &synapse_domain::application::services::run_recipe_review_service::RunRecipeReviewThresholds::default(),
+        );
+    let run_recipe_review = synapse_domain::application::services::memory_projection_service::format_run_recipe_review_projection(
+        &run_recipe_review_decisions,
+    );
 
     let procedural_contradictions = synapse_domain::application::services::procedural_contradiction_service::find_recipe_failure_contradictions(
         &recipe_clusters_raw,
@@ -1751,6 +1760,8 @@ pub async fn handle_api_memory_projections(
         "skill_conflict_policy": synapse_domain::application::services::memory_projection_service::format_skill_conflict_policy_projection(),
         "skill_review": skill_review,
         "skill_review_decisions": skill_review_decisions,
+        "run_recipe_review": run_recipe_review,
+        "run_recipe_review_decisions": run_recipe_review_decisions,
         "configured_skills": configured_skills,
         "recent_skills": recent_skills,
         "skill_surface": skill_surface,
