@@ -6,7 +6,7 @@
 use crate::domain::conversation_target::ConversationDeliveryTarget;
 use crate::domain::user_profile::UserProfile;
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub enum ProfileFieldPatch<T> {
     #[default]
     Keep,
@@ -14,7 +14,7 @@ pub enum ProfileFieldPatch<T> {
     Clear,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct UserProfilePatch {
     pub preferred_language: ProfileFieldPatch<String>,
     pub timezone: ProfileFieldPatch<String>,

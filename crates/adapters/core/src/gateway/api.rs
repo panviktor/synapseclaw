@@ -2014,49 +2014,13 @@ pub async fn handle_api_memory_learning_evals(
         accepted_skill_feedback += result.accepted_skill_feedback_count;
         procedural_contradiction_count += result.procedural_contradictions.len();
 
-        results.push(serde_json::json!({
-            "id": result.scenario_id,
-            "typed_fact_count": result.typed_fact_count,
-            "candidate_kinds": result.candidate_kinds,
-            "assessment_reasons": result.assessment_reasons,
-            "accepted_candidate_kinds": result.accepted_candidate_kinds,
-            "user_profile_candidate_count": result.user_profile_candidate_count,
-            "precedent_candidate_count": result.precedent_candidate_count,
-            "run_recipe_candidate_count": result.run_recipe_candidate_count,
-            "accepted_run_recipe_count": result.accepted_run_recipe_count,
-            "failure_pattern_candidate_count": result.failure_pattern_candidate_count,
-            "accepted_failure_pattern_count": result.accepted_failure_pattern_count,
-            "skill_promotion_reasons": result.skill_promotion_reasons,
-            "skill_promotion_assessments": result.skill_promotion_assessments,
-            "skill_promotion_items": result.skill_promotion_items,
-            "accepted_skill_promotion_count": result.accepted_skill_promotion_count,
-            "skill_review_reasons": result.skill_review_reasons,
-            "skill_review_decisions": result.skill_review_decisions,
-            "skill_review_items": result.skill_review_items,
-            "accepted_skill_review_count": result.accepted_skill_review_count,
-            "skill_feedback_reasons": result.skill_feedback_reasons,
-            "skill_feedback_items": result.skill_feedback_items,
-            "accepted_skill_feedback_count": result.accepted_skill_feedback_count,
-            "run_recipe_review_decisions": result.run_recipe_review_decisions,
-            "run_recipe_review_items": result.run_recipe_review_items,
-            "procedural_contradictions": result.procedural_contradictions,
-            "precedent_mutation_decisions": result.precedent_mutation_decisions,
-            "precedent_mutation_actions": result.precedent_mutation_actions,
-            "precedent_mutation_reasons": result.precedent_mutation_reasons,
-            "precedent_cluster_reviews": result.precedent_cluster_reviews,
-            "precedent_cluster_review_items": result.precedent_cluster_review_items,
-            "failure_cluster_reviews": result.failure_cluster_reviews,
-            "failure_cluster_review_items": result.failure_cluster_review_items,
-            "maintenance_plan": result.maintenance_plan,
-            "maintenance_reasons": result.maintenance_reasons,
-            "maintenance_runs_precedent_compaction": result.maintenance_runs_precedent_compaction,
-            "maintenance_runs_failure_pattern_compaction": result.maintenance_runs_failure_pattern_compaction,
-            "maintenance_runs_run_recipe_review": result.maintenance_runs_run_recipe_review,
-            "maintenance_runs_skill_review": result.maintenance_runs_skill_review,
-            "mutation_candidate_count": result.mutation_candidate_count,
-            "profile_patch_is_noop": result.profile_patch_is_noop,
-            "profile_projection": result.profile_projection,
-        }));
+        match serde_json::to_value(&result) {
+            Ok(value) => results.push(value),
+            Err(error) => results.push(serde_json::json!({
+                "id": result.scenario_id,
+                "error": format!("failed to serialize learning eval result: {error}"),
+            })),
+        }
     }
 
     Json(serde_json::json!({

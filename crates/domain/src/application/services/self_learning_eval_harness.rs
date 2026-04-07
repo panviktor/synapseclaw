@@ -44,7 +44,7 @@ pub struct SelfLearningEvalScenario {
     pub tool_facts: Vec<TypedToolFact>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SelfLearningEvalResult {
     pub scenario_id: &'static str,
     pub typed_fact_count: usize,
@@ -85,6 +85,7 @@ pub struct SelfLearningEvalResult {
     pub maintenance_runs_run_recipe_review: bool,
     pub maintenance_runs_skill_review: bool,
     pub mutation_candidate_count: usize,
+    pub profile_patch: user_profile_service::UserProfilePatch,
     pub profile_patch_is_noop: bool,
     pub profile_projection: Option<String>,
 }
@@ -277,6 +278,7 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         maintenance_runs_run_recipe_review: maintenance_plan.run_run_recipe_review,
         maintenance_runs_skill_review: maintenance_plan.run_skill_review,
         mutation_candidate_count: mutation_candidates.len(),
+        profile_patch: patch.clone(),
         profile_patch_is_noop: patch.is_noop(),
         profile_projection: projected_profile
             .as_ref()
@@ -1414,6 +1416,10 @@ mod tests {
         assert_eq!(result.precedent_candidate_count, 0);
         assert_eq!(result.run_recipe_candidate_count, 0);
         assert!(!result.profile_patch_is_noop);
+        assert!(matches!(
+            result.profile_patch.timezone,
+            user_profile_service::ProfileFieldPatch::Set(_)
+        ));
         assert!(result
             .profile_projection
             .as_deref()
