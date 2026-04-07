@@ -164,6 +164,12 @@ pub fn format_run_recipe_projection(recipe: &RunRecipe) -> String {
             recipe.tool_pattern.join(" -> ")
         ));
     }
+    if !recipe.lineage_task_families.is_empty() {
+        lines.push(format!(
+            "- lineage_task_families: {}",
+            recipe.lineage_task_families.join(", ")
+        ));
+    }
     if !recipe.summary.trim().is_empty() {
         lines.push("- summary:".to_string());
         lines.push(indent_multiline(recipe.summary.trim(), 2));
@@ -189,6 +195,12 @@ pub fn format_skill_projection(skill: &Skill) -> String {
         lines.push(format!(
             "- tool_pattern: {}",
             skill.tool_pattern.join(" -> ")
+        ));
+    }
+    if !skill.lineage_task_families.is_empty() {
+        lines.push(format!(
+            "- lineage_task_families: {}",
+            skill.lineage_task_families.join(", ")
         ));
     }
     if !skill.description.trim().is_empty() {
@@ -647,6 +659,7 @@ mod tests {
         let projection = format_run_recipe_projection(&RunRecipe {
             agent_id: "agent".into(),
             task_family: "deploy".into(),
+            lineage_task_families: vec!["deploy".into()],
             sample_request: "Deploy latest build".into(),
             summary: "Check staging, then deploy.".into(),
             tool_pattern: vec!["session_search".into(), "shell".into()],
@@ -688,6 +701,7 @@ mod tests {
             description: "Preferred deploy procedure".into(),
             content: "1. Build\n2. Test\n3. Deploy".into(),
             task_family: Some("deploy".into()),
+            lineage_task_families: vec!["deploy".into()],
             tool_pattern: vec!["shell".into(), "message_send".into()],
             tags: vec![],
             success_count: 4,
@@ -815,6 +829,7 @@ mod tests {
             canonical_recipe: RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "search_delivery".into(),
+                lineage_task_families: vec!["search_delivery".into(), "delivery_search".into()],
                 sample_request: "find and send".into(),
                 summary: "summary".into(),
                 tool_pattern: vec!["web_search".into(), "message_send".into()],

@@ -237,6 +237,7 @@ mod tests {
             &[RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "search_delivery".into(),
+                lineage_task_families: vec!["search_delivery".into()],
                 sample_request: "find and send".into(),
                 summary: "pattern=web_search -> message_send".into(),
                 tool_pattern: vec!["web_search".into(), "message_send".into()],

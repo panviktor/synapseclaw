@@ -1174,6 +1174,7 @@ mod tests {
             description: String::new(),
             content: content.into(),
             task_family: None,
+            lineage_task_families: Vec::new(),
             tool_pattern: Vec::new(),
             tags: vec![],
             success_count: 1,

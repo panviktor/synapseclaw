@@ -144,6 +144,7 @@ pub fn build_new_skill(
         content: build_skill_content(recipe),
         task_family: Some(recipe.task_family.clone()),
         tool_pattern: recipe.tool_pattern.clone(),
+        lineage_task_families: recipe_lineage_task_families(recipe),
         tags: vec!["recipe-promotion".into(), recipe.task_family.clone()],
         success_count: recipe.success_count,
         fail_count: 0,
@@ -167,8 +168,19 @@ pub fn build_skill_update(
         new_content: Some(build_skill_content(recipe)),
         new_task_family: Some(Some(recipe.task_family.clone())),
         new_tool_pattern: Some(recipe.tool_pattern.clone()),
+        new_lineage_task_families: Some(recipe_lineage_task_families(recipe)),
         new_status: Some(assessment.target_status.clone()),
     }
+}
+
+fn recipe_lineage_task_families(recipe: &RunRecipe) -> Vec<String> {
+    let mut lineage = Vec::new();
+    for value in std::iter::once(&recipe.task_family).chain(recipe.lineage_task_families.iter()) {
+        if !value.trim().is_empty() && !lineage.iter().any(|current| current == value) {
+            lineage.push(value.clone());
+        }
+    }
+    lineage
 }
 
 fn build_skill_description(recipe: &RunRecipe) -> String {
@@ -257,6 +269,7 @@ mod tests {
         RunRecipe {
             agent_id: "agent".into(),
             task_family: "search_delivery".into(),
+            lineage_task_families: vec!["search_delivery".into()],
             sample_request: "find the status page and send it".into(),
             summary: "Use web search, confirm the page, then deliver it.".into(),
             tool_pattern: vec!["web_search".into(), "message_send".into()],
@@ -296,6 +309,7 @@ mod tests {
             description: "Manual skill".into(),
             content: "Use manual process.".into(),
             task_family: Some("search_delivery".into()),
+            lineage_task_families: vec!["search_delivery".into()],
             tool_pattern: vec!["shell".into(), "message_send".into()],
             tags: vec![],
             success_count: 1,
@@ -321,6 +335,7 @@ mod tests {
             description: "Manual skill".into(),
             content: "Use a fixed manual process.".into(),
             task_family: Some("search_delivery".into()),
+            lineage_task_families: vec!["search_delivery".into()],
             tool_pattern: vec!["web_search".into(), "message_send".into()],
             tags: vec![],
             success_count: 1,

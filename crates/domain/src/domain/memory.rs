@@ -354,6 +354,8 @@ pub struct Skill {
     pub task_family: Option<String>,
     #[serde(default)]
     pub tool_pattern: Vec<String>,
+    #[serde(default)]
+    pub lineage_task_families: Vec<String>,
     pub tags: Vec<String>,
     pub success_count: u32,
     pub fail_count: u32,
@@ -376,6 +378,7 @@ pub struct SkillUpdate {
     pub new_content: Option<String>,
     pub new_task_family: Option<Option<String>>,
     pub new_tool_pattern: Option<Vec<String>>,
+    pub new_lineage_task_families: Option<Vec<String>>,
     pub new_status: Option<SkillStatus>,
 }
 

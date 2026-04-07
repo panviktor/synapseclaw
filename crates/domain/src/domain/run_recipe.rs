@@ -9,6 +9,8 @@ pub struct RunRecipe {
     pub sample_request: String,
     pub summary: String,
     pub tool_pattern: Vec<String>,
+    #[serde(default)]
+    pub lineage_task_families: Vec<String>,
     pub success_count: u32,
     pub updated_at: u64,
 }

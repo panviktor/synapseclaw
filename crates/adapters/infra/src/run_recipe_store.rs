@@ -99,6 +99,7 @@ mod tests {
         RunRecipe {
             agent_id: "agent".into(),
             task_family: task_family.into(),
+            lineage_task_families: vec![task_family.into()],
             sample_request: "deploy the latest build".into(),
             summary: "Deployment succeeded".into(),
             tool_pattern: vec!["shell".into()],

@@ -311,6 +311,7 @@ pub async fn execute_post_turn_learning(
                                 new_content: None,
                                 new_task_family: None,
                                 new_tool_pattern: None,
+                                new_lineage_task_families: None,
                                 new_status: None,
                             },
                             &input.agent_id,
@@ -1206,6 +1207,7 @@ mod tests {
             description: "Promoted skill".into(),
             content: "content".into(),
             task_family: Some("search_delivery".into()),
+            lineage_task_families: vec!["search_delivery".into()],
             tool_pattern: vec!["web_fetch".into(), "message_send".into()],
             tags: vec!["recipe-promotion".into()],
             success_count: 4,
@@ -1259,6 +1261,7 @@ mod tests {
             .upsert(crate::domain::run_recipe::RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "search_delivery".into(),
+                lineage_task_families: vec!["search_delivery".into()],
                 sample_request: "find the status page and send it".into(),
                 summary: "Use web search and deliver the result.".into(),
                 tool_pattern: vec!["web_search".into(), "message_send".into()],
@@ -1331,6 +1334,7 @@ mod tests {
             .upsert(crate::domain::run_recipe::RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "search_resource_delivery".into(),
+                lineage_task_families: vec!["search_resource_delivery".into()],
                 sample_request: "find the status page, fetch it, open it and send it again".into(),
                 summary: "Use search, resource tools and deliver the result.".into(),
                 tool_pattern: vec![
@@ -1351,6 +1355,7 @@ mod tests {
             .upsert(crate::domain::run_recipe::RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "delivery_search_resource".into(),
+                lineage_task_families: vec!["delivery_search_resource".into()],
                 sample_request: "find the status page, fetch it, open it and send it again".into(),
                 summary: "Use search, resource tools and deliver the result.".into(),
                 tool_pattern: vec![
@@ -1498,6 +1503,7 @@ mod tests {
             .upsert(crate::domain::run_recipe::RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "search_delivery".into(),
+                lineage_task_families: vec!["search_delivery".into()],
                 sample_request: "find the status page and send it".into(),
                 summary: "Use web search and deliver the result.".into(),
                 tool_pattern: vec!["web_search".into(), "message_send".into()],

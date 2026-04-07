@@ -353,6 +353,7 @@ mod tests {
             description: "desc".into(),
             content: "content".into(),
             task_family: Some(name.into()),
+            lineage_task_families: vec![name.into()],
             tool_pattern: vec!["web_search".into(), "message_send".into()],
             tags: vec![],
             success_count,
@@ -380,6 +381,7 @@ mod tests {
             &[RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "search_delivery".into(),
+                lineage_task_families: vec!["search_delivery".into()],
                 sample_request: "find the status page and send it".into(),
                 summary: "Use web search and message_send".into(),
                 tool_pattern: vec!["web_search".into(), "message_send".into()],
@@ -485,6 +487,7 @@ mod tests {
             &[RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "backup_delivery".into(),
+                lineage_task_families: vec!["backup_delivery".into()],
                 sample_request: "run backup and send it".into(),
                 summary: "Use shell and message_send".into(),
                 tool_pattern: vec!["shell".into(), "message_send".into()],
@@ -520,6 +523,7 @@ mod tests {
                 RunRecipe {
                     agent_id: "agent".into(),
                     task_family: "search_delivery".into(),
+                    lineage_task_families: vec!["search_delivery".into()],
                     sample_request: "find and send".into(),
                     summary: "Use web_search and message_send".into(),
                     tool_pattern: vec!["web_search".into(), "message_send".into()],
@@ -529,6 +533,7 @@ mod tests {
                 RunRecipe {
                     agent_id: "agent".into(),
                     task_family: "fetch_delivery".into(),
+                    lineage_task_families: vec!["fetch_delivery".into()],
                     sample_request: "fetch and send".into(),
                     summary: "Use web_fetch and message_send".into(),
                     tool_pattern: vec!["web_fetch".into(), "message_send".into()],
@@ -586,6 +591,7 @@ mod tests {
         let recipe = RunRecipe {
             agent_id: "agent".into(),
             task_family: "fetch_page".into(),
+            lineage_task_families: vec!["fetch_page".into()],
             sample_request: "fetch the page".into(),
             summary: "Use web_search and message_send".into(),
             tool_pattern: vec!["web_search".into(), "message_send".into()],
@@ -629,6 +635,7 @@ mod tests {
         let recipe = RunRecipe {
             agent_id: "agent".into(),
             task_family: "fetch_page".into(),
+            lineage_task_families: vec!["fetch_page".into()],
             sample_request: "fetch the page".into(),
             summary: "Use web_search and message_send".into(),
             tool_pattern: vec!["web_search".into(), "message_send".into()],

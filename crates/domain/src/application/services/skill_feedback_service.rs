@@ -97,6 +97,9 @@ mod tests {
             description: "desc".into(),
             content: "content".into(),
             task_family: task_family.map(str::to_string),
+            lineage_task_families: task_family
+                .map(|value| vec![value.to_string()])
+                .unwrap_or_default(),
             tool_pattern: tool_pattern.iter().map(|item| item.to_string()).collect(),
             tags: vec![],
             success_count: 4,

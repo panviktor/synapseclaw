@@ -18,6 +18,7 @@ pub fn build_new_recipe(
         sample_request: candidate.sample_request.clone(),
         summary: candidate.summary.clone(),
         tool_pattern: candidate.tool_pattern.clone(),
+        lineage_task_families: vec![candidate.task_family_hint.clone()],
         success_count: 1,
         updated_at,
     }
@@ -34,6 +35,11 @@ pub fn merge_existing_recipe(
         sample_request: prefer_richer_text(&existing.sample_request, &candidate.sample_request),
         summary: prefer_richer_text(&existing.summary, &candidate.summary),
         tool_pattern: merge_tool_patterns(&existing.tool_pattern, &candidate.tool_pattern),
+        lineage_task_families: merge_lineage_task_families(
+            &existing.lineage_task_families,
+            std::slice::from_ref(&candidate.task_family_hint),
+            &existing.task_family,
+        ),
         success_count: existing.success_count.saturating_add(1),
         updated_at,
     }
@@ -44,6 +50,23 @@ fn merge_tool_patterns(existing: &[String], candidate: &[String]) -> Vec<String>
     for tool in candidate {
         if !merged.iter().any(|existing_tool| existing_tool == tool) {
             merged.push(tool.clone());
+        }
+    }
+    merged
+}
+
+fn merge_lineage_task_families(
+    existing: &[String],
+    candidate: &[String],
+    canonical_task_family: &str,
+) -> Vec<String> {
+    let mut merged = Vec::new();
+    if !canonical_task_family.trim().is_empty() {
+        merged.push(canonical_task_family.to_string());
+    }
+    for value in existing.iter().chain(candidate.iter()) {
+        if !value.trim().is_empty() && !merged.iter().any(|current| current == value) {
+            merged.push(value.clone());
         }
     }
     merged
@@ -75,6 +98,7 @@ mod tests {
             sample_request: "send the status page".into(),
             summary: "pattern=web_search -> message_send".into(),
             tool_pattern: vec!["web_search".into(), "message_send".into()],
+            lineage_task_families: vec!["delivery_search".into()],
             success_count: 3,
             updated_at: 10,
         };
@@ -101,6 +125,10 @@ mod tests {
         );
         assert_eq!(merged.updated_at, 20);
         assert!(merged.summary.contains("web_fetch"));
+        assert_eq!(
+            merged.lineage_task_families,
+            vec!["delivery_search".to_string()]
+        );
     }
 
     #[test]
@@ -115,6 +143,10 @@ mod tests {
         let recipe = build_new_recipe("agent", &candidate, 42);
         assert_eq!(recipe.agent_id, "agent");
         assert_eq!(recipe.task_family, "resource_delivery");
+        assert_eq!(
+            recipe.lineage_task_families,
+            vec!["resource_delivery".to_string()]
+        );
         assert_eq!(recipe.success_count, 1);
         assert_eq!(recipe.updated_at, 42);
     }

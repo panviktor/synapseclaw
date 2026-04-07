@@ -131,6 +131,7 @@ pub async fn reflect_on_run(
                         new_content: Some(content.clone()),
                         new_task_family: None,
                         new_tool_pattern: None,
+                        new_lineage_task_families: None,
                         new_status: None,
                     };
                     memory
@@ -146,6 +147,7 @@ pub async fn reflect_on_run(
                         description: analysis.lesson,
                         content: content.clone(),
                         task_family: None,
+                        lineage_task_families: Vec::new(),
                         tool_pattern: Vec::new(),
                         tags: vec![],
                         success_count: u32::from(summary.outcome == ReflectionOutcome::Success),

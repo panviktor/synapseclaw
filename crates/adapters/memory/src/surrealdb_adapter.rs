@@ -638,6 +638,15 @@ fn row_to_skill(v: &serde_json::Value) -> Option<Skill> {
                     .collect()
             })
             .unwrap_or_default(),
+        lineage_task_families: v
+            .get("lineage_task_families")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
         tags: v
             .get("tags")
             .and_then(|t| t.as_array())
@@ -1380,6 +1389,7 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
                     content = $content,
                     task_family = $task_family,
                     tool_pattern = $tool_pattern,
+                    lineage_task_families = $lineage_task_families,
                     tags = $tags,
                     success_count = $sc,
                     fail_count = $fc,
@@ -1395,6 +1405,7 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .bind(("content", skill.content))
             .bind(("task_family", skill.task_family))
             .bind(("tool_pattern", skill.tool_pattern))
+            .bind(("lineage_task_families", skill.lineage_task_families))
             .bind(("tags", skill.tags))
             .bind(("sc", skill.success_count as i64))
             .bind(("fc", skill.fail_count as i64))
@@ -1454,6 +1465,9 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         if update.new_tool_pattern.is_some() {
             parts.push("tool_pattern = $tool_pattern".to_string());
         }
+        if update.new_lineage_task_families.is_some() {
+            parts.push("lineage_task_families = $lineage_task_families".to_string());
+        }
         if update.new_status.is_some() {
             parts.push("status = $status".to_string());
         }
@@ -1461,6 +1475,7 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             || update.new_content.is_some()
             || update.new_task_family.is_some()
             || update.new_tool_pattern.is_some()
+            || update.new_lineage_task_families.is_some()
             || update.new_status.is_some()
         {
             parts.push("version += 1".to_string());
@@ -1487,6 +1502,9 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         }
         if let Some(ref tool_pattern) = update.new_tool_pattern {
             query = query.bind(("tool_pattern", tool_pattern.clone()));
+        }
+        if let Some(ref lineage_task_families) = update.new_lineage_task_families {
+            query = query.bind(("lineage_task_families", lineage_task_families.clone()));
         }
         if let Some(ref status) = update.new_status {
             query = query.bind(("status", status.to_string()));

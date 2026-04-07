@@ -210,6 +210,7 @@ mod tests {
             &[RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "delivery_search".into(),
+                lineage_task_families: vec!["delivery_search".into()],
                 sample_request: "restart service".into(),
                 summary: "pattern=shell -> file_edit".into(),
                 tool_pattern: vec!["shell".into(), "file_edit".into()],
@@ -246,6 +247,7 @@ mod tests {
             &[RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "delivery_search".into(),
+                lineage_task_families: vec!["delivery_search".into()],
                 sample_request: "search and send".into(),
                 summary: "pattern=web_search -> message_send".into(),
                 tool_pattern: vec!["web_search".into(), "message_send".into()],
@@ -278,6 +280,7 @@ mod tests {
             &[RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "delivery_search".into(),
+                lineage_task_families: vec!["delivery_search".into()],
                 sample_request: "search and send".into(),
                 summary: "pattern=web_search -> message_send".into(),
                 tool_pattern: vec!["web_search".into(), "message_send".into()],
@@ -310,6 +313,7 @@ mod tests {
             &[RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "delivery_search".into(),
+                lineage_task_families: vec!["delivery_search".into()],
                 sample_request: "search and send".into(),
                 summary: "pattern=web_search -> message_send".into(),
                 tool_pattern: vec!["web_search".into(), "message_send".into()],

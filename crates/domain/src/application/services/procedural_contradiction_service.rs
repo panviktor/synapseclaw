@@ -111,6 +111,7 @@ mod tests {
             representative: RunRecipe {
                 agent_id: "agent".into(),
                 task_family: task_family.into(),
+                lineage_task_families: vec![task_family.into()],
                 sample_request: "sample".into(),
                 summary: "summary".into(),
                 tool_pattern: tool_pattern
@@ -180,6 +181,7 @@ mod tests {
         let recipe = RunRecipe {
             agent_id: "agent".into(),
             task_family: "status_delivery".into(),
+            lineage_task_families: vec!["status_delivery".into()],
             sample_request: "sample".into(),
             summary: "summary".into(),
             tool_pattern: vec!["web_search".into(), "message_send".into()],

@@ -128,6 +128,7 @@ fn merge_recipe_pair(canonical: &RunRecipe, other: &RunRecipe) -> RunRecipe {
         sample_request: prefer_richer_text(&canonical.sample_request, &other.sample_request),
         summary: prefer_richer_text(&canonical.summary, &other.summary),
         tool_pattern: merge_tool_patterns(&canonical.tool_pattern, &other.tool_pattern),
+        lineage_task_families: merge_lineage_task_families(canonical, other),
         success_count: canonical.success_count.saturating_add(other.success_count),
         updated_at: canonical.updated_at.max(other.updated_at),
     }
@@ -141,6 +142,20 @@ fn merge_tool_patterns(left: &[String], right: &[String]) -> Vec<String> {
             .any(|existing| existing.eq_ignore_ascii_case(tool))
         {
             merged.push(tool.clone());
+        }
+    }
+    merged
+}
+
+fn merge_lineage_task_families(left: &RunRecipe, right: &RunRecipe) -> Vec<String> {
+    let mut merged = Vec::new();
+    for value in std::iter::once(&left.task_family)
+        .chain(left.lineage_task_families.iter())
+        .chain(std::iter::once(&right.task_family))
+        .chain(right.lineage_task_families.iter())
+    {
+        if !value.trim().is_empty() && !merged.iter().any(|current| current == value) {
+            merged.push(value.clone());
         }
     }
     merged
@@ -179,6 +194,7 @@ mod tests {
                 .iter()
                 .map(|tool| (*tool).to_string())
                 .collect(),
+            lineage_task_families: vec![task_family.into()],
             success_count,
             updated_at,
         }
@@ -224,6 +240,10 @@ mod tests {
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].canonical_recipe.task_family, "status_delivery");
         assert_eq!(decisions[0].canonical_recipe.success_count, 6);
+        assert_eq!(
+            decisions[0].canonical_recipe.lineage_task_families,
+            vec!["status_delivery".to_string(), "delivery_search".to_string()]
+        );
         assert_eq!(
             decisions[0].removed_task_families,
             vec!["delivery_search".to_string()]

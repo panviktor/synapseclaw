@@ -93,6 +93,7 @@ DEFINE FIELD IF NOT EXISTS description   ON skill TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS content       ON skill TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS task_family   ON skill TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS tool_pattern  ON skill TYPE option<array>;
+DEFINE FIELD IF NOT EXISTS lineage_task_families ON skill TYPE option<array>;
 DEFINE FIELD IF NOT EXISTS tags          ON skill TYPE option<array>;
 DEFINE FIELD IF NOT EXISTS success_count ON skill TYPE option<int>;
 DEFINE FIELD IF NOT EXISTS fail_count    ON skill TYPE option<int>;
