@@ -2096,6 +2096,43 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         Ok(SurrealMemoryAdapter::rows_to_entries(rows))
     }
 
+    async fn list_recent_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let mut conditions = vec![episode_scope_clause(include_shared).to_string()];
+        if category.is_some() {
+            conditions.push("category = $cat".to_string());
+        }
+        if session_id.is_some() {
+            conditions.push("session_id = $sid".to_string());
+        }
+        conditions.push("created_at >= $updated_since".to_string());
+
+        let q = format!(
+            "SELECT * FROM episode WHERE {} ORDER BY created_at DESC LIMIT $limit",
+            conditions.join(" AND ")
+        );
+
+        let mut resp = self
+            .db
+            .query(&q)
+            .bind(("agent", self.me().to_string()))
+            .bind(("cat", category.map(|c| c.to_string()).unwrap_or_default()))
+            .bind(("sid", session_id.unwrap_or("").to_string()))
+            .bind(("updated_since", updated_since.to_rfc3339()))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(SurrealMemoryAdapter::rows_to_entries(rows))
+    }
+
     async fn consolidate_turn(
         &self,
         _user_message: &str,

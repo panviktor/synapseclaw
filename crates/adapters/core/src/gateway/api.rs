@@ -1495,11 +1495,11 @@ pub async fn handle_api_memory_projections(
         .list_skills(&state.agent_id, limit)
         .await
         .unwrap_or_default();
-    let recent_skill_cutoff = chrono::Utc::now()
+    let recent_cutoff = chrono::Utc::now()
         - chrono::Duration::seconds(maintenance_config.activity_window.as_secs() as i64);
     let recent_learned_skills = state
         .mem
-        .list_recent_skills(&state.agent_id, limit, recent_skill_cutoff)
+        .list_recent_skills(&state.agent_id, limit, recent_cutoff)
         .await
         .unwrap_or_default();
     let recent_skills = learned_skills
@@ -1541,13 +1541,14 @@ pub async fn handle_api_memory_projections(
 
     let recent_precedents = state
         .mem
-        .list_scoped(
+        .list_recent_scoped(
             Some(&synapse_domain::domain::memory::MemoryCategory::Custom(
                 "precedent".into(),
             )),
             None,
             limit,
             false,
+            recent_cutoff,
         )
         .await
         .unwrap_or_default()
@@ -1568,11 +1569,12 @@ pub async fn handle_api_memory_projections(
 
     let recent_reflections = state
         .mem
-        .list_scoped(
+        .list_recent_scoped(
             Some(&synapse_domain::domain::memory::MemoryCategory::Reflection),
             None,
             limit,
             false,
+            recent_cutoff,
         )
         .await
         .unwrap_or_default()
@@ -1593,13 +1595,14 @@ pub async fn handle_api_memory_projections(
 
     let recent_failure_patterns = state
         .mem
-        .list_scoped(
+        .list_recent_scoped(
             Some(&synapse_domain::domain::memory::MemoryCategory::Custom(
                 "failure_pattern".into(),
             )),
             None,
             limit,
             false,
+            recent_cutoff,
         )
         .await
         .unwrap_or_default()
@@ -1618,14 +1621,14 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
-    let precedent_clusters_raw =
-        synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters(
+    let precedent_clusters_raw = synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters_since(
             state.mem.as_ref(),
             &state.agent_id,
             synapse_domain::application::services::procedural_cluster_service::ProceduralClusterKind::Precedent,
             limit,
             6,
             0.95,
+            Some(recent_cutoff),
         )
         .await
         .unwrap_or_default();
@@ -1645,14 +1648,14 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
-    let failure_pattern_clusters_raw =
-        synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters(
+    let failure_pattern_clusters_raw = synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters_since(
             state.mem.as_ref(),
             &state.agent_id,
             synapse_domain::application::services::procedural_cluster_service::ProceduralClusterKind::FailurePattern,
             limit,
             6,
             0.96,
+            Some(recent_cutoff),
         )
         .await
         .unwrap_or_default();

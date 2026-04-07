@@ -274,6 +274,18 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
             .list_scoped(category, session_id, limit, include_shared)
             .await
     }
+    async fn list_recent_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        self.inner
+            .list_recent_scoped(category, session_id, limit, include_shared, updated_since)
+            .await
+    }
     async fn list(
         &self,
         category: Option<&MemoryCategory>,

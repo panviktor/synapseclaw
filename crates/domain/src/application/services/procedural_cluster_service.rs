@@ -36,8 +36,35 @@ pub async fn plan_recent_clusters(
     shortlist_limit: usize,
     similarity_threshold: f64,
 ) -> Result<Vec<ProceduralCluster>, MemoryError> {
+    plan_recent_clusters_since(
+        mem,
+        agent_id,
+        kind,
+        limit,
+        shortlist_limit,
+        similarity_threshold,
+        None,
+    )
+    .await
+}
+
+pub async fn plan_recent_clusters_since(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    kind: ProceduralClusterKind,
+    limit: usize,
+    shortlist_limit: usize,
+    similarity_threshold: f64,
+    updated_since: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<Vec<ProceduralCluster>, MemoryError> {
     let category = cluster_category(&kind);
-    let entries = mem.list_scoped(Some(&category), None, limit, false).await?;
+    let entries = match updated_since {
+        Some(updated_since) => {
+            mem.list_recent_scoped(Some(&category), None, limit, false, updated_since)
+                .await?
+        }
+        None => mem.list_scoped(Some(&category), None, limit, false).await?,
+    };
     if entries.len() < 2 {
         return Ok(entries
             .into_iter()

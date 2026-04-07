@@ -338,6 +338,20 @@ pub trait UnifiedMemoryPort:
         self.list(category, session_id, limit).await
     }
 
+    /// List recent memory entries with explicit shared/global visibility control.
+    async fn list_recent_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let _ = updated_since;
+        self.list_scoped(category, session_id, limit, include_shared)
+            .await
+    }
+
     /// List memory entries, optionally filtered by category and/or session.
     async fn list(
         &self,

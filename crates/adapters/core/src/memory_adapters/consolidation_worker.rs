@@ -19,7 +19,7 @@ use synapse_domain::application::services::procedural_cluster_review_service::{
     ProceduralClusterReviewAction,
 };
 use synapse_domain::application::services::procedural_cluster_service::{
-    plan_recent_clusters, ProceduralClusterKind,
+    plan_recent_clusters, plan_recent_clusters_since, ProceduralClusterKind,
 };
 use synapse_domain::application::services::procedural_contradiction_service::find_recipe_failure_contradictions;
 use synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters;
@@ -367,43 +367,52 @@ pub(crate) async fn sample_learning_maintenance_snapshot(
 ) -> LearningMaintenanceSnapshot {
     let recent_run_recipe_cutoff =
         (chrono::Utc::now().timestamp().max(0) as u64).saturating_sub(activity_window.as_secs());
+    let recent_cutoff =
+        chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
     let recent_run_recipes = run_recipe_store.list_recent(agent_id, recent_run_recipe_cutoff);
     let recent_precedents = list_recent_category_entries(
         memory,
         MemoryCategory::Custom("precedent".into()),
         probe_limit,
+        recent_cutoff,
     )
     .await;
-    let recent_reflections =
-        list_recent_category_entries(memory, MemoryCategory::Reflection, probe_limit).await;
+    let recent_reflections = list_recent_category_entries(
+        memory,
+        MemoryCategory::Reflection,
+        probe_limit,
+        recent_cutoff,
+    )
+    .await;
     let recent_failure_patterns = list_recent_category_entries(
         memory,
         MemoryCategory::Custom("failure_pattern".into()),
         probe_limit,
+        recent_cutoff,
     )
     .await;
-    let precedent_clusters = plan_recent_clusters(
+    let precedent_clusters = plan_recent_clusters_since(
         memory,
         agent_id,
         ProceduralClusterKind::Precedent,
         probe_limit,
         6,
         0.95,
+        Some(recent_cutoff),
     )
     .await
     .unwrap_or_default();
-    let failure_pattern_clusters = plan_recent_clusters(
+    let failure_pattern_clusters = plan_recent_clusters_since(
         memory,
         agent_id,
         ProceduralClusterKind::FailurePattern,
         probe_limit,
         6,
         0.96,
+        Some(recent_cutoff),
     )
     .await
     .unwrap_or_default();
-    let recent_cutoff =
-        chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
     let recent_skills = memory
         .list_recent_skills(&agent_id.to_string(), probe_limit, recent_cutoff)
         .await
@@ -424,7 +433,7 @@ pub(crate) async fn sample_learning_maintenance_snapshot(
         recent_run_recipe_count: recent_run_recipes.len(),
         run_recipe_cluster_count: recipe_clusters.len(),
         procedural_contradiction_count: procedural_contradictions.len(),
-        recent_precedent_count: count_recent_entries(&recent_precedents, recent_cutoff),
+        recent_precedent_count: recent_precedents.len(),
         precedent_cluster_count: precedent_clusters.len(),
         precedent_compact_candidate_count: precedent_cluster_reviews
             .iter()
@@ -440,8 +449,8 @@ pub(crate) async fn sample_learning_maintenance_snapshot(
                     && review.kind == "precedent"
             })
             .count(),
-        recent_reflection_count: count_recent_entries(&recent_reflections, recent_cutoff),
-        recent_failure_pattern_count: count_recent_entries(&recent_failure_patterns, recent_cutoff),
+        recent_reflection_count: recent_reflections.len(),
+        recent_failure_pattern_count: recent_failure_patterns.len(),
         failure_pattern_cluster_count: failure_pattern_clusters.len(),
         failure_pattern_compact_candidate_count: failure_pattern_cluster_reviews
             .iter()
@@ -514,25 +523,12 @@ async fn list_recent_category_entries(
     memory: &dyn UnifiedMemoryPort,
     category: MemoryCategory,
     limit: usize,
+    recent_cutoff: chrono::DateTime<chrono::Utc>,
 ) -> Vec<MemoryEntry> {
     memory
-        .list_scoped(Some(&category), None, limit, false)
+        .list_recent_scoped(Some(&category), None, limit, false, recent_cutoff)
         .await
         .unwrap_or_default()
-}
-
-fn count_recent_entries(
-    entries: &[MemoryEntry],
-    recent_cutoff: chrono::DateTime<chrono::Utc>,
-) -> usize {
-    entries
-        .iter()
-        .filter(|entry| {
-            chrono::DateTime::parse_from_rfc3339(&entry.timestamp)
-                .map(|timestamp| timestamp.with_timezone(&chrono::Utc) >= recent_cutoff)
-                .unwrap_or(false)
-        })
-        .count()
 }
 
 async fn run_skill_review(

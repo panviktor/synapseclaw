@@ -422,6 +422,26 @@ impl UnifiedMemoryPort for InstrumentedMemory {
         log_op("list_scoped", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
         r
     }
+    async fn list_recent_scoped(
+        &self,
+        cat: Option<&MemoryCategory>,
+        sid: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .list_recent_scoped(cat, sid, limit, include_shared, updated_since)
+            .await;
+        log_op(
+            "list_recent_scoped",
+            t,
+            r.as_ref().map(|v| v.len()).unwrap_or(0),
+        );
+        r
+    }
     async fn list(
         &self,
         cat: Option<&MemoryCategory>,
