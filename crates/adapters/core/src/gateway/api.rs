@@ -1438,6 +1438,32 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
+    let recent_failure_patterns = state
+        .mem
+        .list(
+            Some(&synapse_domain::domain::memory::MemoryCategory::Custom(
+                "failure_pattern".into(),
+            )),
+            None,
+            limit,
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let key = entry.key.clone();
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_memory_entry_projection(
+                    "failure-pattern",
+                    &entry,
+                );
+            serde_json::json!({
+                "key": key,
+                "projection": projection,
+            })
+        })
+        .collect::<Vec<_>>();
+
     Json(serde_json::json!({
         "agent_id": state.agent_id,
         "current_user_profile": current_user_profile,
@@ -1447,6 +1473,7 @@ pub async fn handle_api_memory_projections(
         "run_recipes": run_recipes,
         "recent_precedents": recent_precedents,
         "recent_reflections": recent_reflections,
+        "recent_failure_patterns": recent_failure_patterns,
     }))
     .into_response()
 }
@@ -1523,7 +1550,8 @@ pub async fn handle_api_memory_learning_evals(
     }
 
     let scenarios =
-        synapse_domain::application::services::self_learning_eval_harness::default_golden_scenarios();
+        synapse_domain::application::services::self_learning_eval_harness::default_golden_scenarios(
+        );
     let mut results = Vec::with_capacity(scenarios.len());
     let mut by_candidate_kind = std::collections::BTreeMap::<String, usize>::new();
     let mut by_accepted_candidate_kind = std::collections::BTreeMap::<String, usize>::new();

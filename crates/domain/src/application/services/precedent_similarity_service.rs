@@ -31,9 +31,10 @@ pub async fn evaluate_precedent_candidate(
     agent_id: &str,
     thresholds: &PrecedentSimilarityThresholds,
 ) -> MutationDecision {
-    let existing = fetch_precedent_shortlist(mem, &candidate.text, agent_id, thresholds.shortlist_limit)
-        .await
-        .unwrap_or_default();
+    let existing =
+        fetch_precedent_shortlist(mem, &candidate.text, agent_id, thresholds.shortlist_limit)
+            .await
+            .unwrap_or_default();
     decide_precedent_mutation(candidate, &existing, thresholds)
 }
 

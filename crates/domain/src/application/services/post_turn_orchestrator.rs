@@ -7,13 +7,11 @@
 use crate::application::services::learning_candidate_service::{self, LearningCandidate};
 use crate::application::services::learning_events::LearningEvent;
 use crate::application::services::learning_evidence_service::{self, LearningEvidenceEnvelope};
-use crate::application::services::learning_quality_service::{
-    self, LearningCandidateAssessment,
-};
-use crate::application::services::recipe_evolution_service;
-use crate::application::services::precedent_similarity_service;
+use crate::application::services::learning_quality_service::{self, LearningCandidateAssessment};
 use crate::application::services::learning_signals::{self, LearningSignal};
 use crate::application::services::memory_mutation as mutation;
+use crate::application::services::precedent_similarity_service;
+use crate::application::services::recipe_evolution_service;
 use crate::application::services::user_profile_service;
 use crate::domain::memory::MemoryCategory;
 use crate::domain::memory_mutation::{MutationCandidate, MutationSource, MutationThresholds};
@@ -113,13 +111,16 @@ pub async fn execute_post_turn_learning(
         .filter(|assessment| matches!(assessment.candidate, LearningCandidate::Precedent(_)))
         .cloned()
         .collect::<Vec<_>>();
-    let mutation_candidates = learning_candidate_service::build_mutation_candidates_from_assessments(
-        &learning_assessments
-            .iter()
-            .filter(|assessment| !matches!(assessment.candidate, LearningCandidate::Precedent(_)))
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
+    let mutation_candidates =
+        learning_candidate_service::build_mutation_candidates_from_assessments(
+            &learning_assessments
+                .iter()
+                .filter(|assessment| {
+                    !matches!(assessment.candidate, LearningCandidate::Precedent(_))
+                })
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
 
     let mut report = PostTurnReport {
         signal: signal.clone(),
@@ -390,12 +391,12 @@ mod tests {
         OutcomeStatus, ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileFact,
         UserProfileField,
     };
+    use crate::domain::user_profile::UserProfile;
     use crate::ports::memory::{
-        ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort,
-        SkillMemoryPort, UnifiedMemoryPort, WorkingMemoryPort,
+        ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
+        UnifiedMemoryPort, WorkingMemoryPort,
     };
     use crate::ports::user_profile_store::{InMemoryUserProfileStore, UserProfileStorePort};
-    use crate::domain::user_profile::UserProfile;
     use async_trait::async_trait;
     use std::sync::Arc;
 
@@ -410,10 +411,7 @@ mod tests {
 
     #[async_trait]
     impl WorkingMemoryPort for StubMemory {
-        async fn get_core_blocks(
-            &self,
-            _: &AgentId,
-        ) -> Result<Vec<CoreMemoryBlock>, MemoryError> {
+        async fn get_core_blocks(&self, _: &AgentId) -> Result<Vec<CoreMemoryBlock>, MemoryError> {
             Ok(vec![])
         }
 
@@ -442,11 +440,7 @@ mod tests {
             Err(MemoryError::Storage("not used in test".into()))
         }
 
-        async fn get_recent(
-            &self,
-            _: &AgentId,
-            _: usize,
-        ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        async fn get_recent(&self, _: &AgentId, _: usize) -> Result<Vec<MemoryEntry>, MemoryError> {
             Ok(vec![])
         }
 
@@ -454,10 +448,7 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn search_episodes(
-            &self,
-            _: &MemoryQuery,
-        ) -> Result<Vec<SearchResult>, MemoryError> {
+        async fn search_episodes(&self, _: &MemoryQuery) -> Result<Vec<SearchResult>, MemoryError> {
             Ok(vec![])
         }
     }
@@ -480,10 +471,7 @@ mod tests {
             Ok(())
         }
 
-        async fn get_current_facts(
-            &self,
-            _: &MemoryId,
-        ) -> Result<Vec<TemporalFact>, MemoryError> {
+        async fn get_current_facts(&self, _: &MemoryId) -> Result<Vec<TemporalFact>, MemoryError> {
             Ok(vec![])
         }
 

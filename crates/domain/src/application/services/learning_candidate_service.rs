@@ -20,6 +20,10 @@ fn precedent_memory_category() -> MemoryCategory {
     MemoryCategory::Custom("precedent".into())
 }
 
+fn failure_pattern_memory_category() -> MemoryCategory {
+    MemoryCategory::Custom("failure_pattern".into())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum LearningCandidate {
@@ -139,8 +143,8 @@ pub fn build_mutation_candidates(candidates: &[LearningCandidate]) -> Vec<Mutati
             });
         } else if let LearningCandidate::FailurePattern(failure) = candidate {
             mutations.push(MutationCandidate {
-                category: MemoryCategory::Reflection,
-                text: format!("failure_pattern: {}", failure.summary),
+                category: failure_pattern_memory_category(),
+                text: failure.summary.clone(),
                 confidence: 0.74,
                 source: MutationSource::Reflection,
             });
@@ -172,8 +176,8 @@ pub fn build_mutation_candidate_from_assessment(
             source: MutationSource::ToolOutput,
         }),
         LearningCandidate::FailurePattern(failure) => Some(MutationCandidate {
-            category: MemoryCategory::Reflection,
-            text: format!("failure_pattern: {}", failure.summary),
+            category: failure_pattern_memory_category(),
+            text: failure.summary.clone(),
             confidence: assessment.confidence,
             source: MutationSource::Reflection,
         }),
@@ -645,7 +649,10 @@ mod tests {
             mutations[0].category,
             MemoryCategory::Custom("precedent".into())
         );
-        assert_eq!(mutations[1].category, MemoryCategory::Reflection);
+        assert_eq!(
+            mutations[1].category,
+            MemoryCategory::Custom("failure_pattern".into())
+        );
         assert_eq!(mutations[1].source, MutationSource::Reflection);
     }
 

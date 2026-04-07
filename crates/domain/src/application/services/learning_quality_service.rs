@@ -155,11 +155,13 @@ mod tests {
     #[test]
     fn accepts_profile_candidates_immediately() {
         let assessments = assess_learning_candidates(
-            &[LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                field: UserProfileField::Timezone,
-                operation: ProfileOperation::Set,
-                value: Some("Europe/Berlin".into()),
-            })],
+            &[LearningCandidate::UserProfile(
+                UserProfileLearningCandidate {
+                    field: UserProfileField::Timezone,
+                    operation: ProfileOperation::Set,
+                    value: Some("Europe/Berlin".into()),
+                },
+            )],
             &LearningEvidenceEnvelope::default(),
             &[],
         );

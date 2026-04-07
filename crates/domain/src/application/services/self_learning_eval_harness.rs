@@ -8,8 +8,8 @@ use crate::application::services::learning_candidate_service::{self, LearningCan
 use crate::application::services::learning_evidence_service;
 use crate::application::services::learning_quality_service;
 use crate::application::services::user_profile_service;
-use crate::domain::run_recipe::RunRecipe;
 use crate::domain::dialogue_state::FocusEntity;
+use crate::domain::run_recipe::RunRecipe;
 use crate::domain::tool_fact::{
     DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation, ResourceFact,
     ResourceKind, ResourceMetadata, ResourceOperation, SearchDomain, SearchFact, ToolFactPayload,
@@ -283,7 +283,10 @@ fn count_candidate_kind(
     candidates: &[LearningCandidate],
     predicate: fn(&LearningCandidate) -> bool,
 ) -> usize {
-    candidates.iter().filter(|candidate| predicate(candidate)).count()
+    candidates
+        .iter()
+        .filter(|candidate| predicate(candidate))
+        .count()
 }
 
 fn candidate_is_user_profile(candidate: &LearningCandidate) -> bool {

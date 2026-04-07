@@ -7,6 +7,10 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::application::services::learning_maintenance_service::{
+    build_learning_maintenance_plan, LearningMaintenancePolicy, LearningMaintenanceSnapshot,
+};
+use synapse_domain::domain::memory::{MemoryCategory, MemoryEntry};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 
 /// Configuration for the consolidation worker.
@@ -14,10 +18,16 @@ use synapse_domain::ports::memory::UnifiedMemoryPort;
 pub struct ConsolidationWorkerConfig {
     /// Interval between consolidation cycles (decay + GC).
     pub interval: Duration,
+    /// How far back to look for recent learning activity.
+    pub activity_window: Duration,
+    /// How many recent entries per category to probe when building a cheap snapshot.
+    pub activity_probe_limit: usize,
     /// Importance decay threshold.
     pub gc_importance_threshold: f32,
     /// Max age in days for GC candidates.
     pub gc_max_age_days: u32,
+    /// Force a maintenance cycle after this many idle skips.
+    pub max_idle_cycles_before_forced_maintenance: u32,
     /// Interval between prompt optimization cycles.
     pub optimization_interval: Duration,
     /// Minimum reflections needed before optimization runs.
@@ -27,9 +37,12 @@ pub struct ConsolidationWorkerConfig {
 impl Default for ConsolidationWorkerConfig {
     fn default() -> Self {
         Self {
-            interval: Duration::from_secs(3600), // 1 hour
+            interval: Duration::from_secs(3600),         // 1 hour
+            activity_window: Duration::from_secs(21600), // 6 hours
+            activity_probe_limit: 12,
             gc_importance_threshold: 0.05,
             gc_max_age_days: 30,
+            max_idle_cycles_before_forced_maintenance: 6,
             optimization_interval: Duration::from_secs(21600), // 6 hours
             min_reflections_for_optimization: 3,
         }
@@ -50,33 +63,66 @@ pub fn spawn_consolidation_worker(
         interval.tick().await; // skip first immediate tick
 
         let mut last_optimization = std::time::Instant::now();
+        let mut skipped_cycles_since_maintenance = 0_u32;
+        let maintenance_policy = LearningMaintenancePolicy {
+            min_recent_learning_activity: 1,
+            max_skipped_cycles_before_forced_maintenance: config
+                .max_idle_cycles_before_forced_maintenance,
+            min_reflections_for_prompt_optimization: config.min_reflections_for_optimization,
+        };
 
         loop {
             interval.tick().await;
-            tracing::debug!("Memory consolidation cycle starting");
+            let prompt_optimization_due =
+                provider.is_some() && last_optimization.elapsed() >= config.optimization_interval;
+            let snapshot = sample_learning_maintenance_snapshot(
+                memory.as_ref(),
+                config.activity_probe_limit,
+                config.activity_window,
+                skipped_cycles_since_maintenance,
+                prompt_optimization_due,
+            )
+            .await;
+            let plan = build_learning_maintenance_plan(&snapshot, &maintenance_policy);
 
-            // Phase 1: Importance decay
-            match memory.recalculate_importance(&agent_id).await {
-                Ok(_) => tracing::debug!("Importance decay applied"),
-                Err(e) => tracing::debug!("Importance decay failed: {e}"),
+            if !plan.should_run_any() {
+                skipped_cycles_since_maintenance =
+                    skipped_cycles_since_maintenance.saturating_add(1);
+                tracing::debug!(
+                    skipped_cycles_since_maintenance,
+                    "Memory consolidation cycle skipped: no fresh learning activity"
+                );
+                continue;
             }
 
-            // Phase 2: Garbage collection
-            match memory
-                .gc_low_importance(config.gc_importance_threshold, config.gc_max_age_days)
-                .await
-            {
-                Ok(count) => {
-                    if count > 0 {
-                        tracing::info!("Memory GC: {count} entries removed");
-                    }
+            tracing::debug!(
+                reasons = ?plan.reasons,
+                "Memory consolidation cycle starting"
+            );
+
+            if plan.run_importance_decay {
+                match memory.recalculate_importance(&agent_id).await {
+                    Ok(_) => tracing::debug!("Importance decay applied"),
+                    Err(e) => tracing::debug!("Importance decay failed: {e}"),
                 }
-                Err(e) => tracing::debug!("Memory GC failed: {e}"),
             }
 
-            // Phase 3: Prompt optimization (if provider available and interval elapsed)
+            if plan.run_gc {
+                match memory
+                    .gc_low_importance(config.gc_importance_threshold, config.gc_max_age_days)
+                    .await
+                {
+                    Ok(count) => {
+                        if count > 0 {
+                            tracing::info!("Memory GC: {count} entries removed");
+                        }
+                    }
+                    Err(e) => tracing::debug!("Memory GC failed: {e}"),
+                }
+            }
+
             if let Some((ref prov, ref model)) = provider {
-                if last_optimization.elapsed() >= config.optimization_interval {
+                if plan.run_prompt_optimization {
                     match super::prompt_optimizer::optimize_prompt(
                         prov.as_ref(),
                         model,
@@ -102,9 +148,69 @@ pub fn spawn_consolidation_worker(
                 }
             }
 
+            skipped_cycles_since_maintenance = 0;
+
             tracing::debug!("Memory consolidation cycle complete");
         }
     })
+}
+
+async fn sample_learning_maintenance_snapshot(
+    memory: &dyn UnifiedMemoryPort,
+    probe_limit: usize,
+    activity_window: Duration,
+    skipped_cycles_since_maintenance: u32,
+    prompt_optimization_due: bool,
+) -> LearningMaintenanceSnapshot {
+    let recent_precedents = list_recent_category_entries(
+        memory,
+        MemoryCategory::Custom("precedent".into()),
+        probe_limit,
+    )
+    .await;
+    let recent_reflections =
+        list_recent_category_entries(memory, MemoryCategory::Reflection, probe_limit).await;
+    let recent_failure_patterns = list_recent_category_entries(
+        memory,
+        MemoryCategory::Custom("failure_pattern".into()),
+        probe_limit,
+    )
+    .await;
+    let recent_cutoff =
+        chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
+
+    LearningMaintenanceSnapshot {
+        recent_precedent_count: count_recent_entries(&recent_precedents, recent_cutoff),
+        recent_reflection_count: count_recent_entries(&recent_reflections, recent_cutoff),
+        recent_failure_pattern_count: count_recent_entries(&recent_failure_patterns, recent_cutoff),
+        skipped_cycles_since_maintenance,
+        prompt_optimization_due,
+    }
+}
+
+async fn list_recent_category_entries(
+    memory: &dyn UnifiedMemoryPort,
+    category: MemoryCategory,
+    limit: usize,
+) -> Vec<MemoryEntry> {
+    memory
+        .list(Some(&category), None, limit)
+        .await
+        .unwrap_or_default()
+}
+
+fn count_recent_entries(
+    entries: &[MemoryEntry],
+    recent_cutoff: chrono::DateTime<chrono::Utc>,
+) -> usize {
+    entries
+        .iter()
+        .filter(|entry| {
+            chrono::DateTime::parse_from_rfc3339(&entry.timestamp)
+                .map(|timestamp| timestamp.with_timezone(&chrono::Utc) >= recent_cutoff)
+                .unwrap_or(false)
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -115,8 +221,11 @@ mod tests {
     fn default_config() {
         let config = ConsolidationWorkerConfig::default();
         assert_eq!(config.interval, Duration::from_secs(3600));
+        assert_eq!(config.activity_window, Duration::from_secs(21600));
+        assert_eq!(config.activity_probe_limit, 12);
         assert!((config.gc_importance_threshold - 0.05).abs() < 0.001);
         assert_eq!(config.gc_max_age_days, 30);
+        assert_eq!(config.max_idle_cycles_before_forced_maintenance, 6);
         assert_eq!(config.optimization_interval, Duration::from_secs(21600));
         assert_eq!(config.min_reflections_for_optimization, 3);
     }
