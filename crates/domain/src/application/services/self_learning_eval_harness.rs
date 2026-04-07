@@ -1427,6 +1427,13 @@ mod tests {
             .skill_promotion_items
             .iter()
             .any(|item| item.contains("[search_delivery]")));
+        assert!(result.skill_promotion_assessments.iter().any(|assessment| {
+            assessment.reason == "create_candidate_skill"
+                && assessment
+                    .lineage_task_families
+                    .iter()
+                    .any(|family| family == "search_delivery")
+        }));
     }
 
     #[test]
@@ -1461,6 +1468,13 @@ mod tests {
         assert!(result.failure_cluster_review_items.iter().any(
             |item| item.starts_with("stable:") || item.starts_with("blocks_procedural_paths:")
         ));
+        assert!(result.failure_cluster_reviews.iter().any(|review| {
+            matches!(
+                review.action,
+                procedural_cluster_review_service::ProceduralClusterReviewAction::Stable
+                    | procedural_cluster_review_service::ProceduralClusterReviewAction::BlocksProceduralPaths
+            )
+        }));
     }
 
     #[test]
@@ -1524,6 +1538,13 @@ mod tests {
             .skill_review_items
             .iter()
             .any(|item| item.contains("[search_delivery]")));
+        assert!(result.skill_review_decisions.iter().any(|decision| {
+            decision.reason == "unsupported_by_recipe_clusters"
+                && decision
+                    .lineage_task_families
+                    .iter()
+                    .any(|family| family == "search_delivery")
+        }));
     }
 
     #[test]
@@ -1596,6 +1617,23 @@ mod tests {
             .skill_review_items
             .iter()
             .any(|item| item.contains("[fetch_page]")));
+        assert!(result.skill_review_decisions.iter().any(|decision| {
+            decision.reason == "active_supported_recipe_cluster_contradicted_by_failure_clusters"
+                && matches!(
+                    decision.action,
+                    skill_review_service::SkillReviewAction::DowngradeToCandidate
+                )
+                && decision
+                    .lineage_task_families
+                    .iter()
+                    .any(|family| family == "fetch_page")
+        }));
+        assert!(result.procedural_contradictions.iter().any(|contradiction| {
+            contradiction
+                .recipe_lineage_task_families
+                .iter()
+                .any(|family| family == "fetch_page")
+        }));
     }
 
     #[test]
@@ -1617,6 +1655,12 @@ mod tests {
             .precedent_cluster_review_items
             .iter()
             .any(|item| item.starts_with("preserve_branch:")));
+        assert!(result.precedent_cluster_reviews.iter().any(|review| {
+            matches!(
+                review.action,
+                procedural_cluster_review_service::ProceduralClusterReviewAction::PreserveBranch
+            )
+        }));
         assert!(result
             .maintenance_reasons
             .contains(&"precedent_preserve_branch_backlog"));
