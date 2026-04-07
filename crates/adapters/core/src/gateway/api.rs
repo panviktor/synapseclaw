@@ -2035,6 +2035,7 @@ pub async fn handle_api_memory_learning_evals(
             "skill_review_items": result.skill_review_items,
             "accepted_skill_review_count": result.accepted_skill_review_count,
             "skill_feedback_reasons": result.skill_feedback_reasons,
+            "skill_feedback_items": result.skill_feedback_items,
             "accepted_skill_feedback_count": result.accepted_skill_feedback_count,
             "run_recipe_review_decisions": result.run_recipe_review_decisions,
             "run_recipe_review_items": result.run_recipe_review_items,

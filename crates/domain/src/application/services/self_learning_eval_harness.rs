@@ -66,6 +66,7 @@ pub struct SelfLearningEvalResult {
     pub skill_review_items: Vec<String>,
     pub accepted_skill_review_count: usize,
     pub skill_feedback_reasons: Vec<&'static str>,
+    pub skill_feedback_items: Vec<skill_feedback_service::SkillFailureFeedback>,
     pub accepted_skill_feedback_count: usize,
     pub run_recipe_review_decisions: Vec<run_recipe_review_service::RunRecipeReviewDecision>,
     pub run_recipe_review_items: Vec<String>,
@@ -252,6 +253,7 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         skill_review_items: skill_review_items(&skill_review_decisions),
         accepted_skill_review_count: skill_review_decisions.len(),
         skill_feedback_reasons: skill_feedback_reason_names(&skill_feedback),
+        skill_feedback_items: skill_feedback.clone(),
         accepted_skill_feedback_count: skill_feedback.len(),
         run_recipe_review_decisions: run_recipe_review_decisions.clone(),
         run_recipe_review_items: run_recipe_review_items(&run_recipe_review_decisions),
@@ -1545,6 +1547,11 @@ mod tests {
         assert!(result
             .skill_feedback_reasons
             .contains(&"failed_tool_pattern_overlap"));
+        assert!(result.skill_feedback_items.iter().any(|item| {
+            item.reason == "failed_tool_pattern_overlap"
+                && !item.skill_id.is_empty()
+                && !item.skill_name.is_empty()
+        }));
     }
 
     #[test]

@@ -9,7 +9,7 @@ use crate::domain::memory::{Skill, SkillOrigin, SkillStatus};
 
 const TOOL_PATTERN_MATCH_THRESHOLD: f64 = 0.5;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SkillFailureFeedback {
     pub skill_id: String,
     pub skill_name: String,
