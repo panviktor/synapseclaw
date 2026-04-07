@@ -10,6 +10,7 @@ use crate::application::services::learning_evidence_service;
 use crate::application::services::learning_quality_service;
 use crate::application::services::learning_strength_service;
 use crate::application::services::recipe_evolution_service;
+use crate::application::services::skill_feedback_service;
 use crate::application::services::skill_promotion_service;
 use crate::application::services::user_profile_service;
 use crate::domain::dialogue_state::FocusEntity;
@@ -48,6 +49,8 @@ pub struct SelfLearningEvalResult {
     pub accepted_failure_pattern_count: usize,
     pub skill_promotion_reasons: Vec<&'static str>,
     pub accepted_skill_promotion_count: usize,
+    pub skill_feedback_reasons: Vec<&'static str>,
+    pub accepted_skill_feedback_count: usize,
     pub mutation_candidate_count: usize,
     pub profile_patch_is_noop: bool,
     pub profile_projection: Option<String>,
@@ -75,6 +78,7 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
     let mutation_candidates =
         learning_candidate_service::build_mutation_candidates_from_assessments(&assessments);
     let skill_promotion_assessments = build_skill_promotion_assessments(scenario, &assessments);
+    let skill_feedback = build_skill_feedback(scenario, &assessments);
     let patch = learning_candidate_service::build_user_profile_patch_from_assessments(
         &assessments,
         scenario.current_profile.as_ref(),
@@ -114,6 +118,8 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
             .iter()
             .filter(|assessment| assessment.accepted)
             .count(),
+        skill_feedback_reasons: skill_feedback_reason_names(&skill_feedback),
+        accepted_skill_feedback_count: skill_feedback.len(),
         mutation_candidate_count: mutation_candidates.len(),
         profile_patch_is_noop: patch.is_noop(),
         profile_projection: projected_profile
@@ -313,6 +319,40 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             ],
         },
         SelfLearningEvalScenario {
+            id: "failure_pattern_penalizes_overlapping_learned_skill",
+            user_message: "Fetch the page and send it",
+            assistant_response: "The fetch failed.",
+            current_profile: None,
+            existing_recipes: Vec::new(),
+            existing_skills: vec![Skill {
+                id: "sk1".into(),
+                name: "search_delivery".into(),
+                description: "Promoted skill".into(),
+                content: "content".into(),
+                task_family: Some("search_delivery".into()),
+                tool_pattern: vec!["web_fetch".into(), "message_send".into()],
+                tags: vec!["recipe-promotion".into()],
+                success_count: 4,
+                fail_count: 0,
+                version: 1,
+                origin: crate::domain::memory::SkillOrigin::Learned,
+                status: crate::domain::memory::SkillStatus::Active,
+                created_by: "agent".into(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }],
+            tool_facts: vec![
+                TypedToolFact {
+                    tool_id: "message_send".into(),
+                    payload: ToolFactPayload::Delivery(DeliveryFact {
+                        target: DeliveryTargetKind::CurrentConversation,
+                        content_bytes: Some(24),
+                    }),
+                },
+                TypedToolFact::outcome("web_fetch", OutcomeStatus::RuntimeError, Some(220)),
+            ],
+        },
+        SelfLearningEvalScenario {
             id: "strong_repeated_recipe_promotes_skill_candidate",
             user_message: "Find the status page and send it again",
             assistant_response: "Fetched the page and sent it again.",
@@ -384,6 +424,26 @@ fn build_skill_promotion_assessments(
                 existing_skill,
             ))
         })
+        .collect()
+}
+
+fn build_skill_feedback(
+    scenario: &SelfLearningEvalScenario,
+    assessments: &[learning_quality_service::LearningCandidateAssessment],
+) -> Vec<skill_feedback_service::SkillFailureFeedback> {
+    assessments
+        .iter()
+        .filter(|assessment| assessment.accepted)
+        .filter_map(|assessment| {
+            let LearningCandidate::FailurePattern(failure) = &assessment.candidate else {
+                return None;
+            };
+            Some(skill_feedback_service::assess_failure_feedback(
+                failure,
+                &scenario.existing_skills,
+            ))
+        })
+        .flatten()
         .collect()
 }
 
@@ -469,6 +529,18 @@ fn skill_promotion_reason_names(
     for assessment in assessments {
         if !reasons.contains(&assessment.reason) {
             reasons.push(assessment.reason);
+        }
+    }
+    reasons
+}
+
+fn skill_feedback_reason_names(
+    feedback: &[skill_feedback_service::SkillFailureFeedback],
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    for item in feedback {
+        if !reasons.contains(&item.reason) {
+            reasons.push(item.reason);
         }
     }
     reasons
@@ -589,6 +661,21 @@ mod tests {
         assert!(result.assessment_reasons.contains(&"typed_failure_pattern"));
         assert_eq!(result.accepted_failure_pattern_count, 1);
         assert_eq!(result.mutation_candidate_count, 1);
+    }
+
+    #[test]
+    fn failure_turn_penalizes_overlapping_learned_skill() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "failure_pattern_penalizes_overlapping_learned_skill")
+            .unwrap();
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.accepted_failure_pattern_count, 1);
+        assert_eq!(result.accepted_skill_feedback_count, 1);
+        assert!(result
+            .skill_feedback_reasons
+            .contains(&"failed_tool_pattern_overlap"));
     }
 
     #[test]
