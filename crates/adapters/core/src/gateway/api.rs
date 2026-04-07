@@ -1856,13 +1856,16 @@ pub async fn handle_api_memory_learning_evals(
     let mut by_accepted_candidate_kind = std::collections::BTreeMap::<String, usize>::new();
     let mut by_assessment_reason = std::collections::BTreeMap::<String, usize>::new();
     let mut by_skill_promotion_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_skill_review_reason = std::collections::BTreeMap::<String, usize>::new();
     let mut by_skill_feedback_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_precedent_mutation_action = std::collections::BTreeMap::<String, usize>::new();
     let mut profile_updates = 0usize;
     let mut recipe_candidates = 0usize;
     let mut accepted_recipe_candidates = 0usize;
     let mut failure_pattern_candidates = 0usize;
     let mut accepted_failure_pattern_candidates = 0usize;
     let mut accepted_skill_promotions = 0usize;
+    let mut accepted_skill_reviews = 0usize;
     let mut accepted_skill_feedback = 0usize;
 
     for scenario in scenarios {
@@ -1888,9 +1891,19 @@ pub async fn handle_api_memory_learning_evals(
                 .entry((*reason).to_string())
                 .or_default() += 1;
         }
+        for reason in &result.skill_review_reasons {
+            *by_skill_review_reason
+                .entry((*reason).to_string())
+                .or_default() += 1;
+        }
         for reason in &result.skill_feedback_reasons {
             *by_skill_feedback_reason
                 .entry((*reason).to_string())
+                .or_default() += 1;
+        }
+        for action in &result.precedent_mutation_actions {
+            *by_precedent_mutation_action
+                .entry((*action).to_string())
                 .or_default() += 1;
         }
         if !result.profile_patch_is_noop {
@@ -1901,6 +1914,7 @@ pub async fn handle_api_memory_learning_evals(
         failure_pattern_candidates += result.failure_pattern_candidate_count;
         accepted_failure_pattern_candidates += result.accepted_failure_pattern_count;
         accepted_skill_promotions += result.accepted_skill_promotion_count;
+        accepted_skill_reviews += result.accepted_skill_review_count;
         accepted_skill_feedback += result.accepted_skill_feedback_count;
 
         results.push(serde_json::json!({
@@ -1917,8 +1931,12 @@ pub async fn handle_api_memory_learning_evals(
             "accepted_failure_pattern_count": result.accepted_failure_pattern_count,
             "skill_promotion_reasons": result.skill_promotion_reasons,
             "accepted_skill_promotion_count": result.accepted_skill_promotion_count,
+            "skill_review_reasons": result.skill_review_reasons,
+            "accepted_skill_review_count": result.accepted_skill_review_count,
             "skill_feedback_reasons": result.skill_feedback_reasons,
             "accepted_skill_feedback_count": result.accepted_skill_feedback_count,
+            "precedent_mutation_actions": result.precedent_mutation_actions,
+            "precedent_mutation_reasons": result.precedent_mutation_reasons,
             "mutation_candidate_count": result.mutation_candidate_count,
             "profile_patch_is_noop": result.profile_patch_is_noop,
             "profile_projection": result.profile_projection,
@@ -1933,13 +1951,16 @@ pub async fn handle_api_memory_learning_evals(
             "accepted_candidate_kinds": by_accepted_candidate_kind,
             "assessment_reasons": by_assessment_reason,
             "skill_promotion_reasons": by_skill_promotion_reason,
+            "skill_review_reasons": by_skill_review_reason,
             "skill_feedback_reasons": by_skill_feedback_reason,
+            "precedent_mutation_actions": by_precedent_mutation_action,
             "profile_updates": profile_updates,
             "recipe_candidates": recipe_candidates,
             "accepted_recipe_candidates": accepted_recipe_candidates,
             "failure_pattern_candidates": failure_pattern_candidates,
             "accepted_failure_pattern_candidates": accepted_failure_pattern_candidates,
             "accepted_skill_promotions": accepted_skill_promotions,
+            "accepted_skill_reviews": accepted_skill_reviews,
             "accepted_skill_feedback": accepted_skill_feedback,
         },
         "results": results,
