@@ -1537,12 +1537,13 @@ pub async fn handle_api_memory_projections(
 
     let recent_precedents = state
         .mem
-        .list(
+        .list_scoped(
             Some(&synapse_domain::domain::memory::MemoryCategory::Custom(
                 "precedent".into(),
             )),
             None,
             limit,
+            false,
         )
         .await
         .unwrap_or_default()
@@ -1563,10 +1564,11 @@ pub async fn handle_api_memory_projections(
 
     let recent_reflections = state
         .mem
-        .list(
+        .list_scoped(
             Some(&synapse_domain::domain::memory::MemoryCategory::Reflection),
             None,
             limit,
+            false,
         )
         .await
         .unwrap_or_default()
@@ -1587,12 +1589,13 @@ pub async fn handle_api_memory_projections(
 
     let recent_failure_patterns = state
         .mem
-        .list(
+        .list_scoped(
             Some(&synapse_domain::domain::memory::MemoryCategory::Custom(
                 "failure_pattern".into(),
             )),
             None,
             limit,
+            false,
         )
         .await
         .unwrap_or_default()
