@@ -600,7 +600,70 @@ fn build_query_text(user_message: &str, interpretation: Option<&TurnInterpretati
         ));
     }
 
+    if let Some(target) = state.recent_delivery_target.as_ref() {
+        parts.push(format!(
+            "Recent delivery target: {}",
+            summarize_delivery_target(target)
+        ));
+    }
+
+    if let Some(schedule_job) = state.recent_schedule_job.as_ref() {
+        let mut schedule_parts = vec![schedule_job.job_id.clone()];
+        if let Some(session_target) = schedule_job.session_target.as_deref() {
+            schedule_parts.push(format!("session={session_target}"));
+        }
+        if let Some(timezone) = schedule_job.timezone.as_deref() {
+            schedule_parts.push(format!("timezone={timezone}"));
+        }
+        parts.push(format!("Recent schedule: {}", schedule_parts.join(", ")));
+    }
+
+    if let Some(resource) = state.recent_resource.as_ref() {
+        let mut resource_parts = vec![resource.locator.clone()];
+        if let Some(host) = resource.host.as_deref() {
+            resource_parts.push(format!("host={host}"));
+        }
+        parts.push(format!("Recent resource: {}", resource_parts.join(", ")));
+    }
+
+    if let Some(search) = state.recent_search.as_ref() {
+        let mut search_parts = Vec::new();
+        if let Some(query) = search.query.as_deref() {
+            search_parts.push(format!("query={query}"));
+        }
+        if let Some(locator) = search.primary_locator.as_deref() {
+            search_parts.push(format!("result={locator}"));
+        }
+        if !search_parts.is_empty() {
+            parts.push(format!("Recent search: {}", search_parts.join(", ")));
+        }
+    }
+
+    if let Some(workspace) = state.recent_workspace.as_ref() {
+        if let Some(name) = workspace.name.as_deref() {
+            parts.push(format!("Recent workspace: {name}"));
+        }
+    }
+
     parts.join("\n")
+}
+
+fn summarize_delivery_target(
+    target: &crate::domain::conversation_target::ConversationDeliveryTarget,
+) -> String {
+    match target {
+        crate::domain::conversation_target::ConversationDeliveryTarget::CurrentConversation => {
+            "current_conversation".into()
+        }
+        crate::domain::conversation_target::ConversationDeliveryTarget::Explicit {
+            channel,
+            recipient,
+            thread_ref,
+        } => match thread_ref.as_deref() {
+            Some(thread_ref) => format!("{channel}:{recipient}#{thread_ref}"),
+            None => format!("{channel}:{recipient}"),
+        },
+    }
 }
 
 fn build_execution_budget(
@@ -987,6 +1050,62 @@ mod tests {
         assert!(query.contains("Default city: Berlin"));
         assert!(query.contains("Focus: Berlin"));
         assert!(query.contains("Recent tools: weather_lookup"));
+    }
+
+    #[test]
+    fn build_query_text_includes_recent_typed_context_recaps() {
+        let interpretation = crate::application::services::turn_interpretation::TurnInterpretation {
+            dialogue_state: Some(
+                crate::application::services::turn_interpretation::DialogueStateSnapshot {
+                    focus_entities: vec![],
+                    comparison_set: vec![],
+                    reference_anchors: vec![],
+                    last_tool_subjects: vec![],
+                    recent_delivery_target: Some(
+                        crate::domain::conversation_target::ConversationDeliveryTarget::Explicit {
+                            channel: "matrix".into(),
+                            recipient: "!ops:example.org".into(),
+                            thread_ref: Some("$event1".into()),
+                        },
+                    ),
+                    recent_schedule_job: Some(
+                        crate::domain::dialogue_state::ScheduleJobReference {
+                            job_id: "job-42".into(),
+                            action: crate::domain::tool_fact::ScheduleAction::Run,
+                            job_type: Some(crate::domain::tool_fact::ScheduleJobType::Agent),
+                            schedule_kind: Some(crate::domain::tool_fact::ScheduleKind::Cron),
+                            session_target: Some("ops-room".into()),
+                            timezone: Some("Europe/Berlin".into()),
+                        },
+                    ),
+                    recent_resource: Some(crate::domain::dialogue_state::ResourceReference {
+                        kind: crate::domain::tool_fact::ResourceKind::File,
+                        operation: crate::domain::tool_fact::ResourceOperation::Read,
+                        locator: "/tmp/report.md".into(),
+                        host: Some("workspace".into()),
+                    }),
+                    recent_search: Some(crate::domain::dialogue_state::SearchReference {
+                        domain: crate::domain::tool_fact::SearchDomain::Session,
+                        query: Some("deploy rollback".into()),
+                        primary_locator: Some("session:incident-12".into()),
+                        result_count: Some(3),
+                    }),
+                    recent_workspace: Some(crate::domain::dialogue_state::WorkspaceReference {
+                        action: crate::domain::tool_fact::WorkspaceAction::Switch,
+                        name: Some("synapseclaw".into()),
+                        item_count: Some(42),
+                    }),
+                },
+            ),
+            ..Default::default()
+        };
+
+        let query = build_query_text("rerun it", Some(&interpretation));
+        assert!(query.contains("Recent delivery target: matrix:!ops:example.org#$event1"));
+        assert!(query.contains("Recent schedule: job-42, session=ops-room, timezone=Europe/Berlin"));
+        assert!(query.contains("Recent resource: /tmp/report.md, host=workspace"));
+        assert!(query.contains("Recent search: query=deploy rollback, result=session:incident-12"));
+        assert!(query.contains("Recent workspace: synapseclaw"));
     }
 
     #[test]
