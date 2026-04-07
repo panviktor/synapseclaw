@@ -6,6 +6,7 @@
 
 use crate::application::services::failure_similarity_service;
 use crate::application::services::learning_candidate_service::{self, LearningCandidate};
+use crate::application::services::learning_conflict_service;
 use crate::application::services::learning_events::LearningEvent;
 use crate::application::services::learning_evidence_service::{self, LearningEvidenceEnvelope};
 use crate::application::services::learning_quality_service::{self, LearningCandidateAssessment};
@@ -116,14 +117,16 @@ pub async fn execute_post_turn_learning(
         .as_ref()
         .map(|store| store.list(&input.agent_id))
         .unwrap_or_default();
-    let learning_assessments = learning_strength_service::strengthen_learning_assessments(
-        &learning_quality_service::assess_learning_candidates(
-            &learning_candidates,
-            &learning_evidence,
+    let learning_assessments = learning_conflict_service::resolve_learning_conflicts(
+        &learning_strength_service::strengthen_learning_assessments(
+            &learning_quality_service::assess_learning_candidates(
+                &learning_candidates,
+                &learning_evidence,
+                &existing_recipes,
+            ),
+            current_profile.as_ref(),
             &existing_recipes,
         ),
-        current_profile.as_ref(),
-        &existing_recipes,
     );
     let precedent_assessments = learning_assessments
         .iter()
@@ -391,8 +394,8 @@ pub async fn execute_post_turn_learning(
             input.user_profile_store.as_ref(),
             input.user_profile_key.as_deref(),
         ) {
-            let patch = learning_candidate_service::build_user_profile_patch(
-                &learning_candidates,
+            let patch = learning_candidate_service::build_user_profile_patch_from_assessments(
+                &learning_assessments,
                 current_profile.as_ref(),
             );
             if !patch.is_noop() {
@@ -882,6 +885,53 @@ mod tests {
         .await;
 
         assert!(!report.user_profile_updated);
+    }
+
+    #[tokio::test]
+    async fn skips_user_profile_write_for_conflicting_profile_candidates() {
+        let memory = StubMemory::default();
+        let store = Arc::new(InMemoryUserProfileStore::new());
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message: "Remember both timezone options".into(),
+                assistant_response: "Captured conflicting timezone facts.".into(),
+                tools_used: vec!["user_profile".into()],
+                tool_facts: vec![
+                    TypedToolFact {
+                        tool_id: "user_profile".into(),
+                        payload: ToolFactPayload::UserProfile(UserProfileFact {
+                            field: UserProfileField::Timezone,
+                            operation: ProfileOperation::Set,
+                            value: Some("Europe/Berlin".into()),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "user_profile".into(),
+                        payload: ToolFactPayload::UserProfile(UserProfileFact {
+                            field: UserProfileField::Timezone,
+                            operation: ProfileOperation::Set,
+                            value: Some("Europe/Paris".into()),
+                        }),
+                    },
+                ],
+                run_recipe_store: None,
+                user_profile_store: Some(store.clone()),
+                user_profile_key: Some("web:test".into()),
+                auto_save_enabled: true,
+                event_tx: None,
+            },
+        )
+        .await;
+
+        assert!(!report.user_profile_updated);
+        assert!(report
+            .learning_assessments
+            .iter()
+            .all(|assessment| !assessment.accepted));
+        assert!(store.load("web:test").is_none());
     }
 
     #[tokio::test]

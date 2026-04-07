@@ -5,6 +5,7 @@
 //! candidates, and safe profile patching.
 
 use crate::application::services::learning_candidate_service::{self, LearningCandidate};
+use crate::application::services::learning_conflict_service;
 use crate::application::services::learning_evidence_service;
 use crate::application::services::learning_quality_service;
 use crate::application::services::learning_strength_service;
@@ -60,20 +61,22 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         &scenario.tool_facts,
         &evidence,
     );
-    let assessments = learning_strength_service::strengthen_learning_assessments(
-        &learning_quality_service::assess_learning_candidates(
-            &candidates,
-            &evidence,
+    let assessments = learning_conflict_service::resolve_learning_conflicts(
+        &learning_strength_service::strengthen_learning_assessments(
+            &learning_quality_service::assess_learning_candidates(
+                &candidates,
+                &evidence,
+                &scenario.existing_recipes,
+            ),
+            scenario.current_profile.as_ref(),
             &scenario.existing_recipes,
         ),
-        scenario.current_profile.as_ref(),
-        &scenario.existing_recipes,
     );
     let mutation_candidates =
         learning_candidate_service::build_mutation_candidates_from_assessments(&assessments);
     let skill_promotion_assessments = build_skill_promotion_assessments(scenario, &assessments);
-    let patch = learning_candidate_service::build_user_profile_patch(
-        &candidates,
+    let patch = learning_candidate_service::build_user_profile_patch_from_assessments(
+        &assessments,
         scenario.current_profile.as_ref(),
     );
     let projected_profile =
@@ -192,6 +195,32 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                     value: Some("staging".into()),
                 }),
             }],
+        },
+        SelfLearningEvalScenario {
+            id: "conflicting_profile_updates_are_rejected",
+            user_message: "Remember both of these timezones",
+            assistant_response: "I captured conflicting timezone updates.",
+            current_profile: None,
+            existing_recipes: Vec::new(),
+            existing_skills: Vec::new(),
+            tool_facts: vec![
+                TypedToolFact {
+                    tool_id: "user_profile".into(),
+                    payload: ToolFactPayload::UserProfile(UserProfileFact {
+                        field: UserProfileField::Timezone,
+                        operation: ProfileOperation::Set,
+                        value: Some("Europe/Berlin".into()),
+                    }),
+                },
+                TypedToolFact {
+                    tool_id: "user_profile".into(),
+                    payload: ToolFactPayload::UserProfile(UserProfileFact {
+                        field: UserProfileField::Timezone,
+                        operation: ProfileOperation::Set,
+                        value: Some("Europe/Paris".into()),
+                    }),
+                },
+            ],
         },
         SelfLearningEvalScenario {
             id: "similar_existing_recipe_merges",
@@ -494,6 +523,21 @@ mod tests {
         let result = evaluate_scenario(&scenario);
         let projection = result.profile_projection.unwrap();
         assert!(projection.contains("known_environments: prod, staging"));
+    }
+
+    #[test]
+    fn conflicting_profile_updates_do_not_patch_profile() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "conflicting_profile_updates_are_rejected")
+            .unwrap();
+
+        let result = evaluate_scenario(&scenario);
+        assert!(result.profile_patch_is_noop);
+        assert!(result
+            .assessment_reasons
+            .contains(&"conflicting_profile_candidates"));
+        assert!(!result.accepted_candidate_kinds.contains(&"user_profile"));
     }
 
     #[test]

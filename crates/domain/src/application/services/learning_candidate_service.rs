@@ -267,6 +267,18 @@ pub fn build_user_profile_patch(
     patch
 }
 
+pub fn build_user_profile_patch_from_assessments(
+    assessments: &[LearningCandidateAssessment],
+    current: Option<&UserProfile>,
+) -> UserProfilePatch {
+    let accepted = assessments
+        .iter()
+        .filter(|assessment| assessment.accepted)
+        .map(|assessment| assessment.candidate.clone())
+        .collect::<Vec<_>>();
+    build_user_profile_patch(&accepted, current)
+}
+
 fn collect_subjects(tool_facts: &[TypedToolFact], limit: usize) -> Vec<String> {
     let mut subjects = Vec::new();
     for fact in tool_facts {
