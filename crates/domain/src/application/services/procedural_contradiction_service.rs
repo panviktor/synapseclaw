@@ -12,6 +12,7 @@ use crate::domain::run_recipe::RunRecipe;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProceduralContradiction {
     pub recipe_task_family: String,
+    pub recipe_lineage_task_families: Vec<String>,
     pub recipe_cluster_size: usize,
     pub recipe_tool_pattern: Vec<String>,
     pub failure_representative_key: String,
@@ -39,6 +40,10 @@ pub fn find_recipe_failure_contradictions(
                 (overlap >= min_overlap && !failed_tools.is_empty()).then(|| {
                     ProceduralContradiction {
                         recipe_task_family: recipe_cluster.representative.task_family.clone(),
+                        recipe_lineage_task_families: recipe_cluster
+                            .representative
+                            .lineage_task_families
+                            .clone(),
                         recipe_cluster_size: recipe_cluster.member_count(),
                         recipe_tool_pattern: recipe_cluster.representative.tool_pattern.clone(),
                         failure_representative_key: failure_cluster.representative.key.clone(),
@@ -156,6 +161,10 @@ mod tests {
 
         assert_eq!(contradictions.len(), 1);
         assert_eq!(contradictions[0].recipe_task_family, "status_delivery");
+        assert_eq!(
+            contradictions[0].recipe_lineage_task_families,
+            vec!["status_delivery"]
+        );
         assert_eq!(contradictions[0].failure_representative_key, "f1");
     }
 

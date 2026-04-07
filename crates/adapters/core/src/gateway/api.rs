@@ -1708,6 +1708,7 @@ pub async fn handle_api_memory_projections(
         .map(|contradiction| {
             serde_json::json!({
                 "recipe_task_family": contradiction.recipe_task_family,
+                "recipe_lineage_task_families": contradiction.recipe_lineage_task_families,
                 "recipe_cluster_size": contradiction.recipe_cluster_size,
                 "failure_representative_key": contradiction.failure_representative_key,
                 "failure_cluster_size": contradiction.failure_cluster_size,

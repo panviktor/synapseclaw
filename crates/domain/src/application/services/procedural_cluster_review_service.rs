@@ -181,6 +181,7 @@ mod tests {
             )],
             &[ProceduralContradiction {
                 recipe_task_family: "status_delivery".into(),
+                recipe_lineage_task_families: vec!["status_delivery".into()],
                 recipe_cluster_size: 1,
                 recipe_tool_pattern: vec!["web_search".into(), "message_send".into()],
                 failure_representative_key: "f1".into(),

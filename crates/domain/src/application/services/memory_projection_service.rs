@@ -471,13 +471,22 @@ pub fn format_procedural_contradiction_projection(
 
     let mut lines = vec!["[procedural-contradictions]".to_string()];
     for contradiction in contradictions {
+        let lineage = if contradiction.recipe_lineage_task_families.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " | recipe_lineage=[{}]",
+                contradiction.recipe_lineage_task_families.join(", ")
+            )
+        };
         lines.push(format!(
-            "- recipe={} vs failure={} (overlap {:.2}, recipe_cluster_size={}, failure_cluster_size={})",
+            "- recipe={} vs failure={} (overlap {:.2}, recipe_cluster_size={}, failure_cluster_size={}){}",
             contradiction.recipe_task_family,
             contradiction.failure_representative_key,
             contradiction.overlap,
             contradiction.recipe_cluster_size,
-            contradiction.failure_cluster_size
+            contradiction.failure_cluster_size,
+            lineage
         ));
     }
 
@@ -848,6 +857,7 @@ mod tests {
     fn formats_procedural_contradiction_projection() {
         let projection = format_procedural_contradiction_projection(&[ProceduralContradiction {
             recipe_task_family: "search_delivery".into(),
+            recipe_lineage_task_families: vec!["search_delivery".into(), "delivery_search".into()],
             recipe_cluster_size: 2,
             recipe_tool_pattern: vec!["web_search".into(), "message_send".into()],
             failure_representative_key: "f1".into(),
@@ -859,6 +869,7 @@ mod tests {
 
         assert!(projection.contains("[procedural-contradictions]"));
         assert!(projection.contains("search_delivery"));
+        assert!(projection.contains("recipe_lineage=[search_delivery, delivery_search]"));
         assert!(projection.contains("failure=f1"));
     }
 
