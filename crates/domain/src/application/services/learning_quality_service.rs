@@ -60,7 +60,17 @@ pub fn assess_learning_candidates(
                     .iter()
                     .filter(|existing| existing.task_family == recipe.task_family_hint)
                     .collect::<Vec<_>>();
+                let cross_family_existing = existing_recipes
+                    .iter()
+                    .filter(|existing| existing.task_family != recipe.task_family_hint)
+                    .collect::<Vec<_>>();
                 let best_existing = matching_existing
+                    .iter()
+                    .map(|existing| {
+                        tool_pattern_similarity(&existing.tool_pattern, &recipe.tool_pattern)
+                    })
+                    .fold(0.0_f32, f32::max);
+                let best_cross_family = cross_family_existing
                     .iter()
                     .map(|existing| {
                         tool_pattern_similarity(&existing.tool_pattern, &recipe.tool_pattern)
@@ -73,14 +83,19 @@ pub fn assess_learning_candidates(
                 let diverged_existing = !matching_existing.is_empty() && best_existing < 0.45;
                 let ambiguous_existing =
                     !matching_existing.is_empty() && (0.45..0.9).contains(&best_existing);
+                let cross_family_duplicate = best_cross_family >= 0.9
+                    && (matching_existing.is_empty() || best_cross_family >= best_existing - 0.05);
                 let accepted = recipe.tool_pattern.len() >= 2
                     && !diverged_existing
                     && !ambiguous_existing
+                    && !cross_family_duplicate
                     && confidence >= 0.7;
                 let reason = if diverged_existing {
                     "diverged_existing_recipe"
                 } else if ambiguous_existing {
                     "ambiguous_existing_recipe"
+                } else if cross_family_duplicate {
+                    "cross_family_recipe_duplicate"
                 } else if accepted && best_existing >= 0.9 {
                     "merge_existing_recipe"
                 } else if accepted {
@@ -274,6 +289,38 @@ mod tests {
         assert_eq!(assessments.len(), 1);
         assert!(assessments[0].accepted);
         assert_eq!(assessments[0].reason, "merge_existing_recipe");
+    }
+
+    #[test]
+    fn rejects_high_similarity_cross_family_recipe_duplicate() {
+        let assessments = assess_learning_candidates(
+            &[LearningCandidate::RunRecipe(RunRecipeLearningCandidate {
+                task_family_hint: "status_page_delivery".into(),
+                sample_request: "send status".into(),
+                summary: "pattern=web_search -> message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+            })],
+            &LearningEvidenceEnvelope {
+                facets: vec![
+                    LearningEvidenceFacet::Search,
+                    LearningEvidenceFacet::Delivery,
+                ],
+                ..Default::default()
+            },
+            &[RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "delivery_search".into(),
+                sample_request: "search and send".into(),
+                summary: "pattern=web_search -> message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 2,
+                updated_at: 1,
+            }],
+        );
+
+        assert_eq!(assessments.len(), 1);
+        assert!(!assessments[0].accepted);
+        assert_eq!(assessments[0].reason, "cross_family_recipe_duplicate");
     }
 
     #[test]
