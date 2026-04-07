@@ -208,6 +208,39 @@ pub trait UnifiedMemoryPort:
     /// Cross-tier hybrid search with RRF fusion.
     async fn hybrid_search(&self, query: &MemoryQuery) -> Result<HybridSearchResult, MemoryError>;
 
+    /// Find similar episodes for an existing entry.
+    async fn similar_episodes_for_entry(
+        &self,
+        entry: &MemoryEntry,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        let mut result = self
+            .hybrid_search(&MemoryQuery {
+                text: entry.content.clone(),
+                embedding: None,
+                agent_id: agent_id.to_string(),
+                categories: vec![category.clone()],
+                include_shared,
+                time_range: None,
+                limit: limit.saturating_mul(2).max(limit),
+            })
+            .await?;
+        result
+            .episodes
+            .retain(|candidate| candidate.entry.key != entry.key);
+        result.episodes.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        result.episodes.truncate(limit);
+        Ok(result.episodes)
+    }
+
     /// Generate an embedding vector for text.
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError>;
 

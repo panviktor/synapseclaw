@@ -7,7 +7,7 @@
 use crate::application::services::failure_similarity_service;
 use crate::application::services::precedent_similarity_service;
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
-use crate::domain::memory::{MemoryCategory, MemoryEntry, MemoryError, MemoryQuery};
+use crate::domain::memory::{MemoryCategory, MemoryEntry, MemoryError};
 use crate::ports::memory::UnifiedMemoryPort;
 use std::collections::{HashMap, HashSet};
 
@@ -88,25 +88,10 @@ async fn fetch_category_shortlist(
     category: &MemoryCategory,
     limit: usize,
 ) -> Result<Vec<MemoryEntry>, MemoryError> {
-    let query = MemoryQuery {
-        text: entry.content.clone(),
-        embedding: None,
-        agent_id: agent_id.to_string(),
-        categories: vec![category.clone()],
-        include_shared: false,
-        time_range: None,
-        limit: limit.saturating_mul(2).max(limit),
-    };
-    let mut episodes = mem.hybrid_search(&query).await?.episodes;
-    episodes.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    Ok(episodes
+    Ok(mem
+        .similar_episodes_for_entry(entry, agent_id, category, limit, false)
+        .await?
         .into_iter()
-        .take(limit)
         .map(|result| {
             let mut entry = result.entry;
             entry.score = Some(result.score as f64);

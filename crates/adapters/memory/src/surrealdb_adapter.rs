@@ -1669,6 +1669,51 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         })
     }
 
+    async fn similar_episodes_for_entry(
+        &self,
+        entry: &MemoryEntry,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        let mut resp = self
+            .db
+            .query("SELECT embedding FROM episode WHERE key = $key AND agent_id = $agent LIMIT 1")
+            .bind(("key", entry.key.clone()))
+            .bind(("agent", agent_id.to_string()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let rows = take_json!(resp, 0);
+        let stored_embedding = rows
+            .first()
+            .and_then(|row| row.get("embedding"))
+            .cloned()
+            .and_then(|value| serde_json::from_value::<Vec<f32>>(value).ok())
+            .filter(|embedding| !embedding.is_empty());
+
+        let mut episodes = self
+            .search_episodes(&MemoryQuery {
+                text: entry.content.clone(),
+                embedding: stored_embedding,
+                agent_id: agent_id.to_string(),
+                categories: vec![category.clone()],
+                include_shared,
+                time_range: None,
+                limit: limit.saturating_mul(2).max(limit),
+            })
+            .await?;
+        episodes.retain(|candidate| candidate.entry.key != entry.key);
+        episodes.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        episodes.truncate(limit);
+        Ok(episodes)
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         self.embedder
             .embed_one(text)

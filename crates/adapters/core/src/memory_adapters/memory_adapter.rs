@@ -194,6 +194,18 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     async fn hybrid_search(&self, query: &MemoryQuery) -> Result<HybridSearchResult, MemoryError> {
         self.inner.hybrid_search(query).await
     }
+    async fn similar_episodes_for_entry(
+        &self,
+        entry: &MemoryEntry,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        self.inner
+            .similar_episodes_for_entry(entry, agent_id, category, limit, include_shared)
+            .await
+    }
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         self.inner.embed(text).await
     }
