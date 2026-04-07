@@ -313,6 +313,10 @@ async fn sample_learning_maintenance_snapshot(
         .list_skills(&agent_id.to_string(), probe_limit)
         .await
         .unwrap_or_default();
+    let recent_learned_skills = recent_skills
+        .iter()
+        .filter(|skill| skill.origin == synapse_domain::domain::memory::SkillOrigin::Learned)
+        .collect::<Vec<_>>();
     let recent_cutoff =
         chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
     let recent_run_recipe_cutoff =
@@ -334,8 +338,8 @@ async fn sample_learning_maintenance_snapshot(
         recent_reflection_count: count_recent_entries(&recent_reflections, recent_cutoff),
         recent_failure_pattern_count: count_recent_entries(&recent_failure_patterns, recent_cutoff),
         failure_pattern_cluster_count: failure_pattern_clusters.len(),
-        recent_skill_count: recent_skills.len(),
-        candidate_skill_count: recent_skills
+        recent_skill_count: recent_learned_skills.len(),
+        candidate_skill_count: recent_learned_skills
             .iter()
             .filter(|skill| skill.status == synapse_domain::domain::memory::SkillStatus::Candidate)
             .count(),
