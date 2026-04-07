@@ -55,7 +55,8 @@ impl LearningMaintenanceSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LearningMaintenanceReason {
     RecentLearningActivity,
     RunRecipeDuplicateBacklog,
@@ -70,7 +71,7 @@ pub enum LearningMaintenanceReason {
     ForcedMaintenanceInterval,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LearningMaintenancePlan {
     pub run_importance_decay: bool,
     pub run_gc: bool,

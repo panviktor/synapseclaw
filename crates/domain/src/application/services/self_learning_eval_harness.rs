@@ -78,6 +78,7 @@ pub struct SelfLearningEvalResult {
     pub precedent_cluster_review_items: Vec<String>,
     pub failure_cluster_reviews: Vec<procedural_cluster_review_service::ProceduralClusterReview>,
     pub failure_cluster_review_items: Vec<String>,
+    pub maintenance_plan: learning_maintenance_service::LearningMaintenancePlan,
     pub maintenance_reasons: Vec<&'static str>,
     pub maintenance_runs_precedent_compaction: bool,
     pub maintenance_runs_failure_pattern_compaction: bool,
@@ -268,6 +269,7 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         precedent_cluster_review_items: cluster_review_items(&precedent_cluster_reviews),
         failure_cluster_reviews: failure_cluster_reviews.clone(),
         failure_cluster_review_items: cluster_review_items(&failure_cluster_reviews),
+        maintenance_plan: maintenance_plan.clone(),
         maintenance_reasons: maintenance_reason_names(&maintenance_plan),
         maintenance_runs_precedent_compaction: maintenance_plan.run_precedent_compaction,
         maintenance_runs_failure_pattern_compaction: maintenance_plan
@@ -1731,6 +1733,8 @@ mod tests {
         assert!(result
             .maintenance_reasons
             .contains(&"precedent_preserve_branch_backlog"));
+        assert!(result.maintenance_plan.run_run_recipe_review);
+        assert!(result.maintenance_plan.run_skill_review);
         assert!(result.maintenance_runs_run_recipe_review);
         assert!(result.maintenance_runs_skill_review);
     }

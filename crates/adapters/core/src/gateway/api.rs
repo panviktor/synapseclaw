@@ -2047,6 +2047,7 @@ pub async fn handle_api_memory_learning_evals(
             "precedent_cluster_review_items": result.precedent_cluster_review_items,
             "failure_cluster_reviews": result.failure_cluster_reviews,
             "failure_cluster_review_items": result.failure_cluster_review_items,
+            "maintenance_plan": result.maintenance_plan,
             "maintenance_reasons": result.maintenance_reasons,
             "maintenance_runs_precedent_compaction": result.maintenance_runs_precedent_compaction,
             "maintenance_runs_failure_pattern_compaction": result.maintenance_runs_failure_pattern_compaction,
