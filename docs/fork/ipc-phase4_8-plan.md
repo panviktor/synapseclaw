@@ -751,6 +751,47 @@ It should avoid:
 - structured profile + working state always available
 - cloud LLM optional for richer summarization or repair paths
 
+### Deferred SurrealDB Optimization Backlog
+
+After the main Phase 4.9 learning work lands, we should revisit Phase 4.8 and
+push more of the retrieval-heavy shortlist work down into SurrealDB-native
+multi-model queries.
+
+This is a **post-4.9 optimization track**, not a blocker for completing the
+current runtime architecture.
+
+Best candidates:
+
+- `session_search` shortlist generation via richer hybrid/vector/full-text queries
+- `precedent_search` and `memory_recall` over-fetch + re-rank inside SurrealDB
+- graph/temporal expansion for related session and precedent context
+- contradiction / nearby-memory shortlist generation before Rust-side resolution
+- retrieval-side compaction candidate grouping for old noisy episodic entries
+- better neighborhood search for recent working-context recaps
+
+What should likely stay in Rust even after this optimization:
+
+- final resolution policy
+- prompt/context budgeting
+- clarification policy
+- dialogue state transitions
+- hard-fact arbitration
+- security and scope boundaries
+
+Target direction:
+
+```text
+SurrealDB does more shortlist and relationship work
+Rust does final resolution, safety, and prompt assembly
+```
+
+This should improve:
+
+- latency
+- retrieval quality
+- fewer full-list scans in application code
+- better use of graph/vector/temporal joins already available in SurrealDB
+
 ---
 
 ## Architecture Fit

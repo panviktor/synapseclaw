@@ -578,6 +578,47 @@ Therefore Phase 4.9 assumes the `4.8` embedding profile work and must keep:
 We should maintain a **small validated shortlist** of embedding profiles for
 learning-critical paths, rather than pretending all models are equivalent.
 
+### SurrealDB-First Learning Substrate
+
+Phase 4.9 should make stronger use of SurrealDB as the primary learning and
+retrieval substrate, not only as passive storage.
+
+SurrealDB should be the default place for:
+
+- vector and hybrid shortlist generation for precedents
+- graph-aware re-ranking of related runs / sessions / recipes
+- temporal filtering for stale vs current evidence
+- contradiction shortlist generation
+- merge / dedupe candidate generation
+- compaction candidate grouping
+
+This means Phase 4.9 should prefer SurrealDB-native query patterns for:
+
+- precedent similarity search
+- recipe clustering candidates
+- near-duplicate candidate discovery
+- contradictory profile / memory lookup
+- session / run neighborhood expansion
+
+Rust application services should still remain the source of truth for:
+
+- hard-fact arbitration
+- confidence thresholds
+- promotion / merge decisions
+- scoped writes and safety policy
+- cross-surface runtime invariants
+
+In short:
+
+```text
+SurrealDB = similarity / graph / temporal shortlist engine
+Rust domain = policy / safety / promotion / state-transition engine
+```
+
+Phase 4.9 should not assume that every learning decision must be made in Rust
+after naive full-list scans. The database should do more of the heavy shortlist
+work first.
+
 ---
 
 ## Safety & Guardrails
@@ -608,18 +649,20 @@ Recommended order:
 
 1. Slice 1 — Learning Evidence Envelope
 2. Slice 2 — Candidate Formation Pipeline
-3. Slice 4 — Precedent Learning
-4. Slice 5 — Recipe Evolution
-5. Slice 3 — User Profile Learning
-6. Slice 6 — Skill Promotion & Restructuring
-7. Slice 7 — Failure Learning
-8. Slice 8 — Memory Compaction & Quality Control
-9. Slice 9 — Human-Readable Learning Surfaces
-10. Slice 10 — Self-Learning Eval Harness
+3. SurrealDB shortlist/query substrate for precedent / recipe / contradiction search
+4. Slice 4 — Precedent Learning
+5. Slice 5 — Recipe Evolution
+6. Slice 3 — User Profile Learning
+7. Slice 6 — Skill Promotion & Restructuring
+8. Slice 7 — Failure Learning
+9. Slice 8 — Memory Compaction & Quality Control
+10. Slice 9 — Human-Readable Learning Surfaces
+11. Slice 10 — Self-Learning Eval Harness
 
 This order keeps the foundation principled:
 
 - evidence first
+- then DB-native shortlist generation
 - then precedents
 - then recipes
 - then skills
