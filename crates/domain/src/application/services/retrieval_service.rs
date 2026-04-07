@@ -12,6 +12,7 @@ use crate::domain::run_recipe::RunRecipe;
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSearchMatch {
@@ -65,6 +66,7 @@ pub struct SessionSearchOptions {
     pub limit: usize,
     pub metadata_shortlist: usize,
     pub recent_shortlist: usize,
+    pub semantic_shortlist: usize,
     pub min_score: f64,
     pub recency_half_life_secs: u64,
     pub mmr_lambda: f64,
@@ -78,6 +80,7 @@ impl Default for SessionSearchOptions {
             limit: 5,
             metadata_shortlist: 15,
             recent_shortlist: 25,
+            semantic_shortlist: 16,
             min_score: 0.0,
             recency_half_life_secs: 7 * 24 * 60 * 60,
             mmr_lambda: 0.72,
@@ -217,9 +220,9 @@ pub async fn search_sessions_with_options(
         }
     }
 
-    let mut hits = Vec::new();
     let query_embedding = embed_query_or_none(memory, query).await;
     let now = current_unix_seconds();
+    let mut candidates = Vec::new();
     for session in shortlisted {
         let base_score = metadata_hits
             .iter()
@@ -229,8 +232,54 @@ pub async fn search_sessions_with_options(
         let events = store.get_events(&session.key, 20).await;
         let (transcript_score, recap) = transcript_recap(&events, &keywords);
         let document = build_session_document(&session, &events);
-        let document_embedding = if query_embedding.is_some() {
-            embed_document_or_none(memory, &document).await
+        let recency_score = temporal_decay_score(
+            now.saturating_sub(session.last_active),
+            options.recency_half_life_secs,
+        ) * options.weights.recency;
+        let transcript_component = transcript_score * options.weights.transcript;
+        let cheap_score = base_score + transcript_component + recency_score;
+
+        candidates.push(SessionSearchCandidate {
+            session,
+            recap,
+            document,
+            cheap_score,
+            recency_score,
+            transcript_component,
+            base_score,
+        });
+    }
+
+    let semantic_keys = if query_embedding.is_some() && !metadata_hits.is_empty() {
+        let mut ranked = candidates
+            .iter()
+            .map(|candidate| (candidate.cheap_score, candidate.session.key.clone()))
+            .collect::<Vec<_>>();
+        ranked.sort_by(|left, right| {
+            right
+                .0
+                .partial_cmp(&left.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| left.1.cmp(&right.1))
+        });
+        ranked
+            .into_iter()
+            .take(options.semantic_shortlist)
+            .map(|(_, key)| key)
+            .collect::<HashSet<_>>()
+    } else {
+        candidates
+            .iter()
+            .map(|candidate| candidate.session.key.clone())
+            .collect::<HashSet<_>>()
+    };
+
+    let mut hits = Vec::new();
+    for candidate in candidates {
+        let document_embedding = if query_embedding.is_some()
+            && semantic_keys.contains(candidate.session.key.as_str())
+        {
+            embed_document_or_none(memory, &candidate.document).await
         } else {
             None
         };
@@ -243,26 +292,22 @@ pub async fn search_sessions_with_options(
         } else {
             0.0
         };
-        let recency_score = temporal_decay_score(
-            now.saturating_sub(session.last_active),
-            options.recency_half_life_secs,
-        ) * options.weights.recency;
-        let total = base_score
-            + (transcript_score * options.weights.transcript)
+        let total = candidate.base_score
+            + candidate.transcript_component
             + semantic_score
-            + recency_score;
+            + candidate.recency_score;
         if total > options.min_score {
             hits.push(RankedCandidate {
                 score: total,
                 embedding: document_embedding,
                 item: SessionSearchMatch {
                     score: total,
-                    session_key: session.key.clone(),
-                    label: session.label.clone(),
-                    kind: session.kind.clone(),
-                    message_count: session.message_count,
-                    summary: session.summary.clone(),
-                    recap,
+                    session_key: candidate.session.key.clone(),
+                    label: candidate.session.label.clone(),
+                    kind: candidate.session.kind.clone(),
+                    message_count: candidate.session.message_count,
+                    summary: candidate.session.summary.clone(),
+                    recap: candidate.recap,
                 },
             });
         }
@@ -534,6 +579,17 @@ struct RankedCandidate<T> {
     score: f64,
     embedding: Option<Vec<f32>>,
     item: T,
+}
+
+#[derive(Debug, Clone)]
+struct SessionSearchCandidate {
+    session: crate::domain::conversation::ConversationSession,
+    recap: Option<String>,
+    document: String,
+    cheap_score: f64,
+    recency_score: f64,
+    transcript_component: f64,
+    base_score: f64,
 }
 
 fn score_text(keywords: &[&str], text: &str, weight: f64) -> f64 {
