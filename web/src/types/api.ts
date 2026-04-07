@@ -164,6 +164,35 @@ export interface ProceduralClusterReviewResponse {
   reason: string;
 }
 
+export interface SkillReviewDecisionResponse {
+  skill_id: string;
+  skill_name: string;
+  lineage_task_families: string[];
+  action: string;
+  target_status: string;
+  reason: string;
+}
+
+export interface RunRecipeResponse {
+  agent_id: string;
+  task_family: string;
+  sample_request: string;
+  summary: string;
+  tool_pattern: string[];
+  lineage_task_families: string[];
+  success_count: number;
+  updated_at: number;
+}
+
+export interface RunRecipeReviewDecisionResponse {
+  canonical_recipe: RunRecipeResponse;
+  removed_task_families: string[];
+  cluster_task_families: string[];
+  reason: string;
+  promotion_blocked: boolean;
+  promotion_block_reason: string | null;
+}
+
 export interface MemoryProjectionsResponse {
   agent_id: string;
   current_user_profile: UserProfileProjectionResponse | null;
@@ -179,9 +208,9 @@ export interface MemoryProjectionsResponse {
   recent_sessions: ProjectionRef[];
   skill_conflict_policy: string | null;
   skill_review: string | null;
-  skill_review_decisions: unknown[];
+  skill_review_decisions: SkillReviewDecisionResponse[];
   run_recipe_review: string | null;
-  run_recipe_review_decisions: unknown[];
+  run_recipe_review_decisions: RunRecipeReviewDecisionResponse[];
   configured_skills: SkillSurfaceEntry[];
   recent_skills: SkillSurfaceEntry[];
   skill_surface: SkillSurfaceEntry[];

@@ -28,7 +28,10 @@ import type {
   MemoryProjectionsResponse,
   MemoryStatsResponse,
   ProjectionRef,
+  ProceduralClusterReviewResponse,
+  RunRecipeReviewDecisionResponse,
   SkillSurfaceEntry,
+  SkillReviewDecisionResponse,
 } from '@/types/api';
 import {
   getMemory,
@@ -251,6 +254,121 @@ function TinyBadge({ children }: { children: ReactNode }) {
       {children}
     </span>
   );
+}
+
+function formatReason(reason: string): string {
+  return reason.replace(/[_-]+/g, ' ');
+}
+
+function DecisionDeck({
+  eyebrow,
+  title,
+  icon,
+  items,
+  empty,
+}: {
+  eyebrow: string;
+  title: string;
+  icon: LucideIcon;
+  items: Array<{
+    key: string;
+    title: string;
+    subtitle?: string | null;
+    action: string;
+    reason: string;
+    badges?: string[];
+    body?: string | null;
+  }>;
+  empty: string;
+}) {
+  return (
+    <PanelShell eyebrow={eyebrow} title={title} icon={icon}>
+      {items.length === 0 ? (
+        <p className="text-sm leading-6 text-[var(--text-muted)]">{empty}</p>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {items.map((item) => (
+            <article
+              key={item.key}
+              className="rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)]/80 p-4"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">{item.title}</h3>
+                  {item.subtitle && (
+                    <p className="mt-1 text-xs text-[var(--text-muted)]">{item.subtitle}</p>
+                  )}
+                </div>
+                <TinyBadge>{formatReason(item.action)}</TinyBadge>
+              </div>
+              <p className="mt-3 text-xs leading-6 text-[var(--text-muted)]">
+                {formatReason(item.reason)}
+              </p>
+              {item.badges?.length ? (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {item.badges.map((badge) => (
+                    <TinyBadge key={badge}>{badge}</TinyBadge>
+                  ))}
+                </div>
+              ) : null}
+              {item.body ? (
+                <pre className="mt-4 max-h-56 overflow-y-auto whitespace-pre-wrap break-words rounded-[20px] bg-[var(--bg-primary)]/65 px-3 py-3 font-mono text-[11px] leading-6 text-[var(--text-secondary)]">
+                  {item.body}
+                </pre>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      )}
+    </PanelShell>
+  );
+}
+
+function buildSkillDecisionItems(items: SkillReviewDecisionResponse[]) {
+  return items.map((item) => ({
+    key: `${item.skill_id}-${item.action}-${item.reason}`,
+    title: item.skill_name,
+    subtitle: `target status: ${formatLabel(item.target_status)}`,
+    action: item.action,
+    reason: item.reason,
+    badges: item.lineage_task_families.map(formatLabel),
+  }));
+}
+
+function buildRecipeDecisionItems(items: RunRecipeReviewDecisionResponse[]) {
+  return items.map((item) => ({
+    key: `${item.canonical_recipe.task_family}-${item.reason}`,
+    title: formatLabel(item.canonical_recipe.task_family),
+    subtitle: `${item.canonical_recipe.success_count} successes`,
+    action: item.promotion_blocked ? 'promotion blocked' : 'recipe review',
+    reason: item.promotion_block_reason ?? item.reason,
+    badges: [
+      ...item.cluster_task_families.map(formatLabel),
+      ...item.canonical_recipe.lineage_task_families.map(formatLabel),
+    ].slice(0, 8),
+    body: [
+      item.canonical_recipe.summary,
+      item.canonical_recipe.tool_pattern.length
+        ? `tools: ${item.canonical_recipe.tool_pattern.join(' -> ')}`
+        : null,
+      item.removed_task_families.length
+        ? `removed: ${item.removed_task_families.map(formatLabel).join(', ')}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join('\n'),
+  }));
+}
+
+function buildClusterReviewItems(items: ProceduralClusterReviewResponse[]) {
+  return items.map((item) => ({
+    key: `${item.kind}-${item.representative_key}-${item.action}`,
+    title: item.representative_key,
+    subtitle: `${item.member_count} members`,
+    action: item.action,
+    reason: item.reason,
+    badges: [formatLabel(item.kind)],
+  }));
 }
 
 function ProjectionDeck({
@@ -950,6 +1068,14 @@ export default function Memory() {
             </PanelShell>
           </div>
 
+          <DecisionDeck
+            eyebrow="Skill Review"
+            title="Structured Skill Decisions"
+            icon={Sparkles}
+            items={buildSkillDecisionItems(projections?.skill_review_decisions ?? [])}
+            empty="No structured skill review decisions are currently surfaced."
+          />
+
           <SkillDeck
             title="Effective Skills"
             eyebrow="Neocortex"
@@ -1007,6 +1133,26 @@ export default function Memory() {
           </div>
 
           <ContradictionDeck items={projections?.procedural_contradictions ?? []} />
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <DecisionDeck
+              eyebrow="Recipe Review"
+              title="Structured Recipe Decisions"
+              icon={ArrowRight}
+              items={buildRecipeDecisionItems(projections?.run_recipe_review_decisions ?? [])}
+              empty="No structured run recipe review decisions are currently surfaced."
+            />
+            <DecisionDeck
+              eyebrow="Failure Cluster Review"
+              title="Cluster Actions"
+              icon={Layers3}
+              items={buildClusterReviewItems([
+                ...(projections?.precedent_cluster_reviews ?? []),
+                ...(projections?.failure_pattern_cluster_reviews ?? []),
+              ])}
+              empty="No structured cluster review actions are currently surfaced."
+            />
+          </div>
 
           <div className="grid gap-6 xl:grid-cols-2">
             <PanelShell eyebrow="Contradiction Projection" title="Failure Pressure Map" icon={Target}>
