@@ -68,9 +68,16 @@ pub fn assess_learning_candidates(
                 let merge_bonus = if best_existing >= 0.9 { 0.1 } else { 0.0 };
                 let confidence = (0.52 + pattern_bonus + facet_bonus + merge_bonus).min(0.9);
                 let diverged_existing = !matching_existing.is_empty() && best_existing < 0.45;
-                let accepted = recipe.tool_pattern.len() >= 2 && !diverged_existing && confidence >= 0.7;
+                let ambiguous_existing =
+                    !matching_existing.is_empty() && (0.45..0.9).contains(&best_existing);
+                let accepted = recipe.tool_pattern.len() >= 2
+                    && !diverged_existing
+                    && !ambiguous_existing
+                    && confidence >= 0.7;
                 let reason = if diverged_existing {
                     "diverged_existing_recipe"
+                } else if ambiguous_existing {
+                    "ambiguous_existing_recipe"
                 } else if accepted && best_existing >= 0.9 {
                     "merge_existing_recipe"
                 } else if accepted {
@@ -170,6 +177,74 @@ mod tests {
         assert_eq!(assessments.len(), 1);
         assert!(!assessments[0].accepted);
         assert_eq!(assessments[0].reason, "diverged_existing_recipe");
+    }
+
+    #[test]
+    fn rejects_ambiguous_recipe_candidate_until_merge_logic_is_clear() {
+        let assessments = assess_learning_candidates(
+            &[LearningCandidate::RunRecipe(RunRecipeLearningCandidate {
+                task_family_hint: "delivery_search".into(),
+                sample_request: "send status".into(),
+                summary: "pattern=web_search -> web_fetch -> message_send".into(),
+                tool_pattern: vec![
+                    "web_search".into(),
+                    "web_fetch".into(),
+                    "message_send".into(),
+                ],
+            })],
+            &LearningEvidenceEnvelope {
+                facets: vec![
+                    LearningEvidenceFacet::Search,
+                    LearningEvidenceFacet::Delivery,
+                ],
+                ..Default::default()
+            },
+            &[RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "delivery_search".into(),
+                sample_request: "search and send".into(),
+                summary: "pattern=web_search -> message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 2,
+                updated_at: 1,
+            }],
+        );
+
+        assert_eq!(assessments.len(), 1);
+        assert!(!assessments[0].accepted);
+        assert_eq!(assessments[0].reason, "ambiguous_existing_recipe");
+    }
+
+    #[test]
+    fn accepts_high_similarity_recipe_as_merge_candidate() {
+        let assessments = assess_learning_candidates(
+            &[LearningCandidate::RunRecipe(RunRecipeLearningCandidate {
+                task_family_hint: "delivery_search".into(),
+                sample_request: "send status".into(),
+                summary: "pattern=web_search -> message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+            })],
+            &LearningEvidenceEnvelope {
+                facets: vec![
+                    LearningEvidenceFacet::Search,
+                    LearningEvidenceFacet::Delivery,
+                ],
+                ..Default::default()
+            },
+            &[RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "delivery_search".into(),
+                sample_request: "search and send".into(),
+                summary: "pattern=web_search -> message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 2,
+                updated_at: 1,
+            }],
+        );
+
+        assert_eq!(assessments.len(), 1);
+        assert!(assessments[0].accepted);
+        assert_eq!(assessments[0].reason, "merge_existing_recipe");
     }
 
     #[test]
