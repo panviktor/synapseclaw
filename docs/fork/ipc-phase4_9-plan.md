@@ -1,6 +1,6 @@
 # Phase 4.9: Self-Learning, Skill Evolution & Memory Quality
 
-Phase 4.8: embedding-first memory & everyday intelligence | **Phase 4.9: self-learning, skill evolution & memory quality** | next: TBD
+Phase 4.8: embedding-first memory & everyday intelligence | **Phase 4.9: self-learning, skill evolution & memory quality** | next: post-4.9 SurrealDB/runtime polish backlog
 
 ---
 
@@ -734,6 +734,47 @@ Suggested PR split:
 7. `memory-compaction-quality`
 8. `learning-projections`
 9. `self-learning-evals`
+
+---
+
+## Current Implementation Status
+
+As of the current Phase 4.9 rollout, the core learning architecture is largely
+landed.
+
+Implemented or strongly landed:
+
+- Slice 1 — typed learning evidence from runtime/tool outcomes
+- Slice 2 — typed candidate formation and quality gates
+- Slice 3 — safe partial `UserProfile` auto-learning for hard defaults
+- Slice 4 — precedent learning with category-aware similarity and merge policy
+- Slice 5 — recipe evolution, review, duplicate cleanup, and lineage tracking
+- Slice 6 — learned skill promotion/review with explicit
+  `manual | imported | learned` origin and
+  `active | candidate | deprecated` lifecycle
+- Slice 7 — typed failure learning, contradiction detection, and failure-aware
+  review paths
+- Slice 8 — maintenance/compaction flows with review-driven actions and recent
+  scoped maintenance
+- Slice 9 — human-readable projections plus operator API surfaces for learning,
+  review, clusters, contradictions, lineage, and maintenance
+- Slice 10 — deterministic self-learning eval harness with structured review
+  and lineage output
+
+Remaining work is mostly polish and backlog, not missing core architecture.
+
+Still worth doing before calling Phase 4.9 fully polished:
+
+- richer cluster-level rewrite/merge policy for long-lived procedural branches
+- final operator/eval polish for maintenance action explainability
+- any additional SurrealDB-native shortlist upgrades that remove leftover
+  application-side scans
+
+Not required to declare the core Phase 4.9 learning architecture complete:
+
+- post-4.9 runtime retrieval optimizations listed below
+- speculative new learning surfaces or new memory kinds
+- turning every maintenance heuristic into a heavy model-driven rewrite pass
 
 ---
 
