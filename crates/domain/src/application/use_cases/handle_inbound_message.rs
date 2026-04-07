@@ -716,6 +716,7 @@ async fn execute_agent_turn(
                     user_message: content.to_string(),
                     assistant_response: response_text.clone(),
                     tools_used: turn_result.tool_names.clone(),
+                    tool_facts: turn_result.tool_facts.clone(),
                     auto_save_enabled: config.auto_save_memory,
                     event_tx: ports.event_tx.clone(),
                 };
@@ -985,7 +986,6 @@ mod tests {
                 tools_used: false,
                 tool_names: vec![],
                 tool_facts: vec![],
-                typed_tool_facts: vec![],
                 tool_summary: String::new(),
             })
         }

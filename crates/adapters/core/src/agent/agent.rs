@@ -19,6 +19,7 @@ use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::config::schema::Config;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::user_profile_context::{
     InMemoryUserProfileContext, UserProfileContextPort,
 };
@@ -55,6 +56,8 @@ pub struct Agent {
     route_model_by_hint: HashMap<String, String>,
     /// Cumulative token usage from the last turn (provider-reported).
     last_turn_usage: Option<synapse_providers::traits::TokenUsage>,
+    /// Structured facts emitted by tools during the last completed turn.
+    last_turn_tool_facts: Vec<TypedToolFact>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     /// Canonical agent ID for memory scoping.
@@ -347,6 +350,7 @@ impl AgentBuilder {
             available_hints: self.available_hints.unwrap_or_default(),
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
             last_turn_usage: None,
+            last_turn_tool_facts: Vec::new(),
             allowed_tools: allowed,
             response_cache: self.response_cache,
             agent_id: self.agent_id.unwrap_or_else(|| "default".to_string()),
@@ -398,6 +402,10 @@ impl Agent {
     /// Token usage reported by the provider during the last turn (if any).
     pub fn last_turn_usage(&self) -> Option<&synapse_providers::traits::TokenUsage> {
         self.last_turn_usage.as_ref()
+    }
+
+    pub fn last_turn_tool_facts(&self) -> &[TypedToolFact] {
+        &self.last_turn_tool_facts
     }
 
     pub fn set_memory_session_id(&mut self, session_id: Option<String>) {
@@ -708,7 +716,7 @@ impl Agent {
             arguments: Some(args_preview),
         });
 
-        let (result, success, tool_facts, typed_tool_facts) = if let Some(tool) =
+        let (result, success, tool_facts) = if let Some(tool) =
             self.tools.iter().find(|t| t.name() == call.name)
         {
             match tool.execute_with_facts(call.arguments.clone()).await {
@@ -716,7 +724,6 @@ impl Agent {
                     let duration = start.elapsed();
                     let tool_facts = execution.facts;
                     let r = execution.result;
-                    let typed_tool_facts = tool.extract_typed_facts(&call.arguments, Some(&r));
                     self.observer.record_event(&ObserverEvent::ToolCall {
                         tool: call.name.clone(),
                         duration,
@@ -730,7 +737,7 @@ impl Agent {
                             ),
                             success: true,
                         });
-                        (r.output, true, tool_facts, typed_tool_facts)
+                        (r.output, true, tool_facts)
                     } else {
                         let reason = r.error.unwrap_or(r.output);
                         self.observer.record_event(&ObserverEvent::ToolResult {
@@ -740,12 +747,7 @@ impl Agent {
                             ),
                             success: false,
                         });
-                        (
-                            format!("Error: {reason}"),
-                            false,
-                            tool_facts,
-                            typed_tool_facts,
-                        )
+                        (format!("Error: {reason}"), false, tool_facts)
                     }
                 }
                 Err(e) => {
@@ -761,7 +763,7 @@ impl Agent {
                         output: synapse_domain::domain::util::truncate_with_ellipsis(&reason, 500),
                         success: false,
                     });
-                    (reason, false, Vec::new(), Vec::new())
+                    (reason, false, Vec::new())
                 }
             }
         } else {
@@ -771,7 +773,7 @@ impl Agent {
                 output: reason.clone(),
                 success: false,
             });
-            (reason, false, Vec::new(), Vec::new())
+            (reason, false, Vec::new())
         };
 
         ToolExecutionResult {
@@ -780,7 +782,6 @@ impl Agent {
             success,
             tool_call_id: call.tool_call_id.clone(),
             tool_facts,
-            typed_tool_facts,
         }
     }
 
@@ -826,6 +827,7 @@ impl Agent {
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
         self.last_turn_usage = None;
+        self.last_turn_tool_facts.clear();
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -1089,6 +1091,8 @@ impl Agent {
                         store.set(session_id, state);
                     }
                 }
+
+                self.last_turn_tool_facts = tool_facts_this_turn;
 
                 return Ok(final_text);
             }

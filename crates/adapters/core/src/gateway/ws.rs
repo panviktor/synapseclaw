@@ -981,7 +981,7 @@ async fn handle_chat_send_rpc(
     let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx, out_tx).await;
 
     // Clear run_id + abort_tx, extract usage + collect tool history for async persist
-    let (usage, tool_history) = {
+    let (usage, tool_history, tool_facts) = {
         let mut sessions = state
             .chat_sessions
             .lock()
@@ -999,7 +999,11 @@ async fn handle_chat_send_rpc(
         let u = sessions
             .get(&session_key)
             .and_then(|s| s.agent.last_turn_usage().cloned());
-        (u, history_snapshot)
+        let facts = sessions
+            .get(&session_key)
+            .map(|s| s.agent.last_turn_tool_facts().to_vec())
+            .unwrap_or_default();
+        (u, history_snapshot, facts)
     };
     // Persist tool events outside the lock (async-safe)
     persist_tool_events(state, &session_key, &tool_history).await;
@@ -1063,6 +1067,7 @@ async fn handle_chat_send_rpc(
                         user_message: message.clone(),
                         assistant_response: response.clone(),
                         tools_used: extract_tool_names(&tool_history),
+                        tool_facts,
                         auto_save_enabled: state.auto_save,
                         event_tx: Some(state.event_tx.clone()),
                     };

@@ -5,10 +5,14 @@
 //! divergence between transport adapters.
 
 use crate::application::services::learning_events::LearningEvent;
+use crate::application::services::learning_evidence_service::{
+    self, LearningEvidenceEnvelope,
+};
 use crate::application::services::learning_signals::{self, LearningSignal};
 use crate::application::services::memory_mutation as mutation;
 use crate::domain::memory::MemoryCategory;
 use crate::domain::memory_mutation::{MutationCandidate, MutationSource, MutationThresholds};
+use crate::domain::tool_fact::TypedToolFact;
 use crate::ports::memory::UnifiedMemoryPort;
 
 // ── Gate constants ───────────────────────────────────────────────
@@ -30,6 +34,7 @@ pub struct PostTurnInput {
     pub user_message: String,
     pub assistant_response: String,
     pub tools_used: Vec<String>,
+    pub tool_facts: Vec<TypedToolFact>,
     pub auto_save_enabled: bool,
     /// Optional SSE event sender for publishing reports to UI.
     /// Both web and channels should pass this if available.
@@ -47,6 +52,8 @@ pub struct PostTurnReport {
     pub consolidation_started: bool,
     /// Whether skill reflection was started.
     pub reflection_started: bool,
+    /// Cheap typed evidence from this turn.
+    pub learning_evidence: LearningEvidenceEnvelope,
 }
 
 // ── Orchestrator ─────────────────────────────────────────────────
@@ -63,12 +70,14 @@ pub async fn execute_post_turn_learning(
     let patterns = mem.list_signal_patterns().await.unwrap_or_default();
     let signal = learning_signals::classify_signal_with_patterns(&input.user_message, &patterns);
     let user_chars = input.user_message.chars().count();
+    let learning_evidence = learning_evidence_service::build_learning_evidence(&input.tool_facts);
 
     let mut report = PostTurnReport {
         signal: signal.clone(),
         explicit_mutation: None,
         consolidation_started: false,
         reflection_started: false,
+        learning_evidence: learning_evidence.clone(),
     };
 
     // ── 1. Explicit hot-path: direct AUDN mutation ──
@@ -107,8 +116,9 @@ pub async fn execute_post_turn_learning(
     }
 
     // ── 2. Background consolidation (only for non-explicit turns) ──
-    let should_consolidate =
-        !signal.is_explicit() && input.auto_save_enabled && user_chars >= CONSOLIDATE_MIN_CHARS;
+    let should_consolidate = !signal.is_explicit()
+        && input.auto_save_enabled
+        && (user_chars >= CONSOLIDATE_MIN_CHARS || learning_evidence.has_actionable_evidence());
 
     if should_consolidate {
         if let Err(e) = mem
@@ -125,7 +135,7 @@ pub async fn execute_post_turn_learning(
     let has_errors = resp_lower.contains("error") || resp_lower.contains("failed");
     let should_reflect = input.assistant_response.len() > REFLECT_MIN_RESPONSE_LEN
         && user_chars >= REFLECT_MIN_USER_CHARS
-        && (!input.tools_used.is_empty() || has_errors);
+        && (!input.tools_used.is_empty() || learning_evidence.has_actionable_evidence() || has_errors);
 
     if should_reflect {
         if let Err(e) = mem
@@ -160,6 +170,8 @@ pub async fn execute_post_turn_learning(
             "explicit_kind": report.explicit_mutation.as_ref().map(|event| format!("{:?}", event.kind)),
             "consolidation_started": report.consolidation_started,
             "reflection_started": report.reflection_started,
+            "typed_fact_count": report.learning_evidence.typed_fact_count,
+            "learning_facets": report.learning_evidence.facets,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
     }

@@ -16,6 +16,7 @@ pub mod history_compaction;
 pub mod inbound_message_service;
 pub mod ipc_service;
 pub mod learning_events;
+pub mod learning_evidence_service;
 pub mod learning_signals;
 pub mod loop_detection;
 pub mod memory_mutation;
