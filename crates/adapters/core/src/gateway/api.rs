@@ -1618,7 +1618,7 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
-    let precedent_clusters =
+    let precedent_clusters_raw =
         synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters(
             state.mem.as_ref(),
             &state.agent_id,
@@ -1628,8 +1628,10 @@ pub async fn handle_api_memory_projections(
             0.95,
         )
         .await
-        .unwrap_or_default()
-        .into_iter()
+        .unwrap_or_default();
+    let precedent_clusters = precedent_clusters_raw
+        .iter()
+        .cloned()
         .map(|cluster| {
             serde_json::json!({
                 "representative_key": cluster.representative.key,
@@ -1682,6 +1684,22 @@ pub async fn handle_api_memory_projections(
     let procedural_contradiction_projection = synapse_domain::application::services::memory_projection_service::format_procedural_contradiction_projection(
         &procedural_contradictions,
     );
+    let precedent_cluster_reviews = synapse_domain::application::services::procedural_cluster_review_service::review_precedent_clusters(
+        &precedent_clusters_raw,
+        &failure_pattern_clusters_raw,
+    );
+    let failure_pattern_cluster_reviews = synapse_domain::application::services::procedural_cluster_review_service::review_failure_pattern_clusters(
+        &failure_pattern_clusters_raw,
+        &procedural_contradictions,
+    );
+    let procedural_cluster_review = synapse_domain::application::services::memory_projection_service::format_procedural_cluster_review_projection(
+        "procedural-cluster-review",
+        &precedent_cluster_reviews
+            .iter()
+            .cloned()
+            .chain(failure_pattern_cluster_reviews.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
     let procedural_contradiction_entries = procedural_contradictions
         .iter()
         .map(|contradiction| {
@@ -1697,7 +1715,8 @@ pub async fn handle_api_memory_projections(
         .collect::<Vec<_>>();
 
     let failure_pattern_clusters = failure_pattern_clusters_raw
-        .into_iter()
+        .iter()
+        .cloned()
         .map(|cluster| {
             serde_json::json!({
                 "representative_key": cluster.representative.key,
@@ -1767,6 +1786,9 @@ pub async fn handle_api_memory_projections(
         "learning_maintenance": learning_maintenance,
         "procedural_contradictions": procedural_contradiction_entries,
         "procedural_contradiction_projection": procedural_contradiction_projection,
+        "procedural_cluster_review": procedural_cluster_review,
+        "precedent_cluster_reviews": precedent_cluster_reviews,
+        "failure_pattern_cluster_reviews": failure_pattern_cluster_reviews,
         "core_memory": core_projection,
         "working_state": working_state,
         "recent_sessions": recent_sessions,

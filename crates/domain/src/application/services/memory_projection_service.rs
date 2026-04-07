@@ -4,6 +4,7 @@
 //! for operators and UI inspection, not as the canonical source of truth.
 
 use crate::application::services::learning_maintenance_service::LearningMaintenancePlan;
+use crate::application::services::procedural_cluster_review_service::ProceduralClusterReview;
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::application::services::procedural_contradiction_service::ProceduralContradiction;
 use crate::application::services::run_recipe_cluster_service::RunRecipeCluster;
@@ -335,6 +336,29 @@ pub fn format_procedural_cluster_projection(section: &str, cluster: &ProceduralC
         lines.push(indent_multiline(cluster.representative.content.trim(), 2));
     }
     format!("{}\n", lines.join("\n"))
+}
+
+pub fn format_procedural_cluster_review_projection(
+    section: &str,
+    reviews: &[ProceduralClusterReview],
+) -> Option<String> {
+    if reviews.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec![format!("[{section}]")];
+    for review in reviews {
+        lines.push(format!(
+            "- {}:{} members={} action={:?} reason={}",
+            review.kind,
+            review.representative_key,
+            review.member_count,
+            review.action,
+            review.reason
+        ));
+    }
+
+    Some(format!("{}\n", lines.join("\n")))
 }
 
 pub fn format_run_recipe_cluster_projection(cluster: &RunRecipeCluster) -> String {
@@ -759,6 +783,25 @@ mod tests {
         assert!(projection.contains("search_delivery"));
         assert!(projection.contains("delivery_search"));
         assert!(projection.contains("promotion_blocked"));
+    }
+
+    #[test]
+    fn formats_procedural_cluster_review_projection() {
+        let projection = format_procedural_cluster_review_projection(
+            "cluster-review",
+            &[crate::application::services::procedural_cluster_review_service::ProceduralClusterReview {
+                kind: "precedent",
+                representative_key: "p1".into(),
+                member_count: 2,
+                action: crate::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction::CompactCandidate,
+                reason: "duplicate_precedent_cluster",
+            }],
+        )
+        .unwrap();
+
+        assert!(projection.contains("[cluster-review]"));
+        assert!(projection.contains("precedent:p1"));
+        assert!(projection.contains("duplicate_precedent_cluster"));
     }
 
     #[test]
