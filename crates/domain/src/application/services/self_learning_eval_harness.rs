@@ -654,6 +654,7 @@ fn build_skill_promotion_assessments(
     scenario: &SelfLearningEvalScenario,
     assessments: &[learning_quality_service::LearningCandidateAssessment],
 ) -> Vec<skill_promotion_service::SkillPromotionAssessment> {
+    let failure_clusters = build_resulting_failure_clusters(assessments);
     assessments
         .iter()
         .filter(|assessment| assessment.accepted)
@@ -680,11 +681,14 @@ fn build_skill_promotion_assessments(
                 .existing_skills
                 .iter()
                 .find(|skill| skill.name == skill_name);
-            Some(skill_promotion_service::assess_recipe_for_skill_promotion(
-                &recipe,
-                existing_skill,
-                &scenario.existing_skills,
-            ))
+            Some(
+                skill_promotion_service::assess_recipe_for_skill_promotion_with_failures(
+                    &recipe,
+                    existing_skill,
+                    &scenario.existing_skills,
+                    &failure_clusters,
+                ),
+            )
         })
         .collect()
 }

@@ -4,6 +4,8 @@
 //! This service turns those clusters into concrete cleanup decisions so the
 //! store does not keep redundant cross-family recipes forever.
 
+use crate::application::services::procedural_cluster_service::ProceduralCluster;
+use crate::application::services::procedural_contradiction_service;
 use crate::application::services::run_recipe_cluster_service::plan_recipe_clusters;
 use crate::domain::run_recipe::RunRecipe;
 use std::cmp::Ordering;
@@ -28,10 +30,20 @@ pub struct RunRecipeReviewDecision {
     pub removed_task_families: Vec<String>,
     pub cluster_task_families: Vec<String>,
     pub reason: &'static str,
+    pub promotion_blocked: bool,
+    pub promotion_block_reason: Option<&'static str>,
 }
 
 pub fn review_run_recipes(
     recipes: &[RunRecipe],
+    thresholds: &RunRecipeReviewThresholds,
+) -> Vec<RunRecipeReviewDecision> {
+    review_run_recipes_with_failures(recipes, &[], thresholds)
+}
+
+pub fn review_run_recipes_with_failures(
+    recipes: &[RunRecipe],
+    failure_clusters: &[ProceduralCluster],
     thresholds: &RunRecipeReviewThresholds,
 ) -> Vec<RunRecipeReviewDecision> {
     let recipe_lookup = recipes
@@ -41,19 +53,21 @@ pub fn review_run_recipes(
 
     plan_recipe_clusters(recipes, thresholds.cluster_similarity_threshold)
         .into_iter()
-        .filter(|cluster| cluster.member_count() >= 2)
         .filter_map(|cluster| {
             let members = cluster
                 .member_task_families
                 .iter()
                 .filter_map(|task_family| recipe_lookup.get(task_family).copied())
                 .collect::<Vec<_>>();
-            build_review_decision(&members)
+            build_review_decision(&members, failure_clusters)
         })
         .collect()
 }
 
-fn build_review_decision(members: &[&RunRecipe]) -> Option<RunRecipeReviewDecision> {
+fn build_review_decision(
+    members: &[&RunRecipe],
+    failure_clusters: &[ProceduralCluster],
+) -> Option<RunRecipeReviewDecision> {
     let canonical = select_canonical_recipe(members)?;
     let mut merged = canonical.clone();
     let mut removed_task_families = Vec::new();
@@ -72,7 +86,10 @@ fn build_review_decision(members: &[&RunRecipe]) -> Option<RunRecipeReviewDecisi
     }
 
     removed_task_families.sort();
-    if removed_task_families.is_empty() {
+    let promotion_blocked =
+        procedural_contradiction_service::recipe_is_contradicted(&merged, failure_clusters, 0.75);
+    let promotion_block_reason = promotion_blocked.then_some("contradicted_by_failure_clusters");
+    if removed_task_families.is_empty() && !promotion_blocked {
         return None;
     }
 
@@ -81,6 +98,8 @@ fn build_review_decision(members: &[&RunRecipe]) -> Option<RunRecipeReviewDecisi
         removed_task_families,
         cluster_task_families,
         reason: "redundant_recipe_cluster",
+        promotion_blocked,
+        promotion_block_reason,
     })
 }
 
@@ -142,6 +161,7 @@ fn text_richness(value: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::memory::{MemoryCategory, MemoryEntry};
 
     fn recipe(
         task_family: &str,
@@ -161,6 +181,21 @@ mod tests {
                 .collect(),
             success_count,
             updated_at,
+        }
+    }
+
+    fn failure_cluster(key: &str, summary: &str) -> ProceduralCluster {
+        ProceduralCluster {
+            representative: MemoryEntry {
+                id: key.into(),
+                key: key.into(),
+                content: summary.into(),
+                category: MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            member_keys: vec![key.into()],
         }
     }
 
@@ -193,6 +228,7 @@ mod tests {
             decisions[0].removed_task_families,
             vec!["delivery_search".to_string()]
         );
+        assert!(!decisions[0].promotion_blocked);
     }
 
     #[test]
@@ -209,6 +245,32 @@ mod tests {
         );
 
         assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn surfaces_blocked_singleton_recipe_when_contradicted_by_failures() {
+        let decisions = review_run_recipes_with_failures(
+            &[recipe(
+                "delivery_search",
+                &["web_search", "message_send"],
+                "search and send status page",
+                2,
+                10,
+            )],
+            &[failure_cluster(
+                "f1",
+                "failed_tools=web_search -> message_send | outcomes=runtime_error",
+            )],
+            &RunRecipeReviewThresholds::default(),
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert!(decisions[0].promotion_blocked);
+        assert_eq!(
+            decisions[0].promotion_block_reason,
+            Some("contradicted_by_failure_clusters")
+        );
+        assert!(decisions[0].removed_task_families.is_empty());
     }
 
     #[test]

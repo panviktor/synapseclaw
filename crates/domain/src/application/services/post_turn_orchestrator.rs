@@ -421,10 +421,12 @@ pub async fn execute_post_turn_learning(
                     .iter()
                     .map(|recipe| recipe.task_family.clone())
                     .collect::<HashSet<_>>();
-                let review_decisions = run_recipe_review_service::review_run_recipes(
+                let review_decisions = run_recipe_review_service::review_run_recipes_with_failures(
                     &store.list(&input.agent_id),
+                    &recent_failure_clusters,
                     &run_recipe_review_service::RunRecipeReviewThresholds::default(),
                 );
+                let mut blocked_canonicals = HashSet::new();
                 let mut reviewed_families = HashSet::new();
                 let mut reviewed_canonicals = Vec::new();
 
@@ -436,6 +438,23 @@ pub async fn execute_post_turn_learning(
                     match store.upsert(decision.canonical_recipe.clone()) {
                         Ok(()) => {
                             if touches_promoted_cluster {
+                                if decision.promotion_blocked {
+                                    blocked_canonicals
+                                        .insert(decision.canonical_recipe.task_family.clone());
+                                    report.skill_promotion_assessments.push(
+                                        SkillPromotionAssessment {
+                                            skill_name: skill_promotion_service::build_skill_name(
+                                                &decision.canonical_recipe,
+                                            ),
+                                            accepted: false,
+                                            reason: decision
+                                                .promotion_block_reason
+                                                .unwrap_or("blocked_recipe_cluster"),
+                                            target_status:
+                                                crate::domain::memory::SkillStatus::Candidate,
+                                        },
+                                    );
+                                }
                                 reviewed_canonicals.push(decision.canonical_recipe.clone());
                                 reviewed_families
                                     .extend(decision.cluster_task_families.iter().cloned());
@@ -478,6 +497,10 @@ pub async fn execute_post_turn_learning(
                             recipes_for_skill_promotion.push(canonical);
                         }
                     }
+                }
+                if !blocked_canonicals.is_empty() {
+                    recipes_for_skill_promotion
+                        .retain(|recipe| !blocked_canonicals.contains(&recipe.task_family));
                 }
             }
 
@@ -719,6 +742,7 @@ mod tests {
     #[derive(Default)]
     struct StubMemory {
         skills: parking_lot::RwLock<Vec<Skill>>,
+        entries: parking_lot::RwLock<Vec<MemoryEntry>>,
     }
 
     #[async_trait]
@@ -966,11 +990,16 @@ mod tests {
 
         async fn list(
             &self,
-            _: Option<&MemoryCategory>,
+            category: Option<&MemoryCategory>,
             _: Option<&str>,
-            _: usize,
+            limit: usize,
         ) -> Result<Vec<MemoryEntry>, MemoryError> {
-            Ok(vec![])
+            let mut entries = self.entries.read().clone();
+            if let Some(category) = category {
+                entries.retain(|entry| &entry.category == category);
+            }
+            entries.truncate(limit);
+            Ok(entries)
         }
 
         fn should_skip_autosave(&self, _: &str) -> bool {
@@ -1433,5 +1462,75 @@ mod tests {
         assert_eq!(recipes.len(), 1);
         assert_eq!(recipes[0].task_family, "delivery_search_resource");
         assert_eq!(recipes[0].success_count, 7);
+    }
+
+    #[tokio::test]
+    async fn contradicted_recipe_cluster_blocks_skill_promotion() {
+        let memory = StubMemory::default();
+        memory.entries.write().push(MemoryEntry {
+            id: "f1".into(),
+            key: "f1".into(),
+            content: "failed_tools=web_search -> message_send | outcomes=runtime_error".into(),
+            category: MemoryCategory::Custom("failure_pattern".into()),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            session_id: None,
+            score: None,
+        });
+        let run_recipe_store =
+            Arc::new(crate::ports::run_recipe_store::InMemoryRunRecipeStore::new());
+        run_recipe_store
+            .upsert(crate::domain::run_recipe::RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                sample_request: "find the status page and send it".into(),
+                summary: "Use web search and deliver the result.".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 2,
+                updated_at: 1,
+            })
+            .unwrap();
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message: "Find the status page and send it again".into(),
+                assistant_response: "Fetched the page and sent it again.".into(),
+                tools_used: vec!["web_search".into(), "message_send".into()],
+                tool_facts: vec![
+                    TypedToolFact {
+                        tool_id: "web_search".into(),
+                        payload: ToolFactPayload::Search(SearchFact {
+                            domain: SearchDomain::Web,
+                            query: Some("status page".into()),
+                            result_count: Some(2),
+                            primary_locator: Some("https://status.example.com".into()),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "message_send".into(),
+                        payload: ToolFactPayload::Delivery(
+                            crate::domain::tool_fact::DeliveryFact {
+                                target: crate::domain::tool_fact::DeliveryTargetKind::CurrentConversation,
+                                content_bytes: Some(24),
+                            },
+                        ),
+                    },
+                ],
+                run_recipe_store: Some(run_recipe_store),
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+            },
+        )
+        .await;
+
+        assert_eq!(report.run_recipes_upserted, 1);
+        assert_eq!(report.skills_upserted, 0);
+        assert!(report
+            .skill_promotion_assessments
+            .iter()
+            .any(|assessment| assessment.reason == "contradicted_by_failure_clusters"));
     }
 }
