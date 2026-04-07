@@ -98,6 +98,8 @@ pub fn decide_precedent_mutation(
     };
 
     let best_score = best.score.unwrap_or(0.0);
+    let candidate_shape = parse_precedent_summary(&candidate.text);
+    let best_shape = parse_precedent_summary(&best.content);
     let (action, reason) = if best_score >= thresholds.noop_threshold {
         (
             MutationAction::Noop,
@@ -105,6 +107,13 @@ pub fn decide_precedent_mutation(
                 "near-duplicate precedent (score {best_score:.3}), existing: {}",
                 truncate(&best.content, 80)
             ),
+        )
+    } else if best_score >= thresholds.update_threshold
+        && is_distinct_precedent_shape(&candidate_shape, &best_shape)
+    {
+        (
+            MutationAction::Add,
+            format!("similar precedent text but distinct procedure shape (score {best_score:.3})"),
         )
     } else if best_score >= thresholds.update_threshold {
         (
@@ -131,8 +140,109 @@ pub fn decide_precedent_mutation(
     }
 }
 
+pub fn merge_precedent_text(existing_content: &str, candidate_text: &str) -> String {
+    let existing = parse_precedent_summary(existing_content);
+    let candidate = parse_precedent_summary(candidate_text);
+    let merged = PrecedentSummary {
+        tools: union_preserving_order(&existing.tools, &candidate.tools),
+        subjects: union_preserving_order(&existing.subjects, &candidate.subjects),
+        facets: union_preserving_order(&existing.facets, &candidate.facets),
+    };
+    format_precedent_summary(&merged)
+}
+
 fn is_precedent_category(category: &MemoryCategory) -> bool {
     matches!(category, MemoryCategory::Custom(name) if name == "precedent")
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PrecedentSummary {
+    tools: Vec<String>,
+    subjects: Vec<String>,
+    facets: Vec<String>,
+}
+
+fn parse_precedent_summary(value: &str) -> PrecedentSummary {
+    let mut summary = PrecedentSummary::default();
+    for part in value.split(" | ").map(str::trim) {
+        if let Some(raw) = part.strip_prefix("tools=") {
+            summary.tools = raw
+                .split("->")
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect();
+        } else if let Some(raw) = part.strip_prefix("subjects=") {
+            summary.subjects = raw
+                .split(',')
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect();
+        } else if let Some(raw) = part.strip_prefix("facets=") {
+            summary.facets = raw
+                .split(',')
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect();
+        }
+    }
+    summary
+}
+
+fn format_precedent_summary(summary: &PrecedentSummary) -> String {
+    let mut parts = Vec::new();
+    if !summary.tools.is_empty() {
+        parts.push(format!("tools={}", summary.tools.join(" -> ")));
+    }
+    if !summary.subjects.is_empty() {
+        parts.push(format!("subjects={}", summary.subjects.join(", ")));
+    }
+    if !summary.facets.is_empty() {
+        parts.push(format!("facets={}", summary.facets.join(",")));
+    }
+    parts.join(" | ")
+}
+
+fn is_distinct_precedent_shape(candidate: &PrecedentSummary, existing: &PrecedentSummary) -> bool {
+    !candidate.tools.is_empty()
+        && !existing.tools.is_empty()
+        && jaccard_similarity(&candidate.tools, &existing.tools) < 0.5
+}
+
+fn union_preserving_order(left: &[String], right: &[String]) -> Vec<String> {
+    let mut values = Vec::new();
+    for value in left.iter().chain(right.iter()) {
+        if !values
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(value))
+        {
+            values.push(value.clone());
+        }
+    }
+    values
+}
+
+fn jaccard_similarity(left: &[String], right: &[String]) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let shared = left
+        .iter()
+        .filter(|item| right.iter().any(|other| other.eq_ignore_ascii_case(item)))
+        .count() as f64;
+    let mut union = Vec::new();
+    for item in left.iter().chain(right.iter()) {
+        if !union
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(item))
+        {
+            union.push(item.clone());
+        }
+    }
+    if union.is_empty() {
+        0.0
+    } else {
+        shared / union.len() as f64
+    }
 }
 
 fn truncate(value: &str, max: usize) -> String {
@@ -265,5 +375,37 @@ mod tests {
             &PrecedentSimilarityThresholds::default(),
         );
         assert!(matches!(decision.action, MutationAction::Update { .. }));
+    }
+
+    #[test]
+    fn divergent_tool_patterns_add_new_precedent_instead_of_updating() {
+        let decision = decide_precedent_mutation(
+            candidate(),
+            &[MemoryEntry {
+                id: "1".into(),
+                key: "custom_precedent_1".into(),
+                content: "tools=shell -> file_edit | subjects=status.example.com".into(),
+                category: MemoryCategory::Custom("precedent".into()),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: None,
+                score: Some(0.86),
+            }],
+            &PrecedentSimilarityThresholds::default(),
+        );
+
+        assert!(matches!(decision.action, MutationAction::Add));
+        assert!(decision.reason.contains("distinct procedure shape"));
+    }
+
+    #[test]
+    fn merge_precedent_text_unions_subjects_and_facets() {
+        let merged = merge_precedent_text(
+            "tools=web_search -> message_send | subjects=status.example.com | facets=search,delivery",
+            "tools=web_search -> message_send | subjects=status2.example.com | facets=delivery,workspace",
+        );
+
+        assert!(merged.contains("tools=web_search -> message_send"));
+        assert!(merged.contains("subjects=status.example.com, status2.example.com"));
+        assert!(merged.contains("facets=search,delivery,workspace"));
     }
 }

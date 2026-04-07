@@ -217,6 +217,7 @@ pub async fn execute_post_turn_learning(
                 &precedent_similarity_service::PrecedentSimilarityThresholds::default(),
             )
             .await;
+            let decision = merge_precedent_update_decision(mem, &input.agent_id, decision).await;
             match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
                 Ok(event) => report.candidate_mutations.push(event),
                 Err(e) => {
@@ -245,6 +246,7 @@ pub async fn execute_post_turn_learning(
                 &failure_similarity_service::FailureSimilarityThresholds::default(),
             )
             .await;
+            let decision = merge_failure_update_decision(mem, &input.agent_id, decision).await;
             match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
                 Ok(event) => report.candidate_mutations.push(event),
                 Err(e) => {
@@ -495,6 +497,42 @@ pub async fn execute_post_turn_learning(
     }
 
     report
+}
+
+async fn merge_precedent_update_decision(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    mut decision: crate::domain::memory_mutation::MutationDecision,
+) -> crate::domain::memory_mutation::MutationDecision {
+    let crate::domain::memory_mutation::MutationAction::Update { target_id } = &decision.action
+    else {
+        return decision;
+    };
+    if let Ok(Some(existing)) = mem.get(target_id, &agent_id.to_string()).await {
+        decision.candidate.text = precedent_similarity_service::merge_precedent_text(
+            &existing.content,
+            &decision.candidate.text,
+        );
+    }
+    decision
+}
+
+async fn merge_failure_update_decision(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    mut decision: crate::domain::memory_mutation::MutationDecision,
+) -> crate::domain::memory_mutation::MutationDecision {
+    let crate::domain::memory_mutation::MutationAction::Update { target_id } = &decision.action
+    else {
+        return decision;
+    };
+    if let Ok(Some(existing)) = mem.get(target_id, &agent_id.to_string()).await {
+        decision.candidate.text = failure_similarity_service::merge_failure_text(
+            &existing.content,
+            &decision.candidate.text,
+        );
+    }
+    decision
 }
 
 #[cfg(test)]

@@ -98,6 +98,8 @@ pub fn decide_failure_mutation(
     };
 
     let best_score = best.score.unwrap_or(0.0);
+    let candidate_shape = parse_failure_summary(&candidate.text);
+    let best_shape = parse_failure_summary(&best.content);
     let (action, reason) = if best_score >= thresholds.noop_threshold {
         (
             MutationAction::Noop,
@@ -105,6 +107,13 @@ pub fn decide_failure_mutation(
                 "near-duplicate failure pattern (score {best_score:.3}), existing: {}",
                 truncate(&best.content, 80)
             ),
+        )
+    } else if best_score >= thresholds.update_threshold
+        && is_distinct_failure_shape(&candidate_shape, &best_shape)
+    {
+        (
+            MutationAction::Add,
+            format!("similar failure text but distinct failed tools (score {best_score:.3})"),
         )
     } else if best_score >= thresholds.update_threshold {
         (
@@ -131,8 +140,112 @@ pub fn decide_failure_mutation(
     }
 }
 
+pub fn merge_failure_text(existing_content: &str, candidate_text: &str) -> String {
+    let existing = parse_failure_summary(existing_content);
+    let candidate = parse_failure_summary(candidate_text);
+    let merged = FailureSummary {
+        failed_tools: union_preserving_order(&existing.failed_tools, &candidate.failed_tools),
+        outcomes: union_preserving_order(&existing.outcomes, &candidate.outcomes),
+        subjects: union_preserving_order(&existing.subjects, &candidate.subjects),
+    };
+    format_failure_summary(&merged)
+}
+
 fn is_failure_category(category: &MemoryCategory) -> bool {
     matches!(category, MemoryCategory::Custom(name) if name == "failure_pattern")
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct FailureSummary {
+    failed_tools: Vec<String>,
+    outcomes: Vec<String>,
+    subjects: Vec<String>,
+}
+
+fn parse_failure_summary(value: &str) -> FailureSummary {
+    let mut summary = FailureSummary::default();
+    for part in value.split(" | ").map(str::trim) {
+        if let Some(raw) = part.strip_prefix("failed_tools=") {
+            summary.failed_tools = raw
+                .split("->")
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect();
+        } else if let Some(raw) = part.strip_prefix("outcomes=") {
+            summary.outcomes = raw
+                .split(',')
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect();
+        } else if let Some(raw) = part.strip_prefix("subjects=") {
+            summary.subjects = raw
+                .split(',')
+                .map(|item| item.trim().to_string())
+                .filter(|item| !item.is_empty())
+                .collect();
+        }
+    }
+    summary
+}
+
+fn format_failure_summary(summary: &FailureSummary) -> String {
+    let mut parts = Vec::new();
+    if !summary.failed_tools.is_empty() {
+        parts.push(format!(
+            "failed_tools={}",
+            summary.failed_tools.join(" -> ")
+        ));
+    }
+    if !summary.outcomes.is_empty() {
+        parts.push(format!("outcomes={}", summary.outcomes.join(",")));
+    }
+    if !summary.subjects.is_empty() {
+        parts.push(format!("subjects={}", summary.subjects.join(", ")));
+    }
+    parts.join(" | ")
+}
+
+fn is_distinct_failure_shape(candidate: &FailureSummary, existing: &FailureSummary) -> bool {
+    !candidate.failed_tools.is_empty()
+        && !existing.failed_tools.is_empty()
+        && jaccard_similarity(&candidate.failed_tools, &existing.failed_tools) < 0.5
+}
+
+fn union_preserving_order(left: &[String], right: &[String]) -> Vec<String> {
+    let mut values = Vec::new();
+    for value in left.iter().chain(right.iter()) {
+        if !values
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(value))
+        {
+            values.push(value.clone());
+        }
+    }
+    values
+}
+
+fn jaccard_similarity(left: &[String], right: &[String]) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let shared = left
+        .iter()
+        .filter(|item| right.iter().any(|other| other.eq_ignore_ascii_case(item)))
+        .count() as f64;
+    let mut union = Vec::new();
+    for item in left.iter().chain(right.iter()) {
+        if !union
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(item))
+        {
+            union.push(item.clone());
+        }
+    }
+    if union.is_empty() {
+        0.0
+    } else {
+        shared / union.len() as f64
+    }
 }
 
 fn truncate(value: &str, max: usize) -> String {
@@ -206,5 +319,37 @@ mod tests {
         );
 
         assert!(matches!(decision.action, MutationAction::Update { .. }));
+    }
+
+    #[test]
+    fn divergent_failed_tools_add_new_failure_pattern() {
+        let decision = decide_failure_mutation(
+            candidate(),
+            &[MemoryEntry {
+                id: "1".into(),
+                key: "custom_failure_1".into(),
+                content: "failed_tools=shell -> file_edit | outcomes=runtime_error".into(),
+                category: MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: None,
+                score: Some(0.87),
+            }],
+            &FailureSimilarityThresholds::default(),
+        );
+
+        assert!(matches!(decision.action, MutationAction::Add));
+        assert!(decision.reason.contains("distinct failed tools"));
+    }
+
+    #[test]
+    fn merge_failure_text_unions_outcomes_and_subjects() {
+        let merged = merge_failure_text(
+            "failed_tools=web_fetch | outcomes=runtime_error | subjects=status.example.com",
+            "failed_tools=web_fetch | outcomes=timeout,network_error | subjects=status2.example.com",
+        );
+
+        assert!(merged.contains("failed_tools=web_fetch"));
+        assert!(merged.contains("outcomes=runtime_error,timeout,network_error"));
+        assert!(merged.contains("subjects=status.example.com, status2.example.com"));
     }
 }
