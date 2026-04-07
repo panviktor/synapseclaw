@@ -12,6 +12,7 @@ use crate::application::services::learning_strength_service;
 use crate::application::services::recipe_evolution_service;
 use crate::application::services::skill_feedback_service;
 use crate::application::services::skill_promotion_service;
+use crate::application::services::skill_review_service;
 use crate::application::services::user_profile_service;
 use crate::domain::dialogue_state::FocusEntity;
 use crate::domain::memory::Skill;
@@ -49,6 +50,8 @@ pub struct SelfLearningEvalResult {
     pub accepted_failure_pattern_count: usize,
     pub skill_promotion_reasons: Vec<&'static str>,
     pub accepted_skill_promotion_count: usize,
+    pub skill_review_reasons: Vec<&'static str>,
+    pub accepted_skill_review_count: usize,
     pub skill_feedback_reasons: Vec<&'static str>,
     pub accepted_skill_feedback_count: usize,
     pub mutation_candidate_count: usize,
@@ -78,6 +81,9 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
     let mutation_candidates =
         learning_candidate_service::build_mutation_candidates_from_assessments(&assessments);
     let skill_promotion_assessments = build_skill_promotion_assessments(scenario, &assessments);
+    let resulting_recipes = build_resulting_recipes(scenario, &assessments);
+    let skill_review_decisions =
+        skill_review_service::review_learned_skills(&scenario.existing_skills, &resulting_recipes);
     let skill_feedback = build_skill_feedback(scenario, &assessments);
     let patch = learning_candidate_service::build_user_profile_patch_from_assessments(
         &assessments,
@@ -118,6 +124,8 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
             .iter()
             .filter(|assessment| assessment.accepted)
             .count(),
+        skill_review_reasons: skill_review_reason_names(&skill_review_decisions),
+        accepted_skill_review_count: skill_review_decisions.len(),
         skill_feedback_reasons: skill_feedback_reason_names(&skill_feedback),
         accepted_skill_feedback_count: skill_feedback.len(),
         mutation_candidate_count: mutation_candidates.len(),
@@ -436,7 +444,123 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 },
             ],
         },
+        SelfLearningEvalScenario {
+            id: "candidate_skill_without_recipe_support_is_deprecated",
+            user_message: "No-op turn",
+            assistant_response: "No procedural work happened.",
+            current_profile: None,
+            existing_recipes: vec![RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "backup_delivery".into(),
+                sample_request: "run backup and send it".into(),
+                summary: "pattern=shell -> message_send".into(),
+                tool_pattern: vec!["shell".into(), "message_send".into()],
+                success_count: 4,
+                updated_at: 1,
+            }],
+            existing_skills: vec![Skill {
+                id: "sk-learned".into(),
+                name: "search_delivery".into(),
+                description: "Learned skill".into(),
+                content: "content".into(),
+                task_family: Some("search_delivery".into()),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                tags: vec!["recipe-promotion".into()],
+                success_count: 3,
+                fail_count: 0,
+                version: 1,
+                origin: crate::domain::memory::SkillOrigin::Learned,
+                status: crate::domain::memory::SkillStatus::Candidate,
+                created_by: "agent".into(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }],
+            tool_facts: Vec::new(),
+        },
+        SelfLearningEvalScenario {
+            id: "candidate_skill_with_ambiguous_recipe_support_is_deprecated",
+            user_message: "No-op turn",
+            assistant_response: "No procedural work happened.",
+            current_profile: None,
+            existing_recipes: vec![
+                RunRecipe {
+                    agent_id: "agent".into(),
+                    task_family: "search_delivery".into(),
+                    sample_request: "find and send".into(),
+                    summary: "pattern=web_search -> message_send".into(),
+                    tool_pattern: vec!["web_search".into(), "message_send".into()],
+                    success_count: 4,
+                    updated_at: 1,
+                },
+                RunRecipe {
+                    agent_id: "agent".into(),
+                    task_family: "fetch_delivery".into(),
+                    sample_request: "fetch and send".into(),
+                    summary: "pattern=web_fetch -> message_send".into(),
+                    tool_pattern: vec!["web_fetch".into(), "message_send".into()],
+                    success_count: 4,
+                    updated_at: 2,
+                },
+            ],
+            existing_skills: vec![Skill {
+                id: "sk-learned".into(),
+                name: "search_fetch_delivery".into(),
+                description: "Learned skill".into(),
+                content: "content".into(),
+                task_family: Some("search_fetch_delivery".into()),
+                tool_pattern: vec![
+                    "web_search".into(),
+                    "web_fetch".into(),
+                    "message_send".into(),
+                ],
+                tags: vec!["recipe-promotion".into()],
+                success_count: 3,
+                fail_count: 0,
+                version: 1,
+                origin: crate::domain::memory::SkillOrigin::Learned,
+                status: crate::domain::memory::SkillStatus::Candidate,
+                created_by: "agent".into(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }],
+            tool_facts: Vec::new(),
+        },
     ]
+}
+
+fn build_resulting_recipes(
+    scenario: &SelfLearningEvalScenario,
+    assessments: &[learning_quality_service::LearningCandidateAssessment],
+) -> Vec<RunRecipe> {
+    let mut recipes = scenario.existing_recipes.clone();
+    for assessment in assessments.iter().filter(|assessment| assessment.accepted) {
+        let LearningCandidate::RunRecipe(candidate) = &assessment.candidate else {
+            continue;
+        };
+        let recipe = if assessment.merge_with_existing {
+            recipes
+                .iter()
+                .find(|existing| existing.task_family == candidate.task_family_hint)
+                .map(|existing| {
+                    recipe_evolution_service::merge_existing_recipe(existing, candidate, 1)
+                })
+                .unwrap_or_else(|| {
+                    recipe_evolution_service::build_new_recipe("agent", candidate, 1)
+                })
+        } else {
+            recipe_evolution_service::build_new_recipe("agent", candidate, 1)
+        };
+
+        if let Some(existing) = recipes
+            .iter_mut()
+            .find(|existing| existing.task_family == recipe.task_family)
+        {
+            *existing = recipe;
+        } else {
+            recipes.push(recipe);
+        }
+    }
+    recipes
 }
 
 fn build_skill_promotion_assessments(
@@ -592,6 +716,18 @@ fn skill_feedback_reason_names(
     for item in feedback {
         if !reasons.contains(&item.reason) {
             reasons.push(item.reason);
+        }
+    }
+    reasons
+}
+
+fn skill_review_reason_names(
+    decisions: &[skill_review_service::SkillReviewDecision],
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    for decision in decisions {
+        if !reasons.contains(&decision.reason) {
+            reasons.push(decision.reason);
         }
     }
     reasons
@@ -757,5 +893,35 @@ mod tests {
         assert!(result
             .skill_promotion_reasons
             .contains(&"shadowed_by_higher_origin_skill"));
+    }
+
+    #[test]
+    fn candidate_skill_without_recipe_support_is_deprecated() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "candidate_skill_without_recipe_support_is_deprecated")
+            .unwrap();
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.accepted_skill_review_count, 1);
+        assert!(result
+            .skill_review_reasons
+            .contains(&"unsupported_by_recipe_clusters"));
+    }
+
+    #[test]
+    fn candidate_skill_with_ambiguous_recipe_support_is_deprecated() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| {
+                scenario.id == "candidate_skill_with_ambiguous_recipe_support_is_deprecated"
+            })
+            .unwrap();
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.accepted_skill_review_count, 1);
+        assert!(result
+            .skill_review_reasons
+            .contains(&"ambiguous_recipe_cluster_support"));
     }
 }
