@@ -21,9 +21,11 @@ use crate::domain::run_recipe::RunRecipe;
 pub struct LearningDigestProjectionInput {
     pub has_current_profile: bool,
     pub effective_skill_names: Vec<String>,
+    pub effective_skill_lineage_families: Vec<String>,
     pub candidate_skill_count: usize,
     pub shadowed_skill_count: usize,
     pub run_recipe_families: Vec<String>,
+    pub run_recipe_lineage_families: Vec<String>,
     pub run_recipe_cluster_count: usize,
     pub procedural_contradiction_count: usize,
     pub precedent_count: usize,
@@ -271,9 +273,11 @@ pub fn format_memory_entry_projection(section: &str, entry: &MemoryEntry) -> Str
 pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) -> Option<String> {
     if !input.has_current_profile
         && input.effective_skill_names.is_empty()
+        && input.effective_skill_lineage_families.is_empty()
         && input.candidate_skill_count == 0
         && input.shadowed_skill_count == 0
         && input.run_recipe_families.is_empty()
+        && input.run_recipe_lineage_families.is_empty()
         && input.run_recipe_cluster_count == 0
         && input.procedural_contradiction_count == 0
         && input.precedent_count == 0
@@ -299,6 +303,12 @@ pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) 
             input.effective_skill_names.join(", ")
         ));
     }
+    if !input.effective_skill_lineage_families.is_empty() {
+        lines.push(format!(
+            "- effective_skill_lineage_families: {}",
+            input.effective_skill_lineage_families.join(", ")
+        ));
+    }
     lines.push(format!(
         "- candidate_skill_count: {}",
         input.candidate_skill_count
@@ -311,6 +321,12 @@ pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) 
         lines.push(format!(
             "- run_recipe_families: {}",
             input.run_recipe_families.join(", ")
+        ));
+    }
+    if !input.run_recipe_lineage_families.is_empty() {
+        lines.push(format!(
+            "- run_recipe_lineage_families: {}",
+            input.run_recipe_lineage_families.join(", ")
         ));
     }
     lines.push(format!(
@@ -410,6 +426,14 @@ pub fn format_run_recipe_review_projection(
 
     let mut lines = vec!["[run-recipe-review]".to_string()];
     for decision in decisions {
+        let lineage = if decision.canonical_recipe.lineage_task_families.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", lineage=[{}]",
+                decision.canonical_recipe.lineage_task_families.join(", ")
+            )
+        };
         let blocked = if decision.promotion_blocked {
             format!(
                 ", promotion_blocked ({})",
@@ -419,9 +443,10 @@ pub fn format_run_recipe_review_projection(
             String::new()
         };
         lines.push(format!(
-            "- {} -> remove [{}]{}",
+            "- {} -> remove [{}]{}{}",
             decision.canonical_recipe.task_family,
             decision.removed_task_families.join(", "),
+            lineage,
             blocked
         ));
     }
@@ -734,9 +759,11 @@ mod tests {
         let projection = format_learning_digest_projection(&LearningDigestProjectionInput {
             has_current_profile: true,
             effective_skill_names: vec!["manual-deploy".into(), "search_delivery".into()],
+            effective_skill_lineage_families: vec!["deploy".into(), "search_delivery".into()],
             candidate_skill_count: 1,
             shadowed_skill_count: 1,
             run_recipe_families: vec!["search_delivery".into()],
+            run_recipe_lineage_families: vec!["delivery_search".into(), "search_delivery".into()],
             run_recipe_cluster_count: 1,
             procedural_contradiction_count: 1,
             precedent_count: 2,
@@ -748,7 +775,11 @@ mod tests {
 
         assert!(projection.contains("[learning-digest]"));
         assert!(projection.contains("effective_skills: manual-deploy, search_delivery"));
+        assert!(projection.contains("effective_skill_lineage_families: deploy, search_delivery"));
         assert!(projection.contains("candidate_skill_count: 1"));
+        assert!(
+            projection.contains("run_recipe_lineage_families: delivery_search, search_delivery")
+        );
         assert!(projection.contains("run_recipe_cluster_count: 1"));
         assert!(projection.contains("procedural_contradiction_count: 1"));
         assert!(projection.contains("precedent_cluster_count: 1"));
@@ -847,6 +878,7 @@ mod tests {
         assert!(projection.contains("[run-recipe-review]"));
         assert!(projection.contains("search_delivery"));
         assert!(projection.contains("delivery_search"));
+        assert!(projection.contains("lineage=[search_delivery, delivery_search]"));
         assert!(projection.contains("promotion_blocked"));
     }
 

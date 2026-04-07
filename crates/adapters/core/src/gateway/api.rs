@@ -1741,6 +1741,17 @@ pub async fn handle_api_memory_projections(
                 .take(limit)
                 .map(|entry| entry.name.clone())
                 .collect(),
+            effective_skill_lineage_families: recent_learned_skills
+                .iter()
+                .filter(|skill| {
+                    effective_skills
+                        .iter()
+                        .any(|entry| entry.name == skill.name && entry.effective)
+                })
+                .flat_map(|skill| skill.lineage_task_families.iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
             candidate_skill_count: skill_surface
                 .iter()
                 .filter(|entry| entry.status == "candidate")
@@ -1753,6 +1764,12 @@ pub async fn handle_api_memory_projections(
                 .iter()
                 .filter_map(|entry| entry.get("task_family").and_then(serde_json::Value::as_str))
                 .map(ToString::to_string)
+                .collect(),
+            run_recipe_lineage_families: recent_run_recipes
+                .iter()
+                .flat_map(|recipe| recipe.lineage_task_families.iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
                 .collect(),
             run_recipe_cluster_count: recipe_clusters.len(),
             procedural_contradiction_count: procedural_contradiction_entries.len(),
