@@ -156,6 +156,7 @@ pub fn spawn_consolidation_worker(
                     run_recipe_store.as_ref(),
                     &agent_id,
                     config.activity_probe_limit * 4,
+                    config.activity_window,
                 )
                 .await
                 {
@@ -293,7 +294,9 @@ pub(crate) async fn sample_learning_maintenance_snapshot(
     skipped_cycles_since_maintenance: u32,
     prompt_optimization_due: bool,
 ) -> LearningMaintenanceSnapshot {
-    let run_recipes = run_recipe_store.list(agent_id);
+    let recent_run_recipe_cutoff =
+        (chrono::Utc::now().timestamp().max(0) as u64).saturating_sub(activity_window.as_secs());
+    let recent_run_recipes = run_recipe_store.list_recent(agent_id, recent_run_recipe_cutoff);
     let recent_precedents = list_recent_category_entries(
         memory,
         MemoryCategory::Custom("precedent".into()),
@@ -338,12 +341,6 @@ pub(crate) async fn sample_learning_maintenance_snapshot(
         .collect::<Vec<_>>();
     let recent_cutoff =
         chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
-    let recent_run_recipe_cutoff =
-        (chrono::Utc::now().timestamp().max(0) as u64).saturating_sub(activity_window.as_secs());
-    let recent_run_recipes = run_recipes
-        .into_iter()
-        .filter(|recipe| recipe.updated_at >= recent_run_recipe_cutoff)
-        .collect::<Vec<_>>();
     let recipe_clusters = plan_recipe_clusters(&recent_run_recipes, 0.9);
     let procedural_contradictions =
         find_recipe_failure_contradictions(&recipe_clusters, &failure_pattern_clusters, 0.75);
@@ -372,6 +369,7 @@ async fn run_recipe_review(
     store: &dyn RunRecipeStorePort,
     agent_id: &str,
     limit: usize,
+    activity_window: Duration,
 ) -> anyhow::Result<RunRecipeReviewOutcome> {
     let failure_clusters = plan_recent_clusters(
         memory,
@@ -382,8 +380,10 @@ async fn run_recipe_review(
         0.96,
     )
     .await?;
+    let recent_cutoff =
+        (chrono::Utc::now().timestamp().max(0) as u64).saturating_sub(activity_window.as_secs());
     let decisions = review_run_recipes_with_failures(
-        &store.list(agent_id),
+        &store.list_recent(agent_id, recent_cutoff),
         &failure_clusters,
         &RunRecipeReviewThresholds::default(),
     );

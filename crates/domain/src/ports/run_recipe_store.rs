@@ -5,6 +5,12 @@ use anyhow::Result;
 
 pub trait RunRecipeStorePort: Send + Sync {
     fn list(&self, agent_id: &str) -> Vec<RunRecipe>;
+    fn list_recent(&self, agent_id: &str, min_updated_at: u64) -> Vec<RunRecipe> {
+        self.list(agent_id)
+            .into_iter()
+            .filter(|recipe| recipe.updated_at >= min_updated_at)
+            .collect()
+    }
     fn upsert(&self, recipe: RunRecipe) -> Result<()>;
     fn remove(&self, agent_id: &str, task_family: &str) -> Result<()>;
     fn get(&self, agent_id: &str, task_family: &str) -> Option<RunRecipe> {
@@ -38,6 +44,15 @@ impl RunRecipeStorePort for InMemoryRunRecipeStore {
             .read()
             .iter()
             .filter(|recipe| recipe.agent_id == agent_id)
+            .cloned()
+            .collect()
+    }
+
+    fn list_recent(&self, agent_id: &str, min_updated_at: u64) -> Vec<RunRecipe> {
+        self.recipes
+            .read()
+            .iter()
+            .filter(|recipe| recipe.agent_id == agent_id && recipe.updated_at >= min_updated_at)
             .cloned()
             .collect()
     }
@@ -109,5 +124,26 @@ mod tests {
         let recipes = store.list("agent");
         assert_eq!(recipes.len(), 1);
         assert_eq!(recipes[0].task_family, "restart");
+    }
+
+    #[test]
+    fn list_recent_filters_by_updated_at() {
+        let store = InMemoryRunRecipeStore::new();
+        store
+            .upsert(RunRecipe {
+                updated_at: 10,
+                ..recipe("older")
+            })
+            .unwrap();
+        store
+            .upsert(RunRecipe {
+                updated_at: 20,
+                ..recipe("newer")
+            })
+            .unwrap();
+
+        let recipes = store.list_recent("agent", 15);
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].task_family, "newer");
     }
 }

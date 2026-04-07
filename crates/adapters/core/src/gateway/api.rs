@@ -1416,8 +1416,16 @@ pub async fn handle_api_memory_projections(
         Vec::new()
     };
 
+    let maintenance_config =
+        crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default();
+    let recent_run_recipe_cutoff = (chrono::Utc::now().timestamp().max(0) as u64)
+        .saturating_sub(maintenance_config.activity_window.as_secs());
     let mut all_run_recipes = state.run_recipe_store.list(&state.agent_id);
+    let mut recent_run_recipes = state
+        .run_recipe_store
+        .list_recent(&state.agent_id, recent_run_recipe_cutoff);
     all_run_recipes.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    recent_run_recipes.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     let run_recipes = all_run_recipes
         .iter()
         .take(limit)
@@ -1437,7 +1445,7 @@ pub async fn handle_api_memory_projections(
 
     let recipe_clusters_raw =
         synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters(
-            &all_run_recipes,
+            &recent_run_recipes,
             0.9,
         );
     let recipe_clusters = recipe_clusters_raw
@@ -1643,7 +1651,7 @@ pub async fn handle_api_memory_projections(
     let skill_review_decisions =
         synapse_domain::application::services::skill_review_service::review_learned_skills_with_failures(
             &learned_skills,
-            &all_run_recipes,
+            &recent_run_recipes,
             &failure_pattern_clusters_raw,
         );
     let skill_review = synapse_domain::application::services::memory_projection_service::format_skill_review_projection(
@@ -1651,7 +1659,7 @@ pub async fn handle_api_memory_projections(
     );
     let run_recipe_review_decisions =
         synapse_domain::application::services::run_recipe_review_service::review_run_recipes_with_failures(
-            &all_run_recipes,
+            &recent_run_recipes,
             &failure_pattern_clusters_raw,
             &synapse_domain::application::services::run_recipe_review_service::RunRecipeReviewThresholds::default(),
         );
@@ -1725,8 +1733,6 @@ pub async fn handle_api_memory_projections(
             failure_pattern_cluster_count: failure_pattern_clusters.len(),
         },
     );
-    let maintenance_config =
-        crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default();
     let learning_maintenance_snapshot =
         crate::memory_adapters::consolidation_worker::sample_learning_maintenance_snapshot(
             state.mem.as_ref(),
