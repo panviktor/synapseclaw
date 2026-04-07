@@ -16,6 +16,7 @@ use crate::domain::memory::{
     SessionId, Skill, SkillUpdate, TemporalFact, Visibility,
 };
 use async_trait::async_trait;
+use std::collections::HashSet;
 
 // ── Working Memory (core blocks, always in prompt) ───────────────
 
@@ -209,6 +210,12 @@ pub trait ConsolidationPort: Send + Sync {
 ///
 /// Agents and services use this as the single memory interface.
 /// Tool implementations hold `Arc<dyn UnifiedMemoryPort>`.
+#[derive(Debug, Clone)]
+pub struct ScopedClusterCandidates {
+    pub entries: Vec<MemoryEntry>,
+    pub similarity_lookup: std::collections::HashMap<String, Vec<SearchResult>>,
+}
+
 #[async_trait]
 pub trait UnifiedMemoryPort:
     WorkingMemoryPort
@@ -274,6 +281,68 @@ pub trait UnifiedMemoryPort:
             );
         }
         Ok(results)
+    }
+
+    /// Build a scoped candidate substrate for procedural cluster planning.
+    ///
+    /// The default implementation keeps existing behavior: fetch the scoped
+    /// seed set, then reuse `similar_episodes_for_entries`, finally trimming
+    /// neighbors back down to the known scoped keys.
+    async fn scoped_cluster_candidates(
+        &self,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        shortlist_limit: usize,
+        include_shared: bool,
+        updated_since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<ScopedClusterCandidates, MemoryError> {
+        let entries = match updated_since {
+            Some(updated_since) => {
+                self.list_recent_scoped(Some(category), None, limit, include_shared, updated_since)
+                    .await?
+            }
+            None => {
+                self.list_scoped(Some(category), None, limit, include_shared)
+                    .await?
+            }
+        };
+        if entries.len() < 2 {
+            return Ok(ScopedClusterCandidates {
+                entries,
+                similarity_lookup: std::collections::HashMap::new(),
+            });
+        }
+
+        let known_keys = entries
+            .iter()
+            .map(|entry| entry.key.clone())
+            .collect::<HashSet<_>>();
+        let similarity_lookup = self
+            .similar_episodes_for_entries(
+                &entries,
+                agent_id,
+                category,
+                shortlist_limit,
+                include_shared,
+            )
+            .await?
+            .into_iter()
+            .map(|(key, values)| {
+                (
+                    key,
+                    values
+                        .into_iter()
+                        .filter(|result| known_keys.contains(&result.entry.key))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+
+        Ok(ScopedClusterCandidates {
+            entries,
+            similarity_lookup,
+        })
     }
 
     /// Generate an embedding vector for text.

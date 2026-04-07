@@ -17,8 +17,8 @@ use synapse_domain::domain::memory::{
     TemporalFact,
 };
 use synapse_domain::ports::memory::{
-    ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
-    UnifiedMemoryPort, WorkingMemoryPort,
+    ConsolidationPort, EpisodicMemoryPort, ReflectionPort, ScopedClusterCandidates,
+    SemanticMemoryPort, SkillMemoryPort, UnifiedMemoryPort, WorkingMemoryPort,
 };
 
 use crate::embeddings::EmbeddingProvider;
@@ -529,6 +529,50 @@ impl SurrealMemoryAdapter {
     fn rows_to_entries(rows: Vec<serde_json::Value>) -> Vec<MemoryEntry> {
         rows.into_iter().filter_map(|v| row_to_entry(&v)).collect()
     }
+
+    async fn load_scoped_episode_rows(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<serde_json::Value>, MemoryError> {
+        let mut conditions = vec![episode_scope_clause(include_shared).to_string()];
+        if category.is_some() {
+            conditions.push("category = $cat".to_string());
+        }
+        if session_id.is_some() {
+            conditions.push("session_id = $sid".to_string());
+        }
+        if updated_since.is_some() {
+            conditions.push("created_at >= $updated_since".to_string());
+        }
+
+        let q = format!(
+            "SELECT * FROM episode WHERE {} ORDER BY created_at DESC LIMIT $limit",
+            conditions.join(" AND ")
+        );
+
+        let mut query = self
+            .db
+            .query(&q)
+            .bind(("agent", self.me().to_string()))
+            .bind(("cat", category.map(|c| c.to_string()).unwrap_or_default()))
+            .bind(("sid", session_id.unwrap_or("").to_string()))
+            .bind(("limit", limit));
+        if let Some(updated_since) = updated_since {
+            query = query.bind(("updated_since", updated_since.to_rfc3339()));
+        }
+
+        let mut resp = query
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        Ok(rows)
+    }
 }
 
 // ── JSON → domain type helpers ───────────────────────────────────
@@ -546,6 +590,13 @@ fn row_to_entry(v: &serde_json::Value) -> Option<MemoryEntry> {
             .map(String::from),
         score: v.get("bm25_score").and_then(|s| s.as_f64()),
     })
+}
+
+fn row_to_embedding(v: &serde_json::Value) -> Option<Vec<f32>> {
+    v.get("embedding")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<f32>>(value).ok())
+        .filter(|embedding| !embedding.is_empty())
 }
 
 fn episode_scope_clause(include_shared: bool) -> &'static str {
@@ -1949,6 +2000,85 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         Ok(results)
     }
 
+    async fn scoped_cluster_candidates(
+        &self,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        shortlist_limit: usize,
+        include_shared: bool,
+        updated_since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<ScopedClusterCandidates, MemoryError> {
+        let rows = self
+            .load_scoped_episode_rows(Some(category), None, limit, include_shared, updated_since)
+            .await?;
+        let entries = Self::rows_to_entries(rows.clone());
+        if entries.len() < 2 {
+            return Ok(ScopedClusterCandidates {
+                entries,
+                similarity_lookup: std::collections::HashMap::new(),
+            });
+        }
+
+        let embedded_entries = rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    json_str(row, "key"),
+                    row_to_entry(row)?,
+                    row_to_embedding(row)?,
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        let mut similarity_lookup = std::collections::HashMap::new();
+        for (key, _entry, embedding) in &embedded_entries {
+            let mut shortlist = embedded_entries
+                .iter()
+                .filter(|(other_key, _, _)| other_key != key)
+                .map(|(_, other_entry, other_embedding)| SearchResult {
+                    entry: other_entry.clone(),
+                    score: crate::vector::cosine_similarity(embedding, other_embedding),
+                    source: SearchSource::Vector,
+                })
+                .collect::<Vec<_>>();
+            shortlist.sort_by(|left, right| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            shortlist.truncate(shortlist_limit);
+            similarity_lookup.insert(key.clone(), shortlist);
+        }
+
+        let embedded_keys = embedded_entries
+            .iter()
+            .map(|(key, _, _)| key.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for entry in &entries {
+            if embedded_keys.contains(&entry.key) {
+                continue;
+            }
+            similarity_lookup.insert(
+                entry.key.clone(),
+                self.similar_episodes_for_entry(
+                    entry,
+                    agent_id,
+                    category,
+                    shortlist_limit,
+                    include_shared,
+                )
+                .await?,
+            );
+        }
+
+        Ok(ScopedClusterCandidates {
+            entries,
+            similarity_lookup,
+        })
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         self.embedder
             .embed_one(text)
@@ -2087,31 +2217,10 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         limit: usize,
         include_shared: bool,
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
-        let mut conditions = vec![episode_scope_clause(include_shared).to_string()];
-        if category.is_some() {
-            conditions.push("category = $cat".to_string());
-        }
-        if session_id.is_some() {
-            conditions.push("session_id = $sid".to_string());
-        }
-
-        let q = format!(
-            "SELECT * FROM episode WHERE {} ORDER BY created_at DESC LIMIT $limit",
-            conditions.join(" AND ")
-        );
-
-        let mut resp = self
-            .db
-            .query(&q)
-            .bind(("agent", self.me().to_string()))
-            .bind(("cat", category.map(|c| c.to_string()).unwrap_or_default()))
-            .bind(("sid", session_id.unwrap_or("").to_string()))
-            .bind(("limit", limit))
-            .await
-            .map_err(|e| MemoryError::Storage(e.to_string()))?;
-
-        let rows = take_json!(resp, 0);
-        Ok(SurrealMemoryAdapter::rows_to_entries(rows))
+        Ok(SurrealMemoryAdapter::rows_to_entries(
+            self.load_scoped_episode_rows(category, session_id, limit, include_shared, None)
+                .await?,
+        ))
     }
 
     async fn list_recent_scoped(
@@ -2122,33 +2231,16 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         include_shared: bool,
         updated_since: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
-        let mut conditions = vec![episode_scope_clause(include_shared).to_string()];
-        if category.is_some() {
-            conditions.push("category = $cat".to_string());
-        }
-        if session_id.is_some() {
-            conditions.push("session_id = $sid".to_string());
-        }
-        conditions.push("created_at >= $updated_since".to_string());
-
-        let q = format!(
-            "SELECT * FROM episode WHERE {} ORDER BY created_at DESC LIMIT $limit",
-            conditions.join(" AND ")
-        );
-
-        let mut resp = self
-            .db
-            .query(&q)
-            .bind(("agent", self.me().to_string()))
-            .bind(("cat", category.map(|c| c.to_string()).unwrap_or_default()))
-            .bind(("sid", session_id.unwrap_or("").to_string()))
-            .bind(("updated_since", updated_since.to_rfc3339()))
-            .bind(("limit", limit))
-            .await
-            .map_err(|e| MemoryError::Storage(e.to_string()))?;
-
-        let rows = take_json!(resp, 0);
-        Ok(SurrealMemoryAdapter::rows_to_entries(rows))
+        Ok(SurrealMemoryAdapter::rows_to_entries(
+            self.load_scoped_episode_rows(
+                category,
+                session_id,
+                limit,
+                include_shared,
+                Some(updated_since),
+            )
+            .await?,
+        ))
     }
 
     async fn consolidate_turn(

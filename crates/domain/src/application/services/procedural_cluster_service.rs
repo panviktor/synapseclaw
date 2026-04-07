@@ -7,7 +7,7 @@
 use crate::application::services::failure_similarity_service;
 use crate::application::services::precedent_similarity_service;
 use crate::domain::memory::{MemoryCategory, MemoryEntry, MemoryError};
-use crate::ports::memory::UnifiedMemoryPort;
+use crate::ports::memory::{ScopedClusterCandidates, UnifiedMemoryPort};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,13 +58,19 @@ pub async fn plan_recent_clusters_since(
     updated_since: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<Vec<ProceduralCluster>, MemoryError> {
     let category = cluster_category(&kind);
-    let entries = match updated_since {
-        Some(updated_since) => {
-            mem.list_recent_scoped(Some(&category), None, limit, false, updated_since)
-                .await?
-        }
-        None => mem.list_scoped(Some(&category), None, limit, false).await?,
-    };
+    let ScopedClusterCandidates {
+        entries,
+        similarity_lookup,
+    } = mem
+        .scoped_cluster_candidates(
+            agent_id,
+            &category,
+            limit,
+            shortlist_limit,
+            false,
+            updated_since,
+        )
+        .await?;
     if entries.len() < 2 {
         return Ok(entries
             .into_iter()
@@ -75,12 +81,22 @@ pub async fn plan_recent_clusters_since(
             .collect());
     }
 
-    let similarity_lookup =
-        fetch_category_shortlists(mem, agent_id, &entries, &category, shortlist_limit).await?;
-
     Ok(build_clusters(
         &entries,
-        &similarity_lookup,
+        &similarity_lookup
+            .into_iter()
+            .map(|(key, values)| {
+                let shortlist = values
+                    .into_iter()
+                    .map(|result| {
+                        let mut entry = result.entry;
+                        entry.score = Some(result.score as f64);
+                        entry
+                    })
+                    .collect::<Vec<_>>();
+                (key, shortlist)
+            })
+            .collect(),
         &category,
         similarity_threshold,
     ))
@@ -161,31 +177,6 @@ pub fn build_clusters(
     }
 
     clusters
-}
-
-async fn fetch_category_shortlists(
-    mem: &dyn UnifiedMemoryPort,
-    agent_id: &str,
-    entries: &[MemoryEntry],
-    category: &MemoryCategory,
-    limit: usize,
-) -> Result<HashMap<String, Vec<MemoryEntry>>, MemoryError> {
-    Ok(mem
-        .similar_episodes_for_entries(entries, agent_id, category, limit, false)
-        .await?
-        .into_iter()
-        .map(|(key, values)| {
-            let shortlist = values
-                .into_iter()
-                .map(|result| {
-                    let mut entry = result.entry;
-                    entry.score = Some(result.score as f64);
-                    entry
-                })
-                .collect::<Vec<_>>();
-            (key, shortlist)
-        })
-        .collect())
 }
 
 fn cluster_category(kind: &ProceduralClusterKind) -> MemoryCategory {
