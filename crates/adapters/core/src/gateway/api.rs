@@ -10,6 +10,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use synapse_infra::config_io::ConfigIO;
 
 const MASKED_SECRET: &str = "***MASKED***";
@@ -66,6 +67,40 @@ fn skill_origin_priority(origin: &str) -> u8 {
         "imported" => 2,
         "learned" => 1,
         _ => 0,
+    }
+}
+
+fn normalize_skill_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SkillSurfaceEntry {
+    name: String,
+    origin: String,
+    status: String,
+    source: String,
+    priority: u8,
+    effective: bool,
+    shadowed_by: Option<String>,
+    projection: String,
+}
+
+fn mark_shadowed_skills(entries: &mut [SkillSurfaceEntry]) {
+    let mut winners: HashMap<String, String> = HashMap::new();
+    for entry in entries.iter_mut() {
+        let key = normalize_skill_name(&entry.name);
+        if let Some(shadowed_by) = winners.get(&key) {
+            entry.effective = false;
+            entry.shadowed_by = Some(shadowed_by.clone());
+        } else {
+            entry.effective = true;
+            entry.shadowed_by = None;
+            winners.insert(
+                key,
+                format!("{} ({}/{})", entry.name, entry.origin, entry.source),
+            );
+        }
     }
 }
 
@@ -1402,42 +1437,27 @@ pub async fn handle_api_memory_projections(
         crate::skills::load_skills_with_config(&config.workspace_dir, &config)
             .into_iter()
             .map(|skill| {
-                let name = skill.name.clone();
                 let origin = crate::skills::infer_loaded_skill_origin(&skill).to_string();
-                let projection =
-                    crate::skills::format_loaded_skill_projection(&skill, &config.workspace_dir);
-                serde_json::json!({
-                    "name": name,
-                    "origin": origin,
-                    "status": "active",
-                    "source": "configured",
-                    "projection": projection,
-                })
+                SkillSurfaceEntry {
+                    name: skill.name.clone(),
+                    status: "active".to_string(),
+                    source: "configured".to_string(),
+                    priority: skill_origin_priority(&origin),
+                    origin,
+                    effective: false,
+                    shadowed_by: None,
+                    projection: crate::skills::format_loaded_skill_projection(
+                        &skill,
+                        &config.workspace_dir,
+                    ),
+                }
             })
             .collect::<Vec<_>>();
     configured_skills.sort_by(|left, right| {
-        skill_origin_priority(
-            right
-                .get("origin")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(""),
-        )
-        .cmp(&skill_origin_priority(
-            left.get("origin")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or(""),
-        ))
-        .then_with(|| {
-            left.get("name")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .cmp(
-                    right
-                        .get("name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or(""),
-                )
-        })
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.name.cmp(&right.name))
     });
 
     let recent_skills = state
@@ -1447,26 +1467,38 @@ pub async fn handle_api_memory_projections(
         .unwrap_or_default()
         .into_iter()
         .map(|skill| {
-            let name = skill.name.clone();
             let origin = skill.origin.to_string();
-            let status = skill.status.to_string();
-            let projection =
-                synapse_domain::application::services::memory_projection_service::format_skill_projection(
+            SkillSurfaceEntry {
+                name: skill.name.clone(),
+                status: skill.status.to_string(),
+                source: "learned_memory".to_string(),
+                priority: skill_origin_priority(&origin),
+                origin,
+                effective: false,
+                shadowed_by: None,
+                projection: synapse_domain::application::services::memory_projection_service::format_skill_projection(
                     &skill,
-                );
-            serde_json::json!({
-                "name": name,
-                "origin": origin,
-                "status": status,
-                "source": "learned_memory",
-                "projection": projection,
-            })
+                ),
+            }
         })
         .collect::<Vec<_>>();
-    let skill_surface = configured_skills
+
+    let mut skill_surface = configured_skills
         .iter()
         .cloned()
         .chain(recent_skills.iter().cloned())
+        .collect::<Vec<_>>();
+    skill_surface.sort_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    mark_shadowed_skills(&mut skill_surface);
+    let effective_skills = skill_surface
+        .iter()
+        .filter(|entry| entry.effective)
+        .cloned()
         .collect::<Vec<_>>();
 
     let recent_precedents = state
@@ -1551,9 +1583,11 @@ pub async fn handle_api_memory_projections(
         "core_memory": core_projection,
         "working_state": working_state,
         "recent_sessions": recent_sessions,
+        "skill_conflict_policy": synapse_domain::application::services::memory_projection_service::format_skill_conflict_policy_projection(),
         "configured_skills": configured_skills,
         "recent_skills": recent_skills,
         "skill_surface": skill_surface,
+        "effective_skills": effective_skills,
         "run_recipes": run_recipes,
         "recent_precedents": recent_precedents,
         "recent_reflections": recent_reflections,

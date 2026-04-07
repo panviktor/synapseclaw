@@ -169,6 +169,24 @@ pub fn format_skill_projection(skill: &Skill) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
+pub fn format_skill_conflict_policy_projection() -> String {
+    [
+        "[skill-conflict-policy]".to_string(),
+        "- precedence: security/policy boundaries".to_string(),
+        "- precedence: explicit current-turn user instruction".to_string(),
+        "- precedence: manual skill".to_string(),
+        "- precedence: imported skill".to_string(),
+        "- precedence: hard user-profile defaults".to_string(),
+        "- precedence: learned skill".to_string(),
+        "- precedence: recipe".to_string(),
+        "- precedence: precedent".to_string(),
+        "- precedence: generic episodic or semantic retrieval".to_string(),
+        "- note: lower-precedence skills remain inspectable but can be shadowed".to_string(),
+    ]
+    .join("\n")
+        + "\n"
+}
+
 pub fn format_memory_entry_projection(section: &str, entry: &MemoryEntry) -> String {
     let mut lines = vec![
         format!("[{section}]"),
@@ -383,5 +401,14 @@ mod tests {
         assert!(projection.contains("origin: manual"));
         assert!(projection.contains("status: active"));
         assert!(projection.contains("Preferred deploy procedure"));
+    }
+
+    #[test]
+    fn formats_skill_conflict_policy_projection() {
+        let projection = format_skill_conflict_policy_projection();
+
+        assert!(projection.contains("[skill-conflict-policy]"));
+        assert!(projection.contains("manual skill"));
+        assert!(projection.contains("learned skill"));
     }
 }
