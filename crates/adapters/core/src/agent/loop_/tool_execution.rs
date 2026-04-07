@@ -5,7 +5,7 @@ use super::*;
 use synapse_domain::application::services::loop_detection::{
     hash_args, LoopAction, LoopDetector, ToolInvocation,
 };
-use synapse_domain::domain::tool_fact::TypedToolFact;
+use synapse_domain::domain::tool_fact::{OutcomeStatus, TypedToolFact};
 
 #[derive(Debug)]
 pub(crate) struct ToolLoopCancelled;
@@ -74,8 +74,16 @@ pub(crate) struct ToolLoopResult {
     pub(crate) tool_facts: Vec<TypedToolFact>,
 }
 
-fn collect_tool_facts(explicit_facts: Vec<TypedToolFact>) -> Vec<TypedToolFact> {
-    explicit_facts
+fn collect_tool_facts(
+    tool_name: &str,
+    status: OutcomeStatus,
+    duration: Duration,
+    explicit_facts: Vec<TypedToolFact>,
+) -> Vec<TypedToolFact> {
+    let mut facts = explicit_facts;
+    let duration_ms = u64::try_from(duration.as_millis()).ok();
+    facts.push(TypedToolFact::outcome(tool_name, status, duration_ms));
+    facts
 }
 
 pub(crate) async fn execute_one_tool(
@@ -108,7 +116,8 @@ pub(crate) async fn execute_one_tool(
     let Some(tool) = static_tool.or(activated_arc.as_deref()) else {
         let reason = format!("Unknown tool: {call_name}");
         let duration = start.elapsed();
-        let tool_facts = collect_tool_facts(Vec::new());
+        let tool_facts =
+            collect_tool_facts(call_name, OutcomeStatus::UnknownTool, duration, Vec::new());
         observer.record_event(&ObserverEvent::ToolCall {
             tool: call_name.to_string(),
             duration,
@@ -159,7 +168,8 @@ pub(crate) async fn execute_one_tool(
                 output: format!("[blocked] {reason}"),
                 success: false,
             });
-            let tool_facts = collect_tool_facts(Vec::new());
+            let tool_facts =
+                collect_tool_facts(call_name, OutcomeStatus::Blocked, duration, Vec::new());
             return Ok(ToolExecutionOutcome {
                 output: format!("[blocked] {reason}"),
                 success: false,
@@ -183,8 +193,17 @@ pub(crate) async fn execute_one_tool(
     match tool_result {
         Ok(execution) => {
             let duration = start.elapsed();
-            let tool_facts = collect_tool_facts(execution.facts);
             let r = execution.result;
+            let tool_facts = collect_tool_facts(
+                call_name,
+                if r.success {
+                    OutcomeStatus::Succeeded
+                } else {
+                    OutcomeStatus::ReportedFailure
+                },
+                duration,
+                execution.facts,
+            );
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -225,7 +244,8 @@ pub(crate) async fn execute_one_tool(
         }
         Err(e) => {
             let duration = start.elapsed();
-            let tool_facts = collect_tool_facts(Vec::new());
+            let tool_facts =
+                collect_tool_facts(call_name, OutcomeStatus::RuntimeError, duration, Vec::new());
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -783,7 +803,12 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(scrub_credentials(&reason)),
                                 duration: Duration::ZERO,
-                                tool_facts: collect_tool_facts(Vec::new()),
+                                tool_facts: collect_tool_facts(
+                                    &call.name,
+                                    OutcomeStatus::Blocked,
+                                    Duration::ZERO,
+                                    Vec::new(),
+                                ),
                             },
                         ));
                         continue;
@@ -842,7 +867,12 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(denied),
                                 duration: Duration::ZERO,
-                                tool_facts: collect_tool_facts(Vec::new()),
+                                tool_facts: collect_tool_facts(
+                                    &tool_name,
+                                    OutcomeStatus::Blocked,
+                                    Duration::ZERO,
+                                    Vec::new(),
+                                ),
                             },
                         ));
                         continue;
@@ -884,7 +914,12 @@ pub(crate) async fn run_tool_call_loop(
                         success: false,
                         error_reason: Some(duplicate),
                         duration: Duration::ZERO,
-                        tool_facts: collect_tool_facts(Vec::new()),
+                        tool_facts: collect_tool_facts(
+                            &tool_name,
+                            OutcomeStatus::Blocked,
+                            Duration::ZERO,
+                            Vec::new(),
+                        ),
                     },
                 ));
                 continue;

@@ -92,6 +92,27 @@ pub fn assess_learning_candidates(
                     reason,
                 }
             }
+            LearningCandidate::FailurePattern(failure) => {
+                let failed_tool_bonus = (failure.failed_tools.len().min(2) as f32) * 0.1;
+                let subject_bonus = (!failure.subjects.is_empty()) as u8 as f32 * 0.08;
+                let pattern_bonus = (!failure.tool_pattern.is_empty()) as u8 as f32 * 0.06;
+                let status_bonus = (!failure.outcome_statuses.is_empty()) as u8 as f32 * 0.06;
+                let confidence =
+                    (0.42 + failed_tool_bonus + subject_bonus + pattern_bonus + status_bonus)
+                        .min(0.86);
+                let accepted = !failure.failed_tools.is_empty() && confidence >= 0.66;
+                let reason = if accepted {
+                    "typed_failure_pattern"
+                } else {
+                    "weak_failure_signal"
+                };
+                LearningCandidateAssessment {
+                    candidate,
+                    confidence,
+                    accepted,
+                    reason,
+                }
+            }
         })
         .collect()
 }
@@ -125,10 +146,11 @@ fn tool_pattern_similarity(left: &[String], right: &[String]) -> f32 {
 mod tests {
     use super::*;
     use crate::application::services::learning_candidate_service::{
-        PrecedentLearningCandidate, RunRecipeLearningCandidate, UserProfileLearningCandidate,
+        FailureLearningCandidate, PrecedentLearningCandidate, RunRecipeLearningCandidate,
+        UserProfileLearningCandidate,
     };
     use crate::application::services::learning_evidence_service::LearningEvidenceFacet;
-    use crate::domain::tool_fact::{ProfileOperation, UserProfileField};
+    use crate::domain::tool_fact::{OutcomeStatus, ProfileOperation, UserProfileField};
 
     #[test]
     fn accepts_profile_candidates_immediately() {
@@ -268,5 +290,28 @@ mod tests {
         assert_eq!(assessments.len(), 1);
         assert!(assessments[0].accepted);
         assert_eq!(assessments[0].reason, "procedural_precedent");
+    }
+
+    #[test]
+    fn accepts_typed_failure_pattern_with_structured_context() {
+        let assessments = assess_learning_candidates(
+            &[LearningCandidate::FailurePattern(FailureLearningCandidate {
+                summary: "failed_tools=web_fetch | outcomes=runtime_error | subjects=status.example.com".into(),
+                failed_tools: vec!["web_fetch".into()],
+                outcome_statuses: vec![OutcomeStatus::RuntimeError],
+                tool_pattern: vec!["web_fetch".into()],
+                subjects: vec!["status.example.com".into()],
+            })],
+            &LearningEvidenceEnvelope {
+                facets: vec![LearningEvidenceFacet::Outcome, LearningEvidenceFacet::Resource],
+                failure_outcome_count: 1,
+                ..Default::default()
+            },
+            &[],
+        );
+
+        assert_eq!(assessments.len(), 1);
+        assert!(assessments[0].accepted);
+        assert_eq!(assessments[0].reason, "typed_failure_pattern");
     }
 }

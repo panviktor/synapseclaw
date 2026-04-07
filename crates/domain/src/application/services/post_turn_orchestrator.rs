@@ -11,6 +11,7 @@ use crate::application::services::learning_quality_service::{
     self, LearningCandidateAssessment,
 };
 use crate::application::services::recipe_evolution_service;
+use crate::application::services::precedent_similarity_service;
 use crate::application::services::learning_signals::{self, LearningSignal};
 use crate::application::services::memory_mutation as mutation;
 use crate::application::services::user_profile_service;
@@ -107,10 +108,18 @@ pub async fn execute_post_turn_learning(
         &learning_evidence,
         &existing_recipes,
     );
-    let mutation_candidates =
-        learning_candidate_service::build_mutation_candidates_from_assessments(
-            &learning_assessments,
-        );
+    let precedent_assessments = learning_assessments
+        .iter()
+        .filter(|assessment| matches!(assessment.candidate, LearningCandidate::Precedent(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let mutation_candidates = learning_candidate_service::build_mutation_candidates_from_assessments(
+        &learning_assessments
+            .iter()
+            .filter(|assessment| !matches!(assessment.candidate, LearningCandidate::Precedent(_)))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
 
     let mut report = PostTurnReport {
         signal: signal.clone(),
@@ -160,7 +169,35 @@ pub async fn execute_post_turn_learning(
         }
     }
 
-    // ── 1b. Cheap typed candidate mutation path ──
+    // ── 1b. Cheap precedent mutation path (category-aware semantic merge) ──
+    if !signal.is_explicit() && input.auto_save_enabled {
+        for assessment in &precedent_assessments {
+            let Some(candidate) =
+                learning_candidate_service::build_mutation_candidate_from_assessment(assessment)
+            else {
+                continue;
+            };
+            let decision = precedent_similarity_service::evaluate_precedent_candidate(
+                mem,
+                candidate,
+                &input.agent_id,
+                &precedent_similarity_service::PrecedentSimilarityThresholds::default(),
+            )
+            .await;
+            match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
+                Ok(event) => report.candidate_mutations.push(event),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "post_turn",
+                        error = %e,
+                        "Precedent mutation failed"
+                    );
+                }
+            }
+        }
+    }
+
+    // ── 1c. Cheap typed candidate mutation path ──
     if !signal.is_explicit() && input.auto_save_enabled && !mutation_candidates.is_empty() {
         let decisions = mutation::evaluate_candidates(
             mem,
@@ -183,7 +220,7 @@ pub async fn execute_post_turn_learning(
         }
     }
 
-    // ── 1c. Cheap procedural candidate path ──
+    // ── 1d. Cheap procedural candidate path ──
     if !signal.is_explicit() && input.auto_save_enabled {
         if let Some(store) = input.run_recipe_store.as_ref() {
             for assessment in &learning_assessments {
@@ -233,7 +270,7 @@ pub async fn execute_post_turn_learning(
         }
     }
 
-    // ── 1d. Cheap structured profile path ──
+    // ── 1e. Cheap structured profile path ──
     if !signal.is_explicit() && input.auto_save_enabled {
         if let (Some(store), Some(user_key)) = (
             input.user_profile_store.as_ref(),
@@ -283,13 +320,12 @@ pub async fn execute_post_turn_learning(
     }
 
     // ── 3. Skill reflection ──
-    let resp_lower = input.assistant_response.to_lowercase();
-    let has_errors = resp_lower.contains("error") || resp_lower.contains("failed");
-    let should_reflect = input.assistant_response.len() > REFLECT_MIN_RESPONSE_LEN
-        && user_chars >= REFLECT_MIN_USER_CHARS
-        && (!input.tools_used.is_empty()
-            || learning_evidence.has_actionable_evidence()
-            || has_errors);
+    let has_failures = learning_evidence.has_failure_outcomes();
+    let has_reflection_signal =
+        !input.tools_used.is_empty() || learning_evidence.has_actionable_evidence() || has_failures;
+    let should_reflect = user_chars >= REFLECT_MIN_USER_CHARS
+        && has_reflection_signal
+        && (input.assistant_response.len() > REFLECT_MIN_RESPONSE_LEN || has_failures);
 
     if should_reflect {
         if let Err(e) = mem
@@ -325,6 +361,7 @@ pub async fn execute_post_turn_learning(
             "consolidation_started": report.consolidation_started,
             "reflection_started": report.reflection_started,
             "typed_fact_count": report.learning_evidence.typed_fact_count,
+            "failure_outcome_count": report.learning_evidence.failure_outcome_count,
             "learning_facets": report.learning_evidence.facets,
             "learning_candidate_count": report.learning_candidates.len(),
             "learning_candidates": report.learning_candidates,
@@ -350,7 +387,8 @@ mod tests {
         Visibility,
     };
     use crate::domain::tool_fact::{
-        ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
+        OutcomeStatus, ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileFact,
+        UserProfileField,
     };
     use crate::ports::memory::{
         ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort,
@@ -699,5 +737,33 @@ mod tests {
         .await;
 
         assert!(!report.user_profile_updated);
+    }
+
+    #[tokio::test]
+    async fn typed_failure_outcomes_trigger_reflection_without_string_matching() {
+        let memory = StubMemory;
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message:
+                    "Please fetch the status page and summarize what it says for the team".into(),
+                assistant_response: "I could not complete the request in time, but I captured structured outcome context for follow-up handling without relying on literal error keywords in the reflection gate.".into(),
+                tools_used: vec!["web_fetch".into()],
+                tool_facts: vec![TypedToolFact::outcome(
+                    "web_fetch",
+                    OutcomeStatus::RuntimeError,
+                    Some(220),
+                )],
+                run_recipe_store: None,
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+            },
+        )
+        .await;
+
+        assert!(report.reflection_started);
     }
 }

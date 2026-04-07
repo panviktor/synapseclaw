@@ -9,6 +9,7 @@ use crate::domain::tool_fact::{ToolFactPayload, TypedToolFact};
 #[serde(rename_all = "snake_case")]
 pub enum LearningEvidenceFacet {
     Focus,
+    Outcome,
     Delivery,
     Resource,
     Schedule,
@@ -25,6 +26,8 @@ pub enum LearningEvidenceFacet {
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct LearningEvidenceEnvelope {
     pub typed_fact_count: usize,
+    pub outcome_count: usize,
+    pub failure_outcome_count: usize,
     pub projected_subject_count: usize,
     pub focus_entity_count: usize,
     pub profile_update_count: usize,
@@ -38,6 +41,10 @@ impl LearningEvidenceEnvelope {
             || self.focus_entity_count > 0
             || self.profile_update_count > 0
     }
+
+    pub fn has_failure_outcomes(&self) -> bool {
+        self.failure_outcome_count > 0
+    }
 }
 
 pub fn build_learning_evidence(tool_facts: &[TypedToolFact]) -> LearningEvidenceEnvelope {
@@ -48,6 +55,12 @@ pub fn build_learning_evidence(tool_facts: &[TypedToolFact]) -> LearningEvidence
 
     for fact in tool_facts {
         push_facet(&mut envelope.facets, facet_for_payload(&fact.payload));
+        if let ToolFactPayload::Outcome(outcome) = &fact.payload {
+            envelope.outcome_count += 1;
+            if outcome.status.is_failure() {
+                envelope.failure_outcome_count += 1;
+            }
+        }
         envelope.projected_subject_count += fact.projected_subjects().len();
         envelope.focus_entity_count += fact.projected_focus_entities().len();
         if matches!(fact.payload, ToolFactPayload::UserProfile(_)) {
@@ -61,6 +74,7 @@ pub fn build_learning_evidence(tool_facts: &[TypedToolFact]) -> LearningEvidence
 fn facet_for_payload(payload: &ToolFactPayload) -> LearningEvidenceFacet {
     match payload {
         ToolFactPayload::Focus(_) => LearningEvidenceFacet::Focus,
+        ToolFactPayload::Outcome(_) => LearningEvidenceFacet::Outcome,
         ToolFactPayload::Delivery(_) => LearningEvidenceFacet::Delivery,
         ToolFactPayload::Resource(_) => LearningEvidenceFacet::Resource,
         ToolFactPayload::Schedule(_) => LearningEvidenceFacet::Schedule,
@@ -87,8 +101,8 @@ mod tests {
     use crate::domain::conversation_target::ConversationDeliveryTarget;
     use crate::domain::dialogue_state::FocusEntity;
     use crate::domain::tool_fact::{
-        DeliveryFact, DeliveryTargetKind, FocusFact, ProfileOperation, ToolFactPayload,
-        TypedToolFact, UserProfileFact, UserProfileField,
+        DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation,
+        ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
     };
 
     #[test]
@@ -113,6 +127,7 @@ mod tests {
                     value: Some("Europe/Berlin".into()),
                 }),
             },
+            TypedToolFact::outcome("message_send", OutcomeStatus::ReportedFailure, Some(125)),
             TypedToolFact {
                 tool_id: "focus".into(),
                 payload: ToolFactPayload::Focus(FocusFact {
@@ -126,11 +141,14 @@ mod tests {
             },
         ]);
 
-        assert_eq!(evidence.typed_fact_count, 3);
+        assert_eq!(evidence.typed_fact_count, 4);
+        assert_eq!(evidence.outcome_count, 1);
+        assert_eq!(evidence.failure_outcome_count, 1);
         assert_eq!(evidence.profile_update_count, 1);
         assert!(evidence.focus_entity_count >= 1);
         assert!(evidence.projected_subject_count >= 2);
         assert!(evidence.facets.contains(&LearningEvidenceFacet::Delivery));
+        assert!(evidence.facets.contains(&LearningEvidenceFacet::Outcome));
         assert!(evidence
             .facets
             .contains(&LearningEvidenceFacet::UserProfile));

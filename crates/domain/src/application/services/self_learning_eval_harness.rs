@@ -11,9 +11,9 @@ use crate::application::services::user_profile_service;
 use crate::domain::run_recipe::RunRecipe;
 use crate::domain::dialogue_state::FocusEntity;
 use crate::domain::tool_fact::{
-    DeliveryFact, DeliveryTargetKind, FocusFact, ProfileOperation, ResourceFact, ResourceKind,
-    ResourceMetadata, ResourceOperation, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact,
-    UserProfileFact, UserProfileField,
+    DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation, ResourceFact,
+    ResourceKind, ResourceMetadata, ResourceOperation, SearchDomain, SearchFact, ToolFactPayload,
+    TypedToolFact, UserProfileFact, UserProfileField,
 };
 use crate::domain::user_profile::UserProfile;
 
@@ -36,8 +36,10 @@ pub struct SelfLearningEvalResult {
     pub user_profile_candidate_count: usize,
     pub precedent_candidate_count: usize,
     pub run_recipe_candidate_count: usize,
+    pub failure_pattern_candidate_count: usize,
     pub accepted_candidate_kinds: Vec<&'static str>,
     pub accepted_run_recipe_count: usize,
+    pub accepted_failure_pattern_count: usize,
     pub mutation_candidate_count: usize,
     pub profile_patch_is_noop: bool,
     pub profile_projection: Option<String>,
@@ -73,12 +75,23 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         user_profile_candidate_count: count_candidate_kind(&candidates, candidate_is_user_profile),
         precedent_candidate_count: count_candidate_kind(&candidates, candidate_is_precedent),
         run_recipe_candidate_count: count_candidate_kind(&candidates, candidate_is_run_recipe),
+        failure_pattern_candidate_count: count_candidate_kind(
+            &candidates,
+            candidate_is_failure_pattern,
+        ),
         accepted_candidate_kinds: accepted_candidate_kind_names(&assessments),
         accepted_run_recipe_count: assessments
             .iter()
             .filter(|assessment| {
                 assessment.accepted
                     && matches!(assessment.candidate, LearningCandidate::RunRecipe(_))
+            })
+            .count(),
+        accepted_failure_pattern_count: assessments
+            .iter()
+            .filter(|assessment| {
+                assessment.accepted
+                    && matches!(assessment.candidate, LearningCandidate::FailurePattern(_))
             })
             .count(),
         mutation_candidate_count: mutation_candidates.len(),
@@ -227,6 +240,26 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 },
             ],
         },
+        SelfLearningEvalScenario {
+            id: "failed_turn_forms_failure_pattern_only",
+            user_message: "Fetch the status page",
+            assistant_response: "I could not complete that.",
+            current_profile: None,
+            existing_recipes: Vec::new(),
+            tool_facts: vec![
+                TypedToolFact {
+                    tool_id: "web_fetch".into(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::WebResource,
+                        operation: ResourceOperation::Fetch,
+                        locator: "https://status.example.com".into(),
+                        host: Some("status.example.com".into()),
+                        metadata: ResourceMetadata::default(),
+                    }),
+                },
+                TypedToolFact::outcome("web_fetch", OutcomeStatus::RuntimeError, Some(220)),
+            ],
+        },
     ]
 }
 
@@ -237,6 +270,7 @@ fn candidate_kind_names(candidates: &[LearningCandidate]) -> Vec<&'static str> {
             LearningCandidate::UserProfile(_) => "user_profile",
             LearningCandidate::Precedent(_) => "precedent",
             LearningCandidate::RunRecipe(_) => "run_recipe",
+            LearningCandidate::FailurePattern(_) => "failure_pattern",
         };
         if !kinds.contains(&kind) {
             kinds.push(kind);
@@ -264,6 +298,10 @@ fn candidate_is_run_recipe(candidate: &LearningCandidate) -> bool {
     matches!(candidate, LearningCandidate::RunRecipe(_))
 }
 
+fn candidate_is_failure_pattern(candidate: &LearningCandidate) -> bool {
+    matches!(candidate, LearningCandidate::FailurePattern(_))
+}
+
 fn accepted_candidate_kind_names(
     assessments: &[learning_quality_service::LearningCandidateAssessment],
 ) -> Vec<&'static str> {
@@ -276,6 +314,7 @@ fn accepted_candidate_kind_names(
             LearningCandidate::UserProfile(_) => "user_profile",
             LearningCandidate::Precedent(_) => "precedent",
             LearningCandidate::RunRecipe(_) => "run_recipe",
+            LearningCandidate::FailurePattern(_) => "failure_pattern",
         };
         if !kinds.contains(&kind) {
             kinds.push(kind);
@@ -372,5 +411,23 @@ mod tests {
         assert_eq!(result.run_recipe_candidate_count, 1);
         assert_eq!(result.accepted_run_recipe_count, 0);
         assert!(!result.accepted_candidate_kinds.contains(&"run_recipe"));
+    }
+
+    #[test]
+    fn failed_turn_forms_failure_pattern_only() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "failed_turn_forms_failure_pattern_only")
+            .unwrap();
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.precedent_candidate_count, 0);
+        assert_eq!(result.run_recipe_candidate_count, 0);
+        assert_eq!(result.failure_pattern_candidate_count, 1);
+        assert!(result.candidate_kinds.contains(&"failure_pattern"));
+        assert!(result.accepted_candidate_kinds.contains(&"failure_pattern"));
+        assert!(result.assessment_reasons.contains(&"typed_failure_pattern"));
+        assert_eq!(result.accepted_failure_pattern_count, 1);
+        assert_eq!(result.mutation_candidate_count, 1);
     }
 }

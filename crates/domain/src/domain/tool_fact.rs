@@ -29,6 +29,7 @@ pub struct TypedToolFact {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ToolFactPayload {
     Focus(FocusFact),
+    Outcome(OutcomeFact),
     Delivery(DeliveryFact),
     Resource(ResourceFact),
     Schedule(ScheduleFact),
@@ -46,6 +47,21 @@ pub enum ToolFactPayload {
 pub struct FocusFact {
     pub entities: Vec<FocusEntity>,
     pub subjects: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutcomeFact {
+    pub status: OutcomeStatus,
+    pub duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OutcomeStatus {
+    Succeeded,
+    ReportedFailure,
+    RuntimeError,
+    Blocked,
+    UnknownTool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -359,9 +375,24 @@ impl TypedToolFact {
         }
     }
 
+    pub fn outcome(
+        tool_id: impl Into<String>,
+        status: OutcomeStatus,
+        duration_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            tool_id: tool_id.into(),
+            payload: ToolFactPayload::Outcome(OutcomeFact {
+                status,
+                duration_ms,
+            }),
+        }
+    }
+
     pub fn projected_focus_entities(&self) -> Vec<FocusEntity> {
         match &self.payload {
             ToolFactPayload::Focus(focus) => focus.entities.clone(),
+            ToolFactPayload::Outcome(_) => Vec::new(),
             ToolFactPayload::Delivery(delivery) => vec![project_delivery_focus(delivery)],
             ToolFactPayload::Resource(resource) => vec![project_resource_focus(resource)],
             ToolFactPayload::Schedule(schedule) => project_schedule_focus(schedule),
@@ -404,6 +435,7 @@ impl TypedToolFact {
                     }
                 }
             }
+            ToolFactPayload::Outcome(_) => {}
             ToolFactPayload::Delivery(delivery) => match &delivery.target {
                 DeliveryTargetKind::CurrentConversation
                 | DeliveryTargetKind::Explicit(ConversationDeliveryTarget::CurrentConversation)
@@ -509,6 +541,12 @@ impl TypedToolFact {
         }
 
         subjects
+    }
+}
+
+impl OutcomeStatus {
+    pub fn is_failure(&self) -> bool {
+        !matches!(self, Self::Succeeded)
     }
 }
 

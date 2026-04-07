@@ -5,7 +5,7 @@
 
 use crate::domain::conversation::{ConversationEvent, ConversationSession, EventType};
 use crate::domain::dialogue_state::DialogueState;
-use crate::domain::memory::CoreMemoryBlock;
+use crate::domain::memory::{CoreMemoryBlock, MemoryEntry};
 use crate::domain::run_recipe::RunRecipe;
 
 pub fn format_core_blocks_projection(blocks: &[CoreMemoryBlock]) -> Option<String> {
@@ -143,6 +143,26 @@ pub fn format_run_recipe_projection(recipe: &RunRecipe) -> String {
     if !recipe.summary.trim().is_empty() {
         lines.push("- summary:".to_string());
         lines.push(indent_multiline(recipe.summary.trim(), 2));
+    }
+
+    format!("{}\n", lines.join("\n"))
+}
+
+pub fn format_memory_entry_projection(section: &str, entry: &MemoryEntry) -> String {
+    let mut lines = vec![
+        format!("[{section}]"),
+        format!("- key: {}", entry.key),
+        format!("- category: {}", entry.category),
+    ];
+    if let Some(score) = entry.score {
+        lines.push(format!("- score: {:.3}", score));
+    }
+    if let Some(session_id) = &entry.session_id {
+        lines.push(format!("- session_id: {session_id}"));
+    }
+    if !entry.content.trim().is_empty() {
+        lines.push("- content:".to_string());
+        lines.push(indent_multiline(entry.content.trim(), 2));
     }
 
     format!("{}\n", lines.join("\n"))
@@ -297,5 +317,26 @@ mod tests {
         assert!(projection.contains("[run-recipe]"));
         assert!(projection.contains("tool_pattern: session_search -> shell"));
         assert!(projection.contains("Check staging, then deploy."));
+    }
+
+    #[test]
+    fn formats_memory_entry_projection() {
+        let projection = format_memory_entry_projection(
+            "precedent",
+            &MemoryEntry {
+                id: "1".into(),
+                key: "custom_abc".into(),
+                content: "tools=web_search -> message_send | subjects=status.example.com".into(),
+                category: crate::domain::memory::MemoryCategory::Custom("precedent".into()),
+                timestamp: Utc::now().to_rfc3339(),
+                session_id: None,
+                score: Some(0.87),
+            },
+        );
+
+        assert!(projection.contains("[precedent]"));
+        assert!(projection.contains("category: precedent"));
+        assert!(projection.contains("score: 0.870"));
+        assert!(projection.contains("tools=web_search -> message_send"));
     }
 }

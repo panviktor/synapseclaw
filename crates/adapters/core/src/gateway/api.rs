@@ -1387,6 +1387,56 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
+    let recent_precedents = state
+        .mem
+        .list(
+            Some(&synapse_domain::domain::memory::MemoryCategory::Custom(
+                "precedent".into(),
+            )),
+            None,
+            limit,
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let key = entry.key.clone();
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_memory_entry_projection(
+                    "precedent",
+                    &entry,
+                );
+            serde_json::json!({
+                "key": key,
+                "projection": projection,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let recent_reflections = state
+        .mem
+        .list(
+            Some(&synapse_domain::domain::memory::MemoryCategory::Reflection),
+            None,
+            limit,
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let key = entry.key.clone();
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_memory_entry_projection(
+                    "reflection",
+                    &entry,
+                );
+            serde_json::json!({
+                "key": key,
+                "projection": projection,
+            })
+        })
+        .collect::<Vec<_>>();
+
     Json(serde_json::json!({
         "agent_id": state.agent_id,
         "current_user_profile": current_user_profile,
@@ -1394,6 +1444,8 @@ pub async fn handle_api_memory_projections(
         "working_state": working_state,
         "recent_sessions": recent_sessions,
         "run_recipes": run_recipes,
+        "recent_precedents": recent_precedents,
+        "recent_reflections": recent_reflections,
     }))
     .into_response()
 }
@@ -1478,6 +1530,8 @@ pub async fn handle_api_memory_learning_evals(
     let mut profile_updates = 0usize;
     let mut recipe_candidates = 0usize;
     let mut accepted_recipe_candidates = 0usize;
+    let mut failure_pattern_candidates = 0usize;
+    let mut accepted_failure_pattern_candidates = 0usize;
 
     for scenario in scenarios {
         let result =
@@ -1502,6 +1556,8 @@ pub async fn handle_api_memory_learning_evals(
         }
         recipe_candidates += result.run_recipe_candidate_count;
         accepted_recipe_candidates += result.accepted_run_recipe_count;
+        failure_pattern_candidates += result.failure_pattern_candidate_count;
+        accepted_failure_pattern_candidates += result.accepted_failure_pattern_count;
 
         results.push(serde_json::json!({
             "id": result.scenario_id,
@@ -1513,6 +1569,8 @@ pub async fn handle_api_memory_learning_evals(
             "precedent_candidate_count": result.precedent_candidate_count,
             "run_recipe_candidate_count": result.run_recipe_candidate_count,
             "accepted_run_recipe_count": result.accepted_run_recipe_count,
+            "failure_pattern_candidate_count": result.failure_pattern_candidate_count,
+            "accepted_failure_pattern_count": result.accepted_failure_pattern_count,
             "mutation_candidate_count": result.mutation_candidate_count,
             "profile_patch_is_noop": result.profile_patch_is_noop,
             "profile_projection": result.profile_projection,
@@ -1529,6 +1587,8 @@ pub async fn handle_api_memory_learning_evals(
             "profile_updates": profile_updates,
             "recipe_candidates": recipe_candidates,
             "accepted_recipe_candidates": accepted_recipe_candidates,
+            "failure_pattern_candidates": failure_pattern_candidates,
+            "accepted_failure_pattern_candidates": accepted_failure_pattern_candidates,
         },
         "results": results,
     }))

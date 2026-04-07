@@ -51,16 +51,28 @@ pub async fn evaluate_candidate(
         };
     }
 
-    // Find the closest match
-    let best = existing
+    // Find the closest match, preferring the same category when possible.
+    let best_same_category = existing
         .iter()
         .filter(|e| e.score.is_some())
+        .filter(|e| same_category(&candidate.category, &e.category))
         .max_by(|a, b| {
             a.score
                 .unwrap_or(0.0)
                 .partial_cmp(&b.score.unwrap_or(0.0))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    let best = best_same_category.or_else(|| {
+        existing
+            .iter()
+            .filter(|e| e.score.is_some())
+            .max_by(|a, b| {
+                a.score
+                    .unwrap_or(0.0)
+                    .partial_cmp(&b.score.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
 
     let (best_entry, best_score) = match best {
         Some(e) => (e, e.score.unwrap_or(0.0)),
@@ -242,7 +254,10 @@ pub async fn apply_decision_with_event(
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn same_category(a: &MemoryCategory, b: &MemoryCategory) -> bool {
-    std::mem::discriminant(a) == std::mem::discriminant(b)
+    match (a, b) {
+        (MemoryCategory::Custom(left), MemoryCategory::Custom(right)) => left == right,
+        _ => std::mem::discriminant(a) == std::mem::discriminant(b),
+    }
 }
 
 /// Simple heuristic: if both texts share subject but differ in predicate/value,
@@ -308,6 +323,14 @@ mod tests {
         assert!(!same_category(
             &MemoryCategory::Core,
             &MemoryCategory::Daily
+        ));
+        assert!(same_category(
+            &MemoryCategory::Custom("precedent".into()),
+            &MemoryCategory::Custom("precedent".into())
+        ));
+        assert!(!same_category(
+            &MemoryCategory::Custom("precedent".into()),
+            &MemoryCategory::Custom("project".into())
         ));
     }
 
