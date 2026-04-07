@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Activity, BookMarked, BrainCircuit, Gauge, Layers3, Sparkles, Target, X } from 'lucide-react';
 import type {
   ChatSessionInfo,
@@ -44,6 +45,14 @@ function latestLearningTone(report: PostTurnReportEvent | null): string {
   return 'text-[var(--text-primary)]';
 }
 
+function TinyBadge({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-full border border-[var(--border-default)] bg-[var(--glow-secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+      {children}
+    </span>
+  );
+}
+
 export default function MemoryPulse({
   stats,
   budget,
@@ -69,23 +78,29 @@ export default function MemoryPulse({
 
   return (
     <aside className="flex h-full flex-col overflow-hidden bg-[var(--bg-secondary)]">
-      <div className="border-b border-[var(--border-default)] px-4 py-4">
-        <div className="flex items-start justify-between gap-3">
+      <div className="relative overflow-hidden border-b border-[var(--border-default)] bg-[radial-gradient(circle_at_top_left,rgba(217,90,30,0.18),transparent_42%),linear-gradient(180deg,rgba(255,252,248,0.96),rgba(255,247,240,0.92))] px-4 py-4">
+        <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/70 to-transparent" />
+        <div className="relative flex items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
-              Memory Pulse
+              Atlas Memoriae
             </p>
             <h2 className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
               {agentLabel}
             </h2>
             <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Live memory surface, learning state, and context envelope.
+              Live cortical pulse for learning, working state, and prompt budget.
             </p>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              <TinyBadge>Praefrontalis</TinyBadge>
+              <TinyBadge>Hippocampus</TinyBadge>
+              <TinyBadge>Amygdala</TinyBadge>
+            </div>
           </div>
           {onClose && (
             <button
               onClick={onClose}
-              className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-card)] p-2 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-card)]/80 p-2 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
               aria-label="Close memory pulse"
             >
               <X className="h-4 w-4" />
@@ -99,7 +114,12 @@ export default function MemoryPulse({
           <div className="border-b border-[var(--border-default)] px-4 py-3">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">Latest Learning</h3>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Amygdala
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Learning Pulse</h3>
+              </div>
             </div>
           </div>
           <div className="space-y-3 px-4 py-4">
@@ -144,7 +164,12 @@ export default function MemoryPulse({
           <div className="border-b border-[var(--border-default)] px-4 py-3">
             <div className="flex items-center gap-2">
               <BrainCircuit className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">Memory Surface</h3>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Hippocampus
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Memory Surface</h3>
+              </div>
             </div>
           </div>
           <div className="space-y-4 px-4 py-4">
@@ -230,7 +255,12 @@ export default function MemoryPulse({
           <div className="border-b border-[var(--border-default)] px-4 py-3">
             <div className="flex items-center gap-2">
               <Gauge className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">Context Budget</h3>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Praefrontalis
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Context Budget</h3>
+              </div>
             </div>
           </div>
           <div className="space-y-4 px-4 py-4">
@@ -296,7 +326,12 @@ export default function MemoryPulse({
           <div className="border-b border-[var(--border-default)] px-4 py-3">
             <div className="flex items-center gap-2">
               <Target className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">Session Lens</h3>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Corpus Sessionis
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Session Lens</h3>
+              </div>
             </div>
           </div>
           <div className="space-y-3 px-4 py-4">
