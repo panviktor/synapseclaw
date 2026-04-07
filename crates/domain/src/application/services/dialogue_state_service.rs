@@ -79,7 +79,7 @@ pub fn update_state_from_turn(
         return;
     }
 
-    clear_recent_turn_context(state);
+    clear_turn_context(state);
 
     let focus_entities = collect_focus_entities(tool_facts);
     if !focus_entities.is_empty() {
@@ -143,7 +143,10 @@ fn collect_focus_entities(tool_facts: &[TypedToolFact]) -> Vec<FocusEntity> {
     entities
 }
 
-fn clear_recent_turn_context(state: &mut DialogueState) {
+fn clear_turn_context(state: &mut DialogueState) {
+    state.focus_entities.clear();
+    state.comparison_set.clear();
+    state.reference_anchors.clear();
     state.last_tool_subjects.clear();
     state.recent_delivery_target = None;
     state.recent_schedule_job = None;
@@ -624,6 +627,67 @@ mod tests {
         assert_eq!(workspace.action, WorkspaceAction::Switch);
         assert_eq!(workspace.name.as_deref(), Some("research-lab"));
         assert_eq!(workspace.item_count, Some(12));
+    }
+
+    #[test]
+    fn clears_stale_focus_when_new_turn_has_non_focus_typed_context() {
+        let mut state = DialogueState::default();
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[TypedToolFact::focus(
+                "weather_lookup",
+                vec![
+                    FocusEntity {
+                        kind: "city".into(),
+                        name: "Berlin".into(),
+                        metadata: None,
+                    },
+                    FocusEntity {
+                        kind: "city".into(),
+                        name: "Tbilisi".into(),
+                        metadata: None,
+                    },
+                ],
+                vec!["Berlin".into(), "Tbilisi".into()],
+            )],
+            "",
+        );
+        assert_eq!(state.focus_entities.len(), 2);
+        assert!(!state.reference_anchors.is_empty());
+
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[TypedToolFact {
+                tool_id: "session_search".into(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Session,
+                    query: Some("what did we discuss".into()),
+                    result_count: Some(3),
+                    primary_locator: Some("web:session-123".into()),
+                }),
+            }],
+            "",
+        );
+
+        assert!(!state.focus_entities.iter().any(|entity| entity.name == "Berlin"));
+        assert!(!state.focus_entities.iter().any(|entity| entity.name == "Tbilisi"));
+        assert!(state
+            .focus_entities
+            .iter()
+            .any(|entity| entity.name == "web:session-123"));
+        assert!(state.comparison_set.is_empty());
+        assert!(!state.reference_anchors.iter().any(|anchor| anchor.value == "Berlin"));
+        assert!(!state
+            .reference_anchors
+            .iter()
+            .any(|anchor| anchor.value == "Tbilisi"));
+        assert!(state
+            .reference_anchors
+            .iter()
+            .any(|anchor| anchor.value == "web:session-123"));
+        assert!(state.recent_search.is_some());
     }
 
     #[test]
