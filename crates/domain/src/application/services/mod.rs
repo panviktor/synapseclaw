@@ -36,6 +36,7 @@ pub mod retention;
 pub mod retrieval_service;
 pub mod self_learning_eval_harness;
 pub mod skill_promotion_service;
+pub mod skill_review_service;
 pub mod system_event_projection_service;
 pub mod tool_filtering;
 pub mod tool_middleware_service;
