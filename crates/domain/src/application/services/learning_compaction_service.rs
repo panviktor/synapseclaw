@@ -4,6 +4,8 @@
 //! obvious near-duplicates. The worker keeps the newer representative and
 //! removes older duplicates.
 
+use crate::application::services::failure_similarity_service;
+use crate::application::services::precedent_similarity_service;
 use crate::domain::memory::{MemoryCategory, MemoryEntry, MemoryError, MemoryQuery};
 use crate::ports::memory::UnifiedMemoryPort;
 use std::collections::{HashMap, HashSet};
@@ -51,8 +53,12 @@ pub async fn compact_near_duplicates(
         );
     }
 
-    let duplicate_keys =
-        plan_duplicate_removals(&entries, &similarity_lookup, thresholds.duplicate_threshold);
+    let duplicate_keys = plan_duplicate_removals(
+        &entries,
+        &similarity_lookup,
+        &category,
+        thresholds.duplicate_threshold,
+    );
     let mut removed = 0;
     for key in duplicate_keys {
         if mem.forget(&key, &agent_id.to_string()).await? {
@@ -99,6 +105,7 @@ async fn fetch_category_shortlist(
 pub fn plan_duplicate_removals(
     entries: &[MemoryEntry],
     similarity_lookup: &HashMap<String, Vec<MemoryEntry>>,
+    category: &MemoryCategory,
     duplicate_threshold: f64,
 ) -> Vec<String> {
     let mut ordered = entries.to_vec();
@@ -128,6 +135,9 @@ pub fn plan_duplicate_removals(
             if similar.score.unwrap_or(0.0) < duplicate_threshold {
                 continue;
             }
+            if distinct_procedural_shape(category, &entry.content, &similar.content) {
+                continue;
+            }
             if kept.contains(&similar.key) {
                 removed.insert(entry.key.clone());
                 break;
@@ -143,6 +153,18 @@ pub fn plan_duplicate_removals(
     let mut keys = removed.into_iter().collect::<Vec<_>>();
     keys.sort();
     keys
+}
+
+fn distinct_procedural_shape(category: &MemoryCategory, left: &str, right: &str) -> bool {
+    match category {
+        MemoryCategory::Custom(name) if name == "precedent" => {
+            precedent_similarity_service::precedent_contents_have_distinct_shape(left, right)
+        }
+        MemoryCategory::Custom(name) if name == "failure_pattern" => {
+            failure_similarity_service::failure_contents_have_distinct_shape(left, right)
+        }
+        _ => false,
+    }
 }
 
 fn parse_timestamp(value: &str) -> chrono::DateTime<chrono::Utc> {
@@ -196,7 +218,12 @@ mod tests {
             ),
         ]);
 
-        let removed = plan_duplicate_removals(&entries, &similarity_lookup, 0.95);
+        let removed = plan_duplicate_removals(
+            &entries,
+            &similarity_lookup,
+            &MemoryCategory::Custom("precedent".into()),
+            0.95,
+        );
         assert_eq!(removed, vec!["older".to_string()]);
     }
 
@@ -219,7 +246,167 @@ mod tests {
             ("third".into(), vec![similar("third", 1.0)]),
         ]);
 
-        let removed = plan_duplicate_removals(&entries, &similarity_lookup, 0.95);
+        let removed = plan_duplicate_removals(
+            &entries,
+            &similarity_lookup,
+            &MemoryCategory::Custom("precedent".into()),
+            0.95,
+        );
         assert_eq!(removed, vec!["second".to_string()]);
+    }
+
+    #[test]
+    fn keeps_high_similarity_precedents_with_distinct_tool_shape() {
+        let entries = vec![
+            MemoryEntry {
+                id: "newer".into(),
+                key: "newer".into(),
+                content:
+                    "tools=web_search -> message_send | subjects=status.example.com | facets=send"
+                        .into(),
+                category: MemoryCategory::Custom("precedent".into()),
+                timestamp: "2026-03-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            MemoryEntry {
+                id: "older".into(),
+                key: "older".into(),
+                content: "tools=shell -> message_send | subjects=status.example.com | facets=send"
+                    .into(),
+                category: MemoryCategory::Custom("precedent".into()),
+                timestamp: "2026-02-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+        ];
+        let similarity_lookup = HashMap::from([
+            (
+                "newer".into(),
+                vec![
+                    similar("newer", 1.0),
+                    MemoryEntry {
+                        id: "older".into(),
+                        key: "older".into(),
+                        content: "tools=shell -> message_send | subjects=status.example.com | facets=send".into(),
+                        category: MemoryCategory::Custom("precedent".into()),
+                        timestamp: "2026-02-01T00:00:00Z".into(),
+                        session_id: None,
+                        score: Some(0.98),
+                    },
+                ],
+            ),
+            (
+                "older".into(),
+                vec![
+                    MemoryEntry {
+                        id: "older".into(),
+                        key: "older".into(),
+                        content: "tools=shell -> message_send | subjects=status.example.com | facets=send".into(),
+                        category: MemoryCategory::Custom("precedent".into()),
+                        timestamp: "2026-02-01T00:00:00Z".into(),
+                        session_id: None,
+                        score: Some(1.0),
+                    },
+                    MemoryEntry {
+                        id: "newer".into(),
+                        key: "newer".into(),
+                        content: "tools=web_search -> message_send | subjects=status.example.com | facets=send".into(),
+                        category: MemoryCategory::Custom("precedent".into()),
+                        timestamp: "2026-03-01T00:00:00Z".into(),
+                        session_id: None,
+                        score: Some(0.98),
+                    },
+                ],
+            ),
+        ]);
+
+        let removed = plan_duplicate_removals(
+            &entries,
+            &similarity_lookup,
+            &MemoryCategory::Custom("precedent".into()),
+            0.95,
+        );
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn keeps_high_similarity_failure_patterns_with_distinct_failed_tools() {
+        let entries = vec![
+            MemoryEntry {
+                id: "newer".into(),
+                key: "newer".into(),
+                content: "failed_tools=web_fetch -> message_send | outcomes=runtime_error | subjects=status.example.com".into(),
+                category: MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-03-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            MemoryEntry {
+                id: "older".into(),
+                key: "older".into(),
+                content: "failed_tools=shell -> message_send | outcomes=runtime_error | subjects=status.example.com".into(),
+                category: MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-02-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+        ];
+        let similarity_lookup = HashMap::from([
+            (
+                "newer".into(),
+                vec![
+                    MemoryEntry {
+                        id: "newer".into(),
+                        key: "newer".into(),
+                        content: "failed_tools=web_fetch -> message_send | outcomes=runtime_error | subjects=status.example.com".into(),
+                        category: MemoryCategory::Custom("failure_pattern".into()),
+                        timestamp: "2026-03-01T00:00:00Z".into(),
+                        session_id: None,
+                        score: Some(1.0),
+                    },
+                    MemoryEntry {
+                        id: "older".into(),
+                        key: "older".into(),
+                        content: "failed_tools=shell -> message_send | outcomes=runtime_error | subjects=status.example.com".into(),
+                        category: MemoryCategory::Custom("failure_pattern".into()),
+                        timestamp: "2026-02-01T00:00:00Z".into(),
+                        session_id: None,
+                        score: Some(0.98),
+                    },
+                ],
+            ),
+            (
+                "older".into(),
+                vec![
+                    MemoryEntry {
+                        id: "older".into(),
+                        key: "older".into(),
+                        content: "failed_tools=shell -> message_send | outcomes=runtime_error | subjects=status.example.com".into(),
+                        category: MemoryCategory::Custom("failure_pattern".into()),
+                        timestamp: "2026-02-01T00:00:00Z".into(),
+                        session_id: None,
+                        score: Some(1.0),
+                    },
+                    MemoryEntry {
+                        id: "newer".into(),
+                        key: "newer".into(),
+                        content: "failed_tools=web_fetch -> message_send | outcomes=runtime_error | subjects=status.example.com".into(),
+                        category: MemoryCategory::Custom("failure_pattern".into()),
+                        timestamp: "2026-03-01T00:00:00Z".into(),
+                        session_id: None,
+                        score: Some(0.98),
+                    },
+                ],
+            ),
+        ]);
+
+        let removed = plan_duplicate_removals(
+            &entries,
+            &similarity_lookup,
+            &MemoryCategory::Custom("failure_pattern".into()),
+            0.95,
+        );
+        assert!(removed.is_empty());
     }
 }

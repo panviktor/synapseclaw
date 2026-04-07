@@ -151,6 +151,13 @@ pub fn merge_precedent_text(existing_content: &str, candidate_text: &str) -> Str
     format_precedent_summary(&merged)
 }
 
+pub fn precedent_contents_have_distinct_shape(left: &str, right: &str) -> bool {
+    is_distinct_precedent_shape(
+        &parse_precedent_summary(left),
+        &parse_precedent_summary(right),
+    )
+}
+
 fn is_precedent_category(category: &MemoryCategory) -> bool {
     matches!(category, MemoryCategory::Custom(name) if name == "precedent")
 }
