@@ -32,6 +32,8 @@ pub struct TurnMemoryContext {
     pub core_blocks: Vec<CoreMemoryBlock>,
     /// Episodic recall entries matching the user query.
     pub recalled_entries: Vec<MemoryEntry>,
+    /// Small neighborhood around top episodic hits for better local continuity.
+    pub nearby_entries: Vec<MemoryEntry>,
     /// Relevant learned skills (procedural memory).
     pub skills: Vec<Skill>,
     /// Relevant entities (semantic memory / knowledge graph).
@@ -52,6 +54,7 @@ pub struct TurnMemoryContext {
 #[derive(Debug, Clone)]
 pub struct PromptBudget {
     pub recall_max_entries: usize,
+    pub nearby_max_entries: usize,
     pub recall_entry_max_chars: usize,
     pub recall_total_max_chars: usize,
     pub recall_min_relevance: f64,
@@ -66,6 +69,7 @@ impl Default for PromptBudget {
     fn default() -> Self {
         Self {
             recall_max_entries: 5,
+            nearby_max_entries: 2,
             recall_entry_max_chars: 800,
             recall_total_max_chars: 4_000,
             recall_min_relevance: 0.4,
@@ -156,11 +160,13 @@ pub async fn assemble_turn_context(
                     (*n).min(execution_budget.retrieval_budget.max_memory_candidates)
                 });
             load_recall(mem, &query_text, session_id, budget, recall_limit, &mut ctx).await;
+            load_nearby_recall(mem, agent_id, budget, &mut ctx).await;
             apply_resolution_plan(&mut ctx, interpretation);
             tracing::debug!(
                 target: "memory_assembly",
                 core_blocks = ctx.core_blocks.len(),
                 recalled = ctx.recalled_entries.len(),
+                nearby = ctx.nearby_entries.len(),
                 policy = policy_name,
                 "Turn context assembled"
             );
@@ -206,6 +212,7 @@ pub async fn assemble_turn_context(
         ctx.skills = results.skills;
         ctx.entities = results.entities;
     }
+    load_nearby_recall(mem, agent_id, budget, &mut ctx).await;
 
     let allow_historical_context = ctx
         .execution_budget
@@ -300,6 +307,7 @@ pub async fn assemble_turn_context(
         target: "memory_assembly",
         core_blocks = ctx.core_blocks.len(),
         recalled = ctx.recalled_entries.len(),
+        nearby = ctx.nearby_entries.len(),
         skills = ctx.skills.len(),
         entities = ctx.entities.len(),
         sessions = ctx.session_matches.len(),
@@ -371,6 +379,41 @@ async fn load_recall(
         count += 1;
         ctx.recalled_entries.push(entry);
     }
+}
+
+async fn load_nearby_recall(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    budget: &PromptBudget,
+    ctx: &mut TurnMemoryContext,
+) {
+    if ctx.recalled_entries.is_empty() || budget.nearby_max_entries == 0 {
+        return;
+    }
+
+    let seeds = ctx
+        .recalled_entries
+        .iter()
+        .take(2)
+        .cloned()
+        .collect::<Vec<_>>();
+    let nearby = match retrieval_service::search_nearby_memory(
+        mem,
+        agent_id,
+        &seeds,
+        &retrieval_service::NearbyMemorySearchOptions {
+            limit: budget.nearby_max_entries,
+            per_seed_limit: budget.nearby_max_entries.saturating_add(2).max(2),
+            min_score: budget.recall_min_relevance.max(0.55),
+        },
+    )
+    .await
+    {
+        Ok(nearby) => nearby,
+        Err(_) => return,
+    };
+
+    ctx.nearby_entries = nearby.into_iter().map(|match_| match_.entry).collect();
 }
 
 // ── Formatting ───────────────────────────────────────────────────
@@ -726,7 +769,7 @@ fn take_section_lines(section: &str, remaining_lines: &mut usize) -> Option<Stri
 fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Option<String> {
     let mut section = String::new();
 
-    if !ctx.recalled_entries.is_empty() {
+    if !ctx.recalled_entries.is_empty() || !ctx.nearby_entries.is_empty() {
         let header = "[Memory context]\n";
         let mut recall_section = String::from(header);
         let mut added = false;
@@ -743,6 +786,25 @@ fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Opti
             };
             recall_section.push_str(&format!("- {}: {content}\n", entry.key));
             added = true;
+        }
+        if !ctx.nearby_entries.is_empty() {
+            if added {
+                recall_section.push_str("[Nearby memory]\n");
+            }
+            for entry in &ctx.nearby_entries {
+                let content = if entry.content.chars().count() > budget.recall_entry_max_chars {
+                    let truncated: String = entry
+                        .content
+                        .chars()
+                        .take(budget.recall_entry_max_chars)
+                        .collect();
+                    format!("{truncated}…")
+                } else {
+                    entry.content.clone()
+                };
+                recall_section.push_str(&format!("- {}: {content}\n", entry.key));
+                added = true;
+            }
         }
         if added {
             recall_section.push('\n');
@@ -863,6 +925,7 @@ mod tests {
     fn default_budget_values() {
         let b = PromptBudget::default();
         assert_eq!(b.recall_max_entries, 5);
+        assert_eq!(b.nearby_max_entries, 2);
         assert_eq!(b.recall_entry_max_chars, 800);
         assert_eq!(b.recall_total_max_chars, 4_000);
         assert!((b.recall_min_relevance - 0.4).abs() < f64::EPSILON);
@@ -1283,6 +1346,20 @@ mod tests {
         assert!(fmt.enrichment_prefix.contains("…"));
         // Truncated to ~50 chars + key + formatting
         assert!(fmt.enrichment_prefix.len() < 200);
+    }
+
+    #[test]
+    fn format_nearby_memory_entries_with_subheader() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![make_entry("fact1", "Primary fact", 0.9)],
+            nearby_entries: vec![make_entry("fact2", "Nearby fact", 0.7)],
+            ..Default::default()
+        };
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.enrichment_prefix.contains("[Memory context]"));
+        assert!(fmt.enrichment_prefix.contains("- fact1: Primary fact"));
+        assert!(fmt.enrichment_prefix.contains("[Nearby memory]"));
+        assert!(fmt.enrichment_prefix.contains("- fact2: Nearby fact"));
     }
 
     // ── format_turn_context: skills independent of recall ──

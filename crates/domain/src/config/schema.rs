@@ -3448,6 +3448,8 @@ impl PromptBudgetConfig {
     pub fn to_prompt_budget(&self) -> crate::application::services::turn_context::PromptBudget {
         crate::application::services::turn_context::PromptBudget {
             recall_max_entries: self.recall_max_entries,
+            nearby_max_entries: crate::application::services::turn_context::PromptBudget::default()
+                .nearby_max_entries,
             recall_entry_max_chars: self.recall_entry_max_chars,
             recall_total_max_chars: self.recall_total_max_chars,
             recall_min_relevance: 0.0, // set from MemoryConfig.min_relevance_score by caller

@@ -6,7 +6,7 @@
 
 use crate::domain::conversation::{ConversationEvent, ConversationKind, EventType};
 use crate::domain::memory::{
-    Entity, MemoryEntry, MemoryError, MemoryQuery, Skill, SkillOrigin, SkillStatus,
+    Entity, MemoryCategory, MemoryEntry, MemoryError, MemoryQuery, Skill, SkillOrigin, SkillStatus,
 };
 use crate::domain::run_recipe::RunRecipe;
 use crate::ports::conversation_store::ConversationStorePort;
@@ -28,6 +28,23 @@ pub struct SessionSearchMatch {
 #[derive(Debug, Clone)]
 pub struct MemorySearchMatch {
     pub entry: MemoryEntry,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NearbyMemorySearchOptions {
+    pub limit: usize,
+    pub per_seed_limit: usize,
+    pub min_score: f64,
+}
+
+impl Default for NearbyMemorySearchOptions {
+    fn default() -> Self {
+        Self {
+            limit: 2,
+            per_seed_limit: 4,
+            min_score: 0.55,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,6 +384,80 @@ pub async fn search_memory(
     Ok(entries
         .into_iter()
         .map(|entry| MemorySearchMatch { entry })
+        .collect())
+}
+
+pub async fn search_nearby_memory(
+    memory: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    seeds: &[MemoryEntry],
+    options: &NearbyMemorySearchOptions,
+) -> Result<Vec<MemorySearchMatch>, MemoryError> {
+    if seeds.is_empty() || options.limit == 0 || options.per_seed_limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut grouped_seeds = Vec::<(MemoryCategory, Vec<MemoryEntry>)>::new();
+    for seed in seeds {
+        if let Some((_, grouped)) = grouped_seeds
+            .iter_mut()
+            .find(|(category, _)| *category == seed.category)
+        {
+            grouped.push(seed.clone());
+        } else {
+            grouped_seeds.push((seed.category.clone(), vec![seed.clone()]));
+        }
+    }
+
+    let mut seen_keys = seeds
+        .iter()
+        .map(|entry| entry.key.clone())
+        .collect::<HashSet<_>>();
+    let mut ranked = Vec::<(f64, MemoryEntry)>::new();
+
+    for (category, grouped) in grouped_seeds {
+        let lookup = memory
+            .similar_episodes_for_entries(
+                &grouped,
+                agent_id,
+                &category,
+                options.per_seed_limit,
+                false,
+            )
+            .await?;
+        for seed in grouped {
+            for candidate in lookup.get(&seed.key).into_iter().flatten() {
+                if candidate.score < options.min_score as f32 {
+                    continue;
+                }
+                if is_autosave_key(&candidate.entry.key)
+                    || crate::domain::util::should_skip_autosave_content(&candidate.entry.content)
+                    || candidate.entry.content.contains("<tool_result")
+                {
+                    continue;
+                }
+                if !seen_keys.insert(candidate.entry.key.clone()) {
+                    continue;
+                }
+                let mut entry = candidate.entry.clone();
+                entry.score = Some(candidate.score as f64);
+                ranked.push((candidate.score as f64, entry));
+            }
+        }
+    }
+
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.1.key.cmp(&right.1.key))
+    });
+    ranked.truncate(options.limit);
+
+    Ok(ranked
+        .into_iter()
+        .map(|(_, entry)| MemorySearchMatch { entry })
         .collect())
 }
 
@@ -1032,6 +1123,7 @@ mod tests {
     #[derive(Default)]
     struct StubMemory {
         hybrid: HybridSearchResult,
+        similar_lookup: std::collections::HashMap<String, Vec<SearchResult>>,
     }
 
     #[async_trait]
@@ -1160,6 +1252,26 @@ mod tests {
     impl UnifiedMemoryPort for StubMemory {
         async fn hybrid_search(&self, _: &MemoryQuery) -> Result<HybridSearchResult, MemoryError> {
             Ok(self.hybrid.clone())
+        }
+        async fn similar_episodes_for_entries(
+            &self,
+            entries: &[MemoryEntry],
+            _: &str,
+            _: &MemoryCategory,
+            limit: usize,
+            _: bool,
+        ) -> Result<std::collections::HashMap<String, Vec<SearchResult>>, MemoryError> {
+            let mut results = std::collections::HashMap::new();
+            for entry in entries {
+                let mut matches = self
+                    .similar_lookup
+                    .get(&entry.key)
+                    .cloned()
+                    .unwrap_or_default();
+                matches.truncate(limit);
+                results.insert(entry.key.clone(), matches);
+            }
+            Ok(results)
         }
         async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
             Ok(test_embedding(text))
@@ -1297,6 +1409,7 @@ mod tests {
                 }],
                 reflections: vec![],
             },
+            ..Default::default()
         };
 
         let hits = search_turn_hybrid(
@@ -1388,6 +1501,7 @@ mod tests {
                 ],
                 reflections: vec![],
             },
+            ..Default::default()
         };
 
         let hits = search_turn_hybrid(
@@ -1415,6 +1529,125 @@ mod tests {
             .skills
             .iter()
             .all(|skill| matches!(skill.status, crate::domain::memory::SkillStatus::Active)));
+    }
+
+    #[tokio::test]
+    async fn nearby_memory_search_filters_noise_and_deduplicates_across_seed_categories() {
+        let conversation_seed = MemoryEntry {
+            id: "seed-1".into(),
+            key: "deploy-thread".into(),
+            content: "deploy thread".into(),
+            category: MemoryCategory::Conversation,
+            timestamp: String::new(),
+            session_id: Some("session-1".into()),
+            score: Some(0.9),
+        };
+        let precedent_seed = MemoryEntry {
+            id: "seed-2".into(),
+            key: "precedent-deploy".into(),
+            content: "precedent deploy".into(),
+            category: MemoryCategory::Custom("precedent".into()),
+            timestamp: String::new(),
+            session_id: None,
+            score: Some(0.8),
+        };
+        let memory = StubMemory {
+            similar_lookup: std::collections::HashMap::from([
+                (
+                    "deploy-thread".into(),
+                    vec![
+                        SearchResult {
+                            entry: MemoryEntry {
+                                id: "n-noise-1".into(),
+                                key: "assistant_resp_123".into(),
+                                content: "autosave".into(),
+                                category: MemoryCategory::Conversation,
+                                timestamp: String::new(),
+                                session_id: Some("session-1".into()),
+                                score: None,
+                            },
+                            score: 0.99,
+                            source: SearchSource::Vector,
+                        },
+                        SearchResult {
+                            entry: MemoryEntry {
+                                id: "n-1".into(),
+                                key: "deploy-recap".into(),
+                                content: "deployment recap".into(),
+                                category: MemoryCategory::Conversation,
+                                timestamp: String::new(),
+                                session_id: Some("session-1".into()),
+                                score: None,
+                            },
+                            score: 0.81,
+                            source: SearchSource::Vector,
+                        },
+                        SearchResult {
+                            entry: MemoryEntry {
+                                id: "n-noise-2".into(),
+                                key: "deploy-tool".into(),
+                                content: "<tool_result>stale</tool_result>".into(),
+                                category: MemoryCategory::Conversation,
+                                timestamp: String::new(),
+                                session_id: Some("session-1".into()),
+                                score: None,
+                            },
+                            score: 0.8,
+                            source: SearchSource::Vector,
+                        },
+                    ],
+                ),
+                (
+                    "precedent-deploy".into(),
+                    vec![
+                        SearchResult {
+                            entry: MemoryEntry {
+                                id: "n-dup".into(),
+                                key: "deploy-recap".into(),
+                                content: "deployment recap duplicate".into(),
+                                category: MemoryCategory::Custom("precedent".into()),
+                                timestamp: String::new(),
+                                session_id: None,
+                                score: None,
+                            },
+                            score: 0.79,
+                            source: SearchSource::Vector,
+                        },
+                        SearchResult {
+                            entry: MemoryEntry {
+                                id: "n-2".into(),
+                                key: "deploy-branch".into(),
+                                content: "deploy branch precedent".into(),
+                                category: MemoryCategory::Custom("precedent".into()),
+                                timestamp: String::new(),
+                                session_id: None,
+                                score: None,
+                            },
+                            score: 0.77,
+                            source: SearchSource::Vector,
+                        },
+                    ],
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        let hits = search_nearby_memory(
+            &memory,
+            "agent",
+            &[conversation_seed, precedent_seed],
+            &NearbyMemorySearchOptions {
+                limit: 2,
+                per_seed_limit: 3,
+                min_score: 0.6,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].entry.key, "deploy-recap");
+        assert_eq!(hits[1].entry.key, "deploy-branch");
     }
 
     #[tokio::test]
