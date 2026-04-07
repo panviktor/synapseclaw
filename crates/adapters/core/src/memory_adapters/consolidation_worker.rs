@@ -13,6 +13,9 @@ use synapse_domain::application::services::learning_compaction_service::{
 use synapse_domain::application::services::learning_maintenance_service::{
     build_learning_maintenance_plan, LearningMaintenancePolicy, LearningMaintenanceSnapshot,
 };
+use synapse_domain::application::services::procedural_cluster_service::{
+    plan_recent_clusters, ProceduralClusterKind,
+};
 use synapse_domain::application::services::skill_review_service::review_learned_skills;
 use synapse_domain::domain::memory::{MemoryCategory, MemoryEntry, SkillUpdate};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
@@ -235,6 +238,26 @@ async fn sample_learning_maintenance_snapshot(
         probe_limit,
     )
     .await;
+    let precedent_clusters = plan_recent_clusters(
+        memory,
+        agent_id,
+        ProceduralClusterKind::Precedent,
+        probe_limit,
+        6,
+        0.95,
+    )
+    .await
+    .unwrap_or_default();
+    let failure_pattern_clusters = plan_recent_clusters(
+        memory,
+        agent_id,
+        ProceduralClusterKind::FailurePattern,
+        probe_limit,
+        6,
+        0.96,
+    )
+    .await
+    .unwrap_or_default();
     let recent_skills = memory
         .list_skills(&agent_id.to_string(), probe_limit)
         .await
@@ -244,8 +267,10 @@ async fn sample_learning_maintenance_snapshot(
 
     LearningMaintenanceSnapshot {
         recent_precedent_count: count_recent_entries(&recent_precedents, recent_cutoff),
+        precedent_cluster_count: precedent_clusters.len(),
         recent_reflection_count: count_recent_entries(&recent_reflections, recent_cutoff),
         recent_failure_pattern_count: count_recent_entries(&recent_failure_patterns, recent_cutoff),
+        failure_pattern_cluster_count: failure_pattern_clusters.len(),
         recent_skill_count: recent_skills.len(),
         candidate_skill_count: recent_skills
             .iter()

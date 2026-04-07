@@ -6,8 +6,10 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LearningMaintenanceSnapshot {
     pub recent_precedent_count: usize,
+    pub precedent_cluster_count: usize,
     pub recent_reflection_count: usize,
     pub recent_failure_pattern_count: usize,
+    pub failure_pattern_cluster_count: usize,
     pub recent_skill_count: usize,
     pub candidate_skill_count: usize,
     pub skipped_cycles_since_maintenance: u32,
@@ -20,13 +22,29 @@ impl LearningMaintenanceSnapshot {
             + self.recent_reflection_count
             + self.recent_failure_pattern_count
     }
+
+    pub fn precedent_duplicate_count(&self) -> usize {
+        self.recent_precedent_count.saturating_sub(
+            self.precedent_cluster_count
+                .max(1)
+                .min(self.recent_precedent_count),
+        )
+    }
+
+    pub fn failure_pattern_duplicate_count(&self) -> usize {
+        self.recent_failure_pattern_count.saturating_sub(
+            self.failure_pattern_cluster_count
+                .max(1)
+                .min(self.recent_failure_pattern_count),
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LearningMaintenanceReason {
     RecentLearningActivity,
-    PrecedentBacklog,
-    FailurePatternBacklog,
+    PrecedentDuplicateBacklog,
+    FailurePatternDuplicateBacklog,
     SkillBacklog,
     CandidateSkillBacklog,
     PromptOptimizationDue,
@@ -62,8 +80,8 @@ impl LearningMaintenancePlan {
 #[derive(Debug, Clone)]
 pub struct LearningMaintenancePolicy {
     pub min_recent_learning_activity: usize,
-    pub min_precedents_for_compaction: usize,
-    pub min_failure_patterns_for_compaction: usize,
+    pub min_precedent_duplicates_for_compaction: usize,
+    pub min_failure_pattern_duplicates_for_compaction: usize,
     pub min_skills_for_review: usize,
     pub min_candidate_skills_for_review: usize,
     pub max_skipped_cycles_before_forced_maintenance: u32,
@@ -74,8 +92,8 @@ impl Default for LearningMaintenancePolicy {
     fn default() -> Self {
         Self {
             min_recent_learning_activity: 1,
-            min_precedents_for_compaction: 3,
-            min_failure_patterns_for_compaction: 2,
+            min_precedent_duplicates_for_compaction: 1,
+            min_failure_pattern_duplicates_for_compaction: 1,
             min_skills_for_review: 3,
             min_candidate_skills_for_review: 2,
             max_skipped_cycles_before_forced_maintenance: 6,
@@ -90,9 +108,10 @@ pub fn build_learning_maintenance_plan(
 ) -> LearningMaintenancePlan {
     let recent_learning_activity =
         snapshot.recent_learning_activity_count() >= policy.min_recent_learning_activity;
-    let precedent_backlog = snapshot.recent_precedent_count >= policy.min_precedents_for_compaction;
-    let failure_backlog =
-        snapshot.recent_failure_pattern_count >= policy.min_failure_patterns_for_compaction;
+    let precedent_backlog =
+        snapshot.precedent_duplicate_count() >= policy.min_precedent_duplicates_for_compaction;
+    let failure_backlog = snapshot.failure_pattern_duplicate_count()
+        >= policy.min_failure_pattern_duplicates_for_compaction;
     let skill_backlog = snapshot.recent_skill_count >= policy.min_skills_for_review;
     let candidate_skill_backlog =
         snapshot.candidate_skill_count >= policy.min_candidate_skills_for_review;
@@ -112,10 +131,10 @@ pub fn build_learning_maintenance_plan(
         reasons.push(LearningMaintenanceReason::RecentLearningActivity);
     }
     if precedent_backlog {
-        reasons.push(LearningMaintenanceReason::PrecedentBacklog);
+        reasons.push(LearningMaintenanceReason::PrecedentDuplicateBacklog);
     }
     if failure_backlog {
-        reasons.push(LearningMaintenanceReason::FailurePatternBacklog);
+        reasons.push(LearningMaintenanceReason::FailurePatternDuplicateBacklog);
     }
     if skill_backlog {
         reasons.push(LearningMaintenanceReason::SkillBacklog);
@@ -150,8 +169,10 @@ mod tests {
         let plan = build_learning_maintenance_plan(
             &LearningMaintenanceSnapshot {
                 recent_precedent_count: 1,
+                precedent_cluster_count: 1,
                 recent_reflection_count: 0,
                 recent_failure_pattern_count: 0,
+                failure_pattern_cluster_count: 0,
                 recent_skill_count: 0,
                 candidate_skill_count: 0,
                 skipped_cycles_since_maintenance: 0,
@@ -174,8 +195,10 @@ mod tests {
         let plan = build_learning_maintenance_plan(
             &LearningMaintenanceSnapshot {
                 recent_precedent_count: 0,
+                precedent_cluster_count: 0,
                 recent_reflection_count: 3,
                 recent_failure_pattern_count: 0,
+                failure_pattern_cluster_count: 0,
                 recent_skill_count: 0,
                 candidate_skill_count: 0,
                 skipped_cycles_since_maintenance: 0,
@@ -195,8 +218,10 @@ mod tests {
         let plan = build_learning_maintenance_plan(
             &LearningMaintenanceSnapshot {
                 recent_precedent_count: 0,
+                precedent_cluster_count: 0,
                 recent_reflection_count: 0,
                 recent_failure_pattern_count: 0,
+                failure_pattern_cluster_count: 0,
                 recent_skill_count: 0,
                 candidate_skill_count: 0,
                 skipped_cycles_since_maintenance: 6,
@@ -218,8 +243,10 @@ mod tests {
         let plan = build_learning_maintenance_plan(
             &LearningMaintenanceSnapshot {
                 recent_precedent_count: 3,
+                precedent_cluster_count: 1,
                 recent_reflection_count: 0,
                 recent_failure_pattern_count: 2,
+                failure_pattern_cluster_count: 1,
                 recent_skill_count: 4,
                 candidate_skill_count: 2,
                 skipped_cycles_since_maintenance: 0,
@@ -234,10 +261,10 @@ mod tests {
         assert!(plan.should_run_any());
         assert!(plan
             .reasons
-            .contains(&LearningMaintenanceReason::PrecedentBacklog));
+            .contains(&LearningMaintenanceReason::PrecedentDuplicateBacklog));
         assert!(plan
             .reasons
-            .contains(&LearningMaintenanceReason::FailurePatternBacklog));
+            .contains(&LearningMaintenanceReason::FailurePatternDuplicateBacklog));
         assert!(plan
             .reasons
             .contains(&LearningMaintenanceReason::SkillBacklog));

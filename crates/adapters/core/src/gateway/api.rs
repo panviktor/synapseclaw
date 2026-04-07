@@ -1658,8 +1658,10 @@ pub async fn handle_api_memory_projections(
         synapse_domain::application::services::learning_maintenance_service::build_learning_maintenance_plan(
             &synapse_domain::application::services::learning_maintenance_service::LearningMaintenanceSnapshot {
                 recent_precedent_count: recent_precedents.len(),
+                precedent_cluster_count: precedent_clusters.len(),
                 recent_reflection_count: recent_reflections.len(),
                 recent_failure_pattern_count: recent_failure_patterns.len(),
+                failure_pattern_cluster_count: failure_pattern_clusters.len(),
                 recent_skill_count: recent_skills.len(),
                 candidate_skill_count: skill_surface
                     .iter()

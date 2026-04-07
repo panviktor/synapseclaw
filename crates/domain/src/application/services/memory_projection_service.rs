@@ -585,6 +585,7 @@ mod tests {
                 run_prompt_optimization: false,
                 reasons: vec![
                     crate::application::services::learning_maintenance_service::LearningMaintenanceReason::RecentLearningActivity,
+                    crate::application::services::learning_maintenance_service::LearningMaintenanceReason::PrecedentDuplicateBacklog,
                     crate::application::services::learning_maintenance_service::LearningMaintenanceReason::CandidateSkillBacklog,
                 ],
             },
