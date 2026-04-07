@@ -3,7 +3,9 @@
 //! These are cheap, regenerable views over structured state. They are meant
 //! for operators and UI inspection, not as the canonical source of truth.
 
-use crate::application::services::learning_maintenance_service::LearningMaintenancePlan;
+use crate::application::services::learning_maintenance_service::{
+    LearningMaintenancePlan, LearningMaintenanceSnapshot,
+};
 use crate::application::services::procedural_cluster_review_service::ProceduralClusterReview;
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::application::services::procedural_contradiction_service::ProceduralContradiction;
@@ -437,7 +439,10 @@ pub fn format_procedural_contradiction_projection(
     Some(format!("{}\n", lines.join("\n")))
 }
 
-pub fn format_learning_maintenance_projection(plan: &LearningMaintenancePlan) -> Option<String> {
+pub fn format_learning_maintenance_projection(
+    snapshot: &LearningMaintenanceSnapshot,
+    plan: &LearningMaintenancePlan,
+) -> Option<String> {
     if !plan.has_any_advisory_action() {
         return None;
     }
@@ -464,6 +469,30 @@ pub fn format_learning_maintenance_projection(plan: &LearningMaintenancePlan) ->
     lines.push(format!(
         "- run_prompt_optimization: {}",
         plan.run_prompt_optimization
+    ));
+    lines.push(format!(
+        "- run_recipe_duplicates: {}",
+        snapshot.run_recipe_duplicate_count()
+    ));
+    lines.push(format!(
+        "- precedent_compact_candidates: {}",
+        snapshot.precedent_compact_candidate_count
+    ));
+    lines.push(format!(
+        "- precedent_preserve_branches: {}",
+        snapshot.precedent_preserve_branch_count
+    ));
+    lines.push(format!(
+        "- failure_pattern_compact_candidates: {}",
+        snapshot.failure_pattern_compact_candidate_count
+    ));
+    lines.push(format!(
+        "- failure_pattern_blocking_clusters: {}",
+        snapshot.failure_pattern_blocking_count
+    ));
+    lines.push(format!(
+        "- procedural_contradictions: {}",
+        snapshot.procedural_contradiction_count
     ));
     if !plan.reasons.is_empty() {
         lines.push(format!(
@@ -716,6 +745,24 @@ mod tests {
     #[test]
     fn formats_learning_maintenance_projection() {
         let projection = format_learning_maintenance_projection(
+            &crate::application::services::learning_maintenance_service::LearningMaintenanceSnapshot {
+                recent_run_recipe_count: 3,
+                run_recipe_cluster_count: 1,
+                procedural_contradiction_count: 2,
+                recent_precedent_count: 3,
+                precedent_cluster_count: 2,
+                precedent_compact_candidate_count: 1,
+                precedent_preserve_branch_count: 1,
+                recent_reflection_count: 3,
+                recent_failure_pattern_count: 2,
+                failure_pattern_cluster_count: 1,
+                failure_pattern_compact_candidate_count: 1,
+                failure_pattern_blocking_count: 1,
+                recent_skill_count: 2,
+                candidate_skill_count: 1,
+                skipped_cycles_since_maintenance: 0,
+                prompt_optimization_due: false,
+            },
             &crate::application::services::learning_maintenance_service::LearningMaintenancePlan {
                 run_importance_decay: true,
                 run_gc: true,
@@ -739,6 +786,9 @@ mod tests {
         assert!(projection.contains("run_run_recipe_review: true"));
         assert!(projection.contains("run_precedent_compaction: true"));
         assert!(projection.contains("run_skill_review: true"));
+        assert!(projection.contains("run_recipe_duplicates: 2"));
+        assert!(projection.contains("precedent_preserve_branches: 1"));
+        assert!(projection.contains("failure_pattern_blocking_clusters: 1"));
     }
 
     #[test]

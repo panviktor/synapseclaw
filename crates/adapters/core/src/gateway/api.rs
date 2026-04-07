@@ -1779,6 +1779,7 @@ pub async fn handle_api_memory_projections(
             &synapse_domain::application::services::learning_maintenance_service::LearningMaintenancePolicy::default(),
         );
     let learning_maintenance = synapse_domain::application::services::memory_projection_service::format_learning_maintenance_projection(
+        &learning_maintenance_snapshot,
         &learning_maintenance_plan,
     );
 
