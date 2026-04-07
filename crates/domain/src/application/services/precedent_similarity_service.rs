@@ -64,7 +64,7 @@ async fn fetch_precedent_shortlist(
         embedding: None,
         agent_id: agent_id.to_string(),
         categories: vec![MemoryCategory::Custom("precedent".into())],
-        include_shared: true,
+        include_shared: false,
         time_range: None,
         limit: limit.saturating_mul(2).max(limit),
     };

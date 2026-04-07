@@ -439,6 +439,32 @@ fn row_to_entry(v: &serde_json::Value) -> Option<MemoryEntry> {
     })
 }
 
+fn episode_scope_clause(include_shared: bool) -> &'static str {
+    if include_shared {
+        "(agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)"
+    } else {
+        "agent_id = $agent"
+    }
+}
+
+#[cfg(test)]
+mod episode_scope_tests {
+    use super::episode_scope_clause;
+
+    #[test]
+    fn local_scope_excludes_shared_entries() {
+        assert_eq!(episode_scope_clause(false), "agent_id = $agent");
+    }
+
+    #[test]
+    fn shared_scope_keeps_shared_visibility_clause() {
+        assert_eq!(
+            episode_scope_clause(true),
+            "(agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)"
+        );
+    }
+}
+
 fn row_to_core_block(v: &serde_json::Value) -> Option<CoreMemoryBlock> {
     Some(CoreMemoryBlock {
         agent_id: json_str(v, "agent_id"),
@@ -779,18 +805,19 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
+        let scope_clause = episode_scope_clause(query.include_shared);
 
         // BM25 keyword search
         let mut bm25_resp = self
             .db
-            .query(
+            .query(format!(
                 "SELECT *, search::score(1) AS bm25_score FROM episode
                  WHERE content @1@ $text
                  AND (array::len($categories) = 0 OR category INSIDE $categories)
-                 AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
+                 AND {scope_clause}
                  ORDER BY bm25_score DESC
-                 LIMIT $limit",
-            )
+                 LIMIT $limit"
+            ))
             .bind(("text", query.text.clone()))
             .bind(("categories", category_filters.clone()))
             .bind(("agent", query.agent_id.clone()))
@@ -820,17 +847,17 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             let embedding_profile_id = self.active_embedding_profile_id();
             let mut vec_resp = self
                 .db
-                .query(
+                .query(format!(
                     "SELECT *,
                         vector::similarity::cosine(embedding, $emb) AS vec_score
                      FROM episode
                      WHERE embedding <|$limit,64|> $emb
                      AND embedding_profile_id = $profile
                      AND (array::len($categories) = 0 OR category INSIDE $categories)
-                     AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
+                     AND {scope_clause}
                      ORDER BY vec_score DESC
-                     LIMIT $limit",
-                )
+                     LIMIT $limit"
+                ))
                 .bind(("emb", emb.clone()))
                 .bind(("profile", embedding_profile_id))
                 .bind(("categories", category_filters.clone()))
