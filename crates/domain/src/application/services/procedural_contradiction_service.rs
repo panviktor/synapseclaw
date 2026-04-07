@@ -7,6 +7,7 @@
 use crate::application::services::failure_similarity_service;
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::application::services::run_recipe_cluster_service::RunRecipeCluster;
+use crate::domain::run_recipe::RunRecipe;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProceduralContradiction {
@@ -59,6 +60,20 @@ pub fn find_recipe_failure_contradictions(
             .then_with(|| left.recipe_task_family.cmp(&right.recipe_task_family))
     });
     contradictions
+}
+
+pub fn recipe_is_contradicted(
+    recipe: &RunRecipe,
+    failure_clusters: &[ProceduralCluster],
+    min_overlap: f64,
+) -> bool {
+    failure_clusters.iter().any(|failure_cluster| {
+        let failed_tools = failure_similarity_service::failure_summary_failed_tools(
+            &failure_cluster.representative.content,
+        );
+        let overlap = tool_pattern_overlap(&recipe.tool_pattern, &failed_tools);
+        overlap >= min_overlap && !failed_tools.is_empty()
+    })
 }
 
 fn tool_pattern_overlap(left: &[String], right: &[String]) -> f64 {
@@ -158,5 +173,27 @@ mod tests {
         );
 
         assert!(contradictions.is_empty());
+    }
+
+    #[test]
+    fn detects_when_single_recipe_is_contradicted() {
+        let recipe = RunRecipe {
+            agent_id: "agent".into(),
+            task_family: "status_delivery".into(),
+            sample_request: "sample".into(),
+            summary: "summary".into(),
+            tool_pattern: vec!["web_search".into(), "message_send".into()],
+            success_count: 3,
+            updated_at: 1,
+        };
+
+        assert!(recipe_is_contradicted(
+            &recipe,
+            &[failure_cluster(
+                "f1",
+                "failed_tools=web_search -> message_send | outcomes=runtime_error",
+            )],
+            0.75,
+        ));
     }
 }

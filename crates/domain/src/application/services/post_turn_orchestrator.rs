@@ -14,6 +14,9 @@ use crate::application::services::learning_signals::{self, LearningSignal};
 use crate::application::services::learning_strength_service;
 use crate::application::services::memory_mutation as mutation;
 use crate::application::services::precedent_similarity_service;
+use crate::application::services::procedural_cluster_service::{
+    plan_recent_clusters, ProceduralClusterKind,
+};
 use crate::application::services::recipe_evolution_service;
 use crate::application::services::run_recipe_review_service;
 use crate::application::services::skill_feedback_service;
@@ -343,6 +346,26 @@ pub async fn execute_post_turn_learning(
                 .list_skills(&input.agent_id, 128)
                 .await
                 .unwrap_or_default();
+            let recent_failure_clusters = match plan_recent_clusters(
+                mem,
+                &input.agent_id,
+                ProceduralClusterKind::FailurePattern,
+                16,
+                6,
+                0.96,
+            )
+            .await
+            {
+                Ok(clusters) => clusters,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "post_turn",
+                        error = %e,
+                        "Failure cluster lookup failed during skill promotion"
+                    );
+                    Vec::new()
+                }
+            };
             let mut promoted_recipes = Vec::new();
             for assessment in &learning_assessments {
                 if !assessment.accepted {
@@ -472,11 +495,13 @@ pub async fn execute_post_turn_learning(
                         None
                     }
                 };
-                let promotion = skill_promotion_service::assess_recipe_for_skill_promotion(
-                    &recipe,
-                    existing_skill.as_ref(),
-                    &existing_skills,
-                );
+                let promotion =
+                    skill_promotion_service::assess_recipe_for_skill_promotion_with_failures(
+                        &recipe,
+                        existing_skill.as_ref(),
+                        &existing_skills,
+                        &recent_failure_clusters,
+                    );
                 report.skill_promotion_assessments.push(promotion.clone());
                 if !promotion.accepted {
                     continue;

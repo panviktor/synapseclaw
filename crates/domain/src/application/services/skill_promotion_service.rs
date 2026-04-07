@@ -4,6 +4,8 @@
 //! the skill surface. It deliberately uses recipe success counts as the first
 //! repetition signal instead of introducing another model call.
 
+use crate::application::services::procedural_cluster_service::ProceduralCluster;
+use crate::application::services::procedural_contradiction_service;
 use crate::domain::memory::{Skill, SkillOrigin, SkillStatus, SkillUpdate};
 use crate::domain::run_recipe::RunRecipe;
 use chrono::Utc;
@@ -11,6 +13,7 @@ use serde::Serialize;
 
 const SKILL_CANDIDATE_SUCCESS_THRESHOLD: u32 = 3;
 const SKILL_ACTIVE_SUCCESS_THRESHOLD: u32 = 5;
+const SKILL_PROMOTION_CONTRADICTION_OVERLAP_THRESHOLD: f64 = 0.75;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SkillPromotionAssessment {
@@ -24,6 +27,15 @@ pub fn assess_recipe_for_skill_promotion(
     recipe: &RunRecipe,
     existing: Option<&Skill>,
     all_skills: &[Skill],
+) -> SkillPromotionAssessment {
+    assess_recipe_for_skill_promotion_with_failures(recipe, existing, all_skills, &[])
+}
+
+pub fn assess_recipe_for_skill_promotion_with_failures(
+    recipe: &RunRecipe,
+    existing: Option<&Skill>,
+    all_skills: &[Skill],
+    failure_clusters: &[ProceduralCluster],
 ) -> SkillPromotionAssessment {
     let skill_name = build_skill_name(recipe);
 
@@ -68,6 +80,19 @@ pub fn assess_recipe_for_skill_promotion(
                 target_status: existing_skill.status.clone(),
             };
         }
+    }
+
+    if procedural_contradiction_service::recipe_is_contradicted(
+        recipe,
+        failure_clusters,
+        SKILL_PROMOTION_CONTRADICTION_OVERLAP_THRESHOLD,
+    ) {
+        return SkillPromotionAssessment {
+            skill_name,
+            accepted: false,
+            reason: "contradicted_by_failure_clusters",
+            target_status: SkillStatus::Candidate,
+        };
     }
 
     let repeated_target_status = if recipe.success_count >= SKILL_ACTIVE_SUCCESS_THRESHOLD {
@@ -312,5 +337,34 @@ mod tests {
             assess_recipe_for_skill_promotion(&sample_recipe(6), None, &[manual_skill]);
         assert!(!assessment.accepted);
         assert_eq!(assessment.reason, "shadowed_by_higher_origin_skill");
+    }
+
+    #[test]
+    fn rejects_recipe_contradicted_by_failure_clusters() {
+        let failure_cluster =
+            crate::application::services::procedural_cluster_service::ProceduralCluster {
+                representative: crate::domain::memory::MemoryEntry {
+                    id: "f1".into(),
+                    key: "f1".into(),
+                    content: "failed_tools=web_search -> message_send | outcomes=runtime_error"
+                        .into(),
+                    category: crate::domain::memory::MemoryCategory::Custom(
+                        "failure_pattern".into(),
+                    ),
+                    timestamp: "2026-01-01T00:00:00Z".into(),
+                    session_id: None,
+                    score: None,
+                },
+                member_keys: vec!["f1".into()],
+            };
+
+        let assessment = assess_recipe_for_skill_promotion_with_failures(
+            &sample_recipe(6),
+            None,
+            &[],
+            &[failure_cluster],
+        );
+        assert!(!assessment.accepted);
+        assert_eq!(assessment.reason, "contradicted_by_failure_clusters");
     }
 }
