@@ -334,6 +334,10 @@ pub async fn execute_post_turn_learning(
     // ── 1e. Cheap procedural candidate path ──
     if !signal.is_explicit() && input.auto_save_enabled {
         if let Some(store) = input.run_recipe_store.as_ref() {
+            let existing_skills = mem
+                .list_skills(&input.agent_id, 128)
+                .await
+                .unwrap_or_default();
             let mut promoted_recipes = Vec::new();
             for assessment in &learning_assessments {
                 if !assessment.accepted {
@@ -400,6 +404,7 @@ pub async fn execute_post_turn_learning(
                 let promotion = skill_promotion_service::assess_recipe_for_skill_promotion(
                     &recipe,
                     existing_skill.as_ref(),
+                    &existing_skills,
                 );
                 report.skill_promotion_assessments.push(promotion.clone());
                 if !promotion.accepted {

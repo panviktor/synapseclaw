@@ -386,6 +386,56 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 },
             ],
         },
+        SelfLearningEvalScenario {
+            id: "manual_skill_shadows_recipe_promotion",
+            user_message: "Find the status page and send it again",
+            assistant_response: "Fetched the page and sent it again.",
+            current_profile: None,
+            existing_recipes: vec![RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                sample_request: "find the status page and send it".into(),
+                summary: "pattern=web_search -> message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 3,
+                updated_at: 1,
+            }],
+            existing_skills: vec![Skill {
+                id: "sk-manual".into(),
+                name: "manual_status_delivery".into(),
+                description: "Manual skill".into(),
+                content: "Use the manual runbook.".into(),
+                task_family: Some("search_delivery".into()),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                tags: vec!["manual".into()],
+                success_count: 1,
+                fail_count: 0,
+                version: 1,
+                origin: crate::domain::memory::SkillOrigin::Manual,
+                status: crate::domain::memory::SkillStatus::Active,
+                created_by: "agent".into(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }],
+            tool_facts: vec![
+                TypedToolFact {
+                    tool_id: "web_search".into(),
+                    payload: ToolFactPayload::Search(SearchFact {
+                        domain: SearchDomain::Web,
+                        query: Some("status page".into()),
+                        result_count: Some(2),
+                        primary_locator: Some("https://status.example.com".into()),
+                    }),
+                },
+                TypedToolFact {
+                    tool_id: "message_send".into(),
+                    payload: ToolFactPayload::Delivery(DeliveryFact {
+                        target: DeliveryTargetKind::CurrentConversation,
+                        content_bytes: Some(24),
+                    }),
+                },
+            ],
+        },
     ]
 }
 
@@ -422,6 +472,7 @@ fn build_skill_promotion_assessments(
             Some(skill_promotion_service::assess_recipe_for_skill_promotion(
                 &recipe,
                 existing_skill,
+                &scenario.existing_skills,
             ))
         })
         .collect()
@@ -691,5 +742,20 @@ mod tests {
         assert!(result
             .skill_promotion_reasons
             .contains(&"create_candidate_skill"));
+    }
+
+    #[test]
+    fn manual_skill_blocks_shadowed_recipe_promotion() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "manual_skill_shadows_recipe_promotion")
+            .unwrap();
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.accepted_run_recipe_count, 1);
+        assert_eq!(result.accepted_skill_promotion_count, 0);
+        assert!(result
+            .skill_promotion_reasons
+            .contains(&"shadowed_by_higher_origin_skill"));
     }
 }

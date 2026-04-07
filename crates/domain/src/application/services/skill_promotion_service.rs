@@ -23,6 +23,7 @@ pub struct SkillPromotionAssessment {
 pub fn assess_recipe_for_skill_promotion(
     recipe: &RunRecipe,
     existing: Option<&Skill>,
+    all_skills: &[Skill],
 ) -> SkillPromotionAssessment {
     let skill_name = build_skill_name(recipe);
 
@@ -41,6 +42,17 @@ pub fn assess_recipe_for_skill_promotion(
             accepted: false,
             reason: "weak_recipe_shape",
             target_status: SkillStatus::Candidate,
+        };
+    }
+
+    if let Some(shadowing_skill) =
+        find_shadowing_higher_origin_skill(recipe, &skill_name, all_skills)
+    {
+        return SkillPromotionAssessment {
+            skill_name,
+            accepted: false,
+            reason: "shadowed_by_higher_origin_skill",
+            target_status: shadowing_skill.status.clone(),
         };
     }
 
@@ -163,6 +175,47 @@ fn max_skill_status(left: &SkillStatus, right: &SkillStatus) -> SkillStatus {
     }
 }
 
+fn find_shadowing_higher_origin_skill<'a>(
+    recipe: &RunRecipe,
+    skill_name: &str,
+    all_skills: &'a [Skill],
+) -> Option<&'a Skill> {
+    all_skills.iter().find(|skill| {
+        skill.status == SkillStatus::Active
+            && matches!(skill.origin, SkillOrigin::Manual | SkillOrigin::Imported)
+            && !skill.name.eq_ignore_ascii_case(skill_name)
+            && (skill
+                .task_family
+                .as_deref()
+                .is_some_and(|task_family| task_family.eq_ignore_ascii_case(&recipe.task_family))
+                || tool_pattern_overlap(&skill.tool_pattern, &recipe.tool_pattern) >= 0.75)
+    })
+}
+
+fn tool_pattern_overlap(left: &[String], right: &[String]) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let shared = left
+        .iter()
+        .filter(|tool| right.iter().any(|other| other.eq_ignore_ascii_case(tool)))
+        .count() as f64;
+    let mut union = Vec::new();
+    for tool in left.iter().chain(right.iter()) {
+        if !union
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(tool))
+        {
+            union.push(tool.clone());
+        }
+    }
+    if union.is_empty() {
+        0.0
+    } else {
+        shared / union.len() as f64
+    }
+}
+
 fn status_rank(status: &SkillStatus) -> u8 {
     match status {
         SkillStatus::Active => 2,
@@ -189,14 +242,14 @@ mod tests {
 
     #[test]
     fn rejects_recipe_without_enough_repetition() {
-        let assessment = assess_recipe_for_skill_promotion(&sample_recipe(2), None);
+        let assessment = assess_recipe_for_skill_promotion(&sample_recipe(2), None, &[]);
         assert!(!assessment.accepted);
         assert_eq!(assessment.reason, "insufficient_repetition");
     }
 
     #[test]
     fn creates_candidate_skill_from_repeated_recipe() {
-        let assessment = assess_recipe_for_skill_promotion(&sample_recipe(3), None);
+        let assessment = assess_recipe_for_skill_promotion(&sample_recipe(3), None, &[]);
         assert!(assessment.accepted);
         assert_eq!(assessment.target_status, SkillStatus::Candidate);
         assert_eq!(assessment.reason, "create_candidate_skill");
@@ -204,7 +257,7 @@ mod tests {
 
     #[test]
     fn promotes_repeated_recipe_to_active_skill() {
-        let assessment = assess_recipe_for_skill_promotion(&sample_recipe(5), None);
+        let assessment = assess_recipe_for_skill_promotion(&sample_recipe(5), None, &[]);
         assert!(assessment.accepted);
         assert_eq!(assessment.target_status, SkillStatus::Active);
         assert_eq!(assessment.reason, "create_active_skill");
@@ -230,8 +283,34 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        let assessment = assess_recipe_for_skill_promotion(&sample_recipe(6), Some(&existing));
+        let assessment = assess_recipe_for_skill_promotion(&sample_recipe(6), Some(&existing), &[]);
         assert!(!assessment.accepted);
         assert_eq!(assessment.reason, "manual_or_imported_skill_exists");
+    }
+
+    #[test]
+    fn rejects_recipe_shadowed_by_active_manual_skill() {
+        let manual_skill = Skill {
+            id: "sk2".into(),
+            name: "manual_status_delivery".into(),
+            description: "Manual skill".into(),
+            content: "Use a fixed manual process.".into(),
+            task_family: Some("search_delivery".into()),
+            tool_pattern: vec!["web_search".into(), "message_send".into()],
+            tags: vec![],
+            success_count: 1,
+            fail_count: 0,
+            version: 1,
+            origin: SkillOrigin::Manual,
+            status: SkillStatus::Active,
+            created_by: "agent".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        let assessment =
+            assess_recipe_for_skill_promotion(&sample_recipe(6), None, &[manual_skill]);
+        assert!(!assessment.accepted);
+        assert_eq!(assessment.reason, "shadowed_by_higher_origin_skill");
     }
 }
