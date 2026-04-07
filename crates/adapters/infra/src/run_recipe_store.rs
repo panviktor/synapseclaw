@@ -73,6 +73,13 @@ impl RunRecipeStorePort for FileRunRecipeStore {
         }
         self.persist(&recipes)
     }
+
+    fn remove(&self, agent_id: &str, task_family: &str) -> Result<()> {
+        let mut recipes = self.recipes.write();
+        recipes
+            .retain(|recipe| !(recipe.agent_id == agent_id && recipe.task_family == task_family));
+        self.persist(&recipes)
+    }
 }
 
 #[cfg(test)]
@@ -103,5 +110,21 @@ mod tests {
         let recipes = reopened.list("agent");
         assert_eq!(recipes.len(), 1);
         assert_eq!(recipes[0].task_family, "deploy");
+    }
+
+    #[test]
+    fn removes_recipe_persistently() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run_recipes.json");
+
+        let store = FileRunRecipeStore::new(&path).unwrap();
+        store.upsert(recipe("deploy")).unwrap();
+        store.upsert(recipe("restart")).unwrap();
+        store.remove("agent", "deploy").unwrap();
+
+        let reopened = FileRunRecipeStore::new(&path).unwrap();
+        let recipes = reopened.list("agent");
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].task_family, "restart");
     }
 }

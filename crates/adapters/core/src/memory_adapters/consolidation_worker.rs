@@ -16,9 +16,14 @@ use synapse_domain::application::services::learning_maintenance_service::{
 use synapse_domain::application::services::procedural_cluster_service::{
     plan_recent_clusters, ProceduralClusterKind,
 };
+use synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters;
+use synapse_domain::application::services::run_recipe_review_service::{
+    review_run_recipes, RunRecipeReviewThresholds,
+};
 use synapse_domain::application::services::skill_review_service::review_learned_skills;
 use synapse_domain::domain::memory::{MemoryCategory, MemoryEntry, SkillUpdate};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
+use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
 
 /// Configuration for the consolidation worker.
 #[derive(Debug, Clone)]
@@ -61,6 +66,7 @@ impl Default for ConsolidationWorkerConfig {
 /// When `provider` is Some, prompt optimization runs every `optimization_interval`.
 pub fn spawn_consolidation_worker(
     memory: Arc<dyn UnifiedMemoryPort>,
+    run_recipe_store: Arc<dyn RunRecipeStorePort>,
     config: ConsolidationWorkerConfig,
     agent_id: String,
     provider: Option<(Arc<dyn synapse_providers::traits::Provider>, String)>,
@@ -85,6 +91,7 @@ pub fn spawn_consolidation_worker(
                 provider.is_some() && last_optimization.elapsed() >= config.optimization_interval;
             let snapshot = sample_learning_maintenance_snapshot(
                 memory.as_ref(),
+                run_recipe_store.as_ref(),
                 &agent_id,
                 config.activity_probe_limit,
                 config.activity_window,
@@ -133,6 +140,14 @@ pub fn spawn_consolidation_worker(
                         }
                     }
                     Err(e) => tracing::debug!("Memory GC failed: {e}"),
+                }
+            }
+
+            if plan.run_run_recipe_review {
+                match run_recipe_review(run_recipe_store.as_ref(), &agent_id).await {
+                    Ok(0) => tracing::debug!("Run recipe review found no duplicates"),
+                    Ok(count) => tracing::info!(count, "Run recipe review removed duplicates"),
+                    Err(e) => tracing::debug!("Run recipe review failed: {e}"),
                 }
             }
 
@@ -218,12 +233,14 @@ pub fn spawn_consolidation_worker(
 
 async fn sample_learning_maintenance_snapshot(
     memory: &dyn UnifiedMemoryPort,
+    run_recipe_store: &dyn RunRecipeStorePort,
     agent_id: &str,
     probe_limit: usize,
     activity_window: Duration,
     skipped_cycles_since_maintenance: u32,
     prompt_optimization_due: bool,
 ) -> LearningMaintenanceSnapshot {
+    let run_recipes = run_recipe_store.list(agent_id);
     let recent_precedents = list_recent_category_entries(
         memory,
         MemoryCategory::Custom("precedent".into()),
@@ -264,8 +281,17 @@ async fn sample_learning_maintenance_snapshot(
         .unwrap_or_default();
     let recent_cutoff =
         chrono::Utc::now() - chrono::Duration::seconds(activity_window.as_secs() as i64);
+    let recent_run_recipe_cutoff =
+        (chrono::Utc::now().timestamp().max(0) as u64).saturating_sub(activity_window.as_secs());
+    let recent_run_recipes = run_recipes
+        .into_iter()
+        .filter(|recipe| recipe.updated_at >= recent_run_recipe_cutoff)
+        .collect::<Vec<_>>();
+    let recipe_clusters = plan_recipe_clusters(&recent_run_recipes, 0.9);
 
     LearningMaintenanceSnapshot {
+        recent_run_recipe_count: recent_run_recipes.len(),
+        run_recipe_cluster_count: recipe_clusters.len(),
         recent_precedent_count: count_recent_entries(&recent_precedents, recent_cutoff),
         precedent_cluster_count: precedent_clusters.len(),
         recent_reflection_count: count_recent_entries(&recent_reflections, recent_cutoff),
@@ -279,6 +305,25 @@ async fn sample_learning_maintenance_snapshot(
         skipped_cycles_since_maintenance,
         prompt_optimization_due,
     }
+}
+
+async fn run_recipe_review(
+    store: &dyn RunRecipeStorePort,
+    agent_id: &str,
+) -> anyhow::Result<usize> {
+    let decisions =
+        review_run_recipes(&store.list(agent_id), &RunRecipeReviewThresholds::default());
+    let mut removed = 0;
+
+    for decision in decisions {
+        store.upsert(decision.canonical_recipe)?;
+        for task_family in decision.removed_task_families {
+            store.remove(agent_id, &task_family)?;
+            removed += 1;
+        }
+    }
+
+    Ok(removed)
 }
 
 async fn list_recent_category_entries(

@@ -497,6 +497,7 @@ pub async fn run(
         let worker_handle =
             crate::memory_adapters::consolidation_worker::spawn_consolidation_worker(
                 mem,
+                run_recipe_store.clone(),
                 crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default(),
                 daemon_agent_id.clone(),
                 provider_for_worker,

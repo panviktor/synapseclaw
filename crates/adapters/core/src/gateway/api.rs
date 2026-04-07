@@ -1675,6 +1675,8 @@ pub async fn handle_api_memory_projections(
     let learning_maintenance_plan =
         synapse_domain::application::services::learning_maintenance_service::build_learning_maintenance_plan(
             &synapse_domain::application::services::learning_maintenance_service::LearningMaintenanceSnapshot {
+                recent_run_recipe_count: run_recipes.len(),
+                run_recipe_cluster_count: recipe_clusters.len(),
                 recent_precedent_count: recent_precedents.len(),
                 precedent_cluster_count: precedent_clusters.len(),
                 recent_reflection_count: recent_reflections.len(),

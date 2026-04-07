@@ -5,6 +5,8 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LearningMaintenanceSnapshot {
+    pub recent_run_recipe_count: usize,
+    pub run_recipe_cluster_count: usize,
     pub recent_precedent_count: usize,
     pub precedent_cluster_count: usize,
     pub recent_reflection_count: usize,
@@ -31,6 +33,14 @@ impl LearningMaintenanceSnapshot {
         )
     }
 
+    pub fn run_recipe_duplicate_count(&self) -> usize {
+        self.recent_run_recipe_count.saturating_sub(
+            self.run_recipe_cluster_count
+                .max(1)
+                .min(self.recent_run_recipe_count),
+        )
+    }
+
     pub fn failure_pattern_duplicate_count(&self) -> usize {
         self.recent_failure_pattern_count.saturating_sub(
             self.failure_pattern_cluster_count
@@ -43,6 +53,7 @@ impl LearningMaintenanceSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LearningMaintenanceReason {
     RecentLearningActivity,
+    RunRecipeDuplicateBacklog,
     PrecedentDuplicateBacklog,
     FailurePatternDuplicateBacklog,
     SkillBacklog,
@@ -55,6 +66,7 @@ pub enum LearningMaintenanceReason {
 pub struct LearningMaintenancePlan {
     pub run_importance_decay: bool,
     pub run_gc: bool,
+    pub run_run_recipe_review: bool,
     pub run_precedent_compaction: bool,
     pub run_failure_pattern_compaction: bool,
     pub run_skill_review: bool,
@@ -66,6 +78,7 @@ impl LearningMaintenancePlan {
     pub fn should_run_any(&self) -> bool {
         self.run_importance_decay
             || self.run_gc
+            || self.run_run_recipe_review
             || self.run_precedent_compaction
             || self.run_failure_pattern_compaction
             || self.run_skill_review
@@ -80,6 +93,7 @@ impl LearningMaintenancePlan {
 #[derive(Debug, Clone)]
 pub struct LearningMaintenancePolicy {
     pub min_recent_learning_activity: usize,
+    pub min_run_recipe_duplicates_for_review: usize,
     pub min_precedent_duplicates_for_compaction: usize,
     pub min_failure_pattern_duplicates_for_compaction: usize,
     pub min_skills_for_review: usize,
@@ -92,6 +106,7 @@ impl Default for LearningMaintenancePolicy {
     fn default() -> Self {
         Self {
             min_recent_learning_activity: 1,
+            min_run_recipe_duplicates_for_review: 1,
             min_precedent_duplicates_for_compaction: 1,
             min_failure_pattern_duplicates_for_compaction: 1,
             min_skills_for_review: 3,
@@ -108,6 +123,8 @@ pub fn build_learning_maintenance_plan(
 ) -> LearningMaintenancePlan {
     let recent_learning_activity =
         snapshot.recent_learning_activity_count() >= policy.min_recent_learning_activity;
+    let run_recipe_backlog =
+        snapshot.run_recipe_duplicate_count() >= policy.min_run_recipe_duplicates_for_review;
     let precedent_backlog =
         snapshot.precedent_duplicate_count() >= policy.min_precedent_duplicates_for_compaction;
     let failure_backlog = snapshot.failure_pattern_duplicate_count()
@@ -122,6 +139,7 @@ pub fn build_learning_maintenance_plan(
 
     let run_importance_decay = recent_learning_activity || forced_maintenance;
     let run_gc = run_importance_decay;
+    let run_run_recipe_review = run_recipe_backlog;
     let run_precedent_compaction = precedent_backlog;
     let run_failure_pattern_compaction = failure_backlog;
     let run_skill_review = skill_backlog || candidate_skill_backlog;
@@ -129,6 +147,9 @@ pub fn build_learning_maintenance_plan(
     let mut reasons = Vec::new();
     if recent_learning_activity {
         reasons.push(LearningMaintenanceReason::RecentLearningActivity);
+    }
+    if run_recipe_backlog {
+        reasons.push(LearningMaintenanceReason::RunRecipeDuplicateBacklog);
     }
     if precedent_backlog {
         reasons.push(LearningMaintenanceReason::PrecedentDuplicateBacklog);
@@ -152,6 +173,7 @@ pub fn build_learning_maintenance_plan(
     LearningMaintenancePlan {
         run_importance_decay,
         run_gc,
+        run_run_recipe_review,
         run_precedent_compaction,
         run_failure_pattern_compaction,
         run_skill_review,
@@ -168,6 +190,8 @@ mod tests {
     fn recent_learning_activity_runs_maintenance() {
         let plan = build_learning_maintenance_plan(
             &LearningMaintenanceSnapshot {
+                recent_run_recipe_count: 0,
+                run_recipe_cluster_count: 0,
                 recent_precedent_count: 1,
                 precedent_cluster_count: 1,
                 recent_reflection_count: 0,
@@ -194,6 +218,8 @@ mod tests {
     fn prompt_optimization_needs_due_signal_and_reflections() {
         let plan = build_learning_maintenance_plan(
             &LearningMaintenanceSnapshot {
+                recent_run_recipe_count: 0,
+                run_recipe_cluster_count: 0,
                 recent_precedent_count: 0,
                 precedent_cluster_count: 0,
                 recent_reflection_count: 3,
@@ -217,6 +243,8 @@ mod tests {
     fn forced_interval_runs_decay_even_without_recent_activity() {
         let plan = build_learning_maintenance_plan(
             &LearningMaintenanceSnapshot {
+                recent_run_recipe_count: 0,
+                run_recipe_cluster_count: 0,
                 recent_precedent_count: 0,
                 precedent_cluster_count: 0,
                 recent_reflection_count: 0,
@@ -242,6 +270,8 @@ mod tests {
     fn category_backlogs_trigger_targeted_reviews() {
         let plan = build_learning_maintenance_plan(
             &LearningMaintenanceSnapshot {
+                recent_run_recipe_count: 3,
+                run_recipe_cluster_count: 1,
                 recent_precedent_count: 3,
                 precedent_cluster_count: 1,
                 recent_reflection_count: 0,
@@ -255,10 +285,14 @@ mod tests {
             &LearningMaintenancePolicy::default(),
         );
 
+        assert!(plan.run_run_recipe_review);
         assert!(plan.run_precedent_compaction);
         assert!(plan.run_failure_pattern_compaction);
         assert!(plan.run_skill_review);
         assert!(plan.should_run_any());
+        assert!(plan
+            .reasons
+            .contains(&LearningMaintenanceReason::RunRecipeDuplicateBacklog));
         assert!(plan
             .reasons
             .contains(&LearningMaintenanceReason::PrecedentDuplicateBacklog));

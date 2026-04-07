@@ -350,6 +350,10 @@ pub fn format_learning_maintenance_projection(plan: &LearningMaintenancePlan) ->
     ));
     lines.push(format!("- run_gc: {}", plan.run_gc));
     lines.push(format!(
+        "- run_run_recipe_review: {}",
+        plan.run_run_recipe_review
+    ));
+    lines.push(format!(
         "- run_precedent_compaction: {}",
         plan.run_precedent_compaction
     ));
@@ -614,12 +618,14 @@ mod tests {
             &crate::application::services::learning_maintenance_service::LearningMaintenancePlan {
                 run_importance_decay: true,
                 run_gc: true,
+                run_run_recipe_review: true,
                 run_precedent_compaction: true,
                 run_failure_pattern_compaction: false,
                 run_skill_review: true,
                 run_prompt_optimization: false,
                 reasons: vec![
                     crate::application::services::learning_maintenance_service::LearningMaintenanceReason::RecentLearningActivity,
+                    crate::application::services::learning_maintenance_service::LearningMaintenanceReason::RunRecipeDuplicateBacklog,
                     crate::application::services::learning_maintenance_service::LearningMaintenanceReason::PrecedentDuplicateBacklog,
                     crate::application::services::learning_maintenance_service::LearningMaintenanceReason::CandidateSkillBacklog,
                 ],
@@ -628,6 +634,7 @@ mod tests {
         .unwrap();
 
         assert!(projection.contains("[learning-maintenance]"));
+        assert!(projection.contains("run_run_recipe_review: true"));
         assert!(projection.contains("run_precedent_compaction: true"));
         assert!(projection.contains("run_skill_review: true"));
     }

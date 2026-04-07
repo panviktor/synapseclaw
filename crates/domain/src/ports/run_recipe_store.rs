@@ -6,6 +6,7 @@ use anyhow::Result;
 pub trait RunRecipeStorePort: Send + Sync {
     fn list(&self, agent_id: &str) -> Vec<RunRecipe>;
     fn upsert(&self, recipe: RunRecipe) -> Result<()>;
+    fn remove(&self, agent_id: &str, task_family: &str) -> Result<()>;
     fn get(&self, agent_id: &str, task_family: &str) -> Option<RunRecipe> {
         self.list(agent_id)
             .into_iter()
@@ -52,6 +53,13 @@ impl RunRecipeStorePort for InMemoryRunRecipeStore {
         }
         Ok(())
     }
+
+    fn remove(&self, agent_id: &str, task_family: &str) -> Result<()> {
+        self.recipes
+            .write()
+            .retain(|recipe| !(recipe.agent_id == agent_id && recipe.task_family == task_family));
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -88,5 +96,18 @@ mod tests {
             })
             .unwrap();
         assert_eq!(store.list("agent").len(), 1);
+    }
+
+    #[test]
+    fn remove_deletes_only_matching_recipe() {
+        let store = InMemoryRunRecipeStore::new();
+        store.upsert(recipe("deploy")).unwrap();
+        store.upsert(recipe("restart")).unwrap();
+
+        store.remove("agent", "deploy").unwrap();
+
+        let recipes = store.list("agent");
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].task_family, "restart");
     }
 }

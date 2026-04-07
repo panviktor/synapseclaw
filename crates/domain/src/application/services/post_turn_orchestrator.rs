@@ -15,6 +15,7 @@ use crate::application::services::learning_strength_service;
 use crate::application::services::memory_mutation as mutation;
 use crate::application::services::precedent_similarity_service;
 use crate::application::services::recipe_evolution_service;
+use crate::application::services::run_recipe_review_service;
 use crate::application::services::skill_feedback_service;
 use crate::application::services::skill_promotion_service::{self, SkillPromotionAssessment};
 use crate::application::services::user_profile_service;
@@ -24,6 +25,7 @@ use crate::domain::tool_fact::TypedToolFact;
 use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
 use crate::ports::user_profile_store::UserProfileStorePort;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 // ── Gate constants ───────────────────────────────────────────────
@@ -76,6 +78,8 @@ pub struct PostTurnReport {
     pub candidate_mutations: Vec<LearningEvent>,
     /// Count of run recipes upserted from low-cost candidates.
     pub run_recipes_upserted: usize,
+    /// Count of redundant run recipes removed after deterministic cluster review.
+    pub run_recipes_removed: usize,
     /// Candidate/active skill assessments derived from repeated recipes.
     pub skill_promotion_assessments: Vec<SkillPromotionAssessment>,
     /// Count of learned skills created or refreshed from recipe promotion.
@@ -165,6 +169,7 @@ pub async fn execute_post_turn_learning(
         learning_assessments: learning_assessments.clone(),
         candidate_mutations: Vec::new(),
         run_recipes_upserted: 0,
+        run_recipes_removed: 0,
         skill_promotion_assessments: Vec::new(),
         skills_upserted: 0,
         skills_penalized: 0,
@@ -387,7 +392,73 @@ pub async fn execute_post_turn_learning(
                 }
             }
 
-            for recipe in promoted_recipes {
+            let mut recipes_for_skill_promotion = promoted_recipes.clone();
+            if !promoted_recipes.is_empty() {
+                let touched_families = promoted_recipes
+                    .iter()
+                    .map(|recipe| recipe.task_family.clone())
+                    .collect::<HashSet<_>>();
+                let review_decisions = run_recipe_review_service::review_run_recipes(
+                    &store.list(&input.agent_id),
+                    &run_recipe_review_service::RunRecipeReviewThresholds::default(),
+                );
+                let mut reviewed_families = HashSet::new();
+                let mut reviewed_canonicals = Vec::new();
+
+                for decision in review_decisions {
+                    let touches_promoted_cluster = decision
+                        .cluster_task_families
+                        .iter()
+                        .any(|task_family| touched_families.contains(task_family));
+                    match store.upsert(decision.canonical_recipe.clone()) {
+                        Ok(()) => {
+                            if touches_promoted_cluster {
+                                reviewed_canonicals.push(decision.canonical_recipe.clone());
+                                reviewed_families
+                                    .extend(decision.cluster_task_families.iter().cloned());
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "post_turn",
+                                error = %e,
+                                task_family = %decision.canonical_recipe.task_family,
+                                "Run recipe review canonical upsert failed"
+                            );
+                            continue;
+                        }
+                    }
+
+                    for task_family in &decision.removed_task_families {
+                        match store.remove(&input.agent_id, task_family) {
+                            Ok(()) => report.run_recipes_removed += 1,
+                            Err(e) => {
+                                tracing::warn!(
+                                    target: "post_turn",
+                                    error = %e,
+                                    task_family = %task_family,
+                                    "Run recipe review removal failed"
+                                );
+                            }
+                        }
+                    }
+                }
+
+                if !reviewed_canonicals.is_empty() {
+                    recipes_for_skill_promotion
+                        .retain(|recipe| !reviewed_families.contains(&recipe.task_family));
+                    for canonical in reviewed_canonicals {
+                        if !recipes_for_skill_promotion
+                            .iter()
+                            .any(|existing| existing.task_family == canonical.task_family)
+                        {
+                            recipes_for_skill_promotion.push(canonical);
+                        }
+                    }
+                }
+            }
+
+            for recipe in recipes_for_skill_promotion {
                 let skill_name = skill_promotion_service::build_skill_name(&recipe);
                 let existing_skill = match mem.get_skill(&skill_name, &input.agent_id).await {
                     Ok(skill) => skill,
@@ -541,6 +612,7 @@ pub async fn execute_post_turn_learning(
             "learning_assessments": report.learning_assessments,
             "candidate_mutation_count": report.candidate_mutations.len(),
             "run_recipes_upserted": report.run_recipes_upserted,
+            "run_recipes_removed": report.run_recipes_removed,
             "skill_promotion_count": report.skill_promotion_assessments.len(),
             "skill_promotion_assessments": report.skill_promotion_assessments,
             "skills_upserted": report.skills_upserted,
@@ -599,7 +671,8 @@ mod tests {
         Visibility,
     };
     use crate::domain::tool_fact::{
-        OutcomeStatus, ProfileOperation, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact,
+        OutcomeStatus, ProfileOperation, ResourceFact, ResourceKind, ResourceMetadata,
+        ResourceOperation, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact,
         UserProfileFact, UserProfileField,
     };
     use crate::domain::user_profile::UserProfile;
@@ -1161,6 +1234,7 @@ mod tests {
         .await;
 
         assert_eq!(report.run_recipes_upserted, 1);
+        assert_eq!(report.run_recipes_removed, 0);
         assert_eq!(report.skills_upserted, 1);
         assert!(report
             .skill_promotion_assessments
@@ -1176,5 +1250,163 @@ mod tests {
             stored_skills[0].origin,
             crate::domain::memory::SkillOrigin::Learned
         );
+    }
+
+    #[tokio::test]
+    async fn recipe_review_removes_redundant_cross_family_duplicates() {
+        let memory = StubMemory::default();
+        let run_recipe_store =
+            Arc::new(crate::ports::run_recipe_store::InMemoryRunRecipeStore::new());
+        run_recipe_store
+            .upsert(crate::domain::run_recipe::RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_resource_delivery".into(),
+                sample_request: "find the status page, fetch it, open it and send it again".into(),
+                summary: "Use search, resource tools and deliver the result.".into(),
+                tool_pattern: vec![
+                    "web_search".into(),
+                    "web_fetch".into(),
+                    "browser".into(),
+                    "http_request".into(),
+                    "shell".into(),
+                    "file_read".into(),
+                    "file_edit".into(),
+                    "message_send".into(),
+                ],
+                success_count: 2,
+                updated_at: 1,
+            })
+            .unwrap();
+        run_recipe_store
+            .upsert(crate::domain::run_recipe::RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "delivery_search_resource".into(),
+                sample_request: "find the status page, fetch it, open it and send it again".into(),
+                summary: "Use search, resource tools and deliver the result.".into(),
+                tool_pattern: vec![
+                    "web_search".into(),
+                    "web_fetch".into(),
+                    "browser".into(),
+                    "http_request".into(),
+                    "shell".into(),
+                    "file_read".into(),
+                    "message_send".into(),
+                ],
+                success_count: 4,
+                updated_at: 2,
+            })
+            .unwrap();
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message: "Find the status page, fetch it, open it and send it again".into(),
+                assistant_response: "Fetched the page, opened it and sent it again.".into(),
+                tools_used: vec![
+                    "web_search".into(),
+                    "web_fetch".into(),
+                    "browser".into(),
+                    "http_request".into(),
+                    "shell".into(),
+                    "file_read".into(),
+                    "file_edit".into(),
+                    "message_send".into(),
+                ],
+                tool_facts: vec![
+                    TypedToolFact {
+                        tool_id: "web_search".into(),
+                        payload: ToolFactPayload::Search(SearchFact {
+                            domain: SearchDomain::Web,
+                            query: Some("status page".into()),
+                            result_count: Some(2),
+                            primary_locator: Some("https://status.example.com".into()),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "web_fetch".into(),
+                        payload: ToolFactPayload::Resource(ResourceFact {
+                            kind: ResourceKind::WebPage,
+                            operation: ResourceOperation::Fetch,
+                            locator: "https://status.example.com".into(),
+                            host: Some("status.example.com".into()),
+                            metadata: ResourceMetadata::default(),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "browser".into(),
+                        payload: ToolFactPayload::Resource(ResourceFact {
+                            kind: ResourceKind::BrowserPage,
+                            operation: ResourceOperation::Open,
+                            locator: "https://status.example.com".into(),
+                            host: Some("status.example.com".into()),
+                            metadata: ResourceMetadata::default(),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "http_request".into(),
+                        payload: ToolFactPayload::Resource(ResourceFact {
+                            kind: ResourceKind::WebResource,
+                            operation: ResourceOperation::Fetch,
+                            locator: "https://status.example.com".into(),
+                            host: Some("status.example.com".into()),
+                            metadata: ResourceMetadata::default(),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "shell".into(),
+                        payload: ToolFactPayload::Resource(ResourceFact {
+                            kind: ResourceKind::File,
+                            operation: ResourceOperation::Inspect,
+                            locator: "status.log".into(),
+                            host: None,
+                            metadata: ResourceMetadata::default(),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "file_read".into(),
+                        payload: ToolFactPayload::Resource(ResourceFact {
+                            kind: ResourceKind::File,
+                            operation: ResourceOperation::Read,
+                            locator: "status.log".into(),
+                            host: None,
+                            metadata: ResourceMetadata::default(),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "file_edit".into(),
+                        payload: ToolFactPayload::Resource(ResourceFact {
+                            kind: ResourceKind::File,
+                            operation: ResourceOperation::Edit,
+                            locator: "status.md".into(),
+                            host: None,
+                            metadata: ResourceMetadata::default(),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "message_send".into(),
+                        payload: ToolFactPayload::Delivery(
+                            crate::domain::tool_fact::DeliveryFact {
+                                target: crate::domain::tool_fact::DeliveryTargetKind::CurrentConversation,
+                                content_bytes: Some(24),
+                            },
+                        ),
+                    },
+                ],
+                run_recipe_store: Some(run_recipe_store.clone()),
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+            },
+        )
+        .await;
+
+        assert_eq!(report.run_recipes_upserted, 1);
+        assert_eq!(report.run_recipes_removed, 1);
+        let recipes = run_recipe_store.list("agent");
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].task_family, "delivery_search_resource");
+        assert_eq!(recipes[0].success_count, 7);
     }
 }
