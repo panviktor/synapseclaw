@@ -3,7 +3,9 @@
 //! This is intentionally not a phrase-engine. It consumes typed interpretation
 //! and retrieval evidence, then decides which sources should be trusted first.
 
-use crate::application::services::turn_interpretation::{ReferenceSource, TurnInterpretation};
+use crate::application::services::turn_interpretation::{
+    ReferenceCandidateKind, ReferenceSource, TurnInterpretation,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionSource {
@@ -210,6 +212,8 @@ fn score_dialogue_state(interpretation: Option<&TurnInterpretation>) -> Option<f
     let state = interpretation.dialogue_state.as_ref()?;
     let reference_count =
         count_reference_candidates(interpretation, ReferenceSource::DialogueState) as f64;
+    let direct_reference_count =
+        count_direct_dialogue_state_references(interpretation) as f64;
     let anchor_count = state.reference_anchors.len().min(4) as f64;
     let focus_count = state.focus_entities.len().min(3) as f64;
     let comparison_bonus = if state.comparison_set.len() >= 2 {
@@ -222,14 +226,45 @@ fn score_dialogue_state(interpretation: Option<&TurnInterpretation>) -> Option<f
     } else {
         0.05
     };
+    let delivery_bonus = if state.recent_delivery_target.is_some() {
+        0.04
+    } else {
+        0.0
+    };
+    let schedule_bonus = if state.recent_schedule_job.is_some() {
+        0.04
+    } else {
+        0.0
+    };
+    let resource_bonus = if state.recent_resource.is_some() {
+        0.03
+    } else {
+        0.0
+    };
+    let search_bonus = if state.recent_search.is_some() {
+        0.03
+    } else {
+        0.0
+    };
+    let workspace_bonus = if state.recent_workspace.is_some() {
+        0.03
+    } else {
+        0.0
+    };
 
     Some(
         (0.42
             + reference_count.min(4.0) * 0.08
+            + direct_reference_count.min(3.0) * 0.05
             + anchor_count * 0.05
             + focus_count * 0.04
             + comparison_bonus
-            + subject_bonus)
+            + subject_bonus
+            + delivery_bonus
+            + schedule_bonus
+            + resource_bonus
+            + search_bonus
+            + workspace_bonus)
             .min(0.96),
     )
 }
@@ -238,6 +273,11 @@ fn score_user_profile(interpretation: Option<&TurnInterpretation>) -> Option<f64
     let interpretation = interpretation?;
     let profile = interpretation.user_profile.as_ref()?;
     let reference_count = count_reference_candidates(interpretation, ReferenceSource::UserProfile);
+    let dialogue_reference_count =
+        count_reference_candidates(interpretation, ReferenceSource::DialogueState);
+    let current_conversation_reference_count =
+        count_reference_candidates(interpretation, ReferenceSource::CurrentConversation);
+    let direct_dialogue_reference_count = count_direct_dialogue_state_references(interpretation);
     let mut field_count = 0usize;
     if profile.preferred_language.is_some() {
         field_count += 1;
@@ -258,9 +298,18 @@ fn score_user_profile(interpretation: Option<&TurnInterpretation>) -> Option<f64
         field_count += 1;
     }
 
+    let competing_context_penalty = if direct_dialogue_reference_count > 0 {
+        0.16
+    } else if dialogue_reference_count > 0 || current_conversation_reference_count > 0 {
+        0.08
+    } else {
+        0.0
+    };
+
     Some(
-        (0.76 + (reference_count.min(4) as f64) * 0.06 + (field_count.min(4) as f64) * 0.02)
-            .min(0.94),
+        (0.66 + (reference_count.min(4) as f64) * 0.05 + (field_count.min(4) as f64) * 0.02
+            - competing_context_penalty)
+            .clamp(0.0, 0.92),
     )
 }
 
@@ -340,6 +389,25 @@ fn count_reference_candidates(
         .count()
 }
 
+fn count_direct_dialogue_state_references(interpretation: &TurnInterpretation) -> usize {
+    interpretation
+        .reference_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.source == ReferenceSource::DialogueState
+                && matches!(
+                    candidate.kind,
+                    ReferenceCandidateKind::DeliveryTarget
+                        | ReferenceCandidateKind::ScheduleJob
+                        | ReferenceCandidateKind::ResourceLocator { .. }
+                        | ReferenceCandidateKind::SearchQuery { .. }
+                        | ReferenceCandidateKind::SearchResult { .. }
+                        | ReferenceCandidateKind::WorkspaceName { .. }
+                )
+        })
+        .count()
+}
+
 fn compute_confidence(ranked: &[RankedSource]) -> ResolutionConfidence {
     let Some(primary) = ranked.first() else {
         return ResolutionConfidence::Low;
@@ -363,6 +431,7 @@ fn compute_clarification_reason(
 ) -> Option<ClarificationReason> {
     let interpretation = evidence.interpretation?;
     let primary = ranked.first().map(|item| item.source);
+    let direct_dialogue_refs = count_direct_dialogue_state_references(interpretation);
     let ambiguity_gap = score_gap_f64(
         ranked.first().map(|item| item.score).unwrap_or_default(),
         ranked.get(1).map(|item| item.score),
@@ -376,6 +445,13 @@ fn compute_clarification_reason(
 
     if ranked.is_empty() {
         return Some(ClarificationReason::ResolverExhausted);
+    }
+
+    if direct_dialogue_refs > 0
+        && interpretation.clarification_candidates.is_empty()
+        && matches!(primary, Some(ResolutionSource::DialogueState))
+    {
+        return None;
     }
 
     if confidence == ResolutionConfidence::Low {
@@ -397,7 +473,8 @@ fn score_gap_i64(top: i64, second: Option<i64>) -> i64 {
 mod tests {
     use super::*;
     use crate::application::services::turn_interpretation::{
-        CurrentConversationSnapshot, DialogueStateSnapshot, TurnInterpretation,
+        CurrentConversationSnapshot, DialogueStateSnapshot, ProfileReferenceKind,
+        ReferenceCandidate, ReferenceCandidateKind, TurnInterpretation,
     };
     use crate::domain::user_profile::UserProfile;
 
@@ -417,6 +494,11 @@ mod tests {
                 comparison_set: vec![],
                 reference_anchors: vec![],
                 last_tool_subjects: vec![],
+                recent_delivery_target: None,
+                recent_schedule_job: None,
+                recent_resource: None,
+                recent_search: None,
+                recent_workspace: None,
             }),
             reference_candidates: vec![],
             clarification_candidates: vec![],
@@ -494,5 +576,133 @@ mod tests {
 
         assert_eq!(plan.source_order, vec![ResolutionSource::SessionHistory]);
         assert_eq!(plan.confidence, ResolutionConfidence::Medium);
+    }
+
+    #[test]
+    fn direct_dialogue_references_suppress_generic_low_confidence_clarify() {
+        let interpretation = TurnInterpretation {
+            dialogue_state: Some(DialogueStateSnapshot {
+                focus_entities: vec![],
+                comparison_set: vec![],
+                reference_anchors: vec![],
+                last_tool_subjects: vec!["job_123".into()],
+                recent_delivery_target: None,
+                recent_schedule_job: None,
+                recent_resource: None,
+                recent_search: None,
+                recent_workspace: None,
+            }),
+            reference_candidates: vec![ReferenceCandidate {
+                kind: ReferenceCandidateKind::ScheduleJob,
+                value: "job_123".into(),
+                source: ReferenceSource::DialogueState,
+            }],
+            clarification_candidates: vec![],
+            ..Default::default()
+        };
+
+        let plan = build_resolution_plan(ResolutionEvidence {
+            interpretation: Some(&interpretation),
+            top_session_score: None,
+            second_session_score: None,
+            top_recipe_score: None,
+            second_recipe_score: None,
+            top_memory_score: Some(0.41),
+            second_memory_score: Some(0.40),
+            recall_hits: 0,
+            skill_hits: 0,
+            entity_hits: 0,
+        });
+
+        assert_eq!(plan.source_order.first(), Some(&ResolutionSource::DialogueState));
+        assert_ne!(plan.clarification_reason, Some(ClarificationReason::LowConfidence));
+    }
+
+    #[test]
+    fn current_conversation_outranks_profile_when_both_are_present() {
+        let interpretation = TurnInterpretation {
+            user_profile: Some(UserProfile {
+                default_city: Some("Berlin".into()),
+                ..Default::default()
+            }),
+            current_conversation: Some(CurrentConversationSnapshot {
+                adapter: "matrix".into(),
+                has_thread: false,
+            }),
+            reference_candidates: vec![
+                ReferenceCandidate {
+                    kind: ReferenceCandidateKind::Profile(ProfileReferenceKind::City),
+                    value: "Berlin".into(),
+                    source: ReferenceSource::UserProfile,
+                },
+                ReferenceCandidate {
+                    kind: ReferenceCandidateKind::DeliveryTarget,
+                    value: "current_conversation".into(),
+                    source: ReferenceSource::CurrentConversation,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let plan = build_resolution_plan(ResolutionEvidence {
+            interpretation: Some(&interpretation),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            plan.source_order.first(),
+            Some(&ResolutionSource::CurrentConversation)
+        );
+    }
+
+    #[test]
+    fn direct_dialogue_state_outranks_profile_defaults() {
+        let interpretation = TurnInterpretation {
+            user_profile: Some(UserProfile {
+                default_city: Some("Berlin".into()),
+                ..Default::default()
+            }),
+            dialogue_state: Some(DialogueStateSnapshot {
+                focus_entities: vec![],
+                comparison_set: vec![],
+                reference_anchors: vec![],
+                last_tool_subjects: vec![],
+                recent_delivery_target: None,
+                recent_schedule_job: Some(crate::domain::dialogue_state::ScheduleJobReference {
+                    job_id: "job_123".into(),
+                    action: crate::domain::tool_fact::ScheduleAction::Run,
+                    job_type: Some(crate::domain::tool_fact::ScheduleJobType::Agent),
+                    schedule_kind: Some(crate::domain::tool_fact::ScheduleKind::Cron),
+                    session_target: None,
+                    timezone: None,
+                }),
+                recent_resource: None,
+                recent_search: None,
+                recent_workspace: None,
+            }),
+            reference_candidates: vec![
+                ReferenceCandidate {
+                    kind: ReferenceCandidateKind::Profile(ProfileReferenceKind::City),
+                    value: "Berlin".into(),
+                    source: ReferenceSource::UserProfile,
+                },
+                ReferenceCandidate {
+                    kind: ReferenceCandidateKind::ScheduleJob,
+                    value: "job_123".into(),
+                    source: ReferenceSource::DialogueState,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let plan = build_resolution_plan(ResolutionEvidence {
+            interpretation: Some(&interpretation),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            plan.source_order.first(),
+            Some(&ResolutionSource::DialogueState)
+        );
     }
 }
