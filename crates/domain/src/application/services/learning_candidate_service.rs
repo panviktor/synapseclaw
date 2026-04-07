@@ -7,6 +7,8 @@
 use crate::application::services::learning_evidence_service::{
     LearningEvidenceEnvelope, LearningEvidenceFacet,
 };
+use crate::domain::memory::MemoryCategory;
+use crate::domain::memory_mutation::{MutationCandidate, MutationSource};
 use crate::domain::tool_fact::{ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileField};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -80,6 +82,23 @@ pub fn build_learning_candidates(
     }
 
     candidates
+}
+
+pub fn build_mutation_candidates(
+    candidates: &[LearningCandidate],
+) -> Vec<MutationCandidate> {
+    let mut mutations = Vec::new();
+    for candidate in candidates {
+        if let LearningCandidate::Precedent(precedent) = candidate {
+            mutations.push(MutationCandidate {
+                category: MemoryCategory::Conversation,
+                text: format!("precedent: {}", precedent.summary),
+                confidence: 0.72,
+                source: MutationSource::ToolOutput,
+            });
+        }
+    }
+    mutations
 }
 
 fn collect_subjects(tool_facts: &[TypedToolFact], limit: usize) -> Vec<String> {
@@ -252,5 +271,27 @@ mod tests {
         assert!(candidates
             .iter()
             .any(|candidate| matches!(candidate, LearningCandidate::RunRecipe(_))));
+    }
+
+    #[test]
+    fn converts_precedent_candidates_to_conversation_mutations() {
+        let candidates = vec![
+            LearningCandidate::Precedent(PrecedentLearningCandidate {
+                summary: "tools=web_search -> web_fetch | subjects=Berlin".into(),
+                tool_pattern: vec!["web_search".into(), "web_fetch".into()],
+                subjects: vec!["Berlin".into()],
+            }),
+            LearningCandidate::UserProfile(UserProfileLearningCandidate {
+                field: UserProfileField::Timezone,
+                operation: ProfileOperation::Set,
+                value: Some("Europe/Berlin".into()),
+            }),
+        ];
+
+        let mutations = build_mutation_candidates(&candidates);
+        assert_eq!(mutations.len(), 1);
+        assert_eq!(mutations[0].category, MemoryCategory::Conversation);
+        assert_eq!(mutations[0].source, MutationSource::ToolOutput);
+        assert!(mutations[0].text.contains("precedent:"));
     }
 }

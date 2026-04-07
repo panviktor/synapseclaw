@@ -59,6 +59,8 @@ pub struct PostTurnReport {
     pub learning_evidence: LearningEvidenceEnvelope,
     /// Structured low-cost candidates for downstream learning.
     pub learning_candidates: Vec<LearningCandidate>,
+    /// Applied mutation events derived from low-cost learning candidates.
+    pub candidate_mutations: Vec<LearningEvent>,
 }
 
 // ── Orchestrator ─────────────────────────────────────────────────
@@ -83,6 +85,7 @@ pub async fn execute_post_turn_learning(
         &input.tool_facts,
         &learning_evidence,
     );
+    let mutation_candidates = learning_candidate_service::build_mutation_candidates(&learning_candidates);
 
     let mut report = PostTurnReport {
         signal: signal.clone(),
@@ -91,6 +94,7 @@ pub async fn execute_post_turn_learning(
         reflection_started: false,
         learning_evidence: learning_evidence.clone(),
         learning_candidates: learning_candidates.clone(),
+        candidate_mutations: Vec::new(),
     };
 
     // ── 1. Explicit hot-path: direct AUDN mutation ──
@@ -124,6 +128,29 @@ pub async fn execute_post_turn_learning(
                     error = %e,
                     "Explicit mutation failed"
                 );
+            }
+        }
+    }
+
+    // ── 1b. Cheap typed candidate mutation path ──
+    if !signal.is_explicit() && input.auto_save_enabled && !mutation_candidates.is_empty() {
+        let decisions = mutation::evaluate_candidates(
+            mem,
+            mutation_candidates,
+            &input.agent_id,
+            &MutationThresholds::default(),
+        )
+        .await;
+        for decision in decisions {
+            match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
+                Ok(event) => report.candidate_mutations.push(event),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "post_turn",
+                        error = %e,
+                        "Typed candidate mutation failed"
+                    );
+                }
             }
         }
     }
@@ -187,6 +214,7 @@ pub async fn execute_post_turn_learning(
             "learning_facets": report.learning_evidence.facets,
             "learning_candidate_count": report.learning_candidates.len(),
             "learning_candidates": report.learning_candidates,
+            "candidate_mutation_count": report.candidate_mutations.len(),
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
     }
