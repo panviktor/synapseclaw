@@ -9,8 +9,11 @@
 //! The adapter `turn_context_fmt` re-exports these functions.
 
 use crate::application::services::clarification_policy;
+use crate::application::services::procedural_cluster_service;
+use crate::application::services::procedural_contradiction_service;
 use crate::application::services::resolution_router;
 use crate::application::services::retrieval_service;
+use crate::application::services::run_recipe_cluster_service;
 use crate::application::services::turn_budget_policy;
 use crate::application::services::turn_interpretation::{
     ReferenceCandidateKind, ReferenceSource, TurnInterpretation,
@@ -42,6 +45,8 @@ pub struct TurnMemoryContext {
     pub session_matches: Vec<retrieval_service::SessionSearchMatch>,
     /// Relevant prior successful execution recipes / precedents.
     pub run_recipes: Vec<retrieval_service::RunRecipeSearchMatch>,
+    /// Contradictions between surfaced recipe paths and recent failure clusters.
+    pub procedural_contradictions: Vec<procedural_contradiction_service::ProceduralContradiction>,
     /// Deterministic resolver ordering for this turn.
     pub resolution_plan: Option<resolution_router::ResolutionPlan>,
     /// Structured clarification guidance from known defaults and candidates.
@@ -301,6 +306,12 @@ pub async fn assemble_turn_context(
         }
     }
 
+    if allow_historical_context {
+        if let Some(store) = run_recipe_store {
+            load_recipe_contradictions(mem, store, agent_id, &mut ctx).await;
+        }
+    }
+
     apply_resolution_plan(&mut ctx, interpretation);
 
     tracing::debug!(
@@ -312,6 +323,7 @@ pub async fn assemble_turn_context(
         entities = ctx.entities.len(),
         sessions = ctx.session_matches.len(),
         recipes = ctx.run_recipes.len(),
+        contradictions = ctx.procedural_contradictions.len(),
         interpreter_mode = ?ctx
             .execution_budget
             .as_ref()
@@ -414,6 +426,63 @@ async fn load_nearby_recall(
     };
 
     ctx.nearby_entries = nearby.into_iter().map(|match_| match_.entry).collect();
+}
+
+async fn load_recipe_contradictions(
+    mem: &dyn UnifiedMemoryPort,
+    run_recipe_store: &dyn RunRecipeStorePort,
+    agent_id: &str,
+    ctx: &mut TurnMemoryContext,
+) {
+    if ctx.run_recipes.is_empty() {
+        return;
+    }
+
+    let surfaced_recipes = ctx
+        .run_recipes
+        .iter()
+        .filter_map(|hit| run_recipe_store.get(agent_id, &hit.task_family))
+        .collect::<Vec<_>>();
+    if surfaced_recipes.is_empty() {
+        return;
+    }
+
+    let failure_clusters = match procedural_cluster_service::plan_recent_clusters_since(
+        mem,
+        agent_id,
+        procedural_cluster_service::ProceduralClusterKind::FailurePattern,
+        12,
+        6,
+        0.95,
+        Some(chrono::Utc::now() - chrono::Duration::days(30)),
+    )
+    .await
+    {
+        Ok(clusters) => clusters,
+        Err(_) => return,
+    };
+    if failure_clusters.is_empty() {
+        return;
+    }
+
+    let recipe_clusters = run_recipe_cluster_service::plan_recipe_clusters(&surfaced_recipes, 0.9);
+    let surfaced_families = surfaced_recipes
+        .iter()
+        .map(|recipe| recipe.task_family.as_str())
+        .collect::<std::collections::HashSet<_>>();
+
+    ctx.procedural_contradictions =
+        procedural_contradiction_service::find_recipe_failure_contradictions(
+            &recipe_clusters,
+            &failure_clusters,
+            0.75,
+        )
+        .into_iter()
+        .filter(|contradiction| {
+            surfaced_families.contains(contradiction.recipe_task_family.as_str())
+        })
+        .take(2)
+        .collect();
 }
 
 // ── Formatting ───────────────────────────────────────────────────
@@ -941,7 +1010,7 @@ fn format_session_section(ctx: &TurnMemoryContext) -> Option<String> {
 }
 
 fn format_recipe_section(ctx: &TurnMemoryContext) -> Option<String> {
-    if ctx.run_recipes.is_empty() {
+    if ctx.run_recipes.is_empty() && ctx.procedural_contradictions.is_empty() {
         return None;
     }
     let mut section = String::new();
@@ -965,6 +1034,27 @@ fn format_recipe_section(ctx: &TurnMemoryContext) -> Option<String> {
             block.push('\n');
         }
         block.push_str("</recipe>\n");
+        section.push_str(&block);
+    }
+    for contradiction in &ctx.procedural_contradictions {
+        let mut block = format!(
+            "<procedural-contradiction task_family=\"{}\" overlap=\"{:.2}\">\n",
+            contradiction.recipe_task_family, contradiction.overlap
+        );
+        if !contradiction.recipe_lineage_task_families.is_empty() {
+            block.push_str("Lineage: ");
+            block.push_str(&contradiction.recipe_lineage_task_families.join(", "));
+            block.push('\n');
+        }
+        if !contradiction.failed_tools.is_empty() {
+            block.push_str("Failed tools: ");
+            block.push_str(&contradiction.failed_tools.join(", "));
+            block.push('\n');
+        }
+        block.push_str("Failure anchor: ");
+        block.push_str(&contradiction.failure_representative_key);
+        block.push('\n');
+        block.push_str("</procedural-contradiction>\n");
         section.push_str(&block);
     }
     Some(section)
@@ -1540,6 +1630,41 @@ mod tests {
         assert!(fmt.enrichment_prefix.contains("Sample request:"));
         assert!(fmt.enrichment_prefix.contains("Tool pattern: shell, git"));
         assert!(fmt.enrichment_prefix.contains("</recipe>"));
+    }
+
+    #[test]
+    fn format_recipe_section_surfaces_procedural_contradictions() {
+        let ctx = TurnMemoryContext {
+            run_recipes: vec![make_recipe(
+                "status_delivery",
+                "Search the status page and send the result",
+            )],
+            procedural_contradictions: vec![
+                crate::application::services::procedural_contradiction_service::ProceduralContradiction {
+                    recipe_task_family: "status_delivery".into(),
+                    recipe_lineage_task_families: vec!["status_delivery".into(), "status_page_delivery".into()],
+                    recipe_cluster_size: 2,
+                    recipe_tool_pattern: vec!["web_search".into(), "message_send".into()],
+                    failure_representative_key: "failure-1".into(),
+                    failure_cluster_size: 1,
+                    failed_tools: vec!["web_search".into(), "message_send".into()],
+                    overlap: 1.0,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.enrichment_prefix.contains(
+            "<procedural-contradiction task_family=\"status_delivery\" overlap=\"1.00\">"
+        ));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("Lineage: status_delivery, status_page_delivery"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("Failed tools: web_search, message_send"));
+        assert!(fmt.enrichment_prefix.contains("Failure anchor: failure-1"));
     }
 
     #[test]
