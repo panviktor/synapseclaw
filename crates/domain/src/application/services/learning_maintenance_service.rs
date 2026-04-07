@@ -3,7 +3,7 @@
 //! Keeps deferred learning work cheap by deciding when background maintenance
 //! should actually run, instead of blindly executing every cycle.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LearningMaintenanceSnapshot {
     pub recent_run_recipe_count: usize,
     pub run_recipe_cluster_count: usize,
