@@ -1433,6 +1433,23 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
+    let recipe_clusters = synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters(
+        &state.run_recipe_store.list(&state.agent_id),
+        0.9,
+    )
+    .into_iter()
+    .map(|cluster| {
+        serde_json::json!({
+            "representative_task_family": cluster.representative.task_family,
+            "member_count": cluster.member_count(),
+            "member_task_families": cluster.member_task_families,
+            "projection": synapse_domain::application::services::memory_projection_service::format_run_recipe_cluster_projection(
+                &cluster,
+            ),
+        })
+    })
+    .collect::<Vec<_>>();
+
     let mut configured_skills =
         crate::skills::load_skills_with_config(&config.workspace_dir, &config)
             .into_iter()
@@ -1648,6 +1665,7 @@ pub async fn handle_api_memory_projections(
                 .filter_map(|entry| entry.get("task_family").and_then(serde_json::Value::as_str))
                 .map(ToString::to_string)
                 .collect(),
+            run_recipe_cluster_count: recipe_clusters.len(),
             precedent_count: recent_precedents.len(),
             precedent_cluster_count: precedent_clusters.len(),
             failure_pattern_count: recent_failure_patterns.len(),
@@ -1690,6 +1708,7 @@ pub async fn handle_api_memory_projections(
         "skill_surface": skill_surface,
         "effective_skills": effective_skills,
         "run_recipes": run_recipes,
+        "recipe_clusters": recipe_clusters,
         "recent_precedents": recent_precedents,
         "precedent_clusters": precedent_clusters,
         "recent_reflections": recent_reflections,

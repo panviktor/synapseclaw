@@ -5,6 +5,7 @@
 
 use crate::application::services::learning_maintenance_service::LearningMaintenancePlan;
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
+use crate::application::services::run_recipe_cluster_service::RunRecipeCluster;
 use crate::domain::conversation::{ConversationEvent, ConversationSession, EventType};
 use crate::domain::dialogue_state::DialogueState;
 use crate::domain::memory::{CoreMemoryBlock, MemoryEntry, Skill};
@@ -17,6 +18,7 @@ pub struct LearningDigestProjectionInput {
     pub candidate_skill_count: usize,
     pub shadowed_skill_count: usize,
     pub run_recipe_families: Vec<String>,
+    pub run_recipe_cluster_count: usize,
     pub precedent_count: usize,
     pub precedent_cluster_count: usize,
     pub failure_pattern_count: usize,
@@ -237,6 +239,7 @@ pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) 
         && input.candidate_skill_count == 0
         && input.shadowed_skill_count == 0
         && input.run_recipe_families.is_empty()
+        && input.run_recipe_cluster_count == 0
         && input.precedent_count == 0
         && input.precedent_cluster_count == 0
         && input.failure_pattern_count == 0
@@ -274,6 +277,10 @@ pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) 
             input.run_recipe_families.join(", ")
         ));
     }
+    lines.push(format!(
+        "- run_recipe_cluster_count: {}",
+        input.run_recipe_cluster_count
+    ));
     lines.push(format!("- precedent_count: {}", input.precedent_count));
     lines.push(format!(
         "- precedent_cluster_count: {}",
@@ -301,6 +308,32 @@ pub fn format_procedural_cluster_projection(section: &str, cluster: &ProceduralC
     if !cluster.representative.content.trim().is_empty() {
         lines.push("- representative_content:".to_string());
         lines.push(indent_multiline(cluster.representative.content.trim(), 2));
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
+pub fn format_run_recipe_cluster_projection(cluster: &RunRecipeCluster) -> String {
+    let mut lines = vec![
+        "[run-recipe-cluster]".to_string(),
+        format!(
+            "- representative_task_family: {}",
+            cluster.representative.task_family
+        ),
+        format!("- member_count: {}", cluster.member_count()),
+        format!(
+            "- member_task_families: {}",
+            cluster.member_task_families.join(", ")
+        ),
+    ];
+    if !cluster.representative.tool_pattern.is_empty() {
+        lines.push(format!(
+            "- representative_tool_pattern: {}",
+            cluster.representative.tool_pattern.join(" -> ")
+        ));
+    }
+    if !cluster.representative.summary.trim().is_empty() {
+        lines.push("- representative_summary:".to_string());
+        lines.push(indent_multiline(cluster.representative.summary.trim(), 2));
     }
     format!("{}\n", lines.join("\n"))
 }
@@ -558,6 +591,7 @@ mod tests {
             candidate_skill_count: 1,
             shadowed_skill_count: 1,
             run_recipe_families: vec!["search_delivery".into()],
+            run_recipe_cluster_count: 1,
             precedent_count: 2,
             precedent_cluster_count: 1,
             failure_pattern_count: 1,
@@ -568,6 +602,7 @@ mod tests {
         assert!(projection.contains("[learning-digest]"));
         assert!(projection.contains("effective_skills: manual-deploy, search_delivery"));
         assert!(projection.contains("candidate_skill_count: 1"));
+        assert!(projection.contains("run_recipe_cluster_count: 1"));
         assert!(projection.contains("precedent_cluster_count: 1"));
         assert!(projection.contains("failure_pattern_count: 1"));
         assert!(projection.contains("failure_pattern_cluster_count: 1"));
