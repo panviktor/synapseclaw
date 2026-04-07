@@ -49,6 +49,7 @@ pub struct SelfLearningEvalResult {
     pub scenario_id: &'static str,
     pub typed_fact_count: usize,
     pub candidate_kinds: Vec<&'static str>,
+    pub learning_assessments: Vec<learning_quality_service::LearningCandidateAssessment>,
     pub assessment_reasons: Vec<&'static str>,
     pub user_profile_candidate_count: usize,
     pub precedent_candidate_count: usize,
@@ -220,6 +221,7 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         scenario_id: scenario.id,
         typed_fact_count: evidence.typed_fact_count,
         candidate_kinds: candidate_kind_names(&candidates),
+        learning_assessments: assessments.clone(),
         assessment_reasons: assessment_reason_names(&assessments),
         user_profile_candidate_count: count_candidate_kind(&candidates, candidate_is_user_profile),
         precedent_candidate_count: count_candidate_kind(&candidates, candidate_is_precedent),
@@ -1416,6 +1418,14 @@ mod tests {
         assert_eq!(result.precedent_candidate_count, 0);
         assert_eq!(result.run_recipe_candidate_count, 0);
         assert!(!result.profile_patch_is_noop);
+        assert!(result.learning_assessments.iter().any(|assessment| {
+            assessment.accepted
+                && assessment.reason == "explicit_profile_fact"
+                && matches!(
+                    assessment.candidate,
+                    learning_candidate_service::LearningCandidate::UserProfile(_)
+                )
+        }));
         assert!(matches!(
             result.profile_patch.timezone,
             user_profile_service::ProfileFieldPatch::Set(_)
