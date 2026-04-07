@@ -186,8 +186,13 @@ pub fn spawn_consolidation_worker(
             }
 
             if plan.run_skill_review {
-                match run_skill_review(memory.as_ref(), &agent_id, config.activity_probe_limit * 4)
-                    .await
+                match run_skill_review(
+                    memory.as_ref(),
+                    run_recipe_store.as_ref(),
+                    &agent_id,
+                    config.activity_probe_limit * 4,
+                )
+                .await
                 {
                     Ok(0) => tracing::debug!("Learning skill review found no changes"),
                     Ok(count) => {
@@ -353,12 +358,14 @@ fn count_recent_entries(
 
 async fn run_skill_review(
     memory: &dyn UnifiedMemoryPort,
+    run_recipe_store: &dyn RunRecipeStorePort,
     agent_id: &str,
     limit: usize,
 ) -> Result<usize, synapse_domain::domain::memory::MemoryError> {
     let agent_id = agent_id.to_string();
     let skills = memory.list_skills(&agent_id, limit).await?;
-    let decisions = review_learned_skills(&skills);
+    let recipes = run_recipe_store.list(&agent_id);
+    let decisions = review_learned_skills(&skills, &recipes);
     let mut applied = 0;
 
     for decision in decisions {
