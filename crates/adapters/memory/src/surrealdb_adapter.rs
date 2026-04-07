@@ -1261,6 +1261,7 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .query(
                 "SELECT * FROM skill
                  WHERE (name CONTAINS $text OR description CONTAINS $text)
+                 AND (status IS NONE OR status != 'deprecated')
                  AND created_by = $agent
                  ORDER BY success_count DESC
                  LIMIT $limit",
@@ -1328,6 +1329,29 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
 
         let rows = take_json!(resp, 0);
         Ok(rows.first().and_then(row_to_skill))
+    }
+
+    async fn list_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM skill
+                 WHERE created_by = $agent
+                 AND (status IS NONE OR status != 'deprecated')
+                 ORDER BY success_count DESC, updated_at DESC
+                 LIMIT $limit",
+            )
+            .bind(("agent", agent_id.clone()))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(rows.iter().filter_map(row_to_skill).collect())
     }
 }
 

@@ -5,7 +5,9 @@
 //! duplicating ad-hoc scoring logic.
 
 use crate::domain::conversation::{ConversationEvent, ConversationKind, EventType};
-use crate::domain::memory::{Entity, MemoryEntry, MemoryError, MemoryQuery, Skill};
+use crate::domain::memory::{
+    Entity, MemoryEntry, MemoryError, MemoryQuery, Skill, SkillOrigin, SkillStatus,
+};
 use crate::domain::run_recipe::RunRecipe;
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
@@ -391,8 +393,12 @@ pub async fn search_turn_hybrid(
         matched.recalled_entries.push(entry);
     }
 
+    let mut skills = result.skills;
+    skills.retain(skill_is_runtime_active);
+    skills.sort_by(compare_skills_for_runtime);
+
     let mut skill_chars = 0usize;
-    for skill in result.skills {
+    for skill in skills {
         if matched.skills.len() >= options.skills_max_count {
             break;
         }
@@ -424,6 +430,26 @@ pub async fn search_turn_hybrid(
     }
 
     Ok(matched)
+}
+
+fn skill_is_runtime_active(skill: &Skill) -> bool {
+    matches!(skill.status, SkillStatus::Active)
+}
+
+fn compare_skills_for_runtime(left: &Skill, right: &Skill) -> std::cmp::Ordering {
+    skill_origin_priority(&right.origin)
+        .cmp(&skill_origin_priority(&left.origin))
+        .then_with(|| right.success_count.cmp(&left.success_count))
+        .then_with(|| right.updated_at.cmp(&left.updated_at))
+        .then_with(|| left.name.cmp(&right.name))
+}
+
+fn skill_origin_priority(origin: &SkillOrigin) -> u8 {
+    match origin {
+        SkillOrigin::Manual => 3,
+        SkillOrigin::Imported => 2,
+        SkillOrigin::Learned => 1,
+    }
 }
 
 fn is_autosave_key(key: &str) -> bool {
@@ -1123,6 +1149,91 @@ mod tests {
         assert_eq!(hits.recalled_entries[0].key, "weather");
         assert_eq!(hits.skills.len(), 1);
         assert_eq!(hits.entities.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn hybrid_turn_search_prefers_manual_active_skills_and_skips_candidates() {
+        let memory = StubMemory {
+            hybrid: HybridSearchResult {
+                episodes: vec![],
+                entities: vec![],
+                facts: vec![],
+                skills: vec![
+                    Skill {
+                        id: "sk-learned".into(),
+                        name: "learned-weather".into(),
+                        description: String::new(),
+                        content: "Use a weather source".into(),
+                        tags: vec![],
+                        success_count: 50,
+                        fail_count: 1,
+                        version: 2,
+                        origin: crate::domain::memory::SkillOrigin::Learned,
+                        status: crate::domain::memory::SkillStatus::Active,
+                        created_by: "agent".into(),
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                    },
+                    Skill {
+                        id: "sk-manual".into(),
+                        name: "manual-weather".into(),
+                        description: String::new(),
+                        content: "Prefer official sources first".into(),
+                        tags: vec![],
+                        success_count: 1,
+                        fail_count: 0,
+                        version: 1,
+                        origin: crate::domain::memory::SkillOrigin::Manual,
+                        status: crate::domain::memory::SkillStatus::Active,
+                        created_by: "agent".into(),
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                    },
+                    Skill {
+                        id: "sk-candidate".into(),
+                        name: "candidate-weather".into(),
+                        description: String::new(),
+                        content: "Unproven draft".into(),
+                        tags: vec![],
+                        success_count: 99,
+                        fail_count: 0,
+                        version: 1,
+                        origin: crate::domain::memory::SkillOrigin::Learned,
+                        status: crate::domain::memory::SkillStatus::Candidate,
+                        created_by: "agent".into(),
+                        created_at: chrono::Utc::now(),
+                        updated_at: chrono::Utc::now(),
+                    },
+                ],
+                reflections: vec![],
+            },
+        };
+
+        let hits = search_turn_hybrid(
+            &memory,
+            "weather",
+            "agent",
+            None,
+            &HybridTurnSearchOptions {
+                recall_max_entries: 3,
+                recall_min_relevance: 0.4,
+                skills_max_count: 3,
+                skills_total_max_chars: 500,
+                entities_max_count: 0,
+                entities_total_max_chars: 0,
+                query_limit: 8,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(hits.skills.len(), 2);
+        assert_eq!(hits.skills[0].name, "manual-weather");
+        assert_eq!(hits.skills[1].name, "learned-weather");
+        assert!(hits
+            .skills
+            .iter()
+            .all(|skill| matches!(skill.status, crate::domain::memory::SkillStatus::Active)));
     }
 
     #[tokio::test]

@@ -755,9 +755,11 @@ fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Opti
             continue;
         }
         section.push_str(&format!(
-            "<skill name=\"{}\">\n{}\n</skill>\n",
+            "<skill name=\"{}\" origin=\"{}\" status=\"{}\">\n{}\n</skill>\n",
             skill.name,
-            skill.content.trim()
+            skill.origin,
+            skill.status,
+            skill.content.trim(),
         ));
     }
 
@@ -1284,14 +1286,19 @@ mod tests {
 
     #[test]
     fn format_skills_independent_of_recall() {
+        let mut skill = make_skill("deploy", "Run cargo build --release");
+        skill.origin = crate::domain::memory::SkillOrigin::Manual;
+        skill.status = crate::domain::memory::SkillStatus::Active;
         let ctx = TurnMemoryContext {
             recalled_entries: vec![], // empty recall
-            skills: vec![make_skill("deploy", "Run cargo build --release")],
+            skills: vec![skill],
             ..Default::default()
         };
         let fmt = format_turn_context(&ctx, &PromptBudget::default());
         assert!(!fmt.enrichment_prefix.contains("[Memory context]"));
-        assert!(fmt.enrichment_prefix.contains("<skill name=\"deploy\">"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("<skill name=\"deploy\" origin=\"manual\" status=\"active\">"));
         assert!(fmt.enrichment_prefix.contains("Run cargo build --release"));
         assert!(fmt.enrichment_prefix.contains("</skill>"));
     }

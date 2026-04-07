@@ -1388,6 +1388,29 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
+    let recent_skills = state
+        .mem
+        .list_skills(&state.agent_id, limit)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|skill| {
+            let name = skill.name.clone();
+            let origin = skill.origin.to_string();
+            let status = skill.status.to_string();
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_skill_projection(
+                    &skill,
+                );
+            serde_json::json!({
+                "name": name,
+                "origin": origin,
+                "status": status,
+                "projection": projection,
+            })
+        })
+        .collect::<Vec<_>>();
+
     let recent_precedents = state
         .mem
         .list(
@@ -1470,6 +1493,7 @@ pub async fn handle_api_memory_projections(
         "core_memory": core_projection,
         "working_state": working_state,
         "recent_sessions": recent_sessions,
+        "recent_skills": recent_skills,
         "run_recipes": run_recipes,
         "recent_precedents": recent_precedents,
         "recent_reflections": recent_reflections,

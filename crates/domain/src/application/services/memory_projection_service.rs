@@ -5,7 +5,7 @@
 
 use crate::domain::conversation::{ConversationEvent, ConversationSession, EventType};
 use crate::domain::dialogue_state::DialogueState;
-use crate::domain::memory::{CoreMemoryBlock, MemoryEntry};
+use crate::domain::memory::{CoreMemoryBlock, MemoryEntry, Skill};
 use crate::domain::run_recipe::RunRecipe;
 
 pub fn format_core_blocks_projection(blocks: &[CoreMemoryBlock]) -> Option<String> {
@@ -145,6 +145,27 @@ pub fn format_run_recipe_projection(recipe: &RunRecipe) -> String {
         lines.push(indent_multiline(recipe.summary.trim(), 2));
     }
 
+    format!("{}\n", lines.join("\n"))
+}
+
+pub fn format_skill_projection(skill: &Skill) -> String {
+    let mut lines = vec![
+        "[skill]".to_string(),
+        format!("- name: {}", skill.name),
+        format!("- origin: {}", skill.origin),
+        format!("- status: {}", skill.status),
+        format!("- success_count: {}", skill.success_count),
+        format!("- fail_count: {}", skill.fail_count),
+        format!("- version: {}", skill.version),
+    ];
+    if !skill.description.trim().is_empty() {
+        lines.push("- description:".to_string());
+        lines.push(indent_multiline(skill.description.trim(), 2));
+    }
+    if !skill.content.trim().is_empty() {
+        lines.push("- content:".to_string());
+        lines.push(indent_multiline(skill.content.trim(), 2));
+    }
     format!("{}\n", lines.join("\n"))
 }
 
@@ -338,5 +359,29 @@ mod tests {
         assert!(projection.contains("category: precedent"));
         assert!(projection.contains("score: 0.870"));
         assert!(projection.contains("tools=web_search -> message_send"));
+    }
+
+    #[test]
+    fn formats_skill_projection_with_origin_and_status() {
+        let projection = format_skill_projection(&Skill {
+            id: "sk1".into(),
+            name: "deploy".into(),
+            description: "Preferred deploy procedure".into(),
+            content: "1. Build\n2. Test\n3. Deploy".into(),
+            tags: vec![],
+            success_count: 4,
+            fail_count: 1,
+            version: 2,
+            origin: crate::domain::memory::SkillOrigin::Manual,
+            status: crate::domain::memory::SkillStatus::Active,
+            created_by: "agent".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        });
+
+        assert!(projection.contains("[skill]"));
+        assert!(projection.contains("origin: manual"));
+        assert!(projection.contains("status: active"));
+        assert!(projection.contains("Preferred deploy procedure"));
     }
 }

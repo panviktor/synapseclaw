@@ -124,6 +124,24 @@ pub trait SkillMemoryPort: Send + Sync {
     /// Get skill by name, scoped to agent.
     async fn get_skill(&self, name: &str, agent_id: &AgentId)
         -> Result<Option<Skill>, MemoryError>;
+
+    /// List recent/active skills for an agent.
+    async fn list_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        self.find_skills(&MemoryQuery {
+            text: String::new(),
+            embedding: None,
+            agent_id: agent_id.clone(),
+            categories: Vec::new(),
+            include_shared: false,
+            time_range: None,
+            limit,
+        })
+        .await
+    }
 }
 
 // ── Reflection (self-improvement) ────────────────────────────────

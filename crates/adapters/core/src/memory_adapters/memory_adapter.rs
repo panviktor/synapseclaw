@@ -140,6 +140,13 @@ impl SkillMemoryPort for ConsolidatingMemory {
     ) -> Result<Option<Skill>, MemoryError> {
         self.inner.get_skill(name, agent_id).await
     }
+    async fn list_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        self.inner.list_skills(agent_id, limit).await
+    }
 }
 
 #[async_trait]
