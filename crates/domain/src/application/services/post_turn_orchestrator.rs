@@ -216,19 +216,35 @@ pub async fn execute_post_turn_learning(
 
     // ── 1b. Cheap precedent mutation path (category-aware semantic merge) ──
     if !signal.is_explicit() && input.auto_save_enabled {
+        let recent_failure_clusters = if precedent_assessments.is_empty() {
+            Vec::new()
+        } else {
+            plan_recent_clusters(
+                mem,
+                &input.agent_id,
+                ProceduralClusterKind::FailurePattern,
+                24,
+                6,
+                0.96,
+            )
+            .await
+            .unwrap_or_default()
+        };
         for assessment in &precedent_assessments {
             let Some(candidate) =
                 learning_candidate_service::build_mutation_candidate_from_assessment(assessment)
             else {
                 continue;
             };
-            let decision = precedent_similarity_service::evaluate_precedent_candidate(
-                mem,
-                candidate,
-                &input.agent_id,
-                &precedent_similarity_service::PrecedentSimilarityThresholds::default(),
-            )
-            .await;
+            let decision =
+                precedent_similarity_service::evaluate_precedent_candidate_with_failures(
+                    mem,
+                    candidate,
+                    &input.agent_id,
+                    &precedent_similarity_service::PrecedentSimilarityThresholds::default(),
+                    &recent_failure_clusters,
+                )
+                .await;
             let decision = merge_precedent_update_decision(mem, &input.agent_id, decision).await;
             match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
                 Ok(event) => report.candidate_mutations.push(event),

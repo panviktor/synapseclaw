@@ -4,6 +4,9 @@
 //! engine alone. Accepted precedent candidates should compare primarily against
 //! existing precedent memories, not against all episodic memories.
 
+use crate::application::services::{
+    failure_similarity_service, procedural_cluster_service::ProceduralCluster,
+};
 use crate::domain::memory::{MemoryCategory, MemoryEntry, MemoryQuery};
 use crate::domain::memory_mutation::{MutationAction, MutationCandidate, MutationDecision};
 use crate::ports::memory::UnifiedMemoryPort;
@@ -33,11 +36,21 @@ pub async fn evaluate_precedent_candidate(
     agent_id: &str,
     thresholds: &PrecedentSimilarityThresholds,
 ) -> MutationDecision {
+    evaluate_precedent_candidate_with_failures(mem, candidate, agent_id, thresholds, &[]).await
+}
+
+pub async fn evaluate_precedent_candidate_with_failures(
+    mem: &dyn UnifiedMemoryPort,
+    candidate: MutationCandidate,
+    agent_id: &str,
+    thresholds: &PrecedentSimilarityThresholds,
+    failure_clusters: &[ProceduralCluster],
+) -> MutationDecision {
     let existing =
         fetch_precedent_shortlist(mem, &candidate.text, agent_id, thresholds.shortlist_limit)
             .await
             .unwrap_or_default();
-    decide_precedent_mutation(candidate, &existing, thresholds)
+    decide_precedent_mutation_with_failures(candidate, &existing, thresholds, failure_clusters)
 }
 
 async fn fetch_precedent_shortlist(
@@ -79,6 +92,15 @@ pub fn decide_precedent_mutation(
     existing: &[MemoryEntry],
     thresholds: &PrecedentSimilarityThresholds,
 ) -> MutationDecision {
+    decide_precedent_mutation_with_failures(candidate, existing, thresholds, &[])
+}
+
+pub fn decide_precedent_mutation_with_failures(
+    candidate: MutationCandidate,
+    existing: &[MemoryEntry],
+    thresholds: &PrecedentSimilarityThresholds,
+    failure_clusters: &[ProceduralCluster],
+) -> MutationDecision {
     let best = existing
         .iter()
         .filter(|entry| is_precedent_category(&entry.category))
@@ -104,6 +126,8 @@ pub fn decide_precedent_mutation(
     let best_shape = parse_precedent_summary(&best.content);
     let ambiguous_cluster = best_score < thresholds.noop_threshold
         && has_ambiguous_precedent_cluster(best, existing, thresholds);
+    let contradicted_branch =
+        precedent_conflicts_with_failure_clusters(&best.content, failure_clusters, 0.75);
     let (action, reason) = if best_score >= thresholds.noop_threshold {
         (
             MutationAction::Noop,
@@ -116,6 +140,13 @@ pub fn decide_precedent_mutation(
         (
             MutationAction::Add,
             format!("ambiguous precedent cluster near score {best_score:.3}"),
+        )
+    } else if best_score >= thresholds.update_threshold && contradicted_branch {
+        (
+            MutationAction::Add,
+            format!(
+                "similar precedent but contradicted by failure clusters (score {best_score:.3})"
+            ),
         )
     } else if best_score >= thresholds.update_threshold
         && is_distinct_precedent_shape(&candidate_shape, &best_shape)
@@ -185,6 +216,10 @@ pub fn precedent_contents_have_distinct_shape(left: &str, right: &str) -> bool {
     )
 }
 
+pub fn precedent_summary_tools(value: &str) -> Vec<String> {
+    parse_precedent_summary(value).tools
+}
+
 fn is_precedent_category(category: &MemoryCategory) -> bool {
     matches!(category, MemoryCategory::Custom(name) if name == "precedent")
 }
@@ -240,6 +275,21 @@ fn is_distinct_precedent_shape(candidate: &PrecedentSummary, existing: &Preceden
     !candidate.tools.is_empty()
         && !existing.tools.is_empty()
         && jaccard_similarity(&candidate.tools, &existing.tools) < 0.5
+}
+
+fn precedent_conflicts_with_failure_clusters(
+    precedent_content: &str,
+    failure_clusters: &[ProceduralCluster],
+    min_overlap: f64,
+) -> bool {
+    let tools = precedent_summary_tools(precedent_content);
+    !tools.is_empty()
+        && failure_clusters.iter().any(|cluster| {
+            let failed_tools = failure_similarity_service::failure_summary_failed_tools(
+                &cluster.representative.content,
+            );
+            !failed_tools.is_empty() && jaccard_similarity(&tools, &failed_tools) >= min_overlap
+        })
 }
 
 fn union_preserving_order(left: &[String], right: &[String]) -> Vec<String> {
@@ -460,6 +510,39 @@ mod tests {
 
         assert!(matches!(decision.action, MutationAction::Add));
         assert!(decision.reason.contains("ambiguous precedent cluster"));
+    }
+
+    #[test]
+    fn contradicted_similar_precedent_adds_new_branch() {
+        let decision = decide_precedent_mutation_with_failures(
+            candidate(),
+            &[MemoryEntry {
+                id: "1".into(),
+                key: "custom_precedent_1".into(),
+                content: "tools=web_search -> message_send | subjects=status".into(),
+                category: MemoryCategory::Custom("precedent".into()),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                session_id: None,
+                score: Some(0.88),
+            }],
+            &PrecedentSimilarityThresholds::default(),
+            &[ProceduralCluster {
+                representative: MemoryEntry {
+                    id: "f1".into(),
+                    key: "failure_1".into(),
+                    content: "failed_tools=web_search -> message_send | outcomes=runtime_error"
+                        .into(),
+                    category: MemoryCategory::Custom("failure_pattern".into()),
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    session_id: None,
+                    score: None,
+                },
+                member_keys: vec!["failure_1".into()],
+            }],
+        );
+
+        assert!(matches!(decision.action, MutationAction::Add));
+        assert!(decision.reason.contains("contradicted by failure clusters"));
     }
 
     #[test]
