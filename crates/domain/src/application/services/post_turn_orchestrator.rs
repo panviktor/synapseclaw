@@ -5,6 +5,9 @@
 //! divergence between transport adapters.
 
 use crate::application::services::learning_events::LearningEvent;
+use crate::application::services::learning_candidate_service::{
+    self, LearningCandidate,
+};
 use crate::application::services::learning_evidence_service::{
     self, LearningEvidenceEnvelope,
 };
@@ -54,6 +57,8 @@ pub struct PostTurnReport {
     pub reflection_started: bool,
     /// Cheap typed evidence from this turn.
     pub learning_evidence: LearningEvidenceEnvelope,
+    /// Structured low-cost candidates for downstream learning.
+    pub learning_candidates: Vec<LearningCandidate>,
 }
 
 // ── Orchestrator ─────────────────────────────────────────────────
@@ -71,6 +76,13 @@ pub async fn execute_post_turn_learning(
     let signal = learning_signals::classify_signal_with_patterns(&input.user_message, &patterns);
     let user_chars = input.user_message.chars().count();
     let learning_evidence = learning_evidence_service::build_learning_evidence(&input.tool_facts);
+    let learning_candidates = learning_candidate_service::build_learning_candidates(
+        &input.user_message,
+        &input.assistant_response,
+        &input.tools_used,
+        &input.tool_facts,
+        &learning_evidence,
+    );
 
     let mut report = PostTurnReport {
         signal: signal.clone(),
@@ -78,6 +90,7 @@ pub async fn execute_post_turn_learning(
         consolidation_started: false,
         reflection_started: false,
         learning_evidence: learning_evidence.clone(),
+        learning_candidates: learning_candidates.clone(),
     };
 
     // ── 1. Explicit hot-path: direct AUDN mutation ──
@@ -172,6 +185,8 @@ pub async fn execute_post_turn_learning(
             "reflection_started": report.reflection_started,
             "typed_fact_count": report.learning_evidence.typed_fact_count,
             "learning_facets": report.learning_evidence.facets,
+            "learning_candidate_count": report.learning_candidates.len(),
+            "learning_candidates": report.learning_candidates,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
     }
