@@ -1915,7 +1915,11 @@ pub async fn handle_api_memory_learning_evals(
     let mut by_assessment_reason = std::collections::BTreeMap::<String, usize>::new();
     let mut by_skill_promotion_reason = std::collections::BTreeMap::<String, usize>::new();
     let mut by_skill_review_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_skill_review_action = std::collections::BTreeMap::<String, usize>::new();
     let mut by_skill_feedback_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_run_recipe_review_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_run_recipe_promotion_block_reason =
+        std::collections::BTreeMap::<String, usize>::new();
     let mut by_precedent_mutation_action = std::collections::BTreeMap::<String, usize>::new();
     let mut by_precedent_cluster_review_action = std::collections::BTreeMap::<String, usize>::new();
     let mut by_failure_cluster_review_action = std::collections::BTreeMap::<String, usize>::new();
@@ -1928,6 +1932,7 @@ pub async fn handle_api_memory_learning_evals(
     let mut accepted_skill_promotions = 0usize;
     let mut accepted_skill_reviews = 0usize;
     let mut accepted_skill_feedback = 0usize;
+    let mut procedural_contradiction_count = 0usize;
 
     for scenario in scenarios {
         let result =
@@ -1957,10 +1962,25 @@ pub async fn handle_api_memory_learning_evals(
                 .entry((*reason).to_string())
                 .or_default() += 1;
         }
+        for decision in &result.skill_review_decisions {
+            *by_skill_review_action
+                .entry(skill_review_action_name(&decision.action).to_string())
+                .or_default() += 1;
+        }
         for reason in &result.skill_feedback_reasons {
             *by_skill_feedback_reason
                 .entry((*reason).to_string())
                 .or_default() += 1;
+        }
+        for decision in &result.run_recipe_review_decisions {
+            *by_run_recipe_review_reason
+                .entry(decision.reason.to_string())
+                .or_default() += 1;
+            if let Some(reason) = decision.promotion_block_reason {
+                *by_run_recipe_promotion_block_reason
+                    .entry(reason.to_string())
+                    .or_default() += 1;
+            }
         }
         for action in &result.precedent_mutation_actions {
             *by_precedent_mutation_action
@@ -1992,6 +2012,7 @@ pub async fn handle_api_memory_learning_evals(
         accepted_skill_promotions += result.accepted_skill_promotion_count;
         accepted_skill_reviews += result.accepted_skill_review_count;
         accepted_skill_feedback += result.accepted_skill_feedback_count;
+        procedural_contradiction_count += result.procedural_contradictions.len();
 
         results.push(serde_json::json!({
             "id": result.scenario_id,
@@ -2044,7 +2065,10 @@ pub async fn handle_api_memory_learning_evals(
             "assessment_reasons": by_assessment_reason,
             "skill_promotion_reasons": by_skill_promotion_reason,
             "skill_review_reasons": by_skill_review_reason,
+            "skill_review_actions": by_skill_review_action,
             "skill_feedback_reasons": by_skill_feedback_reason,
+            "run_recipe_review_reasons": by_run_recipe_review_reason,
+            "run_recipe_promotion_block_reasons": by_run_recipe_promotion_block_reason,
             "precedent_mutation_actions": by_precedent_mutation_action,
             "precedent_cluster_review_actions": by_precedent_cluster_review_action,
             "failure_cluster_review_actions": by_failure_cluster_review_action,
@@ -2057,6 +2081,7 @@ pub async fn handle_api_memory_learning_evals(
             "accepted_skill_promotions": accepted_skill_promotions,
             "accepted_skill_reviews": accepted_skill_reviews,
             "accepted_skill_feedback": accepted_skill_feedback,
+            "procedural_contradiction_count": procedural_contradiction_count,
         },
         "results": results,
     }))
@@ -2109,6 +2134,22 @@ fn resolution_source_name(
         }
         synapse_domain::application::services::resolution_router::ResolutionSource::LongTermMemory => {
             "long_term_memory"
+        }
+    }
+}
+
+fn skill_review_action_name(
+    action: &synapse_domain::application::services::skill_review_service::SkillReviewAction,
+) -> &'static str {
+    match action {
+        synapse_domain::application::services::skill_review_service::SkillReviewAction::PromoteToActive => {
+            "promote_to_active"
+        }
+        synapse_domain::application::services::skill_review_service::SkillReviewAction::DowngradeToCandidate => {
+            "downgrade_to_candidate"
+        }
+        synapse_domain::application::services::skill_review_service::SkillReviewAction::Deprecate => {
+            "deprecate"
         }
     }
 }

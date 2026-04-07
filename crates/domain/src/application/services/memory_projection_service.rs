@@ -244,10 +244,7 @@ pub fn format_skill_review_projection(decisions: &[SkillReviewDecision]) -> Opti
         let lineage = if decision.lineage_task_families.is_empty() {
             String::new()
         } else {
-            format!(
-                " lineage=[{}]",
-                decision.lineage_task_families.join(", ")
-            )
+            format!(" lineage=[{}]", decision.lineage_task_families.join(", "))
         };
         lines.push(format!(
             "- {} -> {:?} ({}){}",

@@ -69,8 +69,7 @@ pub struct SelfLearningEvalResult {
     pub accepted_skill_feedback_count: usize,
     pub run_recipe_review_decisions: Vec<run_recipe_review_service::RunRecipeReviewDecision>,
     pub run_recipe_review_items: Vec<String>,
-    pub procedural_contradictions:
-        Vec<procedural_contradiction_service::ProceduralContradiction>,
+    pub procedural_contradictions: Vec<procedural_contradiction_service::ProceduralContradiction>,
     pub precedent_mutation_actions: Vec<&'static str>,
     pub precedent_mutation_reasons: Vec<String>,
     pub precedent_cluster_reviews: Vec<procedural_cluster_review_service::ProceduralClusterReview>,
