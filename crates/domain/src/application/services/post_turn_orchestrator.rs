@@ -15,8 +15,11 @@ use crate::application::services::learning_signals::{self, LearningSignal};
 use crate::application::services::memory_mutation as mutation;
 use crate::domain::memory::MemoryCategory;
 use crate::domain::memory_mutation::{MutationCandidate, MutationSource, MutationThresholds};
+use crate::domain::run_recipe::RunRecipe;
 use crate::domain::tool_fact::TypedToolFact;
 use crate::ports::memory::UnifiedMemoryPort;
+use crate::ports::run_recipe_store::RunRecipeStorePort;
+use std::sync::Arc;
 
 // ── Gate constants ───────────────────────────────────────────────
 
@@ -38,6 +41,7 @@ pub struct PostTurnInput {
     pub assistant_response: String,
     pub tools_used: Vec<String>,
     pub tool_facts: Vec<TypedToolFact>,
+    pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
     pub auto_save_enabled: bool,
     /// Optional SSE event sender for publishing reports to UI.
     /// Both web and channels should pass this if available.
@@ -61,6 +65,8 @@ pub struct PostTurnReport {
     pub learning_candidates: Vec<LearningCandidate>,
     /// Applied mutation events derived from low-cost learning candidates.
     pub candidate_mutations: Vec<LearningEvent>,
+    /// Count of run recipes upserted from low-cost candidates.
+    pub run_recipes_upserted: usize,
 }
 
 // ── Orchestrator ─────────────────────────────────────────────────
@@ -95,6 +101,7 @@ pub async fn execute_post_turn_learning(
         learning_evidence: learning_evidence.clone(),
         learning_candidates: learning_candidates.clone(),
         candidate_mutations: Vec::new(),
+        run_recipes_upserted: 0,
     };
 
     // ── 1. Explicit hot-path: direct AUDN mutation ──
@@ -150,6 +157,41 @@ pub async fn execute_post_turn_learning(
                         error = %e,
                         "Typed candidate mutation failed"
                     );
+                }
+            }
+        }
+    }
+
+    // ── 1c. Cheap procedural candidate path ──
+    if !signal.is_explicit() && input.auto_save_enabled {
+        if let Some(store) = input.run_recipe_store.as_ref() {
+            for candidate in &learning_candidates {
+                let LearningCandidate::RunRecipe(recipe_candidate) = candidate else {
+                    continue;
+                };
+                let updated_at = chrono::Utc::now().timestamp().max(0) as u64;
+                let success_count = store
+                    .get(&input.agent_id, &recipe_candidate.task_family_hint)
+                    .map(|recipe| recipe.success_count.saturating_add(1))
+                    .unwrap_or(1);
+                let recipe = RunRecipe {
+                    agent_id: input.agent_id.clone(),
+                    task_family: recipe_candidate.task_family_hint.clone(),
+                    sample_request: recipe_candidate.sample_request.clone(),
+                    summary: recipe_candidate.summary.clone(),
+                    tool_pattern: recipe_candidate.tool_pattern.clone(),
+                    success_count,
+                    updated_at,
+                };
+                match store.upsert(recipe) {
+                    Ok(()) => report.run_recipes_upserted += 1,
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "post_turn",
+                            error = %e,
+                            "Run recipe upsert failed"
+                        );
+                    }
                 }
             }
         }
@@ -215,6 +257,7 @@ pub async fn execute_post_turn_learning(
             "learning_candidate_count": report.learning_candidates.len(),
             "learning_candidates": report.learning_candidates,
             "candidate_mutation_count": report.candidate_mutations.len(),
+            "run_recipes_upserted": report.run_recipes_upserted,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
     }

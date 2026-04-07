@@ -1068,6 +1068,7 @@ async fn handle_chat_send_rpc(
                         assistant_response: response.clone(),
                         tools_used: extract_tool_names(&tool_history),
                         tool_facts,
+                        run_recipe_store: Some(state.run_recipe_store.clone()),
                         auto_save_enabled: state.auto_save,
                         event_tx: Some(state.event_tx.clone()),
                     };

@@ -717,6 +717,7 @@ async fn execute_agent_turn(
                     assistant_response: response_text.clone(),
                     tools_used: turn_result.tool_names.clone(),
                     tool_facts: turn_result.tool_facts.clone(),
+                    run_recipe_store: ports.run_recipe_store.clone(),
                     auto_save_enabled: config.auto_save_memory,
                     event_tx: ports.event_tx.clone(),
                 };
