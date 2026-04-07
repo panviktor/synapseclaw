@@ -19,7 +19,7 @@ use synapse_domain::application::services::procedural_cluster_service::{
 use synapse_domain::application::services::procedural_contradiction_service::find_recipe_failure_contradictions;
 use synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters;
 use synapse_domain::application::services::run_recipe_review_service::{
-    review_run_recipes, RunRecipeReviewThresholds,
+    review_run_recipes_with_failures, RunRecipeReviewThresholds,
 };
 use synapse_domain::application::services::skill_review_service::review_learned_skills_with_failures;
 use synapse_domain::domain::memory::{MemoryCategory, MemoryEntry, SkillUpdate};
@@ -45,6 +45,12 @@ pub struct ConsolidationWorkerConfig {
     pub optimization_interval: Duration,
     /// Minimum reflections needed before optimization runs.
     pub min_reflections_for_optimization: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RunRecipeReviewOutcome {
+    removed: usize,
+    blocked_clusters: usize,
 }
 
 impl Default for ConsolidationWorkerConfig {
@@ -145,9 +151,31 @@ pub fn spawn_consolidation_worker(
             }
 
             if plan.run_run_recipe_review {
-                match run_recipe_review(run_recipe_store.as_ref(), &agent_id).await {
-                    Ok(0) => tracing::debug!("Run recipe review found no duplicates"),
-                    Ok(count) => tracing::info!(count, "Run recipe review removed duplicates"),
+                match run_recipe_review(
+                    memory.as_ref(),
+                    run_recipe_store.as_ref(),
+                    &agent_id,
+                    config.activity_probe_limit * 4,
+                )
+                .await
+                {
+                    Ok(outcome) if outcome == RunRecipeReviewOutcome::default() => {
+                        tracing::debug!("Run recipe review found no actionable clusters")
+                    }
+                    Ok(outcome) => {
+                        if outcome.removed > 0 {
+                            tracing::info!(
+                                count = outcome.removed,
+                                "Run recipe review removed duplicates"
+                            );
+                        }
+                        if outcome.blocked_clusters > 0 {
+                            tracing::info!(
+                                count = outcome.blocked_clusters,
+                                "Run recipe review found contradiction-blocked clusters"
+                            );
+                        }
+                    }
                     Err(e) => tracing::debug!("Run recipe review failed: {e}"),
                 }
             }
@@ -317,14 +345,32 @@ async fn sample_learning_maintenance_snapshot(
 }
 
 async fn run_recipe_review(
+    memory: &dyn UnifiedMemoryPort,
     store: &dyn RunRecipeStorePort,
     agent_id: &str,
-) -> anyhow::Result<usize> {
-    let decisions =
-        review_run_recipes(&store.list(agent_id), &RunRecipeReviewThresholds::default());
+    limit: usize,
+) -> anyhow::Result<RunRecipeReviewOutcome> {
+    let failure_clusters = plan_recent_clusters(
+        memory,
+        agent_id,
+        ProceduralClusterKind::FailurePattern,
+        limit,
+        6,
+        0.96,
+    )
+    .await?;
+    let decisions = review_run_recipes_with_failures(
+        &store.list(agent_id),
+        &failure_clusters,
+        &RunRecipeReviewThresholds::default(),
+    );
     let mut removed = 0;
+    let mut blocked_clusters = 0;
 
     for decision in decisions {
+        if decision.promotion_blocked {
+            blocked_clusters += 1;
+        }
         store.upsert(decision.canonical_recipe)?;
         for task_family in decision.removed_task_families {
             store.remove(agent_id, &task_family)?;
@@ -332,7 +378,10 @@ async fn run_recipe_review(
         }
     }
 
-    Ok(removed)
+    Ok(RunRecipeReviewOutcome {
+        removed,
+        blocked_clusters,
+    })
 }
 
 async fn list_recent_category_entries(

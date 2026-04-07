@@ -145,7 +145,7 @@ pub fn build_learning_maintenance_plan(
 
     let run_importance_decay = recent_learning_activity || forced_maintenance;
     let run_gc = run_importance_decay;
-    let run_run_recipe_review = run_recipe_backlog;
+    let run_run_recipe_review = run_recipe_backlog || contradiction_backlog;
     let run_precedent_compaction = precedent_backlog;
     let run_failure_pattern_compaction = failure_backlog;
     let run_skill_review = skill_backlog || candidate_skill_backlog || contradiction_backlog;
@@ -321,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn procedural_contradictions_trigger_skill_review() {
+    fn procedural_contradictions_trigger_recipe_and_skill_review() {
         let plan = build_learning_maintenance_plan(
             &LearningMaintenanceSnapshot {
                 recent_run_recipe_count: 1,
@@ -340,6 +340,7 @@ mod tests {
             &LearningMaintenancePolicy::default(),
         );
 
+        assert!(plan.run_run_recipe_review);
         assert!(plan.run_skill_review);
         assert!(plan
             .reasons
