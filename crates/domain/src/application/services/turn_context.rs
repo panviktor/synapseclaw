@@ -41,6 +41,8 @@ pub struct TurnMemoryContext {
     pub skills: Vec<Skill>,
     /// Relevant entities (semantic memory / knowledge graph).
     pub entities: Vec<Entity>,
+    /// Short semantic neighborhood around surfaced entities.
+    pub entity_neighbors: Vec<EntityNeighborhood>,
     /// Relevant prior session recaps / historical context.
     pub session_matches: Vec<retrieval_service::SessionSearchMatch>,
     /// Relevant prior successful execution recipes / precedents.
@@ -218,6 +220,7 @@ pub async fn assemble_turn_context(
         ctx.entities = results.entities;
     }
     load_nearby_recall(mem, agent_id, budget, &mut ctx).await;
+    load_entity_neighbors(mem, &mut ctx).await;
 
     let allow_historical_context = ctx
         .execution_budget
@@ -485,6 +488,44 @@ async fn load_recipe_contradictions(
         .collect();
 }
 
+async fn load_entity_neighbors(mem: &dyn UnifiedMemoryPort, ctx: &mut TurnMemoryContext) {
+    if ctx.entities.is_empty() {
+        return;
+    }
+
+    let mut neighborhoods = Vec::new();
+    for entity in ctx.entities.iter().take(2) {
+        if entity.id.trim().is_empty() {
+            continue;
+        }
+        let traversed = match mem.traverse(&entity.id, 1).await {
+            Ok(traversed) => traversed,
+            Err(_) => continue,
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut relations = Vec::new();
+        for (related, fact) in traversed {
+            if related.name.trim().is_empty() || fact.predicate.trim().is_empty() {
+                continue;
+            }
+            let relation = format!("{}: {}", fact.predicate.trim(), related.name.trim());
+            if seen.insert(relation.clone()) {
+                relations.push(relation);
+            }
+            if relations.len() >= 2 {
+                break;
+            }
+        }
+        if !relations.is_empty() {
+            neighborhoods.push(EntityNeighborhood {
+                entity_name: entity.name.clone(),
+                relations,
+            });
+        }
+    }
+    ctx.entity_neighbors = neighborhoods;
+}
+
 // ── Formatting ───────────────────────────────────────────────────
 //
 // Formatting lives here (not in the adapter layer) because both
@@ -501,6 +542,12 @@ pub struct FormattedTurnContext {
     pub resolution_system: String,
     /// Recall + skills + entities + sessions + recipes as enrichment prefix.
     pub enrichment_prefix: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EntityNeighborhood {
+    pub entity_name: String,
+    pub relations: Vec<String>,
 }
 
 /// Format `TurnMemoryContext` into prompt-injectable strings.
@@ -959,10 +1006,21 @@ fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Opti
 
     for entity in &ctx.entities {
         if let Some(summary) = entity.summary.as_ref() {
-            section.push_str(&format!(
-                "<entity name=\"{}\" type=\"{}\">\n{}\n</entity>\n",
+            let mut block = format!(
+                "<entity name=\"{}\" type=\"{}\">\n{}\n",
                 entity.name, entity.entity_type, summary
-            ));
+            );
+            if let Some(neighborhood) = ctx
+                .entity_neighbors
+                .iter()
+                .find(|neighborhood| neighborhood.entity_name == entity.name)
+            {
+                block.push_str("Relations: ");
+                block.push_str(&neighborhood.relations.join(" | "));
+                block.push('\n');
+            }
+            block.push_str("</entity>\n");
+            section.push_str(&block);
         }
     }
 
@@ -1599,6 +1657,10 @@ mod tests {
         let ctx = TurnMemoryContext {
             recalled_entries: vec![], // empty recall
             entities: vec![make_entity("Rust", "Systems programming language")],
+            entity_neighbors: vec![EntityNeighborhood {
+                entity_name: "Rust".into(),
+                relations: vec!["used_for: systems programming".into()],
+            }],
             ..Default::default()
         };
         let fmt = format_turn_context(&ctx, &PromptBudget::default());
@@ -1608,6 +1670,9 @@ mod tests {
         assert!(fmt
             .enrichment_prefix
             .contains("Systems programming language"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("Relations: used_for: systems programming"));
     }
 
     #[test]
