@@ -1495,6 +1495,13 @@ pub async fn handle_api_memory_projections(
         .list_skills(&state.agent_id, limit)
         .await
         .unwrap_or_default();
+    let recent_skill_cutoff = chrono::Utc::now()
+        - chrono::Duration::seconds(maintenance_config.activity_window.as_secs() as i64);
+    let recent_learned_skills = state
+        .mem
+        .list_recent_skills(&state.agent_id, limit, recent_skill_cutoff)
+        .await
+        .unwrap_or_default();
     let recent_skills = learned_skills
         .clone()
         .into_iter()
@@ -1650,7 +1657,7 @@ pub async fn handle_api_memory_projections(
 
     let skill_review_decisions =
         synapse_domain::application::services::skill_review_service::review_learned_skills_with_failures(
-            &learned_skills,
+            &recent_learned_skills,
             &recent_run_recipes,
             &failure_pattern_clusters_raw,
         );
