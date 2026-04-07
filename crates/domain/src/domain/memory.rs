@@ -284,6 +284,64 @@ pub struct TemporalFact {
 
 // ── Skill (procedural memory) ────────────────────────────────────
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillOrigin {
+    Manual,
+    Imported,
+    #[default]
+    Learned,
+}
+
+impl fmt::Display for SkillOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Manual => write!(f, "manual"),
+            Self::Imported => write!(f, "imported"),
+            Self::Learned => write!(f, "learned"),
+        }
+    }
+}
+
+impl SkillOrigin {
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "manual" => Self::Manual,
+            "imported" => Self::Imported,
+            _ => Self::Learned,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillStatus {
+    #[default]
+    Active,
+    Candidate,
+    Deprecated,
+}
+
+impl fmt::Display for SkillStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Candidate => write!(f, "candidate"),
+            Self::Deprecated => write!(f, "deprecated"),
+        }
+    }
+}
+
+impl SkillStatus {
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "candidate" => Self::Candidate,
+            "deprecated" => Self::Deprecated,
+            _ => Self::Active,
+        }
+    }
+}
+
 /// A learned procedure — created from successful pipeline runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
@@ -296,6 +354,10 @@ pub struct Skill {
     pub success_count: u32,
     pub fail_count: u32,
     pub version: u32,
+    #[serde(default)]
+    pub origin: SkillOrigin,
+    #[serde(default)]
+    pub status: SkillStatus,
     pub created_by: AgentId,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,

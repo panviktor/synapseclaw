@@ -1175,6 +1175,8 @@ mod tests {
             success_count: 1,
             fail_count: 0,
             version: 1,
+            origin: crate::domain::memory::SkillOrigin::Learned,
+            status: crate::domain::memory::SkillStatus::Active,
             created_by: "test".into(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

@@ -273,6 +273,54 @@ Recipes should be able to:
 - split when patterns diverge
 - promote into generalized skills
 
+### 4a. Skills have origins and lifecycle states
+
+Phase 4.9 should stop treating all skills as one undifferentiated bucket.
+
+We need one inspectable skill surface with at least these origins:
+
+- **manual**: authored directly by the user/operator
+- **imported**: loaded from external skill packs or repositories
+- **learned**: promoted from recipes / precedents / repeated evidence
+
+And at least these states:
+
+- **active**
+- **candidate**
+- **deprecated**
+
+Important invariants:
+
+- manual skills must never be silently overwritten by auto-learning
+- imported skills may be updated by explicit sync, but not silently rewritten by learned promotion
+- learned skills may be promoted, revised, or deprecated by evidence thresholds
+- all skills should remain human-readable and inspectable even if their origin differs
+
+### 4b. Conflict priority must be explicit
+
+When multiple sources disagree, the system should not improvise.
+
+The default priority order should be:
+
+1. **security / policy boundaries**
+2. **explicit current-turn user correction or instruction**
+3. **scoped manual skill**
+4. **scoped imported skill**
+5. **hard user profile defaults** for fields like language / timezone / default city / delivery target
+6. **learned skill**
+7. **recipe**
+8. **precedent**
+9. **generic episodic / semantic retrieval**
+
+Additional rules:
+
+- user profile should win only for hard-default fields, not for general procedural behavior
+- manual/imported skills should override learned skills and recipes for procedure selection
+- learned skills should override recipes only when confidence/support is strong enough
+- recipes should override single precedents when they clearly generalize multiple successful runs
+- failure memory may veto learned skills / recipes / precedents, but should not override explicit current-turn user intent or hard security policy
+- conflicts must be inspectable: operators should be able to see which source won and why
+
 ### 5. Learning quality matters more than write volume
 
 The goal is not to store more things.
@@ -498,10 +546,13 @@ Promote strong recipes into reusable skills.
 
 Required behavior:
 
+- represent skill origin explicitly: `manual | imported | learned`
+- represent skill lifecycle explicitly: `active | candidate | deprecated`
 - promote when support is high enough
 - demote / deprecate stale or failing skills
 - preserve lineage: skill <- recipe cluster <- precedents
 - track supporting evidence count
+- keep conflict resolution explicit when manual/imported and learned skills disagree
 
 ### Slice 7 — Failure Learning
 

@@ -5,7 +5,7 @@
 
 use chrono::Utc;
 use synapse_domain::domain::memory::{
-    MemoryError, Reflection, ReflectionOutcome, Skill, SkillUpdate,
+    MemoryError, Reflection, ReflectionOutcome, Skill, SkillOrigin, SkillStatus, SkillUpdate,
 };
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_providers::traits::Provider;
@@ -145,6 +145,8 @@ pub async fn reflect_on_run(
                         success_count: u32::from(summary.outcome == ReflectionOutcome::Success),
                         fail_count: u32::from(summary.outcome == ReflectionOutcome::Failure),
                         version: 1,
+                        origin: SkillOrigin::Learned,
+                        status: SkillStatus::Active,
                         created_by: agent_id.to_string(),
                         created_at: Utc::now(),
                         updated_at: Utc::now(),

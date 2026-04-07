@@ -13,7 +13,7 @@ use surrealdb::Surreal;
 use synapse_domain::domain::memory::{
     AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity, HybridSearchResult,
     MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, ReflectionOutcome,
-    SearchResult, SessionId, Skill, SkillUpdate, TemporalFact,
+    SearchResult, SessionId, Skill, SkillOrigin, SkillStatus, SkillUpdate, TemporalFact,
 };
 use synapse_domain::ports::memory::{
     ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
@@ -502,6 +502,16 @@ fn row_to_skill(v: &serde_json::Value) -> Option<Skill> {
         success_count: v.get("success_count").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
         fail_count: v.get("fail_count").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
         version: v.get("version").and_then(|n| n.as_u64()).unwrap_or(1) as u32,
+        origin: v
+            .get("origin")
+            .and_then(|raw| raw.as_str())
+            .map(SkillOrigin::from_str_lossy)
+            .unwrap_or_default(),
+        status: v
+            .get("status")
+            .and_then(|raw| raw.as_str())
+            .map(SkillStatus::from_str_lossy)
+            .unwrap_or_default(),
         created_by: json_str(v, "created_by"),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -1223,6 +1233,8 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
                     success_count = $sc,
                     fail_count = $fc,
                     version = $ver,
+                    origin = $origin,
+                    status = $status,
                     created_by = $agent,
                     created_at = time::now(),
                     updated_at = time::now()",
@@ -1234,6 +1246,8 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .bind(("sc", skill.success_count as i64))
             .bind(("fc", skill.fail_count as i64))
             .bind(("ver", skill.version as i64))
+            .bind(("origin", skill.origin.to_string()))
+            .bind(("status", skill.status.to_string()))
             .bind(("agent", skill.created_by))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
