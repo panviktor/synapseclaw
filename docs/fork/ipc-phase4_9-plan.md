@@ -827,12 +827,24 @@ This follow-up is intentionally **after** the core 4.9 work, so we do not mix:
 
 The main 4.8 areas to improve through SurrealDB are:
 
-- `session_search` shortlist generation via richer hybrid/vector/full-text queries
-- `precedent_search` and `memory_recall` over-fetch + re-rank inside SurrealDB
+- deeper `session_search` shortlist generation via richer hybrid/vector/full-text queries
+- deeper `precedent_search` and `memory_recall` over-fetch + re-rank inside SurrealDB
 - graph + temporal expansion for related sessions, precedents, and run context
 - contradiction / nearby-memory shortlist generation before Rust-side resolution
 - retrieval-side grouping for episodic compaction candidates
 - better neighborhood search for recent working-context recap support
+
+Already implemented in the first post-4.9 pass:
+
+- `memory_recall` switched to typed hybrid retrieval with agent scoping and
+  result cleanup instead of the older convenience `recall()` path.
+- session-scoped `recall()` now over-fetches before `session_id` filtering.
+- `precedent_search` now runs semantic reranking over a bounded
+  `lexical + recent + success-heavy` shortlist instead of the entire recipe
+  store.
+- `session_search` now restricts semantic document embedding work to a cheap
+  shortlist when lexical evidence exists, while preserving broad paraphrase
+  search behavior when it does not.
 
 The intended split should stay:
 

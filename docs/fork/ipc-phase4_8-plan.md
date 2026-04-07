@@ -760,10 +760,24 @@ multi-model queries.
 This is a **post-4.9 optimization track**, not a blocker for completing the
 current runtime architecture.
 
+Implemented after the main 4.9 learning pass:
+
+- `memory_recall` moved off the naive `recall()` path and now uses a typed
+  hybrid search path with agent scoping, over-fetch, and autosave/tool-result
+  noise filtering before presentation.
+- session-scoped `recall()` now over-fetches before `session_id` filtering, so
+  scoped recall does not lose relevant candidates due to early truncation.
+- `precedent_search` no longer semantic-reranks the whole recipe store; it
+  first builds a `lexical + recent + success-heavy` shortlist and only then
+  runs the expensive semantic pass.
+- `session_search` now narrows semantic embedding work to a cheap
+  metadata/transcript/recency shortlist when lexical evidence exists, while
+  keeping broader behavior for paraphrase-heavy zero-lexical cases.
+
 Best candidates:
 
-- `session_search` shortlist generation via richer hybrid/vector/full-text queries
-- `precedent_search` and `memory_recall` over-fetch + re-rank inside SurrealDB
+- deeper `session_search` shortlist generation via richer hybrid/vector/full-text queries
+- deeper `precedent_search` and `memory_recall` over-fetch + re-rank inside SurrealDB
 - graph/temporal expansion for related session and precedent context
 - contradiction / nearby-memory shortlist generation before Rust-side resolution
 - retrieval-side compaction candidate grouping for old noisy episodic entries
