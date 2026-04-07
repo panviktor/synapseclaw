@@ -8,13 +8,15 @@
 use std::sync::Arc;
 use std::time::Duration;
 use synapse_domain::application::services::learning_compaction_service::{
-    compact_near_duplicates, compact_near_duplicates_with_failures, DuplicateCompactionThresholds,
+    compact_selected_near_duplicates, compact_selected_near_duplicates_with_failures,
+    DuplicateCompactionThresholds,
 };
 use synapse_domain::application::services::learning_maintenance_service::{
     build_learning_maintenance_plan, LearningMaintenancePolicy, LearningMaintenanceSnapshot,
 };
 use synapse_domain::application::services::procedural_cluster_review_service::{
-    review_failure_pattern_clusters, review_precedent_clusters, ProceduralClusterReviewAction,
+    representative_keys_for_action, review_failure_pattern_clusters, review_precedent_clusters,
+    ProceduralClusterReviewAction,
 };
 use synapse_domain::application::services::procedural_cluster_service::{
     plan_recent_clusters, ProceduralClusterKind,
@@ -203,10 +205,36 @@ pub fn spawn_consolidation_worker(
                         Vec::new()
                     }
                 };
-                match compact_near_duplicates_with_failures(
+                let recent_precedent_clusters = match plan_recent_clusters(
+                    memory.as_ref(),
+                    &agent_id,
+                    ProceduralClusterKind::Precedent,
+                    config.activity_probe_limit * 4,
+                    6,
+                    0.95,
+                )
+                .await
+                {
+                    Ok(clusters) => clusters,
+                    Err(e) => {
+                        tracing::debug!(
+                            "Failed to load precedent clusters for precedent compaction: {e}"
+                        );
+                        Vec::new()
+                    }
+                };
+                let precedent_reviews =
+                    review_precedent_clusters(&recent_precedent_clusters, &recent_failure_clusters);
+                let compact_candidate_keys = representative_keys_for_action(
+                    &precedent_reviews,
+                    "precedent",
+                    ProceduralClusterReviewAction::CompactCandidate,
+                );
+                match compact_selected_near_duplicates_with_failures(
                     memory.as_ref(),
                     &agent_id,
                     MemoryCategory::Custom("precedent".into()),
+                    &compact_candidate_keys,
                     config.activity_probe_limit * 4,
                     &DuplicateCompactionThresholds::precedent_defaults(),
                     &recent_failure_clusters,
@@ -220,10 +248,49 @@ pub fn spawn_consolidation_worker(
             }
 
             if plan.run_failure_pattern_compaction {
-                match compact_near_duplicates(
+                let recent_failure_clusters = match plan_recent_clusters(
+                    memory.as_ref(),
+                    &agent_id,
+                    ProceduralClusterKind::FailurePattern,
+                    config.activity_probe_limit * 4,
+                    6,
+                    0.96,
+                )
+                .await
+                {
+                    Ok(clusters) => clusters,
+                    Err(e) => {
+                        tracing::debug!(
+                            "Failed to load failure clusters for failure-pattern compaction: {e}"
+                        );
+                        Vec::new()
+                    }
+                };
+                let failure_pattern_reviews = review_failure_pattern_clusters(
+                    &recent_failure_clusters,
+                    &find_recipe_failure_contradictions(
+                        &plan_recipe_clusters(
+                            &run_recipe_store.list_recent(
+                                &agent_id,
+                                (chrono::Utc::now().timestamp().max(0) as u64)
+                                    .saturating_sub(config.activity_window.as_secs()),
+                            ),
+                            0.9,
+                        ),
+                        &recent_failure_clusters,
+                        0.75,
+                    ),
+                );
+                let compact_candidate_keys = representative_keys_for_action(
+                    &failure_pattern_reviews,
+                    "failure_pattern",
+                    ProceduralClusterReviewAction::CompactCandidate,
+                );
+                match compact_selected_near_duplicates(
                     memory.as_ref(),
                     &agent_id,
                     MemoryCategory::Custom("failure_pattern".into()),
+                    &compact_candidate_keys,
                     config.activity_probe_limit * 4,
                     &DuplicateCompactionThresholds::failure_pattern_defaults(),
                 )

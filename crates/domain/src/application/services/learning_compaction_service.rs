@@ -43,6 +43,26 @@ pub async fn compact_near_duplicates(
     compact_near_duplicates_with_failures(mem, agent_id, category, limit, thresholds, &[]).await
 }
 
+pub async fn compact_selected_near_duplicates(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    category: MemoryCategory,
+    representative_keys: &[String],
+    limit: usize,
+    thresholds: &DuplicateCompactionThresholds,
+) -> Result<usize, MemoryError> {
+    compact_selected_near_duplicates_with_failures(
+        mem,
+        agent_id,
+        category,
+        representative_keys,
+        limit,
+        thresholds,
+        &[],
+    )
+    .await
+}
+
 pub async fn compact_near_duplicates_with_failures(
     mem: &dyn UnifiedMemoryPort,
     agent_id: &str,
@@ -52,6 +72,80 @@ pub async fn compact_near_duplicates_with_failures(
     failure_clusters: &[ProceduralCluster],
 ) -> Result<usize, MemoryError> {
     let entries = mem.list_scoped(Some(&category), None, limit, false).await?;
+    compact_entries_with_failures(
+        mem,
+        agent_id,
+        category,
+        entries,
+        thresholds,
+        failure_clusters,
+    )
+    .await
+}
+
+pub async fn compact_selected_near_duplicates_with_failures(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    category: MemoryCategory,
+    representative_keys: &[String],
+    limit: usize,
+    thresholds: &DuplicateCompactionThresholds,
+    failure_clusters: &[ProceduralCluster],
+) -> Result<usize, MemoryError> {
+    let entries = mem.list_scoped(Some(&category), None, limit, false).await?;
+    if representative_keys.is_empty() {
+        return Ok(0);
+    }
+    let representative_set = representative_keys.iter().collect::<HashSet<_>>();
+    let seed_entries = entries
+        .iter()
+        .filter(|entry| representative_set.contains(&entry.key))
+        .cloned()
+        .collect::<Vec<_>>();
+    if seed_entries.is_empty() {
+        return Ok(0);
+    }
+
+    let seed_lookup = fetch_category_shortlists(
+        mem,
+        agent_id,
+        &seed_entries,
+        &category,
+        thresholds.shortlist_limit,
+    )
+    .await?;
+    let mut candidate_entries = seed_entries
+        .iter()
+        .cloned()
+        .map(|entry| (entry.key.clone(), entry))
+        .collect::<HashMap<_, _>>();
+    for values in seed_lookup.values() {
+        for entry in values {
+            candidate_entries
+                .entry(entry.key.clone())
+                .or_insert_with(|| entry.clone());
+        }
+    }
+
+    compact_entries_with_failures(
+        mem,
+        agent_id,
+        category,
+        candidate_entries.into_values().collect(),
+        thresholds,
+        failure_clusters,
+    )
+    .await
+}
+
+async fn compact_entries_with_failures(
+    mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    category: MemoryCategory,
+    entries: Vec<MemoryEntry>,
+    thresholds: &DuplicateCompactionThresholds,
+    failure_clusters: &[ProceduralCluster],
+) -> Result<usize, MemoryError> {
     if entries.len() < 2 {
         return Ok(0);
     }
@@ -279,6 +373,34 @@ mod tests {
             0.95,
             &[],
         );
+        assert_eq!(removed, vec!["older".to_string()]);
+    }
+
+    #[test]
+    fn removal_plan_keeps_newer_neighbor_when_seed_subset_expands_cluster() {
+        let entries = vec![
+            entry("newer", "2026-03-01T00:00:00Z"),
+            entry("older", "2026-02-01T00:00:00Z"),
+        ];
+        let similarity_lookup = HashMap::from([
+            (
+                "newer".into(),
+                vec![similar("newer", 1.0), similar("older", 0.98)],
+            ),
+            (
+                "older".into(),
+                vec![similar("older", 1.0), similar("newer", 0.98)],
+            ),
+        ]);
+
+        let removed = plan_duplicate_removals(
+            &entries,
+            &similarity_lookup,
+            &MemoryCategory::Custom("precedent".into()),
+            0.95,
+            &[],
+        );
+
         assert_eq!(removed, vec!["older".to_string()]);
     }
 

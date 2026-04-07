@@ -13,7 +13,8 @@ use surrealdb::Surreal;
 use synapse_domain::domain::memory::{
     AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity, HybridSearchResult,
     MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, ReflectionOutcome,
-    SearchResult, SessionId, Skill, SkillOrigin, SkillStatus, SkillUpdate, TemporalFact,
+    SearchResult, SearchSource, SessionId, Skill, SkillOrigin, SkillStatus, SkillUpdate,
+    TemporalFact,
 };
 use synapse_domain::ports::memory::{
     ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
@@ -86,6 +87,114 @@ impl SurrealMemoryAdapter {
     /// Used by other components (IPC, cron, chat, etc.) to share the same DB.
     pub fn db(&self) -> Arc<Surreal<Db>> {
         Arc::clone(&self.db)
+    }
+
+    fn score_episode_rows_with_retention(
+        rows: &[serde_json::Value],
+        score_key: &str,
+        source: SearchSource,
+    ) -> Vec<SearchResult> {
+        use synapse_domain::application::services::retention::{
+            compute_retention_score, RetentionPolicy, RetentionWeights,
+        };
+
+        let policy = RetentionPolicy::default();
+        let weights = RetentionWeights::default();
+        let row_map = rows
+            .iter()
+            .map(|row| (json_str(row, "id"), row))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut results = rows
+            .iter()
+            .filter_map(|row| {
+                let entry = row_to_entry(row)?;
+                let relevance = row.get(score_key).and_then(|s| s.as_f64()).unwrap_or(0.0);
+                Some(SearchResult {
+                    entry,
+                    score: relevance as f32,
+                    source: source.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for result in &mut results {
+            let age_hours =
+                if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&result.entry.timestamp) {
+                    (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
+                        .num_hours()
+                        .max(0) as f64
+                } else {
+                    0.0
+                };
+            let access_count = row_map
+                .get(&result.entry.id)
+                .and_then(|row| row.get("access_count"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let retention = compute_retention_score(
+                result.score as f64,
+                age_hours,
+                access_count,
+                &result.entry.category,
+                &policy,
+                &weights,
+            );
+            result.score = retention.total as f32;
+        }
+
+        results.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results
+    }
+
+    async fn search_episode_vector_neighbors(
+        &self,
+        embedding: &[f32],
+        agent_id: &str,
+        category_filters: &[String],
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        if embedding.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let scope_clause = episode_scope_clause(include_shared);
+        let embedding_profile_id = self.active_embedding_profile_id();
+        let mut vec_resp = self
+            .db
+            .query(format!(
+                "SELECT *,
+                    vector::similarity::cosine(embedding, $emb) AS vec_score
+                 FROM episode
+                 WHERE embedding <|$limit,64|> $emb
+                 AND embedding_profile_id = $profile
+                 AND (array::len($categories) = 0 OR category INSIDE $categories)
+                 AND {scope_clause}
+                 ORDER BY vec_score DESC
+                 LIMIT $limit"
+            ))
+            .bind(("emb", embedding.to_vec()))
+            .bind(("profile", embedding_profile_id))
+            .bind(("categories", category_filters.to_vec()))
+            .bind(("agent", agent_id.to_string()))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let vec_rows: Vec<serde_json::Value> = vec_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        Ok(Self::score_episode_rows_with_retention(
+            &vec_rows,
+            "vec_score",
+            SearchSource::Vector,
+        ))
     }
 
     async fn clear_vector_fields(&self, tables: &[&str]) {
@@ -1717,18 +1826,28 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
             .cloned()
             .and_then(|value| serde_json::from_value::<Vec<f32>>(value).ok())
             .filter(|embedding| !embedding.is_empty());
-
-        let mut episodes = self
-            .search_episodes(&MemoryQuery {
+        let category_filters = vec![category.to_string()];
+        let mut episodes = if let Some(stored_embedding) = stored_embedding {
+            self.search_episode_vector_neighbors(
+                &stored_embedding,
+                agent_id,
+                &category_filters,
+                limit.saturating_mul(2).max(limit),
+                include_shared,
+            )
+            .await?
+        } else {
+            self.search_episodes(&MemoryQuery {
                 text: entry.content.clone(),
-                embedding: stored_embedding,
+                embedding: None,
                 agent_id: agent_id.to_string(),
                 categories: vec![category.clone()],
                 include_shared,
                 time_range: None,
                 limit: limit.saturating_mul(2).max(limit),
             })
-            .await?;
+            .await?
+        };
         episodes.retain(|candidate| candidate.entry.key != entry.key);
         episodes.sort_by(|left, right| {
             right
@@ -1774,20 +1893,31 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
                 Some((key, embedding))
             })
             .collect::<std::collections::HashMap<_, _>>();
+        let category_filters = vec![category.to_string()];
 
         let mut results = std::collections::HashMap::new();
         for entry in entries {
-            let mut episodes = self
-                .search_episodes(&MemoryQuery {
+            let mut episodes = if let Some(stored_embedding) = embedding_lookup.get(&entry.key) {
+                self.search_episode_vector_neighbors(
+                    stored_embedding,
+                    agent_id,
+                    &category_filters,
+                    limit.saturating_mul(2).max(limit),
+                    include_shared,
+                )
+                .await?
+            } else {
+                self.search_episodes(&MemoryQuery {
                     text: entry.content.clone(),
-                    embedding: embedding_lookup.get(&entry.key).cloned(),
+                    embedding: None,
                     agent_id: agent_id.to_string(),
                     categories: vec![category.clone()],
                     include_shared,
                     time_range: None,
                     limit: limit.saturating_mul(2).max(limit),
                 })
-                .await?;
+                .await?
+            };
             episodes.retain(|candidate| candidate.entry.key != entry.key);
             episodes.sort_by(|left, right| {
                 right

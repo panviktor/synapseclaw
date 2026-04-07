@@ -26,6 +26,18 @@ pub struct ProceduralClusterReview {
     pub reason: &'static str,
 }
 
+pub fn representative_keys_for_action(
+    reviews: &[ProceduralClusterReview],
+    kind: &'static str,
+    action: ProceduralClusterReviewAction,
+) -> Vec<String> {
+    reviews
+        .iter()
+        .filter(|review| review.kind == kind && review.action == action)
+        .map(|review| review.representative_key.clone())
+        .collect()
+}
+
 pub fn review_precedent_clusters(
     clusters: &[ProceduralCluster],
     failure_clusters: &[ProceduralCluster],
@@ -183,5 +195,41 @@ mod tests {
             ProceduralClusterReviewAction::BlocksProceduralPaths
         );
         assert_eq!(reviews[0].reason, "failure_cluster_blocks_procedural_paths");
+    }
+
+    #[test]
+    fn extracts_representative_keys_for_matching_action() {
+        let reviews = vec![
+            ProceduralClusterReview {
+                kind: "precedent",
+                representative_key: "p1".into(),
+                member_count: 2,
+                action: ProceduralClusterReviewAction::CompactCandidate,
+                reason: "duplicate_precedent_cluster",
+            },
+            ProceduralClusterReview {
+                kind: "precedent",
+                representative_key: "p2".into(),
+                member_count: 1,
+                action: ProceduralClusterReviewAction::PreserveBranch,
+                reason: "failure_contradicted_branch",
+            },
+            ProceduralClusterReview {
+                kind: "failure_pattern",
+                representative_key: "f1".into(),
+                member_count: 2,
+                action: ProceduralClusterReviewAction::CompactCandidate,
+                reason: "duplicate_failure_cluster",
+            },
+        ];
+
+        assert_eq!(
+            representative_keys_for_action(
+                &reviews,
+                "precedent",
+                ProceduralClusterReviewAction::CompactCandidate,
+            ),
+            vec!["p1".to_string()]
+        );
     }
 }
