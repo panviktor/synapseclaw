@@ -7,6 +7,7 @@
 use crate::application::services::learning_candidate_service::{self, LearningCandidate};
 use crate::application::services::learning_evidence_service;
 use crate::application::services::learning_quality_service;
+use crate::application::services::learning_strength_service;
 use crate::application::services::recipe_evolution_service;
 use crate::application::services::skill_promotion_service;
 use crate::application::services::user_profile_service;
@@ -59,9 +60,13 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         &scenario.tool_facts,
         &evidence,
     );
-    let assessments = learning_quality_service::assess_learning_candidates(
-        &candidates,
-        &evidence,
+    let assessments = learning_strength_service::strengthen_learning_assessments(
+        &learning_quality_service::assess_learning_candidates(
+            &candidates,
+            &evidence,
+            &scenario.existing_recipes,
+        ),
+        scenario.current_profile.as_ref(),
         &scenario.existing_recipes,
     );
     let mutation_candidates =
@@ -326,7 +331,7 @@ fn build_skill_promotion_assessments(
             let LearningCandidate::RunRecipe(candidate) = &assessment.candidate else {
                 return None;
             };
-            let recipe = if assessment.reason == "merge_existing_recipe" {
+            let recipe = if assessment.merge_with_existing {
                 scenario
                     .existing_recipes
                     .iter()
@@ -502,7 +507,9 @@ mod tests {
         assert_eq!(result.run_recipe_candidate_count, 1);
         assert_eq!(result.accepted_run_recipe_count, 1);
         assert!(result.accepted_candidate_kinds.contains(&"run_recipe"));
-        assert!(result.assessment_reasons.contains(&"merge_existing_recipe"));
+        assert!(result
+            .assessment_reasons
+            .contains(&"repeated_recipe_pattern"));
         assert_eq!(result.accepted_skill_promotion_count, 1);
         assert!(result
             .skill_promotion_reasons

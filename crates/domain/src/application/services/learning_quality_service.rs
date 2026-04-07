@@ -14,6 +14,7 @@ pub struct LearningCandidateAssessment {
     pub candidate: LearningCandidate,
     pub confidence: f32,
     pub accepted: bool,
+    pub merge_with_existing: bool,
     pub reason: &'static str,
 }
 
@@ -30,6 +31,7 @@ pub fn assess_learning_candidates(
                 candidate,
                 confidence: 0.96,
                 accepted: true,
+                merge_with_existing: false,
                 reason: "explicit_profile_fact",
             },
             LearningCandidate::Precedent(precedent) => {
@@ -49,6 +51,7 @@ pub fn assess_learning_candidates(
                     candidate,
                     confidence,
                     accepted,
+                    merge_with_existing: false,
                     reason,
                 }
             }
@@ -89,6 +92,7 @@ pub fn assess_learning_candidates(
                     candidate,
                     confidence,
                     accepted,
+                    merge_with_existing: accepted && best_existing >= 0.9,
                     reason,
                 }
             }
@@ -110,6 +114,7 @@ pub fn assess_learning_candidates(
                     candidate,
                     confidence,
                     accepted,
+                    merge_with_existing: false,
                     reason,
                 }
             }

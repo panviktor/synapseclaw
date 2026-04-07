@@ -10,6 +10,7 @@ use crate::application::services::learning_events::LearningEvent;
 use crate::application::services::learning_evidence_service::{self, LearningEvidenceEnvelope};
 use crate::application::services::learning_quality_service::{self, LearningCandidateAssessment};
 use crate::application::services::learning_signals::{self, LearningSignal};
+use crate::application::services::learning_strength_service;
 use crate::application::services::memory_mutation as mutation;
 use crate::application::services::precedent_similarity_service;
 use crate::application::services::recipe_evolution_service;
@@ -102,14 +103,26 @@ pub async fn execute_post_turn_learning(
         &input.tool_facts,
         &learning_evidence,
     );
+    let current_profile = if let (Some(store), Some(user_key)) = (
+        input.user_profile_store.as_ref(),
+        input.user_profile_key.as_deref(),
+    ) {
+        store.load(user_key)
+    } else {
+        None
+    };
     let existing_recipes = input
         .run_recipe_store
         .as_ref()
         .map(|store| store.list(&input.agent_id))
         .unwrap_or_default();
-    let learning_assessments = learning_quality_service::assess_learning_candidates(
-        &learning_candidates,
-        &learning_evidence,
+    let learning_assessments = learning_strength_service::strengthen_learning_assessments(
+        &learning_quality_service::assess_learning_candidates(
+            &learning_candidates,
+            &learning_evidence,
+            &existing_recipes,
+        ),
+        current_profile.as_ref(),
         &existing_recipes,
     );
     let precedent_assessments = learning_assessments
@@ -278,7 +291,7 @@ pub async fn execute_post_turn_learning(
                 };
                 let updated_at = chrono::Utc::now().timestamp().max(0) as u64;
                 let existing = store.get(&input.agent_id, &recipe_candidate.task_family_hint);
-                let recipe = if assessment.reason == "merge_existing_recipe" {
+                let recipe = if assessment.merge_with_existing {
                     existing
                         .as_ref()
                         .map(|existing_recipe| {
@@ -378,14 +391,13 @@ pub async fn execute_post_turn_learning(
             input.user_profile_store.as_ref(),
             input.user_profile_key.as_deref(),
         ) {
-            let current = store.load(user_key);
             let patch = learning_candidate_service::build_user_profile_patch(
                 &learning_candidates,
-                current.as_ref(),
+                current_profile.as_ref(),
             );
             if !patch.is_noop() {
-                let updated = user_profile_service::apply_patch(current.clone(), &patch);
-                if updated != current {
+                let updated = user_profile_service::apply_patch(current_profile.clone(), &patch);
+                if updated != current_profile {
                     let result = if let Some(profile) = updated {
                         store.upsert(user_key, profile)
                     } else {

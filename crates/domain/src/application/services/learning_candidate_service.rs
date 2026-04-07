@@ -616,6 +616,7 @@ mod tests {
                 }),
                 confidence: 0.81,
                 accepted: true,
+                merge_with_existing: false,
                 reason: "procedural_precedent",
             },
             LearningCandidateAssessment {
@@ -626,6 +627,7 @@ mod tests {
                 }),
                 confidence: 0.41,
                 accepted: false,
+                merge_with_existing: false,
                 reason: "weak_precedent_signal",
             },
             LearningCandidateAssessment {
@@ -638,6 +640,7 @@ mod tests {
                 }),
                 confidence: 0.77,
                 accepted: true,
+                merge_with_existing: false,
                 reason: "typed_failure_pattern",
             },
         ];

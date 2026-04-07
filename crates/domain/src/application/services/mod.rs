@@ -22,6 +22,7 @@ pub mod learning_evidence_service;
 pub mod learning_maintenance_service;
 pub mod learning_quality_service;
 pub mod learning_signals;
+pub mod learning_strength_service;
 pub mod loop_detection;
 pub mod memory_mutation;
 pub mod memory_projection_service;
