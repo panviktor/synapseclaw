@@ -1474,6 +1474,7 @@ pub async fn handle_api_memory_learning_evals(
     let mut results = Vec::with_capacity(scenarios.len());
     let mut by_candidate_kind = std::collections::BTreeMap::<String, usize>::new();
     let mut by_accepted_candidate_kind = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_assessment_reason = std::collections::BTreeMap::<String, usize>::new();
     let mut profile_updates = 0usize;
     let mut recipe_candidates = 0usize;
     let mut accepted_recipe_candidates = 0usize;
@@ -1491,6 +1492,11 @@ pub async fn handle_api_memory_learning_evals(
                 .entry((*kind).to_string())
                 .or_default() += 1;
         }
+        for reason in &result.assessment_reasons {
+            *by_assessment_reason
+                .entry((*reason).to_string())
+                .or_default() += 1;
+        }
         if !result.profile_patch_is_noop {
             profile_updates += 1;
         }
@@ -1501,6 +1507,7 @@ pub async fn handle_api_memory_learning_evals(
             "id": result.scenario_id,
             "typed_fact_count": result.typed_fact_count,
             "candidate_kinds": result.candidate_kinds,
+            "assessment_reasons": result.assessment_reasons,
             "accepted_candidate_kinds": result.accepted_candidate_kinds,
             "user_profile_candidate_count": result.user_profile_candidate_count,
             "precedent_candidate_count": result.precedent_candidate_count,
@@ -1518,6 +1525,7 @@ pub async fn handle_api_memory_learning_evals(
             "scenario_count": results.len(),
             "candidate_kinds": by_candidate_kind,
             "accepted_candidate_kinds": by_accepted_candidate_kind,
+            "assessment_reasons": by_assessment_reason,
             "profile_updates": profile_updates,
             "recipe_candidates": recipe_candidates,
             "accepted_recipe_candidates": accepted_recipe_candidates,

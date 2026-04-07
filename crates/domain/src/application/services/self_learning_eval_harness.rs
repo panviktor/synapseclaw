@@ -32,6 +32,7 @@ pub struct SelfLearningEvalResult {
     pub scenario_id: &'static str,
     pub typed_fact_count: usize,
     pub candidate_kinds: Vec<&'static str>,
+    pub assessment_reasons: Vec<&'static str>,
     pub user_profile_candidate_count: usize,
     pub precedent_candidate_count: usize,
     pub run_recipe_candidate_count: usize,
@@ -68,6 +69,7 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         scenario_id: scenario.id,
         typed_fact_count: evidence.typed_fact_count,
         candidate_kinds: candidate_kind_names(&candidates),
+        assessment_reasons: assessment_reason_names(&assessments),
         user_profile_candidate_count: count_candidate_kind(&candidates, candidate_is_user_profile),
         precedent_candidate_count: count_candidate_kind(&candidates, candidate_is_precedent),
         run_recipe_candidate_count: count_candidate_kind(&candidates, candidate_is_run_recipe),
@@ -157,6 +159,39 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                     value: Some("staging".into()),
                 }),
             }],
+        },
+        SelfLearningEvalScenario {
+            id: "similar_existing_recipe_merges",
+            user_message: "Find the status page and send it again",
+            assistant_response: "Fetched the page and sent it again.",
+            current_profile: None,
+            existing_recipes: vec![RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                sample_request: "find the status page and send it".into(),
+                summary: "pattern=web_search -> message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 3,
+                updated_at: 1,
+            }],
+            tool_facts: vec![
+                TypedToolFact {
+                    tool_id: "web_search".into(),
+                    payload: ToolFactPayload::Search(SearchFact {
+                        domain: SearchDomain::Web,
+                        query: Some("status page".into()),
+                        result_count: Some(2),
+                        primary_locator: Some("https://status.example.com".into()),
+                    }),
+                },
+                TypedToolFact {
+                    tool_id: "message_send".into(),
+                    payload: ToolFactPayload::Delivery(DeliveryFact {
+                        target: DeliveryTargetKind::CurrentConversation,
+                        content_bytes: Some(24),
+                    }),
+                },
+            ],
         },
         SelfLearningEvalScenario {
             id: "diverged_recipe_is_not_auto_accepted",
@@ -249,6 +284,18 @@ fn accepted_candidate_kind_names(
     kinds
 }
 
+fn assessment_reason_names(
+    assessments: &[learning_quality_service::LearningCandidateAssessment],
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    for assessment in assessments {
+        if !reasons.contains(&assessment.reason) {
+            reasons.push(assessment.reason);
+        }
+    }
+    reasons
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,6 +345,20 @@ mod tests {
         let result = evaluate_scenario(&scenario);
         let projection = result.profile_projection.unwrap();
         assert!(projection.contains("known_environments: prod, staging"));
+    }
+
+    #[test]
+    fn similar_existing_recipe_is_marked_as_merge() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "similar_existing_recipe_merges")
+            .unwrap();
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.run_recipe_candidate_count, 1);
+        assert_eq!(result.accepted_run_recipe_count, 1);
+        assert!(result.accepted_candidate_kinds.contains(&"run_recipe"));
+        assert!(result.assessment_reasons.contains(&"merge_existing_recipe"));
     }
 
     #[test]
