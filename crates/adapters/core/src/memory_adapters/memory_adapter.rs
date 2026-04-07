@@ -229,6 +229,17 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     async fn get(&self, key: &str, agent_id: &AgentId) -> Result<Option<MemoryEntry>, MemoryError> {
         self.inner.get(key, agent_id).await
     }
+    async fn list_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        self.inner
+            .list_scoped(category, session_id, limit, include_shared)
+            .await
+    }
     async fn list(
         &self,
         category: Option<&MemoryCategory>,

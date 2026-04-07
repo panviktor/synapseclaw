@@ -37,7 +37,7 @@ pub async fn plan_recent_clusters(
     similarity_threshold: f64,
 ) -> Result<Vec<ProceduralCluster>, MemoryError> {
     let category = cluster_category(&kind);
-    let entries = mem.list(Some(&category), None, limit).await?;
+    let entries = mem.list_scoped(Some(&category), None, limit, false).await?;
     if entries.len() < 2 {
         return Ok(entries
             .into_iter()

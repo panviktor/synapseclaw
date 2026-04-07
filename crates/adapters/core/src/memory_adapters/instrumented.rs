@@ -349,6 +349,21 @@ impl UnifiedMemoryPort for InstrumentedMemory {
         );
         r
     }
+    async fn list_scoped(
+        &self,
+        cat: Option<&MemoryCategory>,
+        sid: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .list_scoped(cat, sid, limit, include_shared)
+            .await;
+        log_op("list_scoped", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
+        r
+    }
     async fn list(
         &self,
         cat: Option<&MemoryCategory>,

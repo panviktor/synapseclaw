@@ -390,7 +390,7 @@ async fn list_recent_category_entries(
     limit: usize,
 ) -> Vec<MemoryEntry> {
     memory
-        .list(Some(&category), None, limit)
+        .list_scoped(Some(&category), None, limit, false)
         .await
         .unwrap_or_default()
 }

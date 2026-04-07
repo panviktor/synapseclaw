@@ -258,6 +258,18 @@ pub trait UnifiedMemoryPort:
     /// Get a single memory entry by exact key, scoped to agent.
     async fn get(&self, key: &str, agent_id: &AgentId) -> Result<Option<MemoryEntry>, MemoryError>;
 
+    /// List memory entries with explicit shared/global visibility control.
+    async fn list_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let _ = include_shared;
+        self.list(category, session_id, limit).await
+    }
+
     /// List memory entries, optionally filtered by category and/or session.
     async fn list(
         &self,

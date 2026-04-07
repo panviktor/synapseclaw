@@ -1797,9 +1797,17 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         session_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
-        let mut conditions = vec![
-            "(agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)".to_string(),
-        ];
+        self.list_scoped(category, session_id, limit, true).await
+    }
+
+    async fn list_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let mut conditions = vec![episode_scope_clause(include_shared).to_string()];
         if category.is_some() {
             conditions.push("category = $cat".to_string());
         }

@@ -39,7 +39,7 @@ pub async fn compact_near_duplicates(
     limit: usize,
     thresholds: &DuplicateCompactionThresholds,
 ) -> Result<usize, MemoryError> {
-    let entries = mem.list(Some(&category), None, limit).await?;
+    let entries = mem.list_scoped(Some(&category), None, limit, false).await?;
     if entries.len() < 2 {
         return Ok(0);
     }
