@@ -612,6 +612,51 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 TypedToolFact::outcome("web_fetch", OutcomeStatus::RuntimeError, Some(220)),
             ],
         },
+        SelfLearningEvalScenario {
+            id: "active_skill_with_exact_recipe_support_is_downgraded_by_failure_pattern",
+            user_message: "Fetch the page",
+            assistant_response: "The fetch failed.",
+            current_profile: None,
+            existing_recipes: vec![RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "fetch_page".into(),
+                sample_request: "fetch the page".into(),
+                summary: "pattern=web_fetch".into(),
+                tool_pattern: vec!["web_fetch".into()],
+                success_count: 5,
+                updated_at: 1,
+            }],
+            existing_skills: vec![Skill {
+                id: "sk-learned".into(),
+                name: "fetch_page".into(),
+                description: "Learned skill".into(),
+                content: "content".into(),
+                task_family: Some("fetch_page".into()),
+                tool_pattern: vec!["web_fetch".into()],
+                tags: vec!["recipe-promotion".into()],
+                success_count: 6,
+                fail_count: 1,
+                version: 1,
+                origin: crate::domain::memory::SkillOrigin::Learned,
+                status: crate::domain::memory::SkillStatus::Active,
+                created_by: "agent".into(),
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            }],
+            tool_facts: vec![
+                TypedToolFact {
+                    tool_id: "web_fetch".into(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::WebResource,
+                        operation: ResourceOperation::Fetch,
+                        locator: "https://status.example.com".into(),
+                        host: Some("status.example.com".into()),
+                        metadata: ResourceMetadata::default(),
+                    }),
+                },
+                TypedToolFact::outcome("web_fetch", OutcomeStatus::RuntimeError, Some(220)),
+            ],
+        },
     ]
 }
 
@@ -1077,5 +1122,22 @@ mod tests {
         assert!(result
             .skill_review_reasons
             .contains(&"supported_recipe_cluster_contradicted_by_failure_clusters"));
+    }
+
+    #[test]
+    fn active_skill_with_exact_recipe_support_is_downgraded_by_failure_pattern() {
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| {
+                scenario.id
+                    == "active_skill_with_exact_recipe_support_is_downgraded_by_failure_pattern"
+            })
+            .expect("scenario present");
+
+        let result = evaluate_scenario(&scenario);
+        assert_eq!(result.accepted_skill_review_count, 1);
+        assert!(result
+            .skill_review_reasons
+            .contains(&"active_supported_recipe_cluster_contradicted_by_failure_clusters"));
     }
 }

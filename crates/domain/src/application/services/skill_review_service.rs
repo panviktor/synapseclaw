@@ -21,6 +21,7 @@ const SKILL_RECIPE_SUPPORT_THRESHOLD: f64 = 0.66;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum SkillReviewAction {
     PromoteToActive,
+    DowngradeToCandidate,
     Deprecate,
 }
 
@@ -74,6 +75,31 @@ fn review_learned_skill(
             action: SkillReviewAction::Deprecate,
             target_status: SkillStatus::Deprecated,
             reason: "duplicate_learned_skill",
+        });
+    }
+
+    if skill.status == SkillStatus::Active
+        && has_exact_recipe_cluster_support(skill, recipe_clusters)
+        && exact_recipe_support_conflicts_with_failures(skill, recipe_clusters, failure_clusters)
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            action: SkillReviewAction::DowngradeToCandidate,
+            target_status: SkillStatus::Candidate,
+            reason: "active_supported_recipe_cluster_contradicted_by_failure_clusters",
+        });
+    }
+
+    if skill.status == SkillStatus::Active
+        && conflicting_failure_cluster_count(skill, failure_clusters) > 0
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            action: SkillReviewAction::DowngradeToCandidate,
+            target_status: SkillStatus::Candidate,
+            reason: "active_skill_contradicted_by_failure_clusters",
         });
     }
 
@@ -586,6 +612,51 @@ mod tests {
         assert_eq!(
             decisions[0].reason,
             "supported_recipe_cluster_contradicted_by_failure_clusters"
+        );
+    }
+
+    #[test]
+    fn downgrades_active_skill_when_supported_recipe_cluster_conflicts_with_failures() {
+        let skill = sample_skill(
+            "sk1",
+            "fetch_page",
+            SkillOrigin::Learned,
+            SkillStatus::Active,
+            6,
+            1,
+        );
+
+        let recipe = RunRecipe {
+            agent_id: "agent".into(),
+            task_family: "fetch_page".into(),
+            sample_request: "fetch the page".into(),
+            summary: "Use web_search and message_send".into(),
+            tool_pattern: vec!["web_search".into(), "message_send".into()],
+            success_count: 6,
+            updated_at: 1,
+        };
+
+        let failure_cluster = ProceduralCluster {
+            representative: crate::domain::memory::MemoryEntry {
+                id: "m1".into(),
+                key: "m1".into(),
+                content: "failed_tools=web_search -> message_send | outcomes=runtime_error".into(),
+                category: crate::domain::memory::MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            member_keys: vec!["m1".into()],
+        };
+
+        let decisions =
+            review_learned_skills_with_failures(&[skill], &[recipe], &[failure_cluster]);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].action, SkillReviewAction::DowngradeToCandidate);
+        assert_eq!(decisions[0].target_status, SkillStatus::Candidate);
+        assert_eq!(
+            decisions[0].reason,
+            "active_supported_recipe_cluster_contradicted_by_failure_clusters"
         );
     }
 }
