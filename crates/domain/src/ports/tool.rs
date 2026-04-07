@@ -5,7 +5,6 @@
 //! without depending on concrete infrastructure implementations.
 
 use crate::domain::tool_fact::TypedToolFact;
-use crate::ports::agent_runtime::AgentToolFact;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -22,7 +21,7 @@ pub struct ToolResult {
 #[derive(Debug, Clone)]
 pub struct ToolExecution {
     pub result: ToolResult,
-    pub facts: Vec<AgentToolFact>,
+    pub facts: Vec<TypedToolFact>,
 }
 
 /// Description of a tool for the LLM (function-calling spec).
@@ -50,10 +49,10 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool and return both the result and explicit runtime facts.
     ///
-    /// The default implementation preserves the old contract by calling
-    /// `execute()` and then `extract_facts()`. Tools that know result semantics
-    /// should override this to emit facts directly from structured results
-    /// instead of reconstructing them afterward.
+    /// The default implementation executes the tool and then asks the tool
+    /// for typed facts. Tools that know result semantics should override this
+    /// to emit facts directly from structured results instead of reconstructing
+    /// them afterward.
     async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
         let result = self.execute(args.clone()).await?;
         let facts = self.extract_facts(&args, Some(&result));
@@ -66,15 +65,6 @@ pub trait Tool: Send + Sync {
     /// the tool owns real semantic meaning and can expose it without inferring
     /// it from arbitrary JSON key names.
     fn extract_facts(
-        &self,
-        _args: &serde_json::Value,
-        _result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
-        Vec::new()
-    }
-
-    /// Emit typed facts for the new non-string runtime path.
-    fn extract_typed_facts(
         &self,
         _args: &serde_json::Value,
         _result: Option<&ToolResult>,
@@ -121,15 +111,7 @@ impl Tool for ArcToolRef {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
-        self.0.extract_facts(args, result)
-    }
-
-    fn extract_typed_facts(
-        &self,
-        args: &serde_json::Value,
-        result: Option<&ToolResult>,
     ) -> Vec<TypedToolFact> {
-        self.0.extract_typed_facts(args, result)
+        self.0.extract_facts(args, result)
     }
 }

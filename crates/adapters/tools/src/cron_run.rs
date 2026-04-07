@@ -153,7 +153,7 @@ impl CronRunTool {
             synapse_cron::record_last_run(&self.db, &job.id, finished_at, success, &output).await;
 
         let mut fact = cron_facts::build_job_fact(self.name(), "run", &job);
-        fact.focus_entities.push(FocusEntity {
+        fact.push_focus_entity(FocusEntity {
             kind: "job_run".into(),
             name: status.to_string(),
             metadata: Some(duration_ms.to_string()),

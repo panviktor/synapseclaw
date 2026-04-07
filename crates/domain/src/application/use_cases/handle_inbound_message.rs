@@ -718,6 +718,8 @@ async fn execute_agent_turn(
                     tools_used: turn_result.tool_names.clone(),
                     tool_facts: turn_result.tool_facts.clone(),
                     run_recipe_store: ports.run_recipe_store.clone(),
+                    user_profile_store: ports.user_profile_store.clone(),
+                    user_profile_key: Some(channel_user_profile_key(envelope)),
                     auto_save_enabled: config.auto_save_memory,
                     event_tx: ports.event_tx.clone(),
                 };

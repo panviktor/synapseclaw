@@ -33,6 +33,11 @@ pub fn format_dialogue_state_projection(state: &DialogueState) -> Option<String>
     if state.focus_entities.is_empty()
         && state.comparison_set.is_empty()
         && state.last_tool_subjects.is_empty()
+        && state.recent_delivery_target.is_none()
+        && state.recent_schedule_job.is_none()
+        && state.recent_resource.is_none()
+        && state.recent_search.is_none()
+        && state.recent_workspace.is_none()
     {
         return None;
     }
@@ -65,6 +70,28 @@ pub fn format_dialogue_state_projection(state: &DialogueState) -> Option<String>
             "- last_tool_subjects: {}",
             state.last_tool_subjects.join(", ")
         ));
+    }
+    if let Some(target) = &state.recent_delivery_target {
+        lines.push(format!("- recent_delivery_target: {target:?}"));
+    }
+    if let Some(job) = &state.recent_schedule_job {
+        lines.push(format!("- recent_schedule_job: {}", job.job_id));
+    }
+    if let Some(resource) = &state.recent_resource {
+        lines.push(format!("- recent_resource: {}", resource.locator));
+    }
+    if let Some(search) = &state.recent_search {
+        if let Some(query) = &search.query {
+            lines.push(format!("- recent_search_query: {query}"));
+        }
+        if let Some(locator) = &search.primary_locator {
+            lines.push(format!("- recent_search_result: {locator}"));
+        }
+    }
+    if let Some(workspace) = &state.recent_workspace {
+        if let Some(name) = &workspace.name {
+            lines.push(format!("- recent_workspace: {name}"));
+        }
     }
 
     Some(format!("{}\n", lines.join("\n")))
@@ -184,9 +211,13 @@ mod tests {
                 name: "Tbilisi".into(),
                 metadata: None,
             }],
-            slots: vec![],
             reference_anchors: vec![],
             last_tool_subjects: vec!["Berlin".into()],
+            recent_delivery_target: None,
+            recent_schedule_job: None,
+            recent_resource: None,
+            recent_search: None,
+            recent_workspace: None,
             updated_at: 1,
         })
         .unwrap();

@@ -10,7 +10,6 @@ use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
 use synapse_domain::domain::tool_fact::{
     DeliveryFact, DeliveryTargetKind, ToolFactPayload, TypedToolFact,
 };
-use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 
@@ -112,14 +111,6 @@ impl Tool for MessageSendTool {
 
     fn extract_facts(
         &self,
-        _args: &serde_json::Value,
-        _result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
-        Vec::new()
-    }
-
-    fn extract_typed_facts(
-        &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
     ) -> Vec<TypedToolFact> {
@@ -154,10 +145,7 @@ impl Tool for MessageSendTool {
             tool_id: self.name().to_string(),
             payload: ToolFactPayload::Delivery(DeliveryFact {
                 target,
-                content_bytes: args
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .map(str::len),
+                content_bytes: args.get("content").and_then(|v| v.as_str()).map(str::len),
             }),
         }]
     }

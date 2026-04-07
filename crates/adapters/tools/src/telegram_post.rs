@@ -3,9 +3,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::FocusEntity;
+use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{
+    DeliveryFact, DeliveryTargetKind, ToolFactPayload, TypedToolFact,
+};
 
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org/bot";
 const TELEGRAM_REQUEST_TIMEOUT_SECS: u64 = 15;
@@ -227,7 +229,7 @@ impl Tool for TelegramPostTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -242,14 +244,19 @@ impl Tool for TelegramPostTool {
             None => return Vec::new(),
         };
 
-        vec![AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "delivery_target".into(),
-                name: chat_id.to_string(),
-                metadata: Some("telegram".into()),
-            }],
-            slots: Vec::new(),
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Delivery(DeliveryFact {
+                target: DeliveryTargetKind::Explicit(ConversationDeliveryTarget::Explicit {
+                    channel: "telegram".into(),
+                    recipient: chat_id.to_string(),
+                    thread_ref: None,
+                }),
+                content_bytes: args
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .map(str::len),
+            }),
         }]
     }
 }
@@ -386,11 +393,12 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].focus_entities[0].kind, "delivery_target");
-        assert_eq!(
-            facts[0].focus_entities[0].metadata.as_deref(),
-            Some("telegram")
-        );
-        assert!(facts[0].slots.is_empty());
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "delivery_target");
+        assert_eq!(projected[0].name, "@synapseclaw");
+        assert_eq!(projected[0].metadata.as_deref(), Some("telegram"));
+        let subjects = facts[0].projected_subjects();
+        assert!(subjects.iter().any(|subject| subject == "telegram"));
+        assert!(subjects.iter().any(|subject| subject == "@synapseclaw"));
     }
 }

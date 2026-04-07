@@ -7,8 +7,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::application::services::retrieval_service;
-use synapse_domain::domain::dialogue_state::FocusEntity;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
@@ -105,30 +104,26 @@ impl SessionSearchTool {
     fn build_result_facts(
         &self,
         hits: &[retrieval_service::SessionSearchMatch],
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if hits.is_empty() {
             return Vec::new();
         }
 
-        vec![AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: hits
-                .iter()
-                .take(3)
-                .map(|hit| FocusEntity {
-                    kind: "session".into(),
-                    name: hit
-                        .label
-                        .clone()
-                        .filter(|label| !label.trim().is_empty())
-                        .unwrap_or_else(|| hit.session_key.clone()),
-                    metadata: Some(format!(
-                        "key={};kind={};messages={};score={:.2}",
-                        hit.session_key, hit.kind, hit.message_count, hit.score
-                    )),
-                })
-                .collect(),
-            slots: Vec::new(),
+        let primary_locator = hits.first().map(|hit| {
+            hit.label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| hit.session_key.clone())
+        });
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Search(SearchFact {
+                domain: SearchDomain::Session,
+                query: None,
+                result_count: Some(hits.len()),
+                primary_locator,
+            }),
         }]
     }
 }
@@ -557,9 +552,9 @@ mod tests {
 
         assert!(execution.result.success);
         assert_eq!(execution.facts.len(), 1);
-        assert_eq!(execution.facts[0].tool_name, "session_search");
+        assert_eq!(execution.facts[0].tool_id, "session_search");
         assert!(execution.facts[0]
-            .focus_entities
+            .projected_focus_entities()
             .iter()
             .any(|entity| entity.kind == "session" && entity.name == "Weather Thread"));
     }

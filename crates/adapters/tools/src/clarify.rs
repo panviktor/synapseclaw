@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use serde_json::json;
 use synapse_domain::domain::dialogue_state::FocusEntity;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 
 pub struct ClarifyTool;
@@ -101,7 +101,7 @@ impl Tool for ClarifyTool {
         &self,
         args: &serde_json::Value,
         _result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         let question = args
             .get("question")
             .and_then(|value| value.as_str())
@@ -111,9 +111,9 @@ impl Tool for ClarifyTool {
             .and_then(|value| value.as_array())
             .map_or(0usize, |options| options.len().min(5));
 
-        vec![AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
+        vec![TypedToolFact::focus(
+            self.name().to_string(),
+            vec![FocusEntity {
                 kind: "clarification_request".into(),
                 name: question.to_string(),
                 metadata: Some(if option_count > 0 {
@@ -122,8 +122,8 @@ impl Tool for ClarifyTool {
                     "open_ended".to_string()
                 }),
             }],
-            slots: Vec::new(),
-        }]
+            Vec::new(),
+        )]
     }
 }
 
@@ -144,11 +144,11 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].focus_entities[0].kind, "clarification_request");
+        assert_eq!(facts[0].focus_entities()[0].kind, "clarification_request");
         assert_eq!(
-            facts[0].focus_entities[0].metadata.as_deref(),
+            facts[0].focus_entities()[0].metadata.as_deref(),
             Some("multiple_choice")
         );
-        assert!(facts[0].slots.is_empty());
+        assert!(facts[0].subjects().is_empty());
     }
 }

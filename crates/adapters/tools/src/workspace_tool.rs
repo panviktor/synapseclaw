@@ -8,9 +8,10 @@ use serde_json::json;
 use std::fmt::Write;
 use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{
+    ToolFactPayload, TypedToolFact, WorkspaceAction, WorkspaceFact,
+};
 use synapse_infra::workspace::WorkspaceManager;
 use tokio::sync::RwLock;
 
@@ -259,7 +260,7 @@ impl Tool for WorkspaceTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -269,23 +270,28 @@ impl Tool for WorkspaceTool {
             _ => return Vec::new(),
         };
 
-        let mut fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: Vec::new(),
-            slots: Vec::new(),
+        let action = match action {
+            "list" => WorkspaceAction::List,
+            "switch" => WorkspaceAction::Switch,
+            "create" => WorkspaceAction::Create,
+            "info" => WorkspaceAction::Info,
+            "export" => WorkspaceAction::Export,
+            _ => return Vec::new(),
         };
 
-        if let Some(name) = args.get("name").and_then(|value| value.as_str()) {
-            if !name.trim().is_empty() {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "workspace".into(),
-                    name: name.trim().to_string(),
-                    metadata: Some(action.to_string()),
-                });
-            }
-        }
-
-        vec![fact]
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Workspace(WorkspaceFact {
+                action,
+                name: args
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                item_count: None,
+            }),
+        }]
     }
 }
 
@@ -403,10 +409,13 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert!(facts[0].slots.is_empty());
         assert!(facts[0]
-            .focus_entities
+            .projected_focus_entities()
             .iter()
             .any(|entity| entity.kind == "workspace" && entity.name == "client_a"));
+        assert!(facts[0]
+            .projected_subjects()
+            .iter()
+            .any(|subject| subject == "client_a"));
     }
 }

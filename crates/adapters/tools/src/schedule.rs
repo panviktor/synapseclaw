@@ -8,7 +8,7 @@ use std::sync::Arc;
 use synapse_cron::{Db, Surreal};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::tool::ToolExecution;
 
 /// Tool that lets the agent manage recurring and one-shot scheduled tasks.
@@ -30,7 +30,7 @@ impl ScheduleTool {
     async fn execute_action(
         &self,
         args: &serde_json::Value,
-    ) -> Result<(ToolResult, Vec<AgentToolFact>)> {
+    ) -> Result<(ToolResult, Vec<TypedToolFact>)> {
         let action = args
             .get("action")
             .and_then(|value| value.as_str())
@@ -191,7 +191,7 @@ impl ScheduleTool {
         None
     }
 
-    async fn handle_list(&self) -> Result<(ToolResult, Vec<AgentToolFact>)> {
+    async fn handle_list(&self) -> Result<(ToolResult, Vec<TypedToolFact>)> {
         let jobs = synapse_cron::list_jobs(&self.db).await?;
         if jobs.is_empty() {
             return Ok((
@@ -246,7 +246,7 @@ impl ScheduleTool {
         ))
     }
 
-    async fn handle_get(&self, id: &str) -> Result<(ToolResult, Vec<AgentToolFact>)> {
+    async fn handle_get(&self, id: &str) -> Result<(ToolResult, Vec<TypedToolFact>)> {
         match synapse_cron::get_job(&self.db, id).await {
             Ok(job) => {
                 let detail = json!({
@@ -284,7 +284,7 @@ impl ScheduleTool {
         action: &str,
         args: &serde_json::Value,
         approved: bool,
-    ) -> Result<(ToolResult, Vec<AgentToolFact>)> {
+    ) -> Result<(ToolResult, Vec<TypedToolFact>)> {
         let command = args
             .get("command")
             .and_then(|value| value.as_str())
@@ -483,7 +483,7 @@ impl ScheduleTool {
         ))
     }
 
-    async fn handle_cancel(&self, id: &str) -> (ToolResult, Vec<AgentToolFact>) {
+    async fn handle_cancel(&self, id: &str) -> (ToolResult, Vec<TypedToolFact>) {
         match synapse_cron::remove_job(&self.db, id).await {
             Ok(()) => (
                 ToolResult {
@@ -508,7 +508,7 @@ impl ScheduleTool {
         }
     }
 
-    async fn handle_pause_resume(&self, id: &str, pause: bool) -> (ToolResult, Vec<AgentToolFact>) {
+    async fn handle_pause_resume(&self, id: &str, pause: bool) -> (ToolResult, Vec<TypedToolFact>) {
         let operation = if pause {
             synapse_cron::pause_job(&self.db, id).await
         } else {
@@ -589,14 +589,17 @@ mod tests {
     fn build_job_fact_emits_typed_schedule_fields() {
         let fact = cron_facts::build_job_fact("schedule", "create", &sample_job());
 
-        assert_eq!(fact.tool_name, "schedule");
-        assert_eq!(fact.focus_entities.len(), 1);
-        assert_eq!(fact.focus_entities[0].kind, "scheduled_job");
-        assert_eq!(fact.focus_entities[0].name, "job_123");
-        assert!(fact.slots.is_empty());
-        assert_eq!(
-            fact.focus_entities[0].metadata.as_deref(),
-            Some("create:cron:main")
-        );
+        assert_eq!(fact.tool_id, "schedule");
+        let projected = fact.projected_focus_entities();
+        assert!(projected
+            .iter()
+            .any(|entity| entity.kind == "scheduled_job" && entity.name == "job_123"));
+        assert!(projected
+            .iter()
+            .any(|entity| entity.kind == "session_target" && entity.name == "main"));
+        assert!(fact
+            .projected_subjects()
+            .iter()
+            .any(|subject| subject == "job_123"));
     }
 }

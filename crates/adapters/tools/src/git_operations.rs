@@ -5,7 +5,7 @@ use std::sync::Arc;
 use synapse_domain::domain::config::AutonomyLevel;
 use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 
 /// Git operations tool for structured repository management.
 /// Provides safe, parsed git operations with JSON output.
@@ -572,7 +572,7 @@ impl Tool for GitOperationsTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -582,19 +582,19 @@ impl Tool for GitOperationsTool {
             _ => return Vec::new(),
         };
 
-        let mut fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
+        let mut fact = TypedToolFact::focus(
+            self.name().to_string(),
+            vec![FocusEntity {
                 kind: "git_repository".into(),
                 name: self.workspace_dir.display().to_string(),
                 metadata: Some(operation.to_string()),
             }],
-            slots: Vec::new(),
-        };
+            Vec::new(),
+        );
 
         if let Some(branch) = args.get("branch").and_then(|value| value.as_str()) {
             if !branch.trim().is_empty() {
-                fact.focus_entities.push(FocusEntity {
+                fact.push_focus_entity(FocusEntity {
                     kind: "git_branch".into(),
                     name: branch.trim().to_string(),
                     metadata: Some("target".into()),
@@ -861,7 +861,7 @@ mod tests {
 
         assert_eq!(facts.len(), 1);
         assert!(facts[0]
-            .focus_entities
+            .focus_entities()
             .iter()
             .any(|entity| entity.kind == "git_branch" && entity.name == "feature/x"));
     }

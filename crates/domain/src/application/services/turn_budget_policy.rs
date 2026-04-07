@@ -9,6 +9,7 @@
 pub enum InterpreterGateReason {
     ContinuationLikely,
     ReferenceLikeTurn,
+    DirectTypedReference,
     DefaultResolutionLikely,
     AmbiguityDetected,
     PostToolFollowUp,
@@ -49,6 +50,7 @@ pub struct TurnExecutionSignals {
     pub has_working_state: bool,
     pub has_profile_defaults: bool,
     pub has_reference_candidates: bool,
+    pub direct_reference_count: usize,
     pub ambiguity_candidate_count: usize,
     pub recent_tool_fact_count: usize,
     pub explicit_user_correction: bool,
@@ -87,6 +89,11 @@ pub fn build_turn_execution_budget(signals: TurnExecutionSignals) -> TurnExecuti
             .gate_reasons
             .push(InterpreterGateReason::ReferenceLikeTurn);
     }
+    if signals.direct_reference_count > 0 {
+        budget
+            .gate_reasons
+            .push(InterpreterGateReason::DirectTypedReference);
+    }
     if signals.has_working_state {
         budget
             .gate_reasons
@@ -123,6 +130,15 @@ pub fn build_turn_execution_budget(signals: TurnExecutionSignals) -> TurnExecuti
         budget.retrieval_budget.max_memory_candidates = 6;
     }
 
+    if signals.direct_reference_count > 0 && signals.ambiguity_candidate_count == 0 {
+        budget.retrieval_budget.max_session_candidates = 0;
+        budget.retrieval_budget.max_precedent_candidates = 0;
+        budget.retrieval_budget.max_memory_candidates =
+            budget.retrieval_budget.max_memory_candidates.min(3);
+        budget.retrieval_budget.max_projection_lines =
+            budget.retrieval_budget.max_projection_lines.min(16);
+    }
+
     if signals.explicit_user_correction {
         budget.allow_heavy_background_learning = true;
     }
@@ -153,6 +169,23 @@ mod tests {
         assert!(budget
             .gate_reasons
             .contains(&InterpreterGateReason::ReferenceLikeTurn));
+    }
+
+    #[test]
+    fn direct_typed_reference_trims_historical_retrieval_budget() {
+        let budget = build_turn_execution_budget(TurnExecutionSignals {
+            has_reference_candidates: true,
+            direct_reference_count: 1,
+            recent_tool_fact_count: 1,
+            ..TurnExecutionSignals::default()
+        });
+        assert_eq!(budget.interpreter_mode, InterpreterMode::Lightweight);
+        assert!(budget
+            .gate_reasons
+            .contains(&InterpreterGateReason::DirectTypedReference));
+        assert_eq!(budget.retrieval_budget.max_session_candidates, 0);
+        assert_eq!(budget.retrieval_budget.max_precedent_candidates, 0);
+        assert_eq!(budget.retrieval_budget.max_memory_candidates, 3);
     }
 
     #[test]

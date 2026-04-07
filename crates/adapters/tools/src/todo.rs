@@ -12,10 +12,8 @@ use std::sync::Arc;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::{
     domain::dialogue_state::FocusEntity,
-    ports::{
-        agent_runtime::AgentToolFact,
-        tool::{Tool, ToolExecution, ToolResult},
-    },
+    domain::tool_fact::TypedToolFact,
+    ports::tool::{Tool, ToolExecution, ToolResult},
 };
 
 /// Maximum items per session.
@@ -55,7 +53,7 @@ impl TodoTool {
         _session_key: &str,
         item: Option<&TodoItem>,
         _count: usize,
-    ) -> AgentToolFact {
+    ) -> TypedToolFact {
         let mut focus_entities = Vec::new();
 
         if let Some(item) = item {
@@ -66,11 +64,7 @@ impl TodoTool {
             });
         }
 
-        AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities,
-            slots: Vec::new(),
-        }
+        TypedToolFact::focus(self.name().to_string(), focus_entities, Vec::new())
     }
 
     async fn execute_action(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
@@ -149,11 +143,11 @@ impl TodoTool {
                                 success: true,
                                 error: None,
                             },
-                            facts: vec![AgentToolFact {
-                                tool_name: self.name().to_string(),
+                            facts: vec![TypedToolFact::focus(
+                                self.name().to_string(),
                                 focus_entities,
-                                slots: Vec::new(),
-                            }],
+                                Vec::new(),
+                            )],
                         })
                     }
                     _ => Ok(ToolExecution {
@@ -234,15 +228,15 @@ impl TodoTool {
                                 success: true,
                                 error: None,
                             },
-                            facts: vec![AgentToolFact {
-                                tool_name: self.name().to_string(),
-                                focus_entities: vec![FocusEntity {
+                            facts: vec![TypedToolFact::focus(
+                                self.name().to_string(),
+                                vec![FocusEntity {
                                     kind: "todo_item".into(),
                                     name: id.to_string(),
                                     metadata: Some("removed".into()),
                                 }],
-                                slots: Vec::new(),
-                            }],
+                                Vec::new(),
+                            )],
                         });
                     }
                 }
@@ -338,9 +332,9 @@ mod tests {
 
         assert!(exec.result.success);
         assert_eq!(exec.facts.len(), 1);
-        assert_eq!(exec.facts[0].focus_entities[0].kind, "todo_item");
+        assert_eq!(exec.facts[0].focus_entities()[0].kind, "todo_item");
         assert_eq!(
-            exec.facts[0].focus_entities[0].metadata.as_deref(),
+            exec.facts[0].focus_entities()[0].metadata.as_deref(),
             Some("pending")
         );
     }
@@ -359,7 +353,7 @@ mod tests {
 
         assert!(exec.result.success);
         assert!(exec.facts[0]
-            .focus_entities
+            .focus_entities()
             .iter()
             .any(|entity| entity.kind == "todo_item" && entity.name == "1"));
     }

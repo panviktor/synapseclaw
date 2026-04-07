@@ -2,9 +2,10 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Maximum PDF file size (50 MB).
 const MAX_PDF_BYTES: u64 = 50 * 1024 * 1024;
@@ -233,7 +234,7 @@ impl Tool for PdfReadTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -243,14 +244,15 @@ impl Tool for PdfReadTool {
             _ => return Vec::new(),
         };
 
-        vec![AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "pdf_document".into(),
-                name: path,
-                metadata: Some("read".into()),
-            }],
-            slots: Vec::new(),
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::Pdf,
+                operation: ResourceOperation::Read,
+                locator: path,
+                host: None,
+                metadata: ResourceMetadata::default(),
+            }),
         }]
     }
 }
@@ -418,9 +420,14 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].focus_entities[0].kind, "pdf_document");
-        assert_eq!(facts[0].focus_entities[0].name, "docs/spec.pdf");
-        assert!(facts[0].slots.is_empty());
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "pdf_document");
+        assert_eq!(projected[0].name, "docs/spec.pdf");
+        assert_eq!(projected[0].metadata.as_deref(), Some("read"));
+        assert!(facts[0]
+            .projected_subjects()
+            .iter()
+            .any(|subject| subject == "docs/spec.pdf"));
     }
 
     #[cfg(unix)]

@@ -6,7 +6,6 @@ use synapse_domain::application::services::loop_detection::{
     hash_args, LoopAction, LoopDetector, ToolInvocation,
 };
 use synapse_domain::domain::tool_fact::TypedToolFact;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
 
 #[derive(Debug)]
 pub(crate) struct ToolLoopCancelled;
@@ -72,11 +71,10 @@ pub(crate) async fn agent_turn(
 pub(crate) struct ToolLoopResult {
     pub(crate) response: String,
     pub(crate) tool_names: Vec<String>,
-    pub(crate) tool_facts: Vec<AgentToolFact>,
-    pub(crate) typed_tool_facts: Vec<TypedToolFact>,
+    pub(crate) tool_facts: Vec<TypedToolFact>,
 }
 
-fn collect_tool_facts(explicit_facts: Vec<AgentToolFact>) -> Vec<AgentToolFact> {
+fn collect_tool_facts(explicit_facts: Vec<TypedToolFact>) -> Vec<TypedToolFact> {
     explicit_facts
 }
 
@@ -127,7 +125,6 @@ pub(crate) async fn execute_one_tool(
             error_reason: Some(scrub_credentials(&reason)),
             duration,
             tool_facts,
-            typed_tool_facts: Vec::new(),
         });
     };
 
@@ -169,7 +166,6 @@ pub(crate) async fn execute_one_tool(
                 error_reason: Some(reason),
                 duration,
                 tool_facts,
-                typed_tool_facts: Vec::new(),
             });
         }
     }
@@ -189,7 +185,6 @@ pub(crate) async fn execute_one_tool(
             let duration = start.elapsed();
             let tool_facts = collect_tool_facts(execution.facts);
             let r = execution.result;
-            let typed_tool_facts = tool.extract_typed_facts(&call_arguments, Some(&r));
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -211,7 +206,6 @@ pub(crate) async fn execute_one_tool(
                     error_reason: None,
                     duration,
                     tool_facts,
-                    typed_tool_facts,
                 })
             } else {
                 let reason = r.error.unwrap_or(r.output);
@@ -226,7 +220,6 @@ pub(crate) async fn execute_one_tool(
                     error_reason: Some(scrub_credentials(&reason)),
                     duration,
                     tool_facts,
-                    typed_tool_facts,
                 })
             }
         }
@@ -253,7 +246,6 @@ pub(crate) async fn execute_one_tool(
                 error_reason: Some(scrub_credentials(&reason)),
                 duration,
                 tool_facts,
-                typed_tool_facts: Vec::new(),
             })
         }
     }
@@ -264,8 +256,7 @@ pub(crate) struct ToolExecutionOutcome {
     pub(crate) success: bool,
     pub(crate) error_reason: Option<String>,
     pub(crate) duration: Duration,
-    pub(crate) tool_facts: Vec<AgentToolFact>,
-    pub(crate) typed_tool_facts: Vec<TypedToolFact>,
+    pub(crate) tool_facts: Vec<TypedToolFact>,
 }
 
 pub(crate) fn should_execute_tools_in_parallel(
@@ -404,8 +395,7 @@ pub(crate) async fn run_tool_call_loop(
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
     let mut total_tool_calls = 0usize;
     let mut loop_detector = LoopDetector::new();
-    let mut collected_tool_facts = Vec::<AgentToolFact>::new();
-    let mut collected_typed_tool_facts = Vec::<TypedToolFact>::new();
+    let mut collected_tool_facts = Vec::<TypedToolFact>::new();
     let mut collected_tool_names = Vec::<String>::new();
 
     tracing::info!(
@@ -719,7 +709,6 @@ pub(crate) async fn run_tool_call_loop(
                 response: display_text,
                 tool_names: collected_tool_names,
                 tool_facts: collected_tool_facts,
-                typed_tool_facts: collected_typed_tool_facts,
             });
         }
 
@@ -795,7 +784,6 @@ pub(crate) async fn run_tool_call_loop(
                                 error_reason: Some(scrub_credentials(&reason)),
                                 duration: Duration::ZERO,
                                 tool_facts: collect_tool_facts(Vec::new()),
-                                typed_tool_facts: Vec::new(),
                             },
                         ));
                         continue;
@@ -855,7 +843,6 @@ pub(crate) async fn run_tool_call_loop(
                                 error_reason: Some(denied),
                                 duration: Duration::ZERO,
                                 tool_facts: collect_tool_facts(Vec::new()),
-                                typed_tool_facts: Vec::new(),
                             },
                         ));
                         continue;
@@ -898,7 +885,6 @@ pub(crate) async fn run_tool_call_loop(
                         error_reason: Some(duplicate),
                         duration: Duration::ZERO,
                         tool_facts: collect_tool_facts(Vec::new()),
-                        typed_tool_facts: Vec::new(),
                     },
                 ));
                 continue;
@@ -1037,7 +1023,6 @@ pub(crate) async fn run_tool_call_loop(
             }
 
             collected_tool_facts.extend(outcome.tool_facts.clone());
-            collected_typed_tool_facts.extend(outcome.typed_tool_facts.clone());
             if !collected_tool_names
                 .iter()
                 .any(|existing| existing == &call.name)
@@ -1104,7 +1089,6 @@ pub(crate) async fn run_tool_call_loop(
                     response: clarify.to_string(),
                     tool_names: collected_tool_names,
                     tool_facts: collected_tool_facts,
-                    typed_tool_facts: collected_typed_tool_facts,
                 });
             }
             LoopAction::ForceStop => {
@@ -1119,7 +1103,6 @@ pub(crate) async fn run_tool_call_loop(
                     response: stop.to_string(),
                     tool_names: collected_tool_names,
                     tool_facts: collected_tool_facts,
-                    typed_tool_facts: collected_typed_tool_facts,
                 });
             }
         }

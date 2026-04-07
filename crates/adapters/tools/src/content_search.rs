@@ -3,9 +3,8 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::ports::tool::ToolExecution;
 
 const MAX_RESULTS: usize = 1000;
@@ -392,19 +391,17 @@ impl Tool for ContentSearchTool {
         let (result, summary) = self.execute_search(&args).await?;
         let facts = summary
             .filter(|_| result.success)
-            .map(|summary| AgentToolFact {
-                tool_name: self.name().to_string(),
-                focus_entities: summary
-                    .matched_paths
-                    .iter()
-                    .take(5)
-                    .map(|path| FocusEntity {
-                        kind: "workspace_file".into(),
-                        name: path.clone(),
-                        metadata: Some("content_match".into()),
-                    })
-                    .collect(),
-                slots: Vec::new(),
+            .map(|summary| TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Workspace,
+                    query: args
+                        .get("pattern")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    result_count: Some(summary.total_matches),
+                    primary_locator: summary.matched_paths.first().cloned(),
+                }),
             })
             .map(|fact| vec![fact])
             .unwrap_or_default();

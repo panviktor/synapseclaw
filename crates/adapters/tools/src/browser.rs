@@ -16,7 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 use tokio::process::Command;
 use tracing::debug;
 
@@ -1093,7 +1095,7 @@ impl Tool for BrowserTool {
         self.execute_action(action, backend).await
     }
 
-    fn extract_facts(&self, args: &Value, result: Option<&ToolResult>) -> Vec<AgentToolFact> {
+    fn extract_facts(&self, args: &Value, result: Option<&ToolResult>) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -1101,12 +1103,6 @@ impl Tool for BrowserTool {
         let action_name = match args.get("action").and_then(Value::as_str) {
             Some(action) if !action.trim().is_empty() => action.trim(),
             _ => return Vec::new(),
-        };
-
-        let mut fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: Vec::new(),
-            slots: Vec::new(),
         };
 
         match parse_browser_action(action_name, args) {
@@ -1118,101 +1114,139 @@ impl Tool for BrowserTool {
                     Ok(host) => host,
                     Err(_) => return Vec::new(),
                 };
-                fact.focus_entities.push(FocusEntity {
-                    kind: "browser_page".into(),
-                    name: url.clone(),
-                    metadata: Some(host.clone()),
-                });
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserPage,
+                        operation: ResourceOperation::Open,
+                        locator: url,
+                        host: Some(host),
+                        metadata: ResourceMetadata::default(),
+                    }),
+                }]
             }
             Ok(BrowserAction::Click { selector })
             | Ok(BrowserAction::GetText { selector })
             | Ok(BrowserAction::Hover { selector })
             | Ok(BrowserAction::IsVisible { selector }) => {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "browser_selector".into(),
-                    name: selector,
-                    metadata: Some(action_name.to_string()),
-                });
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: browser_selector_operation(action_name),
+                        locator: selector,
+                        host: None,
+                        metadata: ResourceMetadata::default(),
+                    }),
+                }]
             }
             Ok(BrowserAction::Fill { selector, value }) => {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "browser_selector".into(),
-                    name: selector,
-                    metadata: Some(format!("fill:{}b", value.len())),
-                });
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: ResourceOperation::Type,
+                        locator: selector,
+                        host: None,
+                        metadata: ResourceMetadata {
+                            byte_count: Some(value.len()),
+                            ..ResourceMetadata::default()
+                        },
+                    }),
+                }]
             }
             Ok(BrowserAction::Type { selector, text }) => {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "browser_selector".into(),
-                    name: selector,
-                    metadata: Some(format!("type:{}b", text.len())),
-                });
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: ResourceOperation::Type,
+                        locator: selector,
+                        host: None,
+                        metadata: ResourceMetadata {
+                            byte_count: Some(text.len()),
+                            ..ResourceMetadata::default()
+                        },
+                    }),
+                }]
             }
-            Ok(BrowserAction::Snapshot { .. }) => {}
-            Ok(BrowserAction::Screenshot { path, full_page }) => {
-                if let Some(path) = path {
-                    fact.focus_entities.push(FocusEntity {
-                        kind: "image_file".into(),
-                        name: path,
-                        metadata: Some(if full_page {
-                            "browser_screenshot_full_page".into()
-                        } else {
-                            "browser_screenshot".into()
-                        }),
-                    });
-                }
-            }
-            Ok(BrowserAction::Wait { selector, ms, text }) => {
-                if let Some(selector) = selector {
-                    fact.focus_entities.push(FocusEntity {
-                        kind: "browser_selector".into(),
-                        name: selector,
-                        metadata: Some(match (ms, text.is_some()) {
-                            (Some(wait_ms), true) => format!("wait:{}ms:text", wait_ms),
-                            (Some(wait_ms), false) => format!("wait:{}ms", wait_ms),
-                            (None, true) => "wait:text".into(),
-                            (None, false) => "wait".into(),
-                        }),
-                    });
-                }
-            }
-            Ok(BrowserAction::Press { key }) => {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "browser_key".into(),
-                    name: key,
-                    metadata: Some("press".into()),
-                });
-            }
-            Ok(BrowserAction::Scroll { direction, pixels }) => {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "browser_scroll".into(),
-                    name: direction,
-                    metadata: pixels.map(|value| value.to_string()),
-                });
-            }
+            Ok(BrowserAction::Snapshot { .. }) => vec![TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Resource(ResourceFact {
+                    kind: ResourceKind::BrowserPage,
+                    operation: ResourceOperation::Inspect,
+                    locator: "snapshot".into(),
+                    host: None,
+                    metadata: ResourceMetadata::default(),
+                }),
+            }],
+            Ok(BrowserAction::Screenshot { path, full_page }) => path
+                .map(|path| TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::Image,
+                        operation: ResourceOperation::Snapshot,
+                        locator: path,
+                        host: None,
+                        metadata: ResourceMetadata {
+                            include_base64: Some(full_page),
+                            ..ResourceMetadata::default()
+                        },
+                    }),
+                })
+                .into_iter()
+                .collect(),
+            Ok(BrowserAction::Wait { selector, ms, text }) => selector
+                .map(|selector| TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: ResourceOperation::Verify,
+                        locator: selector,
+                        host: None,
+                        metadata: ResourceMetadata {
+                            item_count: ms.map(|value| value as usize),
+                            byte_count: text.as_ref().map(|value| value.len()),
+                            ..ResourceMetadata::default()
+                        },
+                    }),
+                })
+                .into_iter()
+                .collect(),
+            Ok(BrowserAction::Press { .. }) => Vec::new(),
+            Ok(BrowserAction::Scroll { .. }) => Vec::new(),
             Ok(BrowserAction::Find {
                 by,
                 value,
                 action,
                 fill_value,
             }) => {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "browser_find".into(),
-                    name: format!("{by}:{value}"),
-                    metadata: Some(match fill_value {
-                        Some(text) => format!("{action}:{}b", text.len()),
-                        None => action,
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: browser_find_operation(&action),
+                        locator: format!("{by}:{value}"),
+                        host: None,
+                        metadata: ResourceMetadata {
+                            byte_count: fill_value.as_ref().map(|text| text.len()),
+                            ..ResourceMetadata::default()
+                        },
                     }),
-                });
+                }]
             }
-            Ok(BrowserAction::GetTitle | BrowserAction::GetUrl | BrowserAction::Close) => {}
+            Ok(BrowserAction::GetTitle | BrowserAction::GetUrl | BrowserAction::Close) => {
+                Vec::new()
+            }
             Err(_) => {
+                let mut fact =
+                    TypedToolFact::focus(self.name().to_string(), Vec::new(), Vec::new());
                 if let Some(x) = args.get("x").and_then(Value::as_i64) {
                     let name = match args.get("y").and_then(Value::as_i64) {
                         Some(y) => format!("{x},{y}"),
                         None => x.to_string(),
                     };
-                    fact.focus_entities.push(FocusEntity {
+                    fact.push_focus_entity(FocusEntity {
                         kind: "computer_coordinate".into(),
                         name,
                         metadata: args
@@ -1221,10 +1255,26 @@ impl Tool for BrowserTool {
                             .map(str::to_string),
                     });
                 }
+                vec![fact]
             }
         }
+    }
+}
 
-        vec![fact]
+fn browser_selector_operation(action_name: &str) -> ResourceOperation {
+    match action_name {
+        "click" => ResourceOperation::Click,
+        "get_text" | "hover" | "is_visible" => ResourceOperation::Inspect,
+        _ => ResourceOperation::Inspect,
+    }
+}
+
+fn browser_find_operation(action: &str) -> ResourceOperation {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "click" => ResourceOperation::Click,
+        "fill" => ResourceOperation::Type,
+        "text" | "hover" => ResourceOperation::Inspect,
+        _ => ResourceOperation::Inspect,
     }
 }
 
@@ -2623,13 +2673,15 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].focus_entities[0].kind, "browser_page");
-        assert_eq!(facts[0].focus_entities[0].name, "https://example.com/docs");
-        assert_eq!(
-            facts[0].focus_entities[0].metadata.as_deref(),
-            Some("example.com")
-        );
-        assert!(facts[0].slots.is_empty());
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "browser_page");
+        assert_eq!(projected[0].name, "https://example.com/docs");
+        assert_eq!(projected[0].metadata.as_deref(), Some("example.com"));
+        let subjects = facts[0].projected_subjects();
+        assert!(subjects
+            .iter()
+            .any(|subject| subject == "https://example.com/docs"));
+        assert!(subjects.iter().any(|subject| subject == "example.com"));
     }
 
     #[test]
@@ -2647,7 +2699,7 @@ mod tests {
 
         assert_eq!(facts.len(), 1);
         assert!(facts[0]
-            .focus_entities
+            .projected_focus_entities()
             .iter()
             .any(|entity| entity.kind == "browser_selector" && entity.name == "@e2"));
     }

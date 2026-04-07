@@ -212,8 +212,7 @@ fn score_dialogue_state(interpretation: Option<&TurnInterpretation>) -> Option<f
     let state = interpretation.dialogue_state.as_ref()?;
     let reference_count =
         count_reference_candidates(interpretation, ReferenceSource::DialogueState) as f64;
-    let direct_reference_count =
-        count_direct_dialogue_state_references(interpretation) as f64;
+    let direct_reference_count = count_direct_dialogue_state_references(interpretation) as f64;
     let anchor_count = state.reference_anchors.len().min(4) as f64;
     let focus_count = state.focus_entities.len().min(3) as f64;
     let comparison_bonus = if state.comparison_set.len() >= 2 {
@@ -614,8 +613,14 @@ mod tests {
             entity_hits: 0,
         });
 
-        assert_eq!(plan.source_order.first(), Some(&ResolutionSource::DialogueState));
-        assert_ne!(plan.clarification_reason, Some(ClarificationReason::LowConfidence));
+        assert_eq!(
+            plan.source_order.first(),
+            Some(&ResolutionSource::DialogueState)
+        );
+        assert_ne!(
+            plan.clarification_reason,
+            Some(ClarificationReason::LowConfidence)
+        );
     }
 
     #[test]

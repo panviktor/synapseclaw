@@ -400,9 +400,10 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
 
     let mut result = FormattedTurnContext::default();
     let max_chars = budget.enrichment_total_max_chars;
-    let mut remaining_projection_lines = ctx.execution_budget.as_ref().map_or(usize::MAX, |b| {
-        b.retrieval_budget.max_projection_lines
-    });
+    let mut remaining_projection_lines = ctx
+        .execution_budget
+        .as_ref()
+        .map_or(usize::MAX, |b| b.retrieval_budget.max_projection_lines);
 
     // Core blocks → system prompt
     for block in &ctx.core_blocks {
@@ -672,9 +673,9 @@ fn should_include_enrichment_source(
         return true;
     };
 
-    let has_direct_reference_gate = execution_budget.gate_reasons.contains(
-        &turn_budget_policy::InterpreterGateReason::DirectTypedReference,
-    );
+    let has_direct_reference_gate = execution_budget
+        .gate_reasons
+        .contains(&turn_budget_policy::InterpreterGateReason::DirectTypedReference);
     if !has_direct_reference_gate {
         return true;
     }
@@ -1001,12 +1002,18 @@ mod tests {
             };
 
         let execution_budget = build_execution_budget(Some(&interpretation)).unwrap();
-        assert_eq!(execution_budget.interpreter_mode, InterpreterMode::Lightweight);
+        assert_eq!(
+            execution_budget.interpreter_mode,
+            InterpreterMode::Lightweight
+        );
         assert!(execution_budget
             .gate_reasons
             .contains(&InterpreterGateReason::DirectTypedReference));
         assert_eq!(execution_budget.retrieval_budget.max_session_candidates, 0);
-        assert_eq!(execution_budget.retrieval_budget.max_precedent_candidates, 0);
+        assert_eq!(
+            execution_budget.retrieval_budget.max_precedent_candidates,
+            0
+        );
         assert_eq!(execution_budget.retrieval_budget.max_memory_candidates, 3);
     }
 
@@ -1032,12 +1039,18 @@ mod tests {
             };
 
         let execution_budget = build_execution_budget(Some(&interpretation)).unwrap();
-        assert_eq!(execution_budget.interpreter_mode, InterpreterMode::Lightweight);
+        assert_eq!(
+            execution_budget.interpreter_mode,
+            InterpreterMode::Lightweight
+        );
         assert!(!execution_budget
             .gate_reasons
             .contains(&InterpreterGateReason::DirectTypedReference));
         assert_eq!(execution_budget.retrieval_budget.max_session_candidates, 2);
-        assert_eq!(execution_budget.retrieval_budget.max_precedent_candidates, 2);
+        assert_eq!(
+            execution_budget.retrieval_budget.max_precedent_candidates,
+            2
+        );
     }
 
     #[test]

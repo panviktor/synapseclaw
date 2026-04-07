@@ -7,10 +7,11 @@ use std::sync::Arc;
 use synapse_domain::config::schema::{
     ClassificationRule, Config, DelegateAgentConfig, ModelRouteConfig,
 };
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    RoutingAction, RoutingFact, ToolFactPayload, TypedToolFact,
+};
 use synapse_domain::domain::util::MaybeSet;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_infra::config_io::ConfigIO;
 
 const DEFAULT_AGENT_MAX_DEPTH: u32 = 3;
@@ -923,42 +924,65 @@ impl Tool for ModelRoutingConfigTool {
         })
     }
 
-    fn extract_facts(&self, args: &Value, result: Option<&ToolResult>) -> Vec<AgentToolFact> {
+    fn extract_facts(&self, args: &Value, result: Option<&ToolResult>) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
 
-        let mut fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "config_file".into(),
-                name: self.config.config_path.display().to_string(),
-                metadata: Some("model_routing".into()),
-            }],
-            slots: Vec::new(),
+        let action = match args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("get")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "get" => RoutingAction::Get,
+            "list_hints" => RoutingAction::ListHints,
+            "set_default" => RoutingAction::SetDefault,
+            "upsert_scenario" => RoutingAction::UpsertScenario,
+            "remove_scenario" => RoutingAction::RemoveScenario,
+            "upsert_agent" => RoutingAction::UpsertAgent,
+            "remove_agent" => RoutingAction::RemoveAgent,
+            _ => return Vec::new(),
         };
 
-        if let Some(hint) = args.get("hint").and_then(Value::as_str) {
-            if !hint.trim().is_empty() {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "routing_hint".into(),
-                    name: hint.trim().to_string(),
-                    metadata: Some("routing_hint".into()),
-                });
-            }
-        }
-
-        if let Some(name) = args.get("name").and_then(Value::as_str) {
-            if !name.trim().is_empty() {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "delegate_agent".into(),
-                    name: name.trim().to_string(),
-                    metadata: Some("routing_agent".into()),
-                });
-            }
-        }
-
-        vec![fact]
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Routing(RoutingFact {
+                action,
+                hint: args
+                    .get("hint")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                agent_name: args
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                provider: args
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                model: args
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                matcher_count: args.get("patterns").and_then(Value::as_array).map(Vec::len),
+                allowed_tool_count: match args.get("allowed_tools") {
+                    Some(Value::Array(values)) => Some(values.len()),
+                    Some(Value::String(value)) if !value.trim().is_empty() => Some(1),
+                    _ => None,
+                },
+            }),
+        }]
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {

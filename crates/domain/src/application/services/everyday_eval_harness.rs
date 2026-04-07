@@ -7,7 +7,7 @@
 use crate::application::services::clarification_policy::{self, ClarificationGuidance};
 use crate::application::services::resolution_router::{self, ResolutionPlan, ResolutionSource};
 use crate::application::services::turn_interpretation::{self, TurnInterpretation};
-use crate::domain::conversation_target::CurrentConversationContext;
+use crate::domain::conversation_target::{ConversationDeliveryTarget, CurrentConversationContext};
 use crate::domain::dialogue_state::DialogueState;
 use crate::domain::user_profile::UserProfile;
 use crate::ports::memory::UnifiedMemoryPort;
@@ -231,7 +231,6 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
                     },
                 ],
                 focus_entities: vec![],
-                slots: vec![],
                 reference_anchors: vec![
                     crate::domain::dialogue_state::ReferenceAnchor {
                         selector: crate::domain::dialogue_state::ReferenceAnchorSelector::Ordinal(
@@ -249,6 +248,11 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
                     },
                 ],
                 last_tool_subjects: vec!["Berlin".into(), "Tbilisi".into()],
+                recent_delivery_target: None,
+                recent_schedule_job: None,
+                recent_resource: None,
+                recent_search: None,
+                recent_workspace: None,
                 updated_at: 1,
             }),
             top_session_score: None,
@@ -257,6 +261,213 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
             second_recipe_score: None,
             top_memory_score: None,
             second_memory_score: None,
+            recall_hits: 0,
+            skill_hits: 0,
+            entity_hits: 0,
+        },
+        EverydayEvalScenario {
+            id: "that_file_uses_dialogue_state",
+            user_message: "Open that file again",
+            profile: None,
+            current_conversation: None,
+            dialogue_state: Some(DialogueState {
+                focus_entities: vec![crate::domain::dialogue_state::FocusEntity {
+                    kind: "file".into(),
+                    name: "/workspace/README.md".into(),
+                    metadata: Some("read".into()),
+                }],
+                reference_anchors: vec![crate::domain::dialogue_state::ReferenceAnchor {
+                    selector: crate::domain::dialogue_state::ReferenceAnchorSelector::Current,
+                    entity_kind: Some("file".into()),
+                    value: "/workspace/README.md".into(),
+                }],
+                recent_resource: Some(crate::domain::dialogue_state::ResourceReference {
+                    kind: crate::domain::tool_fact::ResourceKind::File,
+                    operation: crate::domain::tool_fact::ResourceOperation::Read,
+                    locator: "/workspace/README.md".into(),
+                    host: None,
+                }),
+                last_tool_subjects: vec!["/workspace/README.md".into()],
+                recent_delivery_target: None,
+                recent_schedule_job: None,
+                comparison_set: vec![],
+                recent_search: None,
+                recent_workspace: None,
+                updated_at: 1,
+            }),
+            top_session_score: None,
+            second_session_score: None,
+            top_recipe_score: None,
+            second_recipe_score: None,
+            top_memory_score: Some(0.42),
+            second_memory_score: Some(0.37),
+            recall_hits: 0,
+            skill_hits: 0,
+            entity_hits: 0,
+        },
+        EverydayEvalScenario {
+            id: "that_job_uses_dialogue_state",
+            user_message: "Rerun that job",
+            profile: None,
+            current_conversation: None,
+            dialogue_state: Some(DialogueState {
+                recent_schedule_job: Some(crate::domain::dialogue_state::ScheduleJobReference {
+                    job_id: "job_123".into(),
+                    action: crate::domain::tool_fact::ScheduleAction::Run,
+                    job_type: Some(crate::domain::tool_fact::ScheduleJobType::Agent),
+                    schedule_kind: Some(crate::domain::tool_fact::ScheduleKind::Cron),
+                    session_target: Some("main".into()),
+                    timezone: Some("Europe/Berlin".into()),
+                }),
+                recent_delivery_target: None,
+                recent_resource: None,
+                recent_search: None,
+                recent_workspace: None,
+                focus_entities: vec![],
+                comparison_set: vec![],
+                reference_anchors: vec![],
+                last_tool_subjects: vec!["job_123".into()],
+                updated_at: 1,
+            }),
+            top_session_score: None,
+            second_session_score: None,
+            top_recipe_score: None,
+            second_recipe_score: None,
+            top_memory_score: Some(0.41),
+            second_memory_score: Some(0.39),
+            recall_hits: 0,
+            skill_hits: 0,
+            entity_hits: 0,
+        },
+        EverydayEvalScenario {
+            id: "send_it_there_uses_dialogue_state_delivery",
+            user_message: "Send it there",
+            profile: None,
+            current_conversation: None,
+            dialogue_state: Some(DialogueState {
+                focus_entities: vec![crate::domain::dialogue_state::FocusEntity {
+                    kind: "delivery_target".into(),
+                    name: "explicit:telegram:@synapseclaw".into(),
+                    metadata: Some("explicit".into()),
+                }],
+                reference_anchors: vec![crate::domain::dialogue_state::ReferenceAnchor {
+                    selector: crate::domain::dialogue_state::ReferenceAnchorSelector::Current,
+                    entity_kind: Some("delivery_target".into()),
+                    value: "explicit:telegram:@synapseclaw".into(),
+                }],
+                recent_delivery_target: Some(ConversationDeliveryTarget::Explicit {
+                    channel: "telegram".into(),
+                    recipient: "@synapseclaw".into(),
+                    thread_ref: None,
+                }),
+                recent_schedule_job: None,
+                recent_resource: None,
+                recent_search: None,
+                recent_workspace: None,
+                comparison_set: vec![],
+                last_tool_subjects: vec!["@synapseclaw".into()],
+                updated_at: 1,
+            }),
+            top_session_score: None,
+            second_session_score: None,
+            top_recipe_score: None,
+            second_recipe_score: None,
+            top_memory_score: Some(0.43),
+            second_memory_score: Some(0.4),
+            recall_hits: 0,
+            skill_hits: 0,
+            entity_hits: 0,
+        },
+        EverydayEvalScenario {
+            id: "send_it_there_sparse_delivery_context",
+            user_message: "Send it there",
+            profile: None,
+            current_conversation: None,
+            dialogue_state: Some(DialogueState {
+                recent_delivery_target: Some(ConversationDeliveryTarget::Explicit {
+                    channel: "telegram".into(),
+                    recipient: "@synapseclaw".into(),
+                    thread_ref: None,
+                }),
+                recent_schedule_job: None,
+                recent_resource: None,
+                recent_search: None,
+                recent_workspace: None,
+                focus_entities: vec![],
+                comparison_set: vec![],
+                reference_anchors: vec![],
+                last_tool_subjects: vec!["@synapseclaw".into()],
+                updated_at: 1,
+            }),
+            top_session_score: None,
+            second_session_score: None,
+            top_recipe_score: None,
+            second_recipe_score: None,
+            top_memory_score: Some(0.43),
+            second_memory_score: Some(0.4),
+            recall_hits: 0,
+            skill_hits: 0,
+            entity_hits: 0,
+        },
+        EverydayEvalScenario {
+            id: "reuse_that_search_uses_dialogue_state",
+            user_message: "Use that search again",
+            profile: None,
+            current_conversation: None,
+            dialogue_state: Some(DialogueState {
+                recent_delivery_target: None,
+                recent_schedule_job: None,
+                recent_resource: None,
+                recent_search: Some(crate::domain::dialogue_state::SearchReference {
+                    domain: crate::domain::tool_fact::SearchDomain::Session,
+                    query: Some("what did we discuss".into()),
+                    primary_locator: Some("web:session-123".into()),
+                    result_count: Some(3),
+                }),
+                recent_workspace: None,
+                focus_entities: vec![],
+                comparison_set: vec![],
+                reference_anchors: vec![],
+                last_tool_subjects: vec!["what did we discuss".into()],
+                updated_at: 1,
+            }),
+            top_session_score: None,
+            second_session_score: None,
+            top_recipe_score: None,
+            second_recipe_score: None,
+            top_memory_score: Some(0.44),
+            second_memory_score: Some(0.41),
+            recall_hits: 0,
+            skill_hits: 0,
+            entity_hits: 0,
+        },
+        EverydayEvalScenario {
+            id: "switch_back_there_uses_workspace_context",
+            user_message: "Switch back there",
+            profile: None,
+            current_conversation: None,
+            dialogue_state: Some(DialogueState {
+                recent_delivery_target: None,
+                recent_schedule_job: None,
+                recent_resource: None,
+                recent_search: None,
+                recent_workspace: Some(crate::domain::dialogue_state::WorkspaceReference {
+                    action: crate::domain::tool_fact::WorkspaceAction::Switch,
+                    name: Some("research-lab".into()),
+                    item_count: Some(12),
+                }),
+                focus_entities: vec![],
+                comparison_set: vec![],
+                reference_anchors: vec![],
+                last_tool_subjects: vec!["research-lab".into()],
+                updated_at: 1,
+            }),
+            top_session_score: None,
+            second_session_score: None,
+            top_recipe_score: None,
+            second_recipe_score: None,
+            top_memory_score: Some(0.44),
+            second_memory_score: Some(0.41),
             recall_hits: 0,
             skill_hits: 0,
             entity_hits: 0,
@@ -594,6 +805,102 @@ mod tests {
                 .candidate_set,
             vec!["Berlin", "Tbilisi"]
         );
+    }
+
+    #[tokio::test]
+    async fn that_file_scenario_prefers_dialogue_state_without_generic_clarify() {
+        let memory = StubMemory;
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "that_file_uses_dialogue_state")
+            .unwrap();
+
+        let result = evaluate_scenario(&memory, &scenario).await;
+        assert_eq!(
+            result.selected_source,
+            Some(ResolutionSource::DialogueState)
+        );
+        assert_ne!(result.clarification_shape, ClarificationShape::GenericRisk);
+    }
+
+    #[tokio::test]
+    async fn that_job_scenario_prefers_dialogue_state_without_generic_clarify() {
+        let memory = StubMemory;
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "that_job_uses_dialogue_state")
+            .unwrap();
+
+        let result = evaluate_scenario(&memory, &scenario).await;
+        assert_eq!(
+            result.selected_source,
+            Some(ResolutionSource::DialogueState)
+        );
+        assert_ne!(result.clarification_shape, ClarificationShape::GenericRisk);
+    }
+
+    #[tokio::test]
+    async fn send_it_there_scenario_prefers_dialogue_state_delivery() {
+        let memory = StubMemory;
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "send_it_there_uses_dialogue_state_delivery")
+            .unwrap();
+
+        let result = evaluate_scenario(&memory, &scenario).await;
+        assert_eq!(
+            result.selected_source,
+            Some(ResolutionSource::DialogueState)
+        );
+        assert_ne!(result.clarification_shape, ClarificationShape::GenericRisk);
+    }
+
+    #[tokio::test]
+    async fn sparse_delivery_context_avoids_generic_clarify() {
+        let memory = StubMemory;
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "send_it_there_sparse_delivery_context")
+            .unwrap();
+
+        let result = evaluate_scenario(&memory, &scenario).await;
+        assert_eq!(
+            result.selected_source,
+            Some(ResolutionSource::DialogueState)
+        );
+        assert_ne!(result.clarification_shape, ClarificationShape::GenericRisk);
+    }
+
+    #[tokio::test]
+    async fn reuse_that_search_prefers_dialogue_state_without_generic_clarify() {
+        let memory = StubMemory;
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "reuse_that_search_uses_dialogue_state")
+            .unwrap();
+
+        let result = evaluate_scenario(&memory, &scenario).await;
+        assert_eq!(
+            result.selected_source,
+            Some(ResolutionSource::DialogueState)
+        );
+        assert_ne!(result.clarification_shape, ClarificationShape::GenericRisk);
+    }
+
+    #[tokio::test]
+    async fn switch_back_there_prefers_workspace_dialogue_state() {
+        let memory = StubMemory;
+        let scenario = default_golden_scenarios()
+            .into_iter()
+            .find(|scenario| scenario.id == "switch_back_there_uses_workspace_context")
+            .unwrap();
+
+        let result = evaluate_scenario(&memory, &scenario).await;
+        assert_eq!(
+            result.selected_source,
+            Some(ResolutionSource::DialogueState)
+        );
+        assert_ne!(result.clarification_shape, ClarificationShape::GenericRisk);
     }
 
     #[tokio::test]

@@ -2,9 +2,10 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Open approved HTTPS URLs in the system default browser (no scraping, no DOM automation).
 pub struct BrowserOpenTool {
@@ -129,7 +130,7 @@ impl Tool for BrowserOpenTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -147,14 +148,15 @@ impl Tool for BrowserOpenTool {
             Err(_) => return Vec::new(),
         };
 
-        vec![AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "browser_page".into(),
-                name: validated_url.clone(),
-                metadata: Some(host.clone()),
-            }],
-            slots: Vec::new(),
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::BrowserPage,
+                operation: ResourceOperation::Open,
+                locator: validated_url,
+                host: Some(host),
+                metadata: ResourceMetadata::default(),
+            }),
         }]
     }
 }
@@ -549,12 +551,15 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].focus_entities[0].kind, "browser_page");
-        assert_eq!(
-            facts[0].focus_entities[0].metadata.as_deref(),
-            Some("docs.example.com")
-        );
-        assert!(facts[0].slots.is_empty());
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "browser_page");
+        assert_eq!(projected[0].name, "https://docs.example.com/guide");
+        assert_eq!(projected[0].metadata.as_deref(), Some("docs.example.com"));
+        let subjects = facts[0].projected_subjects();
+        assert!(subjects
+            .iter()
+            .any(|subject| subject == "https://docs.example.com/guide"));
+        assert!(subjects.iter().any(|subject| subject == "docs.example.com"));
     }
 
     #[tokio::test]

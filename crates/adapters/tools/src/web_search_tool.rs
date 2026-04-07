@@ -4,9 +4,7 @@ use regex::Regex;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
-use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::tool::ToolExecution;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -573,7 +571,7 @@ impl Tool for WebSearchTool {
         Ok(self.execute_query(query).await?.0)
     }
 
-    fn extract_typed_facts(
+    fn extract_facts(
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
@@ -617,18 +615,14 @@ impl Tool for WebSearchTool {
         let (result, hits) = self.execute_query(query).await?;
         Ok(ToolExecution {
             result,
-            facts: vec![AgentToolFact {
-                tool_name: self.name().to_string(),
-                focus_entities: hits
-                    .iter()
-                    .take(3)
-                    .map(|hit| FocusEntity {
-                        kind: "search_result".into(),
-                        name: hit.title.clone(),
-                        metadata: Some(hit.url.clone()),
-                    })
-                    .collect(),
-                slots: Vec::new(),
+            facts: vec![TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Web,
+                    query: Some(query.to_string()),
+                    result_count: Some(hits.len()),
+                    primary_locator: hits.first().map(|hit| hit.url.clone()),
+                }),
             }],
         })
     }

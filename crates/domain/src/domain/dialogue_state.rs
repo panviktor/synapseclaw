@@ -7,6 +7,11 @@
 //! This is NOT long-term memory. It lives in-memory with TTL expiry and is
 //! never promoted to the core_memory or episode tables.
 
+use crate::domain::conversation_target::ConversationDeliveryTarget;
+use crate::domain::tool_fact::{
+    ResourceKind, ResourceOperation, ScheduleAction, ScheduleJobType, ScheduleKind, SearchDomain,
+    WorkspaceAction,
+};
 use serde::{Deserialize, Serialize};
 
 /// Session-scoped dialogue state — the "what are we talking about?" layer.
@@ -16,18 +21,26 @@ pub struct DialogueState {
     pub focus_entities: Vec<FocusEntity>,
     /// When the user compared two things (Berlin vs Tbilisi, staging vs prod).
     pub comparison_set: Vec<FocusEntity>,
-    /// Structured slots filled during the conversation (location, timezone, etc.).
-    pub slots: Vec<DialogueSlot>,
     /// Derived typed anchors for short follow-ups ("second", "latest", "current").
     pub reference_anchors: Vec<ReferenceAnchor>,
     /// Structured subjects from the last tool execution.
     pub last_tool_subjects: Vec<String>,
+    /// Most recent typed delivery target surfaced by tools.
+    pub recent_delivery_target: Option<ConversationDeliveryTarget>,
+    /// Most recent typed schedule/job context surfaced by tools.
+    pub recent_schedule_job: Option<ScheduleJobReference>,
+    /// Most recent typed resource context surfaced by tools.
+    pub recent_resource: Option<ResourceReference>,
+    /// Most recent typed search context surfaced by tools.
+    pub recent_search: Option<SearchReference>,
+    /// Most recent typed workspace context surfaced by tools.
+    pub recent_workspace: Option<WorkspaceReference>,
     /// Timestamp of last update (unix secs).
     pub updated_at: u64,
 }
 
 /// An entity currently in conversational focus.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FocusEntity {
     /// What kind of thing: "city", "service", "file", "branch", "person", etc.
     pub kind: String,
@@ -35,30 +48,6 @@ pub struct FocusEntity {
     pub name: String,
     /// Optional extra metadata.
     pub metadata: Option<String>,
-}
-
-/// A named slot filled during conversation (like Rasa slots).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub enum DialogueSlotProvenance {
-    /// Observed from structured runtime facts such as tool args/results.
-    #[default]
-    Observed,
-    /// System/runtime context injected by the transport layer.
-    RuntimeContext,
-    /// Derived reference anchors rebuilt from current focus/comparison state.
-    DerivedReference,
-}
-
-/// A named slot filled during conversation (like Rasa slots).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DialogueSlot {
-    /// Slot name: "location", "service_name", "environment", "time_range".
-    pub name: String,
-    /// Slot value.
-    pub value: String,
-    /// Where this slot came from.
-    #[serde(default)]
-    pub provenance: DialogueSlotProvenance,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,30 +75,37 @@ pub struct ReferenceAnchor {
     pub value: String,
 }
 
-impl DialogueSlot {
-    pub fn observed(name: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            value: value.into(),
-            provenance: DialogueSlotProvenance::Observed,
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduleJobReference {
+    pub job_id: String,
+    pub action: ScheduleAction,
+    pub job_type: Option<ScheduleJobType>,
+    pub schedule_kind: Option<ScheduleKind>,
+    pub session_target: Option<String>,
+    pub timezone: Option<String>,
+}
 
-    pub fn runtime_context(name: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            value: value.into(),
-            provenance: DialogueSlotProvenance::RuntimeContext,
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceReference {
+    pub kind: ResourceKind,
+    pub operation: ResourceOperation,
+    pub locator: String,
+    pub host: Option<String>,
+}
 
-    pub fn derived_reference(name: impl Into<String>, value: impl Into<String>) -> Self {
-        Self {
-            name: name.into(),
-            value: value.into(),
-            provenance: DialogueSlotProvenance::DerivedReference,
-        }
-    }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SearchReference {
+    pub domain: SearchDomain,
+    pub query: Option<String>,
+    pub primary_locator: Option<String>,
+    pub result_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceReference {
+    pub action: WorkspaceAction,
+    pub name: Option<String>,
+    pub item_count: Option<usize>,
 }
 
 impl DialogueState {
@@ -127,14 +123,6 @@ impl DialogueState {
         self.comparison_set.len() >= 2
     }
 
-    /// Get slot value by name.
-    pub fn slot(&self, name: &str) -> Option<&str> {
-        self.slots
-            .iter()
-            .find(|s| s.name == name)
-            .map(|s| s.value.as_str())
-    }
-
     /// Whether the state is stale (older than TTL seconds).
     pub fn is_stale(&self, ttl_secs: u64) -> bool {
         let now = std::time::SystemTime::now()
@@ -148,9 +136,13 @@ impl DialogueState {
     pub fn clear(&mut self) {
         self.focus_entities.clear();
         self.comparison_set.clear();
-        self.slots.clear();
         self.reference_anchors.clear();
         self.last_tool_subjects.clear();
+        self.recent_delivery_target = None;
+        self.recent_schedule_job = None;
+        self.recent_resource = None;
+        self.recent_search = None;
+        self.recent_workspace = None;
     }
 }
 
@@ -210,19 +202,5 @@ mod tests {
             ..Default::default()
         };
         assert!(state.has_comparison());
-    }
-
-    #[test]
-    fn slot_lookup() {
-        let state = DialogueState {
-            slots: vec![DialogueSlot {
-                name: "location".into(),
-                value: "Moscow".into(),
-                provenance: DialogueSlotProvenance::Observed,
-            }],
-            ..Default::default()
-        };
-        assert_eq!(state.slot("location"), Some("Moscow"));
-        assert_eq!(state.slot("timezone"), None);
     }
 }

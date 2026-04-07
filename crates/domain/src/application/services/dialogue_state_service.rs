@@ -4,11 +4,11 @@
 //! cities/languages/timezones from free text. Typed state is updated from
 //! structured runtime facts such as tool-call arguments and results.
 
-use crate::domain::dialogue_state::{
-    DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal,
-    ResourceReference, ScheduleJobReference, SearchReference, WorkspaceReference,
-};
 use crate::domain::dialogue_state::FocusEntity;
+use crate::domain::dialogue_state::{
+    DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal, ResourceReference,
+    ScheduleJobReference, SearchReference, WorkspaceReference,
+};
 use crate::domain::tool_fact::{ToolFactPayload, TypedToolFact};
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -172,7 +172,11 @@ fn collect_subjects(tool_facts: &[TypedToolFact]) -> Vec<String> {
 fn collect_recent_delivery_target(
     tool_facts: &[TypedToolFact],
 ) -> Option<crate::domain::conversation_target::ConversationDeliveryTarget> {
-    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
+    tool_facts
+        .iter()
+        .rev()
+        .find_map(|fact| {
+            match &fact.payload {
         ToolFactPayload::Delivery(delivery) => Some(match &delivery.target {
             crate::domain::tool_fact::DeliveryTargetKind::CurrentConversation => {
                 crate::domain::conversation_target::ConversationDeliveryTarget::CurrentConversation
@@ -187,61 +191,74 @@ fn collect_recent_delivery_target(
             .as_ref()
             .and_then(|target| target.delivery.clone()),
         _ => None,
-    })
+    }
+        })
 }
 
 fn collect_recent_schedule_job(tool_facts: &[TypedToolFact]) -> Option<ScheduleJobReference> {
-    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
-        ToolFactPayload::Schedule(schedule) => schedule.job_id.as_ref().map(|job_id| {
-            ScheduleJobReference {
-                job_id: job_id.clone(),
-                action: schedule.action.clone(),
-                job_type: schedule.job_type.clone(),
-                schedule_kind: schedule.schedule_kind.clone(),
-                session_target: schedule
-                    .target
-                    .as_ref()
-                    .and_then(|target| target.session.clone()),
-                timezone: schedule.timezone.clone(),
+    tool_facts
+        .iter()
+        .rev()
+        .find_map(|fact| match &fact.payload {
+            ToolFactPayload::Schedule(schedule) => {
+                schedule.job_id.as_ref().map(|job_id| ScheduleJobReference {
+                    job_id: job_id.clone(),
+                    action: schedule.action.clone(),
+                    job_type: schedule.job_type.clone(),
+                    schedule_kind: schedule.schedule_kind.clone(),
+                    session_target: schedule
+                        .target
+                        .as_ref()
+                        .and_then(|target| target.session.clone()),
+                    timezone: schedule.timezone.clone(),
+                })
             }
-        }),
-        _ => None,
-    })
+            _ => None,
+        })
 }
 
 fn collect_recent_resource(tool_facts: &[TypedToolFact]) -> Option<ResourceReference> {
-    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
-        ToolFactPayload::Resource(resource) => Some(ResourceReference {
-            kind: resource.kind.clone(),
-            operation: resource.operation.clone(),
-            locator: resource.locator.clone(),
-            host: resource.host.clone(),
-        }),
-        _ => None,
-    })
+    tool_facts
+        .iter()
+        .rev()
+        .find_map(|fact| match &fact.payload {
+            ToolFactPayload::Resource(resource) => Some(ResourceReference {
+                kind: resource.kind.clone(),
+                operation: resource.operation.clone(),
+                locator: resource.locator.clone(),
+                host: resource.host.clone(),
+            }),
+            _ => None,
+        })
 }
 
 fn collect_recent_search(tool_facts: &[TypedToolFact]) -> Option<SearchReference> {
-    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
-        ToolFactPayload::Search(search) => Some(SearchReference {
-            domain: search.domain.clone(),
-            query: search.query.clone(),
-            primary_locator: search.primary_locator.clone(),
-            result_count: search.result_count,
-        }),
-        _ => None,
-    })
+    tool_facts
+        .iter()
+        .rev()
+        .find_map(|fact| match &fact.payload {
+            ToolFactPayload::Search(search) => Some(SearchReference {
+                domain: search.domain.clone(),
+                query: search.query.clone(),
+                primary_locator: search.primary_locator.clone(),
+                result_count: search.result_count,
+            }),
+            _ => None,
+        })
 }
 
 fn collect_recent_workspace(tool_facts: &[TypedToolFact]) -> Option<WorkspaceReference> {
-    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
-        ToolFactPayload::Workspace(workspace) => Some(WorkspaceReference {
-            action: workspace.action.clone(),
-            name: workspace.name.clone(),
-            item_count: workspace.item_count,
-        }),
-        _ => None,
-    })
+    tool_facts
+        .iter()
+        .rev()
+        .find_map(|fact| match &fact.payload {
+            ToolFactPayload::Workspace(workspace) => Some(WorkspaceReference {
+                action: workspace.action.clone(),
+                name: workspace.name.clone(),
+                item_count: workspace.item_count,
+            }),
+            _ => None,
+        })
 }
 
 fn derive_reference_anchors(
@@ -320,8 +337,8 @@ mod tests {
     use crate::domain::tool_fact::{
         DeliveryFact, DeliveryTargetKind, ResourceFact, ResourceKind, ResourceMetadata,
         ResourceOperation, ScheduleAction, ScheduleFact, ScheduleJobType, ScheduleKind,
-        ScheduleTarget, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact,
-        WorkspaceAction, WorkspaceFact,
+        ScheduleTarget, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact, WorkspaceAction,
+        WorkspaceFact,
     };
 
     #[test]
@@ -671,14 +688,23 @@ mod tests {
             "",
         );
 
-        assert!(!state.focus_entities.iter().any(|entity| entity.name == "Berlin"));
-        assert!(!state.focus_entities.iter().any(|entity| entity.name == "Tbilisi"));
+        assert!(!state
+            .focus_entities
+            .iter()
+            .any(|entity| entity.name == "Berlin"));
+        assert!(!state
+            .focus_entities
+            .iter()
+            .any(|entity| entity.name == "Tbilisi"));
         assert!(state
             .focus_entities
             .iter()
             .any(|entity| entity.name == "web:session-123"));
         assert!(state.comparison_set.is_empty());
-        assert!(!state.reference_anchors.iter().any(|anchor| anchor.value == "Berlin"));
+        assert!(!state
+            .reference_anchors
+            .iter()
+            .any(|anchor| anchor.value == "Berlin"));
         assert!(!state
             .reference_anchors
             .iter()

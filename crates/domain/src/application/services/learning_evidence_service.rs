@@ -131,7 +131,9 @@ mod tests {
         assert!(evidence.focus_entity_count >= 1);
         assert!(evidence.projected_subject_count >= 2);
         assert!(evidence.facets.contains(&LearningEvidenceFacet::Delivery));
-        assert!(evidence.facets.contains(&LearningEvidenceFacet::UserProfile));
+        assert!(evidence
+            .facets
+            .contains(&LearningEvidenceFacet::UserProfile));
         assert!(evidence.facets.contains(&LearningEvidenceFacet::Focus));
         assert!(evidence.has_actionable_evidence());
     }

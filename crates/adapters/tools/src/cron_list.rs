@@ -5,7 +5,7 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{Db, Surreal};
 use synapse_domain::config::schema::Config;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::tool::ToolExecution;
 
 pub struct CronListTool {
@@ -81,7 +81,7 @@ impl Tool for CronListTool {
     }
 }
 
-fn collect_list_facts(tool_name: &str, jobs: &[synapse_cron::CronJob]) -> Vec<AgentToolFact> {
+fn collect_list_facts(tool_name: &str, jobs: &[synapse_cron::CronJob]) -> Vec<TypedToolFact> {
     jobs.iter()
         .take(3)
         .map(|job| cron_facts::build_job_fact(tool_name, "list", job))
@@ -136,7 +136,7 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 3);
-        assert!(facts.iter().all(|fact| fact.tool_name == "cron_list"));
-        assert_eq!(facts[0].focus_entities[0].kind, "scheduled_job");
+        assert!(facts.iter().all(|fact| fact.tool_id == "cron_list"));
+        assert_eq!(facts[0].projected_focus_entities()[0].kind, "scheduled_job");
     }
 }

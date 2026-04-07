@@ -5,8 +5,8 @@
 
 use crate::domain::conversation_target::{ConversationDeliveryTarget, CurrentConversationContext};
 use crate::domain::dialogue_state::{
-    DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal,
-    ResourceReference, ScheduleJobReference, SearchReference, WorkspaceReference,
+    DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal, ResourceReference,
+    ScheduleJobReference, SearchReference, WorkspaceReference,
 };
 use crate::domain::tool_fact::{ResourceKind, SearchDomain, WorkspaceAction};
 use crate::domain::user_profile::UserProfile;
@@ -637,7 +637,10 @@ fn format_search_reference(search: &SearchReference) -> String {
 }
 
 fn format_workspace_reference(workspace: &WorkspaceReference) -> String {
-    let mut parts = vec![format!("action={}", workspace_action_name(&workspace.action))];
+    let mut parts = vec![format!(
+        "action={}",
+        workspace_action_name(&workspace.action)
+    )];
     if let Some(name) = &workspace.name {
         parts.push(format!("name={name}"));
     }
@@ -730,7 +733,9 @@ fn resource_kind_name(kind: &ResourceKind) -> &'static str {
     }
 }
 
-fn resource_operation_name(operation: &crate::domain::tool_fact::ResourceOperation) -> &'static str {
+fn resource_operation_name(
+    operation: &crate::domain::tool_fact::ResourceOperation,
+) -> &'static str {
     match operation {
         crate::domain::tool_fact::ResourceOperation::Read => "read",
         crate::domain::tool_fact::ResourceOperation::Write => "write",

@@ -4,10 +4,11 @@ use serde_json::{json, Value};
 use std::fs;
 use std::sync::Arc;
 use synapse_domain::config::schema::{Config, ProxyConfig, ProxyScope};
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 use synapse_domain::domain::util::MaybeSet;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_infra::config_io::ConfigIO;
 use synapse_providers::proxy::ProxyConfigExt;
 use synapse_providers::proxy::{runtime_proxy_config, set_runtime_proxy_config};
@@ -399,22 +400,21 @@ impl Tool for ProxyConfigTool {
         })
     }
 
-    fn extract_facts(&self, _args: &Value, result: Option<&ToolResult>) -> Vec<AgentToolFact> {
+    fn extract_facts(&self, _args: &Value, result: Option<&ToolResult>) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
 
-        let fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "config_file".into(),
-                name: self.config.config_path.display().to_string(),
-                metadata: Some("proxy".into()),
-            }],
-            slots: Vec::new(),
-        };
-
-        vec![fact]
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::ConfigFile,
+                operation: ResourceOperation::Configure,
+                locator: self.config.config_path.display().to_string(),
+                host: None,
+                metadata: ResourceMetadata::default(),
+            }),
+        }]
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {

@@ -5,9 +5,10 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Maximum time to wait for a screenshot command to complete.
 const SCREENSHOT_TIMEOUT_SECS: u64 = 15;
@@ -247,7 +248,7 @@ impl Tool for ScreenshotTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -263,17 +264,16 @@ impl Tool for ScreenshotTool {
         );
         let output_path = self.security.workspace_dir.join(&safe_name);
 
-        let fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "image_file".into(),
-                name: output_path.display().to_string(),
-                metadata: Some("screenshot".into()),
-            }],
-            slots: Vec::new(),
-        };
-
-        vec![fact]
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::Image,
+                operation: ResourceOperation::Snapshot,
+                locator: output_path.display().to_string(),
+                host: None,
+                metadata: ResourceMetadata::default(),
+            }),
+        }]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

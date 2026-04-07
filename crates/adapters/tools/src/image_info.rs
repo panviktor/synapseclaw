@@ -4,9 +4,10 @@ use serde_json::json;
 use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Maximum file size we will read and base64-encode (5 MB).
 const MAX_IMAGE_BYTES: u64 = 5_242_880;
@@ -151,7 +152,7 @@ impl Tool for ImageInfoTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -161,17 +162,19 @@ impl Tool for ImageInfoTool {
             _ => return Vec::new(),
         };
 
-        let fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "image_file".into(),
-                name: path.clone(),
-                metadata: Some("inspect".into()),
-            }],
-            slots: Vec::new(),
-        };
-
-        vec![fact]
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::Image,
+                operation: ResourceOperation::Inspect,
+                locator: path,
+                host: None,
+                metadata: ResourceMetadata {
+                    include_base64: args.get("include_base64").and_then(|value| value.as_bool()),
+                    ..ResourceMetadata::default()
+                },
+            }),
+        }]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

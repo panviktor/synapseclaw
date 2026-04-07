@@ -10,7 +10,6 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ScheduleAction, ScheduleFact, ScheduleJobType, ScheduleTarget, ToolFactPayload, TypedToolFact,
 };
-use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::ToolExecution;
 
@@ -352,7 +351,7 @@ impl Tool for CronAddTool {
          This is the preferred tool for sending scheduled/delayed messages to users via channels."
     }
 
-    fn extract_typed_facts(
+    fn extract_facts(
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
@@ -385,14 +384,16 @@ impl Tool for CronAddTool {
                 .get("channel")
                 .and_then(serde_json::Value::as_str)
                 .zip(value.get("to").and_then(serde_json::Value::as_str))
-                .map(|(channel, recipient)| ConversationDeliveryTarget::Explicit {
-                    channel: channel.to_string(),
-                    recipient: recipient.to_string(),
-                    thread_ref: value
-                        .get("thread_ref")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string),
-                })
+                .map(
+                    |(channel, recipient)| ConversationDeliveryTarget::Explicit {
+                        channel: channel.to_string(),
+                        recipient: recipient.to_string(),
+                        thread_ref: value
+                            .get("thread_ref")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_string),
+                    },
+                )
         });
 
         vec![TypedToolFact {
@@ -400,12 +401,18 @@ impl Tool for CronAddTool {
             payload: ToolFactPayload::Schedule(ScheduleFact {
                 action: ScheduleAction::Create,
                 job_type,
+                schedule_kind: None,
+                job_id: None,
+                annotation: None,
                 timezone,
                 target: if session.is_some() || delivery.is_some() {
                     Some(ScheduleTarget { session, delivery })
                 } else {
                     None
                 },
+                run_count: None,
+                last_status: None,
+                last_duration_ms: None,
             }),
         }]
     }
@@ -524,14 +531,6 @@ impl Tool for CronAddTool {
         })
     }
 
-    fn extract_facts(
-        &self,
-        _args: &serde_json::Value,
-        _result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
-        Vec::new()
-    }
-
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         Ok(self.execute_action(&args).await?.result)
     }
@@ -586,14 +585,17 @@ mod tests {
     fn build_job_fact_emits_typed_schedule_fields() {
         let fact = cron_facts::build_job_fact("cron_add", "create", &sample_job());
 
-        assert_eq!(fact.tool_name, "cron_add");
-        assert_eq!(fact.focus_entities.len(), 1);
-        assert_eq!(fact.focus_entities[0].kind, "scheduled_job");
-        assert_eq!(fact.focus_entities[0].name, "job_123");
-        assert_eq!(
-            fact.focus_entities[0].metadata.as_deref(),
-            Some("create:cron:main")
-        );
-        assert!(fact.slots.is_empty());
+        assert_eq!(fact.tool_id, "cron_add");
+        let projected = fact.projected_focus_entities();
+        assert!(projected
+            .iter()
+            .any(|entity| entity.kind == "scheduled_job" && entity.name == "job_123"));
+        assert!(projected
+            .iter()
+            .any(|entity| entity.kind == "session_target" && entity.name == "main"));
+        assert!(fact
+            .projected_subjects()
+            .iter()
+            .any(|subject| subject == "job_123"));
     }
 }

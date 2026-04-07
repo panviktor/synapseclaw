@@ -4,8 +4,9 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use synapse_domain::domain::dialogue_state::FocusEntity;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 use tokio::fs;
 
 /// Workspace backup tool: create, list, verify, and restore timestamped backups
@@ -262,7 +263,7 @@ impl Tool for BackupTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -272,27 +273,38 @@ impl Tool for BackupTool {
             _ => return Vec::new(),
         };
 
-        let mut fact = AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "workspace_directory".into(),
-                name: self.workspace_dir.display().to_string(),
-                metadata: Some("backup".into()),
-            }],
-            slots: Vec::new(),
-        };
+        let mut facts = vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::Directory,
+                operation: ResourceOperation::Snapshot,
+                locator: self.workspace_dir.display().to_string(),
+                host: None,
+                metadata: ResourceMetadata::default(),
+            }),
+        }];
 
         if let Some(name) = args.get("backup_name").and_then(|value| value.as_str()) {
             if !name.trim().is_empty() {
-                fact.focus_entities.push(FocusEntity {
-                    kind: "backup_snapshot".into(),
-                    name: name.trim().to_string(),
-                    metadata: Some(command.to_string()),
+                facts.push(TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BackupSnapshot,
+                        operation: match command {
+                            "create" => ResourceOperation::Snapshot,
+                            "verify" => ResourceOperation::Verify,
+                            "restore" => ResourceOperation::Restore,
+                            _ => ResourceOperation::Inspect,
+                        },
+                        locator: name.trim().to_string(),
+                        host: None,
+                        metadata: ResourceMetadata::default(),
+                    }),
                 });
             }
         }
 
-        vec![fact]
+        facts
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

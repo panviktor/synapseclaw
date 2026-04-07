@@ -2,9 +2,10 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
-use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Write file contents with path sandboxing
 pub struct FileWriteTool {
@@ -166,7 +167,7 @@ impl Tool for FileWriteTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -175,14 +176,21 @@ impl Tool for FileWriteTool {
             Some(path) if !path.trim().is_empty() => path,
             _ => return Vec::new(),
         };
-        vec![AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![FocusEntity {
-                kind: "file_resource".into(),
-                name: path.to_string(),
-                metadata: Some("write".into()),
-            }],
-            slots: Vec::new(),
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::File,
+                operation: ResourceOperation::Write,
+                locator: path.to_string(),
+                host: None,
+                metadata: ResourceMetadata {
+                    byte_count: args
+                        .get("content")
+                        .and_then(|value| value.as_str())
+                        .map(str::len),
+                    ..Default::default()
+                },
+            }),
         }]
     }
 }
@@ -353,12 +361,14 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].focus_entities[0].kind, "file_resource");
-        assert_eq!(
-            facts[0].focus_entities[0].metadata.as_deref(),
-            Some("write")
-        );
-        assert!(facts[0].slots.is_empty());
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "file_resource");
+        assert_eq!(projected[0].name, "notes/todo.txt");
+        assert_eq!(projected[0].metadata.as_deref(), Some("write"));
+        assert!(facts[0]
+            .projected_subjects()
+            .iter()
+            .any(|subject| subject == "notes/todo.txt"));
     }
 
     #[tokio::test]

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::runtime::RuntimeAdapter;
 
 /// Maximum shell command execution time before kill.
@@ -234,7 +234,7 @@ impl Tool for ShellTool {
         &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if matches!(result, Some(result) if !result.success) {
             return Vec::new();
         }
@@ -244,9 +244,9 @@ impl Tool for ShellTool {
             _ => return Vec::new(),
         };
 
-        vec![AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: vec![
+        vec![TypedToolFact::focus(
+            self.name().to_string(),
+            vec![
                 FocusEntity {
                     kind: "workspace_directory".into(),
                     name: self.security.workspace_dir.display().to_string(),
@@ -258,8 +258,8 @@ impl Tool for ShellTool {
                     metadata: Some(self.security.workspace_dir.display().to_string()),
                 },
             ],
-            slots: Vec::new(),
-        }]
+            Vec::new(),
+        )]
     }
 }
 
@@ -593,16 +593,16 @@ mod tests {
         );
 
         assert_eq!(facts.len(), 1);
-        assert_eq!(facts[0].focus_entities[0].kind, "workspace_directory");
+        assert_eq!(facts[0].focus_entities()[0].kind, "workspace_directory");
         assert_eq!(
-            facts[0].focus_entities[0].metadata.as_deref(),
+            facts[0].focus_entities()[0].metadata.as_deref(),
             Some("shell_cwd")
         );
         assert!(facts[0]
-            .focus_entities
+            .focus_entities()
             .iter()
             .any(|entity| entity.kind == "shell_command" && entity.name == "cargo test -q"));
-        assert!(facts[0].slots.is_empty());
+        assert!(facts[0].subjects().is_empty());
     }
 
     #[tokio::test]

@@ -17,9 +17,9 @@ use synapse_domain::application::services::turn_context::{
 };
 use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::config::schema::Config;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
-use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::user_profile_context::{
     InMemoryUserProfileContext, UserProfileContextPort,
 };
@@ -406,6 +406,10 @@ impl Agent {
 
     pub fn last_turn_tool_facts(&self) -> &[TypedToolFact] {
         &self.last_turn_tool_facts
+    }
+
+    pub fn user_profile_key(&self) -> Option<&str> {
+        self.user_profile_key.as_deref()
     }
 
     pub fn set_memory_session_id(&mut self, session_id: Option<String>) {

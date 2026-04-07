@@ -7,8 +7,7 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::application::services::retrieval_service;
-use synapse_domain::domain::dialogue_state::FocusEntity;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
 use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
@@ -107,28 +106,19 @@ impl PrecedentSearchTool {
     fn build_result_facts(
         &self,
         hits: &[retrieval_service::RunRecipeSearchMatch],
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if hits.is_empty() {
             return Vec::new();
         }
 
-        vec![AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: hits
-                .iter()
-                .take(3)
-                .map(|hit| FocusEntity {
-                    kind: "run_recipe".into(),
-                    name: hit.task_family.clone(),
-                    metadata: Some(format!(
-                        "successes={};score={};tools={}",
-                        hit.success_count,
-                        hit.score,
-                        hit.tool_pattern.join(",")
-                    )),
-                })
-                .collect(),
-            slots: Vec::new(),
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Search(SearchFact {
+                domain: SearchDomain::Precedent,
+                query: None,
+                result_count: Some(hits.len()),
+                primary_locator: hits.first().map(|hit| hit.task_family.clone()),
+            }),
         }]
     }
 }
@@ -432,9 +422,9 @@ mod tests {
 
         assert!(execution.result.success);
         assert_eq!(execution.facts.len(), 1);
-        assert_eq!(execution.facts[0].tool_name, "precedent_search");
+        assert_eq!(execution.facts[0].tool_id, "precedent_search");
         assert!(execution.facts[0]
-            .focus_entities
+            .projected_focus_entities()
             .iter()
             .any(|entity| entity.kind == "run_recipe" && entity.name == "deploy"));
     }

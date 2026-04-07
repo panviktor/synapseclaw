@@ -15,7 +15,6 @@ use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
     ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
 };
-use synapse_domain::ports::agent_runtime::AgentToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 use synapse_domain::ports::user_profile_context::UserProfileContextPort;
@@ -164,14 +163,6 @@ impl Tool for UserProfileTool {
 
     fn extract_facts(
         &self,
-        _args: &serde_json::Value,
-        _result: Option<&ToolResult>,
-    ) -> Vec<AgentToolFact> {
-        Vec::new()
-    }
-
-    fn extract_typed_facts(
-        &self,
         args: &serde_json::Value,
         result: Option<&ToolResult>,
     ) -> Vec<TypedToolFact> {
@@ -208,8 +199,9 @@ impl Tool for UserProfileTool {
             .collect();
         }
 
-        let clear =
-            |field: &str, args: &UserProfileArgs| args.clear_fields.iter().any(|item| item == field);
+        let clear = |field: &str, args: &UserProfileArgs| {
+            args.clear_fields.iter().any(|item| item == field)
+        };
         let clear_only = matches!(args.action, ProfileAction::Clear);
         let mut facts = Vec::new();
 

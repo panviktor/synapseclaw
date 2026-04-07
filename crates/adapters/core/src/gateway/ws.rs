@@ -981,7 +981,7 @@ async fn handle_chat_send_rpc(
     let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx, out_tx).await;
 
     // Clear run_id + abort_tx, extract usage + collect tool history for async persist
-    let (usage, tool_history, tool_facts) = {
+    let (usage, tool_history, tool_facts, user_profile_key) = {
         let mut sessions = state
             .chat_sessions
             .lock()
@@ -1003,7 +1003,10 @@ async fn handle_chat_send_rpc(
             .get(&session_key)
             .map(|s| s.agent.last_turn_tool_facts().to_vec())
             .unwrap_or_default();
-        (u, history_snapshot, facts)
+        let profile_key = sessions
+            .get(&session_key)
+            .and_then(|s| s.agent.user_profile_key().map(str::to_string));
+        (u, history_snapshot, facts, profile_key)
     };
     // Persist tool events outside the lock (async-safe)
     persist_tool_events(state, &session_key, &tool_history).await;
@@ -1069,6 +1072,8 @@ async fn handle_chat_send_rpc(
                         tools_used: extract_tool_names(&tool_history),
                         tool_facts,
                         run_recipe_store: Some(state.run_recipe_store.clone()),
+                        user_profile_store: Some(state.user_profile_store.clone()),
+                        user_profile_key,
                         auto_save_enabled: state.auto_save,
                         event_tx: Some(state.event_tx.clone()),
                     };

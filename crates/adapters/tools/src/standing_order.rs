@@ -8,7 +8,7 @@ use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::standing_order::{StandingOrder, StandingOrderKind};
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::standing_order_store::StandingOrderStorePort;
 use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
@@ -35,7 +35,7 @@ impl StandingOrderTool {
     async fn execute_action(
         &self,
         args: &serde_json::Value,
-    ) -> anyhow::Result<(ToolResult, Vec<AgentToolFact>)> {
+    ) -> anyhow::Result<(ToolResult, Vec<TypedToolFact>)> {
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
@@ -100,15 +100,15 @@ impl StandingOrderTool {
                         success: true,
                         error: None,
                     },
-                    vec![AgentToolFact {
-                        tool_name: self.name().to_string(),
-                        focus_entities: vec![FocusEntity {
+                    vec![TypedToolFact::focus(
+                        self.name().to_string(),
+                        vec![FocusEntity {
                             kind: "standing_order".into(),
                             name: id,
                             metadata: Some(kind_str.to_string()),
                         }],
-                        slots: Vec::new(),
-                    }],
+                        Vec::new(),
+                    )],
                 ))
             }
             "list" => {
@@ -137,9 +137,9 @@ impl StandingOrderTool {
                         o.id, kind, o.delivery_channel, o.delivery_recipient
                     ));
                 }
-                let facts = vec![AgentToolFact {
-                    tool_name: self.name().to_string(),
-                    focus_entities: orders
+                let facts = vec![TypedToolFact::focus(
+                    self.name().to_string(),
+                    orders
                         .iter()
                         .take(3)
                         .map(|order| FocusEntity {
@@ -153,8 +153,8 @@ impl StandingOrderTool {
                             }),
                         })
                         .collect(),
-                    slots: Vec::new(),
-                }];
+                    Vec::new(),
+                )];
                 Ok((
                     ToolResult {
                         output: out,
@@ -173,15 +173,15 @@ impl StandingOrderTool {
                             success: true,
                             error: None,
                         },
-                        vec![AgentToolFact {
-                            tool_name: self.name().to_string(),
-                            focus_entities: vec![FocusEntity {
+                        vec![TypedToolFact::focus(
+                            self.name().to_string(),
+                            vec![FocusEntity {
                                 kind: "standing_order".into(),
                                 name: id.to_string(),
                                 metadata: Some("cancelled".into()),
                             }],
-                            slots: Vec::new(),
-                        }],
+                            Vec::new(),
+                        )],
                     ))
                 } else {
                     Ok((

@@ -5,7 +5,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 use synapse_domain::application::services::retrieval_service;
 use synapse_domain::domain::dialogue_state::FocusEntity;
-use synapse_domain::ports::agent_runtime::AgentToolFact;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_domain::ports::tool::ToolExecution;
 
@@ -82,14 +82,14 @@ impl MemoryRecallTool {
     fn build_result_facts(
         &self,
         entries: &[synapse_domain::application::services::retrieval_service::MemorySearchMatch],
-    ) -> Vec<AgentToolFact> {
+    ) -> Vec<TypedToolFact> {
         if entries.is_empty() {
             return Vec::new();
         }
 
-        vec![AgentToolFact {
-            tool_name: self.name().to_string(),
-            focus_entities: entries
+        vec![TypedToolFact::focus(
+            self.name().to_string(),
+            entries
                 .iter()
                 .take(3)
                 .map(|hit| FocusEntity {
@@ -98,8 +98,8 @@ impl MemoryRecallTool {
                     metadata: Some(hit.entry.content.chars().take(120).collect()),
                 })
                 .collect(),
-            slots: Vec::new(),
-        }]
+            Vec::new(),
+        )]
     }
 }
 
