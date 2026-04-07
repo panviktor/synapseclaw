@@ -17,6 +17,7 @@ pub mod history_compaction;
 pub mod inbound_message_service;
 pub mod ipc_service;
 pub mod learning_candidate_service;
+pub mod learning_compaction_service;
 pub mod learning_conflict_service;
 pub mod learning_events;
 pub mod learning_evidence_service;

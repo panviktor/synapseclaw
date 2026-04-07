@@ -7,6 +7,9 @@
 
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::application::services::learning_compaction_service::{
+    compact_near_duplicates, DuplicateCompactionThresholds,
+};
 use synapse_domain::application::services::learning_maintenance_service::{
     build_learning_maintenance_plan, LearningMaintenancePolicy, LearningMaintenanceSnapshot,
 };
@@ -127,6 +130,40 @@ pub fn spawn_consolidation_worker(
                         }
                     }
                     Err(e) => tracing::debug!("Memory GC failed: {e}"),
+                }
+            }
+
+            if plan.run_precedent_compaction {
+                match compact_near_duplicates(
+                    memory.as_ref(),
+                    &agent_id,
+                    MemoryCategory::Custom("precedent".into()),
+                    config.activity_probe_limit * 4,
+                    &DuplicateCompactionThresholds::precedent_defaults(),
+                )
+                .await
+                {
+                    Ok(0) => tracing::debug!("Precedent compaction found no duplicates"),
+                    Ok(count) => tracing::info!(count, "Precedent compaction removed duplicates"),
+                    Err(e) => tracing::debug!("Precedent compaction failed: {e}"),
+                }
+            }
+
+            if plan.run_failure_pattern_compaction {
+                match compact_near_duplicates(
+                    memory.as_ref(),
+                    &agent_id,
+                    MemoryCategory::Custom("failure_pattern".into()),
+                    config.activity_probe_limit * 4,
+                    &DuplicateCompactionThresholds::failure_pattern_defaults(),
+                )
+                .await
+                {
+                    Ok(0) => tracing::debug!("Failure-pattern compaction found no duplicates"),
+                    Ok(count) => {
+                        tracing::info!(count, "Failure-pattern compaction removed duplicates")
+                    }
+                    Err(e) => tracing::debug!("Failure-pattern compaction failed: {e}"),
                 }
             }
 

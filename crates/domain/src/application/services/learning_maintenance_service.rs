@@ -47,14 +47,14 @@ impl LearningMaintenancePlan {
     pub fn should_run_any(&self) -> bool {
         self.run_importance_decay
             || self.run_gc
+            || self.run_precedent_compaction
+            || self.run_failure_pattern_compaction
             || self.run_skill_review
             || self.run_prompt_optimization
     }
 
     pub fn has_any_advisory_action(&self) -> bool {
-        self.run_precedent_compaction
-            || self.run_failure_pattern_compaction
-            || self.should_run_any()
+        self.should_run_any()
     }
 }
 
