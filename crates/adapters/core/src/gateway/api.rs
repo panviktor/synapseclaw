@@ -60,6 +60,15 @@ pub struct MemoryProjectionQuery {
     pub limit: Option<usize>,
 }
 
+fn skill_origin_priority(origin: &str) -> u8 {
+    match origin {
+        "manual" => 3,
+        "imported" => 2,
+        "learned" => 1,
+        _ => 0,
+    }
+}
+
 #[derive(Deserialize)]
 pub struct MemoryStoreBody {
     pub key: String,
@@ -1305,6 +1314,7 @@ pub async fn handle_api_memory_projections(
     }
 
     let limit = params.limit.unwrap_or(3).clamp(1, 10);
+    let config = state.config.lock().clone();
     let current_user_profile = extract_bearer_token(&headers)
         .map(super::ws::token_hash_prefix)
         .and_then(|token_prefix| {
@@ -1388,6 +1398,48 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
+    let mut configured_skills =
+        crate::skills::load_skills_with_config(&config.workspace_dir, &config)
+            .into_iter()
+            .map(|skill| {
+                let name = skill.name.clone();
+                let origin = crate::skills::infer_loaded_skill_origin(&skill).to_string();
+                let projection =
+                    crate::skills::format_loaded_skill_projection(&skill, &config.workspace_dir);
+                serde_json::json!({
+                    "name": name,
+                    "origin": origin,
+                    "status": "active",
+                    "source": "configured",
+                    "projection": projection,
+                })
+            })
+            .collect::<Vec<_>>();
+    configured_skills.sort_by(|left, right| {
+        skill_origin_priority(
+            right
+                .get("origin")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(""),
+        )
+        .cmp(&skill_origin_priority(
+            left.get("origin")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(""),
+        ))
+        .then_with(|| {
+            left.get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .cmp(
+                    right
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or(""),
+                )
+        })
+    });
+
     let recent_skills = state
         .mem
         .list_skills(&state.agent_id, limit)
@@ -1406,9 +1458,15 @@ pub async fn handle_api_memory_projections(
                 "name": name,
                 "origin": origin,
                 "status": status,
+                "source": "learned_memory",
                 "projection": projection,
             })
         })
+        .collect::<Vec<_>>();
+    let skill_surface = configured_skills
+        .iter()
+        .cloned()
+        .chain(recent_skills.iter().cloned())
         .collect::<Vec<_>>();
 
     let recent_precedents = state
@@ -1493,7 +1551,9 @@ pub async fn handle_api_memory_projections(
         "core_memory": core_projection,
         "working_state": working_state,
         "recent_sessions": recent_sessions,
+        "configured_skills": configured_skills,
         "recent_skills": recent_skills,
+        "skill_surface": skill_surface,
         "run_recipes": run_recipes,
         "recent_precedents": recent_precedents,
         "recent_reflections": recent_reflections,
