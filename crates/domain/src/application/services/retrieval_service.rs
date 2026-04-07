@@ -111,6 +111,9 @@ pub struct RunRecipeSearchOptions {
     pub min_score: f64,
     pub recency_half_life_secs: u64,
     pub mmr_lambda: f64,
+    pub lexical_shortlist: usize,
+    pub recent_shortlist: usize,
+    pub success_shortlist: usize,
     pub weights: RunRecipeSearchWeights,
 }
 
@@ -121,6 +124,9 @@ impl Default for RunRecipeSearchOptions {
             min_score: 0.0,
             recency_half_life_secs: 14 * 24 * 60 * 60,
             mmr_lambda: 0.72,
+            lexical_shortlist: 24,
+            recent_shortlist: 24,
+            success_shortlist: 16,
             weights: RunRecipeSearchWeights::default(),
         }
     }
@@ -303,9 +309,75 @@ pub async fn search_run_recipes_with_options(
     let keywords: Vec<&str> = query_lower.split_whitespace().collect();
     let query_embedding = embed_query_or_none(memory, query).await;
     let now = current_unix_seconds();
+    let mut recipes = store.list(agent_id);
+
+    recipes.sort_by(|left, right| {
+        right
+            .updated_at
+            .cmp(&left.updated_at)
+            .then_with(|| right.success_count.cmp(&left.success_count))
+            .then_with(|| left.task_family.cmp(&right.task_family))
+    });
+
+    let lexical_scores = recipes
+        .iter()
+        .filter_map(|recipe| {
+            let score = score_recipe_keywords(recipe, &keywords);
+            if score > 0.0 {
+                Some((score, recipe.task_family.clone()))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut lexical_scores = lexical_scores;
+    lexical_scores.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+
+    let mut shortlisted = Vec::new();
+    for (_, family) in lexical_scores.iter().take(options.lexical_shortlist) {
+        if let Some(recipe) = recipes.iter().find(|recipe| recipe.task_family == *family) {
+            if !shortlisted
+                .iter()
+                .any(|existing: &RunRecipe| existing.task_family == recipe.task_family)
+            {
+                shortlisted.push(recipe.clone());
+            }
+        }
+    }
+    for recipe in recipes.iter().take(options.recent_shortlist) {
+        if !shortlisted
+            .iter()
+            .any(|existing| existing.task_family == recipe.task_family)
+        {
+            shortlisted.push(recipe.clone());
+        }
+    }
+    let mut success_sorted = recipes.clone();
+    success_sorted.sort_by(|left, right| {
+        right
+            .success_count
+            .cmp(&left.success_count)
+            .then_with(|| right.updated_at.cmp(&left.updated_at))
+            .then_with(|| left.task_family.cmp(&right.task_family))
+    });
+    for recipe in success_sorted.iter().take(options.success_shortlist) {
+        if !shortlisted
+            .iter()
+            .any(|existing| existing.task_family == recipe.task_family)
+        {
+            shortlisted.push(recipe.clone());
+        }
+    }
 
     let mut hits = Vec::new();
-    for recipe in store.list(agent_id) {
+    for recipe in shortlisted {
         let lexical = score_recipe_keywords(&recipe, &keywords) * options.weights.lexical;
         let document = build_recipe_document(&recipe);
         let document_embedding = if query_embedding.is_some() {
