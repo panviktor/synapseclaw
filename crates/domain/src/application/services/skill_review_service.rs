@@ -78,6 +78,19 @@ fn review_learned_skill(
     }
 
     if skill.status == SkillStatus::Candidate
+        && has_exact_recipe_cluster_support(skill, recipe_clusters)
+        && exact_recipe_support_conflicts_with_failures(skill, recipe_clusters, failure_clusters)
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "supported_recipe_cluster_contradicted_by_failure_clusters",
+        });
+    }
+
+    if skill.status == SkillStatus::Candidate
         && !has_exact_recipe_cluster_support(skill, recipe_clusters)
         && conflicting_failure_cluster_count(skill, failure_clusters) > 0
     {
@@ -188,10 +201,35 @@ fn conflicting_failure_cluster_count(
         .count()
 }
 
+fn exact_recipe_support_conflicts_with_failures(
+    skill: &Skill,
+    recipe_clusters: &[RunRecipeCluster],
+    failure_clusters: &[ProceduralCluster],
+) -> bool {
+    recipe_clusters
+        .iter()
+        .filter(|cluster| recipe_cluster_exactly_supports_skill(skill, cluster))
+        .any(|cluster| {
+            failure_clusters.iter().any(|failure_cluster| {
+                failure_cluster_conflicts_with_tool_pattern(
+                    &cluster.representative.tool_pattern,
+                    failure_cluster,
+                )
+            })
+        })
+}
+
 fn failure_cluster_conflicts_with_skill(skill: &Skill, cluster: &ProceduralCluster) -> bool {
+    failure_cluster_conflicts_with_tool_pattern(&skill.tool_pattern, cluster)
+}
+
+fn failure_cluster_conflicts_with_tool_pattern(
+    tool_pattern: &[String],
+    cluster: &ProceduralCluster,
+) -> bool {
     let failed_tools =
         failure_similarity_service::failure_summary_failed_tools(&cluster.representative.content);
-    !failed_tools.is_empty() && tool_pattern_overlap(&skill.tool_pattern, &failed_tools) >= 0.75
+    !failed_tools.is_empty() && tool_pattern_overlap(tool_pattern, &failed_tools) >= 0.75
 }
 
 fn recipe_cluster_supports_skill(skill: &Skill, cluster: &RunRecipeCluster) -> bool {
@@ -506,5 +544,48 @@ mod tests {
         let decisions = review_learned_skills_with_failures(&[skill], &[], &[failure_cluster]);
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].reason, "contradicted_by_failure_clusters");
+    }
+
+    #[test]
+    fn deprecates_candidate_when_supported_recipe_cluster_conflicts_with_failures() {
+        let skill = sample_skill(
+            "sk1",
+            "fetch_page",
+            SkillOrigin::Learned,
+            SkillStatus::Candidate,
+            4,
+            0,
+        );
+
+        let recipe = RunRecipe {
+            agent_id: "agent".into(),
+            task_family: "fetch_page".into(),
+            sample_request: "fetch the page".into(),
+            summary: "Use web_search and message_send".into(),
+            tool_pattern: vec!["web_search".into(), "message_send".into()],
+            success_count: 4,
+            updated_at: 1,
+        };
+
+        let failure_cluster = ProceduralCluster {
+            representative: crate::domain::memory::MemoryEntry {
+                id: "m1".into(),
+                key: "m1".into(),
+                content: "failed_tools=web_search -> message_send | outcomes=runtime_error".into(),
+                category: crate::domain::memory::MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            member_keys: vec!["m1".into()],
+        };
+
+        let decisions =
+            review_learned_skills_with_failures(&[skill], &[recipe], &[failure_cluster]);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(
+            decisions[0].reason,
+            "supported_recipe_cluster_contradicted_by_failure_clusters"
+        );
     }
 }
