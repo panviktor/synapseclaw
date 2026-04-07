@@ -15,6 +15,7 @@ use crate::application::services::learning_strength_service;
 use crate::application::services::memory_mutation as mutation;
 use crate::application::services::precedent_similarity_service;
 use crate::application::services::recipe_evolution_service;
+use crate::application::services::skill_feedback_service;
 use crate::application::services::skill_promotion_service::{self, SkillPromotionAssessment};
 use crate::application::services::user_profile_service;
 use crate::domain::memory::MemoryCategory;
@@ -79,6 +80,8 @@ pub struct PostTurnReport {
     pub skill_promotion_assessments: Vec<SkillPromotionAssessment>,
     /// Count of learned skills created or refreshed from recipe promotion.
     pub skills_upserted: usize,
+    /// Count of learned skills cooled down by accepted failure evidence.
+    pub skills_penalized: usize,
     /// Whether a structured user profile patch was applied.
     pub user_profile_updated: bool,
 }
@@ -164,6 +167,7 @@ pub async fn execute_post_turn_learning(
         run_recipes_upserted: 0,
         skill_promotion_assessments: Vec::new(),
         skills_upserted: 0,
+        skills_penalized: 0,
         user_profile_updated: false,
     };
 
@@ -255,6 +259,50 @@ pub async fn execute_post_turn_learning(
                         error = %e,
                         "Failure-pattern mutation failed"
                     );
+                }
+            }
+        }
+    }
+
+    // ── 1c2. Failure feedback into learned skills ──
+    if !signal.is_explicit() && input.auto_save_enabled && !failure_assessments.is_empty() {
+        if let Ok(existing_skills) = mem.list_skills(&input.agent_id, 64).await {
+            for assessment in &failure_assessments {
+                if !assessment.accepted {
+                    continue;
+                }
+                let LearningCandidate::FailurePattern(failure) = &assessment.candidate else {
+                    continue;
+                };
+                for feedback in
+                    skill_feedback_service::assess_failure_feedback(failure, &existing_skills)
+                {
+                    match mem
+                        .update_skill(
+                            &feedback.skill_id,
+                            crate::domain::memory::SkillUpdate {
+                                increment_success: false,
+                                increment_fail: true,
+                                new_description: None,
+                                new_content: None,
+                                new_task_family: None,
+                                new_tool_pattern: None,
+                                new_status: None,
+                            },
+                            &input.agent_id,
+                        )
+                        .await
+                    {
+                        Ok(()) => report.skills_penalized += 1,
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "post_turn",
+                                error = %e,
+                                skill = %feedback.skill_name,
+                                "Skill failure feedback update failed"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -491,6 +539,7 @@ pub async fn execute_post_turn_learning(
             "skill_promotion_count": report.skill_promotion_assessments.len(),
             "skill_promotion_assessments": report.skill_promotion_assessments,
             "skills_upserted": report.skills_upserted,
+            "skills_penalized": report.skills_penalized,
             "user_profile_updated": report.user_profile_updated,
             "timestamp": chrono::Utc::now().to_rfc3339(),
         }));
@@ -998,6 +1047,59 @@ mod tests {
         .await;
 
         assert!(report.reflection_started);
+    }
+
+    #[tokio::test]
+    async fn accepted_failure_pattern_penalizes_overlapping_learned_skill() {
+        let memory = StubMemory::default();
+        memory.skills.write().push(Skill {
+            id: "skill_1".into(),
+            name: "search_delivery".into(),
+            description: "Promoted skill".into(),
+            content: "content".into(),
+            task_family: Some("search_delivery".into()),
+            tool_pattern: vec!["web_fetch".into(), "message_send".into()],
+            tags: vec!["recipe-promotion".into()],
+            success_count: 4,
+            fail_count: 0,
+            version: 1,
+            origin: crate::domain::memory::SkillOrigin::Learned,
+            status: crate::domain::memory::SkillStatus::Active,
+            created_by: "agent".into(),
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        });
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message: "Fetch the page and send it".into(),
+                assistant_response: "The fetch failed.".into(),
+                tools_used: vec!["web_fetch".into(), "message_send".into()],
+                tool_facts: vec![
+                    TypedToolFact::outcome("web_fetch", OutcomeStatus::RuntimeError, Some(220)),
+                    TypedToolFact {
+                        tool_id: "message_send".into(),
+                        payload: ToolFactPayload::Delivery(
+                            crate::domain::tool_fact::DeliveryFact {
+                                target: crate::domain::tool_fact::DeliveryTargetKind::CurrentConversation,
+                                content_bytes: Some(24),
+                            },
+                        ),
+                    },
+                ],
+                run_recipe_store: None,
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+            },
+        )
+        .await;
+
+        assert_eq!(report.skills_penalized, 1);
+        assert_eq!(memory.skills.read()[0].fail_count, 1);
     }
 
     #[tokio::test]

@@ -105,6 +105,8 @@ pub fn build_new_skill(
         name: assessment.skill_name.clone(),
         description: build_skill_description(recipe),
         content: build_skill_content(recipe),
+        task_family: Some(recipe.task_family.clone()),
+        tool_pattern: recipe.tool_pattern.clone(),
         tags: vec!["recipe-promotion".into(), recipe.task_family.clone()],
         success_count: recipe.success_count,
         fail_count: 0,
@@ -126,6 +128,8 @@ pub fn build_skill_update(
         increment_fail: false,
         new_description: Some(build_skill_description(recipe)),
         new_content: Some(build_skill_content(recipe)),
+        new_task_family: Some(Some(recipe.task_family.clone())),
+        new_tool_pattern: Some(recipe.tool_pattern.clone()),
         new_status: Some(assessment.target_status.clone()),
     }
 }
@@ -213,6 +217,8 @@ mod tests {
             name: "search_delivery".into(),
             description: "Manual skill".into(),
             content: "Use manual process.".into(),
+            task_family: Some("search_delivery".into()),
+            tool_pattern: vec!["shell".into(), "message_send".into()],
             tags: vec![],
             success_count: 1,
             fail_count: 0,

@@ -1173,6 +1173,8 @@ mod tests {
             name: name.into(),
             description: String::new(),
             content: content.into(),
+            task_family: None,
+            tool_pattern: Vec::new(),
             tags: vec![],
             success_count: 1,
             fail_count: 0,

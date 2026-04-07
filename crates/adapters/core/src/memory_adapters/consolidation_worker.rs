@@ -300,6 +300,8 @@ async fn run_skill_review(
                     increment_fail: false,
                     new_description: None,
                     new_content: None,
+                    new_task_family: None,
+                    new_tool_pattern: None,
                     new_status: Some(decision.target_status),
                 },
                 &agent_id,

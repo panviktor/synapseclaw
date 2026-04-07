@@ -490,6 +490,19 @@ fn row_to_skill(v: &serde_json::Value) -> Option<Skill> {
         name: json_str(v, "name"),
         description: json_str(v, "description"),
         content: json_str(v, "content"),
+        task_family: v
+            .get("task_family")
+            .and_then(|raw| raw.as_str())
+            .map(String::from),
+        tool_pattern: v
+            .get("tool_pattern")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
         tags: v
             .get("tags")
             .and_then(|t| t.as_array())
@@ -1229,6 +1242,8 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
                     name = $name,
                     description = $desc,
                     content = $content,
+                    task_family = $task_family,
+                    tool_pattern = $tool_pattern,
                     tags = $tags,
                     success_count = $sc,
                     fail_count = $fc,
@@ -1242,6 +1257,8 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .bind(("name", skill.name))
             .bind(("desc", skill.description))
             .bind(("content", skill.content))
+            .bind(("task_family", skill.task_family))
+            .bind(("tool_pattern", skill.tool_pattern))
             .bind(("tags", skill.tags))
             .bind(("sc", skill.success_count as i64))
             .bind(("fc", skill.fail_count as i64))
@@ -1295,11 +1312,19 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         if update.new_content.is_some() {
             parts.push("content = $content".to_string());
         }
+        if update.new_task_family.is_some() {
+            parts.push("task_family = $task_family".to_string());
+        }
+        if update.new_tool_pattern.is_some() {
+            parts.push("tool_pattern = $tool_pattern".to_string());
+        }
         if update.new_status.is_some() {
             parts.push("status = $status".to_string());
         }
         if update.new_description.is_some()
             || update.new_content.is_some()
+            || update.new_task_family.is_some()
+            || update.new_tool_pattern.is_some()
             || update.new_status.is_some()
         {
             parts.push("version += 1".to_string());
@@ -1320,6 +1345,12 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         }
         if let Some(ref content) = update.new_content {
             query = query.bind(("content", content.clone()));
+        }
+        if let Some(ref task_family) = update.new_task_family {
+            query = query.bind(("task_family", task_family.clone()));
+        }
+        if let Some(ref tool_pattern) = update.new_tool_pattern {
+            query = query.bind(("tool_pattern", tool_pattern.clone()));
         }
         if let Some(ref status) = update.new_status {
             query = query.bind(("status", status.to_string()));

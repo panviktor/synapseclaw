@@ -37,6 +37,7 @@ pub mod resolution_router;
 pub mod retention;
 pub mod retrieval_service;
 pub mod self_learning_eval_harness;
+pub mod skill_feedback_service;
 pub mod skill_promotion_service;
 pub mod skill_review_service;
 pub mod system_event_projection_service;

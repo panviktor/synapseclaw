@@ -350,6 +350,10 @@ pub struct Skill {
     pub description: String,
     /// Markdown step-by-step procedure.
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_family: Option<String>,
+    #[serde(default)]
+    pub tool_pattern: Vec<String>,
     pub tags: Vec<String>,
     pub success_count: u32,
     pub fail_count: u32,
@@ -370,6 +374,8 @@ pub struct SkillUpdate {
     pub increment_fail: bool,
     pub new_description: Option<String>,
     pub new_content: Option<String>,
+    pub new_task_family: Option<Option<String>>,
+    pub new_tool_pattern: Option<Vec<String>>,
     pub new_status: Option<SkillStatus>,
 }
 

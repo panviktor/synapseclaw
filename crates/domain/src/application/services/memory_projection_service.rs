@@ -170,6 +170,15 @@ pub fn format_skill_projection(skill: &Skill) -> String {
         format!("- fail_count: {}", skill.fail_count),
         format!("- version: {}", skill.version),
     ];
+    if let Some(task_family) = &skill.task_family {
+        lines.push(format!("- task_family: {task_family}"));
+    }
+    if !skill.tool_pattern.is_empty() {
+        lines.push(format!(
+            "- tool_pattern: {}",
+            skill.tool_pattern.join(" -> ")
+        ));
+    }
     if !skill.description.trim().is_empty() {
         lines.push("- description:".to_string());
         lines.push(indent_multiline(skill.description.trim(), 2));
@@ -486,6 +495,8 @@ mod tests {
             name: "deploy".into(),
             description: "Preferred deploy procedure".into(),
             content: "1. Build\n2. Test\n3. Deploy".into(),
+            task_family: Some("deploy".into()),
+            tool_pattern: vec!["shell".into(), "message_send".into()],
             tags: vec![],
             success_count: 4,
             fail_count: 1,

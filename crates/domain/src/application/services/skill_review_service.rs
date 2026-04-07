@@ -105,6 +105,8 @@ mod tests {
             name: name.into(),
             description: "desc".into(),
             content: "content".into(),
+            task_family: Some(name.into()),
+            tool_pattern: vec!["web_search".into(), "message_send".into()],
             tags: vec![],
             success_count,
             fail_count,
