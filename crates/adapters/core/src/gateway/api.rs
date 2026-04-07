@@ -1577,9 +1577,36 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
+    let learning_digest = synapse_domain::application::services::memory_projection_service::format_learning_digest_projection(
+        &synapse_domain::application::services::memory_projection_service::LearningDigestProjectionInput {
+            has_current_profile: current_user_profile.is_some(),
+            effective_skill_names: effective_skills
+                .iter()
+                .take(limit)
+                .map(|entry| entry.name.clone())
+                .collect(),
+            candidate_skill_count: skill_surface
+                .iter()
+                .filter(|entry| entry.status == "candidate")
+                .count(),
+            shadowed_skill_count: skill_surface
+                .iter()
+                .filter(|entry| !entry.effective)
+                .count(),
+            run_recipe_families: run_recipes
+                .iter()
+                .filter_map(|entry| entry.get("task_family").and_then(serde_json::Value::as_str))
+                .map(ToString::to_string)
+                .collect(),
+            precedent_count: recent_precedents.len(),
+            failure_pattern_count: recent_failure_patterns.len(),
+        },
+    );
+
     Json(serde_json::json!({
         "agent_id": state.agent_id,
         "current_user_profile": current_user_profile,
+        "learning_digest": learning_digest,
         "core_memory": core_projection,
         "working_state": working_state,
         "recent_sessions": recent_sessions,

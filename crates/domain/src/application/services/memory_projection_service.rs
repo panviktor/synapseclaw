@@ -8,6 +8,17 @@ use crate::domain::dialogue_state::DialogueState;
 use crate::domain::memory::{CoreMemoryBlock, MemoryEntry, Skill};
 use crate::domain::run_recipe::RunRecipe;
 
+#[derive(Debug, Clone)]
+pub struct LearningDigestProjectionInput {
+    pub has_current_profile: bool,
+    pub effective_skill_names: Vec<String>,
+    pub candidate_skill_count: usize,
+    pub shadowed_skill_count: usize,
+    pub run_recipe_families: Vec<String>,
+    pub precedent_count: usize,
+    pub failure_pattern_count: usize,
+}
+
 pub fn format_core_blocks_projection(blocks: &[CoreMemoryBlock]) -> Option<String> {
     if blocks.is_empty() {
         return None;
@@ -205,6 +216,56 @@ pub fn format_memory_entry_projection(section: &str, entry: &MemoryEntry) -> Str
     }
 
     format!("{}\n", lines.join("\n"))
+}
+
+pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) -> Option<String> {
+    if !input.has_current_profile
+        && input.effective_skill_names.is_empty()
+        && input.candidate_skill_count == 0
+        && input.shadowed_skill_count == 0
+        && input.run_recipe_families.is_empty()
+        && input.precedent_count == 0
+        && input.failure_pattern_count == 0
+    {
+        return None;
+    }
+
+    let mut lines = vec!["[learning-digest]".to_string()];
+    lines.push(format!(
+        "- current_user_profile: {}",
+        if input.has_current_profile {
+            "present"
+        } else {
+            "absent"
+        }
+    ));
+    if !input.effective_skill_names.is_empty() {
+        lines.push(format!(
+            "- effective_skills: {}",
+            input.effective_skill_names.join(", ")
+        ));
+    }
+    lines.push(format!(
+        "- candidate_skill_count: {}",
+        input.candidate_skill_count
+    ));
+    lines.push(format!(
+        "- shadowed_skill_count: {}",
+        input.shadowed_skill_count
+    ));
+    if !input.run_recipe_families.is_empty() {
+        lines.push(format!(
+            "- run_recipe_families: {}",
+            input.run_recipe_families.join(", ")
+        ));
+    }
+    lines.push(format!("- precedent_count: {}", input.precedent_count));
+    lines.push(format!(
+        "- failure_pattern_count: {}",
+        input.failure_pattern_count
+    ));
+
+    Some(format!("{}\n", lines.join("\n")))
 }
 
 fn format_recap_events(events: &[ConversationEvent]) -> Option<String> {
@@ -410,5 +471,24 @@ mod tests {
         assert!(projection.contains("[skill-conflict-policy]"));
         assert!(projection.contains("manual skill"));
         assert!(projection.contains("learned skill"));
+    }
+
+    #[test]
+    fn formats_learning_digest_projection() {
+        let projection = format_learning_digest_projection(&LearningDigestProjectionInput {
+            has_current_profile: true,
+            effective_skill_names: vec!["manual-deploy".into(), "search_delivery".into()],
+            candidate_skill_count: 1,
+            shadowed_skill_count: 1,
+            run_recipe_families: vec!["search_delivery".into()],
+            precedent_count: 2,
+            failure_pattern_count: 1,
+        })
+        .unwrap();
+
+        assert!(projection.contains("[learning-digest]"));
+        assert!(projection.contains("effective_skills: manual-deploy, search_delivery"));
+        assert!(projection.contains("candidate_skill_count: 1"));
+        assert!(projection.contains("failure_pattern_count: 1"));
     }
 }
