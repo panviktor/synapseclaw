@@ -6,8 +6,10 @@
 
 use crate::domain::dialogue_state::{
     DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal,
+    ResourceReference, ScheduleJobReference, SearchReference, WorkspaceReference,
 };
-use crate::ports::agent_runtime::AgentToolFact;
+use crate::domain::dialogue_state::FocusEntity;
+use crate::domain::tool_fact::{ToolFactPayload, TypedToolFact};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 
@@ -64,7 +66,7 @@ impl Default for DialogueStateStore {
 pub fn update_state_from_turn(
     state: &mut DialogueState,
     _user_message: &str,
-    tool_facts: &[AgentToolFact],
+    tool_facts: &[TypedToolFact],
     _assistant_response: &str,
 ) {
     let now = std::time::SystemTime::now()
@@ -76,6 +78,8 @@ pub fn update_state_from_turn(
     if tool_facts.is_empty() {
         return;
     }
+
+    clear_recent_turn_context(state);
 
     let focus_entities = collect_focus_entities(tool_facts);
     if !focus_entities.is_empty() {
@@ -95,49 +99,146 @@ pub fn update_state_from_turn(
         derive_reference_anchors(&state.focus_entities, &state.comparison_set);
 
     let subjects = collect_subjects(tool_facts);
-    if !subjects.is_empty() {
-        state.last_tool_subjects = subjects;
+    state.last_tool_subjects = subjects;
+
+    if let Some(target) = collect_recent_delivery_target(tool_facts) {
+        state.recent_delivery_target = Some(target);
+    }
+
+    if let Some(schedule_job) = collect_recent_schedule_job(tool_facts) {
+        state.recent_schedule_job = Some(schedule_job);
+    }
+
+    if let Some(resource) = collect_recent_resource(tool_facts) {
+        state.recent_resource = Some(resource);
+    }
+
+    if let Some(search) = collect_recent_search(tool_facts) {
+        state.recent_search = Some(search);
+    }
+
+    if let Some(workspace) = collect_recent_workspace(tool_facts) {
+        state.recent_workspace = Some(workspace);
     }
 }
 
 pub fn should_materialize_state(
     existing: Option<&DialogueState>,
-    tool_facts: &[AgentToolFact],
+    tool_facts: &[TypedToolFact],
 ) -> bool {
     existing.is_some() || !tool_facts.is_empty()
 }
 
-fn collect_focus_entities(
-    tool_facts: &[AgentToolFact],
-) -> Vec<crate::domain::dialogue_state::FocusEntity> {
+fn collect_focus_entities(tool_facts: &[TypedToolFact]) -> Vec<FocusEntity> {
     let mut entities = Vec::new();
     for fact in tool_facts {
-        for entity in &fact.focus_entities {
-            if !entities
-                .iter()
-                .any(|existing: &crate::domain::dialogue_state::FocusEntity| {
-                    existing.kind == entity.kind && existing.name == entity.name
-                })
-            {
-                entities.push(entity.clone());
+        for entity in fact.projected_focus_entities() {
+            if !entities.iter().any(|existing: &FocusEntity| {
+                existing.kind == entity.kind && existing.name == entity.name
+            }) {
+                entities.push(entity);
             }
         }
     }
     entities
 }
 
-fn collect_subjects(tool_facts: &[AgentToolFact]) -> Vec<String> {
+fn clear_recent_turn_context(state: &mut DialogueState) {
+    state.last_tool_subjects.clear();
+    state.recent_delivery_target = None;
+    state.recent_schedule_job = None;
+    state.recent_resource = None;
+    state.recent_search = None;
+    state.recent_workspace = None;
+}
+
+fn collect_subjects(tool_facts: &[TypedToolFact]) -> Vec<String> {
     let mut subjects = Vec::new();
 
     for fact in tool_facts {
-        for entity in &fact.focus_entities {
-            if !subjects.iter().any(|existing| existing == &entity.name) {
-                subjects.push(entity.name.clone());
+        for subject in fact.projected_subjects() {
+            if !subjects.iter().any(|existing| existing == &subject) {
+                subjects.push(subject);
             }
         }
     }
 
     subjects
+}
+
+fn collect_recent_delivery_target(
+    tool_facts: &[TypedToolFact],
+) -> Option<crate::domain::conversation_target::ConversationDeliveryTarget> {
+    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
+        ToolFactPayload::Delivery(delivery) => Some(match &delivery.target {
+            crate::domain::tool_fact::DeliveryTargetKind::CurrentConversation => {
+                crate::domain::conversation_target::ConversationDeliveryTarget::CurrentConversation
+            }
+            crate::domain::tool_fact::DeliveryTargetKind::Explicit(target)
+            | crate::domain::tool_fact::DeliveryTargetKind::ProfileDefault(target) => {
+                target.clone()
+            }
+        }),
+        ToolFactPayload::Schedule(schedule) => schedule
+            .target
+            .as_ref()
+            .and_then(|target| target.delivery.clone()),
+        _ => None,
+    })
+}
+
+fn collect_recent_schedule_job(tool_facts: &[TypedToolFact]) -> Option<ScheduleJobReference> {
+    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
+        ToolFactPayload::Schedule(schedule) => schedule.job_id.as_ref().map(|job_id| {
+            ScheduleJobReference {
+                job_id: job_id.clone(),
+                action: schedule.action.clone(),
+                job_type: schedule.job_type.clone(),
+                schedule_kind: schedule.schedule_kind.clone(),
+                session_target: schedule
+                    .target
+                    .as_ref()
+                    .and_then(|target| target.session.clone()),
+                timezone: schedule.timezone.clone(),
+            }
+        }),
+        _ => None,
+    })
+}
+
+fn collect_recent_resource(tool_facts: &[TypedToolFact]) -> Option<ResourceReference> {
+    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
+        ToolFactPayload::Resource(resource) => Some(ResourceReference {
+            kind: resource.kind.clone(),
+            operation: resource.operation.clone(),
+            locator: resource.locator.clone(),
+            host: resource.host.clone(),
+        }),
+        _ => None,
+    })
+}
+
+fn collect_recent_search(tool_facts: &[TypedToolFact]) -> Option<SearchReference> {
+    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
+        ToolFactPayload::Search(search) => Some(SearchReference {
+            domain: search.domain.clone(),
+            query: search.query.clone(),
+            primary_locator: search.primary_locator.clone(),
+            result_count: search.result_count,
+        }),
+        _ => None,
+    })
+}
+
+fn collect_recent_workspace(tool_facts: &[TypedToolFact]) -> Option<WorkspaceReference> {
+    tool_facts.iter().rev().find_map(|fact| match &fact.payload {
+        ToolFactPayload::Workspace(workspace) => Some(WorkspaceReference {
+            action: workspace.action.clone(),
+            name: workspace.name.clone(),
+            item_count: workspace.item_count,
+        }),
+        _ => None,
+    })
 }
 
 fn derive_reference_anchors(
@@ -211,8 +312,14 @@ fn ordinal_selector(index: usize) -> Option<ReferenceOrdinal> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::conversation_target::ConversationDeliveryTarget;
     use crate::domain::dialogue_state::{FocusEntity, ReferenceAnchorSelector, ReferenceOrdinal};
-    use crate::ports::agent_runtime::AgentToolFact;
+    use crate::domain::tool_fact::{
+        DeliveryFact, DeliveryTargetKind, ResourceFact, ResourceKind, ResourceMetadata,
+        ResourceOperation, ScheduleAction, ScheduleFact, ScheduleJobType, ScheduleKind,
+        ScheduleTarget, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact,
+        WorkspaceAction, WorkspaceFact,
+    };
 
     #[test]
     fn update_state_keeps_existing_focus_without_lexical_extraction() {
@@ -231,7 +338,6 @@ mod tests {
         assert_eq!(state.focus_entities.len(), 1);
         assert_eq!(state.focus_entities[0].name, "synapseclaw");
         assert!(state.comparison_set.is_empty());
-        assert!(state.slots.is_empty());
         assert!(state.reference_anchors.is_empty());
     }
 
@@ -241,9 +347,9 @@ mod tests {
         update_state_from_turn(
             &mut state,
             "",
-            &[AgentToolFact {
-                tool_name: "weather_lookup".into(),
-                focus_entities: vec![
+            &[TypedToolFact::focus(
+                "weather_lookup",
+                vec![
                     FocusEntity {
                         kind: "city".into(),
                         name: "Berlin".into(),
@@ -255,8 +361,8 @@ mod tests {
                         metadata: None,
                     },
                 ],
-                slots: vec![],
-            }],
+                vec!["Berlin".into(), "Tbilisi".into()],
+            )],
             "",
         );
         assert_eq!(state.last_tool_subjects, vec!["Berlin", "Tbilisi"]);
@@ -283,15 +389,15 @@ mod tests {
         update_state_from_turn(
             &mut state,
             "",
-            &[AgentToolFact {
-                tool_name: "service_status".into(),
-                focus_entities: vec![FocusEntity {
+            &[TypedToolFact::focus(
+                "service_status",
+                vec![FocusEntity {
                     kind: "service".into(),
                     name: "synapseclaw.service".into(),
                     metadata: None,
                 }],
-                slots: vec![],
-            }],
+                vec!["synapseclaw.service".into()],
+            )],
             "",
         );
 
@@ -309,9 +415,9 @@ mod tests {
         update_state_from_turn(
             &mut state,
             "",
-            &[AgentToolFact {
-                tool_name: "weather_lookup".into(),
-                focus_entities: vec![
+            &[TypedToolFact::focus(
+                "weather_lookup",
+                vec![
                     FocusEntity {
                         kind: "city".into(),
                         name: "Berlin".into(),
@@ -323,8 +429,8 @@ mod tests {
                         metadata: None,
                     },
                 ],
-                slots: vec![],
-            }],
+                vec!["Berlin".into(), "Tbilisi".into()],
+            )],
             "",
         );
         assert!(state
@@ -336,15 +442,15 @@ mod tests {
         update_state_from_turn(
             &mut state,
             "",
-            &[AgentToolFact {
-                tool_name: "service_status".into(),
-                focus_entities: vec![FocusEntity {
+            &[TypedToolFact::focus(
+                "service_status",
+                vec![FocusEntity {
                     kind: "service".into(),
                     name: "synapseclaw.service".into(),
                     metadata: None,
                 }],
-                slots: vec![],
-            }],
+                vec!["synapseclaw.service".into()],
+            )],
             "",
         );
 
@@ -366,10 +472,7 @@ mod tests {
         assert!(!should_materialize_state(None, &[]));
         assert!(should_materialize_state(
             None,
-            &[AgentToolFact {
-                tool_name: "shell".into(),
-                ..Default::default()
-            }],
+            &[TypedToolFact::focus("shell", Vec::new(), Vec::new())],
         ));
         assert!(should_materialize_state(
             Some(&DialogueState::default()),
@@ -394,5 +497,176 @@ mod tests {
         let loaded = store.get("conv1");
         assert!(loaded.is_some());
         assert_eq!(loaded.unwrap().focus_entities[0].name, "Moscow");
+    }
+
+    #[test]
+    fn captures_recent_delivery_and_schedule_context_from_typed_facts() {
+        let mut state = DialogueState::default();
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[
+                TypedToolFact {
+                    tool_id: "telegram_post".into(),
+                    payload: ToolFactPayload::Delivery(DeliveryFact {
+                        target: DeliveryTargetKind::Explicit(
+                            ConversationDeliveryTarget::Explicit {
+                                channel: "telegram".into(),
+                                recipient: "@synapseclaw".into(),
+                                thread_ref: None,
+                            },
+                        ),
+                        content_bytes: Some(4),
+                    }),
+                },
+                TypedToolFact {
+                    tool_id: "cron_add".into(),
+                    payload: ToolFactPayload::Schedule(ScheduleFact {
+                        action: ScheduleAction::Create,
+                        job_type: Some(ScheduleJobType::Agent),
+                        schedule_kind: Some(ScheduleKind::Cron),
+                        job_id: Some("job_123".into()),
+                        annotation: None,
+                        timezone: Some("Europe/Berlin".into()),
+                        target: Some(ScheduleTarget {
+                            session: Some("main".into()),
+                            delivery: None,
+                        }),
+                        run_count: None,
+                        last_status: None,
+                        last_duration_ms: None,
+                    }),
+                },
+            ],
+            "",
+        );
+
+        assert!(matches!(
+            state.recent_delivery_target,
+            Some(ConversationDeliveryTarget::Explicit { .. })
+        ));
+        assert_eq!(
+            state
+                .recent_schedule_job
+                .as_ref()
+                .map(|job| job.job_id.as_str()),
+            Some("job_123")
+        );
+        assert_eq!(
+            state
+                .recent_schedule_job
+                .as_ref()
+                .and_then(|job| job.session_target.as_deref()),
+            Some("main")
+        );
+    }
+
+    #[test]
+    fn captures_recent_resource_and_search_context_from_typed_facts() {
+        let mut state = DialogueState::default();
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[
+                TypedToolFact {
+                    tool_id: "file_read".into(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::File,
+                        operation: ResourceOperation::Read,
+                        locator: "/workspace/README.md".into(),
+                        host: None,
+                        metadata: ResourceMetadata::default(),
+                    }),
+                },
+                TypedToolFact {
+                    tool_id: "session_search".into(),
+                    payload: ToolFactPayload::Search(SearchFact {
+                        domain: SearchDomain::Session,
+                        query: Some("what did we discuss".into()),
+                        result_count: Some(3),
+                        primary_locator: Some("web:session-123".into()),
+                    }),
+                },
+            ],
+            "",
+        );
+
+        let resource = state.recent_resource.expect("resource context");
+        assert_eq!(resource.kind, ResourceKind::File);
+        assert_eq!(resource.operation, ResourceOperation::Read);
+        assert_eq!(resource.locator, "/workspace/README.md");
+
+        let search = state.recent_search.expect("search context");
+        assert_eq!(search.domain, SearchDomain::Session);
+        assert_eq!(search.query.as_deref(), Some("what did we discuss"));
+        assert_eq!(search.primary_locator.as_deref(), Some("web:session-123"));
+        assert_eq!(search.result_count, Some(3));
+    }
+
+    #[test]
+    fn captures_recent_workspace_context_from_typed_facts() {
+        let mut state = DialogueState::default();
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[TypedToolFact {
+                tool_id: "workspace".into(),
+                payload: ToolFactPayload::Workspace(WorkspaceFact {
+                    action: WorkspaceAction::Switch,
+                    name: Some("research-lab".into()),
+                    item_count: Some(12),
+                }),
+            }],
+            "",
+        );
+
+        let workspace = state.recent_workspace.expect("workspace context");
+        assert_eq!(workspace.action, WorkspaceAction::Switch);
+        assert_eq!(workspace.name.as_deref(), Some("research-lab"));
+        assert_eq!(workspace.item_count, Some(12));
+    }
+
+    #[test]
+    fn clears_stale_recent_context_when_new_turn_has_other_typed_facts() {
+        let mut state = DialogueState::default();
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[TypedToolFact {
+                tool_id: "session_search".into(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Session,
+                    query: Some("what did we discuss".into()),
+                    result_count: Some(3),
+                    primary_locator: Some("web:session-123".into()),
+                }),
+            }],
+            "",
+        );
+        assert!(state.recent_search.is_some());
+        assert!(state
+            .last_tool_subjects
+            .contains(&"what did we discuss".to_string()));
+        assert!(state
+            .last_tool_subjects
+            .contains(&"web:session-123".to_string()));
+
+        update_state_from_turn(
+            &mut state,
+            "",
+            &[TypedToolFact {
+                tool_id: "workspace".into(),
+                payload: ToolFactPayload::Workspace(WorkspaceFact {
+                    action: WorkspaceAction::Switch,
+                    name: Some("research-lab".into()),
+                    item_count: Some(12),
+                }),
+            }],
+            "",
+        );
+
+        assert!(state.recent_search.is_none());
+        assert!(state.recent_workspace.is_some());
+        assert_eq!(state.last_tool_subjects, vec!["research-lab"]);
     }
 }

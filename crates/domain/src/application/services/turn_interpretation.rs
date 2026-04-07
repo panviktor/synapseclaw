@@ -6,7 +6,9 @@
 use crate::domain::conversation_target::{ConversationDeliveryTarget, CurrentConversationContext};
 use crate::domain::dialogue_state::{
     DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal,
+    ResourceReference, ScheduleJobReference, SearchReference, WorkspaceReference,
 };
+use crate::domain::tool_fact::{ResourceKind, SearchDomain, WorkspaceAction};
 use crate::domain::user_profile::UserProfile;
 use crate::ports::memory::UnifiedMemoryPort;
 
@@ -31,6 +33,11 @@ pub struct DialogueStateSnapshot {
     pub comparison_set: Vec<(String, String)>,
     pub reference_anchors: Vec<ReferenceAnchor>,
     pub last_tool_subjects: Vec<String>,
+    pub recent_delivery_target: Option<ConversationDeliveryTarget>,
+    pub recent_schedule_job: Option<ScheduleJobReference>,
+    pub recent_resource: Option<ResourceReference>,
+    pub recent_search: Option<SearchReference>,
+    pub recent_workspace: Option<WorkspaceReference>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +58,19 @@ pub enum ReferenceCandidateKind {
     },
     Profile(ProfileReferenceKind),
     DeliveryTarget,
+    ScheduleJob,
+    ResourceLocator {
+        resource_kind: ResourceKind,
+    },
+    SearchQuery {
+        domain: SearchDomain,
+    },
+    SearchResult {
+        domain: SearchDomain,
+    },
+    WorkspaceName {
+        action: WorkspaceAction,
+    },
     RecentSubject,
 }
 
@@ -186,6 +206,36 @@ pub fn format_turn_interpretation(interpretation: &TurnInterpretation) -> Option
                 state.last_tool_subjects.join(", ")
             ));
         }
+        if let Some(target) = &state.recent_delivery_target {
+            lines.push(format!(
+                "- recent_delivery_target: {}",
+                format_delivery_target(target)
+            ));
+        }
+        if let Some(schedule_job) = &state.recent_schedule_job {
+            lines.push(format!(
+                "- recent_schedule_job: {}",
+                format_schedule_job(schedule_job)
+            ));
+        }
+        if let Some(resource) = &state.recent_resource {
+            lines.push(format!(
+                "- recent_resource: {}",
+                format_resource_reference(resource)
+            ));
+        }
+        if let Some(search) = &state.recent_search {
+            lines.push(format!(
+                "- recent_search: {}",
+                format_search_reference(search)
+            ));
+        }
+        if let Some(workspace) = &state.recent_workspace {
+            lines.push(format!(
+                "- recent_workspace: {}",
+                format_workspace_reference(workspace)
+            ));
+        }
     }
 
     if !interpretation.reference_candidates.is_empty()
@@ -234,11 +284,21 @@ fn snapshot_dialogue_state(state: &DialogueState) -> Option<DialogueStateSnapsho
         .collect::<Vec<_>>();
     let reference_anchors = state.reference_anchors.clone();
     let last_tool_subjects = state.last_tool_subjects.clone();
+    let recent_delivery_target = state.recent_delivery_target.clone();
+    let recent_schedule_job = state.recent_schedule_job.clone();
+    let recent_resource = state.recent_resource.clone();
+    let recent_search = state.recent_search.clone();
+    let recent_workspace = state.recent_workspace.clone();
 
     if focus_entities.is_empty()
         && comparison_set.is_empty()
         && reference_anchors.is_empty()
         && last_tool_subjects.is_empty()
+        && recent_delivery_target.is_none()
+        && recent_schedule_job.is_none()
+        && recent_resource.is_none()
+        && recent_search.is_none()
+        && recent_workspace.is_none()
     {
         None
     } else {
@@ -247,6 +307,11 @@ fn snapshot_dialogue_state(state: &DialogueState) -> Option<DialogueStateSnapsho
             comparison_set,
             reference_anchors,
             last_tool_subjects,
+            recent_delivery_target,
+            recent_schedule_job,
+            recent_resource,
+            recent_search,
+            recent_workspace,
         })
     }
 }
@@ -292,6 +357,86 @@ fn collect_reference_candidates(
                 ReferenceSource::DialogueState,
             );
         }
+        if let Some(target) = &state.recent_delivery_target {
+            push_reference_candidate(
+                &mut candidates,
+                ReferenceCandidateKind::DeliveryTarget,
+                &format_delivery_target(target),
+                ReferenceSource::DialogueState,
+            );
+        }
+        if let Some(schedule_job) = &state.recent_schedule_job {
+            push_reference_candidate(
+                &mut candidates,
+                ReferenceCandidateKind::ScheduleJob,
+                &schedule_job.job_id,
+                ReferenceSource::DialogueState,
+            );
+            if let Some(session_target) = schedule_job.session_target.as_deref() {
+                push_reference_candidate(
+                    &mut candidates,
+                    ReferenceCandidateKind::Entity {
+                        entity_kind: "session_target".into(),
+                    },
+                    session_target,
+                    ReferenceSource::DialogueState,
+                );
+            }
+        }
+        if let Some(resource) = &state.recent_resource {
+            push_reference_candidate(
+                &mut candidates,
+                ReferenceCandidateKind::ResourceLocator {
+                    resource_kind: resource.kind.clone(),
+                },
+                &resource.locator,
+                ReferenceSource::DialogueState,
+            );
+            if let Some(host) = resource.host.as_deref() {
+                push_reference_candidate(
+                    &mut candidates,
+                    ReferenceCandidateKind::ResourceLocator {
+                        resource_kind: resource.kind.clone(),
+                    },
+                    host,
+                    ReferenceSource::DialogueState,
+                );
+            }
+        }
+        if let Some(search) = &state.recent_search {
+            if let Some(query) = search.query.as_deref() {
+                push_reference_candidate(
+                    &mut candidates,
+                    ReferenceCandidateKind::SearchQuery {
+                        domain: search.domain.clone(),
+                    },
+                    query,
+                    ReferenceSource::DialogueState,
+                );
+            }
+            if let Some(locator) = search.primary_locator.as_deref() {
+                push_reference_candidate(
+                    &mut candidates,
+                    ReferenceCandidateKind::SearchResult {
+                        domain: search.domain.clone(),
+                    },
+                    locator,
+                    ReferenceSource::DialogueState,
+                );
+            }
+        }
+        if let Some(workspace) = &state.recent_workspace {
+            if let Some(name) = workspace.name.as_deref() {
+                push_reference_candidate(
+                    &mut candidates,
+                    ReferenceCandidateKind::WorkspaceName {
+                        action: workspace.action.clone(),
+                    },
+                    name,
+                    ReferenceSource::DialogueState,
+                );
+            }
+        }
     }
 
     if let Some(profile) = profile {
@@ -329,11 +474,11 @@ fn collect_reference_candidates(
                 ReferenceSource::UserProfile,
             );
         }
-        if profile.default_delivery_target.is_some() {
+        if let Some(target) = profile.default_delivery_target.as_ref() {
             push_reference_candidate(
                 &mut candidates,
                 ReferenceCandidateKind::Profile(ProfileReferenceKind::DeliveryTarget),
-                "default_delivery_target",
+                &format_delivery_target(target),
                 ReferenceSource::UserProfile,
             );
         }
@@ -453,6 +598,55 @@ fn format_delivery_target(target: &ConversationDeliveryTarget) -> String {
     }
 }
 
+fn format_schedule_job(job: &ScheduleJobReference) -> String {
+    let mut parts = vec![job.job_id.clone()];
+    if let Some(session_target) = &job.session_target {
+        parts.push(format!("session={session_target}"));
+    }
+    if let Some(timezone) = &job.timezone {
+        parts.push(format!("tz={timezone}"));
+    }
+    parts.join(" ")
+}
+
+fn format_resource_reference(resource: &ResourceReference) -> String {
+    let mut parts = vec![format!(
+        "{} {}",
+        resource_operation_name(&resource.operation),
+        resource.locator
+    )];
+    parts.push(format!("kind={}", resource_kind_name(&resource.kind)));
+    if let Some(host) = &resource.host {
+        parts.push(format!("host={host}"));
+    }
+    parts.join(" ")
+}
+
+fn format_search_reference(search: &SearchReference) -> String {
+    let mut parts = vec![format!("domain={}", search_domain_name(&search.domain))];
+    if let Some(query) = &search.query {
+        parts.push(format!("query={query}"));
+    }
+    if let Some(locator) = &search.primary_locator {
+        parts.push(format!("primary={locator}"));
+    }
+    if let Some(result_count) = search.result_count {
+        parts.push(format!("results={result_count}"));
+    }
+    parts.join(" ")
+}
+
+fn format_workspace_reference(workspace: &WorkspaceReference) -> String {
+    let mut parts = vec![format!("action={}", workspace_action_name(&workspace.action))];
+    if let Some(name) = &workspace.name {
+        parts.push(format!("name={name}"));
+    }
+    if let Some(item_count) = workspace.item_count {
+        parts.push(format!("items={item_count}"));
+    }
+    parts.join(" ")
+}
+
 fn reference_source_name(source: ReferenceSource) -> &'static str {
     match source {
         ReferenceSource::DialogueState => "dialogue_state",
@@ -484,6 +678,19 @@ fn reference_candidate_kind_name(kind: &ReferenceCandidateKind) -> String {
             format!("profile<{}>", profile_reference_kind_name(*kind))
         }
         ReferenceCandidateKind::DeliveryTarget => "delivery_target".into(),
+        ReferenceCandidateKind::ScheduleJob => "schedule_job".into(),
+        ReferenceCandidateKind::ResourceLocator { resource_kind } => {
+            format!("resource<{}>", resource_kind_name(resource_kind))
+        }
+        ReferenceCandidateKind::SearchQuery { domain } => {
+            format!("search_query<{}>", search_domain_name(domain))
+        }
+        ReferenceCandidateKind::SearchResult { domain } => {
+            format!("search_result<{}>", search_domain_name(domain))
+        }
+        ReferenceCandidateKind::WorkspaceName { action } => {
+            format!("workspace<{}>", workspace_action_name(action))
+        }
         ReferenceCandidateKind::RecentSubject => "recent_subject".into(),
     }
 }
@@ -505,14 +712,81 @@ fn ordinal_name(ordinal: &ReferenceOrdinal) -> &'static str {
     }
 }
 
+fn resource_kind_name(kind: &ResourceKind) -> &'static str {
+    match kind {
+        ResourceKind::File => "file",
+        ResourceKind::Directory => "directory",
+        ResourceKind::Image => "image",
+        ResourceKind::Pdf => "pdf",
+        ResourceKind::WebPage => "web_page",
+        ResourceKind::WebResource => "web_resource",
+        ResourceKind::NetworkEndpoint => "network_endpoint",
+        ResourceKind::BrowserPage => "browser_page",
+        ResourceKind::BrowserSelector => "browser_selector",
+        ResourceKind::GitRepository => "git_repository",
+        ResourceKind::GitBranch => "git_branch",
+        ResourceKind::BackupSnapshot => "backup_snapshot",
+        ResourceKind::ConfigFile => "config_file",
+    }
+}
+
+fn resource_operation_name(operation: &crate::domain::tool_fact::ResourceOperation) -> &'static str {
+    match operation {
+        crate::domain::tool_fact::ResourceOperation::Read => "read",
+        crate::domain::tool_fact::ResourceOperation::Write => "write",
+        crate::domain::tool_fact::ResourceOperation::Edit => "edit",
+        crate::domain::tool_fact::ResourceOperation::Search => "search",
+        crate::domain::tool_fact::ResourceOperation::Fetch => "fetch",
+        crate::domain::tool_fact::ResourceOperation::Open => "open",
+        crate::domain::tool_fact::ResourceOperation::Click => "click",
+        crate::domain::tool_fact::ResourceOperation::Type => "type",
+        crate::domain::tool_fact::ResourceOperation::Inspect => "inspect",
+        crate::domain::tool_fact::ResourceOperation::Snapshot => "snapshot",
+        crate::domain::tool_fact::ResourceOperation::Verify => "verify",
+        crate::domain::tool_fact::ResourceOperation::Restore => "restore",
+        crate::domain::tool_fact::ResourceOperation::Configure => "configure",
+    }
+}
+
+fn search_domain_name(domain: &SearchDomain) -> &'static str {
+    match domain {
+        SearchDomain::Web => "web",
+        SearchDomain::Workspace => "workspace",
+        SearchDomain::Session => "session",
+        SearchDomain::Precedent => "precedent",
+        SearchDomain::Knowledge => "knowledge",
+    }
+}
+
+fn workspace_action_name(action: &WorkspaceAction) -> &'static str {
+    match action {
+        WorkspaceAction::List => "list",
+        WorkspaceAction::Switch => "switch",
+        WorkspaceAction::Create => "create",
+        WorkspaceAction::Export => "export",
+        WorkspaceAction::Info => "info",
+        WorkspaceAction::Backup => "backup",
+        WorkspaceAction::Retention => "retention",
+        WorkspaceAction::Purge => "purge",
+        WorkspaceAction::Stats => "stats",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::dialogue_state::FocusEntity;
+    use crate::domain::conversation_target::ConversationDeliveryTarget;
+    use crate::domain::dialogue_state::{
+        FocusEntity, ResourceReference, SearchReference, WorkspaceReference,
+    };
     use crate::domain::memory::{
         AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity,
         HybridSearchResult, MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery,
         Reflection, SearchResult, SessionId, Skill, SkillUpdate, TemporalFact, Visibility,
+    };
+    use crate::domain::tool_fact::{
+        ResourceKind, ResourceOperation, ScheduleAction, ScheduleJobType, ScheduleKind,
+        SearchDomain, WorkspaceAction,
     };
     use crate::ports::memory::{
         ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
@@ -866,6 +1140,153 @@ mod tests {
                     entity_kind,
                 } if entity_kind.as_deref() == Some("city")
             ) && candidate.value == "Tbilisi"
+        }));
+    }
+
+    #[tokio::test]
+    async fn typed_delivery_and_schedule_state_surface_reference_candidates() {
+        let interpretation = build_turn_interpretation(
+            None,
+            "send the report there and rerun that job",
+            None,
+            None,
+            Some(&DialogueState {
+                recent_delivery_target: Some(ConversationDeliveryTarget::Explicit {
+                    channel: "telegram".into(),
+                    recipient: "@synapseclaw".into(),
+                    thread_ref: None,
+                }),
+                recent_schedule_job: Some(ScheduleJobReference {
+                    job_id: "job_123".into(),
+                    action: ScheduleAction::Run,
+                    job_type: Some(ScheduleJobType::Agent),
+                    schedule_kind: Some(ScheduleKind::Cron),
+                    session_target: Some("main".into()),
+                    timezone: Some("Europe/Berlin".into()),
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(interpretation.reference_candidates.iter().any(|candidate| {
+            matches!(candidate.kind, ReferenceCandidateKind::DeliveryTarget)
+                && candidate.value == "explicit:telegram:@synapseclaw"
+        }));
+        assert!(interpretation.reference_candidates.iter().any(|candidate| {
+            matches!(candidate.kind, ReferenceCandidateKind::ScheduleJob)
+                && candidate.value == "job_123"
+        }));
+        assert!(interpretation.reference_candidates.iter().any(|candidate| {
+            matches!(
+                &candidate.kind,
+                ReferenceCandidateKind::Entity { entity_kind } if entity_kind == "session_target"
+            ) && candidate.value == "main"
+        }));
+    }
+
+    #[tokio::test]
+    async fn typed_resource_and_search_state_surface_reference_candidates() {
+        let interpretation = build_turn_interpretation(
+            None,
+            "open that file and reuse that search",
+            None,
+            None,
+            Some(&DialogueState {
+                recent_resource: Some(ResourceReference {
+                    kind: ResourceKind::File,
+                    operation: ResourceOperation::Read,
+                    locator: "/workspace/README.md".into(),
+                    host: None,
+                }),
+                recent_search: Some(SearchReference {
+                    domain: SearchDomain::Session,
+                    query: Some("what did we discuss".into()),
+                    primary_locator: Some("web:session-123".into()),
+                    result_count: Some(3),
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(interpretation.reference_candidates.iter().any(|candidate| {
+            matches!(
+                &candidate.kind,
+                ReferenceCandidateKind::ResourceLocator { resource_kind }
+                    if resource_kind == &ResourceKind::File
+            ) && candidate.value == "/workspace/README.md"
+        }));
+        assert!(interpretation.reference_candidates.iter().any(|candidate| {
+            matches!(
+                &candidate.kind,
+                ReferenceCandidateKind::SearchQuery { domain }
+                    if domain == &SearchDomain::Session
+            ) && candidate.value == "what did we discuss"
+        }));
+        assert!(interpretation.reference_candidates.iter().any(|candidate| {
+            matches!(
+                &candidate.kind,
+                ReferenceCandidateKind::SearchResult { domain }
+                    if domain == &SearchDomain::Session
+            ) && candidate.value == "web:session-123"
+        }));
+    }
+
+    #[tokio::test]
+    async fn typed_workspace_state_surfaces_reference_candidates() {
+        let interpretation = build_turn_interpretation(
+            None,
+            "switch back there",
+            None,
+            None,
+            Some(&DialogueState {
+                recent_workspace: Some(WorkspaceReference {
+                    action: WorkspaceAction::Switch,
+                    name: Some("research-lab".into()),
+                    item_count: Some(12),
+                }),
+                ..Default::default()
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert!(interpretation.reference_candidates.iter().any(|candidate| {
+            matches!(
+                &candidate.kind,
+                ReferenceCandidateKind::WorkspaceName { action }
+                    if action == &WorkspaceAction::Switch
+            ) && candidate.value == "research-lab"
+        }));
+    }
+
+    #[tokio::test]
+    async fn profile_delivery_target_surfaces_actual_target_value() {
+        let interpretation = build_turn_interpretation(
+            None,
+            "send it to my default place",
+            Some(UserProfile {
+                default_delivery_target: Some(ConversationDeliveryTarget::Explicit {
+                    channel: "telegram".into(),
+                    recipient: "@synapseclaw".into(),
+                    thread_ref: None,
+                }),
+                ..Default::default()
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(interpretation.reference_candidates.iter().any(|candidate| {
+            matches!(
+                candidate.kind,
+                ReferenceCandidateKind::Profile(ProfileReferenceKind::DeliveryTarget)
+            ) && candidate.value == "explicit:telegram:@synapseclaw"
         }));
     }
 }

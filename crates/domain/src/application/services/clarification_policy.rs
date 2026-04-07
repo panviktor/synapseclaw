@@ -40,7 +40,7 @@ pub fn build_clarification_guidance(
 }
 
 pub fn format_clarification_guidance(guidance: &ClarificationGuidance) -> Option<String> {
-    if guidance.candidate_set.is_empty() {
+    if guidance.candidate_set.is_empty() && !guidance.required && guidance.reason.is_none() {
         return None;
     }
 
@@ -97,6 +97,11 @@ mod tests {
                 ],
                 reference_anchors: vec![],
                 last_tool_subjects: vec![],
+                recent_delivery_target: None,
+                recent_schedule_job: None,
+                recent_resource: None,
+                recent_search: None,
+                recent_workspace: None,
             }),
             clarification_candidates: vec!["Berlin".into(), "Tbilisi".into()],
             reference_candidates: vec![],
@@ -133,5 +138,20 @@ mod tests {
         assert!(block.contains("clarification_required: true"));
         assert!(block.contains("Berlin | Tbilisi"));
         assert!(block.contains("reason: low_confidence"));
+    }
+
+    #[test]
+    fn formats_required_reason_without_candidate_set() {
+        let block = format_clarification_guidance(&ClarificationGuidance {
+            candidate_set: vec![],
+            required: true,
+            avoid_generic_questions: true,
+            reason: Some("resolver_exhausted".into()),
+        })
+        .unwrap();
+
+        assert!(block.contains("[clarification-policy]"));
+        assert!(block.contains("clarification_required: true"));
+        assert!(block.contains("reason: resolver_exhausted"));
     }
 }

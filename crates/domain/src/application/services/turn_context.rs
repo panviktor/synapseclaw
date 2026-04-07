@@ -12,7 +12,9 @@ use crate::application::services::clarification_policy;
 use crate::application::services::resolution_router;
 use crate::application::services::retrieval_service;
 use crate::application::services::turn_budget_policy;
-use crate::application::services::turn_interpretation::TurnInterpretation;
+use crate::application::services::turn_interpretation::{
+    ReferenceCandidateKind, ReferenceSource, TurnInterpretation,
+};
 use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryEntry, Skill};
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
@@ -398,6 +400,9 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
 
     let mut result = FormattedTurnContext::default();
     let max_chars = budget.enrichment_total_max_chars;
+    let mut remaining_projection_lines = ctx.execution_budget.as_ref().map_or(usize::MAX, |b| {
+        b.retrieval_budget.max_projection_lines
+    });
 
     // Core blocks → system prompt
     for block in &ctx.core_blocks {
@@ -421,6 +426,9 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
     }
 
     for section in ordered_enrichment_sections(ctx, budget) {
+        let Some(section) = take_section_lines(&section, &mut remaining_projection_lines) else {
+            break;
+        };
         if result.enrichment_prefix.chars().count() + section.chars().count() > max_chars {
             break;
         }
@@ -563,6 +571,11 @@ fn build_execution_budget(
                 || !state.comparison_set.is_empty()
                 || !state.reference_anchors.is_empty()
                 || !state.last_tool_subjects.is_empty()
+                || state.recent_delivery_target.is_some()
+                || state.recent_schedule_job.is_some()
+                || state.recent_resource.is_some()
+                || state.recent_search.is_some()
+                || state.recent_workspace.is_some()
         }),
         has_profile_defaults: user_profile.is_some_and(|profile| {
             profile.preferred_language.is_some()
@@ -571,11 +584,31 @@ fn build_execution_budget(
                 || profile.default_delivery_target.is_some()
         }),
         has_reference_candidates: !interpretation.reference_candidates.is_empty(),
+        direct_reference_count: count_direct_reference_candidates(interpretation),
         ambiguity_candidate_count: interpretation.clarification_candidates.len(),
         recent_tool_fact_count: dialogue_state.map_or(0, |state| state.last_tool_subjects.len()),
         explicit_user_correction: false,
     };
     Some(turn_budget_policy::build_turn_execution_budget(signals))
+}
+
+fn count_direct_reference_candidates(interpretation: &TurnInterpretation) -> usize {
+    interpretation
+        .reference_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.source == ReferenceSource::DialogueState
+                && matches!(
+                    candidate.kind,
+                    ReferenceCandidateKind::DeliveryTarget
+                        | ReferenceCandidateKind::ScheduleJob
+                        | ReferenceCandidateKind::ResourceLocator { .. }
+                        | ReferenceCandidateKind::SearchQuery { .. }
+                        | ReferenceCandidateKind::SearchResult { .. }
+                        | ReferenceCandidateKind::WorkspaceName { .. }
+                )
+        })
+        .count()
 }
 
 fn apply_resolution_plan(ctx: &mut TurnMemoryContext, interpretation: Option<&TurnInterpretation>) {
@@ -606,35 +639,87 @@ fn ordered_enrichment_sections(ctx: &TurnMemoryContext, budget: &PromptBudget) -
     let mut sections = Vec::<(usize, String)>::new();
 
     if let Some(section) = format_memory_section(ctx, budget) {
-        sections.push((
-            resolution_router::source_priority(
-                plan,
-                resolution_router::ResolutionSource::LongTermMemory,
-            ),
-            section,
-        ));
+        let source = resolution_router::ResolutionSource::LongTermMemory;
+        if should_include_enrichment_source(ctx, source) {
+            sections.push((resolution_router::source_priority(plan, source), section));
+        }
     }
     if let Some(section) = format_session_section(ctx) {
-        sections.push((
-            resolution_router::source_priority(
-                plan,
-                resolution_router::ResolutionSource::SessionHistory,
-            ),
-            section,
-        ));
+        let source = resolution_router::ResolutionSource::SessionHistory;
+        if should_include_enrichment_source(ctx, source) {
+            sections.push((resolution_router::source_priority(plan, source), section));
+        }
     }
     if let Some(section) = format_recipe_section(ctx) {
-        sections.push((
-            resolution_router::source_priority(
-                plan,
-                resolution_router::ResolutionSource::RunRecipe,
-            ),
-            section,
-        ));
+        let source = resolution_router::ResolutionSource::RunRecipe;
+        if should_include_enrichment_source(ctx, source) {
+            sections.push((resolution_router::source_priority(plan, source), section));
+        }
     }
 
     sections.sort_by_key(|(priority, _)| *priority);
     sections.into_iter().map(|(_, section)| section).collect()
+}
+
+fn should_include_enrichment_source(
+    ctx: &TurnMemoryContext,
+    source: resolution_router::ResolutionSource,
+) -> bool {
+    let Some(execution_budget) = ctx.execution_budget.as_ref() else {
+        return true;
+    };
+    let Some(plan) = ctx.resolution_plan.as_ref() else {
+        return true;
+    };
+
+    let has_direct_reference_gate = execution_budget.gate_reasons.contains(
+        &turn_budget_policy::InterpreterGateReason::DirectTypedReference,
+    );
+    if !has_direct_reference_gate {
+        return true;
+    }
+
+    if plan.confidence == resolution_router::ResolutionConfidence::Low {
+        return true;
+    }
+
+    let priority = resolution_router::source_priority(Some(plan), source);
+    priority != usize::MAX && priority <= 1
+}
+
+fn take_section_lines(section: &str, remaining_lines: &mut usize) -> Option<String> {
+    if *remaining_lines == 0 || section.trim().is_empty() {
+        return None;
+    }
+
+    let lines = section.lines().collect::<Vec<_>>();
+    if lines.is_empty() {
+        return None;
+    }
+
+    if lines.len() <= *remaining_lines {
+        *remaining_lines -= lines.len();
+        let mut result = lines.join("\n");
+        if section.ends_with('\n') {
+            result.push('\n');
+        }
+        return Some(result);
+    }
+
+    if *remaining_lines == 1 {
+        *remaining_lines = 0;
+        return Some("...\n".to_string());
+    }
+
+    let visible_lines = (*remaining_lines).saturating_sub(1);
+    let mut result = lines
+        .into_iter()
+        .take(visible_lines)
+        .collect::<Vec<_>>()
+        .join("\n");
+    result.push_str("\n...\n");
+    *remaining_lines = 0;
+    Some(result)
 }
 
 fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Option<String> {
@@ -763,7 +848,9 @@ mod tests {
     use crate::application::services::retrieval_service::{
         RunRecipeSearchMatch, SessionSearchMatch,
     };
-    use crate::application::services::turn_budget_policy::InterpreterMode;
+    use crate::application::services::turn_budget_policy::{
+        InterpreterGateReason, InterpreterMode, RetrievalBudget, TurnExecutionBudget,
+    };
     use crate::domain::dialogue_state::DialogueState;
     use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryCategory, MemoryEntry, Skill};
 
@@ -853,6 +940,11 @@ mod tests {
                         ],
                         reference_anchors: vec![],
                         last_tool_subjects: vec!["weather_lookup".into()],
+                        recent_delivery_target: None,
+                        recent_schedule_job: None,
+                        recent_resource: None,
+                        recent_search: None,
+                        recent_workspace: None,
                     },
                 ),
                 clarification_candidates: vec!["Berlin".into(), "Tbilisi".into()],
@@ -865,6 +957,175 @@ mod tests {
             InterpreterMode::Lightweight
         );
         assert_eq!(execution_budget.retrieval_budget.max_session_candidates, 2);
+    }
+
+    #[test]
+    fn execution_budget_trims_history_when_direct_typed_reference_exists() {
+        let interpretation =
+            crate::application::services::turn_interpretation::TurnInterpretation {
+                dialogue_state: Some(
+                    crate::application::services::turn_interpretation::DialogueStateSnapshot {
+                        focus_entities: vec![],
+                        comparison_set: vec![],
+                        reference_anchors: vec![],
+                        last_tool_subjects: vec!["job_123".into()],
+                        recent_delivery_target: None,
+                        recent_schedule_job: Some(
+                            crate::domain::dialogue_state::ScheduleJobReference {
+                                job_id: "job_123".into(),
+                                action: crate::domain::tool_fact::ScheduleAction::Run,
+                                job_type: Some(
+                                    crate::domain::tool_fact::ScheduleJobType::Agent,
+                                ),
+                                schedule_kind: Some(
+                                    crate::domain::tool_fact::ScheduleKind::Cron,
+                                ),
+                                session_target: Some("main".into()),
+                                timezone: Some("Europe/Berlin".into()),
+                            },
+                        ),
+                        recent_resource: None,
+                        recent_search: None,
+                        recent_workspace: None,
+                    },
+                ),
+                reference_candidates: vec![
+                    crate::application::services::turn_interpretation::ReferenceCandidate {
+                        kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::ScheduleJob,
+                        value: "job_123".into(),
+                        source: crate::application::services::turn_interpretation::ReferenceSource::DialogueState,
+                    },
+                ],
+                clarification_candidates: vec![],
+                ..Default::default()
+            };
+
+        let execution_budget = build_execution_budget(Some(&interpretation)).unwrap();
+        assert_eq!(execution_budget.interpreter_mode, InterpreterMode::Lightweight);
+        assert!(execution_budget
+            .gate_reasons
+            .contains(&InterpreterGateReason::DirectTypedReference));
+        assert_eq!(execution_budget.retrieval_budget.max_session_candidates, 0);
+        assert_eq!(execution_budget.retrieval_budget.max_precedent_candidates, 0);
+        assert_eq!(execution_budget.retrieval_budget.max_memory_candidates, 3);
+    }
+
+    #[test]
+    fn current_conversation_alone_does_not_trigger_direct_reference_budget_trim() {
+        let interpretation =
+            crate::application::services::turn_interpretation::TurnInterpretation {
+                current_conversation: Some(
+                    crate::application::services::turn_interpretation::CurrentConversationSnapshot {
+                        adapter: "matrix".into(),
+                        has_thread: true,
+                    },
+                ),
+                reference_candidates: vec![
+                    crate::application::services::turn_interpretation::ReferenceCandidate {
+                        kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::DeliveryTarget,
+                        value: "current_conversation".into(),
+                        source: crate::application::services::turn_interpretation::ReferenceSource::CurrentConversation,
+                    },
+                ],
+                clarification_candidates: vec![],
+                ..Default::default()
+            };
+
+        let execution_budget = build_execution_budget(Some(&interpretation)).unwrap();
+        assert_eq!(execution_budget.interpreter_mode, InterpreterMode::Lightweight);
+        assert!(!execution_budget
+            .gate_reasons
+            .contains(&InterpreterGateReason::DirectTypedReference));
+        assert_eq!(execution_budget.retrieval_budget.max_session_candidates, 2);
+        assert_eq!(execution_budget.retrieval_budget.max_precedent_candidates, 2);
+    }
+
+    #[test]
+    fn take_section_lines_truncates_with_ellipsis() {
+        let mut remaining_lines = 3usize;
+        let section = "line1\nline2\nline3\nline4\n";
+
+        let trimmed = take_section_lines(section, &mut remaining_lines).unwrap();
+
+        assert_eq!(remaining_lines, 0);
+        assert_eq!(trimmed.lines().count(), 3);
+        assert!(trimmed.contains("line1"));
+        assert!(trimmed.contains("line2"));
+        assert!(trimmed.contains("..."));
+    }
+
+    #[test]
+    fn format_turn_context_respects_projection_line_budget() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![
+                make_entry("k1", "alpha", 0.9),
+                make_entry("k2", "beta", 0.8),
+                make_entry("k3", "gamma", 0.7),
+            ],
+            execution_budget: Some(TurnExecutionBudget {
+                retrieval_budget: RetrievalBudget {
+                    max_projection_lines: 2,
+                    ..RetrievalBudget::default()
+                },
+                ..TurnExecutionBudget::default()
+            }),
+            ..TurnMemoryContext::default()
+        };
+
+        let formatted = format_turn_context(&ctx, &PromptBudget::default());
+
+        assert!(formatted.enrichment_prefix.lines().count() <= 2);
+        assert!(formatted.enrichment_prefix.contains("[Memory context]"));
+        assert!(formatted.enrichment_prefix.contains("..."));
+    }
+
+    #[test]
+    fn direct_reference_skips_low_priority_memory_enrichment() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![make_entry("fact1", "User likes Rust", 0.9)],
+            execution_budget: Some(TurnExecutionBudget {
+                gate_reasons: vec![InterpreterGateReason::DirectTypedReference],
+                ..TurnExecutionBudget::default()
+            }),
+            resolution_plan: Some(resolution_router::ResolutionPlan {
+                source_order: vec![
+                    resolution_router::ResolutionSource::DialogueState,
+                    resolution_router::ResolutionSource::UserProfile,
+                    resolution_router::ResolutionSource::LongTermMemory,
+                ],
+                confidence: resolution_router::ResolutionConfidence::Medium,
+                clarify_after_exhaustion: true,
+                clarification_reason: None,
+            }),
+            ..TurnMemoryContext::default()
+        };
+
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(!fmt.enrichment_prefix.contains("[Memory context]"));
+    }
+
+    #[test]
+    fn direct_reference_keeps_secondary_memory_enrichment() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![make_entry("fact1", "User likes Rust", 0.9)],
+            execution_budget: Some(TurnExecutionBudget {
+                gate_reasons: vec![InterpreterGateReason::DirectTypedReference],
+                ..TurnExecutionBudget::default()
+            }),
+            resolution_plan: Some(resolution_router::ResolutionPlan {
+                source_order: vec![
+                    resolution_router::ResolutionSource::DialogueState,
+                    resolution_router::ResolutionSource::LongTermMemory,
+                ],
+                confidence: resolution_router::ResolutionConfidence::Medium,
+                clarify_after_exhaustion: true,
+                clarification_reason: None,
+            }),
+            ..TurnMemoryContext::default()
+        };
+
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.enrichment_prefix.contains("[Memory context]"));
     }
 
     // ── Helpers ──
