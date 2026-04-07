@@ -5,6 +5,7 @@
 
 use crate::application::services::learning_maintenance_service::LearningMaintenancePlan;
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
+use crate::application::services::procedural_contradiction_service::ProceduralContradiction;
 use crate::application::services::run_recipe_cluster_service::RunRecipeCluster;
 use crate::application::services::skill_review_service::SkillReviewDecision;
 use crate::domain::conversation::{ConversationEvent, ConversationSession, EventType};
@@ -20,6 +21,7 @@ pub struct LearningDigestProjectionInput {
     pub shadowed_skill_count: usize,
     pub run_recipe_families: Vec<String>,
     pub run_recipe_cluster_count: usize,
+    pub procedural_contradiction_count: usize,
     pub precedent_count: usize,
     pub precedent_cluster_count: usize,
     pub failure_pattern_count: usize,
@@ -257,6 +259,7 @@ pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) 
         && input.shadowed_skill_count == 0
         && input.run_recipe_families.is_empty()
         && input.run_recipe_cluster_count == 0
+        && input.procedural_contradiction_count == 0
         && input.precedent_count == 0
         && input.precedent_cluster_count == 0
         && input.failure_pattern_count == 0
@@ -297,6 +300,10 @@ pub fn format_learning_digest_projection(input: &LearningDigestProjectionInput) 
     lines.push(format!(
         "- run_recipe_cluster_count: {}",
         input.run_recipe_cluster_count
+    ));
+    lines.push(format!(
+        "- procedural_contradiction_count: {}",
+        input.procedural_contradiction_count
     ));
     lines.push(format!("- precedent_count: {}", input.precedent_count));
     lines.push(format!(
@@ -353,6 +360,28 @@ pub fn format_run_recipe_cluster_projection(cluster: &RunRecipeCluster) -> Strin
         lines.push(indent_multiline(cluster.representative.summary.trim(), 2));
     }
     format!("{}\n", lines.join("\n"))
+}
+
+pub fn format_procedural_contradiction_projection(
+    contradictions: &[ProceduralContradiction],
+) -> Option<String> {
+    if contradictions.is_empty() {
+        return None;
+    }
+
+    let mut lines = vec!["[procedural-contradictions]".to_string()];
+    for contradiction in contradictions {
+        lines.push(format!(
+            "- recipe={} vs failure={} (overlap {:.2}, recipe_cluster_size={}, failure_cluster_size={})",
+            contradiction.recipe_task_family,
+            contradiction.failure_representative_key,
+            contradiction.overlap,
+            contradiction.recipe_cluster_size,
+            contradiction.failure_cluster_size
+        ));
+    }
+
+    Some(format!("{}\n", lines.join("\n")))
 }
 
 pub fn format_learning_maintenance_projection(plan: &LearningMaintenancePlan) -> Option<String> {
@@ -613,6 +642,7 @@ mod tests {
             shadowed_skill_count: 1,
             run_recipe_families: vec!["search_delivery".into()],
             run_recipe_cluster_count: 1,
+            procedural_contradiction_count: 1,
             precedent_count: 2,
             precedent_cluster_count: 1,
             failure_pattern_count: 1,
@@ -624,6 +654,7 @@ mod tests {
         assert!(projection.contains("effective_skills: manual-deploy, search_delivery"));
         assert!(projection.contains("candidate_skill_count: 1"));
         assert!(projection.contains("run_recipe_cluster_count: 1"));
+        assert!(projection.contains("procedural_contradiction_count: 1"));
         assert!(projection.contains("precedent_cluster_count: 1"));
         assert!(projection.contains("failure_pattern_count: 1"));
         assert!(projection.contains("failure_pattern_cluster_count: 1"));
@@ -644,6 +675,7 @@ mod tests {
                     crate::application::services::learning_maintenance_service::LearningMaintenanceReason::RecentLearningActivity,
                     crate::application::services::learning_maintenance_service::LearningMaintenanceReason::RunRecipeDuplicateBacklog,
                     crate::application::services::learning_maintenance_service::LearningMaintenanceReason::PrecedentDuplicateBacklog,
+                    crate::application::services::learning_maintenance_service::LearningMaintenanceReason::ProceduralContradictionBacklog,
                     crate::application::services::learning_maintenance_service::LearningMaintenanceReason::CandidateSkillBacklog,
                 ],
             },
@@ -654,6 +686,24 @@ mod tests {
         assert!(projection.contains("run_run_recipe_review: true"));
         assert!(projection.contains("run_precedent_compaction: true"));
         assert!(projection.contains("run_skill_review: true"));
+    }
+
+    #[test]
+    fn formats_procedural_contradiction_projection() {
+        let projection = format_procedural_contradiction_projection(&[ProceduralContradiction {
+            recipe_task_family: "search_delivery".into(),
+            recipe_cluster_size: 2,
+            recipe_tool_pattern: vec!["web_search".into(), "message_send".into()],
+            failure_representative_key: "f1".into(),
+            failure_cluster_size: 1,
+            failed_tools: vec!["web_search".into(), "message_send".into()],
+            overlap: 1.0,
+        }])
+        .unwrap();
+
+        assert!(projection.contains("[procedural-contradictions]"));
+        assert!(projection.contains("search_delivery"));
+        assert!(projection.contains("failure=f1"));
     }
 
     #[test]

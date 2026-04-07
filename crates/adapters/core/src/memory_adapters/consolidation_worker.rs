@@ -16,6 +16,7 @@ use synapse_domain::application::services::learning_maintenance_service::{
 use synapse_domain::application::services::procedural_cluster_service::{
     plan_recent_clusters, ProceduralClusterKind,
 };
+use synapse_domain::application::services::procedural_contradiction_service::find_recipe_failure_contradictions;
 use synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters;
 use synapse_domain::application::services::run_recipe_review_service::{
     review_run_recipes, RunRecipeReviewThresholds,
@@ -293,10 +294,13 @@ async fn sample_learning_maintenance_snapshot(
         .filter(|recipe| recipe.updated_at >= recent_run_recipe_cutoff)
         .collect::<Vec<_>>();
     let recipe_clusters = plan_recipe_clusters(&recent_run_recipes, 0.9);
+    let procedural_contradictions =
+        find_recipe_failure_contradictions(&recipe_clusters, &failure_pattern_clusters, 0.75);
 
     LearningMaintenanceSnapshot {
         recent_run_recipe_count: recent_run_recipes.len(),
         run_recipe_cluster_count: recipe_clusters.len(),
+        procedural_contradiction_count: procedural_contradictions.len(),
         recent_precedent_count: count_recent_entries(&recent_precedents, recent_cutoff),
         precedent_cluster_count: precedent_clusters.len(),
         recent_reflection_count: count_recent_entries(&recent_reflections, recent_cutoff),

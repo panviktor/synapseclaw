@@ -7,6 +7,7 @@
 pub struct LearningMaintenanceSnapshot {
     pub recent_run_recipe_count: usize,
     pub run_recipe_cluster_count: usize,
+    pub procedural_contradiction_count: usize,
     pub recent_precedent_count: usize,
     pub precedent_cluster_count: usize,
     pub recent_reflection_count: usize,
@@ -56,6 +57,7 @@ pub enum LearningMaintenanceReason {
     RunRecipeDuplicateBacklog,
     PrecedentDuplicateBacklog,
     FailurePatternDuplicateBacklog,
+    ProceduralContradictionBacklog,
     SkillBacklog,
     CandidateSkillBacklog,
     PromptOptimizationDue,
@@ -96,6 +98,7 @@ pub struct LearningMaintenancePolicy {
     pub min_run_recipe_duplicates_for_review: usize,
     pub min_precedent_duplicates_for_compaction: usize,
     pub min_failure_pattern_duplicates_for_compaction: usize,
+    pub min_procedural_contradictions_for_review: usize,
     pub min_skills_for_review: usize,
     pub min_candidate_skills_for_review: usize,
     pub max_skipped_cycles_before_forced_maintenance: u32,
@@ -109,6 +112,7 @@ impl Default for LearningMaintenancePolicy {
             min_run_recipe_duplicates_for_review: 1,
             min_precedent_duplicates_for_compaction: 1,
             min_failure_pattern_duplicates_for_compaction: 1,
+            min_procedural_contradictions_for_review: 1,
             min_skills_for_review: 3,
             min_candidate_skills_for_review: 2,
             max_skipped_cycles_before_forced_maintenance: 6,
@@ -129,6 +133,8 @@ pub fn build_learning_maintenance_plan(
         snapshot.precedent_duplicate_count() >= policy.min_precedent_duplicates_for_compaction;
     let failure_backlog = snapshot.failure_pattern_duplicate_count()
         >= policy.min_failure_pattern_duplicates_for_compaction;
+    let contradiction_backlog =
+        snapshot.procedural_contradiction_count >= policy.min_procedural_contradictions_for_review;
     let skill_backlog = snapshot.recent_skill_count >= policy.min_skills_for_review;
     let candidate_skill_backlog =
         snapshot.candidate_skill_count >= policy.min_candidate_skills_for_review;
@@ -142,7 +148,7 @@ pub fn build_learning_maintenance_plan(
     let run_run_recipe_review = run_recipe_backlog;
     let run_precedent_compaction = precedent_backlog;
     let run_failure_pattern_compaction = failure_backlog;
-    let run_skill_review = skill_backlog || candidate_skill_backlog;
+    let run_skill_review = skill_backlog || candidate_skill_backlog || contradiction_backlog;
 
     let mut reasons = Vec::new();
     if recent_learning_activity {
@@ -156,6 +162,9 @@ pub fn build_learning_maintenance_plan(
     }
     if failure_backlog {
         reasons.push(LearningMaintenanceReason::FailurePatternDuplicateBacklog);
+    }
+    if contradiction_backlog {
+        reasons.push(LearningMaintenanceReason::ProceduralContradictionBacklog);
     }
     if skill_backlog {
         reasons.push(LearningMaintenanceReason::SkillBacklog);
@@ -192,6 +201,7 @@ mod tests {
             &LearningMaintenanceSnapshot {
                 recent_run_recipe_count: 0,
                 run_recipe_cluster_count: 0,
+                procedural_contradiction_count: 0,
                 recent_precedent_count: 1,
                 precedent_cluster_count: 1,
                 recent_reflection_count: 0,
@@ -220,6 +230,7 @@ mod tests {
             &LearningMaintenanceSnapshot {
                 recent_run_recipe_count: 0,
                 run_recipe_cluster_count: 0,
+                procedural_contradiction_count: 0,
                 recent_precedent_count: 0,
                 precedent_cluster_count: 0,
                 recent_reflection_count: 3,
@@ -245,6 +256,7 @@ mod tests {
             &LearningMaintenanceSnapshot {
                 recent_run_recipe_count: 0,
                 run_recipe_cluster_count: 0,
+                procedural_contradiction_count: 0,
                 recent_precedent_count: 0,
                 precedent_cluster_count: 0,
                 recent_reflection_count: 0,
@@ -272,6 +284,7 @@ mod tests {
             &LearningMaintenanceSnapshot {
                 recent_run_recipe_count: 3,
                 run_recipe_cluster_count: 1,
+                procedural_contradiction_count: 0,
                 recent_precedent_count: 3,
                 precedent_cluster_count: 1,
                 recent_reflection_count: 0,
@@ -305,5 +318,31 @@ mod tests {
         assert!(plan
             .reasons
             .contains(&LearningMaintenanceReason::CandidateSkillBacklog));
+    }
+
+    #[test]
+    fn procedural_contradictions_trigger_skill_review() {
+        let plan = build_learning_maintenance_plan(
+            &LearningMaintenanceSnapshot {
+                recent_run_recipe_count: 1,
+                run_recipe_cluster_count: 1,
+                procedural_contradiction_count: 1,
+                recent_precedent_count: 0,
+                precedent_cluster_count: 0,
+                recent_reflection_count: 0,
+                recent_failure_pattern_count: 1,
+                failure_pattern_cluster_count: 1,
+                recent_skill_count: 0,
+                candidate_skill_count: 0,
+                skipped_cycles_since_maintenance: 0,
+                prompt_optimization_due: false,
+            },
+            &LearningMaintenancePolicy::default(),
+        );
+
+        assert!(plan.run_skill_review);
+        assert!(plan
+            .reasons
+            .contains(&LearningMaintenanceReason::ProceduralContradictionBacklog));
     }
 }

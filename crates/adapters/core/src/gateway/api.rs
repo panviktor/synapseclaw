@@ -1435,10 +1435,13 @@ pub async fn handle_api_memory_projections(
         })
         .collect::<Vec<_>>();
 
-    let recipe_clusters = synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters(
-        &all_run_recipes,
-        0.9,
-    )
+    let recipe_clusters_raw =
+        synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters(
+            &all_run_recipes,
+            0.9,
+        );
+    let recipe_clusters = recipe_clusters_raw
+        .clone()
     .into_iter()
     .map(|cluster| {
         serde_json::json!({
@@ -1644,6 +1647,28 @@ pub async fn handle_api_memory_projections(
         &skill_review_decisions,
     );
 
+    let procedural_contradictions = synapse_domain::application::services::procedural_contradiction_service::find_recipe_failure_contradictions(
+        &recipe_clusters_raw,
+        &failure_pattern_clusters_raw,
+        0.75,
+    );
+    let procedural_contradiction_projection = synapse_domain::application::services::memory_projection_service::format_procedural_contradiction_projection(
+        &procedural_contradictions,
+    );
+    let procedural_contradiction_entries = procedural_contradictions
+        .iter()
+        .map(|contradiction| {
+            serde_json::json!({
+                "recipe_task_family": contradiction.recipe_task_family,
+                "recipe_cluster_size": contradiction.recipe_cluster_size,
+                "failure_representative_key": contradiction.failure_representative_key,
+                "failure_cluster_size": contradiction.failure_cluster_size,
+                "failed_tools": contradiction.failed_tools,
+                "overlap": contradiction.overlap,
+            })
+        })
+        .collect::<Vec<_>>();
+
     let failure_pattern_clusters = failure_pattern_clusters_raw
         .into_iter()
         .map(|cluster| {
@@ -1681,6 +1706,7 @@ pub async fn handle_api_memory_projections(
                 .map(ToString::to_string)
                 .collect(),
             run_recipe_cluster_count: recipe_clusters.len(),
+            procedural_contradiction_count: procedural_contradiction_entries.len(),
             precedent_count: recent_precedents.len(),
             precedent_cluster_count: precedent_clusters.len(),
             failure_pattern_count: recent_failure_patterns.len(),
@@ -1692,6 +1718,7 @@ pub async fn handle_api_memory_projections(
             &synapse_domain::application::services::learning_maintenance_service::LearningMaintenanceSnapshot {
                 recent_run_recipe_count: run_recipes.len(),
                 run_recipe_cluster_count: recipe_clusters.len(),
+                procedural_contradiction_count: procedural_contradiction_entries.len(),
                 recent_precedent_count: recent_precedents.len(),
                 precedent_cluster_count: precedent_clusters.len(),
                 recent_reflection_count: recent_reflections.len(),
@@ -1716,6 +1743,8 @@ pub async fn handle_api_memory_projections(
         "current_user_profile": current_user_profile,
         "learning_digest": learning_digest,
         "learning_maintenance": learning_maintenance,
+        "procedural_contradictions": procedural_contradiction_entries,
+        "procedural_contradiction_projection": procedural_contradiction_projection,
         "core_memory": core_projection,
         "working_state": working_state,
         "recent_sessions": recent_sessions,

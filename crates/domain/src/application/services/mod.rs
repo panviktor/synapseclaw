@@ -33,6 +33,7 @@ pub mod pipeline_service;
 pub mod post_turn_orchestrator;
 pub mod precedent_similarity_service;
 pub mod procedural_cluster_service;
+pub mod procedural_contradiction_service;
 pub mod recipe_evolution_service;
 pub mod resolution_router;
 pub mod retention;
