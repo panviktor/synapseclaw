@@ -4,6 +4,7 @@
 //! implementing their own spawn/decide/mutate logic. This eliminates policy
 //! divergence between transport adapters.
 
+use crate::application::services::failure_similarity_service;
 use crate::application::services::learning_candidate_service::{self, LearningCandidate};
 use crate::application::services::learning_events::LearningEvent;
 use crate::application::services::learning_evidence_service::{self, LearningEvidenceEnvelope};
@@ -116,12 +117,20 @@ pub async fn execute_post_turn_learning(
         .filter(|assessment| matches!(assessment.candidate, LearningCandidate::Precedent(_)))
         .cloned()
         .collect::<Vec<_>>();
+    let failure_assessments = learning_assessments
+        .iter()
+        .filter(|assessment| matches!(assessment.candidate, LearningCandidate::FailurePattern(_)))
+        .cloned()
+        .collect::<Vec<_>>();
     let mutation_candidates =
         learning_candidate_service::build_mutation_candidates_from_assessments(
             &learning_assessments
                 .iter()
                 .filter(|assessment| {
-                    !matches!(assessment.candidate, LearningCandidate::Precedent(_))
+                    !matches!(
+                        assessment.candidate,
+                        LearningCandidate::Precedent(_) | LearningCandidate::FailurePattern(_)
+                    )
                 })
                 .cloned()
                 .collect::<Vec<_>>(),
@@ -205,7 +214,35 @@ pub async fn execute_post_turn_learning(
         }
     }
 
-    // ── 1c. Cheap typed candidate mutation path ──
+    // ── 1c. Cheap failure-pattern mutation path ──
+    if !signal.is_explicit() && input.auto_save_enabled {
+        for assessment in &failure_assessments {
+            let Some(candidate) =
+                learning_candidate_service::build_mutation_candidate_from_assessment(assessment)
+            else {
+                continue;
+            };
+            let decision = failure_similarity_service::evaluate_failure_candidate(
+                mem,
+                candidate,
+                &input.agent_id,
+                &failure_similarity_service::FailureSimilarityThresholds::default(),
+            )
+            .await;
+            match mutation::apply_decision_with_event(mem, &decision, &input.agent_id).await {
+                Ok(event) => report.candidate_mutations.push(event),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "post_turn",
+                        error = %e,
+                        "Failure-pattern mutation failed"
+                    );
+                }
+            }
+        }
+    }
+
+    // ── 1d. Cheap typed candidate mutation path ──
     if !signal.is_explicit() && input.auto_save_enabled && !mutation_candidates.is_empty() {
         let decisions = mutation::evaluate_candidates(
             mem,
@@ -228,7 +265,7 @@ pub async fn execute_post_turn_learning(
         }
     }
 
-    // ── 1d. Cheap procedural candidate path ──
+    // ── 1e. Cheap procedural candidate path ──
     if !signal.is_explicit() && input.auto_save_enabled {
         if let Some(store) = input.run_recipe_store.as_ref() {
             let mut promoted_recipes = Vec::new();
@@ -335,7 +372,7 @@ pub async fn execute_post_turn_learning(
         }
     }
 
-    // ── 1e. Cheap structured profile path ──
+    // ── 1f. Cheap structured profile path ──
     if !signal.is_explicit() && input.auto_save_enabled {
         if let (Some(store), Some(user_key)) = (
             input.user_profile_store.as_ref(),
