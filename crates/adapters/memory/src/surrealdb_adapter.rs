@@ -609,7 +609,7 @@ fn episode_scope_clause(include_shared: bool) -> &'static str {
 
 #[cfg(test)]
 mod episode_scope_tests {
-    use super::episode_scope_clause;
+    use super::{episode_scope_clause, recall_search_limit};
 
     #[test]
     fn local_scope_excludes_shared_entries() {
@@ -622,6 +622,17 @@ mod episode_scope_tests {
             episode_scope_clause(true),
             "(agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)"
         );
+    }
+
+    #[test]
+    fn scoped_recall_overfetches_before_session_filtering() {
+        assert_eq!(recall_search_limit(5, true), 15);
+        assert_eq!(recall_search_limit(1, true), 5);
+    }
+
+    #[test]
+    fn unscoped_recall_keeps_requested_limit() {
+        assert_eq!(recall_search_limit(5, false), 5);
     }
 }
 
@@ -2137,7 +2148,7 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
             categories: Vec::new(),
             include_shared: true,
             time_range: None,
-            limit,
+            limit: recall_search_limit(limit, session_id.is_some()),
         };
 
         let results = self.search_episodes(&mq).await?;
@@ -2371,6 +2382,14 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         );
         Ok(())
     }
+}
+
+fn recall_search_limit(limit: usize, scoped_to_session: bool) -> usize {
+    if !scoped_to_session {
+        return limit;
+    }
+
+    limit.saturating_mul(3).max(limit.saturating_add(4))
 }
 
 // ── Learning Signal Patterns ─────────────────────────────────────
