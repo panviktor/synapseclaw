@@ -112,6 +112,89 @@ export interface ContextBudgetResponse {
   min_relevance_score: number;
 }
 
+export interface ProjectionRef {
+  projection: string | null;
+  key?: string;
+  kind?: string;
+  task_family?: string;
+  representative_key?: string;
+  representative_task_family?: string;
+  member_count?: number;
+  member_keys?: string[];
+  member_task_families?: string[];
+  lineage_task_families?: string[];
+}
+
+export interface SkillSurfaceEntry {
+  name: string;
+  status: string;
+  source: string;
+  priority: number;
+  origin: string;
+  effective: boolean;
+  shadowed_by: string | null;
+  projection: string | null;
+}
+
+export interface UserProfileProjectionResponse {
+  key: string;
+  projection: string;
+}
+
+export interface WorkingStateProjectionResponse {
+  session_key: string;
+  projection: string;
+}
+
+export interface ProceduralContradictionResponse {
+  recipe_task_family: string;
+  recipe_lineage_task_families: string[];
+  recipe_cluster_size: number;
+  failure_representative_key: string;
+  failure_cluster_size: number;
+  failed_tools: string[];
+  overlap: number;
+}
+
+export interface ProceduralClusterReviewResponse {
+  kind: string;
+  representative_key: string;
+  member_count: number;
+  action: string;
+  reason: string;
+}
+
+export interface MemoryProjectionsResponse {
+  agent_id: string;
+  current_user_profile: UserProfileProjectionResponse | null;
+  learning_digest: string | null;
+  learning_maintenance: string | null;
+  procedural_contradictions: ProceduralContradictionResponse[];
+  procedural_contradiction_projection: string | null;
+  procedural_cluster_review: string | null;
+  precedent_cluster_reviews: ProceduralClusterReviewResponse[];
+  failure_pattern_cluster_reviews: ProceduralClusterReviewResponse[];
+  core_memory: string | null;
+  working_state: WorkingStateProjectionResponse | null;
+  recent_sessions: ProjectionRef[];
+  skill_conflict_policy: string | null;
+  skill_review: string | null;
+  skill_review_decisions: unknown[];
+  run_recipe_review: string | null;
+  run_recipe_review_decisions: unknown[];
+  configured_skills: SkillSurfaceEntry[];
+  recent_skills: SkillSurfaceEntry[];
+  skill_surface: SkillSurfaceEntry[];
+  effective_skills: SkillSurfaceEntry[];
+  run_recipes: ProjectionRef[];
+  recipe_clusters: ProjectionRef[];
+  recent_precedents: ProjectionRef[];
+  precedent_clusters: ProjectionRef[];
+  recent_reflections: ProjectionRef[];
+  recent_failure_patterns: ProjectionRef[];
+  failure_pattern_clusters: ProjectionRef[];
+}
+
 export interface PostTurnReportEvent extends SSEEvent {
   type: 'post_turn_report';
   agent_id: string;

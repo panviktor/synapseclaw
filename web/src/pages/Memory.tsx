@@ -1,8 +1,11 @@
-import { Fragment, useState, useEffect, useMemo, useCallback } from 'react';
+import { Fragment, useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
+  Activity,
+  Archive,
   Brain,
+  BrainCircuit,
   Search,
   Plus,
   Trash2,
@@ -16,9 +19,25 @@ import {
   Sparkles,
   ArrowRight,
   Orbit,
+  Target,
+  type LucideIcon,
 } from 'lucide-react';
-import type { ContextBudgetResponse, MemoryEntry, MemoryStatsResponse } from '@/types/api';
-import { getMemory, storeMemory, deleteMemory, getMemoryStats, getContextBudget } from '@/lib/api';
+import type {
+  ContextBudgetResponse,
+  MemoryEntry,
+  MemoryProjectionsResponse,
+  MemoryStatsResponse,
+  ProjectionRef,
+  SkillSurfaceEntry,
+} from '@/types/api';
+import {
+  getMemory,
+  storeMemory,
+  deleteMemory,
+  getMemoryStats,
+  getContextBudget,
+  getMemoryProjections,
+} from '@/lib/api';
 import { t } from '@/lib/i18n';
 
 function truncate(text: string, max: number): string {
@@ -46,32 +65,108 @@ function budgetShare(value: number, total: number): number {
 
 type SortField = 'key' | 'category' | 'timestamp';
 type SortDir = 'asc' | 'desc';
-type StudioTab = 'overview' | 'blocks' | 'budget' | 'entries';
+type StudioTab = 'praefrontalis' | 'hippocampus' | 'neocortex' | 'amygdala' | 'archivum';
 
-function StudioTabButton({
+const CHAMBERS: Array<{
+  id: StudioTab;
+  latin: string;
+  title: string;
+  subtitle: string;
+  icon: LucideIcon;
+}> = [
+  {
+    id: 'praefrontalis',
+    latin: 'Praefrontalis',
+    title: 'Cortex Praefrontalis',
+    subtitle: 'working state, profile, budget, governance',
+    icon: BrainCircuit,
+  },
+  {
+    id: 'hippocampus',
+    latin: 'Hippocampus',
+    title: 'Memoria Episodica',
+    subtitle: 'sessions, precedents, reflections, cluster recall',
+    icon: Orbit,
+  },
+  {
+    id: 'neocortex',
+    latin: 'Neocortex',
+    title: 'Procedural Layer',
+    subtitle: 'core memory, skills, recipes, semantic structure',
+    icon: Layers3,
+  },
+  {
+    id: 'amygdala',
+    latin: 'Amygdala',
+    title: 'Stress And Conflict',
+    subtitle: 'failures, contradictions, reviews, maintenance',
+    icon: Activity,
+  },
+  {
+    id: 'archivum',
+    latin: 'Archivum',
+    title: 'Raw Archive',
+    subtitle: 'search, inspect, add, delete, verify',
+    icon: Archive,
+  },
+];
+
+function formatLabel(value?: string | null): string {
+  if (!value) return 'unknown';
+  return value.replace(/[_-]+/g, ' ');
+}
+
+function summarizeProjectionRef(item: ProjectionRef): string {
+  return (
+    item.task_family ||
+    item.representative_task_family ||
+    item.key ||
+    item.representative_key ||
+    item.kind ||
+    'untitled trace'
+  );
+}
+
+function toneBadge(active: boolean): string {
+  return active
+    ? 'border-transparent bg-[var(--accent-primary)] text-white shadow-[0_18px_48px_var(--glow-primary)]'
+    : 'border-[var(--border-default)] bg-[var(--bg-card)]/80 text-[var(--text-muted)] hover:border-[var(--accent-primary)]/35 hover:text-[var(--text-primary)]';
+}
+
+function ChamberButton({
+  chamber,
   active,
-  label,
   onClick,
 }: {
+  chamber: (typeof CHAMBERS)[number];
   active: boolean;
-  label: string;
   onClick: () => void;
 }) {
+  const Icon = chamber.icon;
+
   return (
     <button
       onClick={onClick}
-      className={`rounded-full px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition-all ${
-        active
-          ? 'bg-[var(--accent-primary)] text-white shadow-[0_8px_24px_var(--glow-primary)]'
-          : 'border border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:text-[var(--text-primary)]'
-      }`}
+      className={`relative overflow-hidden rounded-[26px] border p-4 text-left transition-all duration-300 ${toneBadge(active)}`}
     >
-      {label}
+      <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/55 to-transparent" />
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.28em] opacity-75">
+            {chamber.latin}
+          </p>
+          <p className="mt-2 text-sm font-semibold tracking-tight">{chamber.title}</p>
+          <p className="mt-1 text-xs leading-5 opacity-80">{chamber.subtitle}</p>
+        </div>
+        <div className={`rounded-2xl p-2 ${active ? 'bg-white/16' : 'bg-[var(--glow-secondary)]'}`}>
+          <Icon className="h-5 w-5" />
+        </div>
+      </div>
     </button>
   );
 }
 
-function StatCard({
+function AtlasMetric({
   label,
   value,
   caption,
@@ -81,11 +176,251 @@ function StatCard({
   caption: string;
 }) {
   return (
-    <div className="rounded-3xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-4">
-      <p className="text-[10px] uppercase tracking-[0.24em] text-[var(--text-placeholder)]">{label}</p>
+    <div className="rounded-[26px] border border-[var(--border-default)] bg-[var(--bg-card)]/90 px-4 py-4 shadow-[0_20px_50px_rgba(12,16,24,0.08)] backdrop-blur">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">{label}</p>
       <p className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">{value}</p>
-      <p className="mt-1 text-xs text-[var(--text-muted)]">{caption}</p>
+      <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">{caption}</p>
     </div>
+  );
+}
+
+function PanelShell({
+  eyebrow,
+  title,
+  icon: Icon,
+  children,
+  actions,
+  className = '',
+}: {
+  eyebrow: string;
+  title: string;
+  icon: LucideIcon;
+  children: ReactNode;
+  actions?: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`relative overflow-hidden rounded-[30px] border border-[var(--border-default)] bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(255,248,241,0.92))] shadow-[0_30px_80px_rgba(12,16,24,0.08)] ${className}`}>
+      <div className="absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/60 to-transparent" />
+      <div className="flex items-start justify-between gap-3 border-b border-[var(--border-default)]/80 px-5 py-4">
+        <div className="flex items-start gap-3">
+          <div className="rounded-2xl bg-[var(--glow-primary)] p-2.5 text-[var(--accent-primary)]">
+            <Icon className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">
+              {eyebrow}
+            </p>
+            <h2 className="mt-1 text-lg font-semibold tracking-tight text-[var(--text-primary)]">
+              {title}
+            </h2>
+          </div>
+        </div>
+        {actions}
+      </div>
+      <div className="px-5 py-5">{children}</div>
+    </section>
+  );
+}
+
+function ProjectionText({
+  text,
+  empty,
+  compact = false,
+}: {
+  text?: string | null;
+  empty: string;
+  compact?: boolean;
+}) {
+  if (!text?.trim()) {
+    return <p className="text-sm leading-6 text-[var(--text-muted)]">{empty}</p>;
+  }
+
+  return (
+    <pre
+      className={`overflow-x-auto whitespace-pre-wrap break-words rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)]/75 px-4 py-4 font-mono text-[12px] leading-6 text-[var(--text-secondary)] ${compact ? 'max-h-64 overflow-y-auto' : 'min-h-[9rem]'}`}
+    >
+      {text}
+    </pre>
+  );
+}
+
+function TinyBadge({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-full border border-[var(--border-default)] bg-[var(--glow-secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+      {children}
+    </span>
+  );
+}
+
+function ProjectionDeck({
+  title,
+  eyebrow,
+  icon,
+  items,
+  empty,
+}: {
+  title: string;
+  eyebrow: string;
+  icon: LucideIcon;
+  items: ProjectionRef[];
+  empty: string;
+}) {
+  return (
+    <PanelShell eyebrow={eyebrow} title={title} icon={icon}>
+      {items.length === 0 ? (
+        <p className="text-sm leading-6 text-[var(--text-muted)]">{empty}</p>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {items.map((item, index) => (
+            <article
+              key={`${item.key ?? item.representative_key ?? item.task_family ?? item.representative_task_family ?? item.kind ?? 'projection'}-${index}`}
+              className="rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)]/80 p-4"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    {formatLabel(summarizeProjectionRef(item))}
+                  </h3>
+                  {(item.key || item.representative_key || item.kind) && (
+                    <p className="mt-1 text-xs text-[var(--text-muted)]">
+                      {[item.key, item.representative_key, item.kind].filter(Boolean).join(' · ')}
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {item.member_count != null && <TinyBadge>{item.member_count} nodes</TinyBadge>}
+                  {(item.task_family || item.representative_task_family) && (
+                    <TinyBadge>{formatLabel(item.task_family ?? item.representative_task_family)}</TinyBadge>
+                  )}
+                </div>
+              </div>
+              {item.lineage_task_families?.length ? (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {item.lineage_task_families.slice(0, 4).map((lineage) => (
+                    <TinyBadge key={lineage}>{formatLabel(lineage)}</TinyBadge>
+                  ))}
+                </div>
+              ) : null}
+              {item.projection ? (
+                <pre className="mt-4 max-h-56 overflow-y-auto whitespace-pre-wrap break-words rounded-[20px] bg-[var(--bg-primary)]/65 px-3 py-3 font-mono text-[11px] leading-6 text-[var(--text-secondary)]">
+                  {item.projection}
+                </pre>
+              ) : (
+                <p className="mt-4 text-sm leading-6 text-[var(--text-muted)]">
+                  No projection body surfaced for this trace yet.
+                </p>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </PanelShell>
+  );
+}
+
+function SkillDeck({
+  title,
+  eyebrow,
+  items,
+  empty,
+}: {
+  title: string;
+  eyebrow: string;
+  items: SkillSurfaceEntry[];
+  empty: string;
+}) {
+  return (
+    <PanelShell eyebrow={eyebrow} title={title} icon={Sparkles}>
+      {items.length === 0 ? (
+        <p className="text-sm leading-6 text-[var(--text-muted)]">{empty}</p>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {items.map((skill) => (
+            <article
+              key={`${skill.name}-${skill.origin}-${skill.status}-${skill.source}`}
+              className="rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)]/80 p-4"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">{skill.name}</h3>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">
+                    {formatLabel(skill.origin)} · {formatLabel(skill.status)} · {formatLabel(skill.source)}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {skill.effective && <TinyBadge>effective</TinyBadge>}
+                  <TinyBadge>p{skill.priority}</TinyBadge>
+                </div>
+              </div>
+              {skill.shadowed_by && (
+                <p className="mt-3 text-xs leading-5 text-[var(--text-muted)]">
+                  Shadowed by <span className="font-medium text-[var(--text-primary)]">{skill.shadowed_by}</span>
+                </p>
+              )}
+              {skill.projection ? (
+                <pre className="mt-4 max-h-56 overflow-y-auto whitespace-pre-wrap break-words rounded-[20px] bg-[var(--bg-primary)]/65 px-3 py-3 font-mono text-[11px] leading-6 text-[var(--text-secondary)]">
+                  {skill.projection}
+                </pre>
+              ) : (
+                <p className="mt-4 text-sm leading-6 text-[var(--text-muted)]">
+                  This skill is surfaced without a detailed projection body.
+                </p>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </PanelShell>
+  );
+}
+
+function ContradictionDeck({
+  items,
+}: {
+  items: MemoryProjectionsResponse['procedural_contradictions'];
+}) {
+  return (
+    <PanelShell eyebrow="Procedural Contradictions" title="Conflict Vectors" icon={Target}>
+      {items.length === 0 ? (
+        <p className="text-sm leading-6 text-[var(--text-muted)]">
+          No active recipe-versus-failure contradiction was surfaced in the current window.
+        </p>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-2">
+          {items.map((item, index) => (
+            <article
+              key={`${item.recipe_task_family}-${item.failure_representative_key}-${index}`}
+              className="rounded-[24px] border border-[rgba(217,90,30,0.18)] bg-[linear-gradient(180deg,rgba(255,247,240,0.96),rgba(255,250,245,0.9))] p-4"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+                    {formatLabel(item.recipe_task_family)}
+                  </h3>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">
+                    Failure anchor: {item.failure_representative_key}
+                  </p>
+                </div>
+                <TinyBadge>{Math.round(item.overlap * 100)}% overlap</TinyBadge>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <TinyBadge>{item.recipe_cluster_size} recipe nodes</TinyBadge>
+                <TinyBadge>{item.failure_cluster_size} failure nodes</TinyBadge>
+                {item.failed_tools.slice(0, 3).map((tool) => (
+                  <TinyBadge key={tool}>{tool}</TinyBadge>
+                ))}
+              </div>
+              {item.recipe_lineage_task_families.length > 0 && (
+                <p className="mt-3 text-xs leading-6 text-[var(--text-muted)]">
+                  Lineage: {item.recipe_lineage_task_families.map(formatLabel).join(', ')}
+                </p>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </PanelShell>
   );
 }
 
@@ -101,6 +436,7 @@ export default function Memory() {
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<MemoryStatsResponse | null>(null);
   const [budget, setBudget] = useState<ContextBudgetResponse | null>(null);
+  const [projections, setProjections] = useState<MemoryProjectionsResponse | null>(null);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -108,7 +444,7 @@ export default function Memory() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sortField, setSortField] = useState<SortField>('timestamp');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
-  const [activeTab, setActiveTab] = useState<StudioTab>('overview');
+  const [activeTab, setActiveTab] = useState<StudioTab>('praefrontalis');
 
   const [formKey, setFormKey] = useState('');
   const [formContent, setFormContent] = useState('');
@@ -118,6 +454,8 @@ export default function Memory() {
 
   const agentLabel = stats?.agent_id ?? selectedAgent ?? 'Local Runtime';
   const topCategories = stats?.by_category.slice(0, 5) ?? [];
+  const heroChamber = CHAMBERS.find((chamber) => chamber.id === activeTab) ?? CHAMBERS[0]!;
+  const ActiveChamberIcon = heroChamber.icon;
 
   const fetchEntries = useCallback((q?: string, cat?: string) => {
     if (remoteScope) {
@@ -137,10 +475,12 @@ export default function Memory() {
     Promise.all([
       getMemoryStats(selectedAgent),
       getContextBudget(selectedAgent),
+      getMemoryProjections(selectedAgent, 8),
     ])
-      .then(([memoryStats, contextBudget]) => {
+      .then(([memoryStats, contextBudget, memoryProjections]) => {
         setStats(memoryStats);
         setBudget(contextBudget);
+        setProjections(memoryProjections);
       })
       .catch((err) => setError((prev) => prev ?? err.message))
       .finally(() => setSurfaceLoading(false));
@@ -177,6 +517,22 @@ export default function Memory() {
   const categories = Array.from(new Set(entries.map((e) => e.category))).sort();
   const hasScores = entries.some((e) => e.score !== null && e.score !== undefined);
   const colCount = hasScores ? 6 : 5;
+  const totalClusterCount =
+    (projections?.recipe_clusters.length ?? 0) +
+    (projections?.precedent_clusters.length ?? 0) +
+    (projections?.failure_pattern_clusters.length ?? 0);
+  const lineageFamilies = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          [
+            ...(projections?.recipe_clusters.flatMap((item) => item.lineage_task_families ?? []) ?? []),
+            ...(projections?.run_recipes.flatMap((item) => item.lineage_task_families ?? []) ?? []),
+          ].filter(Boolean),
+        ),
+      ),
+    [projections],
+  );
 
   const sortedEntries = useMemo(() => {
     const sorted = [...entries].sort((a, b) => {
@@ -257,16 +613,18 @@ export default function Memory() {
 
   return (
     <div className="space-y-6 p-6 animate-fade-in">
-      <div className="relative overflow-hidden rounded-[28px] border border-[var(--border-default)] bg-[linear-gradient(135deg,var(--glow-primary),transparent_35%),var(--bg-card)] px-6 py-6">
-        <div className="absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/70 to-transparent" />
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+      <div className="relative overflow-hidden rounded-[36px] border border-[var(--border-default)] bg-[radial-gradient(circle_at_top_left,rgba(217,90,30,0.24),transparent_38%),radial-gradient(circle_at_85%_18%,rgba(255,196,128,0.2),transparent_26%),linear-gradient(135deg,rgba(255,248,241,0.98),rgba(255,255,255,0.92))] px-6 py-7 shadow-[0_35px_120px_rgba(12,16,24,0.12)]">
+        <div className="absolute -left-12 top-8 h-36 w-36 rounded-full bg-[var(--glow-primary)] blur-3xl" />
+        <div className="absolute right-0 top-0 h-48 w-48 rounded-full bg-[rgba(255,211,168,0.28)] blur-3xl" />
+        <div className="absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/80 to-transparent" />
+        <div className="relative flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">
-              Memory Studio
+            <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--text-placeholder)]">
+              Atlas Memoriae
             </p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <h1 className="text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
-                {agentLabel}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
+                Memory Atlas For {agentLabel}
               </h1>
               <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
                 remoteScope
@@ -276,30 +634,55 @@ export default function Memory() {
                 {remoteScope ? 'remote scope' : 'local scope'}
               </span>
             </div>
-            <p className="mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
-              Inspect long-term memory shape, core blocks, prompt budget, and learning surface without dropping back to raw tables.
+            <p className="mt-3 max-w-3xl text-sm leading-7 text-[var(--text-muted)]">
+              A dramatic operator map for the new memory system: working state, episodic recall,
+              procedural skill lines, contradictions, maintenance pressure, and the raw archive,
+              all surfaced in one place instead of a dead table.
             </p>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {['Praefrontalis', 'Hippocampus', 'Neocortex', 'Amygdala', 'Archivum'].map((label) => (
+                <TinyBadge key={label}>{label}</TinyBadge>
+              ))}
+            </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            {remoteScope && (
-              <button
-                onClick={() => navigate(`/agents?agent=${encodeURIComponent(selectedAgent ?? '')}`)}
-                className="btn-secondary inline-flex items-center gap-2 px-4 py-2 text-sm"
-              >
-                <Orbit className="h-4 w-4" />
-                Back To Workbench
-              </button>
-            )}
-            {!remoteScope && (
-              <button
-                onClick={() => setShowForm(true)}
-                className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
-              >
-                <Plus className="h-4 w-4" />
-                {t('memory.add_memory')}
-              </button>
-            )}
+          <div className="w-full max-w-md rounded-[28px] border border-[var(--border-default)] bg-white/75 p-5 backdrop-blur xl:w-[28rem]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">
+                  Active Chamber
+                </p>
+                <p className="mt-2 text-lg font-semibold text-[var(--text-primary)]">
+                  {heroChamber.title}
+                </p>
+                <p className="mt-1 text-sm leading-6 text-[var(--text-muted)]">
+                  {heroChamber.subtitle}
+                </p>
+              </div>
+              <div className="rounded-2xl bg-[var(--glow-primary)] p-3 text-[var(--accent-primary)]">
+                <ActiveChamberIcon className="h-5 w-5" />
+              </div>
+            </div>
+            <div className="mt-5 flex flex-wrap gap-2">
+              {remoteScope && (
+                <button
+                  onClick={() => navigate(`/agents?agent=${encodeURIComponent(selectedAgent ?? '')}`)}
+                  className="btn-secondary inline-flex items-center gap-2 px-4 py-2 text-sm"
+                >
+                  <Orbit className="h-4 w-4" />
+                  Back To Workbench
+                </button>
+              )}
+              {!remoteScope && (
+                <button
+                  onClick={() => setShowForm(true)}
+                  className="btn-primary inline-flex items-center gap-2 px-4 py-2 text-sm"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t('memory.add_memory')}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -310,223 +693,382 @@ export default function Memory() {
         </div>
       )}
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <StatCard
-          label="Entries"
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <AtlasMetric
+          label="Engrammata"
           value={surfaceLoading ? '…' : formatNumber(stats?.total_entries ?? 0)}
-          caption="Total surfaced memories"
+          caption="Total entries under the current scope."
         />
-        <StatCard
-          label="Skills"
-          value={surfaceLoading ? '…' : formatNumber(stats?.skills ?? 0)}
-          caption="Procedural patterns available"
+        <AtlasMetric
+          label="Artes"
+          value={surfaceLoading ? '…' : formatNumber(projections?.effective_skills.length ?? stats?.skills ?? 0)}
+          caption="Effective skills surviving shadowing and review."
         />
-        <StatCard
-          label="Entities"
-          value={surfaceLoading ? '…' : formatNumber(stats?.entities ?? 0)}
-          caption="Knowledge graph nodes"
+        <AtlasMetric
+          label="Clusters"
+          value={surfaceLoading ? '…' : formatNumber(totalClusterCount)}
+          caption="Recipe, precedent, and failure cluster surface."
         />
-        <StatCard
-          label="Mode"
+        <AtlasMetric
+          label="Contradictions"
+          value={surfaceLoading ? '…' : formatNumber(projections?.procedural_contradictions.length ?? 0)}
+          caption="Recipe branches currently colliding with failure memory."
+        />
+        <AtlasMetric
+          label="Continuatio"
           value={surfaceLoading ? '…' : (budget?.continuation_policy ?? 'n/a')}
-          caption="Continuation and recall policy"
+          caption="Continuation policy currently shaping the prompt envelope."
         />
       </div>
 
-      <div className="flex flex-wrap gap-2">
-        <StudioTabButton active={activeTab === 'overview'} label="Overview" onClick={() => setActiveTab('overview')} />
-        <StudioTabButton active={activeTab === 'blocks'} label="Core Blocks" onClick={() => setActiveTab('blocks')} />
-        <StudioTabButton active={activeTab === 'budget'} label="Budget" onClick={() => setActiveTab('budget')} />
-        <StudioTabButton active={activeTab === 'entries'} label="Entries" onClick={() => setActiveTab('entries')} />
+      <div className="grid gap-3 xl:grid-cols-5">
+        {CHAMBERS.map((chamber) => (
+          <ChamberButton
+            key={chamber.id}
+            chamber={chamber}
+            active={activeTab === chamber.id}
+            onClick={() => setActiveTab(chamber.id)}
+          />
+        ))}
       </div>
 
-      {activeTab === 'overview' && (
-        <div className="grid gap-6 xl:grid-cols-[1.3fr_0.7fr]">
-          <section className="glass-card overflow-hidden">
-            <div className="border-b border-[var(--border-default)] px-5 py-4">
-              <div className="flex items-center gap-2">
-                <Layers3 className="h-4 w-4 text-[var(--accent-primary)]" />
-                <h2 className="text-sm font-semibold text-[var(--text-primary)]">Memory Surface</h2>
-              </div>
-            </div>
-            <div className="space-y-4 px-5 py-5">
-              {topCategories.length === 0 ? (
-                <p className="text-sm text-[var(--text-muted)]">
-                  No category distribution has been surfaced yet.
-                </p>
-              ) : (
-                topCategories.map((category) => {
-                  const total = stats?.total_entries ?? 0;
-                  const width = total > 0 ? Math.max(8, Math.round((category.count / total) * 100)) : 0;
-                  return (
-                    <div key={category.category} className="space-y-1.5">
+      {activeTab === 'praefrontalis' && (
+        <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+          <div className="space-y-6">
+            <PanelShell eyebrow="Executive Memory" title="Working State" icon={Brain}>
+              <ProjectionText
+                text={projections?.working_state?.projection}
+                empty="No working-state projection has been surfaced yet."
+              />
+            </PanelShell>
+
+            <PanelShell eyebrow="Learning Digest" title="Recent System Pulse" icon={Sparkles}>
+              <ProjectionText
+                text={projections?.learning_digest}
+                empty="No learning digest has been generated yet for this scope."
+              />
+            </PanelShell>
+
+            <PanelShell eyebrow="Governance" title="Conflict Policy" icon={BookMarked}>
+              <ProjectionText
+                text={projections?.skill_conflict_policy}
+                empty="Skill conflict policy has not been exposed yet."
+              />
+            </PanelShell>
+          </div>
+
+          <div className="space-y-6">
+            <PanelShell eyebrow="Profile" title="Current User Profile" icon={Target}>
+              <ProjectionText
+                text={projections?.current_user_profile?.projection}
+                empty="No profile projection is available for this scope."
+                compact
+              />
+            </PanelShell>
+
+            <PanelShell eyebrow="Context Envelope" title="Budget Anatomy" icon={Gauge}>
+              {budget ? (
+                <div className="space-y-4">
+                  {[
+                    {
+                      label: 'Recall',
+                      share: budgetShare(budget.recall_total_max_chars, budget.enrichment_total_max_chars),
+                      meta: `${budget.recall_max_entries} entries · ${formatChars(budget.recall_total_max_chars)}`,
+                    },
+                    {
+                      label: 'Skills',
+                      share: budgetShare(budget.skills_total_max_chars, budget.enrichment_total_max_chars),
+                      meta: `${budget.skills_max_count} items · ${formatChars(budget.skills_total_max_chars)}`,
+                    },
+                    {
+                      label: 'Entities',
+                      share: budgetShare(budget.entities_total_max_chars, budget.enrichment_total_max_chars),
+                      meta: `${budget.entities_max_count} items · ${formatChars(budget.entities_total_max_chars)}`,
+                    },
+                  ].map((item) => (
+                    <div key={item.label} className="space-y-1.5">
                       <div className="flex items-center justify-between gap-3 text-sm">
-                        <span className="capitalize text-[var(--text-secondary)]">{category.category}</span>
-                        <span className="text-[var(--text-muted)]">{formatNumber(category.count)}</span>
+                        <span className="font-medium text-[var(--text-secondary)]">{item.label}</span>
+                        <span className="text-[var(--text-muted)]">{item.meta}</span>
                       </div>
                       <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-hover)]">
                         <div
                           className="h-full rounded-full"
                           style={{
-                            width: `${width}%`,
+                            width: `${item.share}%`,
                             background: 'linear-gradient(90deg, var(--accent-primary), rgba(217, 90, 30, 0.45))',
                           }}
                         />
                       </div>
                     </div>
-                  );
-                })
-              )}
-            </div>
-          </section>
+                  ))}
 
-          <section className="space-y-4">
-            <div className="glass-card overflow-hidden">
-              <div className="border-b border-[var(--border-default)] px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-[var(--accent-primary)]" />
-                  <h2 className="text-sm font-semibold text-[var(--text-primary)]">Quick Paths</h2>
-                </div>
-              </div>
-              <div className="space-y-3 px-5 py-5">
-                <button
-                  onClick={() => navigate(remoteScope ? `/agents?agent=${encodeURIComponent(selectedAgent ?? '')}` : '/agents')}
-                  className="flex w-full items-center justify-between rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3 text-left transition-colors hover:border-[var(--accent-primary)]/30"
-                >
-                  <div>
-                    <p className="text-sm font-medium text-[var(--text-primary)]">Agent Workbench</p>
-                    <p className="mt-1 text-xs text-[var(--text-muted)]">Jump back into the live transcript and memory pulse.</p>
+                  <div className="grid gap-3">
+                    <div className="rounded-[22px] border border-[var(--border-default)] bg-[var(--bg-card)]/75 px-4 py-3">
+                      <p className="text-[10px] uppercase tracking-[0.24em] text-[var(--text-placeholder)]">Continuation</p>
+                      <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">{budget.continuation_policy}</p>
+                    </div>
+                    <div className="rounded-[22px] border border-[var(--border-default)] bg-[var(--bg-card)]/75 px-4 py-3">
+                      <p className="text-[10px] uppercase tracking-[0.24em] text-[var(--text-placeholder)]">Envelope</p>
+                      <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                        {formatChars(budget.enrichment_total_max_chars)}
+                      </p>
+                    </div>
+                    <div className="rounded-[22px] border border-[var(--border-default)] bg-[var(--bg-card)]/75 px-4 py-3">
+                      <p className="text-[10px] uppercase tracking-[0.24em] text-[var(--text-placeholder)]">Min relevance</p>
+                      <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                        {budget.min_relevance_score.toFixed(2)}
+                      </p>
+                    </div>
                   </div>
-                  <ArrowRight className="h-4 w-4 text-[var(--text-muted)]" />
-                </button>
-              </div>
-            </div>
+                </div>
+              ) : (
+                <p className="text-sm leading-6 text-[var(--text-muted)]">
+                  Context budget is not available for this scope yet.
+                </p>
+              )}
+            </PanelShell>
 
-            <div className="glass-card overflow-hidden">
-              <div className="border-b border-[var(--border-default)] px-5 py-4">
-                <div className="flex items-center gap-2">
-                  <Gauge className="h-4 w-4 text-[var(--accent-primary)]" />
-                  <h2 className="text-sm font-semibold text-[var(--text-primary)]">Budget Snapshot</h2>
-                </div>
-              </div>
-              <div className="space-y-3 px-5 py-5 text-sm">
-                <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-placeholder)]">Continuation</p>
-                  <p className="mt-1 font-medium text-[var(--text-primary)]">{budget?.continuation_policy ?? 'n/a'}</p>
-                </div>
-                <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-3">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-placeholder)]">Envelope</p>
-                  <p className="mt-1 font-medium text-[var(--text-primary)]">
-                    {budget ? formatChars(budget.enrichment_total_max_chars) : 'n/a'}
+            <PanelShell eyebrow="Cortical Surface" title="Category And Block Topology" icon={Layers3}>
+              <div className="space-y-5">
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                    Dominant categories
                   </p>
+                  {topCategories.length === 0 ? (
+                    <p className="text-sm leading-6 text-[var(--text-muted)]">No category distribution has been surfaced yet.</p>
+                  ) : (
+                    topCategories.map((category) => {
+                      const total = stats?.total_entries ?? 0;
+                      const width = total > 0 ? Math.max(8, Math.round((category.count / total) * 100)) : 0;
+                      return (
+                        <div key={category.category} className="space-y-1.5">
+                          <div className="flex items-center justify-between gap-3 text-sm">
+                            <span className="capitalize text-[var(--text-secondary)]">{category.category}</span>
+                            <span className="text-[var(--text-muted)]">{formatNumber(category.count)}</span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+                            <div
+                              className="h-full rounded-full"
+                              style={{
+                                width: `${width}%`,
+                                background: 'linear-gradient(90deg, var(--accent-primary), rgba(217, 90, 30, 0.45))',
+                              }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                    Core blocks
+                  </p>
+                  {stats?.core_blocks.length ? (
+                    <div className="grid gap-3">
+                      {stats.core_blocks.map((block) => (
+                        <div key={block.label} className="rounded-[22px] border border-[var(--border-default)] bg-[var(--bg-card)]/75 px-4 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm font-medium text-[var(--text-primary)]">
+                              {formatLabel(block.label)}
+                            </span>
+                            <span className="text-xs text-[var(--text-muted)]">{formatChars(block.chars)}</span>
+                          </div>
+                          <p className="mt-1 text-xs text-[var(--text-muted)]">Updated {formatDate(block.updated_at)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm leading-6 text-[var(--text-muted)]">
+                      No core blocks have been surfaced for this agent yet.
+                    </p>
+                  )}
                 </div>
               </div>
-            </div>
-          </section>
+            </PanelShell>
+          </div>
         </div>
       )}
 
-      {activeTab === 'blocks' && (
-        <section className="glass-card overflow-hidden">
-          <div className="border-b border-[var(--border-default)] px-5 py-4">
-            <div className="flex items-center gap-2">
-              <BookMarked className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h2 className="text-sm font-semibold text-[var(--text-primary)]">Core Blocks</h2>
-            </div>
-          </div>
-          <div className="grid gap-4 px-5 py-5 md:grid-cols-2">
-            {stats?.core_blocks.length ? (
-              stats.core_blocks.map((block) => (
-                <div key={block.label} className="rounded-3xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-4">
-                  <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-placeholder)]">
-                    {block.label.replace(/_/g, ' ')}
-                  </p>
-                  <p className="mt-2 text-lg font-semibold text-[var(--text-primary)]">{formatChars(block.chars)}</p>
-                  <p className="mt-1 text-xs text-[var(--text-muted)]">Updated {formatDate(block.updated_at)}</p>
-                </div>
-              ))
-            ) : (
-              <p className="text-sm text-[var(--text-muted)]">No core blocks have been surfaced for this agent yet.</p>
-            )}
-          </div>
-        </section>
+      {activeTab === 'hippocampus' && (
+        <div className="grid gap-6">
+          <ProjectionDeck
+            title="Recent Sessions"
+            eyebrow="Hippocampus"
+            icon={Orbit}
+            items={projections?.recent_sessions ?? []}
+            empty="No recent sessions were surfaced in the current memory window."
+          />
+          <ProjectionDeck
+            title="Precedent Traces"
+            eyebrow="Episodic Memory"
+            icon={Brain}
+            items={projections?.recent_precedents ?? []}
+            empty="No recent precedents have been materialized yet."
+          />
+          <ProjectionDeck
+            title="Reflection Stream"
+            eyebrow="Reflective Memory"
+            icon={Sparkles}
+            items={projections?.recent_reflections ?? []}
+            empty="No recent reflections are available in this scope."
+          />
+          <ProjectionDeck
+            title="Precedent Clusters"
+            eyebrow="Cluster Review"
+            icon={Layers3}
+            items={projections?.precedent_clusters ?? []}
+            empty="No precedent clusters were formed in the current review window."
+          />
+        </div>
       )}
 
-      {activeTab === 'budget' && (
-        <section className="glass-card overflow-hidden">
-          <div className="border-b border-[var(--border-default)] px-5 py-4">
-            <div className="flex items-center gap-2">
-              <Gauge className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h2 className="text-sm font-semibold text-[var(--text-primary)]">Context Budget</h2>
-            </div>
-          </div>
-          <div className="space-y-5 px-5 py-5">
-            {budget ? (
-              <>
-                {[
-                  {
-                    label: 'Recall',
-                    share: budgetShare(budget.recall_total_max_chars, budget.enrichment_total_max_chars),
-                    meta: `${budget.recall_max_entries} entries · ${formatChars(budget.recall_total_max_chars)}`,
-                  },
-                  {
-                    label: 'Skills',
-                    share: budgetShare(budget.skills_total_max_chars, budget.enrichment_total_max_chars),
-                    meta: `${budget.skills_max_count} items · ${formatChars(budget.skills_total_max_chars)}`,
-                  },
-                  {
-                    label: 'Entities',
-                    share: budgetShare(budget.entities_total_max_chars, budget.enrichment_total_max_chars),
-                    meta: `${budget.entities_max_count} items · ${formatChars(budget.entities_total_max_chars)}`,
-                  },
-                ].map((item) => (
-                  <div key={item.label} className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-3 text-sm">
-                      <span className="font-medium text-[var(--text-secondary)]">{item.label}</span>
-                      <span className="text-[var(--text-muted)]">{item.meta}</span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-hover)]">
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${item.share}%`,
-                          background: 'linear-gradient(90deg, var(--accent-primary), rgba(217, 90, 30, 0.45))',
-                        }}
-                      />
-                    </div>
-                  </div>
+      {activeTab === 'neocortex' && (
+        <div className="space-y-6">
+          <div className="grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
+            <PanelShell eyebrow="Semantic Memory" title="Core Memory" icon={BookMarked}>
+              <ProjectionText
+                text={projections?.core_memory}
+                empty="Core memory has not been surfaced for this scope yet."
+              />
+            </PanelShell>
+
+            <PanelShell eyebrow="Effective Surface" title="Skill Constellation" icon={Sparkles}>
+              <div className="mb-4 flex flex-wrap gap-1.5">
+                {lineageFamilies.slice(0, 8).map((family) => (
+                  <TinyBadge key={family}>{formatLabel(family)}</TinyBadge>
                 ))}
-
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="rounded-3xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-4">
-                    <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-placeholder)]">Continuation policy</p>
-                    <p className="mt-2 text-lg font-semibold text-[var(--text-primary)]">{budget.continuation_policy}</p>
-                  </div>
-                  <div className="rounded-3xl border border-[var(--border-default)] bg-[var(--bg-card)] px-4 py-4">
-                    <p className="text-[10px] uppercase tracking-[0.22em] text-[var(--text-placeholder)]">Min relevance</p>
-                    <p className="mt-2 text-lg font-semibold text-[var(--text-primary)]">{budget.min_relevance_score.toFixed(2)}</p>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <p className="text-sm text-[var(--text-muted)]">Context budget is not available for this scope yet.</p>
-            )}
+                {lineageFamilies.length === 0 && <TinyBadge>no lineage surfaced</TinyBadge>}
+              </div>
+              <ProjectionText
+                text={projections?.skill_review}
+                empty="Skill review projection is not available yet."
+                compact
+              />
+            </PanelShell>
           </div>
-        </section>
+
+          <SkillDeck
+            title="Effective Skills"
+            eyebrow="Neocortex"
+            items={projections?.effective_skills ?? []}
+            empty="No effective skills are currently active."
+          />
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <SkillDeck
+              title="Configured And Shadowed Skills"
+              eyebrow="Manual And Imported Layer"
+              items={projections?.skill_surface ?? []}
+              empty="No skill surface is available yet."
+            />
+            <SkillDeck
+              title="Recent Learned Skills"
+              eyebrow="Promoted Patterns"
+              items={projections?.recent_skills ?? []}
+              empty="No recent learned skills are visible in this scope."
+            />
+          </div>
+
+          <ProjectionDeck
+            title="Run Recipes"
+            eyebrow="Procedural Memory"
+            icon={ArrowRight}
+            items={projections?.run_recipes ?? []}
+            empty="No run recipes have been surfaced yet."
+          />
+          <ProjectionDeck
+            title="Recipe Clusters"
+            eyebrow="Clustered Procedures"
+            icon={Layers3}
+            items={projections?.recipe_clusters ?? []}
+            empty="No recipe clusters are available in the current review window."
+          />
+        </div>
       )}
 
-      {activeTab === 'entries' && (
+      {activeTab === 'amygdala' && (
+        <div className="space-y-6">
+          <div className="grid gap-6 xl:grid-cols-2">
+            <PanelShell eyebrow="Maintenance" title="Learning Maintenance" icon={Activity}>
+              <ProjectionText
+                text={projections?.learning_maintenance}
+                empty="No maintenance plan is currently exposed."
+              />
+            </PanelShell>
+            <PanelShell eyebrow="Review Surface" title="Cluster Review Digest" icon={Layers3}>
+              <ProjectionText
+                text={projections?.procedural_cluster_review}
+                empty="Cluster review digest is not available yet."
+              />
+            </PanelShell>
+          </div>
+
+          <ContradictionDeck items={projections?.procedural_contradictions ?? []} />
+
+          <div className="grid gap-6 xl:grid-cols-2">
+            <PanelShell eyebrow="Contradiction Projection" title="Failure Pressure Map" icon={Target}>
+              <ProjectionText
+                text={projections?.procedural_contradiction_projection}
+                empty="No contradiction projection is currently available."
+                compact
+              />
+            </PanelShell>
+            <PanelShell eyebrow="Review Decisions" title="Recipe And Skill Reviews" icon={Sparkles}>
+              <div className="space-y-4">
+                <ProjectionText
+                  text={projections?.skill_review}
+                  empty="Skill review decisions have not been projected yet."
+                  compact
+                />
+                <ProjectionText
+                  text={projections?.run_recipe_review}
+                  empty="Run recipe review decisions have not been projected yet."
+                  compact
+                />
+              </div>
+            </PanelShell>
+          </div>
+
+          <ProjectionDeck
+            title="Failure Patterns"
+            eyebrow="Stress Memory"
+            icon={Activity}
+            items={projections?.recent_failure_patterns ?? []}
+            empty="No recent failure patterns are visible in this scope."
+          />
+          <ProjectionDeck
+            title="Failure Pattern Clusters"
+            eyebrow="Failure Cluster Surface"
+            icon={Layers3}
+            items={projections?.failure_pattern_clusters ?? []}
+            empty="No failure pattern clusters were surfaced in the recent window."
+          />
+        </div>
+      )}
+
+      {activeTab === 'archivum' && (
         <div className="space-y-6">
           {remoteScope ? (
-            <div className="glass-card px-6 py-8 text-center">
-              <Brain className="mx-auto mb-4 h-10 w-10 text-[var(--accent-primary)]" />
-              <p className="text-lg font-semibold text-[var(--text-primary)]">Remote entry inspector is not proxied yet</p>
+            <div className="rounded-[30px] border border-[var(--border-default)] bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(255,248,241,0.92))] px-6 py-8 text-center shadow-[0_24px_70px_rgba(12,16,24,0.08)]">
+              <Archive className="mx-auto mb-4 h-10 w-10 text-[var(--accent-primary)]" />
+              <p className="text-lg font-semibold text-[var(--text-primary)]">Remote archive inspector is not proxied yet</p>
               <p className="mx-auto mt-2 max-w-2xl text-sm text-[var(--text-muted)]">
                 This view already uses remote `stats` and `context budget`, but raw entry list, add, and delete are still local-only surfaces.
               </p>
             </div>
           ) : (
             <>
+              <PanelShell eyebrow="Archivum" title="Raw Memory Controls" icon={Archive}>
+                <p className="text-sm leading-6 text-[var(--text-muted)]">
+                  This chamber keeps the operator-grade raw view alive: full search, direct adds,
+                  deletes, timestamps, categories, and exact content inspection for every stored
+                  memory item.
+                </p>
+              </PanelShell>
+
               <div className="flex flex-col gap-3 sm:flex-row">
                 <div className="relative flex-1">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--text-secondary)]" />
@@ -567,12 +1109,12 @@ export default function Memory() {
                   <div className="h-8 w-8 rounded-full border-2 border-[var(--glow-primary)] border-t-[var(--accent-primary)] animate-spin" />
                 </div>
               ) : entries.length === 0 ? (
-                <div className="glass-card p-8 text-center">
+                <div className="rounded-[30px] border border-[var(--border-default)] bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(255,248,241,0.92))] p-8 text-center shadow-[0_24px_70px_rgba(12,16,24,0.08)]">
                   <Brain className="mx-auto mb-3 h-10 w-10 text-[var(--bg-secondary)]" />
                   <p className="text-[var(--text-secondary)]">{t('memory.empty')}</p>
                 </div>
               ) : (
-                <div className="glass-card overflow-x-auto">
+                <div className="overflow-x-auto rounded-[30px] border border-[var(--border-default)] bg-[linear-gradient(180deg,rgba(255,255,255,0.96),rgba(255,248,241,0.92))] shadow-[0_24px_70px_rgba(12,16,24,0.08)]">
                   <table className="table-warm">
                     <thead>
                       <tr className="group">
@@ -662,7 +1204,7 @@ export default function Memory() {
       {showForm && !remoteScope && createPortal(
         <div className="fixed inset-0 z-[9999] flex items-center justify-center md:pl-60">
           <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => { setShowForm(false); setFormError(null); }} />
-          <div className="relative glass-card mx-4 w-full max-w-md p-6 animate-fade-in-scale">
+          <div className="relative mx-4 w-full max-w-md overflow-hidden rounded-[30px] border border-[var(--border-default)] bg-[linear-gradient(180deg,rgba(255,255,255,0.98),rgba(255,248,241,0.94))] p-6 shadow-[0_35px_100px_rgba(12,16,24,0.18)] animate-fade-in-scale">
             <div className="mb-4 flex items-center justify-between">
               <h3 className="text-lg font-semibold text-[var(--text-primary)]">{t('memory.add_modal_title')}</h3>
               <button

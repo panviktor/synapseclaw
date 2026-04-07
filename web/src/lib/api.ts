@@ -13,6 +13,7 @@ import type {
   ChannelMessageInfo,
   MemoryStatsResponse,
   ContextBudgetResponse,
+  MemoryProjectionsResponse,
 } from '../types/api';
 import { clearToken, getToken, setToken } from './auth';
 
@@ -304,6 +305,16 @@ export function getMemoryStats(agentId?: string | null): Promise<MemoryStatsResp
 
 export function getContextBudget(agentId?: string | null): Promise<ContextBudgetResponse> {
   return apiFetch<ContextBudgetResponse>(withAgentPrefix('/api/memory/context-budget', agentId));
+}
+
+export function getMemoryProjections(
+  agentId?: string | null,
+  limit: number = 8,
+): Promise<MemoryProjectionsResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return apiFetch<MemoryProjectionsResponse>(
+    withAgentPrefix(`/api/memory/projections?${params.toString()}`, agentId),
+  );
 }
 
 // ---------------------------------------------------------------------------
