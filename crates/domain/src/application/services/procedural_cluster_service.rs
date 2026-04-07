@@ -48,13 +48,8 @@ pub async fn plan_recent_clusters(
             .collect());
     }
 
-    let mut similarity_lookup = HashMap::new();
-    for entry in &entries {
-        similarity_lookup.insert(
-            entry.key.clone(),
-            fetch_category_shortlist(mem, agent_id, entry, &category, shortlist_limit).await?,
-        );
-    }
+    let similarity_lookup =
+        fetch_category_shortlists(mem, agent_id, &entries, &category, shortlist_limit).await?;
 
     Ok(build_clusters(
         &entries,
@@ -141,21 +136,27 @@ pub fn build_clusters(
     clusters
 }
 
-async fn fetch_category_shortlist(
+async fn fetch_category_shortlists(
     mem: &dyn UnifiedMemoryPort,
     agent_id: &str,
-    entry: &MemoryEntry,
+    entries: &[MemoryEntry],
     category: &MemoryCategory,
     limit: usize,
-) -> Result<Vec<MemoryEntry>, MemoryError> {
+) -> Result<HashMap<String, Vec<MemoryEntry>>, MemoryError> {
     Ok(mem
-        .similar_episodes_for_entry(entry, agent_id, category, limit, false)
+        .similar_episodes_for_entries(entries, agent_id, category, limit, false)
         .await?
         .into_iter()
-        .map(|result| {
-            let mut entry = result.entry;
-            entry.score = Some(result.score as f64);
-            entry
+        .map(|(key, values)| {
+            let shortlist = values
+                .into_iter()
+                .map(|result| {
+                    let mut entry = result.entry;
+                    entry.score = Some(result.score as f64);
+                    entry
+                })
+                .collect::<Vec<_>>();
+            (key, shortlist)
         })
         .collect())
 }

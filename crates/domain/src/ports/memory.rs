@@ -256,6 +256,26 @@ pub trait UnifiedMemoryPort:
         Ok(result.episodes)
     }
 
+    /// Find similar episodes for multiple existing entries.
+    async fn similar_episodes_for_entries(
+        &self,
+        entries: &[MemoryEntry],
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<std::collections::HashMap<String, Vec<SearchResult>>, MemoryError> {
+        let mut results = std::collections::HashMap::new();
+        for entry in entries {
+            results.insert(
+                entry.key.clone(),
+                self.similar_episodes_for_entry(entry, agent_id, category, limit, include_shared)
+                    .await?,
+            );
+        }
+        Ok(results)
+    }
+
     /// Generate an embedding vector for text.
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError>;
 

@@ -317,6 +317,26 @@ impl UnifiedMemoryPort for InstrumentedMemory {
         );
         r
     }
+    async fn similar_episodes_for_entries(
+        &self,
+        entries: &[MemoryEntry],
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<std::collections::HashMap<String, Vec<SearchResult>>, MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .similar_episodes_for_entries(entries, agent_id, category, limit, include_shared)
+            .await;
+        let count = r
+            .as_ref()
+            .map(|lookup| lookup.values().map(Vec::len).sum())
+            .unwrap_or(0);
+        log_op("similar_episodes_for_entries", t, count);
+        r
+    }
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         let t = Instant::now();
         let r = self.inner.embed(text).await;

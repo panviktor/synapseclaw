@@ -216,6 +216,18 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
             .similar_episodes_for_entry(entry, agent_id, category, limit, include_shared)
             .await
     }
+    async fn similar_episodes_for_entries(
+        &self,
+        entries: &[MemoryEntry],
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<std::collections::HashMap<String, Vec<SearchResult>>, MemoryError> {
+        self.inner
+            .similar_episodes_for_entries(entries, agent_id, category, limit, include_shared)
+            .await
+    }
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         self.inner.embed(text).await
     }

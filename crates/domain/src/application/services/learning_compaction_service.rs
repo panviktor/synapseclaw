@@ -56,14 +56,14 @@ pub async fn compact_near_duplicates_with_failures(
         return Ok(0);
     }
 
-    let mut similarity_lookup = HashMap::new();
-    for entry in &entries {
-        similarity_lookup.insert(
-            entry.key.clone(),
-            fetch_category_shortlist(mem, agent_id, entry, &category, thresholds.shortlist_limit)
-                .await?,
-        );
-    }
+    let similarity_lookup = fetch_category_shortlists(
+        mem,
+        agent_id,
+        &entries,
+        &category,
+        thresholds.shortlist_limit,
+    )
+    .await?;
 
     let duplicate_keys = plan_duplicate_removals(
         &entries,
@@ -81,21 +81,27 @@ pub async fn compact_near_duplicates_with_failures(
     Ok(removed)
 }
 
-async fn fetch_category_shortlist(
+async fn fetch_category_shortlists(
     mem: &dyn UnifiedMemoryPort,
     agent_id: &str,
-    entry: &MemoryEntry,
+    entries: &[MemoryEntry],
     category: &MemoryCategory,
     limit: usize,
-) -> Result<Vec<MemoryEntry>, MemoryError> {
+) -> Result<HashMap<String, Vec<MemoryEntry>>, MemoryError> {
     Ok(mem
-        .similar_episodes_for_entry(entry, agent_id, category, limit, false)
+        .similar_episodes_for_entries(entries, agent_id, category, limit, false)
         .await?
         .into_iter()
-        .map(|result| {
-            let mut entry = result.entry;
-            entry.score = Some(result.score as f64);
-            entry
+        .map(|(key, values)| {
+            let shortlist = values
+                .into_iter()
+                .map(|result| {
+                    let mut entry = result.entry;
+                    entry.score = Some(result.score as f64);
+                    entry
+                })
+                .collect::<Vec<_>>();
+            (key, shortlist)
         })
         .collect())
 }

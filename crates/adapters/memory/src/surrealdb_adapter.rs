@@ -1740,6 +1740,67 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         Ok(episodes)
     }
 
+    async fn similar_episodes_for_entries(
+        &self,
+        entries: &[MemoryEntry],
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<std::collections::HashMap<String, Vec<SearchResult>>, MemoryError> {
+        let keys = entries
+            .iter()
+            .map(|entry| entry.key.clone())
+            .collect::<Vec<_>>();
+        let mut resp = self
+            .db
+            .query(
+                "SELECT key, embedding FROM episode WHERE key INSIDE $keys AND agent_id = $agent",
+            )
+            .bind(("keys", keys))
+            .bind(("agent", agent_id.to_string()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let rows = take_json!(resp, 0);
+        let embedding_lookup = rows
+            .iter()
+            .filter_map(|row| {
+                let key = row.get("key").and_then(|value| value.as_str())?.to_string();
+                let embedding = row
+                    .get("embedding")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value::<Vec<f32>>(value).ok())
+                    .filter(|embedding| !embedding.is_empty())?;
+                Some((key, embedding))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut results = std::collections::HashMap::new();
+        for entry in entries {
+            let mut episodes = self
+                .search_episodes(&MemoryQuery {
+                    text: entry.content.clone(),
+                    embedding: embedding_lookup.get(&entry.key).cloned(),
+                    agent_id: agent_id.to_string(),
+                    categories: vec![category.clone()],
+                    include_shared,
+                    time_range: None,
+                    limit: limit.saturating_mul(2).max(limit),
+                })
+                .await?;
+            episodes.retain(|candidate| candidate.entry.key != entry.key);
+            episodes.sort_by(|left, right| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            episodes.truncate(limit);
+            results.insert(entry.key.clone(), episodes);
+        }
+        Ok(results)
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         self.embedder
             .embed_one(text)
