@@ -7,11 +7,15 @@
 use crate::application::services::learning_candidate_service::{self, LearningCandidate};
 use crate::application::services::learning_conflict_service;
 use crate::application::services::learning_evidence_service;
+use crate::application::services::learning_maintenance_service;
 use crate::application::services::learning_quality_service;
 use crate::application::services::learning_strength_service;
 use crate::application::services::precedent_similarity_service;
+use crate::application::services::procedural_cluster_review_service;
 use crate::application::services::procedural_cluster_service::ProceduralCluster;
+use crate::application::services::procedural_contradiction_service;
 use crate::application::services::recipe_evolution_service;
+use crate::application::services::run_recipe_cluster_service;
 use crate::application::services::skill_feedback_service;
 use crate::application::services::skill_promotion_service;
 use crate::application::services::skill_review_service;
@@ -60,6 +64,13 @@ pub struct SelfLearningEvalResult {
     pub accepted_skill_feedback_count: usize,
     pub precedent_mutation_actions: Vec<&'static str>,
     pub precedent_mutation_reasons: Vec<String>,
+    pub precedent_cluster_review_items: Vec<String>,
+    pub failure_cluster_review_items: Vec<String>,
+    pub maintenance_reasons: Vec<&'static str>,
+    pub maintenance_runs_precedent_compaction: bool,
+    pub maintenance_runs_failure_pattern_compaction: bool,
+    pub maintenance_runs_run_recipe_review: bool,
+    pub maintenance_runs_skill_review: bool,
     pub mutation_candidate_count: usize,
     pub profile_patch_is_noop: bool,
     pub profile_projection: Option<String>,
@@ -97,6 +108,78 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
         &resulting_failure_clusters,
     );
     let skill_feedback = build_skill_feedback(scenario, &assessments);
+    let resulting_precedent_clusters =
+        build_resulting_precedent_clusters(scenario, &precedent_mutation_decisions);
+    let resulting_recipe_clusters =
+        run_recipe_cluster_service::plan_recipe_clusters(&resulting_recipes, 0.9);
+    let procedural_contradictions =
+        procedural_contradiction_service::find_recipe_failure_contradictions(
+            &resulting_recipe_clusters,
+            &resulting_failure_clusters,
+            0.75,
+        );
+    let precedent_cluster_reviews = procedural_cluster_review_service::review_precedent_clusters(
+        &resulting_precedent_clusters,
+        &resulting_failure_clusters,
+    );
+    let failure_cluster_reviews =
+        procedural_cluster_review_service::review_failure_pattern_clusters(
+            &resulting_failure_clusters,
+            &procedural_contradictions,
+        );
+    let maintenance_plan = learning_maintenance_service::build_learning_maintenance_plan(
+        &learning_maintenance_service::LearningMaintenanceSnapshot {
+            recent_run_recipe_count: resulting_recipes.len(),
+            run_recipe_cluster_count: resulting_recipe_clusters.len(),
+            procedural_contradiction_count: procedural_contradictions.len(),
+            recent_precedent_count: resulting_precedent_clusters.len(),
+            precedent_cluster_count: resulting_precedent_clusters.len(),
+            precedent_compact_candidate_count: precedent_cluster_reviews
+                .iter()
+                .filter(|review| {
+                    review.kind == "precedent"
+                        && review.action
+                            == procedural_cluster_review_service::ProceduralClusterReviewAction::CompactCandidate
+                })
+                .count(),
+            precedent_preserve_branch_count: precedent_cluster_reviews
+                .iter()
+                .filter(|review| {
+                    review.kind == "precedent"
+                        && review.action
+                            == procedural_cluster_review_service::ProceduralClusterReviewAction::PreserveBranch
+                })
+                .count(),
+            recent_reflection_count: 0,
+            recent_failure_pattern_count: resulting_failure_clusters.len(),
+            failure_pattern_cluster_count: resulting_failure_clusters.len(),
+            failure_pattern_compact_candidate_count: failure_cluster_reviews
+                .iter()
+                .filter(|review| {
+                    review.kind == "failure_pattern"
+                        && review.action
+                            == procedural_cluster_review_service::ProceduralClusterReviewAction::CompactCandidate
+                })
+                .count(),
+            failure_pattern_blocking_count: failure_cluster_reviews
+                .iter()
+                .filter(|review| {
+                    review.kind == "failure_pattern"
+                        && review.action
+                            == procedural_cluster_review_service::ProceduralClusterReviewAction::BlocksProceduralPaths
+                })
+                .count(),
+            recent_skill_count: scenario.existing_skills.len(),
+            candidate_skill_count: scenario
+                .existing_skills
+                .iter()
+                .filter(|skill| skill.status == crate::domain::memory::SkillStatus::Candidate)
+                .count(),
+            skipped_cycles_since_maintenance: 0,
+            prompt_optimization_due: false,
+        },
+        &learning_maintenance_service::LearningMaintenancePolicy::default(),
+    );
     let patch = learning_candidate_service::build_user_profile_patch_from_assessments(
         &assessments,
         scenario.current_profile.as_ref(),
@@ -145,6 +228,14 @@ pub fn evaluate_scenario(scenario: &SelfLearningEvalScenario) -> SelfLearningEva
             .iter()
             .map(|decision| decision.reason.clone())
             .collect(),
+        precedent_cluster_review_items: cluster_review_items(&precedent_cluster_reviews),
+        failure_cluster_review_items: cluster_review_items(&failure_cluster_reviews),
+        maintenance_reasons: maintenance_reason_names(&maintenance_plan),
+        maintenance_runs_precedent_compaction: maintenance_plan.run_precedent_compaction,
+        maintenance_runs_failure_pattern_compaction: maintenance_plan
+            .run_failure_pattern_compaction,
+        maintenance_runs_run_recipe_review: maintenance_plan.run_run_recipe_review,
+        maintenance_runs_skill_review: maintenance_plan.run_skill_review,
         mutation_candidate_count: mutation_candidates.len(),
         profile_patch_is_noop: patch.is_noop(),
         profile_projection: projected_profile
@@ -911,6 +1002,49 @@ fn build_precedent_mutation_decisions(
         .collect()
 }
 
+fn build_resulting_precedent_clusters(
+    scenario: &SelfLearningEvalScenario,
+    decisions: &[crate::domain::memory_mutation::MutationDecision],
+) -> Vec<ProceduralCluster> {
+    let mut clusters = scenario
+        .existing_precedents
+        .iter()
+        .map(|entry| ProceduralCluster {
+            representative: entry.clone(),
+            member_keys: vec![entry.key.clone()],
+        })
+        .collect::<Vec<_>>();
+
+    clusters.extend(
+        decisions
+            .iter()
+            .enumerate()
+            .filter(|(_, decision)| {
+                matches!(
+                    decision.action,
+                    crate::domain::memory_mutation::MutationAction::Add
+                )
+            })
+            .map(|(index, decision)| {
+                let key = format!("eval-precedent-{index}");
+                ProceduralCluster {
+                    representative: MemoryEntry {
+                        id: key.clone(),
+                        key: key.clone(),
+                        content: decision.candidate.text.clone(),
+                        category: MemoryCategory::Custom("precedent".into()),
+                        timestamp: "2026-01-01T00:00:00Z".into(),
+                        session_id: None,
+                        score: None,
+                    },
+                    member_keys: vec![key],
+                }
+            }),
+    );
+
+    clusters
+}
+
 fn candidate_kind_names(candidates: &[LearningCandidate]) -> Vec<&'static str> {
     let mut kinds = Vec::new();
     for candidate in candidates {
@@ -1040,6 +1174,85 @@ fn precedent_mutation_action_names(
     actions
 }
 
+fn cluster_review_items(
+    reviews: &[procedural_cluster_review_service::ProceduralClusterReview],
+) -> Vec<String> {
+    reviews
+        .iter()
+        .map(|review| {
+            format!(
+                "{}:{}",
+                cluster_review_action_name(&review.action),
+                review.representative_key
+            )
+        })
+        .collect()
+}
+
+fn cluster_review_action_name(
+    action: &procedural_cluster_review_service::ProceduralClusterReviewAction,
+) -> &'static str {
+    match action {
+        procedural_cluster_review_service::ProceduralClusterReviewAction::Stable => "stable",
+        procedural_cluster_review_service::ProceduralClusterReviewAction::CompactCandidate => {
+            "compact_candidate"
+        }
+        procedural_cluster_review_service::ProceduralClusterReviewAction::PreserveBranch => {
+            "preserve_branch"
+        }
+        procedural_cluster_review_service::ProceduralClusterReviewAction::BlocksProceduralPaths => {
+            "blocks_procedural_paths"
+        }
+    }
+}
+
+fn maintenance_reason_names(
+    plan: &learning_maintenance_service::LearningMaintenancePlan,
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    for reason in &plan.reasons {
+        let value = match reason {
+            learning_maintenance_service::LearningMaintenanceReason::RecentLearningActivity => {
+                "recent_learning_activity"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::RunRecipeDuplicateBacklog => {
+                "run_recipe_duplicate_backlog"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::PrecedentDuplicateBacklog => {
+                "precedent_duplicate_backlog"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::PrecedentPreserveBranchBacklog => {
+                "precedent_preserve_branch_backlog"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::FailurePatternDuplicateBacklog => {
+                "failure_pattern_duplicate_backlog"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::FailureBlockingClusterBacklog => {
+                "failure_blocking_cluster_backlog"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::ProceduralContradictionBacklog => {
+                "procedural_contradiction_backlog"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::SkillBacklog => {
+                "skill_backlog"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::CandidateSkillBacklog => {
+                "candidate_skill_backlog"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::PromptOptimizationDue => {
+                "prompt_optimization_due"
+            }
+            learning_maintenance_service::LearningMaintenanceReason::ForcedMaintenanceInterval => {
+                "forced_maintenance_interval"
+            }
+        };
+        if !reasons.contains(&value) {
+            reasons.push(value);
+        }
+    }
+    reasons
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1155,6 +1368,9 @@ mod tests {
         assert!(result.assessment_reasons.contains(&"typed_failure_pattern"));
         assert_eq!(result.accepted_failure_pattern_count, 1);
         assert_eq!(result.mutation_candidate_count, 1);
+        assert!(result.failure_cluster_review_items.iter().any(
+            |item| item.starts_with("stable:") || item.starts_with("blocks_procedural_paths:")
+        ));
     }
 
     #[test]
@@ -1299,5 +1515,14 @@ mod tests {
             .precedent_mutation_reasons
             .iter()
             .any(|reason| reason.contains("contradicted by failure clusters")));
+        assert!(result
+            .precedent_cluster_review_items
+            .iter()
+            .any(|item| item.starts_with("preserve_branch:")));
+        assert!(result
+            .maintenance_reasons
+            .contains(&"precedent_preserve_branch_backlog"));
+        assert!(result.maintenance_runs_run_recipe_review);
+        assert!(result.maintenance_runs_skill_review);
     }
 }

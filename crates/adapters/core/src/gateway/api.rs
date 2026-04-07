@@ -1897,6 +1897,9 @@ pub async fn handle_api_memory_learning_evals(
     let mut by_skill_review_reason = std::collections::BTreeMap::<String, usize>::new();
     let mut by_skill_feedback_reason = std::collections::BTreeMap::<String, usize>::new();
     let mut by_precedent_mutation_action = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_precedent_cluster_review_action = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_failure_cluster_review_action = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_maintenance_reason = std::collections::BTreeMap::<String, usize>::new();
     let mut profile_updates = 0usize;
     let mut recipe_candidates = 0usize;
     let mut accepted_recipe_candidates = 0usize;
@@ -1944,6 +1947,25 @@ pub async fn handle_api_memory_learning_evals(
                 .entry((*action).to_string())
                 .or_default() += 1;
         }
+        for item in &result.precedent_cluster_review_items {
+            if let Some((action, _)) = item.split_once(':') {
+                *by_precedent_cluster_review_action
+                    .entry(action.to_string())
+                    .or_default() += 1;
+            }
+        }
+        for item in &result.failure_cluster_review_items {
+            if let Some((action, _)) = item.split_once(':') {
+                *by_failure_cluster_review_action
+                    .entry(action.to_string())
+                    .or_default() += 1;
+            }
+        }
+        for reason in &result.maintenance_reasons {
+            *by_maintenance_reason
+                .entry((*reason).to_string())
+                .or_default() += 1;
+        }
         if !result.profile_patch_is_noop {
             profile_updates += 1;
         }
@@ -1975,6 +1997,13 @@ pub async fn handle_api_memory_learning_evals(
             "accepted_skill_feedback_count": result.accepted_skill_feedback_count,
             "precedent_mutation_actions": result.precedent_mutation_actions,
             "precedent_mutation_reasons": result.precedent_mutation_reasons,
+            "precedent_cluster_review_items": result.precedent_cluster_review_items,
+            "failure_cluster_review_items": result.failure_cluster_review_items,
+            "maintenance_reasons": result.maintenance_reasons,
+            "maintenance_runs_precedent_compaction": result.maintenance_runs_precedent_compaction,
+            "maintenance_runs_failure_pattern_compaction": result.maintenance_runs_failure_pattern_compaction,
+            "maintenance_runs_run_recipe_review": result.maintenance_runs_run_recipe_review,
+            "maintenance_runs_skill_review": result.maintenance_runs_skill_review,
             "mutation_candidate_count": result.mutation_candidate_count,
             "profile_patch_is_noop": result.profile_patch_is_noop,
             "profile_projection": result.profile_projection,
@@ -1992,6 +2021,9 @@ pub async fn handle_api_memory_learning_evals(
             "skill_review_reasons": by_skill_review_reason,
             "skill_feedback_reasons": by_skill_feedback_reason,
             "precedent_mutation_actions": by_precedent_mutation_action,
+            "precedent_cluster_review_actions": by_precedent_cluster_review_action,
+            "failure_cluster_review_actions": by_failure_cluster_review_action,
+            "maintenance_reasons": by_maintenance_reason,
             "profile_updates": profile_updates,
             "recipe_candidates": recipe_candidates,
             "accepted_recipe_candidates": accepted_recipe_candidates,
