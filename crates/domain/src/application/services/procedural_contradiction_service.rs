@@ -9,7 +9,7 @@ use crate::application::services::procedural_cluster_service::ProceduralCluster;
 use crate::application::services::run_recipe_cluster_service::RunRecipeCluster;
 use crate::domain::run_recipe::RunRecipe;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct ProceduralContradiction {
     pub recipe_task_family: String,
     pub recipe_lineage_task_families: Vec<String>,
