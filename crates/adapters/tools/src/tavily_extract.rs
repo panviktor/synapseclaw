@@ -4,6 +4,10 @@ use serde_json::json;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
+use synapse_domain::ports::tool::ToolExecution;
 
 /// Tavily Extract tool — fetches and extracts content from URLs using the
 /// Tavily Extract API. Returns clean markdown/text content from web pages.
@@ -12,6 +16,13 @@ pub struct TavilyExtractTool {
     timeout_secs: u64,
     config_path: PathBuf,
     secrets_encrypt: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExtractedPage {
+    url: String,
+    host: Option<String>,
+    byte_count: usize,
 }
 
 impl TavilyExtractTool {
@@ -57,50 +68,85 @@ impl TavilyExtractTool {
             Ok(raw_key)
         }
     }
-}
 
-#[async_trait]
-impl Tool for TavilyExtractTool {
-    fn name(&self) -> &str {
-        "tavily_extract"
+    fn parse_urls(urls_str: &str) -> Vec<String> {
+        urls_str
+            .split(',')
+            .map(|url| url.trim())
+            .filter(|url| !url.is_empty())
+            .take(20)
+            .map(ToOwned::to_owned)
+            .collect()
     }
 
-    fn description(&self) -> &str {
-        "Extract clean content from web URLs using Tavily. \
-         Returns page content in markdown format. Useful for reading articles, \
-         documentation, or any web page content. Supports up to 20 URLs at once."
-    }
-
-    fn parameters_schema(&self) -> serde_json::Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "urls": {
-                    "type": "string",
-                    "description": "URL or comma-separated list of URLs to extract content from (max 20)"
-                },
-                "format": {
-                    "type": "string",
-                    "enum": ["markdown", "text"],
-                    "description": "Output format (default: markdown)"
+    fn parse_extracted_pages(json: &serde_json::Value) -> Vec<ExtractedPage> {
+        json.get("results")
+            .and_then(|results| results.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|result| {
+                let url = result.get("url").and_then(|value| value.as_str())?.trim();
+                if url.is_empty() {
+                    return None;
                 }
-            },
-            "required": ["urls"]
-        })
+                let content = result
+                    .get("raw_content")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                Some(ExtractedPage {
+                    url: url.to_string(),
+                    host: extract_host(url),
+                    byte_count: content.len(),
+                })
+            })
+            .collect()
     }
 
-    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+    fn build_resource_facts(urls: impl IntoIterator<Item = ExtractedPage>) -> Vec<TypedToolFact> {
+        urls.into_iter()
+            .map(|page| TypedToolFact {
+                tool_id: "tavily_extract".to_string(),
+                payload: ToolFactPayload::Resource(ResourceFact {
+                    kind: ResourceKind::WebPage,
+                    operation: ResourceOperation::Fetch,
+                    locator: page.url,
+                    host: page.host,
+                    metadata: ResourceMetadata {
+                        byte_count: Some(page.byte_count),
+                        item_count: None,
+                        include_base64: None,
+                    },
+                }),
+            })
+            .collect()
+    }
+
+    fn extract_requested_pages(args: &serde_json::Value) -> Vec<ExtractedPage> {
+        let urls_str = match args.get("urls").and_then(|value| value.as_str()) {
+            Some(urls) => urls,
+            None => return Vec::new(),
+        };
+
+        Self::parse_urls(urls_str)
+            .into_iter()
+            .map(|url| ExtractedPage {
+                host: extract_host(&url),
+                url,
+                byte_count: 0,
+            })
+            .collect()
+    }
+
+    async fn execute_extract(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<(ToolResult, Vec<TypedToolFact>)> {
         let urls_str = args
             .get("urls")
             .and_then(|u| u.as_str())
             .ok_or_else(|| anyhow::anyhow!("Missing required parameter: urls"))?;
 
-        let urls: Vec<&str> = urls_str
-            .split(',')
-            .map(|u| u.trim())
-            .filter(|u| !u.is_empty())
-            .take(20)
-            .collect();
+        let urls = Self::parse_urls(urls_str);
 
         if urls.is_empty() {
             anyhow::bail!("No valid URLs provided");
@@ -175,10 +221,160 @@ impl Tool for TavilyExtractTool {
             output = "No content extracted".to_string();
         }
 
-        Ok(ToolResult {
-            success: true,
-            output,
-            error: None,
+        Ok((
+            ToolResult {
+                success: true,
+                output,
+                error: None,
+            },
+            Self::build_resource_facts(Self::parse_extracted_pages(&json)),
+        ))
+    }
+}
+
+fn extract_host(raw_url: &str) -> Option<String> {
+    reqwest::Url::parse(raw_url)
+        .ok()
+        .and_then(|url| url.host_str().map(ToOwned::to_owned))
+}
+
+#[async_trait]
+impl Tool for TavilyExtractTool {
+    fn name(&self) -> &str {
+        "tavily_extract"
+    }
+
+    fn description(&self) -> &str {
+        "Extract clean content from web URLs using Tavily. \
+         Returns page content in markdown format. Useful for reading articles, \
+         documentation, or any web page content. Supports up to 20 URLs at once."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "urls": {
+                    "type": "string",
+                    "description": "URL or comma-separated list of URLs to extract content from (max 20)"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "text"],
+                    "description": "Output format (default: markdown)"
+                }
+            },
+            "required": ["urls"]
         })
+    }
+
+    async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
+        Ok(self.execute_extract(args).await?.0)
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        Self::build_resource_facts(Self::extract_requested_pages(args))
+    }
+
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
+        let (result, facts) = self.execute_extract(args).await?;
+        Ok(ToolExecution { result, facts })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_urls_trims_and_limits_inputs() {
+        let urls = TavilyExtractTool::parse_urls(
+            " https://example.com/a , ,https://example.org/b, https://example.net/c ",
+        );
+
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/a",
+                "https://example.org/b",
+                "https://example.net/c"
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_extracted_pages_reads_successful_results() {
+        let json = json!({
+            "results": [
+                {
+                    "url": "https://example.com/a",
+                    "raw_content": "hello"
+                },
+                {
+                    "url": "https://example.org/b",
+                    "raw_content": "world!"
+                }
+            ],
+            "failed_results": [
+                {
+                    "url": "https://bad.example/c",
+                    "error": "timeout"
+                }
+            ]
+        });
+
+        let pages = TavilyExtractTool::parse_extracted_pages(&json);
+
+        assert_eq!(
+            pages,
+            vec![
+                ExtractedPage {
+                    url: "https://example.com/a".into(),
+                    host: Some("example.com".into()),
+                    byte_count: 5,
+                },
+                ExtractedPage {
+                    url: "https://example.org/b".into(),
+                    host: Some("example.org".into()),
+                    byte_count: 6,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_facts_emits_requested_web_pages() {
+        let tool =
+            TavilyExtractTool::new_with_config(None, 15, PathBuf::from("config.toml"), false);
+        let facts = tool.extract_facts(
+            &json!({"urls": "https://example.com/a,https://example.org/b"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 2);
+        assert!(facts.iter().all(|fact| matches!(
+            &fact.payload,
+            ToolFactPayload::Resource(resource)
+                if resource.kind == ResourceKind::WebPage
+                    && resource.operation == ResourceOperation::Fetch
+        )));
+        assert!(matches!(
+            &facts[0].payload,
+            ToolFactPayload::Resource(resource)
+                if resource.locator == "https://example.com/a"
+                    && resource.host.as_deref() == Some("example.com")
+        ));
     }
 }

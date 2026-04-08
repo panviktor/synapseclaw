@@ -2,6 +2,9 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use synapse_domain::domain::tool_fact::{
+    ToolFactPayload, TypedToolFact, WorkspaceAction, WorkspaceFact,
+};
 use tokio::fs;
 
 /// Workspace data lifecycle tool: retention status, time-based purge, and
@@ -70,6 +73,41 @@ impl DataManagementTool {
             error: None,
         })
     }
+
+    fn build_result_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        let result = match result {
+            Some(result) if result.success => result,
+            _ => return Vec::new(),
+        };
+
+        let action = match args.get("command").and_then(|value| value.as_str()) {
+            Some("retention_status") => WorkspaceAction::Retention,
+            Some("purge") => WorkspaceAction::Purge,
+            Some("stats") => WorkspaceAction::Stats,
+            _ => return Vec::new(),
+        };
+
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap_or_default();
+        let item_count = parsed
+            .get("affected_files")
+            .or_else(|| parsed.get("files"))
+            .or_else(|| parsed.get("total_files"))
+            .and_then(|value| value.as_u64())
+            .map(|value| value as usize);
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Workspace(WorkspaceFact {
+                action,
+                name: Some(self.workspace_dir.display().to_string()),
+                item_count,
+            }),
+        }]
+    }
 }
 
 #[async_trait]
@@ -128,6 +166,14 @@ impl Tool for DataManagementTool {
                 error: Some(format!("Unknown command: {other}")),
             }),
         }
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.build_result_facts(args, result)
     }
 }
 
@@ -261,6 +307,7 @@ async fn count_dir_contents(dir: &Path) -> anyhow::Result<(usize, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::domain::tool_fact::ToolFactPayload;
     use tempfile::TempDir;
 
     fn make_tool(tmp: &TempDir) -> DataManagementTool {
@@ -316,5 +363,28 @@ mod tests {
         assert!(res.success);
         let v: serde_json::Value = serde_json::from_str(&res.output).unwrap();
         assert_eq!(v["total_files"], 3);
+    }
+
+    #[test]
+    fn extract_facts_emits_workspace_fact_for_purge() {
+        let tmp = TempDir::new().unwrap();
+        let tool = make_tool(&tmp);
+        let facts = tool.extract_facts(
+            &json!({"command": "purge", "dry_run": true}),
+            Some(&ToolResult {
+                success: true,
+                output: json!({"files": 4, "bytes_freed": 1024}).to_string(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        match &facts[0].payload {
+            ToolFactPayload::Workspace(workspace) => {
+                assert_eq!(workspace.action, WorkspaceAction::Purge);
+                assert_eq!(workspace.item_count, Some(4));
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
     }
 }

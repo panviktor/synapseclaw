@@ -7,6 +7,9 @@ use std::time::Duration;
 use synapse_domain::config::schema::{DelegateAgentConfig, SwarmConfig, SwarmStrategy};
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    RoutingAction, RoutingFact, ToolFactPayload, TypedToolFact,
+};
 use synapse_providers::{self, Provider};
 
 /// Default timeout for individual agent calls within a swarm.
@@ -37,6 +40,39 @@ impl SwarmTool {
             fallback_credential,
             provider_runtime_options,
         }
+    }
+
+    fn build_result_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        match result {
+            Some(result) if result.success => {}
+            _ => return Vec::new(),
+        }
+
+        let swarm_name = match args.get("swarm").and_then(|value| value.as_str()) {
+            Some(name) if !name.trim().is_empty() => name.trim(),
+            _ => return Vec::new(),
+        };
+        let swarm_config = match self.swarms.get(swarm_name) {
+            Some(config) => config,
+            None => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Routing(RoutingFact {
+                action: RoutingAction::Get,
+                hint: Some(swarm_name.to_string()),
+                agent_name: None,
+                provider: None,
+                model: None,
+                matcher_count: Some(swarm_config.agents.len()),
+                allowed_tool_count: None,
+            }),
+        }]
     }
 
     fn create_provider_for_agent(
@@ -541,6 +577,14 @@ impl Tool for SwarmTool {
             SwarmStrategy::Router => self.execute_router(swarm_config, prompt, context).await,
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.build_result_facts(args, result)
+    }
 }
 
 #[cfg(test)]
@@ -548,6 +592,7 @@ mod tests {
     use super::*;
     use synapse_domain::domain::config::AutonomyLevel;
     use synapse_domain::domain::security_policy::SecurityPolicy;
+    use synapse_domain::domain::tool_fact::ToolFactPayload;
 
     fn test_security() -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy::default())
@@ -950,5 +995,34 @@ mod tests {
             .await
             .unwrap();
         assert!(!result.success);
+    }
+
+    #[test]
+    fn extract_facts_emits_routing_fact_for_swarm_invocation() {
+        let tool = SwarmTool::new(
+            sample_swarms(),
+            sample_agents(),
+            None,
+            test_security(),
+            synapse_providers::ProviderRuntimeOptions::default(),
+        );
+        let facts = tool.extract_facts(
+            &json!({"swarm": "pipeline", "prompt": "Summarize release notes"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        match &facts[0].payload {
+            ToolFactPayload::Routing(routing) => {
+                assert_eq!(routing.action, RoutingAction::Get);
+                assert_eq!(routing.hint.as_deref(), Some("pipeline"));
+                assert_eq!(routing.matcher_count, Some(2));
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
     }
 }

@@ -4,6 +4,9 @@ use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    NotificationChannel, NotificationFact, ToolFactPayload, TypedToolFact,
+};
 
 const PUSHOVER_API_URL: &str = "https://api.pushover.net/1/messages.json";
 const PUSHOVER_REQUEST_TIMEOUT_SECS: u64 = 15;
@@ -73,6 +76,38 @@ impl PushoverTool {
             user_key.ok_or_else(|| anyhow::anyhow!("PUSHOVER_USER_KEY not found in .env"))?;
 
         Ok((token, user_key))
+    }
+
+    fn build_result_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        match result {
+            Some(result) if result.success => {}
+            _ => return Vec::new(),
+        }
+
+        let message = match args.get("message").and_then(|value| value.as_str()) {
+            Some(message) => message.trim(),
+            None => return Vec::new(),
+        };
+        if message.is_empty() {
+            return Vec::new();
+        }
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Notification(NotificationFact {
+                channel: NotificationChannel::Pushover,
+                message_bytes: message.len(),
+                title_bytes: args
+                    .get("title")
+                    .and_then(|value| value.as_str())
+                    .map(str::len),
+                priority: args.get("priority").and_then(|value| value.as_i64()),
+            }),
+        }]
     }
 }
 
@@ -212,6 +247,14 @@ impl Tool for PushoverTool {
             })
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.build_result_facts(args, result)
+    }
 }
 
 #[cfg(test)]
@@ -219,6 +262,7 @@ mod tests {
     use super::*;
     use std::fs;
     use synapse_domain::domain::config::AutonomyLevel;
+    use synapse_domain::domain::tool_fact::ToolFactPayload;
     use tempfile::TempDir;
 
     fn test_security(level: AutonomyLevel, max_actions_per_hour: u32) -> Arc<SecurityPolicy> {
@@ -429,5 +473,54 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.error.unwrap().contains("-2..=2"));
+    }
+
+    #[test]
+    fn extract_facts_emits_notification_fact() {
+        let tool = PushoverTool::new(
+            test_security(AutonomyLevel::Full, 100),
+            PathBuf::from("/tmp"),
+        );
+        let facts = tool.extract_facts(
+            &json!({
+                "message": "Build completed",
+                "title": "Deploy",
+                "priority": 1
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        match &facts[0].payload {
+            ToolFactPayload::Notification(notification) => {
+                assert_eq!(notification.channel, NotificationChannel::Pushover);
+                assert_eq!(notification.message_bytes, "Build completed".len());
+                assert_eq!(notification.title_bytes, Some("Deploy".len()));
+                assert_eq!(notification.priority, Some(1));
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_facts_skips_failed_notifications() {
+        let tool = PushoverTool::new(
+            test_security(AutonomyLevel::Full, 100),
+            PathBuf::from("/tmp"),
+        );
+        let facts = tool.extract_facts(
+            &json!({"message": "Build completed"}),
+            Some(&ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("boom".into()),
+            }),
+        );
+
+        assert!(facts.is_empty());
     }
 }

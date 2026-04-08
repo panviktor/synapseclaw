@@ -8,6 +8,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::memory::Entity;
+use synapse_domain::domain::tool_fact::{
+    KnowledgeAction, KnowledgeFact, ToolFactPayload, TypedToolFact,
+};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 
 /// Tool for managing a knowledge graph via SemanticMemoryPort.
@@ -19,6 +22,54 @@ impl KnowledgeTool {
     pub fn new(memory: Arc<dyn UnifiedMemoryPort>) -> Self {
         Self { memory }
     }
+}
+
+fn build_result_facts(
+    tool_name: &str,
+    args: &serde_json::Value,
+    result: Option<&ToolResult>,
+) -> Vec<TypedToolFact> {
+    match result {
+        Some(result) if result.success => {}
+        _ => return Vec::new(),
+    }
+
+    let action = match args.get("action").and_then(|value| value.as_str()) {
+        Some("search") => KnowledgeAction::Search,
+        Some("add_entity") => KnowledgeAction::AddEntity,
+        Some("add_fact") => KnowledgeAction::AddFact,
+        Some("get_facts") => KnowledgeAction::GetFacts,
+        _ => return Vec::new(),
+    };
+
+    let query = args
+        .get("query")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let subject = args
+        .get("subject")
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+
+    vec![TypedToolFact {
+        tool_id: tool_name.to_string(),
+        payload: ToolFactPayload::Knowledge(KnowledgeFact {
+            action,
+            subject: subject.or(query),
+            predicate: args
+                .get("predicate")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            object: args
+                .get("object")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+            entity_type: args
+                .get("entity_type")
+                .and_then(|value| value.as_str())
+                .map(str::to_string),
+        }),
+    }]
 }
 
 #[async_trait]
@@ -271,5 +322,90 @@ impl Tool for KnowledgeTool {
                 )),
             }),
         }
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        build_result_facts(self.name(), args, result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_facts_emits_add_entity_knowledge_fact() {
+        let facts = build_result_facts(
+            "knowledge",
+            &json!({
+                "action": "add_entity",
+                "query": "Atlas",
+                "entity_type": "project",
+                "summary": "Release train"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        match &facts[0].payload {
+            ToolFactPayload::Knowledge(fact) => {
+                assert_eq!(fact.action, KnowledgeAction::AddEntity);
+                assert_eq!(fact.subject.as_deref(), Some("Atlas"));
+                assert_eq!(fact.entity_type.as_deref(), Some("project"));
+                assert_eq!(fact.predicate, None);
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_facts_emits_add_fact_knowledge_fact() {
+        let facts = build_result_facts(
+            "knowledge",
+            &json!({
+                "action": "add_fact",
+                "subject": "Atlas",
+                "predicate": "uses",
+                "object": "SSO"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        match &facts[0].payload {
+            ToolFactPayload::Knowledge(fact) => {
+                assert_eq!(fact.action, KnowledgeAction::AddFact);
+                assert_eq!(fact.subject.as_deref(), Some("Atlas"));
+                assert_eq!(fact.predicate.as_deref(), Some("uses"));
+                assert_eq!(fact.object.as_deref(), Some("SSO"));
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_facts_skips_failed_results() {
+        let facts = build_result_facts(
+            "knowledge",
+            &json!({"action": "search", "query": "Atlas"}),
+            Some(&ToolResult {
+                success: false,
+                output: String::new(),
+                error: Some("boom".into()),
+            }),
+        );
+
+        assert!(facts.is_empty());
     }
 }
