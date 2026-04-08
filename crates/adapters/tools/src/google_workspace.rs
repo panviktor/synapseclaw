@@ -4,6 +4,10 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, SearchDomain, SearchFact,
+    ToolFactPayload, TypedToolFact,
+};
 
 /// Default `gws` command execution time before kill (overridden by config).
 const DEFAULT_GWS_TIMEOUT_SECS: u64 = 30;
@@ -73,6 +77,122 @@ impl GoogleWorkspaceTool {
             timeout_secs,
             audit_log,
         }
+    }
+
+    fn resource_locator(args: &serde_json::Value) -> Option<String> {
+        let service = args.get("service")?.as_str()?.trim();
+        let resource = args.get("resource")?.as_str()?.trim();
+        if service.is_empty() || resource.is_empty() {
+            return None;
+        }
+
+        let mut locator = format!("gws://{service}/{resource}");
+        if let Some(sub_resource) = args.get("sub_resource").and_then(|value| value.as_str()) {
+            let sub_resource = sub_resource.trim();
+            if !sub_resource.is_empty() {
+                locator.push('/');
+                locator.push_str(sub_resource);
+            }
+        }
+        Some(locator)
+    }
+
+    fn resource_operation(method: &str) -> ResourceOperation {
+        match method {
+            "list" | "search" | "query" => ResourceOperation::Search,
+            "get" | "read" | "fetch" => ResourceOperation::Read,
+            "create" | "insert" | "append" | "send" => ResourceOperation::Write,
+            "update" | "patch" | "modify" | "replace" | "delete" | "remove" => {
+                ResourceOperation::Edit
+            }
+            _ => ResourceOperation::Inspect,
+        }
+    }
+
+    fn is_search_method(method: &str) -> bool {
+        matches!(method, "list" | "search" | "query")
+    }
+
+    fn search_query(args: &serde_json::Value) -> Option<String> {
+        let params = args.get("params")?;
+        match params {
+            serde_json::Value::Object(map) if !map.is_empty() => Some(params.to_string()),
+            _ => None,
+        }
+    }
+
+    fn result_item_count(result: &ToolResult, args: &serde_json::Value) -> Option<usize> {
+        if !result.success {
+            return None;
+        }
+
+        let format = args
+            .get("format")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("json");
+        if format != "json" {
+            return None;
+        }
+
+        let value: serde_json::Value = serde_json::from_str(&result.output).ok()?;
+        match value {
+            serde_json::Value::Array(items) => Some(items.len()),
+            serde_json::Value::Object(map) => map
+                .values()
+                .find_map(|value| value.as_array().map(Vec::len))
+                .or_else(|| (!map.is_empty()).then_some(map.len())),
+            _ => None,
+        }
+    }
+
+    fn build_result_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        let result = match result {
+            Some(result) if result.success => result,
+            _ => return Vec::new(),
+        };
+
+        let method = match args.get("method").and_then(serde_json::Value::as_str) {
+            Some(method) => method,
+            None => return Vec::new(),
+        };
+        let locator = match Self::resource_locator(args) {
+            Some(locator) => locator,
+            None => return Vec::new(),
+        };
+        let item_count = Self::result_item_count(result, args);
+
+        let mut facts = vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::WebResource,
+                operation: Self::resource_operation(method),
+                locator: locator.clone(),
+                host: None,
+                metadata: ResourceMetadata {
+                    byte_count: Some(result.output.len()),
+                    item_count,
+                    include_base64: None,
+                },
+            }),
+        }];
+
+        if Self::is_search_method(method) {
+            facts.push(TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Workspace,
+                    query: Self::search_query(args),
+                    result_count: item_count,
+                    primary_locator: Some(locator),
+                }),
+            });
+        }
+
+        facts
     }
 }
 
@@ -420,6 +540,14 @@ impl Tool for GoogleWorkspaceTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.build_result_facts(args, result)
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +555,7 @@ mod tests {
     use super::*;
     use synapse_domain::domain::config::AutonomyLevel;
     use synapse_domain::domain::security_policy::SecurityPolicy;
+    use synapse_domain::domain::tool_fact::{ToolFactPayload, TypedToolFact};
 
     fn test_security() -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy {
@@ -713,5 +842,82 @@ mod tests {
     #[test]
     fn gws_timeout_is_reasonable() {
         assert_eq!(DEFAULT_GWS_TIMEOUT_SECS, 30);
+    }
+
+    fn resource_fact<'a>(facts: &'a [TypedToolFact]) -> &'a ResourceFact {
+        facts
+            .iter()
+            .find_map(|fact| match &fact.payload {
+                ToolFactPayload::Resource(resource) => Some(resource),
+                _ => None,
+            })
+            .expect("resource fact")
+    }
+
+    fn search_fact<'a>(facts: &'a [TypedToolFact]) -> &'a SearchFact {
+        facts
+            .iter()
+            .find_map(|fact| match &fact.payload {
+                ToolFactPayload::Search(search) => Some(search),
+                _ => None,
+            })
+            .expect("search fact")
+    }
+
+    #[test]
+    fn extract_facts_emits_workspace_resource_and_search_for_lists() {
+        let tool = GoogleWorkspaceTool::new(test_security(), vec![], None, None, 60, 30, false);
+        let args = json!({
+            "service": "drive",
+            "resource": "files",
+            "method": "list",
+            "params": {"q": "mimeType='application/pdf'"},
+        });
+        let result = ToolResult {
+            success: true,
+            output: r#"{"files":[{"id":"1"},{"id":"2"}]}"#.into(),
+            error: None,
+        };
+
+        let facts = tool.extract_facts(&args, Some(&result));
+
+        assert_eq!(facts.len(), 2);
+        let resource = resource_fact(&facts);
+        assert_eq!(resource.kind, ResourceKind::WebResource);
+        assert_eq!(resource.operation, ResourceOperation::Search);
+        assert_eq!(resource.locator, "gws://drive/files");
+        assert_eq!(resource.metadata.item_count, Some(2));
+
+        let search = search_fact(&facts);
+        assert_eq!(search.domain, SearchDomain::Workspace);
+        assert_eq!(
+            search.query.as_deref(),
+            Some(r#"{"q":"mimeType='application/pdf'"}"#)
+        );
+        assert_eq!(search.result_count, Some(2));
+        assert_eq!(search.primary_locator.as_deref(), Some("gws://drive/files"));
+    }
+
+    #[test]
+    fn extract_facts_emits_only_resource_for_mutations() {
+        let tool = GoogleWorkspaceTool::new(test_security(), vec![], None, None, 60, 30, false);
+        let args = json!({
+            "service": "calendar",
+            "resource": "events",
+            "method": "create",
+            "body": {"summary": "Weekly sync"},
+        });
+        let result = ToolResult {
+            success: true,
+            output: r#"{"id":"evt_123"}"#.into(),
+            error: None,
+        };
+
+        let facts = tool.extract_facts(&args, Some(&result));
+
+        assert_eq!(facts.len(), 1);
+        let resource = resource_fact(&facts);
+        assert_eq!(resource.operation, ResourceOperation::Write);
+        assert_eq!(resource.locator, "gws://calendar/events");
     }
 }
