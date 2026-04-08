@@ -331,6 +331,23 @@ impl SurrealMemoryAdapter {
         Ok(())
     }
 
+    fn spawn_profile_bound_reindex(&self) {
+        let db = Arc::clone(&self.db);
+        let embedder = Arc::clone(&self.embedder);
+        let agent_id = self.agent_id.clone();
+
+        tokio::spawn(async move {
+            let adapter = SurrealMemoryAdapter {
+                db,
+                embedder,
+                agent_id,
+            };
+            if let Err(error) = adapter.reindex_profile_bound_vectors().await {
+                tracing::warn!(%error, "memory: background embedding profile reindex failed");
+            }
+        });
+    }
+
     async fn apply_schema(&self) -> Result<(), MemoryError> {
         // Apply base schema (tables, fields, standard indexes).
         let schema = include_str!("surrealdb_schema.surql");
@@ -424,7 +441,10 @@ impl SurrealMemoryAdapter {
                 tracing::debug!(dim, "HNSW vector indexes verified");
             }
 
-            self.reindex_profile_bound_vectors().await?;
+            // Do not block daemon startup on large profile-bound reindex jobs.
+            // The gateway/scheduler can come up immediately while stale vectors
+            // are refreshed in the background.
+            self.spawn_profile_bound_reindex();
         }
 
         // Migrate stale agent_ids to the current agent_id.
