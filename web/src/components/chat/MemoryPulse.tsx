@@ -4,12 +4,14 @@ import type {
   ChatSessionInfo,
   ContextBudgetResponse,
   MemoryStatsResponse,
+  MemoryProjectionsResponse,
   PostTurnReportEvent,
 } from '@/types/api';
 
 interface MemoryPulseProps {
   stats: MemoryStatsResponse | null;
   budget: ContextBudgetResponse | null;
+  projections: MemoryProjectionsResponse | null;
   lastReport: PostTurnReportEvent | null;
   session: ChatSessionInfo | null;
   agentLabel: string;
@@ -27,6 +29,10 @@ function formatChars(value: number): string {
 function allocationShare(value: number, total: number): number {
   if (total <= 0 || value <= 0) return 0;
   return Math.max(10, Math.round((value / total) * 100));
+}
+
+function formatLabel(value: string): string {
+  return value.replace(/[_-]+/g, ' ');
 }
 
 function latestLearningText(report: PostTurnReportEvent | null): string {
@@ -56,6 +62,7 @@ function TinyBadge({ children }: { children: ReactNode }) {
 export default function MemoryPulse({
   stats,
   budget,
+  projections,
   lastReport,
   session,
   agentLabel,
@@ -67,6 +74,10 @@ export default function MemoryPulse({
     budget?.recall_total_max_chars ?? 0,
     budget?.enrichment_total_max_chars ?? 0,
   );
+  const nearbyShare = allocationShare(
+    (budget?.nearby_max_entries ?? 0) * Math.min(160, budget?.recall_entry_max_chars ?? 0),
+    budget?.enrichment_total_max_chars ?? 0,
+  );
   const skillsShare = allocationShare(
     budget?.skills_total_max_chars ?? 0,
     budget?.enrichment_total_max_chars ?? 0,
@@ -75,6 +86,17 @@ export default function MemoryPulse({
     budget?.entities_total_max_chars ?? 0,
     budget?.enrichment_total_max_chars ?? 0,
   );
+  const maintenanceReasons = projections?.learning_maintenance_plan?.reasons ?? [];
+  const maintenanceActionCount = [
+    projections?.learning_maintenance_plan?.run_importance_decay,
+    projections?.learning_maintenance_plan?.run_gc,
+    projections?.learning_maintenance_plan?.run_run_recipe_review,
+    projections?.learning_maintenance_plan?.run_precedent_compaction,
+    projections?.learning_maintenance_plan?.run_failure_pattern_compaction,
+    projections?.learning_maintenance_plan?.run_skill_review,
+    projections?.learning_maintenance_plan?.run_prompt_optimization,
+  ].filter(Boolean).length;
+  const topEffectiveSkills = projections?.effective_skills.slice(0, 3) ?? [];
 
   return (
     <aside className="flex h-full flex-col overflow-hidden bg-[var(--bg-secondary)]">
@@ -157,6 +179,33 @@ export default function MemoryPulse({
                 reflected
               </span>
             </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Conflicts</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                  {projections?.procedural_contradictions.length ?? 0}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Actions</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                  {maintenanceActionCount}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Skills</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                  {projections?.effective_skills.length ?? 0}
+                </p>
+              </div>
+            </div>
+            {maintenanceReasons.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {maintenanceReasons.slice(0, 4).map((reason) => (
+                  <TinyBadge key={reason}>{formatLabel(reason)}</TinyBadge>
+                ))}
+              </div>
+            )}
           </div>
         </section>
 
@@ -254,6 +303,49 @@ export default function MemoryPulse({
         <section className="glass-card overflow-hidden">
           <div className="border-b border-[var(--border-default)] px-4 py-3">
             <div className="flex items-center gap-2">
+              <Layers3 className="h-4 w-4 text-[var(--accent-primary)]" />
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Neocortex
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Procedural Surface</h3>
+              </div>
+            </div>
+          </div>
+          <div className="space-y-3 px-4 py-4">
+            {topEffectiveSkills.length > 0 ? (
+              <>
+                <div className="flex flex-wrap gap-1.5">
+                  {topEffectiveSkills.map((skill) => (
+                    <TinyBadge key={`${skill.name}-${skill.origin}`}>{skill.name}</TinyBadge>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Recipes</p>
+                    <p className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+                      {projections?.run_recipes.length ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Clusters</p>
+                    <p className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+                      {(projections?.recipe_clusters.length ?? 0) + (projections?.precedent_clusters.length ?? 0)}
+                    </p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-[var(--text-muted)]">
+                No effective procedural surface has been promoted yet.
+              </p>
+            )}
+          </div>
+        </section>
+
+        <section className="glass-card overflow-hidden">
+          <div className="border-b border-[var(--border-default)] px-4 py-3">
+            <div className="flex items-center gap-2">
               <Gauge className="h-4 w-4 text-[var(--accent-primary)]" />
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
@@ -283,6 +375,11 @@ export default function MemoryPulse({
                     label: 'Recall',
                     share: recallShare,
                     meta: `${budget.recall_max_entries} entries · ${formatChars(budget.recall_total_max_chars)}`,
+                  },
+                  {
+                    label: 'Nearby',
+                    share: nearbyShare,
+                    meta: `${budget.nearby_max_entries} echo lanes`,
                   },
                   {
                     label: 'Skills',

@@ -24,6 +24,7 @@ import type {
   StatusResponse,
   MemoryStatsResponse,
   ContextBudgetResponse,
+  MemoryProjectionsResponse,
   PostTurnReportEvent,
 } from '@/types/api';
 import { WebSocketClient } from '@/lib/ws';
@@ -36,6 +37,7 @@ import {
   deleteChannelSession,
   getMemoryStats,
   getContextBudget,
+  getMemoryProjections,
   type AgentEntry,
 } from '@/lib/api';
 import SessionSidebar from '@/components/chat/SessionSidebar';
@@ -89,6 +91,7 @@ export default function AgentChat() {
   );
   const [memoryStats, setMemoryStats] = useState<MemoryStatsResponse | null>(null);
   const [contextBudget, setContextBudget] = useState<ContextBudgetResponse | null>(null);
+  const [memoryProjections, setMemoryProjections] = useState<MemoryProjectionsResponse | null>(null);
   const [memoryPulseOpen, setMemoryPulseOpen] = useState(false);
   const [sessionSidebarOpen, setSessionSidebarOpen] = useState(false);
   const [localSessionCount, setLocalSessionCount] = useState(0);
@@ -125,15 +128,18 @@ export default function AgentChat() {
 
   const loadMemorySurface = useCallback(async (agentId: string | null) => {
     try {
-      const [statsResponse, budgetResponse] = await Promise.all([
+      const [statsResponse, budgetResponse, projectionsResponse] = await Promise.all([
         getMemoryStats(agentId),
         getContextBudget(agentId),
+        getMemoryProjections(agentId, 6),
       ]);
       setMemoryStats(statsResponse);
       setContextBudget(budgetResponse);
+      setMemoryProjections(projectionsResponse);
     } catch {
       setMemoryStats(null);
       setContextBudget(null);
+      setMemoryProjections(null);
     }
   }, []);
 
@@ -1023,6 +1029,7 @@ export default function AgentChat() {
             <MemoryPulse
               stats={memoryStats}
               budget={contextBudget}
+              projections={memoryProjections}
               lastReport={latestLearningEvent}
               session={selectedSession}
               agentLabel={activeAgentLabel}
@@ -1042,6 +1049,7 @@ export default function AgentChat() {
             <MemoryPulse
               stats={memoryStats}
               budget={contextBudget}
+              projections={memoryProjections}
               lastReport={latestLearningEvent}
               session={selectedSession}
               agentLabel={activeAgentLabel}
