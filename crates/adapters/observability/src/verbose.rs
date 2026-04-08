@@ -20,12 +20,26 @@ impl Observer for VerboseObserver {
                 provider,
                 model,
                 messages_count,
+                context,
             } => {
                 eprintln!("> Thinking");
-                eprintln!(
-                    "> Send (provider={}, model={}, messages={})",
-                    provider, model, messages_count
-                );
+                if let Some(context) = context {
+                    eprintln!(
+                        "> Send (provider={}, model={}, messages={}, chars={}, system={}, prior={}, current={})",
+                        provider,
+                        model,
+                        messages_count,
+                        context.total_chars,
+                        context.system_chars,
+                        context.prior_chat_chars,
+                        context.current_turn_chars
+                    );
+                } else {
+                    eprintln!(
+                        "> Send (provider={}, model={}, messages={})",
+                        provider, model, messages_count
+                    );
+                }
             }
             ObserverEvent::LlmResponse {
                 duration, success, ..
@@ -80,6 +94,7 @@ mod tests {
             provider: "openrouter".into(),
             model: "claude".into(),
             messages_count: 3,
+            context: None,
         });
         obs.record_event(&ObserverEvent::LlmResponse {
             provider: "openrouter".into(),

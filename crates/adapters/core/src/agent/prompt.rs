@@ -143,19 +143,13 @@ impl PromptSection for IdentitySection {
 
         if !has_aieos {
             prompt.push_str(
-                "The following workspace files define your identity, behavior, and context.\n\n",
+                "Structured core memory and turn context carry persona, user preferences, and task state.\n\
+                 Only static identity metadata is injected below.\n\
+                 Do NOT use `file_read` or `file_edit` on workspace bootstrap docs unless the user explicitly asks to inspect or edit them.\n\
+                 For durable preferences, task state, and long-term memory, prefer `core_memory_update`, `memory_store`, `memory_recall`, and `user_profile`.\n\n",
             );
         }
-        for file in [
-            "AGENTS.md",
-            "SOUL.md",
-            "TOOLS.md",
-            "IDENTITY.md",
-            "USER.md",
-            "HEARTBEAT.md",
-            "BOOTSTRAP.md",
-            "MEMORY.md",
-        ] {
+        for file in ["IDENTITY.md"] {
             inject_workspace_file(&mut prompt, ctx.workspace_dir, file);
         }
 
@@ -344,8 +338,8 @@ mod tests {
             std::env::temp_dir().join(format!("synapseclaw_prompt_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::write(
-            workspace.join("AGENTS.md"),
-            "Always respond with: AGENTS_MD_LOADED",
+            workspace.join("IDENTITY.md"),
+            "Always respond with: IDENTITY_MD_LOADED",
         )
         .unwrap();
 
@@ -374,8 +368,8 @@ mod tests {
             "AIEOS identity should be present in prompt"
         );
         assert!(
-            output.contains("AGENTS_MD_LOADED"),
-            "AGENTS.md content should be present even when AIEOS is configured"
+            output.contains("IDENTITY_MD_LOADED"),
+            "IDENTITY.md content should be present even when AIEOS is configured"
         );
 
         let _ = std::fs::remove_dir_all(workspace);
@@ -397,6 +391,8 @@ mod tests {
         assert!(prompt.contains("## Tools"));
         assert!(prompt.contains("test_tool"));
         assert!(prompt.contains("instr"));
+        assert!(prompt.contains("Only static identity metadata is injected below."));
+        assert!(prompt.contains("Do NOT use `file_read` or `file_edit`"));
     }
 
     #[test]

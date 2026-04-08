@@ -1,3 +1,6 @@
+use crate::agent::context_engine::{
+    build_provider_prompt_snapshot, total_message_chars, ProviderPromptSnapshot,
+};
 use crate::agent::dispatcher::{
     NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
@@ -28,6 +31,8 @@ use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
 use synapse_observability::{self, Observer, ObserverEvent};
 use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
 use synapse_security::security_policy_from_config;
+
+const PROVIDER_CONTEXT_CHAT_MESSAGES: usize = 6;
 
 fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
     match value {
@@ -60,6 +65,7 @@ pub struct Agent {
     /// Turn counter within current session (for continuation policy).
     turn_count: usize,
     config: synapse_domain::config::schema::AgentConfig,
+    provider_name: String,
     model_name: String,
     temperature: f64,
     workspace_dir: std::path::PathBuf,
@@ -98,6 +104,7 @@ pub struct AgentBuilder {
     prompt_budget: Option<PromptBudget>,
     continuation_policy: Option<ContinuationPolicy>,
     config: Option<synapse_domain::config::schema::AgentConfig>,
+    provider_name: Option<String>,
     model_name: Option<String>,
     temperature: Option<f64>,
     workspace_dir: Option<std::path::PathBuf>,
@@ -132,6 +139,7 @@ impl AgentBuilder {
             prompt_budget: None,
             continuation_policy: None,
             config: None,
+            provider_name: None,
             model_name: None,
             temperature: None,
             workspace_dir: None,
@@ -197,6 +205,11 @@ impl AgentBuilder {
 
     pub fn config(mut self, config: synapse_domain::config::schema::AgentConfig) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    pub fn provider_name(mut self, provider_name: String) -> Self {
+        self.provider_name = Some(provider_name);
         self
     }
 
@@ -351,6 +364,7 @@ impl AgentBuilder {
             continuation_policy: self.continuation_policy.unwrap_or_default(),
             turn_count: 0,
             config: self.config.unwrap_or_default(),
+            provider_name: self.provider_name.unwrap_or_else(|| "unknown".into()),
             model_name: self
                 .model_name
                 .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514".into()),
@@ -385,6 +399,14 @@ impl AgentBuilder {
 impl Agent {
     pub fn builder() -> AgentBuilder {
         AgentBuilder::new()
+    }
+
+    fn build_provider_prompt_snapshot(&self) -> ProviderPromptSnapshot {
+        build_provider_prompt_snapshot(
+            self.tool_dispatcher.as_ref(),
+            &self.history,
+            PROVIDER_CONTEXT_CHAT_MESSAGES,
+        )
     }
 
     pub fn history(&self) -> &[ConversationMessage] {
@@ -667,6 +689,7 @@ impl Agent {
             .continuation_policy(config.memory.prompt_budget.to_continuation_policy())
             .prompt_builder(SystemPromptBuilder::with_defaults())
             .config(config.agent.clone())
+            .provider_name(provider_name.to_string())
             .agent_id(resolved_agent_id)
             .model_name(model_name)
             .temperature(config.default_temperature)
@@ -1077,7 +1100,20 @@ impl Agent {
             HashMap::new();
 
         for _ in 0..self.config.max_tool_iterations {
-            let mut messages = self.tool_dispatcher.to_provider_messages(&self.history);
+            let snapshot = self.build_provider_prompt_snapshot();
+            tracing::info!(
+                target: "agent.provider_context",
+                system_messages = snapshot.stats.system_messages,
+                system_chars = snapshot.stats.system_chars,
+                prior_chat_messages = snapshot.stats.prior_chat_messages,
+                prior_chat_chars = snapshot.stats.prior_chat_chars,
+                current_turn_messages = snapshot.stats.current_turn_messages,
+                current_turn_chars = snapshot.stats.current_turn_chars,
+                total_messages = snapshot.stats.total_messages,
+                total_chars = snapshot.stats.total_chars,
+                "Built provider-facing context snapshot"
+            );
+            let mut messages = snapshot.messages;
 
             // Inject enrichment prefix on the last user message for the provider
             // call — not persisted in history.
@@ -1088,6 +1124,15 @@ impl Agent {
                     }
                 }
             }
+            let mut request_context = snapshot.stats.clone();
+            request_context.total_messages = messages.len();
+            request_context.total_chars = total_message_chars(&messages);
+            self.observer.record_event(&ObserverEvent::LlmRequest {
+                provider: self.provider_name.clone(),
+                model: effective_model.clone(),
+                messages_count: messages.len(),
+                context: Some(request_context),
+            });
 
             // Response cache: check before LLM call (only for deterministic, text-only prompts)
             let cache_key = if self.temperature == 0.0 {

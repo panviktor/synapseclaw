@@ -477,6 +477,7 @@ pub(crate) async fn run_tool_call_loop(
             provider: provider_name.to_string(),
             model: model.to_string(),
             messages_count: history.len(),
+            context: None,
         });
         runtime_trace::record_event(
             "llm_request",

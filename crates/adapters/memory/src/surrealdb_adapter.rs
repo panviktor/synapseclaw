@@ -632,9 +632,25 @@ fn episode_scope_clause(include_shared: bool) -> &'static str {
     }
 }
 
+fn trim_core_block_tail(content: &str, max_chars: usize) -> String {
+    let char_count = content.chars().count();
+    if char_count <= max_chars {
+        return content.to_string();
+    }
+
+    let start_byte = content
+        .char_indices()
+        .nth(char_count.saturating_sub(max_chars))
+        .map(|(idx, _)| idx)
+        .unwrap_or(0);
+    let trimmed = &content[start_byte..];
+    let start = trimmed.find('\n').map(|idx| idx + 1).unwrap_or(0);
+    trimmed[start..].to_string()
+}
+
 #[cfg(test)]
 mod episode_scope_tests {
-    use super::{episode_scope_clause, recall_search_limit};
+    use super::{episode_scope_clause, recall_search_limit, trim_core_block_tail};
 
     #[test]
     fn local_scope_excludes_shared_entries() {
@@ -658,6 +674,25 @@ mod episode_scope_tests {
     #[test]
     fn unscoped_recall_keeps_requested_limit() {
         assert_eq!(recall_search_limit(5, false), 5);
+    }
+
+    #[test]
+    fn core_block_trim_preserves_utf8_boundaries() {
+        let content =
+            "alpha\nПользователь предпочитает краткие ответы без воды, лучше короткими буллетами.";
+        let trimmed = trim_core_block_tail(content, 32);
+
+        assert!(trimmed.is_char_boundary(trimmed.len()));
+        assert!(trimmed.chars().count() <= 32);
+    }
+
+    #[test]
+    fn core_block_trim_preserves_cjk_boundaries() {
+        let content = "alpha\n既定の都市は東京で、曖昧な天気の質問は東京を優先してください。";
+        let trimmed = trim_core_block_tail(content, 24);
+
+        assert!(trimmed.is_char_boundary(trimmed.len()));
+        assert!(trimmed.chars().count() <= 24);
     }
 }
 
@@ -873,9 +908,7 @@ impl WorkingMemoryPort for SurrealMemoryAdapter {
         if let Ok(blocks) = self.get_core_blocks(agent_id).await {
             if let Some(block) = blocks.iter().find(|b| b.label == label) {
                 if block.content.len() > MAX_BLOCK_CHARS {
-                    let trimmed = &block.content[block.content.len() - MAX_BLOCK_CHARS..];
-                    let start = trimmed.find('\n').map(|i| i + 1).unwrap_or(0);
-                    let final_content = trimmed[start..].to_string();
+                    let final_content = trim_core_block_tail(&block.content, MAX_BLOCK_CHARS);
                     let _ = self
                         .db
                         .query(

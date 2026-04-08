@@ -80,11 +80,24 @@ impl synapse_observability::Observer for BroadcastObserver {
         // Broadcast to SSE subscribers
         let json = match event {
             synapse_observability::ObserverEvent::LlmRequest {
-                provider, model, ..
+                provider,
+                model,
+                context,
+                ..
             } => serde_json::json!({
                 "type": "llm_request",
                 "provider": provider,
                 "model": model,
+                "context": context.as_ref().map(|context| serde_json::json!({
+                    "system_messages": context.system_messages,
+                    "system_chars": context.system_chars,
+                    "prior_chat_messages": context.prior_chat_messages,
+                    "prior_chat_chars": context.prior_chat_chars,
+                    "current_turn_messages": context.current_turn_messages,
+                    "current_turn_chars": context.current_turn_chars,
+                    "total_messages": context.total_messages,
+                    "total_chars": context.total_chars,
+                })),
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
             synapse_observability::ObserverEvent::ToolCall {

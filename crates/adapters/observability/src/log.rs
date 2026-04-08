@@ -66,13 +66,30 @@ impl Observer for LogObserver {
                 provider,
                 model,
                 messages_count,
+                context,
             } => {
-                info!(
-                    provider = %provider,
-                    model = %model,
-                    messages_count = messages_count,
-                    "llm.request"
-                );
+                if let Some(context) = context {
+                    info!(
+                        provider = %provider,
+                        model = %model,
+                        messages_count = messages_count,
+                        system_messages = context.system_messages,
+                        system_chars = context.system_chars,
+                        prior_chat_messages = context.prior_chat_messages,
+                        prior_chat_chars = context.prior_chat_chars,
+                        current_turn_messages = context.current_turn_messages,
+                        current_turn_chars = context.current_turn_chars,
+                        total_chars = context.total_chars,
+                        "llm.request"
+                    );
+                } else {
+                    info!(
+                        provider = %provider,
+                        model = %model,
+                        messages_count = messages_count,
+                        "llm.request"
+                    );
+                }
             }
             ObserverEvent::LlmResponse {
                 provider,
