@@ -1008,9 +1008,6 @@ async fn handle_chat_send_rpc(
             .and_then(|s| s.agent.user_profile_key().map(str::to_string));
         (u, history_snapshot, facts, profile_key)
     };
-    // Persist tool events outside the lock (async-safe)
-    persist_tool_events(state, &session_key, &tool_history).await;
-
     match result {
         Ok(response) => {
             // Push assistant message via the same out_tx channel as tool events.
@@ -1025,64 +1022,69 @@ async fn handle_chat_send_rpc(
                 })
                 .to_string(),
             );
-
-            persist_message(
-                state,
-                &session_key,
-                "assistant",
-                Some("assistant"),
-                &response,
-                None,
-                None,
-            )
-            .await;
-            // Phase 4.0 Slice 3: finalize via conversation_service
-            {
-                let input = usage.as_ref().and_then(|u| u.input_tokens).unwrap_or(0) as i64;
-                let output = usage.as_ref().and_then(|u| u.output_tokens).unwrap_or(0) as i64;
-                if let (Some(cs), Some(rs)) =
-                    (state.conversation_store.as_ref(), state.run_store.as_ref())
-                {
+            let state_bg = state.clone();
+            let session_key_bg = session_key.clone();
+            let run_id_bg = run_id.clone();
+            let message_bg = message.clone();
+            let response_bg = response.clone();
+            let tool_history_bg = tool_history.clone();
+            let tool_facts_bg = tool_facts.clone();
+            let user_profile_key_bg = user_profile_key.clone();
+            let usage_bg = usage.clone();
+            tokio::spawn(async move {
+                persist_tool_events(&state_bg, &session_key_bg, &tool_history_bg).await;
+                persist_message(
+                    &state_bg,
+                    &session_key_bg,
+                    "assistant",
+                    Some("assistant"),
+                    &response_bg,
+                    None,
+                    None,
+                )
+                .await;
+                let input = usage_bg.as_ref().and_then(|u| u.input_tokens).unwrap_or(0) as i64;
+                let output = usage_bg.as_ref().and_then(|u| u.output_tokens).unwrap_or(0) as i64;
+                if let (Some(cs), Some(rs)) = (
+                    state_bg.conversation_store.as_ref(),
+                    state_bg.run_store.as_ref(),
+                ) {
                     let _ = synapse_domain::application::use_cases::start_conversation_run::finalize_success(
-                        cs.as_ref(), rs.as_ref(), &session_key, &run_id, input, output,
+                        cs.as_ref(), rs.as_ref(), &session_key_bg, &run_id_bg, input, output,
                     ).await;
                 }
-            }
-            sync_memory_count(state, &session_key, 2);
-            persist_usage_memory(state, &session_key, usage.as_ref());
-            update_session_goal(state, &session_key, &message).await;
-            emit_session_event(state, "session.updated", &session_key);
-            emit_run_event(state, "session.run_finished", &session_key, &run_id);
+                sync_memory_count(&state_bg, &session_key_bg, 2);
+                persist_usage_memory(&state_bg, &session_key_bg, usage_bg.as_ref());
+                update_session_goal(&state_bg, &session_key_bg, &message_bg).await;
+                emit_session_event(&state_bg, "session.updated", &session_key_bg);
+                emit_run_event(
+                    &state_bg,
+                    "session.run_finished",
+                    &session_key_bg,
+                    &run_id_bg,
+                );
+                summarize_session_if_needed(&state_bg, &session_key_bg).await;
 
-            // Fire-and-forget: rolling session summary every N messages
-            let st = state.clone();
-            let sk = session_key.clone();
-            tokio::spawn(async move {
-                summarize_session_if_needed(&st, &sk).await;
-            });
-
-            // ── Post-turn learning (fire-and-forget via orchestrator) ──
-            {
-                let mem = state.mem.clone();
+                let mem = state_bg.mem.clone();
                 let input =
                     synapse_domain::application::services::post_turn_orchestrator::PostTurnInput {
-                        agent_id: state.agent_id.clone(),
-                        user_message: message.clone(),
-                        assistant_response: response.clone(),
-                        tools_used: extract_tool_names(&tool_history),
-                        tool_facts,
-                        run_recipe_store: Some(state.run_recipe_store.clone()),
-                        user_profile_store: Some(state.user_profile_store.clone()),
-                        user_profile_key,
-                        auto_save_enabled: state.auto_save,
-                        event_tx: Some(state.event_tx.clone()),
+                        agent_id: state_bg.agent_id.clone(),
+                        user_message: message_bg,
+                        assistant_response: response_bg,
+                        tools_used: extract_tool_names(&tool_history_bg),
+                        tool_facts: tool_facts_bg,
+                        run_recipe_store: Some(state_bg.run_recipe_store.clone()),
+                        user_profile_store: Some(state_bg.user_profile_store.clone()),
+                        user_profile_key: user_profile_key_bg,
+                        auto_save_enabled: state_bg.auto_save,
+                        event_tx: Some(state_bg.event_tx.clone()),
                     };
-                tokio::spawn(async move {
-                    synapse_domain::application::services::post_turn_orchestrator::execute_post_turn_learning(
-                        mem.as_ref(), input,
-                    ).await;
-                });
-            }
+                synapse_domain::application::services::post_turn_orchestrator::execute_post_turn_learning(
+                    mem.as_ref(),
+                    input,
+                )
+                .await;
+            });
 
             // RPC response: metadata only (assistant message already pushed above)
             Ok(serde_json::json!({
@@ -1092,6 +1094,7 @@ async fn handle_chat_send_rpc(
         Err(e) => {
             let msg = e.to_string();
             if msg == "aborted" {
+                persist_tool_events(state, &session_key, &tool_history).await;
                 persist_message(
                     state,
                     &session_key,
@@ -1118,6 +1121,7 @@ async fn handle_chat_send_rpc(
                 }));
             }
             let sanitized = synapse_providers::sanitize_api_error(&msg);
+            persist_tool_events(state, &session_key, &tool_history).await;
             persist_message(state, &session_key, "error", None, &sanitized, None, None).await;
             // Phase 4.0 Slice 3: finalize failed
             if let (Some(cs), Some(rs)) =
@@ -1173,11 +1177,14 @@ async fn run_agent_turn_with_abort(
     };
 
     // Wrap the agent's observer to push real-time tool events through WS.
+    let base_observer = agent.observer_arc();
     let ws_observer: std::sync::Arc<dyn synapse_observability::Observer> =
         std::sync::Arc::new(WsToolNotifyObserver {
-            inner: agent.observer_arc(),
+            inner: Arc::clone(&base_observer),
             tx: out_tx.clone(),
             session_key: session_key.to_string(),
+            seen_tool_calls: std::sync::Mutex::new(std::collections::HashSet::new()),
+            seen_tool_results: std::sync::Mutex::new(std::collections::HashSet::new()),
         });
     agent.set_observer(ws_observer);
 
@@ -1191,6 +1198,7 @@ async fn run_agent_turn_with_abort(
     };
 
     // Put agent back
+    agent.set_observer(base_observer);
     {
         let mut sessions = state
             .chat_sessions
@@ -1652,11 +1660,21 @@ async fn persist_tool_events(
     history: &[synapse_providers::ConversationMessage],
 ) {
     use synapse_providers::ConversationMessage;
+    let mut call_signature_by_id = std::collections::HashMap::new();
+    let mut seen_tool_calls = std::collections::HashSet::new();
+    let mut seen_tool_results = std::collections::HashSet::new();
 
     for msg in history {
         match msg {
             ConversationMessage::AssistantToolCalls { tool_calls, .. } => {
                 for tc in tool_calls {
+                    let call_signature = persisted_tool_call_signature(tc);
+                    if !tc.id.trim().is_empty() {
+                        call_signature_by_id.insert(tc.id.clone(), call_signature.clone());
+                    }
+                    if !seen_tool_calls.insert(call_signature) {
+                        continue;
+                    }
                     persist_message(
                         state,
                         session_key,
@@ -1671,6 +1689,11 @@ async fn persist_tool_events(
             }
             ConversationMessage::ToolResults(results) => {
                 for tr in results {
+                    let result_signature =
+                        persisted_tool_result_signature(tr, &call_signature_by_id);
+                    if !seen_tool_results.insert(result_signature) {
+                        continue;
+                    }
                     persist_message(
                         state,
                         session_key,
@@ -1685,6 +1708,21 @@ async fn persist_tool_events(
             }
             ConversationMessage::Chat(_) => {} // handled separately by caller
         }
+    }
+}
+
+fn persisted_tool_call_signature(tool_call: &synapse_providers::ToolCall) -> String {
+    format!("call:{}:{}", tool_call.name, tool_call.arguments)
+}
+
+fn persisted_tool_result_signature(
+    result: &synapse_providers::ToolResultMessage,
+    call_signature_by_id: &std::collections::HashMap<String, String>,
+) -> String {
+    if let Some(call_signature) = call_signature_by_id.get(&result.tool_call_id) {
+        format!("result:{call_signature}")
+    } else {
+        format!("result:{}", result.content)
     }
 }
 
@@ -1714,6 +1752,8 @@ struct WsToolNotifyObserver {
     inner: std::sync::Arc<dyn synapse_observability::Observer>,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
     session_key: String,
+    seen_tool_calls: std::sync::Mutex<std::collections::HashSet<String>>,
+    seen_tool_results: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl synapse_observability::Observer for WsToolNotifyObserver {
@@ -1726,6 +1766,12 @@ impl synapse_observability::Observer for WsToolNotifyObserver {
                 } else {
                     tool.clone()
                 };
+                if let Ok(mut seen) = self.seen_tool_calls.lock() {
+                    if !seen.insert(content.clone()) {
+                        self.inner.record_event(event);
+                        return;
+                    }
+                }
                 let evt = serde_json::json!({
                     "type": "tool_call",
                     "session_key": self.session_key,
@@ -1736,7 +1782,7 @@ impl synapse_observability::Observer for WsToolNotifyObserver {
                 let _ = self.tx.send(evt.to_string());
             }
             ObserverEvent::ToolResult {
-                tool: _,
+                tool,
                 output,
                 success,
             } => {
@@ -1745,6 +1791,13 @@ impl synapse_observability::Observer for WsToolNotifyObserver {
                 } else {
                     format!("Error: {}", truncate_str(output, 500))
                 };
+                let result_key = format!("{tool}:{content}");
+                if let Ok(mut seen) = self.seen_tool_results.lock() {
+                    if !seen.insert(result_key) {
+                        self.inner.record_event(event);
+                        return;
+                    }
+                }
                 let evt = serde_json::json!({
                     "type": "tool_result",
                     "session_key": self.session_key,
@@ -1995,5 +2048,46 @@ mod tests {
         let result = truncate_str("hello world this is long", 10);
         assert!(result.len() <= 14); // UTF-8 ellipsis is 3 bytes
         assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn persisted_tool_event_keys_are_stable() {
+        let tool_call = synapse_providers::ToolCall {
+            id: "call-123".into(),
+            name: "shell".into(),
+            arguments: "{\"cmd\":\"printf ok\"}".into(),
+        };
+        let duplicate_call = synapse_providers::ToolCall {
+            id: "call-456".into(),
+            name: "shell".into(),
+            arguments: "{\"cmd\":\"printf ok\"}".into(),
+        };
+        let result = synapse_providers::ToolResultMessage {
+            tool_call_id: "call-123".into(),
+            content: "ok".into(),
+        };
+        let duplicate_result = synapse_providers::ToolResultMessage {
+            tool_call_id: "call-123".into(),
+            content: "ok".into(),
+        };
+        let call_map = std::collections::HashMap::from([
+            (
+                tool_call.id.clone(),
+                persisted_tool_call_signature(&tool_call),
+            ),
+            (
+                duplicate_call.id.clone(),
+                persisted_tool_call_signature(&duplicate_call),
+            ),
+        ]);
+
+        assert_eq!(
+            persisted_tool_call_signature(&tool_call),
+            persisted_tool_call_signature(&duplicate_call)
+        );
+        assert_eq!(
+            persisted_tool_result_signature(&result, &call_map),
+            persisted_tool_result_signature(&duplicate_result, &call_map)
+        );
     }
 }

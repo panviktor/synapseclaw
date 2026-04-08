@@ -207,6 +207,7 @@ pub struct SearchFact {
 pub enum SearchDomain {
     Web,
     Workspace,
+    Memory,
     Session,
     Precedent,
     Knowledge,
@@ -824,6 +825,7 @@ fn search_domain_kind(domain: &SearchDomain) -> &'static str {
     match domain {
         SearchDomain::Web => "search_result",
         SearchDomain::Workspace => "workspace_file",
+        SearchDomain::Memory => "memory_entry",
         SearchDomain::Session => "session",
         SearchDomain::Precedent => "run_recipe",
         SearchDomain::Knowledge => "knowledge_entity",

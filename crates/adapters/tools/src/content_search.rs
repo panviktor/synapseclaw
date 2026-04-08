@@ -1,4 +1,5 @@
 use super::traits::{Tool, ToolResult};
+use crate::tool_fact_helpers::preferred_workspace_locator;
 use async_trait::async_trait;
 use serde_json::json;
 use std::process::Stdio;
@@ -391,17 +392,21 @@ impl Tool for ContentSearchTool {
         let (result, summary) = self.execute_search(&args).await?;
         let facts = summary
             .filter(|_| result.success)
-            .map(|summary| TypedToolFact {
-                tool_id: self.name().to_string(),
-                payload: ToolFactPayload::Search(SearchFact {
-                    domain: SearchDomain::Workspace,
-                    query: args
-                        .get("pattern")
-                        .and_then(|value| value.as_str())
-                        .map(str::to_string),
-                    result_count: Some(summary.total_matches),
-                    primary_locator: summary.matched_paths.first().cloned(),
-                }),
+            .and_then(|summary| {
+                preferred_workspace_locator(summary.matched_paths.iter().map(String::as_str)).map(
+                    |primary_locator| TypedToolFact {
+                        tool_id: self.name().to_string(),
+                        payload: ToolFactPayload::Search(SearchFact {
+                            domain: SearchDomain::Workspace,
+                            query: args
+                                .get("pattern")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string),
+                            result_count: Some(summary.total_matches),
+                            primary_locator: Some(primary_locator),
+                        }),
+                    },
+                )
             })
             .map(|fact| vec![fact])
             .unwrap_or_default();
@@ -908,6 +913,16 @@ mod tests {
 
         assert!(result.success);
         assert!(result.output.contains("No matches found"));
+    }
+
+    #[test]
+    fn preferred_workspace_locator_skips_bootstrap_and_session_artifacts() {
+        let locator = preferred_workspace_locator(
+            ["SOUL.md", "sessions/web/main.jsonl", "src/agent/loop_.rs"].into_iter(),
+        )
+        .expect("preferred locator");
+
+        assert_eq!(locator, "src/agent/loop_.rs");
     }
 
     #[tokio::test]

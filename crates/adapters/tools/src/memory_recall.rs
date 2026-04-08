@@ -5,7 +5,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::memory::MemoryQuery;
-use synapse_domain::domain::tool_fact::TypedToolFact;
+use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_domain::ports::tool::ToolExecution;
 
@@ -125,29 +125,44 @@ impl MemoryRecallTool {
             )),
         }
     }
+}
 
-    fn build_result_facts(
-        &self,
-        entries: &[synapse_domain::application::services::retrieval_service::MemorySearchMatch],
-    ) -> Vec<TypedToolFact> {
-        if entries.is_empty() {
-            return Vec::new();
-        }
-
-        vec![TypedToolFact::focus(
-            self.name().to_string(),
-            entries
-                .iter()
-                .take(3)
-                .map(|hit| FocusEntity {
-                    kind: hit.entry.category.to_string(),
-                    name: hit.entry.key.clone(),
-                    metadata: Some(hit.entry.content.chars().take(120).collect()),
-                })
-                .collect(),
-            Vec::new(),
-        )]
+fn build_result_facts(
+    tool_name: &str,
+    query: Option<&str>,
+    entries: &[synapse_domain::application::services::retrieval_service::MemorySearchMatch],
+) -> Vec<TypedToolFact> {
+    if entries.is_empty() {
+        return Vec::new();
     }
+
+    let mut facts = vec![TypedToolFact {
+        tool_id: tool_name.to_string(),
+        payload: ToolFactPayload::Search(SearchFact {
+            domain: SearchDomain::Memory,
+            query: query.map(str::to_string),
+            result_count: Some(entries.len()),
+            primary_locator: entries
+                .iter()
+                .find_map(|hit| (!hit.entry.key.trim().is_empty()).then(|| hit.entry.key.clone())),
+        }),
+    }];
+
+    facts.push(TypedToolFact::focus(
+        tool_name.to_string(),
+        entries
+            .iter()
+            .take(3)
+            .map(|hit| FocusEntity {
+                kind: hit.entry.category.to_string(),
+                name: hit.entry.key.clone(),
+                metadata: Some(hit.entry.content.chars().take(120).collect()),
+            })
+            .collect(),
+        Vec::new(),
+    ));
+
+    facts
 }
 
 #[async_trait]
@@ -183,10 +198,61 @@ impl Tool for MemoryRecallTool {
     }
 
     async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
+        let query = args
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         let (result, entries) = self.execute_query(&args).await?;
         Ok(ToolExecution {
             result,
-            facts: self.build_result_facts(&entries),
+            facts: build_result_facts(self.name(), query.as_deref(), &entries),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synapse_domain::application::services::retrieval_service::MemorySearchMatch;
+    use synapse_domain::domain::memory::{MemoryCategory, MemoryEntry};
+    use synapse_domain::domain::tool_fact::ToolFactPayload;
+
+    fn sample_entry(key: &str, content: &str, category: MemoryCategory) -> MemorySearchMatch {
+        MemorySearchMatch {
+            entry: MemoryEntry {
+                id: format!("id-{key}"),
+                key: key.to_string(),
+                content: content.to_string(),
+                category,
+                timestamp: "2026-04-08T00:00:00Z".into(),
+                session_id: None,
+                score: Some(0.91),
+            },
+        }
+    }
+
+    #[test]
+    fn build_result_facts_emits_memory_search_and_focus() {
+        let entries = vec![sample_entry(
+            "atlas_work_chain",
+            "project Atlas; branch release/hotfix-17",
+            MemoryCategory::Core,
+        )];
+        let facts = build_result_facts("memory_recall", Some("atlas hotfix"), &entries);
+
+        assert_eq!(facts.len(), 2);
+        match &facts[0].payload {
+            ToolFactPayload::Search(search) => {
+                assert_eq!(search.domain, SearchDomain::Memory);
+                assert_eq!(search.query.as_deref(), Some("atlas hotfix"));
+                assert_eq!(search.primary_locator.as_deref(), Some("atlas_work_chain"));
+                assert_eq!(search.result_count, Some(1));
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+        assert!(facts[1]
+            .focus_entities()
+            .iter()
+            .any(|entity| entity.kind == "core" && entity.name == "atlas_work_chain"));
     }
 }

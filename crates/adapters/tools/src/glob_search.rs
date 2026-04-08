@@ -1,4 +1,5 @@
 use super::traits::{Tool, ToolResult};
+use crate::tool_fact_helpers::preferred_workspace_locator;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -226,9 +227,9 @@ impl Tool for GlobSearchTool {
         let facts = if !result.success {
             Vec::new()
         } else if let Some(outcome) = outcome {
-            if outcome.matched_paths.is_empty() {
-                Vec::new()
-            } else {
+            if let Some(primary_locator) =
+                preferred_workspace_locator(outcome.matched_paths.iter().map(String::as_str))
+            {
                 vec![TypedToolFact {
                     tool_id: self.name().to_string(),
                     payload: ToolFactPayload::Search(SearchFact {
@@ -238,9 +239,11 @@ impl Tool for GlobSearchTool {
                             .and_then(|value| value.as_str())
                             .map(str::to_string),
                         result_count: Some(outcome.matched_paths.len()),
-                        primary_locator: outcome.matched_paths.first().cloned(),
+                        primary_locator: Some(primary_locator),
                     }),
                 }]
+            } else {
+                Vec::new()
             }
         } else {
             Vec::new()
@@ -377,6 +380,15 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("Path traversal"));
+    }
+
+    #[test]
+    fn glob_search_fact_prefers_non_bootstrap_locator() {
+        let locator = preferred_workspace_locator(
+            ["USER.md", "sessions/main/trace.jsonl", "src/lib.rs"].into_iter(),
+        )
+        .expect("preferred locator");
+        assert_eq!(locator, "src/lib.rs");
     }
 
     #[tokio::test]

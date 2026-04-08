@@ -6,7 +6,7 @@ use crate::agent::turn_context_fmt;
 use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as IoWrite;
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,6 +28,24 @@ use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
 use synapse_observability::{self, Observer, ObserverEvent};
 use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
 use synapse_security::security_policy_from_config;
+
+fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            let normalized = entries
+                .into_iter()
+                .map(|(key, value)| (key.clone(), canonicalize_tool_args(value)))
+                .collect();
+            serde_json::Value::Object(normalized)
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(canonicalize_tool_args).collect())
+        }
+        other => other.clone(),
+    }
+}
 
 pub struct Agent {
     provider: Box<dyn Provider>,
@@ -805,6 +823,108 @@ impl Agent {
         futures_util::future::join_all(futs).await
     }
 
+    fn tool_call_signature(&self, call: &ParsedToolCall) -> Option<(String, String)> {
+        if self
+            .config
+            .tool_call_dedup_exempt
+            .iter()
+            .any(|tool| tool == &call.name)
+        {
+            return None;
+        }
+        Some((
+            call.name.clone(),
+            canonicalize_tool_args(&call.arguments).to_string(),
+        ))
+    }
+
+    fn deduplicate_turn_calls(&self, calls: Vec<ParsedToolCall>) -> Vec<ParsedToolCall> {
+        let mut seen = HashSet::new();
+        let mut deduped = Vec::with_capacity(calls.len());
+
+        for call in calls {
+            let Some(signature) = self.tool_call_signature(&call) else {
+                deduped.push(call);
+                continue;
+            };
+
+            if seen.insert(signature) {
+                deduped.push(call);
+            }
+        }
+
+        deduped
+    }
+
+    async fn execute_tools_with_cache(
+        &self,
+        calls: &[ParsedToolCall],
+        cache: &mut HashMap<(String, String), ToolExecutionResult>,
+    ) -> Vec<ToolExecutionResult> {
+        let mut results: Vec<Option<ToolExecutionResult>> = vec![None; calls.len()];
+        let mut uncached = Vec::new();
+        let mut pending_by_signature: HashMap<(String, String), usize> = HashMap::new();
+        let mut pending_waiters: HashMap<usize, Vec<(usize, Option<String>)>> = HashMap::new();
+
+        for (index, call) in calls.iter().cloned().enumerate() {
+            if let Some(signature) = self.tool_call_signature(&call) {
+                if let Some(cached) = cache.get(&signature) {
+                    let mut reused = cached.clone();
+                    reused.tool_call_id = call.tool_call_id.clone();
+                    tracing::info!(
+                        tool = %call.name,
+                        "reusing cached tool result for duplicate call within turn"
+                    );
+                    results[index] = Some(reused);
+                    continue;
+                }
+                if let Some(existing_uncached_index) = pending_by_signature.get(&signature).copied()
+                {
+                    pending_waiters
+                        .entry(existing_uncached_index)
+                        .or_default()
+                        .push((index, call.tool_call_id.clone()));
+                    continue;
+                }
+                let uncached_index = uncached.len();
+                pending_by_signature.insert(signature.clone(), uncached_index);
+                uncached.push((index, call, Some(signature)));
+            } else {
+                uncached.push((index, call, None));
+            }
+        }
+
+        let pending_calls: Vec<ParsedToolCall> =
+            uncached.iter().map(|(_, call, _)| call.clone()).collect();
+        let executed = self.execute_tools(&pending_calls).await;
+
+        for (uncached_index, ((index, _, signature), result)) in
+            uncached.into_iter().zip(executed.into_iter()).enumerate()
+        {
+            if let Some(signature) = signature {
+                let mut stored = result.clone();
+                stored.tool_call_id = None;
+                cache.insert(signature, stored);
+            }
+            results[index] = Some(result);
+            if let Some(waiters) = pending_waiters.remove(&uncached_index) {
+                for (waiter_index, waiter_tool_call_id) in waiters {
+                    let mut reused = results[index]
+                        .as_ref()
+                        .expect("primary result should be stored before waiters")
+                        .clone();
+                    reused.tool_call_id = waiter_tool_call_id;
+                    results[waiter_index] = Some(reused);
+                }
+            }
+        }
+
+        results
+            .into_iter()
+            .map(|result| result.expect("every tool call should yield a result"))
+            .collect()
+    }
+
     fn classify_model(&self, user_message: &str) -> String {
         if let Some(decision) =
             super::classifier::classify_with_decision(&self.classification_config, user_message)
@@ -953,6 +1073,9 @@ impl Agent {
         let effective_model = self.classify_model(user_message);
         let mut tool_facts_this_turn = Vec::new();
 
+        let mut executed_call_cache: HashMap<(String, String), ToolExecutionResult> =
+            HashMap::new();
+
         for _ in 0..self.config.max_tool_iterations {
             let mut messages = self.tool_dispatcher.to_provider_messages(&self.history);
 
@@ -1049,7 +1172,8 @@ impl Agent {
                     Some(prev.output_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0));
             }
 
-            let (text, calls) = self.tool_dispatcher.parse_response(&response);
+            let (text, parsed_calls) = self.tool_dispatcher.parse_response(&response);
+            let calls = self.deduplicate_turn_calls(parsed_calls);
             if calls.is_empty() {
                 let final_text = if text.is_empty() {
                     response.text.unwrap_or_default()
@@ -1116,7 +1240,9 @@ impl Agent {
                 reasoning_content: response.reasoning_content.clone(),
             });
 
-            let results = self.execute_tools(&calls).await;
+            let results = self
+                .execute_tools_with_cache(&calls, &mut executed_call_cache)
+                .await;
             tool_facts_this_turn.extend(
                 results
                     .iter()
@@ -1597,5 +1723,89 @@ mod tests {
             agent.tool_specs.is_empty(),
             "No tools should match a non-existent allowlist entry"
         );
+    }
+
+    #[test]
+    fn deduplicate_turn_calls_skips_identical_name_and_args() {
+        let agent = AgentBuilder::new()
+            .provider(Box::new(MockProvider {
+                responses: Mutex::new(Vec::new()),
+            }))
+            .tools(Vec::new())
+            .memory(Arc::new(synapse_memory::NoopUnifiedMemory))
+            .observer(Arc::new(synapse_observability::NoopObserver))
+            .prompt_builder(SystemPromptBuilder::with_defaults())
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .config(synapse_domain::config::schema::AgentConfig::default())
+            .model_name("test".into())
+            .temperature(0.0)
+            .workspace_dir(std::env::temp_dir())
+            .identity_config(synapse_domain::config::schema::IdentityConfig::default())
+            .skills(Vec::new())
+            .agent_id("default".into())
+            .build()
+            .expect("agent should build");
+
+        let calls = vec![
+            ParsedToolCall {
+                name: "shell".into(),
+                arguments: serde_json::json!({"command": "date"}),
+                tool_call_id: Some("call-1".into()),
+            },
+            ParsedToolCall {
+                name: "shell".into(),
+                arguments: serde_json::json!({"command": "date"}),
+                tool_call_id: Some("call-2".into()),
+            },
+            ParsedToolCall {
+                name: "shell".into(),
+                arguments: serde_json::json!({"command": "uptime"}),
+                tool_call_id: Some("call-3".into()),
+            },
+        ];
+
+        let deduped = agent.deduplicate_turn_calls(calls);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].tool_call_id.as_deref(), Some("call-1"));
+        assert_eq!(deduped[1].tool_call_id.as_deref(), Some("call-3"));
+    }
+
+    #[test]
+    fn deduplicate_turn_calls_normalizes_argument_key_order() {
+        let agent = AgentBuilder::new()
+            .provider(Box::new(MockProvider {
+                responses: Mutex::new(Vec::new()),
+            }))
+            .tools(Vec::new())
+            .memory(Arc::new(synapse_memory::NoopUnifiedMemory))
+            .observer(Arc::new(synapse_observability::NoopObserver))
+            .prompt_builder(SystemPromptBuilder::with_defaults())
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .config(synapse_domain::config::schema::AgentConfig::default())
+            .model_name("test".into())
+            .temperature(0.0)
+            .workspace_dir(std::env::temp_dir())
+            .identity_config(synapse_domain::config::schema::IdentityConfig::default())
+            .skills(Vec::new())
+            .agent_id("default".into())
+            .build()
+            .expect("agent should build");
+
+        let calls = vec![
+            ParsedToolCall {
+                name: "http_request".into(),
+                arguments: serde_json::json!({"method": "GET", "url": "https://example.com"}),
+                tool_call_id: Some("call-a".into()),
+            },
+            ParsedToolCall {
+                name: "http_request".into(),
+                arguments: serde_json::json!({"url": "https://example.com", "method": "GET"}),
+                tool_call_id: Some("call-b".into()),
+            },
+        ];
+
+        let deduped = agent.deduplicate_turn_calls(calls);
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].tool_call_id.as_deref(), Some("call-a"));
     }
 }
