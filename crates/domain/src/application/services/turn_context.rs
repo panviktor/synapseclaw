@@ -9,6 +9,8 @@
 //! The adapter `turn_context_fmt` re-exports these functions.
 
 use crate::application::services::clarification_policy;
+use crate::application::services::failure_similarity_service;
+use crate::application::services::precedent_similarity_service;
 use crate::application::services::procedural_cluster_service;
 use crate::application::services::procedural_contradiction_service;
 use crate::application::services::resolution_router;
@@ -18,7 +20,7 @@ use crate::application::services::turn_budget_policy;
 use crate::application::services::turn_interpretation::{
     ReferenceCandidateKind, ReferenceSource, TurnInterpretation,
 };
-use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryEntry, Skill};
+use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryCategory, MemoryEntry, Skill};
 use crate::domain::run_recipe::RunRecipe;
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
@@ -40,6 +42,8 @@ pub struct TurnMemoryContext {
     pub nearby_entries: Vec<MemoryEntry>,
     /// Recent temporal echoes from the same memory lanes as surfaced recall.
     pub recent_echoes: Vec<MemoryEntry>,
+    /// Surfaced precedent-memory branches that conflict with recent failure clusters.
+    pub memory_cautions: Vec<MemoryContradictionCaution>,
     /// Relevant learned skills (procedural memory).
     pub skills: Vec<Skill>,
     /// Relevant entities (semantic memory / knowledge graph).
@@ -179,6 +183,7 @@ pub async fn assemble_turn_context(
                 recalled = ctx.recalled_entries.len(),
                 nearby = ctx.nearby_entries.len(),
                 echoes = ctx.recent_echoes.len(),
+                memory_cautions = ctx.memory_cautions.len(),
                 policy = policy_name,
                 "Turn context assembled"
             );
@@ -226,7 +231,6 @@ pub async fn assemble_turn_context(
     }
     load_nearby_recall(mem, agent_id, budget, &mut ctx).await;
     load_recent_echoes(mem, budget, &mut ctx).await;
-    load_entity_neighbors(mem, &mut ctx).await;
 
     let allow_historical_context = ctx
         .execution_budget
@@ -234,6 +238,23 @@ pub async fn assemble_turn_context(
         .is_some_and(|execution_budget| {
             execution_budget.interpreter_mode != turn_budget_policy::InterpreterMode::Skip
         });
+    let needs_failure_clusters = has_precedent_memory_entries(&ctx.recalled_entries)
+        || has_precedent_memory_entries(&ctx.nearby_entries)
+        || has_precedent_memory_entries(&ctx.recent_echoes)
+        || (allow_historical_context && run_recipe_store.is_some());
+    let failure_clusters = if needs_failure_clusters {
+        load_recent_failure_clusters(mem, agent_id).await
+    } else {
+        Vec::new()
+    };
+
+    if !failure_clusters.is_empty() {
+        prioritize_uncontradicted_memory_entries(&mut ctx.recalled_entries, &failure_clusters);
+        prioritize_uncontradicted_memory_entries(&mut ctx.nearby_entries, &failure_clusters);
+        prioritize_uncontradicted_memory_entries(&mut ctx.recent_echoes, &failure_clusters);
+        load_memory_contradictions_from_clusters(&failure_clusters, &mut ctx);
+    }
+    load_entity_neighbors(mem, &mut ctx).await;
 
     if allow_historical_context {
         if let Some(store) = conversation_store {
@@ -297,7 +318,6 @@ pub async fn assemble_turn_context(
                     .iter()
                     .filter_map(|hit| store.get(agent_id, &hit.task_family))
                     .collect::<Vec<_>>();
-                let failure_clusters = load_recent_failure_clusters(mem, agent_id).await;
                 let recipe_hits = prioritize_uncontradicted_recipe_hits(
                     recipe_hits,
                     &stored_recipe_hits,
@@ -339,6 +359,7 @@ pub async fn assemble_turn_context(
         recalled = ctx.recalled_entries.len(),
         nearby = ctx.nearby_entries.len(),
         echoes = ctx.recent_echoes.len(),
+        memory_cautions = ctx.memory_cautions.len(),
         skills = ctx.skills.len(),
         entities = ctx.entities.len(),
         sessions = ctx.session_matches.len(),
@@ -535,6 +556,106 @@ async fn load_recent_failure_clusters(
     .unwrap_or_default()
 }
 
+fn has_precedent_memory_entries(entries: &[MemoryEntry]) -> bool {
+    entries
+        .iter()
+        .any(|entry| is_precedent_memory_category(&entry.category))
+}
+
+fn is_precedent_memory_category(category: &MemoryCategory) -> bool {
+    matches!(category, MemoryCategory::Custom(name) if name == "precedent")
+}
+
+fn prioritize_uncontradicted_memory_entries(
+    entries: &mut Vec<MemoryEntry>,
+    failure_clusters: &[procedural_cluster_service::ProceduralCluster],
+) {
+    if entries.len() <= 1 || failure_clusters.is_empty() {
+        return;
+    }
+
+    let mut preferred = Vec::new();
+    let mut contradicted = Vec::new();
+
+    for entry in entries.drain(..) {
+        let is_contradicted = is_precedent_memory_category(&entry.category)
+            && precedent_similarity_service::precedent_is_contradicted_by_failures(
+                &entry.content,
+                failure_clusters,
+                0.75,
+            );
+        if is_contradicted {
+            contradicted.push(entry);
+        } else {
+            preferred.push(entry);
+        }
+    }
+
+    preferred.extend(contradicted);
+    *entries = preferred;
+}
+
+fn load_memory_contradictions_from_clusters(
+    failure_clusters: &[procedural_cluster_service::ProceduralCluster],
+    ctx: &mut TurnMemoryContext,
+) {
+    if failure_clusters.is_empty() {
+        return;
+    }
+
+    let mut cautions = Vec::new();
+    let mut seen_keys = std::collections::HashSet::new();
+    for entry in ctx
+        .recalled_entries
+        .iter()
+        .chain(ctx.nearby_entries.iter())
+        .chain(ctx.recent_echoes.iter())
+    {
+        if !is_precedent_memory_category(&entry.category) || !seen_keys.insert(entry.key.clone()) {
+            continue;
+        }
+        let tools = precedent_similarity_service::precedent_summary_tools(&entry.content);
+        if tools.is_empty() {
+            continue;
+        }
+        let best_match = failure_clusters
+            .iter()
+            .filter_map(|cluster| {
+                let failed_tools = failure_similarity_service::failure_summary_failed_tools(
+                    &cluster.representative.content,
+                );
+                if failed_tools.is_empty() {
+                    return None;
+                }
+                let overlap = tool_pattern_overlap(&tools, &failed_tools);
+                (overlap >= 0.75).then_some(MemoryContradictionCaution {
+                    entry_key: entry.key.clone(),
+                    failure_representative_key: cluster.representative.key.clone(),
+                    failed_tools,
+                    overlap,
+                })
+            })
+            .max_by(|left, right| {
+                left.overlap
+                    .partial_cmp(&right.overlap)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+        if let Some(caution) = best_match {
+            cautions.push(caution);
+        }
+    }
+
+    cautions.sort_by(|left, right| {
+        right
+            .overlap
+            .partial_cmp(&left.overlap)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.entry_key.cmp(&right.entry_key))
+    });
+    cautions.truncate(2);
+    ctx.memory_cautions = cautions;
+}
+
 fn prioritize_uncontradicted_recipe_hits(
     recipe_hits: Vec<retrieval_service::RunRecipeSearchMatch>,
     stored_recipes: &[RunRecipe],
@@ -567,6 +688,30 @@ fn prioritize_uncontradicted_recipe_hits(
 
     preferred.extend(contradicted);
     preferred
+}
+
+fn tool_pattern_overlap(left: &[String], right: &[String]) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let shared = left
+        .iter()
+        .filter(|tool| right.iter().any(|other| other.eq_ignore_ascii_case(tool)))
+        .count() as f64;
+    let mut union = Vec::new();
+    for tool in left.iter().chain(right.iter()) {
+        if !union
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(tool))
+        {
+            union.push(tool.clone());
+        }
+    }
+    if union.is_empty() {
+        0.0
+    } else {
+        shared / union.len() as f64
+    }
 }
 
 fn load_recipe_contradictions_from_clusters(
@@ -668,6 +813,14 @@ pub struct FormattedTurnContext {
 pub struct EntityNeighborhood {
     pub entity_name: String,
     pub relations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct MemoryContradictionCaution {
+    pub entry_key: String,
+    pub failure_representative_key: String,
+    pub failed_tools: Vec<String>,
+    pub overlap: f64,
 }
 
 /// Format `TurnMemoryContext` into prompt-injectable strings.
@@ -1071,6 +1224,7 @@ fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Opti
     if !ctx.recalled_entries.is_empty()
         || !ctx.nearby_entries.is_empty()
         || !ctx.recent_echoes.is_empty()
+        || !ctx.memory_cautions.is_empty()
     {
         let header = "[Memory context]\n";
         let mut recall_section = String::from(header);
@@ -1094,6 +1248,27 @@ fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Opti
             }
             for entry in &ctx.recent_echoes {
                 append_memory_line(&mut recall_section, entry, budget.recall_entry_max_chars);
+                added = true;
+            }
+        }
+        if !ctx.memory_cautions.is_empty() {
+            if added {
+                recall_section.push_str("[Memory cautions]\n");
+            }
+            for caution in &ctx.memory_cautions {
+                recall_section.push_str(&format!(
+                    "<memory-caution key=\"{}\" overlap=\"{:.2}\">\n",
+                    caution.entry_key, caution.overlap
+                ));
+                if !caution.failed_tools.is_empty() {
+                    recall_section.push_str("Failed tools: ");
+                    recall_section.push_str(&caution.failed_tools.join(", "));
+                    recall_section.push('\n');
+                }
+                recall_section.push_str("Failure anchor: ");
+                recall_section.push_str(&caution.failure_representative_key);
+                recall_section.push('\n');
+                recall_section.push_str("</memory-caution>\n");
                 added = true;
             }
         }
@@ -1619,6 +1794,13 @@ mod tests {
         }
     }
 
+    fn make_precedent_entry(key: &str, content: &str, score: f64) -> MemoryEntry {
+        MemoryEntry {
+            category: MemoryCategory::Custom("precedent".into()),
+            ..make_entry(key, content, score)
+        }
+    }
+
     fn make_skill(name: &str, content: &str) -> Skill {
         Skill {
             id: String::new(),
@@ -1788,6 +1970,34 @@ mod tests {
         assert!(fmt.enrichment_prefix.contains("- fact3: Recent echo"));
     }
 
+    #[test]
+    fn format_memory_section_surfaces_precedent_cautions() {
+        let ctx = TurnMemoryContext {
+            recalled_entries: vec![make_precedent_entry(
+                "precedent-status",
+                "tools=web_search -> message_send | subjects=status.example.com",
+                0.91,
+            )],
+            memory_cautions: vec![MemoryContradictionCaution {
+                entry_key: "precedent-status".into(),
+                failure_representative_key: "failure-1".into(),
+                failed_tools: vec!["web_search".into(), "message_send".into()],
+                overlap: 1.0,
+            }],
+            ..Default::default()
+        };
+
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.enrichment_prefix.contains("[Memory cautions]"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("<memory-caution key=\"precedent-status\" overlap=\"1.00\">"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("Failed tools: web_search, message_send"));
+        assert!(fmt.enrichment_prefix.contains("Failure anchor: failure-1"));
+    }
+
     // ── format_turn_context: skills independent of recall ──
 
     #[test]
@@ -1889,6 +2099,33 @@ mod tests {
 
         assert_eq!(ordered[0].task_family, "backup_delivery");
         assert_eq!(ordered[1].task_family, "status_delivery");
+    }
+
+    #[test]
+    fn prioritize_uncontradicted_memory_entries_keeps_safe_precedent_first() {
+        let mut entries = vec![
+            make_precedent_entry(
+                "precedent-status",
+                "tools=web_search -> message_send | subjects=status.example.com",
+                0.91,
+            ),
+            make_precedent_entry(
+                "precedent-backup",
+                "tools=shell -> message_send | subjects=backup-job",
+                0.82,
+            ),
+        ];
+
+        prioritize_uncontradicted_memory_entries(
+            &mut entries,
+            &[make_failure_cluster(
+                "failure-1",
+                "failed_tools=web_search -> message_send | outcomes=runtime_error",
+            )],
+        );
+
+        assert_eq!(entries[0].key, "precedent-backup");
+        assert_eq!(entries[1].key, "precedent-status");
     }
 
     #[test]

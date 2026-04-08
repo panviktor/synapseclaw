@@ -1308,9 +1308,7 @@ fn precedent_mutation_items(
         .collect()
 }
 
-fn mutation_action_name(
-    action: &crate::domain::memory_mutation::MutationAction,
-) -> &'static str {
+fn mutation_action_name(action: &crate::domain::memory_mutation::MutationAction) -> &'static str {
     match action {
         crate::domain::memory_mutation::MutationAction::Add => "add",
         crate::domain::memory_mutation::MutationAction::Update { .. } => "update",
@@ -1319,9 +1317,7 @@ fn mutation_action_name(
     }
 }
 
-fn mutation_source_name(
-    source: &crate::domain::memory_mutation::MutationSource,
-) -> &'static str {
+fn mutation_source_name(source: &crate::domain::memory_mutation::MutationSource) -> &'static str {
     match source {
         crate::domain::memory_mutation::MutationSource::Consolidation => "consolidation",
         crate::domain::memory_mutation::MutationSource::ExplicitUser => "explicit_user",
@@ -1721,12 +1717,15 @@ mod tests {
                     .iter()
                     .any(|family| family == "fetch_page")
         }));
-        assert!(result.procedural_contradictions.iter().any(|contradiction| {
-            contradiction
-                .recipe_lineage_task_families
-                .iter()
-                .any(|family| family == "fetch_page")
-        }));
+        assert!(result
+            .procedural_contradictions
+            .iter()
+            .any(|contradiction| {
+                contradiction
+                    .recipe_lineage_task_families
+                    .iter()
+                    .any(|family| family == "fetch_page")
+            }));
     }
 
     #[test]
