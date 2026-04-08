@@ -40,6 +40,7 @@ credentials.json
 # Local state backups
 .local-state-backups/
 *.local-state-backup/
+/AGENTS.md
 
 # Coverage artifacts
 lcov.info
