@@ -591,6 +591,21 @@ fn make_schema_nullable(schema: Value) -> Value {
 fn normalize_strict_tool_schema(schema: Value) -> Value {
     match schema {
         Value::Object(mut obj) => {
+            if let Some(one_of) = obj.remove("oneOf") {
+                match (obj.remove("anyOf"), one_of) {
+                    (Some(Value::Array(mut any_of)), Value::Array(mut one_of)) => {
+                        any_of.append(&mut one_of);
+                        obj.insert("anyOf".to_string(), Value::Array(any_of));
+                    }
+                    (None, value) => {
+                        obj.insert("anyOf".to_string(), value);
+                    }
+                    (Some(existing), _) => {
+                        obj.insert("anyOf".to_string(), existing);
+                    }
+                }
+            }
+
             let original_required = obj
                 .get("required")
                 .and_then(Value::as_array)
@@ -641,7 +656,7 @@ fn normalize_strict_tool_schema(schema: Value) -> Value {
                 }
             }
 
-            for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+            for key in ["allOf", "anyOf", "prefixItems"] {
                 if let Some(Value::Array(items)) = obj.get_mut(key) {
                     for item in items {
                         *item = normalize_strict_tool_schema(item.take());
@@ -1890,6 +1905,25 @@ data: [DONE]
                 Value::String("cwd".into())
             ])
         );
+    }
+
+    #[test]
+    fn normalize_strict_tool_schema_rewrites_one_of_to_any_of() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "allowed_tools": {
+                    "oneOf": [
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": "string" } }
+                    ]
+                }
+            }
+        });
+
+        let normalized = normalize_strict_tool_schema(schema);
+        assert!(normalized["properties"]["allowed_tools"]["oneOf"].is_null());
+        assert!(normalized["properties"]["allowed_tools"]["anyOf"].is_array());
     }
 
     #[test]
