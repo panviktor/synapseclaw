@@ -1,20 +1,31 @@
-use crate::auth::openai_oauth::extract_account_id_from_jwt;
+use crate::auth::openai_oauth::{extract_account_id_from_jwt, refresh_access_token};
 use crate::auth::AuthService;
 use crate::multimodal;
-use crate::traits::{ChatMessage, Provider, ProviderCapabilities};
+use crate::traits::{
+    ChatMessage, ChatRequest as ProviderChatRequest, ChatResponse as ProviderChatResponse,
+    Provider, ProviderCapabilities, TokenUsage, ToolCall as ProviderToolCall, ToolSpec,
+};
 use crate::ProviderRuntimeOptions;
 use async_trait::async_trait;
+use base64::Engine;
+use chrono::{DateTime, TimeZone, Utc};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::fs;
 use std::path::PathBuf;
 
 const DEFAULT_CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const CODEX_RESPONSES_URL_ENV: &str = "SYNAPSECLAW_CODEX_RESPONSES_URL";
 const CODEX_BASE_URL_ENV: &str = "SYNAPSECLAW_CODEX_BASE_URL";
+const CODEX_ACCESS_TOKEN_ENV: &str = "SYNAPSECLAW_OPENAI_CODEX_ACCESS_TOKEN";
+const CODEX_REFRESH_TOKEN_ENV: &str = "SYNAPSECLAW_OPENAI_CODEX_REFRESH_TOKEN";
+const CODEX_ACCOUNT_ID_ENV: &str = "SYNAPSECLAW_OPENAI_CODEX_ACCOUNT_ID";
+const CODEX_HOME_ENV: &str = "CODEX_HOME";
 const DEFAULT_CODEX_INSTRUCTIONS: &str =
     "You are SynapseClaw, a concise and helpful coding assistant.";
+const CODEX_TOKEN_REFRESH_SKEW_SECS: i64 = 90;
 
 pub struct OpenAiCodexProvider {
     auth: AuthService,
@@ -29,21 +40,18 @@ pub struct OpenAiCodexProvider {
 #[derive(Debug, Serialize)]
 struct ResponsesRequest {
     model: String,
-    input: Vec<ResponsesInput>,
+    input: Vec<Value>,
     instructions: String,
     store: bool,
     stream: bool,
     text: ResponsesTextOptions,
     reasoning: ResponsesReasoningOptions,
     include: Vec<String>,
-    tool_choice: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<ResponsesToolSpec>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<String>,
     parallel_tool_calls: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct ResponsesInput {
-    role: String,
-    content: Vec<ResponsesInputContent>,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,25 +75,92 @@ struct ResponsesReasoningOptions {
     summary: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize)]
+struct ResponsesToolSpec {
+    #[serde(rename = "type")]
+    kind: String,
+    name: String,
+    description: String,
+    parameters: Value,
+    strict: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
 struct ResponsesResponse {
+    #[serde(default)]
+    id: Option<String>,
     #[serde(default)]
     output: Vec<ResponsesOutput>,
     #[serde(default)]
     output_text: Option<String>,
+    #[serde(default)]
+    usage: Option<ResponsesUsage>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ResponsesOutput {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    call_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+    #[serde(default)]
+    encrypted_content: Option<String>,
     #[serde(default)]
     content: Vec<ResponsesContent>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct ResponsesContent {
     #[serde(rename = "type")]
     kind: Option<String>,
     text: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ResponsesUsage {
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+    #[serde(default)]
+    input_tokens_details: Option<ResponsesInputTokensDetails>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ResponsesInputTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct EnvCodexAuth {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexCliAuthFile {
+    #[serde(default)]
+    auth_mode: Option<String>,
+    #[serde(default)]
+    tokens: Option<CodexCliAuthTokens>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodexCliAuthTokens {
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    account_id: Option<String>,
 }
 
 impl OpenAiCodexProvider {
@@ -210,9 +285,126 @@ fn normalize_model_id(model: &str) -> &str {
     model.rsplit('/').next().unwrap_or(model)
 }
 
-fn build_responses_input(messages: &[ChatMessage]) -> (String, Vec<ResponsesInput>) {
+fn read_env_codex_auth() -> Option<EnvCodexAuth> {
+    let access_token = std::env::var(CODEX_ACCESS_TOKEN_ENV)
+        .ok()
+        .and_then(|value| first_nonempty(Some(&value)));
+    let refresh_token = std::env::var(CODEX_REFRESH_TOKEN_ENV)
+        .ok()
+        .and_then(|value| first_nonempty(Some(&value)));
+    let account_id = std::env::var(CODEX_ACCOUNT_ID_ENV)
+        .ok()
+        .and_then(|value| first_nonempty(Some(&value)));
+
+    if access_token.is_none() && refresh_token.is_none() {
+        None
+    } else {
+        Some(EnvCodexAuth {
+            access_token,
+            refresh_token,
+            account_id,
+        })
+    }
+}
+
+fn resolve_codex_cli_home() -> Option<PathBuf> {
+    match std::env::var(CODEX_HOME_ENV)
+        .ok()
+        .and_then(|value| first_nonempty(Some(&value)))
+    {
+        Some(configured) if configured == "~" => {
+            directories::UserDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
+        }
+        Some(configured) if configured.starts_with("~/") => directories::UserDirs::new()
+            .map(|dirs| dirs.home_dir().join(configured.trim_start_matches("~/"))),
+        Some(configured) => Some(PathBuf::from(configured)),
+        None => directories::UserDirs::new().map(|dirs| dirs.home_dir().join(".codex")),
+    }
+}
+
+fn read_codex_cli_auth() -> Option<EnvCodexAuth> {
+    let auth_path = resolve_codex_cli_home()?.join("auth.json");
+    let raw = fs::read_to_string(auth_path).ok()?;
+    let parsed: CodexCliAuthFile = serde_json::from_str(&raw).ok()?;
+    if parsed.auth_mode.as_deref() != Some("chatgpt") {
+        return None;
+    }
+
+    let tokens = parsed.tokens?;
+    let access_token = tokens
+        .access_token
+        .as_deref()
+        .and_then(|value| first_nonempty(Some(value)));
+    let refresh_token = tokens
+        .refresh_token
+        .as_deref()
+        .and_then(|value| first_nonempty(Some(value)));
+    let account_id = tokens
+        .account_id
+        .as_deref()
+        .and_then(|value| first_nonempty(Some(value)));
+
+    if access_token.is_none() && refresh_token.is_none() {
+        None
+    } else {
+        Some(EnvCodexAuth {
+            access_token,
+            refresh_token,
+            account_id,
+        })
+    }
+}
+
+fn extract_expiry_from_jwt(token: &str) -> Option<DateTime<Utc>> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    let exp = claims.get("exp")?.as_i64()?;
+    Utc.timestamp_opt(exp, 0).single()
+}
+
+fn token_is_expiring(token: &str, skew_secs: i64) -> bool {
+    match extract_expiry_from_jwt(token) {
+        Some(expiry) => expiry <= Utc::now() + chrono::Duration::seconds(skew_secs),
+        None => false,
+    }
+}
+
+async fn resolve_external_access_token(
+    client: &Client,
+) -> anyhow::Result<Option<(String, Option<String>)>> {
+    let Some(external_auth) = read_env_codex_auth().or_else(read_codex_cli_auth) else {
+        return Ok(None);
+    };
+
+    let access_token = match external_auth.access_token {
+        Some(token) if !token_is_expiring(&token, CODEX_TOKEN_REFRESH_SKEW_SECS) => token,
+        Some(token) => match external_auth.refresh_token.as_deref() {
+            Some(refresh_token) => refresh_access_token(client, refresh_token)
+                .await
+                .map(|token_set| token_set.access_token)?,
+            None => token,
+        },
+        None => match external_auth.refresh_token.as_deref() {
+            Some(refresh_token) => refresh_access_token(client, refresh_token)
+                .await
+                .map(|token_set| token_set.access_token)?,
+            None => return Ok(None),
+        },
+    };
+
+    let account_id = external_auth
+        .account_id
+        .or_else(|| extract_account_id_from_jwt(&access_token));
+
+    Ok(Some((access_token, account_id)))
+}
+
+fn build_responses_input(messages: &[ChatMessage]) -> (String, Vec<Value>) {
     let mut system_parts: Vec<&str> = Vec::new();
-    let mut input: Vec<ResponsesInput> = Vec::new();
+    let mut input: Vec<Value> = Vec::new();
 
     for msg in messages {
         match msg.role.as_str() {
@@ -249,20 +441,16 @@ fn build_responses_input(messages: &[ChatMessage]) -> (String, Vec<ResponsesInpu
                     });
                 }
 
-                input.push(ResponsesInput {
-                    role: "user".to_string(),
-                    content: content_items,
-                });
+                input.push(serde_json::json!({
+                    "role": "user",
+                    "content": content_items,
+                }));
             }
             "assistant" => {
-                input.push(ResponsesInput {
-                    role: "assistant".to_string(),
-                    content: vec![ResponsesInputContent {
-                        kind: "output_text".to_string(),
-                        text: Some(msg.content.clone()),
-                        image_url: None,
-                    }],
-                });
+                append_assistant_input(&mut input, &msg.content);
+            }
+            "tool" => {
+                append_tool_result_input(&mut input, &msg.content);
             }
             _ => {}
         }
@@ -277,20 +465,178 @@ fn build_responses_input(messages: &[ChatMessage]) -> (String, Vec<ResponsesInpu
     (instructions, input)
 }
 
+fn append_assistant_input(input: &mut Vec<Value>, content: &str) {
+    if let Ok(value) = serde_json::from_str::<Value>(content) {
+        let text = value
+            .get("content")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(ToString::to_string);
+
+        if let Some(text) = text {
+            input.push(serde_json::json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": text,
+                }],
+            }));
+        }
+
+        if let Some(tool_calls) = value.get("tool_calls").and_then(Value::as_array) {
+            for tool_call in tool_calls {
+                let call_id = tool_call
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty());
+                let name = tool_call
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty());
+                let arguments = tool_call
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "{}".to_string());
+                if let (Some(call_id), Some(name)) = (call_id, name) {
+                    input.push(serde_json::json!({
+                        "type": "function_call",
+                        "call_id": call_id,
+                        "name": name,
+                        "arguments": arguments,
+                    }));
+                }
+            }
+            return;
+        }
+    }
+
+    if !content.trim().is_empty() {
+        input.push(serde_json::json!({
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": content,
+            }],
+        }));
+    }
+}
+
+fn append_tool_result_input(input: &mut Vec<Value>, content: &str) {
+    if let Ok(value) = serde_json::from_str::<Value>(content) {
+        let call_id = value
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty());
+        let output = value
+            .get("content")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| content.to_string());
+        if let Some(call_id) = call_id {
+            input.push(serde_json::json!({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": output,
+            }));
+            return;
+        }
+    }
+
+    input.push(serde_json::json!({
+        "role": "user",
+        "content": [{
+            "type": "input_text",
+            "text": format!("[Tool result]\\n{content}"),
+        }],
+    }));
+}
+
+fn convert_tools(tools: Option<&[ToolSpec]>) -> Option<Vec<ResponsesToolSpec>> {
+    tools.map(|items| {
+        items
+            .iter()
+            .map(|tool| ResponsesToolSpec {
+                kind: "function".to_string(),
+                name: tool.name.clone(),
+                description: tool.description.clone(),
+                parameters: tool.parameters.clone(),
+                strict: true,
+            })
+            .collect()
+    })
+}
+
+fn extract_responses_tool_calls(response: &ResponsesResponse) -> Vec<ProviderToolCall> {
+    response
+        .output
+        .iter()
+        .filter(|item| item.kind.as_deref() == Some("function_call"))
+        .filter_map(|item| {
+            let call_id = item
+                .call_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())?;
+            let name = item
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())?;
+            Some(ProviderToolCall {
+                id: call_id.to_string(),
+                name: name.to_string(),
+                arguments: item.arguments.clone().unwrap_or_else(|| "{}".to_string()),
+            })
+        })
+        .collect()
+}
+
+fn extract_responses_reasoning(response: &ResponsesResponse) -> Option<String> {
+    response
+        .output
+        .iter()
+        .find(|item| item.kind.as_deref() == Some("reasoning"))
+        .and_then(|item| item.encrypted_content.clone())
+}
+
+fn parse_responses_chat_response(response: ResponsesResponse) -> ProviderChatResponse {
+    let usage = response.usage.as_ref().map(|usage| TokenUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        cached_input_tokens: usage
+            .input_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens),
+    });
+
+    ProviderChatResponse {
+        text: extract_responses_text(&response),
+        tool_calls: extract_responses_tool_calls(&response),
+        usage,
+        reasoning_content: extract_responses_reasoning(&response),
+    }
+}
+
 fn clamp_reasoning_effort(model: &str, effort: &str) -> String {
     let id = normalize_model_id(model);
-    // gpt-5-codex currently supports only low|medium|high.
-    if id == "gpt-5-codex" {
+    if matches!(id, "gpt-5.4" | "gpt-5.4-mini" | "gpt-5-codex") {
         return match effort {
             "low" | "medium" | "high" => effort.to_string(),
             "minimal" => "low".to_string(),
             _ => "high".to_string(),
         };
     }
-    if (id.starts_with("gpt-5.2") || id.starts_with("gpt-5.3")) && effort == "minimal" {
+    if (id.starts_with("gpt-5.2") || id.starts_with("gpt-5.3") || id.starts_with("gpt-5.4"))
+        && effort == "minimal"
+    {
         return "low".to_string();
     }
-    if id.starts_with("gpt-5-codex") && effort == "xhigh" {
+    if (id.starts_with("gpt-5.4") || id.starts_with("gpt-5-codex")) && effort == "xhigh" {
         return "high".to_string();
     }
     if id == "gpt-5.1" && effort == "xhigh" {
@@ -593,19 +939,25 @@ async fn decode_responses_body(response: reqwest::Response) -> anyhow::Result<St
 }
 
 impl OpenAiCodexProvider {
-    async fn send_responses_request(
-        &self,
-        input: Vec<ResponsesInput>,
-        instructions: String,
-        model: &str,
-    ) -> anyhow::Result<String> {
+    async fn send_request(&self, request: &ResponsesRequest) -> anyhow::Result<reqwest::Response> {
         let use_gateway_api_key_auth = self.custom_endpoint && self.gateway_api_key.is_some();
+        let external_auth = resolve_external_access_token(&self.client).await?;
+        if external_auth.is_some() {
+            tracing::info!("using external OpenAI Codex auth source");
+        }
         let profile = match self
             .auth
             .get_profile("openai-codex", self.auth_profile_override.as_deref())
             .await
         {
             Ok(profile) => profile,
+            Err(err) if external_auth.is_some() => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to load OpenAI Codex profile; continuing with external auth mode"
+                );
+                None
+            }
             Err(err) if use_gateway_api_key_auth => {
                 tracing::warn!(
                     error = %err,
@@ -621,6 +973,13 @@ impl OpenAiCodexProvider {
             .await
         {
             Ok(token) => token,
+            Err(err) if external_auth.is_some() => {
+                tracing::warn!(
+                    error = %err,
+                    "failed to refresh OpenAI token from auth store; continuing with external auth mode"
+                );
+                None
+            }
             Err(err) if use_gateway_api_key_auth => {
                 tracing::warn!(
                     error = %err,
@@ -631,17 +990,23 @@ impl OpenAiCodexProvider {
             Err(err) => return Err(err),
         };
 
-        let account_id = profile.and_then(|profile| profile.account_id).or_else(|| {
-            oauth_access_token
-                .as_deref()
-                .and_then(extract_account_id_from_jwt)
-        });
+        let external_access_token = external_auth.as_ref().map(|(token, _)| token.clone());
+        let external_account_id = external_auth
+            .as_ref()
+            .and_then(|(_, account_id)| account_id.clone());
+        let access_token_for_account = oauth_access_token
+            .as_deref()
+            .or(external_access_token.as_deref());
+        let account_id = profile
+            .and_then(|profile| profile.account_id)
+            .or_else(|| access_token_for_account.and_then(extract_account_id_from_jwt))
+            .or(external_account_id);
         let access_token = if use_gateway_api_key_auth {
-            oauth_access_token
+            oauth_access_token.or(external_access_token)
         } else {
-            Some(oauth_access_token.ok_or_else(|| {
+            Some(oauth_access_token.or(external_access_token).ok_or_else(|| {
                 anyhow::anyhow!(
-                    "OpenAI Codex auth profile not found. Run `synapseclaw auth login --provider openai-codex`."
+                    "OpenAI Codex auth profile not found. Run `synapseclaw auth login --provider openai-codex`, set SYNAPSECLAW_OPENAI_CODEX_ACCESS_TOKEN, or provide ~/.codex/auth.json."
                 )
             })?)
         };
@@ -650,33 +1015,10 @@ impl OpenAiCodexProvider {
         } else {
             Some(account_id.ok_or_else(|| {
                 anyhow::anyhow!(
-                    "OpenAI Codex account id not found in auth profile/token. Run `synapseclaw auth login --provider openai-codex` again."
+                    "OpenAI Codex account id not found in auth profile/token. Run `synapseclaw auth login --provider openai-codex` again or set SYNAPSECLAW_OPENAI_CODEX_ACCOUNT_ID."
                 )
             })?)
         };
-        let normalized_model = normalize_model_id(model);
-
-        let request = ResponsesRequest {
-            model: normalized_model.to_string(),
-            input,
-            instructions,
-            store: false,
-            stream: true,
-            text: ResponsesTextOptions {
-                verbosity: "medium".to_string(),
-            },
-            reasoning: ResponsesReasoningOptions {
-                effort: resolve_reasoning_effort(
-                    normalized_model,
-                    self.reasoning_effort.as_deref(),
-                ),
-                summary: "auto".to_string(),
-            },
-            include: vec!["reasoning.encrypted_content".to_string()],
-            tool_choice: "auto".to_string(),
-            parallel_tool_calls: true,
-        };
-
         let bearer_token = if use_gateway_api_key_auth {
             self.gateway_api_key.as_deref().unwrap_or_default()
         } else {
@@ -689,7 +1031,14 @@ impl OpenAiCodexProvider {
             .header("Authorization", format!("Bearer {bearer_token}"))
             .header("OpenAI-Beta", "responses=experimental")
             .header("originator", "pi")
-            .header("accept", "text/event-stream")
+            .header(
+                "accept",
+                if request.stream {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+            )
             .header("Content-Type", "application/json");
 
         if let Some(account_id) = account_id.as_deref() {
@@ -711,7 +1060,83 @@ impl OpenAiCodexProvider {
             return Err(super::api_error("OpenAI Codex", response).await);
         }
 
-        decode_responses_body(response).await
+        Ok(response)
+    }
+
+    async fn send_responses_text_request(
+        &self,
+        input: Vec<Value>,
+        instructions: String,
+        model: &str,
+    ) -> anyhow::Result<String> {
+        let normalized_model = normalize_model_id(model);
+        let request = ResponsesRequest {
+            model: normalized_model.to_string(),
+            input,
+            instructions,
+            store: false,
+            stream: true,
+            text: ResponsesTextOptions {
+                verbosity: "medium".to_string(),
+            },
+            reasoning: ResponsesReasoningOptions {
+                effort: resolve_reasoning_effort(
+                    normalized_model,
+                    self.reasoning_effort.as_deref(),
+                ),
+                summary: "auto".to_string(),
+            },
+            include: vec!["reasoning.encrypted_content".to_string()],
+            tools: None,
+            tool_choice: None,
+            parallel_tool_calls: false,
+        };
+
+        decode_responses_body(self.send_request(&request).await?).await
+    }
+
+    async fn send_responses_chat_request(
+        &self,
+        input: Vec<Value>,
+        instructions: String,
+        tools: Option<Vec<ResponsesToolSpec>>,
+        model: &str,
+    ) -> anyhow::Result<ProviderChatResponse> {
+        let normalized_model = normalize_model_id(model);
+        let request = ResponsesRequest {
+            model: normalized_model.to_string(),
+            input,
+            instructions,
+            store: false,
+            stream: false,
+            text: ResponsesTextOptions {
+                verbosity: "medium".to_string(),
+            },
+            reasoning: ResponsesReasoningOptions {
+                effort: resolve_reasoning_effort(
+                    normalized_model,
+                    self.reasoning_effort.as_deref(),
+                ),
+                summary: "auto".to_string(),
+            },
+            include: vec!["reasoning.encrypted_content".to_string()],
+            tool_choice: tools.as_ref().map(|_| "auto".to_string()),
+            tools,
+            parallel_tool_calls: true,
+        };
+
+        let response = self.send_request(&request).await?;
+        let body = response
+            .text()
+            .await
+            .map_err(|err| anyhow::anyhow!("error reading OpenAI Codex response body: {err}"))?;
+        let parsed: ResponsesResponse = serde_json::from_str(&body).map_err(|err| {
+            anyhow::anyhow!(
+                "OpenAI Codex JSON parse failed: {err}. Payload: {}",
+                super::sanitize_api_error(&body)
+            )
+        })?;
+        Ok(parse_responses_chat_response(parsed))
     }
 }
 
@@ -719,10 +1144,25 @@ impl OpenAiCodexProvider {
 impl Provider for OpenAiCodexProvider {
     fn capabilities(&self) -> ProviderCapabilities {
         ProviderCapabilities {
-            native_tool_calling: false,
+            native_tool_calling: true,
             vision: true,
             prompt_caching: false,
         }
+    }
+
+    async fn chat(
+        &self,
+        request: ProviderChatRequest<'_>,
+        model: &str,
+        _temperature: f64,
+    ) -> anyhow::Result<ProviderChatResponse> {
+        let config = synapse_domain::config::schema::MultimodalConfig::default();
+        let prepared =
+            crate::multimodal::prepare_messages_for_provider(request.messages, &config).await?;
+        let (instructions, input) = build_responses_input(&prepared.messages);
+        let tools = convert_tools(request.tools);
+        self.send_responses_chat_request(input, instructions, tools, model)
+            .await
     }
 
     async fn chat_with_system(
@@ -744,7 +1184,7 @@ impl Provider for OpenAiCodexProvider {
         let prepared = crate::multimodal::prepare_messages_for_provider(&messages, &config).await?;
 
         let (instructions, input) = build_responses_input(&prepared.messages);
-        self.send_responses_request(input, instructions, model)
+        self.send_responses_text_request(input, instructions, model)
             .await
     }
 
@@ -759,7 +1199,7 @@ impl Provider for OpenAiCodexProvider {
         let prepared = crate::multimodal::prepare_messages_for_provider(messages, &config).await?;
 
         let (instructions, input) = build_responses_input(&prepared.messages);
-        self.send_responses_request(input, instructions, model)
+        self.send_responses_text_request(input, instructions, model)
             .await
     }
 }
@@ -799,6 +1239,7 @@ mod tests {
         let response = ResponsesResponse {
             output: vec![],
             output_text: Some("hello".into()),
+            ..ResponsesResponse::default()
         };
         assert_eq!(extract_responses_text(&response).as_deref(), Some("hello"));
     }
@@ -807,12 +1248,16 @@ mod tests {
     fn extracts_nested_output_text() {
         let response = ResponsesResponse {
             output: vec![ResponsesOutput {
+                kind: Some("message".into()),
                 content: vec![ResponsesContent {
                     kind: Some("output_text".into()),
                     text: Some("nested".into()),
+                    ..ResponsesContent::default()
                 }],
+                ..ResponsesOutput::default()
             }],
             output_text: None,
+            ..ResponsesResponse::default()
         };
         assert_eq!(extract_responses_text(&response).as_deref(), Some("nested"));
     }
@@ -1066,7 +1511,7 @@ data: [DONE]
     fn build_responses_input_ignores_unknown_roles() {
         let messages = vec![
             ChatMessage {
-                role: "tool".into(),
+                role: "moderator".into(),
                 content: "result".into(),
             },
             ChatMessage {
@@ -1089,14 +1534,9 @@ data: [DONE]
         let (_, input) = build_responses_input(&messages);
 
         assert_eq!(input.len(), 1);
-        assert_eq!(input[0].role, "user");
-        assert_eq!(input[0].content.len(), 2);
-
-        let json: Vec<Value> = input[0]
-            .content
-            .iter()
-            .map(|item| serde_json::to_value(item).unwrap())
-            .collect();
+        assert_eq!(input[0]["role"], "user");
+        let json = input[0]["content"].as_array().unwrap();
+        assert_eq!(json.len(), 2);
 
         // First content = text
         assert_eq!(json[0]["type"], "input_text");
@@ -1113,9 +1553,10 @@ data: [DONE]
         let (_, input) = build_responses_input(&messages);
 
         assert_eq!(input.len(), 1);
-        assert_eq!(input[0].content.len(), 1);
+        let content = input[0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
 
-        let json = serde_json::to_value(&input[0].content[0]).unwrap();
+        let json = &content[0];
         assert_eq!(json["type"], "input_text");
         assert_eq!(json["text"], "Hello without images");
     }
@@ -1128,17 +1569,78 @@ data: [DONE]
         let (_, input) = build_responses_input(&messages);
 
         assert_eq!(input.len(), 1);
-        assert_eq!(input[0].content.len(), 3); // text + 2 images
-
-        let json: Vec<Value> = input[0]
-            .content
-            .iter()
-            .map(|item| serde_json::to_value(item).unwrap())
-            .collect();
+        let json = input[0]["content"].as_array().unwrap();
+        assert_eq!(json.len(), 3); // text + 2 images
 
         assert_eq!(json[0]["type"], "input_text");
         assert_eq!(json[1]["type"], "input_image");
         assert_eq!(json[2]["type"], "input_image");
+    }
+
+    #[test]
+    fn build_responses_input_replays_native_tool_history() {
+        let messages = vec![
+            ChatMessage::assistant(
+                serde_json::json!({
+                    "content": "Checking now",
+                    "tool_calls": [{
+                        "id": "call_123",
+                        "name": "shell",
+                        "arguments": "{\"command\":\"uptime\"}",
+                    }],
+                })
+                .to_string(),
+            ),
+            ChatMessage::tool(
+                serde_json::json!({
+                    "tool_call_id": "call_123",
+                    "content": "load average: 0.00",
+                })
+                .to_string(),
+            ),
+        ];
+
+        let (_, input) = build_responses_input(&messages);
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[0]["role"], "assistant");
+        assert_eq!(input[1]["type"], "function_call");
+        assert_eq!(input[1]["call_id"], "call_123");
+        assert_eq!(input[1]["name"], "shell");
+        assert_eq!(input[2]["type"], "function_call_output");
+        assert_eq!(input[2]["call_id"], "call_123");
+        assert_eq!(input[2]["output"], "load average: 0.00");
+    }
+
+    #[test]
+    fn parse_responses_chat_response_extracts_native_tool_calls() {
+        let response = ResponsesResponse {
+            output: vec![ResponsesOutput {
+                kind: Some("function_call".into()),
+                call_id: Some("call_abc".into()),
+                name: Some("shell".into()),
+                arguments: Some("{\"command\":\"date\"}".into()),
+                ..ResponsesOutput::default()
+            }],
+            usage: Some(ResponsesUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(4),
+                input_tokens_details: Some(ResponsesInputTokensDetails {
+                    cached_tokens: Some(3),
+                }),
+            }),
+            ..ResponsesResponse::default()
+        };
+
+        let parsed = parse_responses_chat_response(response);
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].id, "call_abc");
+        assert_eq!(parsed.tool_calls[0].name, "shell");
+        assert_eq!(parsed.tool_calls[0].arguments, "{\"command\":\"date\"}");
+        assert_eq!(parsed.usage.as_ref().and_then(|u| u.input_tokens), Some(10));
+        assert_eq!(
+            parsed.usage.as_ref().and_then(|u| u.cached_input_tokens),
+            Some(3)
+        );
     }
 
     #[test]
@@ -1159,7 +1661,7 @@ data: [DONE]
             OpenAiCodexProvider::new(&options, None).expect("provider should initialize");
         let caps = provider.capabilities();
 
-        assert!(!caps.native_tool_calling);
+        assert!(caps.native_tool_calling);
         assert!(caps.vision);
     }
 }

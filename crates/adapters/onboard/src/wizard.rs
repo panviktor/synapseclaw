@@ -703,7 +703,7 @@ fn default_model_for_provider(provider: &str) -> String {
     match canonical_provider_name(provider) {
         "anthropic" => "claude-sonnet-4-5-20250929".into(),
         "openai" => "gpt-5.2".into(),
-        "openai-codex" => "gpt-5-codex".into(),
+        "openai-codex" => "gpt-5.4".into(),
         "venice" => "zai-org-glm-5".into(),
         "groq" => "llama-3.3-70b-versatile".into(),
         "mistral" => "mistral-large-latest".into(),
@@ -795,15 +795,23 @@ fn curated_models_for_provider(provider_name: &str) -> Vec<(String, String)> {
             ),
         ],
         "openai-codex" => vec![
+            ("gpt-5.4".to_string(), "GPT-5.4 (recommended)".to_string()),
             (
-                "gpt-5-codex".to_string(),
-                "GPT-5 Codex (recommended)".to_string(),
+                "gpt-5.4-mini".to_string(),
+                "GPT-5.4 mini (faster)".to_string(),
+            ),
+            (
+                "gpt-5.3-codex".to_string(),
+                "GPT-5.3 Codex (stable coding)".to_string(),
+            ),
+            (
+                "gpt-5.3-codex-spark".to_string(),
+                "GPT-5.3 Codex Spark (fastest coding)".to_string(),
             ),
             (
                 "gpt-5.2-codex".to_string(),
-                "GPT-5.2 Codex (agentic coding)".to_string(),
+                "GPT-5.2 Codex (legacy compatibility)".to_string(),
             ),
-            ("o4-mini".to_string(), "o4-mini (fallback)".to_string()),
         ],
         "venice" => vec![
             (
@@ -6269,7 +6277,7 @@ mod tests {
             "anthropic/claude-sonnet-4.6"
         );
         assert_eq!(default_model_for_provider("openai"), "gpt-5.2");
-        assert_eq!(default_model_for_provider("openai-codex"), "gpt-5-codex");
+        assert_eq!(default_model_for_provider("openai-codex"), "gpt-5.4");
         assert_eq!(
             default_model_for_provider("anthropic"),
             "claude-sonnet-4-5-20250929"
@@ -6368,7 +6376,9 @@ mod tests {
             .map(|(id, _)| id)
             .collect();
 
-        assert!(ids.contains(&"gpt-5-codex".to_string()));
+        assert!(ids.contains(&"gpt-5.4".to_string()));
+        assert!(ids.contains(&"gpt-5.4-mini".to_string()));
+        assert!(ids.contains(&"gpt-5.3-codex".to_string()));
         assert!(ids.contains(&"gpt-5.2-codex".to_string()));
     }
 
