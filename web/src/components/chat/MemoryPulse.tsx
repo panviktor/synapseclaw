@@ -35,6 +35,16 @@ function formatLabel(value: string): string {
   return value.replace(/[_-]+/g, ' ');
 }
 
+function previewProjection(text: string | null | undefined, maxLines: number = 4): string | null {
+  if (!text?.trim()) return null;
+  const lines = text
+    .trim()
+    .split('\n')
+    .filter((line) => line.trim().length > 0);
+  if (lines.length <= maxLines) return lines.join('\n');
+  return `${lines.slice(0, maxLines).join('\n')}\n…`;
+}
+
 function latestLearningText(report: PostTurnReportEvent | null): string {
   if (!report) return 'No learning event yet for this agent in the current stream.';
   if (report.explicit_kind) return report.explicit_kind.replace(/_/g, ' ');
@@ -97,6 +107,8 @@ export default function MemoryPulse({
     projections?.learning_maintenance_plan?.run_prompt_optimization,
   ].filter(Boolean).length;
   const topEffectiveSkills = projections?.effective_skills.slice(0, 3) ?? [];
+  const workingStatePreview = previewProjection(projections?.working_state?.projection, 5);
+  const profilePreview = previewProjection(projections?.current_user_profile?.projection, 5);
 
   return (
     <aside className="flex h-full flex-col overflow-hidden bg-[var(--bg-secondary)]">
@@ -206,6 +218,34 @@ export default function MemoryPulse({
                 ))}
               </div>
             )}
+          </div>
+        </section>
+
+        <section className="glass-card overflow-hidden">
+          <div className="border-b border-[var(--border-default)] px-4 py-3">
+            <div className="flex items-center gap-2">
+              <BookMarked className="h-4 w-4 text-[var(--accent-primary)]" />
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Praefrontalis
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Working State</h3>
+              </div>
+            </div>
+          </div>
+          <div className="space-y-3 px-4 py-4">
+            <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">State projection</p>
+              <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--text-secondary)]">
+                {workingStatePreview ?? 'No working-state projection is active for this chat scope yet.'}
+              </pre>
+            </div>
+            <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Profile defaults</p>
+              <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--text-secondary)]">
+                {profilePreview ?? 'No structured user-profile projection is available for this scope yet.'}
+              </pre>
+            </div>
           </div>
         </section>
 
