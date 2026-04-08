@@ -525,6 +525,7 @@ mod tests {
             provider: "openrouter".into(),
             model: "claude-sonnet".into(),
             messages_count: 2,
+            context: None,
         });
         obs.record_event(&ObserverEvent::LlmResponse {
             provider: "openrouter".into(),

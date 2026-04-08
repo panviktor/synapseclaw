@@ -1,3 +1,6 @@
+use crate::agent::context_engine::{
+    build_provider_prompt_snapshot, total_message_chars, ProviderPromptSnapshot,
+};
 use crate::agent::dispatcher::{
     NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
@@ -49,75 +52,6 @@ fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
-fn format_delivery_target(
-    target: &synapse_domain::domain::conversation_target::ConversationDeliveryTarget,
-) -> String {
-    match target {
-        synapse_domain::domain::conversation_target::ConversationDeliveryTarget::CurrentConversation => {
-            "current_conversation".to_string()
-        }
-        synapse_domain::domain::conversation_target::ConversationDeliveryTarget::Explicit {
-            channel,
-            recipient,
-            thread_ref,
-        } => match thread_ref {
-            Some(thread_ref) => format!("{channel}:{recipient}#{thread_ref}"),
-            None => format!("{channel}:{recipient}"),
-        },
-    }
-}
-
-fn format_resolution_defaults(
-    interpretation: Option<&turn_interpretation::TurnInterpretation>,
-) -> Option<String> {
-    let interpretation = interpretation?;
-    let mut lines = Vec::new();
-
-    if let Some(profile) = interpretation.user_profile.as_ref() {
-        if let Some(city) = profile.default_city.as_deref() {
-            lines.push("[resolution-defaults]".to_string());
-            lines.push(format!("- implicit_city: {city}"));
-            lines.push(
-                "- when the user omits a city for weather, local time, or timezone requests, use implicit_city unless the current turn names another location".to_string(),
-            );
-        }
-
-        if let Some(target) = profile.default_delivery_target.as_ref() {
-            if lines.is_empty() {
-                lines.push("[resolution-defaults]".to_string());
-            }
-            lines.push(format!(
-                "- implicit_delivery_target: {}",
-                format_delivery_target(target)
-            ));
-            lines.push(
-                "- when the user asks to send or reply \"there\" without naming a destination, use implicit_delivery_target unless the current turn names another target".to_string(),
-            );
-        }
-    }
-
-    if let Some(state) = interpretation.dialogue_state.as_ref() {
-        if let Some(target) = state.recent_delivery_target.as_ref() {
-            if lines.is_empty() {
-                lines.push("[resolution-defaults]".to_string());
-            }
-            lines.push(format!(
-                "- recent_delivery_target: {}",
-                format_delivery_target(target)
-            ));
-            lines.push(
-                "- when the user says \"there\" and no newer destination is named, prefer recent_delivery_target".to_string(),
-            );
-        }
-    }
-
-    if lines.is_empty() {
-        None
-    } else {
-        Some(format!("{}\n", lines.join("\n")))
-    }
-}
-
 pub struct Agent {
     provider: Box<dyn Provider>,
     tools: Vec<Box<dyn Tool>>,
@@ -131,6 +65,7 @@ pub struct Agent {
     /// Turn counter within current session (for continuation policy).
     turn_count: usize,
     config: synapse_domain::config::schema::AgentConfig,
+    provider_name: String,
     model_name: String,
     temperature: f64,
     workspace_dir: std::path::PathBuf,
@@ -169,6 +104,7 @@ pub struct AgentBuilder {
     prompt_budget: Option<PromptBudget>,
     continuation_policy: Option<ContinuationPolicy>,
     config: Option<synapse_domain::config::schema::AgentConfig>,
+    provider_name: Option<String>,
     model_name: Option<String>,
     temperature: Option<f64>,
     workspace_dir: Option<std::path::PathBuf>,
@@ -203,6 +139,7 @@ impl AgentBuilder {
             prompt_budget: None,
             continuation_policy: None,
             config: None,
+            provider_name: None,
             model_name: None,
             temperature: None,
             workspace_dir: None,
@@ -268,6 +205,11 @@ impl AgentBuilder {
 
     pub fn config(mut self, config: synapse_domain::config::schema::AgentConfig) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    pub fn provider_name(mut self, provider_name: String) -> Self {
+        self.provider_name = Some(provider_name);
         self
     }
 
@@ -422,6 +364,7 @@ impl AgentBuilder {
             continuation_policy: self.continuation_policy.unwrap_or_default(),
             turn_count: 0,
             config: self.config.unwrap_or_default(),
+            provider_name: self.provider_name.unwrap_or_else(|| "unknown".into()),
             model_name: self
                 .model_name
                 .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514".into()),
@@ -458,8 +401,8 @@ impl Agent {
         AgentBuilder::new()
     }
 
-    fn build_provider_messages(&self) -> Vec<ChatMessage> {
-        build_provider_messages(
+    fn build_provider_prompt_snapshot(&self) -> ProviderPromptSnapshot {
+        build_provider_prompt_snapshot(
             self.tool_dispatcher.as_ref(),
             &self.history,
             PROVIDER_CONTEXT_CHAT_MESSAGES,
@@ -746,6 +689,7 @@ impl Agent {
             .continuation_policy(config.memory.prompt_budget.to_continuation_policy())
             .prompt_builder(SystemPromptBuilder::with_defaults())
             .config(config.agent.clone())
+            .provider_name(provider_name.to_string())
             .agent_id(resolved_agent_id)
             .model_name(model_name)
             .temperature(config.default_temperature)
@@ -1062,7 +1006,6 @@ impl Agent {
         let interpretation_block = turn_interpretation.as_ref().and_then(|interpretation| {
             turn_interpretation::format_turn_interpretation(&interpretation)
         });
-        let resolution_defaults_block = format_resolution_defaults(turn_interpretation.as_ref());
         // ── Unified turn context assembly ──
         let continuation = if self.turn_count > 0 {
             Some(&self.continuation_policy)
@@ -1105,19 +1048,6 @@ impl Agent {
             self.history.retain(|msg| {
                 if let ConversationMessage::Chat(chat) = msg {
                     !(chat.role == "system" && chat.content.starts_with(INTERPRETATION_MARKER))
-                } else {
-                    true
-                }
-            });
-            self.history
-                .push(ConversationMessage::Chat(ChatMessage::system(block)));
-        }
-        if let Some(block) = resolution_defaults_block {
-            const RESOLUTION_DEFAULTS_MARKER: &str = "[resolution-defaults]\n";
-            self.history.retain(|msg| {
-                if let ConversationMessage::Chat(chat) = msg {
-                    !(chat.role == "system"
-                        && chat.content.starts_with(RESOLUTION_DEFAULTS_MARKER))
                 } else {
                     true
                 }
@@ -1170,7 +1100,20 @@ impl Agent {
             HashMap::new();
 
         for _ in 0..self.config.max_tool_iterations {
-            let mut messages = self.build_provider_messages();
+            let snapshot = self.build_provider_prompt_snapshot();
+            tracing::info!(
+                target: "agent.provider_context",
+                system_messages = snapshot.stats.system_messages,
+                system_chars = snapshot.stats.system_chars,
+                prior_chat_messages = snapshot.stats.prior_chat_messages,
+                prior_chat_chars = snapshot.stats.prior_chat_chars,
+                current_turn_messages = snapshot.stats.current_turn_messages,
+                current_turn_chars = snapshot.stats.current_turn_chars,
+                total_messages = snapshot.stats.total_messages,
+                total_chars = snapshot.stats.total_chars,
+                "Built provider-facing context snapshot"
+            );
+            let mut messages = snapshot.messages;
 
             // Inject enrichment prefix on the last user message for the provider
             // call — not persisted in history.
@@ -1181,6 +1124,15 @@ impl Agent {
                     }
                 }
             }
+            let mut request_context = snapshot.stats.clone();
+            request_context.total_messages = messages.len();
+            request_context.total_chars = total_message_chars(&messages);
+            self.observer.record_event(&ObserverEvent::LlmRequest {
+                provider: self.provider_name.clone(),
+                model: effective_model.clone(),
+                messages_count: messages.len(),
+                context: Some(request_context),
+            });
 
             // Response cache: check before LLM call (only for deterministic, text-only prompts)
             let cache_key = if self.temperature == 0.0 {
@@ -1381,53 +1333,6 @@ impl Agent {
         listen_handle.abort();
         Ok(())
     }
-}
-
-fn build_provider_messages(
-    dispatcher: &dyn ToolDispatcher,
-    history: &[ConversationMessage],
-    recent_chat_limit: usize,
-) -> Vec<ChatMessage> {
-    let latest_user_index = history.iter().rposition(|msg| {
-        matches!(
-            msg,
-            ConversationMessage::Chat(chat) if chat.role == "user"
-        )
-    });
-
-    let mut provider_messages: Vec<ChatMessage> = history
-        .iter()
-        .filter_map(|msg| match msg {
-            ConversationMessage::Chat(chat) if chat.role == "system" => Some(chat.clone()),
-            _ => None,
-        })
-        .collect();
-
-    let (prefix, current_turn) = match latest_user_index {
-        Some(index) => history.split_at(index),
-        None => (history, &[][..]),
-    };
-
-    let recent_chat_context = prefix
-        .iter()
-        .filter_map(|msg| match msg {
-            ConversationMessage::Chat(chat)
-                if chat.role == "user" || chat.role == "assistant" =>
-            {
-                Some(ConversationMessage::Chat(chat.clone()))
-            }
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    let context_start = recent_chat_context
-        .len()
-        .saturating_sub(recent_chat_limit);
-    provider_messages.extend(dispatcher.to_provider_messages(
-        &recent_chat_context[context_start..],
-    ));
-    provider_messages.extend(dispatcher.to_provider_messages(current_turn));
-    provider_messages
 }
 
 pub async fn run(

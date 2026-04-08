@@ -1,5 +1,17 @@
 use std::time::Duration;
 
+#[derive(Debug, Clone, Default)]
+pub struct ProviderContextStats {
+    pub system_messages: usize,
+    pub system_chars: usize,
+    pub prior_chat_messages: usize,
+    pub prior_chat_chars: usize,
+    pub current_turn_messages: usize,
+    pub current_turn_chars: usize,
+    pub total_messages: usize,
+    pub total_chars: usize,
+}
+
 /// Discrete events emitted by the agent runtime for observability.
 ///
 /// Each variant represents a lifecycle event that observers can record,
@@ -18,6 +30,7 @@ pub enum ObserverEvent {
         provider: String,
         model: String,
         messages_count: usize,
+        context: Option<ProviderContextStats>,
     },
     /// Result of a single LLM provider call.
     LlmResponse {

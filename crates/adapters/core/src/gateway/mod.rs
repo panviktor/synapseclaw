@@ -2633,6 +2633,7 @@ async fn handle_webhook(
             provider: provider_label.clone(),
             model: model_label.clone(),
             messages_count: 1,
+            context: None,
         });
 
     match run_gateway_chat_simple(&state, message).await {
