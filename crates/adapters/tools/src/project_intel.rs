@@ -10,6 +10,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use synapse_domain::domain::tool_fact::{
+    ProjectAction, ProjectFact, ToolFactPayload, TypedToolFact,
+};
 
 /// Project intelligence tool for consulting project management.
 ///
@@ -52,6 +55,56 @@ impl ProjectIntelTool {
             default_language,
             risk_sensitivity: RiskSensitivity::from_str(&risk_sensitivity),
         }
+    }
+
+    fn build_result_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        match result {
+            Some(result) if result.success => {}
+            _ => return Vec::new(),
+        }
+
+        let action = match args.get("action").and_then(|value| value.as_str()) {
+            Some("status_report") => ProjectAction::StatusReport,
+            Some("risk_scan") => ProjectAction::RiskScan,
+            Some("draft_update") => ProjectAction::DraftUpdate,
+            Some("sprint_summary") => ProjectAction::SprintSummary,
+            Some("effort_estimate") => ProjectAction::EffortEstimate,
+            _ => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Project(ProjectFact {
+                action,
+                project_name: args
+                    .get("project_name")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                language: args
+                    .get("language")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .or_else(|| Some(self.default_language.clone())),
+                period: args
+                    .get("period")
+                    .or_else(|| args.get("sprint_dates"))
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                audience: args
+                    .get("audience")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                tone: args
+                    .get("tone")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                task_count: project_task_count(args),
+            }),
+        }]
     }
 
     fn execute_status_report(&self, args: &serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -517,11 +570,45 @@ impl Tool for ProjectIntelTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.build_result_facts(args, result)
+    }
+}
+
+fn project_task_count(args: &serde_json::Value) -> Option<usize> {
+    if let Some(tasks) = args.get("tasks").and_then(|value| value.as_str()) {
+        return Some(tasks.lines().filter(|line| !line.trim().is_empty()).count());
+    }
+
+    let completed = args
+        .get("completed")
+        .and_then(|value| value.as_str())
+        .map(|value| value.lines().filter(|line| !line.trim().is_empty()).count())
+        .unwrap_or(0);
+    let in_progress = args
+        .get("in_progress")
+        .and_then(|value| value.as_str())
+        .map(|value| value.lines().filter(|line| !line.trim().is_empty()).count())
+        .unwrap_or(0);
+    let blocked = args
+        .get("blocked")
+        .and_then(|value| value.as_str())
+        .map(|value| value.lines().filter(|line| !line.trim().is_empty()).count())
+        .unwrap_or(0);
+
+    let total = completed + in_progress + blocked;
+    (total > 0).then_some(total)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::domain::tool_fact::ToolFactPayload;
 
     fn tool() -> ProjectIntelTool {
         ProjectIntelTool::new("en".into(), "medium".into())
@@ -746,5 +833,60 @@ mod tests {
             .unwrap();
         assert!(result.success);
         assert!(result.output.contains("[HIGH]") || result.output.contains("[CRITICAL]"));
+    }
+
+    #[test]
+    fn extract_facts_emits_project_fact_for_status_report() {
+        let t = tool();
+        let facts = t.extract_facts(
+            &json!({
+                "action": "status_report",
+                "project_name": "Atlas",
+                "period": "week",
+                "language": "en",
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        match &facts[0].payload {
+            ToolFactPayload::Project(project) => {
+                assert_eq!(project.action, ProjectAction::StatusReport);
+                assert_eq!(project.project_name.as_deref(), Some("Atlas"));
+                assert_eq!(project.period.as_deref(), Some("week"));
+                assert_eq!(project.language.as_deref(), Some("en"));
+                assert_eq!(project.task_count, None);
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_facts_counts_effort_estimate_tasks() {
+        let t = tool();
+        let facts = t.extract_facts(
+            &json!({
+                "action": "effort_estimate",
+                "tasks": "Fix typo\nImplement auth\n"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        match &facts[0].payload {
+            ToolFactPayload::Project(project) => {
+                assert_eq!(project.action, ProjectAction::EffortEstimate);
+                assert_eq!(project.task_count, Some(2));
+                assert_eq!(project.language.as_deref(), Some("en"));
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
     }
 }
