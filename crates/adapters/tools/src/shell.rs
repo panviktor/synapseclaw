@@ -2,11 +2,13 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
-use synapse_domain::domain::tool_fact::TypedToolFact;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 use synapse_domain::ports::runtime::RuntimeAdapter;
 
 /// Maximum shell command execution time before kill.
@@ -18,7 +20,17 @@ const MAX_OUTPUT_BYTES: usize = 1_048_576;
 /// Only functional variables are included — never API keys or secrets.
 #[cfg(not(target_os = "windows"))]
 const SAFE_ENV_VARS: &[&str] = &[
-    "PATH", "HOME", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "USER", "SHELL", "TMPDIR",
+    "PATH",
+    "HOME",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "USER",
+    "SHELL",
+    "TMPDIR",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
 ];
 
 /// Environment variables safe to pass to shell commands on Windows.
@@ -80,6 +92,187 @@ fn collect_allowed_shell_env_vars(security: &SecurityPolicy) -> Vec<String> {
         }
     }
     out
+}
+
+fn configure_runtime_bus_env(cmd: &mut tokio::process::Command) {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let session_bus = std::env::var("DBUS_SESSION_BUS_ADDRESS")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+
+    if let Some(runtime_dir) = runtime_dir.as_deref() {
+        cmd.env("XDG_RUNTIME_DIR", runtime_dir);
+    }
+
+    if let Some(session_bus) = session_bus.as_deref() {
+        cmd.env("DBUS_SESSION_BUS_ADDRESS", session_bus);
+        return;
+    }
+
+    if let Some(runtime_dir) = runtime_dir.as_deref() {
+        let bus_path = std::path::Path::new(runtime_dir).join("bus");
+        if bus_path.exists() {
+            cmd.env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                format!("unix:path={}", bus_path.display()),
+            );
+        }
+    }
+}
+
+fn extract_shell_focus_entities(
+    workspace_dir: &std::path::Path,
+    command: &str,
+) -> Vec<FocusEntity> {
+    let mut entities = vec![
+        FocusEntity {
+            kind: "workspace_directory".into(),
+            name: workspace_dir.display().to_string(),
+            metadata: Some("shell_cwd".into()),
+        },
+        FocusEntity {
+            kind: "shell_command".into(),
+            name: command.to_string(),
+            metadata: Some(workspace_dir.display().to_string()),
+        },
+    ];
+
+    if let Some(service_name) = extract_system_service(command) {
+        entities.push(FocusEntity {
+            kind: "system_service".into(),
+            name: service_name,
+            metadata: Some(service_command_label(command).into()),
+        });
+    }
+
+    if looks_like_package_updates(command) {
+        entities.push(FocusEntity {
+            kind: "ops_workflow".into(),
+            name: "package_updates".into(),
+            metadata: Some("package_manager_check".into()),
+        });
+    }
+
+    if looks_like_system_memory_check(command) {
+        entities.push(FocusEntity {
+            kind: "system_metric".into(),
+            name: "memory".into(),
+            metadata: Some("capacity_check".into()),
+        });
+    }
+
+    if looks_like_disk_check(command) {
+        entities.push(FocusEntity {
+            kind: "system_metric".into(),
+            name: "disk".into(),
+            metadata: Some("capacity_check".into()),
+        });
+    }
+
+    if looks_like_uptime_check(command) {
+        entities.push(FocusEntity {
+            kind: "system_metric".into(),
+            name: "load_average".into(),
+            metadata: Some("uptime".into()),
+        });
+    }
+
+    if let Some(url) = extract_http_url(command) {
+        entities.push(FocusEntity {
+            kind: "network_endpoint".into(),
+            name: url,
+            metadata: Some(shell_network_label(command).into()),
+        });
+    }
+
+    entities
+}
+
+fn build_shell_resource_facts(tool_name: &str, command: &str) -> Vec<TypedToolFact> {
+    let mut facts = Vec::new();
+    if let Some(url) = extract_http_url(command) {
+        facts.push(TypedToolFact {
+            tool_id: tool_name.to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::NetworkEndpoint,
+                operation: if url.contains("/health") {
+                    ResourceOperation::Verify
+                } else {
+                    ResourceOperation::Fetch
+                },
+                host: extract_url_host(&url),
+                locator: url,
+                metadata: ResourceMetadata::default(),
+            }),
+        });
+    }
+    facts
+}
+
+fn extract_system_service(command: &str) -> Option<String> {
+    static SERVICE_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let service_re = SERVICE_RE.get_or_init(|| {
+        regex::Regex::new(r"(?P<service>[A-Za-z0-9_.@-]+\.service)\b")
+            .expect("service regex must be valid")
+    });
+    service_re
+        .captures(command)
+        .and_then(|caps| caps.name("service").map(|m| m.as_str().to_string()))
+}
+
+fn service_command_label(command: &str) -> &'static str {
+    if command.contains("journalctl") {
+        "journalctl"
+    } else if command.contains("systemctl") {
+        "systemctl"
+    } else {
+        "shell"
+    }
+}
+
+fn looks_like_package_updates(command: &str) -> bool {
+    (command.contains("apt ") || command.contains("apt-get ") || command.contains("dnf "))
+        && (command.contains("list --upgradable")
+            || command.contains(" update")
+            || command.contains(" upgrade"))
+}
+
+fn looks_like_system_memory_check(command: &str) -> bool {
+    command.contains("free ") || command.trim() == "free" || command.contains("/proc/meminfo")
+}
+
+fn looks_like_disk_check(command: &str) -> bool {
+    command.contains("df ") || command.trim() == "df"
+}
+
+fn looks_like_uptime_check(command: &str) -> bool {
+    command.trim() == "uptime" || command.contains(" uptime")
+}
+
+fn extract_http_url(command: &str) -> Option<String> {
+    command.split_whitespace().find_map(|token| {
+        let candidate = token.trim_matches(|ch: char| "\"'()[]{};, ".contains(ch));
+        (candidate.starts_with("http://") || candidate.starts_with("https://"))
+            .then(|| candidate.to_string())
+    })
+}
+
+fn extract_url_host(url: &str) -> Option<String> {
+    let without_scheme = url.split_once("://")?.1;
+    let host_port = without_scheme.split('/').next()?;
+    Some(host_port.to_string())
+}
+
+fn shell_network_label(command: &str) -> &'static str {
+    if command.contains("/health") {
+        "health_check"
+    } else if command.contains("curl ") {
+        "curl"
+    } else {
+        "network_probe"
+    }
 }
 
 #[async_trait]
@@ -178,6 +371,7 @@ impl Tool for ShellTool {
                 cmd.env(&var, val);
             }
         }
+        configure_runtime_bus_env(&mut cmd);
 
         let result =
             tokio::time::timeout(Duration::from_secs(SHELL_TIMEOUT_SECS), cmd.output()).await;
@@ -244,22 +438,13 @@ impl Tool for ShellTool {
             _ => return Vec::new(),
         };
 
-        vec![TypedToolFact::focus(
+        let mut facts = vec![TypedToolFact::focus(
             self.name().to_string(),
-            vec![
-                FocusEntity {
-                    kind: "workspace_directory".into(),
-                    name: self.security.workspace_dir.display().to_string(),
-                    metadata: Some("shell_cwd".into()),
-                },
-                FocusEntity {
-                    kind: "shell_command".into(),
-                    name: command.to_string(),
-                    metadata: Some(self.security.workspace_dir.display().to_string()),
-                },
-            ],
+            extract_shell_focus_entities(&self.security.workspace_dir, command),
             Vec::new(),
-        )]
+        )];
+        facts.extend(build_shell_resource_facts(self.name(), command));
+        facts
     }
 }
 
@@ -562,6 +747,32 @@ mod tests {
             .contains("SYNAPSECLAW_TEST_PASSTHROUGH=db://unit-test"));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_reconstructs_session_bus_from_runtime_dir() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        std::fs::write(runtime_dir.path().join("bus"), "").unwrap();
+        let _runtime_guard = EnvGuard::set(
+            "XDG_RUNTIME_DIR",
+            runtime_dir.path().to_string_lossy().as_ref(),
+        );
+        let _bus_guard = EnvGuard::set("DBUS_SESSION_BUS_ADDRESS", "");
+
+        let tool = ShellTool::new(test_security_with_env_cmd(), test_runtime());
+        let result = tool
+            .execute(json!({"command": "env"}))
+            .await
+            .expect("env command execution should succeed");
+
+        assert!(result.success);
+        assert!(result
+            .output
+            .contains(&format!("XDG_RUNTIME_DIR={}", runtime_dir.path().display())));
+        assert!(result.output.contains(&format!(
+            "DBUS_SESSION_BUS_ADDRESS=unix:path={}/bus",
+            runtime_dir.path().display()
+        )));
+    }
+
     #[test]
     fn invalid_shell_env_passthrough_names_are_filtered() {
         let security = SecurityPolicy {
@@ -603,6 +814,39 @@ mod tests {
             .iter()
             .any(|entity| entity.kind == "shell_command" && entity.name == "cargo test -q"));
         assert!(facts[0].subjects().is_empty());
+    }
+
+    #[test]
+    fn extract_facts_emits_service_and_network_context() {
+        let tool = ShellTool::new(test_security(AutonomyLevel::Supervised), test_runtime());
+        let facts = tool.extract_facts(
+            &json!({"command": "systemctl status synapseclaw.service && curl http://127.0.0.1:42617/health"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert!(facts[0]
+            .focus_entities()
+            .iter()
+            .any(|entity| entity.kind == "system_service"
+                && entity.name == "synapseclaw.service"
+                && entity.metadata.as_deref() == Some("systemctl")));
+        assert!(facts[0]
+            .focus_entities()
+            .iter()
+            .any(|entity| entity.kind == "network_endpoint"
+                && entity.name == "http://127.0.0.1:42617/health"
+                && entity.metadata.as_deref() == Some("health_check")));
+        assert!(facts.iter().any(|fact| matches!(
+            &fact.payload,
+            ToolFactPayload::Resource(resource)
+                if resource.kind == ResourceKind::NetworkEndpoint
+                    && resource.operation == ResourceOperation::Verify
+                    && resource.locator == "http://127.0.0.1:42617/health"
+        )));
     }
 
     #[tokio::test]
@@ -681,6 +925,10 @@ mod tests {
         assert!(
             SAFE_ENV_VARS.contains(&"TERM"),
             "TERM must be in safe env vars"
+        );
+        assert!(
+            SAFE_ENV_VARS.contains(&"XDG_RUNTIME_DIR"),
+            "XDG_RUNTIME_DIR must be in safe env vars"
         );
     }
 

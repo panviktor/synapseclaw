@@ -62,6 +62,7 @@ pub mod swarm;
 pub mod tavily_extract;
 pub mod telegram_post;
 pub mod todo;
+mod tool_fact_helpers;
 pub mod traits;
 pub mod user_profile;
 pub mod web_fetch;

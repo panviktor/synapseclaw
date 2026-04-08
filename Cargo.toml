@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/domain", "crates/adapters/core", "crates/adapters/security", "crates/adapters/memory", "crates/adapters/observability", "crates/adapters/cron-store", "crates/adapters/providers", "crates/adapters/mcp", "crates/adapters/infra", "crates/adapters/channels", "crates/adapters/tools", "crates/adapters/onboard"]
+members = [".", "crates/domain", "crates/adapters/core", "crates/adapters/security", "crates/adapters/memory", "crates/adapters/observability", "crates/adapters/cron-store", "crates/adapters/providers", "crates/adapters/mcp", "crates/adapters/infra", "crates/adapters/channels", "crates/adapters/tools", "crates/adapters/onboard", "dev/gateway-chat-harness"]
 resolver = "2"
 
 [package]
@@ -197,4 +197,3 @@ path = "tests/test_system.rs"
 [[test]]
 name = "live"
 path = "tests/test_live.rs"
-

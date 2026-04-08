@@ -757,6 +757,7 @@ fn search_domain_name(domain: &SearchDomain) -> &'static str {
     match domain {
         SearchDomain::Web => "web",
         SearchDomain::Workspace => "workspace",
+        SearchDomain::Memory => "memory",
         SearchDomain::Session => "session",
         SearchDomain::Precedent => "precedent",
         SearchDomain::Knowledge => "knowledge",

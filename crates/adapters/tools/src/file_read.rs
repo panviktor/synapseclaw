@@ -1,4 +1,5 @@
 use super::traits::{Tool, ToolResult};
+use crate::tool_fact_helpers::is_low_signal_bootstrap_path;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
@@ -232,6 +233,10 @@ impl Tool for FileReadTool {
             _ => return Vec::new(),
         };
 
+        if is_low_signal_bootstrap_path(path) {
+            return Vec::new();
+        }
+
         vec![TypedToolFact {
             tool_id: self.name().to_string(),
             payload: ToolFactPayload::Resource(ResourceFact {
@@ -353,6 +358,21 @@ mod tests {
             .projected_subjects()
             .iter()
             .any(|subject| subject == "notes/todo.txt"));
+    }
+
+    #[test]
+    fn extract_facts_skips_low_signal_bootstrap_files() {
+        let tool = FileReadTool::new(test_security(std::env::temp_dir()));
+        let facts = tool.extract_facts(
+            &json!({"path": "SOUL.md"}),
+            Some(&ToolResult {
+                success: true,
+                output: String::new(),
+                error: None,
+            }),
+        );
+
+        assert!(facts.is_empty());
     }
 
     #[tokio::test]

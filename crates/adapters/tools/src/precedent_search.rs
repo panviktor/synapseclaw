@@ -379,6 +379,7 @@ mod tests {
             .upsert(RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "deploy".into(),
+                lineage_task_families: vec!["deploy".into()],
                 sample_request: "deploy the latest release to production".into(),
                 summary: "Check staging first, then ship the release".into(),
                 tool_pattern: vec!["shell".into(), "git".into()],
@@ -406,6 +407,7 @@ mod tests {
             .upsert(RunRecipe {
                 agent_id: "agent".into(),
                 task_family: "deploy".into(),
+                lineage_task_families: vec!["deploy".into()],
                 sample_request: "deploy the latest release to production".into(),
                 summary: "Check staging first, then ship the release".into(),
                 tool_pattern: vec!["shell".into(), "git".into()],

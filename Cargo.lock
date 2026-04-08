@@ -2367,6 +2367,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "gateway-chat-harness"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "reqwest 0.13.2",
+ "serde",
+ "serde_json",
+ "synapse_domain",
+ "synapse_infra",
+ "tokio",
+ "tokio-tungstenite 0.29.0",
+ "uuid",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.12.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

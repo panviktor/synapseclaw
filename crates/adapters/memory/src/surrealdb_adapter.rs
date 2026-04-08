@@ -34,6 +34,10 @@ fn log_latency(op: &str, start: Instant) {
     }
 }
 
+fn vector_knn_operator(limit: usize, effort: usize) -> String {
+    format!("<|{},{}|>", limit.max(1), effort.max(1))
+}
+
 /// SurrealDB-backed memory adapter.
 pub struct SurrealMemoryAdapter {
     db: Arc<Surreal<Db>>,
@@ -165,6 +169,7 @@ impl SurrealMemoryAdapter {
         }
 
         let scope_clause = episode_scope_clause(include_shared);
+        let knn = vector_knn_operator(limit, 64);
         let embedding_profile_id = self.active_embedding_profile_id();
         let mut vec_resp = self
             .db
@@ -172,7 +177,7 @@ impl SurrealMemoryAdapter {
                 "SELECT *,
                     vector::similarity::cosine(embedding, $emb) AS vec_score
                  FROM episode
-                 WHERE embedding <|$limit,64|> $emb
+                 WHERE embedding {knn} $emb
                  AND embedding_profile_id = $profile
                  AND (array::len($categories) = 0 OR category INSIDE $categories)
                  AND {scope_clause}
@@ -1044,6 +1049,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         };
 
         let vec_rows = if let Some(ref emb) = query_embedding {
+            let knn = vector_knn_operator(query.limit, 64);
             let embedding_profile_id = self.active_embedding_profile_id();
             let mut vec_resp = self
                 .db
@@ -1051,7 +1057,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                     "SELECT *,
                         vector::similarity::cosine(embedding, $emb) AS vec_score
                      FROM episode
-                     WHERE embedding <|$limit,64|> $emb
+                     WHERE embedding {knn} $emb
                      AND embedding_profile_id = $profile
                      AND (array::len($categories) = 0 OR category INSIDE $categories)
                      AND {scope_clause}
@@ -2293,19 +2299,20 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
             return Ok(vec![]);
         }
 
+        let knn = vector_knn_operator(limit, 64);
         let mut resp = self
             .db
-            .query(
+            .query(format!(
                 "SELECT *,
                     vector::similarity::cosine(embedding, $emb) AS sim
                  FROM fact
-                 WHERE embedding <|$limit,64|> $emb
+                 WHERE embedding {knn} $emb
                  AND embedding_profile_id = $profile
                  AND valid_to IS NONE
                  AND (created_by = $agent OR created_by IS NONE)
                  ORDER BY sim DESC
                  LIMIT $limit",
-            )
+            ))
             .bind(("emb", embedding.to_vec()))
             .bind(("profile", self.active_embedding_profile_id()))
             .bind(("agent", self.me().to_string()))
