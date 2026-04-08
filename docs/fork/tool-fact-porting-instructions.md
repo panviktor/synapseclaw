@@ -14,9 +14,9 @@ Coverage proxy:
 
 | Metric | Count | Notes |
 |---|---:|---|
-| `crates/adapters/tools/src` source files | 64 | rough tool-adapter scope proxy |
-| files with `extract_facts(...)` or `execute_with_facts(...)` | 25 | partially or fully migrated |
-| files still without typed-fact hooks | 39 | likely still legacy/minimal |
+| `crates/adapters/tools/src` source files | 61 | rough tool-adapter scope proxy |
+| files with `extract_facts(...)` or `execute_with_facts(...)` | 52 | partially or fully migrated |
+| files still without typed-fact hooks | 9 | support files, not standalone tools |
 
 Observed tools from live validation:
 
@@ -34,7 +34,44 @@ Observed tools from live validation:
 | `file_write` | 1 | good baseline | lower priority |
 | `file_edit` | 1 | good baseline | lower priority |
 
+## Completed Batches
+
+Implemented since the live validation pass:
+
+1. `memory_recall`
+2. `core_memory_update`
+3. `shell`
+4. `file_read`
+5. `content_search`
+6. `glob_search`
+7. `precedent_search`
+8. `tavily_extract`
+9. `google_workspace`
+10. `knowledge_tool`
+11. `project_intel`
+12. `pushover`
+13. `data_management`
+14. `cloud_patterns`
+15. `cloud_ops`
+16. `linkedin`
+17. `swarm`
+18. `composio`
+
+Remaining files without typed-fact hooks are support/non-tool modules:
+
+- `cli_discovery.rs`
+- `cron_facts.rs`
+- `lib.rs`
+- `linkedin_client.rs`
+- `memory_facts.rs`
+- `report_templates.rs`
+- `schema.rs`
+- `tool_fact_helpers.rs`
+- `traits.rs`
+
 ## First Batch
+
+Status: done
 
 Port these first, in this order:
 

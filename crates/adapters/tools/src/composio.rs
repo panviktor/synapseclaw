@@ -18,6 +18,10 @@ use std::fmt::Write;
 use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, SearchDomain, SearchFact,
+    ToolFactPayload, TypedToolFact,
+};
 
 const COMPOSIO_API_BASE_V3: &str = "https://backend.composio.dev/api/v3";
 const COMPOSIO_API_BASE_V2: &str = "https://backend.composio.dev/api";
@@ -53,6 +57,84 @@ impl ComposioTool {
             security,
             recent_connected_accounts: RwLock::new(HashMap::new()),
             action_slug_cache: RwLock::new(HashMap::new()),
+        }
+    }
+
+    fn build_result_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        let result = match result {
+            Some(result) if result.success => result,
+            _ => return Vec::new(),
+        };
+
+        let action = match args.get("action").and_then(|value| value.as_str()) {
+            Some(action) => action,
+            None => return Vec::new(),
+        };
+        let app = args
+            .get("app")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+
+        match action {
+            "list" | "list_accounts" | "connected_accounts" => vec![TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Workspace,
+                    query: app.map(str::to_string),
+                    result_count: None,
+                    primary_locator: Some(format!("composio://{action}/{}", app.unwrap_or("all"))),
+                }),
+            }],
+            "connect" => vec![TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Resource(ResourceFact {
+                    kind: ResourceKind::WebResource,
+                    operation: ResourceOperation::Configure,
+                    locator: format!(
+                        "composio://connect/{}",
+                        app.or_else(|| {
+                            args.get("auth_config_id")
+                                .and_then(|value| value.as_str())
+                                .map(str::trim)
+                                .filter(|value| !value.is_empty())
+                        })
+                        .unwrap_or("default")
+                    ),
+                    host: Some("backend.composio.dev".to_string()),
+                    metadata: ResourceMetadata {
+                        byte_count: Some(result.output.len()),
+                        item_count: None,
+                        include_base64: None,
+                    },
+                }),
+            }],
+            "execute" => vec![TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Resource(ResourceFact {
+                    kind: ResourceKind::WebResource,
+                    operation: ResourceOperation::Configure,
+                    locator: format!(
+                        "composio://execute/{}/{}",
+                        app.unwrap_or("unknown"),
+                        args.get("tool_slug")
+                            .or_else(|| args.get("action_name"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("unknown")
+                    ),
+                    host: Some("backend.composio.dev".to_string()),
+                    metadata: ResourceMetadata {
+                        byte_count: Some(result.output.len()),
+                        item_count: None,
+                        include_base64: None,
+                    },
+                }),
+            }],
+            _ => Vec::new(),
         }
     }
 
@@ -886,6 +968,14 @@ impl Tool for ComposioTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.build_result_facts(args, result)
+    }
 }
 
 fn normalize_entity_id(entity_id: &str) -> String {
@@ -1332,6 +1422,7 @@ mod tests {
     use super::*;
     use synapse_domain::domain::config::AutonomyLevel;
     use synapse_domain::domain::security_policy::SecurityPolicy;
+    use synapse_domain::domain::tool_fact::ToolFactPayload;
 
     fn test_security() -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy::default())
@@ -1934,5 +2025,60 @@ mod tests {
         assert_eq!(body["version"], json!(COMPOSIO_TOOL_VERSION_LATEST));
         assert!(body.get("connected_account_id").is_none());
         assert!(body.get("user_id").is_none());
+    }
+
+    #[test]
+    fn extract_facts_emits_workspace_search_for_list() {
+        let tool = ComposioTool::new("test-key", None, test_security());
+        let facts = tool.extract_facts(
+            &json!({"action": "list", "app": "gmail"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        match &facts[0].payload {
+            ToolFactPayload::Search(search) => {
+                assert_eq!(search.domain, SearchDomain::Workspace);
+                assert_eq!(search.query.as_deref(), Some("gmail"));
+                assert_eq!(
+                    search.primary_locator.as_deref(),
+                    Some("composio://list/gmail")
+                );
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_facts_emits_resource_fact_for_execute() {
+        let tool = ComposioTool::new("test-key", None, test_security());
+        let facts = tool.extract_facts(
+            &json!({
+                "action": "execute",
+                "app": "github",
+                "action_name": "GITHUB_LIST_REPOS"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "{\"ok\":true}".into(),
+                error: None,
+            }),
+        );
+
+        match &facts[0].payload {
+            ToolFactPayload::Resource(resource) => {
+                assert_eq!(resource.kind, ResourceKind::WebResource);
+                assert_eq!(resource.operation, ResourceOperation::Configure);
+                assert_eq!(
+                    resource.locator,
+                    "composio://execute/github/GITHUB_LIST_REPOS"
+                );
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
     }
 }

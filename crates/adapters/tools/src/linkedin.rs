@@ -6,6 +6,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use synapse_domain::config::schema::{LinkedInContentConfig, LinkedInImageConfig};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    NotificationChannel, NotificationFact, ResourceFact, ResourceKind, ResourceMetadata,
+    ResourceOperation, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact,
+};
 
 pub struct LinkedInTool {
     security: Arc<SecurityPolicy>,
@@ -81,6 +85,185 @@ impl LinkedInTool {
 
         parts.join("\n\n")
     }
+
+    fn build_result_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        let result = match result {
+            Some(result) if result.success => result,
+            _ => return Vec::new(),
+        };
+
+        let action = match args.get("action").and_then(|value| value.as_str()) {
+            Some(action) => action,
+            None => return Vec::new(),
+        };
+
+        let mut facts = Vec::new();
+        let resource = match action {
+            "create_post" => Some(ResourceFact {
+                kind: ResourceKind::WebResource,
+                operation: ResourceOperation::Write,
+                locator: args
+                    .get("post_id")
+                    .and_then(|value| value.as_str())
+                    .map(|id| format!("linkedin://post/{id}"))
+                    .unwrap_or_else(|| "linkedin://post".to_string()),
+                host: Some("linkedin.com".to_string()),
+                metadata: ResourceMetadata {
+                    byte_count: args
+                        .get("text")
+                        .and_then(|value| value.as_str())
+                        .map(str::len),
+                    item_count: None,
+                    include_base64: Some(
+                        args.get("generate_image")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(false),
+                    ),
+                },
+            }),
+            "list_posts" => Some(ResourceFact {
+                kind: ResourceKind::WebResource,
+                operation: ResourceOperation::Read,
+                locator: "linkedin://posts".to_string(),
+                host: Some("linkedin.com".to_string()),
+                metadata: ResourceMetadata {
+                    byte_count: Some(result.output.len()),
+                    item_count: parse_json_array_len(&result.output),
+                    include_base64: None,
+                },
+            }),
+            "comment" => Some(ResourceFact {
+                kind: ResourceKind::WebResource,
+                operation: ResourceOperation::Edit,
+                locator: args
+                    .get("post_id")
+                    .and_then(|value| value.as_str())
+                    .map(|id| format!("linkedin://post/{id}/comment"))
+                    .unwrap_or_else(|| "linkedin://post/comment".to_string()),
+                host: Some("linkedin.com".to_string()),
+                metadata: ResourceMetadata {
+                    byte_count: args
+                        .get("text")
+                        .and_then(|value| value.as_str())
+                        .map(str::len),
+                    item_count: None,
+                    include_base64: None,
+                },
+            }),
+            "react" => Some(ResourceFact {
+                kind: ResourceKind::WebResource,
+                operation: ResourceOperation::Edit,
+                locator: args
+                    .get("post_id")
+                    .and_then(|value| value.as_str())
+                    .map(|id| format!("linkedin://post/{id}/reaction"))
+                    .unwrap_or_else(|| "linkedin://post/reaction".to_string()),
+                host: Some("linkedin.com".to_string()),
+                metadata: ResourceMetadata {
+                    byte_count: None,
+                    item_count: None,
+                    include_base64: None,
+                },
+            }),
+            "delete_post" => Some(ResourceFact {
+                kind: ResourceKind::WebResource,
+                operation: ResourceOperation::Edit,
+                locator: args
+                    .get("post_id")
+                    .and_then(|value| value.as_str())
+                    .map(|id| format!("linkedin://post/{id}"))
+                    .unwrap_or_else(|| "linkedin://post".to_string()),
+                host: Some("linkedin.com".to_string()),
+                metadata: ResourceMetadata::default(),
+            }),
+            "get_engagement" => Some(ResourceFact {
+                kind: ResourceKind::WebResource,
+                operation: ResourceOperation::Inspect,
+                locator: args
+                    .get("post_id")
+                    .and_then(|value| value.as_str())
+                    .map(|id| format!("linkedin://post/{id}/engagement"))
+                    .unwrap_or_else(|| "linkedin://post/engagement".to_string()),
+                host: Some("linkedin.com".to_string()),
+                metadata: ResourceMetadata {
+                    byte_count: Some(result.output.len()),
+                    item_count: None,
+                    include_base64: None,
+                },
+            }),
+            "get_profile" => Some(ResourceFact {
+                kind: ResourceKind::WebResource,
+                operation: ResourceOperation::Read,
+                locator: "linkedin://profile".to_string(),
+                host: Some("linkedin.com".to_string()),
+                metadata: ResourceMetadata {
+                    byte_count: Some(result.output.len()),
+                    item_count: None,
+                    include_base64: None,
+                },
+            }),
+            "get_content_strategy" => Some(ResourceFact {
+                kind: ResourceKind::ConfigFile,
+                operation: ResourceOperation::Read,
+                locator: "linkedin://content-strategy".to_string(),
+                host: None,
+                metadata: ResourceMetadata {
+                    byte_count: Some(result.output.len()),
+                    item_count: None,
+                    include_base64: None,
+                },
+            }),
+            _ => None,
+        };
+
+        if let Some(resource) = resource {
+            facts.push(TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Resource(resource),
+            });
+        }
+
+        match action {
+            "create_post" | "comment" => facts.push(TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Notification(NotificationFact {
+                    channel: NotificationChannel::Other("linkedin".to_string()),
+                    message_bytes: args
+                        .get("text")
+                        .and_then(|value| value.as_str())
+                        .map(str::len)
+                        .unwrap_or(0),
+                    title_bytes: args
+                        .get("article_title")
+                        .and_then(|value| value.as_str())
+                        .map(str::len),
+                    priority: None,
+                }),
+            }),
+            "list_posts" => facts.push(TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Workspace,
+                    query: None,
+                    result_count: parse_json_array_len(&result.output),
+                    primary_locator: Some("linkedin://posts".to_string()),
+                }),
+            }),
+            _ => {}
+        }
+
+        facts
+    }
+}
+
+fn parse_json_array_len(output: &str) -> Option<usize> {
+    serde_json::from_str::<serde_json::Value>(output)
+        .ok()
+        .and_then(|value| value.as_array().map(Vec::len))
 }
 
 #[async_trait]
@@ -439,12 +622,21 @@ impl Tool for LinkedInTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.build_result_facts(args, result)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use synapse_domain::domain::config::AutonomyLevel;
+    use synapse_domain::domain::tool_fact::ToolFactPayload;
 
     fn test_security(level: AutonomyLevel, max_actions_per_hour: u32) -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy {
@@ -589,6 +781,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn extract_facts_emits_notification_for_create_post() {
+        let tool = make_tool(AutonomyLevel::Full, 100);
+        let facts = tool.extract_facts(
+            &json!({
+                "action": "create_post",
+                "text": "Release shipped",
+                "generate_image": true
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert!(facts.iter().any(|fact| matches!(
+            &fact.payload,
+            ToolFactPayload::Notification(notification)
+                if notification.channel == NotificationChannel::Other("linkedin".to_string())
+                    && notification.message_bytes == "Release shipped".len()
+        )));
+        assert!(facts.iter().any(|fact| matches!(
+            &fact.payload,
+            ToolFactPayload::Resource(resource)
+                if resource.locator == "linkedin://post"
+                    && resource.operation == ResourceOperation::Write
+        )));
+    }
+
+    #[test]
+    fn extract_facts_emits_search_for_list_posts() {
+        let tool = make_tool(AutonomyLevel::Full, 100);
+        let facts = tool.extract_facts(
+            &json!({"action": "list_posts", "count": 2}),
+            Some(&ToolResult {
+                success: true,
+                output: r#"[{"id":"1"},{"id":"2"}]"#.into(),
+                error: None,
+            }),
+        );
+
+        assert!(facts.iter().any(|fact| matches!(
+            &fact.payload,
+            ToolFactPayload::Search(search)
+                if search.result_count == Some(2)
+                    && search.primary_locator.as_deref() == Some("linkedin://posts")
+        )));
     }
 
     #[tokio::test]

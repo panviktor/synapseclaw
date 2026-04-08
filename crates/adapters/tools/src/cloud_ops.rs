@@ -8,6 +8,9 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde_json::json;
 use synapse_domain::config::schema::CloudOpsConfig;
+use synapse_domain::domain::tool_fact::{
+    SecurityAction, SecurityFact, ToolFactPayload, TypedToolFact,
+};
 use synapse_domain::domain::util::truncate_with_ellipsis;
 
 /// Read-only cloud operations advisory tool.
@@ -20,6 +23,74 @@ pub struct CloudOpsTool {
 impl CloudOpsTool {
     pub fn new(config: CloudOpsConfig) -> Self {
         Self { config }
+    }
+
+    fn build_result_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        let result = match result {
+            Some(result) if result.success => result,
+            _ => return Vec::new(),
+        };
+
+        let action = match args.get("action").and_then(|value| value.as_str()) {
+            Some("review_iac") => SecurityAction::ParseVulnerability,
+            Some("assess_migration") | Some("cost_analysis") | Some("architecture_review") => {
+                SecurityAction::GenerateReport
+            }
+            _ => return Vec::new(),
+        };
+
+        let parsed: serde_json::Value = serde_json::from_str(&result.output).unwrap_or_default();
+        let step = parsed
+            .get("findings_count")
+            .or_else(|| parsed.get("opportunities_count"))
+            .and_then(|value| value.as_u64());
+
+        let severity = if matches!(action, SecurityAction::ParseVulnerability) {
+            parsed
+                .get("findings")
+                .and_then(|value| value.as_array())
+                .and_then(|findings| {
+                    findings
+                        .iter()
+                        .filter_map(|finding| {
+                            finding
+                                .get("severity")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_string)
+                        })
+                        .max_by_key(|severity| match severity.as_str() {
+                            "critical" => 4,
+                            "high" => 3,
+                            "medium" => 2,
+                            "low" => 1,
+                            _ => 0,
+                        })
+                })
+        } else {
+            None
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Security(SecurityFact {
+                action,
+                severity,
+                subject: args
+                    .get("action")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                step,
+                client_name: args
+                    .get("cloud")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+                    .or_else(|| Some(self.config.default_cloud.clone())),
+            }),
+        }]
     }
 }
 
@@ -116,6 +187,14 @@ impl Tool for CloudOpsTool {
                 )),
             }),
         }
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.build_result_facts(args, result)
     }
 }
 
@@ -600,6 +679,7 @@ fn review_pillar_operations(input: &str, _cloud: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::domain::tool_fact::ToolFactPayload;
 
     fn test_config() -> CloudOpsConfig {
         CloudOpsConfig::default()
@@ -847,5 +927,38 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("'cloud' must be a string"));
+    }
+
+    #[test]
+    fn extract_facts_emits_security_fact_for_review_iac() {
+        let tool = CloudOpsTool::new(test_config());
+        let facts = tool.extract_facts(
+            &json!({
+                "action": "review_iac",
+                "cloud": "aws"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: json!({
+                    "findings_count": 2,
+                    "findings": [
+                        {"severity": "high"},
+                        {"severity": "medium"}
+                    ]
+                })
+                .to_string(),
+                error: None,
+            }),
+        );
+
+        match &facts[0].payload {
+            ToolFactPayload::Security(security) => {
+                assert_eq!(security.action, SecurityAction::ParseVulnerability);
+                assert_eq!(security.client_name.as_deref(), Some("aws"));
+                assert_eq!(security.step, Some(2));
+                assert_eq!(security.severity.as_deref(), Some("high"));
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
     }
 }

@@ -7,6 +7,7 @@ use super::traits::{Tool, ToolResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
 use synapse_domain::domain::util::truncate_with_ellipsis;
 
 /// A cloud architecture pattern with metadata.
@@ -31,6 +32,55 @@ impl CloudPatternsTool {
         Self {
             patterns: built_in_patterns(),
         }
+    }
+
+    fn build_result_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        match result {
+            Some(result) if result.success => {}
+            _ => return Vec::new(),
+        }
+
+        let action = args
+            .get("action")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        let result_count = match action {
+            "list" => Some(
+                self.filter_by_cloud(args.get("cloud").and_then(|value| value.as_str()))
+                    .len(),
+            ),
+            "match" => Some(
+                self.match_patterns(
+                    args.get("workload")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default(),
+                    args.get("cloud").and_then(|value| value.as_str()),
+                )
+                .len(),
+            ),
+            _ => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Search(SearchFact {
+                domain: SearchDomain::Knowledge,
+                query: args
+                    .get("workload")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+                result_count,
+                primary_locator: args
+                    .get("cloud")
+                    .and_then(|value| value.as_str())
+                    .map(|cloud| format!("cloud-patterns://{cloud}"))
+                    .or_else(|| Some("cloud-patterns://all".to_string())),
+            }),
+        }]
     }
 }
 
@@ -133,6 +183,14 @@ impl Tool for CloudPatternsTool {
                 error: Some(format!("Unknown action '{}'. Valid: match, list", action)),
             }),
         }
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.build_result_facts(args, result)
     }
 }
 
@@ -283,6 +341,7 @@ resource "aws_appmesh_virtual_service" "app" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::domain::tool_fact::ToolFactPayload;
 
     #[test]
     fn built_in_patterns_are_populated() {
@@ -408,5 +467,39 @@ mod tests {
 
         assert!(!result.success);
         assert!(result.error.unwrap().contains("Unknown action"));
+    }
+
+    #[test]
+    fn extract_facts_emits_search_fact_for_match() {
+        let tool = CloudPatternsTool::new();
+        let facts = tool.extract_facts(
+            &json!({
+                "action": "match",
+                "workload": "Container deployment with Kubernetes",
+                "cloud": "aws"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        match &facts[0].payload {
+            ToolFactPayload::Search(search) => {
+                assert_eq!(search.domain, SearchDomain::Knowledge);
+                assert_eq!(
+                    search.query.as_deref(),
+                    Some("Container deployment with Kubernetes")
+                );
+                assert!(search.result_count.unwrap_or(0) >= 1);
+                assert_eq!(
+                    search.primary_locator.as_deref(),
+                    Some("cloud-patterns://aws")
+                );
+            }
+            payload => panic!("unexpected payload: {payload:?}"),
+        }
     }
 }
