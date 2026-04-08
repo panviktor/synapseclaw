@@ -240,7 +240,7 @@ impl SurrealMemoryAdapter {
             if let Ok(embedding) = self.embedder.embed_document(&content).await {
                 self.db
                     .query(
-                        "UPDATE type::thing('episode', $id) SET
+                        "UPDATE type::record('episode', $id) SET
                             embedding = $embedding,
                             embedding_profile_id = $profile",
                     )
@@ -277,7 +277,7 @@ impl SurrealMemoryAdapter {
             if let Ok(embedding) = self.embedder.embed_document(&text).await {
                 self.db
                     .query(
-                        "UPDATE type::thing('entity', $id) SET
+                        "UPDATE type::record('entity', $id) SET
                             embedding = $embedding,
                             embedding_profile_id = $profile",
                     )
@@ -314,7 +314,7 @@ impl SurrealMemoryAdapter {
             if let Ok(embedding) = self.embedder.embed_document(&text).await {
                 self.db
                     .query(
-                        "UPDATE type::thing('fact', $id) SET
+                        "UPDATE type::record('fact', $id) SET
                             embedding = $embedding,
                             embedding_profile_id = $profile",
                     )
@@ -2171,7 +2171,7 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
                 for id in ids {
                     let _ = db
                         .query(
-                            "UPDATE type::thing('episode', $id) SET \
+                            "UPDATE type::record('episode', $id) SET \
                              access_count = (access_count ?? 0) + 1, \
                              last_accessed = time::now()",
                         )
@@ -2363,7 +2363,7 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         };
         self.db
             .query(
-                "UPDATE type::thing('episode', $id) SET \
+                "UPDATE type::record('episode', $id) SET \
                  visibility = $vis, shared_with = $agents \
                  WHERE agent_id = $owner",
             )
@@ -2472,7 +2472,7 @@ impl SurrealMemoryAdapter {
     ) -> Result<bool, synapse_domain::domain::memory::MemoryError> {
         let mut resp = self
             .db
-            .query("DELETE FROM learning_signal_pattern WHERE id = type::thing('learning_signal_pattern', $id) RETURN BEFORE")
+            .query("DELETE FROM learning_signal_pattern WHERE id = type::record('learning_signal_pattern', $id) RETURN BEFORE")
             .bind(("id", id.to_string()))
             .await
             .map_err(|e| synapse_domain::domain::memory::MemoryError::Storage(e.to_string()))?;
