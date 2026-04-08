@@ -764,9 +764,10 @@ Implemented or strongly landed:
   maintenance, lineage, review, and contradiction data to drive a first-class
   operator-facing memory studio instead of plain text dumps
 
+The core Phase 4.9 learning architecture should now be treated as landed.
 Remaining work is mostly polish and backlog, not missing core architecture.
 
-Still worth doing before calling Phase 4.9 fully polished:
+Still worth doing for a fully polished post-Phase-4.9 system:
 
 - richer cluster-level rewrite/merge policy for long-lived procedural branches
 - any additional SurrealDB-native shortlist upgrades that remove leftover

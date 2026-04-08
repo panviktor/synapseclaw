@@ -760,6 +760,8 @@ multi-model queries.
 This is a **post-4.9 optimization track**, not a blocker for completing the
 current runtime architecture.
 
+The core Phase 4.8 runtime architecture should now be treated as complete.
+
 Implemented after the main 4.9 learning pass:
 
 - `memory_recall` moved off the naive `recall()` path and now uses a typed

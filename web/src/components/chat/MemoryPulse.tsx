@@ -107,6 +107,7 @@ export default function MemoryPulse({
     projections?.learning_maintenance_plan?.run_prompt_optimization,
   ].filter(Boolean).length;
   const topEffectiveSkills = projections?.effective_skills.slice(0, 3) ?? [];
+  const topContradictions = projections?.procedural_contradictions.slice(0, 2) ?? [];
   const workingStatePreview = previewProjection(projections?.working_state?.projection, 5);
   const profilePreview = previewProjection(projections?.current_user_profile?.projection, 5);
 
@@ -215,6 +216,26 @@ export default function MemoryPulse({
               <div className="flex flex-wrap gap-1.5">
                 {maintenanceReasons.slice(0, 4).map((reason) => (
                   <TinyBadge key={reason}>{formatLabel(reason)}</TinyBadge>
+                ))}
+              </div>
+            )}
+            {topContradictions.length > 0 && (
+              <div className="space-y-2">
+                {topContradictions.map((item) => (
+                  <div
+                    key={`${item.recipe_task_family}-${item.failure_representative_key}`}
+                    className="rounded-2xl border border-[rgba(217,90,30,0.18)] bg-[linear-gradient(180deg,rgba(255,247,240,0.96),rgba(255,250,245,0.9))] px-3 py-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[var(--text-primary)]">
+                        {formatLabel(item.recipe_task_family)}
+                      </span>
+                      <TinyBadge>{Math.round(item.overlap * 100)}% overlap</TinyBadge>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-5 text-[var(--text-muted)]">
+                      {item.failed_tools.slice(0, 3).join(' -> ')} collides with {item.failure_representative_key}
+                    </p>
+                  </div>
                 ))}
               </div>
             )}
