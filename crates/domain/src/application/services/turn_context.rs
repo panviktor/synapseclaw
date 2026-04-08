@@ -19,6 +19,7 @@ use crate::application::services::turn_interpretation::{
     ReferenceCandidateKind, ReferenceSource, TurnInterpretation,
 };
 use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryEntry, Skill};
+use crate::domain::run_recipe::RunRecipe;
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
@@ -287,6 +288,16 @@ pub async fn assemble_turn_context(
                     recipe_max_count,
                 )
                 .await;
+                let stored_recipe_hits = recipe_hits
+                    .iter()
+                    .filter_map(|hit| store.get(agent_id, &hit.task_family))
+                    .collect::<Vec<_>>();
+                let failure_clusters = load_recent_failure_clusters(mem, agent_id).await;
+                let recipe_hits = prioritize_uncontradicted_recipe_hits(
+                    recipe_hits,
+                    &stored_recipe_hits,
+                    &failure_clusters,
+                );
                 let mut total_recipe_chars = 0usize;
                 for recipe in recipe_hits {
                     if recipe.score < RECIPE_MIN_SCORE {
@@ -305,13 +316,13 @@ pub async fn assemble_turn_context(
                     total_recipe_chars += recipe_chars;
                     ctx.run_recipes.push(recipe);
                 }
+                load_recipe_contradictions_from_clusters(
+                    store,
+                    agent_id,
+                    &failure_clusters,
+                    &mut ctx,
+                );
             }
-        }
-    }
-
-    if allow_historical_context {
-        if let Some(store) = run_recipe_store {
-            load_recipe_contradictions(mem, store, agent_id, &mut ctx).await;
         }
     }
 
@@ -431,13 +442,64 @@ async fn load_nearby_recall(
     ctx.nearby_entries = nearby.into_iter().map(|match_| match_.entry).collect();
 }
 
-async fn load_recipe_contradictions(
+async fn load_recent_failure_clusters(
     mem: &dyn UnifiedMemoryPort,
+    agent_id: &str,
+    ) -> Vec<procedural_cluster_service::ProceduralCluster> {
+    procedural_cluster_service::plan_recent_clusters_since(
+        mem,
+        agent_id,
+        procedural_cluster_service::ProceduralClusterKind::FailurePattern,
+        12,
+        6,
+        0.95,
+        Some(chrono::Utc::now() - chrono::Duration::days(30)),
+    )
+    .await
+    .unwrap_or_default()
+}
+
+fn prioritize_uncontradicted_recipe_hits(
+    recipe_hits: Vec<retrieval_service::RunRecipeSearchMatch>,
+    stored_recipes: &[RunRecipe],
+    failure_clusters: &[procedural_cluster_service::ProceduralCluster],
+) -> Vec<retrieval_service::RunRecipeSearchMatch> {
+    if recipe_hits.len() <= 1 || failure_clusters.is_empty() {
+        return recipe_hits;
+    }
+
+    let mut preferred = Vec::new();
+    let mut contradicted = Vec::new();
+
+    for hit in recipe_hits {
+        let is_contradicted = stored_recipes
+            .iter()
+            .find(|recipe| recipe.task_family == hit.task_family)
+            .is_some_and(|recipe| {
+                procedural_contradiction_service::recipe_is_contradicted(
+                    recipe,
+                    failure_clusters,
+                    0.75,
+                )
+            });
+        if is_contradicted {
+            contradicted.push(hit);
+        } else {
+            preferred.push(hit);
+        }
+    }
+
+    preferred.extend(contradicted);
+    preferred
+}
+
+fn load_recipe_contradictions_from_clusters(
     run_recipe_store: &dyn RunRecipeStorePort,
     agent_id: &str,
+    failure_clusters: &[procedural_cluster_service::ProceduralCluster],
     ctx: &mut TurnMemoryContext,
 ) {
-    if ctx.run_recipes.is_empty() {
+    if ctx.run_recipes.is_empty() || failure_clusters.is_empty() {
         return;
     }
 
@@ -450,24 +512,6 @@ async fn load_recipe_contradictions(
         return;
     }
 
-    let failure_clusters = match procedural_cluster_service::plan_recent_clusters_since(
-        mem,
-        agent_id,
-        procedural_cluster_service::ProceduralClusterKind::FailurePattern,
-        12,
-        6,
-        0.95,
-        Some(chrono::Utc::now() - chrono::Duration::days(30)),
-    )
-    .await
-    {
-        Ok(clusters) => clusters,
-        Err(_) => return,
-    };
-    if failure_clusters.is_empty() {
-        return;
-    }
-
     let recipe_clusters = run_recipe_cluster_service::plan_recipe_clusters(&surfaced_recipes, 0.9);
     let surfaced_families = surfaced_recipes
         .iter()
@@ -477,7 +521,7 @@ async fn load_recipe_contradictions(
     ctx.procedural_contradictions =
         procedural_contradiction_service::find_recipe_failure_contradictions(
             &recipe_clusters,
-            &failure_clusters,
+            failure_clusters,
             0.75,
         )
         .into_iter()
@@ -1543,6 +1587,34 @@ mod tests {
         }
     }
 
+    fn make_stored_recipe(task_family: &str, tool_pattern: &[&str], summary: &str) -> RunRecipe {
+        RunRecipe {
+            agent_id: "agent".into(),
+            task_family: task_family.into(),
+            lineage_task_families: vec![task_family.into()],
+            sample_request: format!("{task_family} the latest release"),
+            summary: summary.into(),
+            tool_pattern: tool_pattern.iter().map(|tool| (*tool).to_string()).collect(),
+            success_count: 3,
+            updated_at: 1,
+        }
+    }
+
+    fn make_failure_cluster(key: &str, summary: &str) -> procedural_cluster_service::ProceduralCluster {
+        procedural_cluster_service::ProceduralCluster {
+            representative: MemoryEntry {
+                id: key.into(),
+                key: key.into(),
+                content: summary.into(),
+                category: MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            member_keys: vec![key.into()],
+        }
+    }
+
     fn make_session_match(label: &str, summary: &str, recap: &str) -> SessionSearchMatch {
         SessionSearchMatch {
             score: 2.4,
@@ -1695,6 +1767,41 @@ mod tests {
         assert!(fmt.enrichment_prefix.contains("Sample request:"));
         assert!(fmt.enrichment_prefix.contains("Tool pattern: shell, git"));
         assert!(fmt.enrichment_prefix.contains("</recipe>"));
+    }
+
+    #[test]
+    fn prioritize_uncontradicted_recipe_hits_keeps_safe_branch_first() {
+        let hits = vec![
+            RunRecipeSearchMatch {
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                ..make_recipe("status_delivery", "Search and send the status page")
+            },
+            RunRecipeSearchMatch {
+                tool_pattern: vec!["shell".into(), "message_send".into()],
+                ..make_recipe("backup_delivery", "Run backup and send the result")
+            },
+        ];
+        let stored = vec![
+            make_stored_recipe(
+                "status_delivery",
+                &["web_search", "message_send"],
+                "Search and send the status page",
+            ),
+            make_stored_recipe(
+                "backup_delivery",
+                &["shell", "message_send"],
+                "Run backup and send the result",
+            ),
+        ];
+        let failures = vec![make_failure_cluster(
+            "f1",
+            "failed_tools=web_search -> message_send | outcomes=runtime_error",
+        )];
+
+        let ordered = prioritize_uncontradicted_recipe_hits(hits, &stored, &failures);
+
+        assert_eq!(ordered[0].task_family, "backup_delivery");
+        assert_eq!(ordered[1].task_family, "status_delivery");
     }
 
     #[test]
