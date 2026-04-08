@@ -13,6 +13,7 @@ interface MemoryPulseProps {
   budget: ContextBudgetResponse | null;
   projections: MemoryProjectionsResponse | null;
   lastReport: PostTurnReportEvent | null;
+  recentReports?: PostTurnReportEvent[];
   session: ChatSessionInfo | null;
   agentLabel: string;
   onClose?: () => void;
@@ -29,6 +30,10 @@ function formatChars(value: number): string {
 function allocationShare(value: number, total: number): number {
   if (total <= 0 || value <= 0) return 0;
   return Math.max(10, Math.round((value / total) * 100));
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function formatLabel(value: string): string {
@@ -61,6 +66,67 @@ function latestLearningTone(report: PostTurnReportEvent | null): string {
   return 'text-[var(--text-primary)]';
 }
 
+function eventLabel(event: PostTurnReportEvent): string {
+  if (event.explicit_kind) return event.explicit_kind.replace(/_/g, ' ');
+  if (event.explicit_mutation) return 'explicit mutation';
+  if (event.reflection_started) return 'reflection';
+  if (event.consolidation_started) return 'consolidation';
+  return 'passive turn';
+}
+
+function formatEventTime(iso?: string): string {
+  if (!iso) return 'pending';
+  return new Date(iso).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function maintenanceActionCount(projections: MemoryProjectionsResponse | null): number {
+  if (!projections) return 0;
+  return [
+    projections.learning_maintenance_plan?.run_importance_decay,
+    projections.learning_maintenance_plan?.run_gc,
+    projections.learning_maintenance_plan?.run_run_recipe_review,
+    projections.learning_maintenance_plan?.run_precedent_compaction,
+    projections.learning_maintenance_plan?.run_failure_pattern_compaction,
+    projections.learning_maintenance_plan?.run_skill_review,
+    projections.learning_maintenance_plan?.run_prompt_optimization,
+  ].filter(Boolean).length;
+}
+
+function deriveMaintenanceLoad(projections: MemoryProjectionsResponse | null): number {
+  if (!projections) return 0;
+  const snapshot = projections.learning_maintenance_snapshot;
+  return clampPercent(
+    maintenanceActionCount(projections) * 12 +
+      snapshot.procedural_contradiction_count * 7 +
+      snapshot.failure_pattern_blocking_count * 5 +
+      snapshot.precedent_compact_candidate_count * 3 +
+      snapshot.failure_pattern_compact_candidate_count * 3 +
+      snapshot.candidate_skill_count * 4 +
+      snapshot.skipped_cycles_since_maintenance * 4 +
+      (snapshot.prompt_optimization_due ? 10 : 0),
+  );
+}
+
+function deriveConflictPressure(projections: MemoryProjectionsResponse | null): number {
+  if (!projections) return 0;
+  const snapshot = projections.learning_maintenance_snapshot;
+  return clampPercent(
+    projections.procedural_contradictions.length * 18 +
+      snapshot.failure_pattern_blocking_count * 10 +
+      snapshot.precedent_preserve_branch_count * 6,
+  );
+}
+
+function deriveReadiness(projections: MemoryProjectionsResponse | null): number {
+  if (!projections) return 0;
+  const penalty = deriveMaintenanceLoad(projections) * 0.45 + deriveConflictPressure(projections) * 0.55;
+  return clampPercent(100 - penalty);
+}
+
 function TinyBadge({ children }: { children: ReactNode }) {
   return (
     <span className="inline-flex items-center rounded-full border border-[var(--border-default)] bg-[var(--glow-secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
@@ -74,6 +140,7 @@ export default function MemoryPulse({
   budget,
   projections,
   lastReport,
+  recentReports = [],
   session,
   agentLabel,
   onClose,
@@ -97,23 +164,18 @@ export default function MemoryPulse({
     budget?.enrichment_total_max_chars ?? 0,
   );
   const maintenanceReasons = projections?.learning_maintenance_plan?.reasons ?? [];
-  const maintenanceActionCount = [
-    projections?.learning_maintenance_plan?.run_importance_decay,
-    projections?.learning_maintenance_plan?.run_gc,
-    projections?.learning_maintenance_plan?.run_run_recipe_review,
-    projections?.learning_maintenance_plan?.run_precedent_compaction,
-    projections?.learning_maintenance_plan?.run_failure_pattern_compaction,
-    projections?.learning_maintenance_plan?.run_skill_review,
-    projections?.learning_maintenance_plan?.run_prompt_optimization,
-  ].filter(Boolean).length;
+  const reviewActionCount = maintenanceActionCount(projections);
   const topEffectiveSkills = projections?.effective_skills.slice(0, 3) ?? [];
   const topContradictions = projections?.procedural_contradictions.slice(0, 2) ?? [];
   const workingStatePreview = previewProjection(projections?.working_state?.projection, 5);
   const profilePreview = previewProjection(projections?.current_user_profile?.projection, 5);
+  const readiness = deriveReadiness(projections);
+  const conflictPressure = deriveConflictPressure(projections);
+  const maintenanceLoad = deriveMaintenanceLoad(projections);
 
   return (
     <aside className="flex h-full flex-col overflow-hidden bg-[var(--bg-secondary)]">
-      <div className="relative overflow-hidden border-b border-[var(--border-default)] bg-[radial-gradient(circle_at_top_left,rgba(217,90,30,0.18),transparent_42%),linear-gradient(180deg,rgba(255,252,248,0.96),rgba(255,247,240,0.92))] px-4 py-4">
+      <div className="relative overflow-hidden border-b border-[var(--border-default)] bg-[linear-gradient(135deg,var(--glow-primary),transparent_35%),var(--bg-card)] px-4 py-4">
         <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/70 to-transparent" />
         <div className="relative flex items-start justify-between gap-3">
           <div>
@@ -194,23 +256,46 @@ export default function MemoryPulse({
             </div>
             <div className="grid grid-cols-3 gap-2">
               <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
-                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Conflicts</p>
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Readiness</p>
                 <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
-                  {projections?.procedural_contradictions.length ?? 0}
+                  {readiness}%
                 </p>
               </div>
               <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
-                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Actions</p>
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Stability</p>
                 <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
-                  {maintenanceActionCount}
+                  {clampPercent(100 - conflictPressure)}%
                 </p>
               </div>
               <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
-                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Skills</p>
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Maintenance</p>
                 <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
-                  {projections?.effective_skills.length ?? 0}
+                  {maintenanceLoad}%
                 </p>
               </div>
+            </div>
+            <div className="space-y-2">
+              {[
+                { label: 'Readiness', value: readiness },
+                { label: 'Stability', value: clampPercent(100 - conflictPressure) },
+                { label: 'Maintenance load', value: maintenanceLoad },
+              ].map((item) => (
+                <div key={item.label} className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-[var(--text-secondary)]">{item.label}</span>
+                    <span className="font-semibold text-[var(--accent-primary)]">{item.value}%</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${item.value}%`,
+                        background: 'linear-gradient(90deg, var(--accent-primary), rgba(217, 90, 30, 0.45))',
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
             </div>
             {maintenanceReasons.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
@@ -237,6 +322,34 @@ export default function MemoryPulse({
                     </p>
                   </div>
                 ))}
+              </div>
+            )}
+            {recentReports.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-placeholder)]">
+                    Runtime trace
+                  </p>
+                  <TinyBadge>{reviewActionCount} review lanes</TinyBadge>
+                </div>
+                <div className="space-y-2">
+                  {recentReports.slice(0, 4).map((event, index) => (
+                    <div
+                      key={`${event.agent_id}-${event.timestamp ?? index}-${event.signal}`}
+                      className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className={`text-xs font-medium ${latestLearningTone(event)}`}>{event.signal}</p>
+                          <p className="mt-1 text-[11px] text-[var(--text-muted)]">{eventLabel(event)}</p>
+                        </div>
+                        <span className="text-[10px] text-[var(--text-placeholder)]">
+                          {formatEventTime(event.timestamp)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

@@ -600,6 +600,18 @@ export default function AgentChat() {
               typeof event.agent_id === 'string' &&
               event.agent_id === effectiveAgentId,
           ) ?? null;
+  const recentLearningEvents =
+    effectiveAgentId === null
+      ? []
+      : [...learningEvents]
+          .reverse()
+          .filter(
+            (event): event is PostTurnReportEvent =>
+              event.type === 'post_turn_report' &&
+              typeof event.agent_id === 'string' &&
+              event.agent_id === effectiveAgentId,
+          )
+          .slice(0, 6);
   const activeAgentInfo = activeAgent ? agents.find((agent) => agent.agent_id === activeAgent) ?? null : null;
   const activeAgentLabel = activeAgentInfo?.agent_id ?? activeAgent ?? 'Local Runtime';
   const sessionTitle =
@@ -1031,6 +1043,7 @@ export default function AgentChat() {
               budget={contextBudget}
               projections={memoryProjections}
               lastReport={latestLearningEvent}
+              recentReports={recentLearningEvents}
               session={selectedSession}
               agentLabel={activeAgentLabel}
             />
@@ -1051,6 +1064,7 @@ export default function AgentChat() {
               budget={contextBudget}
               projections={memoryProjections}
               lastReport={latestLearningEvent}
+              recentReports={recentLearningEvents}
               session={selectedSession}
               agentLabel={activeAgentLabel}
               onClose={() => setMemoryPulseOpen(false)}

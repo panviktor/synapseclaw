@@ -29,6 +29,7 @@ import type {
   MemoryEntry,
   MemoryProjectionsResponse,
   MemoryStatsResponse,
+  PostTurnReportEvent,
   ProjectionRef,
   ProceduralClusterReviewResponse,
   RunRecipeReviewDecisionResponse,
@@ -43,6 +44,7 @@ import {
   getContextBudget,
   getMemoryProjections,
 } from '@/lib/api';
+import { useSSE } from '@/hooks/useSSE';
 import { t } from '@/lib/i18n';
 
 function truncate(text: string, max: number): string {
@@ -66,6 +68,88 @@ function formatChars(value: number): string {
 function budgetShare(value: number, total: number): number {
   if (total <= 0 || value <= 0) return 0;
   return Math.max(8, Math.round((value / total) * 100));
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function learningLabel(event: PostTurnReportEvent): string {
+  if (event.explicit_kind) return event.explicit_kind.replace(/_/g, ' ');
+  if (event.explicit_mutation) return 'explicit mutation';
+  if (event.reflection_started) return 'reflection';
+  if (event.consolidation_started) return 'consolidation';
+  return 'passive turn';
+}
+
+function learningTone(event: PostTurnReportEvent): string {
+  if (event.explicit_mutation) return 'text-[var(--accent-primary)]';
+  if (event.reflection_started) return 'text-[var(--status-success)]';
+  if (event.consolidation_started) return 'text-[var(--status-info)]';
+  return 'text-[var(--text-primary)]';
+}
+
+function formatEventTime(iso?: string): string {
+  if (!iso) return 'pending';
+  return new Date(iso).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function maintenanceActionCount(plan: LearningMaintenancePlanResponse | null | undefined): number {
+  if (!plan) return 0;
+  return [
+    plan.run_importance_decay,
+    plan.run_gc,
+    plan.run_run_recipe_review,
+    plan.run_precedent_compaction,
+    plan.run_failure_pattern_compaction,
+    plan.run_skill_review,
+    plan.run_prompt_optimization,
+  ].filter(Boolean).length;
+}
+
+function deriveMaintenanceLoad(
+  snapshot: LearningMaintenanceSnapshotResponse | null | undefined,
+  plan: LearningMaintenancePlanResponse | null | undefined,
+): number {
+  if (!snapshot || !plan) return 0;
+  return clampPercent(
+    maintenanceActionCount(plan) * 12 +
+      snapshot.procedural_contradiction_count * 7 +
+      snapshot.failure_pattern_blocking_count * 5 +
+      snapshot.precedent_compact_candidate_count * 3 +
+      snapshot.failure_pattern_compact_candidate_count * 3 +
+      snapshot.candidate_skill_count * 4 +
+      snapshot.skipped_cycles_since_maintenance * 4 +
+      (snapshot.prompt_optimization_due ? 10 : 0),
+  );
+}
+
+function deriveConflictPressure(
+  snapshot: LearningMaintenanceSnapshotResponse | null | undefined,
+  contradictionCount: number,
+): number {
+  if (!snapshot && contradictionCount <= 0) return 0;
+  return clampPercent(
+    contradictionCount * 18 +
+      (snapshot?.failure_pattern_blocking_count ?? 0) * 10 +
+      (snapshot?.precedent_preserve_branch_count ?? 0) * 6,
+  );
+}
+
+function deriveReadiness(
+  snapshot: LearningMaintenanceSnapshotResponse | null | undefined,
+  plan: LearningMaintenancePlanResponse | null | undefined,
+  contradictionCount: number,
+): number {
+  if (!snapshot || !plan) return 0;
+  const penalty =
+    deriveMaintenanceLoad(snapshot, plan) * 0.45 +
+    deriveConflictPressure(snapshot, contradictionCount) * 0.55;
+  return clampPercent(100 - penalty);
 }
 
 type SortField = 'key' | 'category' | 'timestamp';
@@ -134,8 +218,8 @@ function summarizeProjectionRef(item: ProjectionRef): string {
 
 function toneBadge(active: boolean): string {
   return active
-    ? 'border-transparent bg-[var(--accent-primary)] text-white shadow-[0_18px_48px_var(--glow-primary)]'
-    : 'border-[var(--border-default)] bg-[var(--bg-card)]/80 text-[var(--text-muted)] hover:border-[var(--accent-primary)]/35 hover:text-[var(--text-primary)]';
+    ? 'border-[var(--accent-primary)]/25 bg-[var(--glow-primary)] text-[var(--text-primary)] shadow-[0_16px_36px_rgba(217,90,30,0.12)]'
+    : 'border-[var(--border-default)] bg-[var(--bg-card)] text-[var(--text-muted)] hover:border-[var(--accent-primary)]/25 hover:text-[var(--text-primary)]';
 }
 
 function ChamberButton({
@@ -152,9 +236,9 @@ function ChamberButton({
   return (
     <button
       onClick={onClick}
-      className={`relative overflow-hidden rounded-[26px] border p-4 text-left transition-all duration-300 ${toneBadge(active)}`}
+      className={`glass-card relative overflow-hidden rounded-[24px] border p-4 text-left transition-all duration-300 ${toneBadge(active)}`}
     >
-      <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-white/55 to-transparent" />
+      <div className="absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/45 to-transparent" />
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-[0.28em] opacity-75">
@@ -175,16 +259,29 @@ function AtlasMetric({
   label,
   value,
   caption,
+  progress,
 }: {
   label: string;
   value: string;
   caption: string;
+  progress?: number;
 }) {
   return (
-    <div className="rounded-[26px] border border-[var(--border-default)] bg-[var(--bg-card)]/90 px-4 py-4 shadow-[0_20px_50px_rgba(12,16,24,0.08)] backdrop-blur">
+    <div className="glass-card rounded-[24px] px-4 py-4">
       <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">{label}</p>
       <p className="mt-2 text-2xl font-semibold tracking-tight text-[var(--text-primary)]">{value}</p>
       <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">{caption}</p>
+      {progress != null ? (
+        <div className="mt-4 h-2 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+          <div
+            className="h-full rounded-full"
+            style={{
+              width: `${clampPercent(progress)}%`,
+              background: 'linear-gradient(90deg, var(--accent-primary), rgba(217, 90, 30, 0.4))',
+            }}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -205,8 +302,8 @@ function PanelShell({
   className?: string;
 }) {
   return (
-    <section className={`relative overflow-hidden rounded-[30px] border border-[var(--border-default)] bg-[linear-gradient(180deg,rgba(255,255,255,0.94),rgba(255,248,241,0.92))] shadow-[0_30px_80px_rgba(12,16,24,0.08)] ${className}`}>
-      <div className="absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/60 to-transparent" />
+    <section className={`glass-card relative overflow-hidden rounded-[28px] ${className}`}>
+      <div className="absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/45 to-transparent" />
       <div className="flex items-start justify-between gap-3 border-b border-[var(--border-default)]/80 px-5 py-4">
         <div className="flex items-start gap-3">
           <div className="rounded-2xl bg-[var(--glow-primary)] p-2.5 text-[var(--accent-primary)]">
@@ -255,6 +352,87 @@ function TinyBadge({ children }: { children: ReactNode }) {
     <span className="inline-flex items-center rounded-full border border-[var(--border-default)] bg-[var(--glow-secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
       {children}
     </span>
+  );
+}
+
+function ProgressDeck({
+  eyebrow,
+  title,
+  items,
+}: {
+  eyebrow: string;
+  title: string;
+  items: Array<{
+    label: string;
+    value: number;
+    caption: string;
+  }>;
+}) {
+  return (
+    <PanelShell eyebrow={eyebrow} title={title} icon={Gauge}>
+      <div className="space-y-4">
+        {items.map((item) => (
+          <div key={item.label} className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-[var(--text-primary)]">{item.label}</p>
+                <p className="text-xs text-[var(--text-muted)]">{item.caption}</p>
+              </div>
+              <span className="text-sm font-semibold text-[var(--accent-primary)]">{clampPercent(item.value)}%</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${clampPercent(item.value)}%`,
+                  background: 'linear-gradient(90deg, var(--accent-primary), rgba(217, 90, 30, 0.4))',
+                }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </PanelShell>
+  );
+}
+
+function RuntimeFeed({
+  events,
+  status,
+}: {
+  events: PostTurnReportEvent[];
+  status: 'disconnected' | 'connecting' | 'connected';
+}) {
+  return (
+    <PanelShell
+      eyebrow="Runtime Feed"
+      title="Recent Memory Signals"
+      icon={Activity}
+      actions={<TinyBadge>{status === 'connected' ? 'live' : status}</TinyBadge>}
+    >
+      {events.length === 0 ? (
+        <p className="text-sm leading-6 text-[var(--text-muted)]">
+          No post-turn runtime signals have arrived for this scope yet.
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {events.map((event, index) => (
+            <article
+              key={`${event.agent_id}-${event.timestamp ?? index}-${event.signal}`}
+              className="rounded-[20px] border border-[var(--border-default)] bg-[var(--bg-card)]/80 px-4 py-3"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className={`text-sm font-medium ${learningTone(event)}`}>{event.signal}</p>
+                  <p className="mt-1 text-xs text-[var(--text-muted)]">{learningLabel(event)}</p>
+                </div>
+                <span className="text-[11px] text-[var(--text-placeholder)]">{formatEventTime(event.timestamp)}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      )}
+    </PanelShell>
   );
 }
 
@@ -690,8 +868,13 @@ export default function Memory() {
   const [formCategory, setFormCategory] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { events: runtimeEvents, status: runtimeFeedStatus } = useSSE({
+    filterTypes: ['post_turn_report'],
+    maxEvents: 80,
+  });
 
   const agentLabel = stats?.agent_id ?? selectedAgent ?? 'Local Runtime';
+  const effectiveAgentId = stats?.agent_id ?? selectedAgent ?? null;
   const topCategories = stats?.by_category.slice(0, 5) ?? [];
   const heroChamber = CHAMBERS.find((chamber) => chamber.id === activeTab) ?? CHAMBERS[0]!;
   const ActiveChamberIcon = heroChamber.icon;
@@ -760,6 +943,45 @@ export default function Memory() {
     (projections?.recipe_clusters.length ?? 0) +
     (projections?.precedent_clusters.length ?? 0) +
     (projections?.failure_pattern_clusters.length ?? 0);
+  const recentRuntimeEvents = useMemo(
+    () =>
+      [...runtimeEvents]
+        .reverse()
+        .filter(
+          (event): event is PostTurnReportEvent =>
+            event.type === 'post_turn_report' &&
+            (effectiveAgentId ? event.agent_id === effectiveAgentId : true),
+        )
+        .slice(0, 6),
+    [runtimeEvents, effectiveAgentId],
+  );
+  const maintenanceLoad = deriveMaintenanceLoad(
+    projections?.learning_maintenance_snapshot,
+    projections?.learning_maintenance_plan,
+  );
+  const conflictPressure = deriveConflictPressure(
+    projections?.learning_maintenance_snapshot,
+    projections?.procedural_contradictions.length ?? 0,
+  );
+  const readiness = deriveReadiness(
+    projections?.learning_maintenance_snapshot,
+    projections?.learning_maintenance_plan,
+    projections?.procedural_contradictions.length ?? 0,
+  );
+  const surfaceCoverage = clampPercent(
+    (
+      [
+        projections?.working_state?.projection,
+        projections?.current_user_profile?.projection,
+        projections?.learning_digest,
+        projections?.core_memory,
+        projections?.skill_review,
+        projections?.run_recipe_review,
+        projections?.procedural_cluster_review,
+      ].filter(Boolean).length /
+        7
+    ) * 100,
+  );
   const lineageFamilies = useMemo(
     () =>
       Array.from(
@@ -852,18 +1074,16 @@ export default function Memory() {
 
   return (
     <div className="space-y-6 p-6 animate-fade-in">
-      <div className="relative overflow-hidden rounded-[36px] border border-[var(--border-default)] bg-[radial-gradient(circle_at_top_left,rgba(217,90,30,0.24),transparent_38%),radial-gradient(circle_at_85%_18%,rgba(255,196,128,0.2),transparent_26%),linear-gradient(135deg,rgba(255,248,241,0.98),rgba(255,255,255,0.92))] px-6 py-7 shadow-[0_35px_120px_rgba(12,16,24,0.12)]">
-        <div className="absolute -left-12 top-8 h-36 w-36 rounded-full bg-[var(--glow-primary)] blur-3xl" />
-        <div className="absolute right-0 top-0 h-48 w-48 rounded-full bg-[rgba(255,211,168,0.28)] blur-3xl" />
-        <div className="absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/80 to-transparent" />
+      <div className="relative overflow-hidden rounded-[28px] border border-[var(--border-default)] bg-[linear-gradient(135deg,var(--glow-primary),transparent_35%),var(--bg-card)] px-6 py-6">
+        <div className="absolute inset-x-10 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/70 to-transparent" />
         <div className="relative flex flex-col gap-6 xl:flex-row xl:items-end xl:justify-between">
           <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.3em] text-[var(--text-placeholder)]">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">
               Atlas Memoriae
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-2">
-              <h1 className="text-4xl font-semibold tracking-tight text-[var(--text-primary)]">
-                Memory Atlas For {agentLabel}
+              <h1 className="text-3xl font-semibold tracking-tight text-[var(--text-primary)]">
+                Memory Studio For {agentLabel}
               </h1>
               <span className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
                 remoteScope
@@ -874,9 +1094,8 @@ export default function Memory() {
               </span>
             </div>
             <p className="mt-3 max-w-3xl text-sm leading-7 text-[var(--text-muted)]">
-              A dramatic operator map for the new memory system: working state, episodic recall,
-              procedural skill lines, contradictions, maintenance pressure, and the raw archive,
-              all surfaced in one place instead of a dead table.
+              Working state, episodic recall, procedural memory, contradictions, maintenance
+              pressure, and recent runtime signals in one operator surface.
             </p>
             <div className="mt-4 flex flex-wrap gap-2">
               {['Praefrontalis', 'Hippocampus', 'Neocortex', 'Amygdala', 'Archivum'].map((label) => (
@@ -885,7 +1104,7 @@ export default function Memory() {
             </div>
           </div>
 
-          <div className="w-full max-w-md rounded-[28px] border border-[var(--border-default)] bg-white/75 p-5 backdrop-blur xl:w-[28rem]">
+          <div className="glass-card w-full max-w-md rounded-[24px] p-5 xl:w-[28rem]">
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-[var(--text-placeholder)]">
@@ -932,31 +1151,40 @@ export default function Memory() {
         </div>
       )}
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-6">
         <AtlasMetric
           label="Engrammata"
           value={surfaceLoading ? '…' : formatNumber(stats?.total_entries ?? 0)}
           caption="Total entries under the current scope."
         />
         <AtlasMetric
-          label="Artes"
-          value={surfaceLoading ? '…' : formatNumber(projections?.effective_skills.length ?? stats?.skills ?? 0)}
-          caption="Effective skills surviving shadowing and review."
+          label="Coverage"
+          value={surfaceLoading ? '…' : `${surfaceCoverage}%`}
+          caption="Structured surfaces currently populated."
+          progress={surfaceCoverage}
         />
         <AtlasMetric
-          label="Clusters"
-          value={surfaceLoading ? '…' : formatNumber(totalClusterCount)}
-          caption="Recipe, precedent, and failure cluster surface."
+          label="Readiness"
+          value={surfaceLoading ? '…' : `${readiness}%`}
+          caption="Lower contradiction and maintenance drag."
+          progress={readiness}
         />
         <AtlasMetric
-          label="Contradictions"
-          value={surfaceLoading ? '…' : formatNumber(projections?.procedural_contradictions.length ?? 0)}
-          caption="Recipe branches currently colliding with failure memory."
+          label="Stability"
+          value={surfaceLoading ? '…' : `${clampPercent(100 - conflictPressure)}%`}
+          caption="Calm across recipe, precedent, and failure lanes."
+          progress={clampPercent(100 - conflictPressure)}
+        />
+        <AtlasMetric
+          label="Maintenance"
+          value={surfaceLoading ? '…' : `${maintenanceLoad}%`}
+          caption={`${maintenanceActionCount(projections?.learning_maintenance_plan)} active review actions`}
+          progress={maintenanceLoad}
         />
         <AtlasMetric
           label="Continuatio"
-          value={surfaceLoading ? '…' : (budget?.continuation_policy ?? 'n/a')}
-          caption="Continuation policy currently shaping the prompt envelope."
+          value={surfaceLoading ? '…' : budget?.continuation_policy ?? 'n/a'}
+          caption={`${formatNumber(totalClusterCount)} live clusters under this scope.`}
         />
       </div>
 
@@ -988,6 +1216,8 @@ export default function Memory() {
               />
             </PanelShell>
 
+            <RuntimeFeed events={recentRuntimeEvents} status={runtimeFeedStatus} />
+
             <PanelShell eyebrow="Governance" title="Conflict Policy" icon={BookMarked}>
               <ProjectionText
                 text={projections?.skill_conflict_policy}
@@ -997,6 +1227,35 @@ export default function Memory() {
           </div>
 
           <div className="space-y-6">
+            <ProgressDeck
+              eyebrow="Readiness"
+              title="Operational Index"
+              items={[
+                {
+                  label: 'Memory readiness',
+                  value: readiness,
+                  caption: 'Overall posture after contradictions and pending maintenance.',
+                },
+                {
+                  label: 'Surface coverage',
+                  value: surfaceCoverage,
+                  caption: 'How many structured projections are currently populated.',
+                },
+                {
+                  label: 'Recall allocation',
+                  value: budget
+                    ? budgetShare(budget.recall_total_max_chars, budget.enrichment_total_max_chars)
+                    : 0,
+                  caption: 'Share of the prompt envelope reserved for recall.',
+                },
+                {
+                  label: 'Conflict calm',
+                  value: clampPercent(100 - conflictPressure),
+                  caption: 'Higher is calmer; lower means stronger failure collisions.',
+                },
+              ]}
+            />
+
             <PanelShell eyebrow="Profile" title="Current User Profile" icon={Target}>
               <ProjectionText
                 text={projections?.current_user_profile?.projection}
