@@ -240,6 +240,22 @@ This gives the feeling of "jumping into another mind" without overdesigning it.
 
 Current implementation status:
 
+- the older raw memory table has been reworked into `Atlas Memoriae`
+- the surface is now organized into `Praefrontalis`, `Hippocampus`,
+  `Neocortex`, `Amygdala`, and `Archivum`
+- projections already expose working state, recipes, skills, contradictions,
+  maintenance, clusters, and review decisions as readable operator surfaces
+- `MemoryPulse` in chat now shares the same visual language instead of feeling
+  like a separate admin widget
+
+The remaining UI work is polish:
+
+- tighter mobile/layout refinement
+- motion/detail consistency across workbench and atlas
+- optional extra visualizations for lineage and maintenance cadence
+
+Current implementation status:
+
 - the old storage-first table has already been replaced by a projections-driven
   `Atlas Memoriae` surface
 - the main chambers are now:

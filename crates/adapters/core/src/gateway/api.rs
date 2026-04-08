@@ -1325,6 +1325,7 @@ pub async fn handle_api_context_budget(
     let budget = &config.memory.prompt_budget;
     Json(serde_json::json!({
         "recall_max_entries": budget.recall_max_entries,
+        "nearby_max_entries": budget.nearby_max_entries,
         "recall_entry_max_chars": budget.recall_entry_max_chars,
         "recall_total_max_chars": budget.recall_total_max_chars,
         "skills_max_count": budget.skills_max_count,
@@ -1807,6 +1808,8 @@ pub async fn handle_api_memory_projections(
         "current_user_profile": current_user_profile,
         "learning_digest": learning_digest,
         "learning_maintenance": learning_maintenance,
+        "learning_maintenance_snapshot": learning_maintenance_snapshot,
+        "learning_maintenance_plan": learning_maintenance_plan,
         "procedural_contradictions": procedural_contradiction_entries,
         "procedural_contradiction_projection": procedural_contradiction_projection,
         "procedural_cluster_review": procedural_cluster_review,

@@ -773,6 +773,15 @@ Implemented after the main 4.9 learning pass:
 - `session_search` now narrows semantic embedding work to a cheap
   metadata/transcript/recency shortlist when lexical evidence exists, while
   keeping broader behavior for paraphrase-heavy zero-lexical cases.
+- runtime recall now loads small nearby neighborhoods around top episodic hits
+  instead of relying on isolated entries alone.
+- retrieval query seeding now includes typed working-state recaps for recent
+  delivery, schedule, resource, search, and workspace context.
+- runtime prompt assembly now adds semantic neighborhood recaps for surfaced
+  entities and recent temporal echoes for recalled memory lanes.
+- recipe surfacing is now contradiction-aware before prompt assembly, so safe
+  recipe branches rank above recent failure-colliding alternatives when both
+  are available.
 
 Best candidates:
 

@@ -24,6 +24,8 @@ import {
 } from 'lucide-react';
 import type {
   ContextBudgetResponse,
+  LearningMaintenancePlanResponse,
+  LearningMaintenanceSnapshotResponse,
   MemoryEntry,
   MemoryProjectionsResponse,
   MemoryStatsResponse,
@@ -542,6 +544,125 @@ function ContradictionDeck({
   );
 }
 
+function MaintenanceMatrix({
+  snapshot,
+  plan,
+}: {
+  snapshot: LearningMaintenanceSnapshotResponse | null | undefined;
+  plan: LearningMaintenancePlanResponse | null | undefined;
+}) {
+  return (
+    <PanelShell eyebrow="Autonomic Layer" title="Maintenance Matrix" icon={Activity}>
+      {!snapshot || !plan ? (
+        <p className="text-sm leading-6 text-[var(--text-muted)]">
+          Structured maintenance state is not available for this scope yet.
+        </p>
+      ) : (
+        <div className="space-y-5">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {[
+              {
+                label: 'Recipe pressure',
+                value: `${snapshot.recent_run_recipe_count}/${snapshot.run_recipe_cluster_count}`,
+                caption: 'recent recipes / clusters',
+              },
+              {
+                label: 'Precedent pressure',
+                value: `${snapshot.precedent_compact_candidate_count}`,
+                caption: 'compact candidates',
+              },
+              {
+                label: 'Failure pressure',
+                value: `${snapshot.failure_pattern_blocking_count}`,
+                caption: 'blocking clusters',
+              },
+              {
+                label: 'Skill review',
+                value: `${snapshot.recent_skill_count}/${snapshot.candidate_skill_count}`,
+                caption: 'active / candidate skills',
+              },
+            ].map((item) => (
+              <div
+                key={item.label}
+                className="rounded-[22px] border border-[var(--border-default)] bg-[var(--bg-card)]/80 px-4 py-3"
+              >
+                <p className="text-[10px] uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  {item.label}
+                </p>
+                <p className="mt-2 text-xl font-semibold text-[var(--text-primary)]">{item.value}</p>
+                <p className="mt-1 text-xs leading-5 text-[var(--text-muted)]">{item.caption}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <div className="rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)]/80 p-4">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.26em] text-[var(--text-placeholder)]">
+                Planned actions
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {[
+                  ['importance decay', plan.run_importance_decay],
+                  ['garbage collect', plan.run_gc],
+                  ['recipe review', plan.run_run_recipe_review],
+                  ['precedent compaction', plan.run_precedent_compaction],
+                  ['failure compaction', plan.run_failure_pattern_compaction],
+                  ['skill review', plan.run_skill_review],
+                  ['prompt optimization', plan.run_prompt_optimization],
+                ].map(([label, active]) => (
+                  <span
+                    key={String(label)}
+                    className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide ${
+                      active
+                        ? 'border-transparent bg-[var(--accent-primary)] text-white'
+                        : 'border-[var(--border-default)] bg-[var(--glow-secondary)] text-[var(--text-muted)]'
+                    }`}
+                  >
+                    {String(label)}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-[24px] border border-[var(--border-default)] bg-[var(--bg-card)]/80 p-4">
+              <p className="text-[10px] font-semibold uppercase tracking-[0.26em] text-[var(--text-placeholder)]">
+                Reasons and cadence
+              </p>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {plan.reasons.length > 0 ? (
+                  plan.reasons.map((reason) => (
+                    <TinyBadge key={reason}>{formatLabel(reason)}</TinyBadge>
+                  ))
+                ) : (
+                  <TinyBadge>no active reason</TinyBadge>
+                )}
+              </div>
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-[18px] bg-[var(--bg-primary)]/65 px-3 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">
+                    Skipped cycles
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                    {snapshot.skipped_cycles_since_maintenance}
+                  </p>
+                </div>
+                <div className="rounded-[18px] bg-[var(--bg-primary)]/65 px-3 py-3">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">
+                    Prompt rewrite due
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-[var(--text-primary)]">
+                    {snapshot.prompt_optimization_due ? 'yes' : 'no'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </PanelShell>
+  );
+}
+
 export default function Memory() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -894,6 +1015,14 @@ export default function Memory() {
                       meta: `${budget.recall_max_entries} entries · ${formatChars(budget.recall_total_max_chars)}`,
                     },
                     {
+                      label: 'Nearby',
+                      share: budgetShare(
+                        budget.nearby_max_entries * Math.min(160, budget.recall_entry_max_chars),
+                        budget.enrichment_total_max_chars,
+                      ),
+                      meta: `${budget.nearby_max_entries} echo lanes`,
+                    },
+                    {
                       label: 'Skills',
                       share: budgetShare(budget.skills_total_max_chars, budget.enrichment_total_max_chars),
                       meta: `${budget.skills_max_count} items · ${formatChars(budget.skills_total_max_chars)}`,
@@ -1131,6 +1260,11 @@ export default function Memory() {
               />
             </PanelShell>
           </div>
+
+          <MaintenanceMatrix
+            snapshot={projections?.learning_maintenance_snapshot}
+            plan={projections?.learning_maintenance_plan}
+          />
 
           <ContradictionDeck items={projections?.procedural_contradictions ?? []} />
 

@@ -760,13 +760,15 @@ Implemented or strongly landed:
   review, clusters, contradictions, lineage, and maintenance
 - Slice 10 — deterministic self-learning eval harness with structured review
   and lineage output
+- Atlas/UI follow-through — memory projections now surface enough structured
+  maintenance, lineage, review, and contradiction data to drive a first-class
+  operator-facing memory studio instead of plain text dumps
 
 Remaining work is mostly polish and backlog, not missing core architecture.
 
 Still worth doing before calling Phase 4.9 fully polished:
 
 - richer cluster-level rewrite/merge policy for long-lived procedural branches
-- final operator/eval polish for maintenance action explainability
 - any additional SurrealDB-native shortlist upgrades that remove leftover
   application-side scans
 

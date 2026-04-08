@@ -101,6 +101,7 @@ export interface MemoryStatsResponse {
 
 export interface ContextBudgetResponse {
   recall_max_entries: number;
+  nearby_max_entries: number;
   recall_entry_max_chars: number;
   recall_total_max_chars: number;
   skills_max_count: number;
@@ -164,6 +165,36 @@ export interface ProceduralClusterReviewResponse {
   reason: string;
 }
 
+export interface LearningMaintenanceSnapshotResponse {
+  recent_run_recipe_count: number;
+  run_recipe_cluster_count: number;
+  procedural_contradiction_count: number;
+  recent_precedent_count: number;
+  precedent_cluster_count: number;
+  precedent_compact_candidate_count: number;
+  precedent_preserve_branch_count: number;
+  recent_reflection_count: number;
+  recent_failure_pattern_count: number;
+  failure_pattern_cluster_count: number;
+  failure_pattern_compact_candidate_count: number;
+  failure_pattern_blocking_count: number;
+  recent_skill_count: number;
+  candidate_skill_count: number;
+  skipped_cycles_since_maintenance: number;
+  prompt_optimization_due: boolean;
+}
+
+export interface LearningMaintenancePlanResponse {
+  run_importance_decay: boolean;
+  run_gc: boolean;
+  run_run_recipe_review: boolean;
+  run_precedent_compaction: boolean;
+  run_failure_pattern_compaction: boolean;
+  run_skill_review: boolean;
+  run_prompt_optimization: boolean;
+  reasons: string[];
+}
+
 export interface SkillReviewDecisionResponse {
   skill_id: string;
   skill_name: string;
@@ -198,6 +229,8 @@ export interface MemoryProjectionsResponse {
   current_user_profile: UserProfileProjectionResponse | null;
   learning_digest: string | null;
   learning_maintenance: string | null;
+  learning_maintenance_snapshot: LearningMaintenanceSnapshotResponse;
+  learning_maintenance_plan: LearningMaintenancePlanResponse;
   procedural_contradictions: ProceduralContradictionResponse[];
   procedural_contradiction_projection: string | null;
   procedural_cluster_review: string | null;

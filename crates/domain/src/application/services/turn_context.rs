@@ -38,6 +38,8 @@ pub struct TurnMemoryContext {
     pub recalled_entries: Vec<MemoryEntry>,
     /// Small neighborhood around top episodic hits for better local continuity.
     pub nearby_entries: Vec<MemoryEntry>,
+    /// Recent temporal echoes from the same memory lanes as surfaced recall.
+    pub recent_echoes: Vec<MemoryEntry>,
     /// Relevant learned skills (procedural memory).
     pub skills: Vec<Skill>,
     /// Relevant entities (semantic memory / knowledge graph).
@@ -169,12 +171,14 @@ pub async fn assemble_turn_context(
                 });
             load_recall(mem, &query_text, session_id, budget, recall_limit, &mut ctx).await;
             load_nearby_recall(mem, agent_id, budget, &mut ctx).await;
+            load_recent_echoes(mem, budget, &mut ctx).await;
             apply_resolution_plan(&mut ctx, interpretation);
             tracing::debug!(
                 target: "memory_assembly",
                 core_blocks = ctx.core_blocks.len(),
                 recalled = ctx.recalled_entries.len(),
                 nearby = ctx.nearby_entries.len(),
+                echoes = ctx.recent_echoes.len(),
                 policy = policy_name,
                 "Turn context assembled"
             );
@@ -221,6 +225,7 @@ pub async fn assemble_turn_context(
         ctx.entities = results.entities;
     }
     load_nearby_recall(mem, agent_id, budget, &mut ctx).await;
+    load_recent_echoes(mem, budget, &mut ctx).await;
     load_entity_neighbors(mem, &mut ctx).await;
 
     let allow_historical_context = ctx
@@ -333,6 +338,7 @@ pub async fn assemble_turn_context(
         core_blocks = ctx.core_blocks.len(),
         recalled = ctx.recalled_entries.len(),
         nearby = ctx.nearby_entries.len(),
+        echoes = ctx.recent_echoes.len(),
         skills = ctx.skills.len(),
         entities = ctx.entities.len(),
         sessions = ctx.session_matches.len(),
@@ -442,10 +448,80 @@ async fn load_nearby_recall(
     ctx.nearby_entries = nearby.into_iter().map(|match_| match_.entry).collect();
 }
 
+async fn load_recent_echoes(
+    mem: &dyn UnifiedMemoryPort,
+    budget: &PromptBudget,
+    ctx: &mut TurnMemoryContext,
+) {
+    if ctx.recalled_entries.is_empty() || budget.nearby_max_entries == 0 {
+        return;
+    }
+
+    let mut categories = Vec::new();
+    for entry in ctx.recalled_entries.iter().take(3) {
+        if !categories
+            .iter()
+            .any(|category: &crate::domain::memory::MemoryCategory| category == &entry.category)
+        {
+            categories.push(entry.category.clone());
+        }
+    }
+    if categories.is_empty() {
+        return;
+    }
+
+    let mut seen_keys = ctx
+        .recalled_entries
+        .iter()
+        .chain(ctx.nearby_entries.iter())
+        .map(|entry| entry.key.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let updated_since = chrono::Utc::now() - chrono::Duration::days(14);
+    let mut echoes = Vec::new();
+
+    for category in categories {
+        let recent = match mem
+            .list_recent_scoped(
+                Some(&category),
+                None,
+                budget.nearby_max_entries.saturating_mul(3).max(4),
+                false,
+                updated_since,
+            )
+            .await
+        {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+
+        for entry in recent {
+            if seen_keys.contains(&entry.key)
+                || is_autosave_key(&entry.key)
+                || crate::domain::util::should_skip_autosave_content(&entry.content)
+                || entry.content.contains("<tool_result")
+            {
+                continue;
+            }
+            if seen_keys.insert(entry.key.clone()) {
+                echoes.push(entry);
+            }
+        }
+    }
+
+    echoes.sort_by(|left, right| {
+        right
+            .timestamp
+            .cmp(&left.timestamp)
+            .then_with(|| left.key.cmp(&right.key))
+    });
+    echoes.truncate(budget.nearby_max_entries);
+    ctx.recent_echoes = echoes;
+}
+
 async fn load_recent_failure_clusters(
     mem: &dyn UnifiedMemoryPort,
     agent_id: &str,
-    ) -> Vec<procedural_cluster_service::ProceduralCluster> {
+) -> Vec<procedural_cluster_service::ProceduralCluster> {
     procedural_cluster_service::plan_recent_clusters_since(
         mem,
         agent_id,
@@ -992,22 +1068,15 @@ fn take_section_lines(section: &str, remaining_lines: &mut usize) -> Option<Stri
 fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Option<String> {
     let mut section = String::new();
 
-    if !ctx.recalled_entries.is_empty() || !ctx.nearby_entries.is_empty() {
+    if !ctx.recalled_entries.is_empty()
+        || !ctx.nearby_entries.is_empty()
+        || !ctx.recent_echoes.is_empty()
+    {
         let header = "[Memory context]\n";
         let mut recall_section = String::from(header);
         let mut added = false;
         for entry in &ctx.recalled_entries {
-            let content = if entry.content.chars().count() > budget.recall_entry_max_chars {
-                let truncated: String = entry
-                    .content
-                    .chars()
-                    .take(budget.recall_entry_max_chars)
-                    .collect();
-                format!("{truncated}…")
-            } else {
-                entry.content.clone()
-            };
-            recall_section.push_str(&format!("- {}: {content}\n", entry.key));
+            append_memory_line(&mut recall_section, entry, budget.recall_entry_max_chars);
             added = true;
         }
         if !ctx.nearby_entries.is_empty() {
@@ -1015,17 +1084,16 @@ fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Opti
                 recall_section.push_str("[Nearby memory]\n");
             }
             for entry in &ctx.nearby_entries {
-                let content = if entry.content.chars().count() > budget.recall_entry_max_chars {
-                    let truncated: String = entry
-                        .content
-                        .chars()
-                        .take(budget.recall_entry_max_chars)
-                        .collect();
-                    format!("{truncated}…")
-                } else {
-                    entry.content.clone()
-                };
-                recall_section.push_str(&format!("- {}: {content}\n", entry.key));
+                append_memory_line(&mut recall_section, entry, budget.recall_entry_max_chars);
+                added = true;
+            }
+        }
+        if !ctx.recent_echoes.is_empty() {
+            if added {
+                recall_section.push_str("[Recent echoes]\n");
+            }
+            for entry in &ctx.recent_echoes {
+                append_memory_line(&mut recall_section, entry, budget.recall_entry_max_chars);
                 added = true;
             }
         }
@@ -1073,6 +1141,16 @@ fn format_memory_section(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Opti
     } else {
         Some(section)
     }
+}
+
+fn append_memory_line(section: &mut String, entry: &MemoryEntry, max_chars: usize) {
+    let content = if entry.content.chars().count() > max_chars {
+        let truncated: String = entry.content.chars().take(max_chars).collect();
+        format!("{truncated}…")
+    } else {
+        entry.content.clone()
+    };
+    section.push_str(&format!("- {}: {content}\n", entry.key));
 }
 
 fn format_session_section(ctx: &TurnMemoryContext) -> Option<String> {
@@ -1594,13 +1672,19 @@ mod tests {
             lineage_task_families: vec![task_family.into()],
             sample_request: format!("{task_family} the latest release"),
             summary: summary.into(),
-            tool_pattern: tool_pattern.iter().map(|tool| (*tool).to_string()).collect(),
+            tool_pattern: tool_pattern
+                .iter()
+                .map(|tool| (*tool).to_string())
+                .collect(),
             success_count: 3,
             updated_at: 1,
         }
     }
 
-    fn make_failure_cluster(key: &str, summary: &str) -> procedural_cluster_service::ProceduralCluster {
+    fn make_failure_cluster(
+        key: &str,
+        summary: &str,
+    ) -> procedural_cluster_service::ProceduralCluster {
         procedural_cluster_service::ProceduralCluster {
             representative: MemoryEntry {
                 id: key.into(),
@@ -1692,6 +1776,7 @@ mod tests {
         let ctx = TurnMemoryContext {
             recalled_entries: vec![make_entry("fact1", "Primary fact", 0.9)],
             nearby_entries: vec![make_entry("fact2", "Nearby fact", 0.7)],
+            recent_echoes: vec![make_entry("fact3", "Recent echo", 0.6)],
             ..Default::default()
         };
         let fmt = format_turn_context(&ctx, &PromptBudget::default());
@@ -1699,6 +1784,8 @@ mod tests {
         assert!(fmt.enrichment_prefix.contains("- fact1: Primary fact"));
         assert!(fmt.enrichment_prefix.contains("[Nearby memory]"));
         assert!(fmt.enrichment_prefix.contains("- fact2: Nearby fact"));
+        assert!(fmt.enrichment_prefix.contains("[Recent echoes]"));
+        assert!(fmt.enrichment_prefix.contains("- fact3: Recent echo"));
     }
 
     // ── format_turn_context: skills independent of recall ──
