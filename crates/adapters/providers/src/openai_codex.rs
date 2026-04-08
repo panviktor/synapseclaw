@@ -556,6 +556,65 @@ fn append_tool_result_input(input: &mut Vec<Value>, content: &str) {
     }));
 }
 
+fn normalize_strict_tool_schema(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut obj) => {
+            if let Some(Value::Object(properties)) = obj.get_mut("properties") {
+                let normalized = properties
+                    .iter_mut()
+                    .map(|(key, value)| (key.clone(), normalize_strict_tool_schema(value.take())))
+                    .collect();
+                *properties = normalized;
+            }
+
+            if let Some(Value::Object(defs)) = obj.get_mut("$defs") {
+                let normalized = defs
+                    .iter_mut()
+                    .map(|(key, value)| (key.clone(), normalize_strict_tool_schema(value.take())))
+                    .collect();
+                *defs = normalized;
+            }
+
+            if let Some(Value::Object(defs)) = obj.get_mut("definitions") {
+                let normalized = defs
+                    .iter_mut()
+                    .map(|(key, value)| (key.clone(), normalize_strict_tool_schema(value.take())))
+                    .collect();
+                *defs = normalized;
+            }
+
+            for key in ["items", "additionalProperties", "contains"] {
+                if let Some(value) = obj.get_mut(key) {
+                    *value = normalize_strict_tool_schema(value.take());
+                }
+            }
+
+            for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if let Some(Value::Array(items)) = obj.get_mut(key) {
+                    for item in items {
+                        *item = normalize_strict_tool_schema(item.take());
+                    }
+                }
+            }
+
+            let should_close_object = matches!(obj.get("type"), Some(Value::String(t)) if t == "object")
+                && (obj.contains_key("properties") || obj.contains_key("required"));
+            if should_close_object {
+                obj.insert("additionalProperties".to_string(), Value::Bool(false));
+            }
+
+            Value::Object(obj)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .into_iter()
+                .map(normalize_strict_tool_schema)
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 fn convert_tools(tools: Option<&[ToolSpec]>) -> Option<Vec<ResponsesToolSpec>> {
     tools.map(|items| {
         items
@@ -564,7 +623,7 @@ fn convert_tools(tools: Option<&[ToolSpec]>) -> Option<Vec<ResponsesToolSpec>> {
                 kind: "function".to_string(),
                 name: tool.name.clone(),
                 description: tool.description.clone(),
-                parameters: tool.parameters.clone(),
+                parameters: normalize_strict_tool_schema(tool.parameters.clone()),
                 strict: true,
             })
             .collect()
@@ -1713,6 +1772,52 @@ data: [DONE]
         assert_eq!(
             parsed.usage.as_ref().and_then(|u| u.cached_input_tokens),
             Some(3)
+        );
+    }
+
+    #[test]
+    fn normalize_strict_tool_schema_closes_object_nodes() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string" },
+                "options": {
+                    "type": "object",
+                    "properties": {
+                        "cwd": { "type": "string" }
+                    }
+                }
+            },
+            "required": ["command"]
+        });
+
+        let normalized = normalize_strict_tool_schema(schema);
+        assert_eq!(normalized["additionalProperties"], Value::Bool(false));
+        assert_eq!(
+            normalized["properties"]["options"]["additionalProperties"],
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn convert_tools_normalizes_parameters_for_strict_mode() {
+        let tools = vec![ToolSpec {
+            name: "shell".to_string(),
+            description: "Run a shell command".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string" }
+                },
+                "required": ["command"]
+            }),
+        }];
+
+        let converted = convert_tools(Some(&tools)).expect("tool specs");
+        assert_eq!(converted.len(), 1);
+        assert_eq!(
+            converted[0].parameters["additionalProperties"],
+            Value::Bool(false)
         );
     }
 
