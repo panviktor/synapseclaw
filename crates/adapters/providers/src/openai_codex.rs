@@ -13,6 +13,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -923,15 +924,128 @@ fn parse_sse_text(body: &str) -> anyhow::Result<Option<String>> {
     Ok(fallback_text)
 }
 
-fn parse_sse_response(body: &str) -> anyhow::Result<Option<ResponsesResponse>> {
+fn parse_sse_chat_response(body: &str) -> anyhow::Result<Option<ProviderChatResponse>> {
     let mut completed_response = None;
+    let mut saw_text_delta = false;
+    let mut text_delta_accumulator = String::new();
+    let mut fallback_text = None;
+    let mut tool_calls_by_call_id: HashMap<String, ProviderToolCall> = HashMap::new();
+    let mut item_to_call_id: HashMap<String, String> = HashMap::new();
     let mut buffer = body.to_string();
 
     let mut process_event = |event: Value| -> anyhow::Result<()> {
         if let Some(message) = extract_stream_error_message(&event) {
             return Err(anyhow::anyhow!("OpenAI Codex stream error: {message}"));
         }
+
         let event_type = event.get("type").and_then(Value::as_str);
+        match event_type {
+            Some("response.output_text.delta") => {
+                if let Some(delta) = nonempty_preserve(event.get("delta").and_then(Value::as_str)) {
+                    saw_text_delta = true;
+                    text_delta_accumulator.push_str(&delta);
+                }
+            }
+            Some("response.output_text.done") if !saw_text_delta => {
+                if fallback_text.is_none() {
+                    fallback_text = nonempty_preserve(event.get("text").and_then(Value::as_str));
+                }
+            }
+            Some("response.output_item.added" | "response.output_item.done") => {
+                if let Some(item) = event.get("item").and_then(Value::as_object) {
+                    if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                        let item_id = item
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty())
+                            .map(ToString::to_string);
+                        let call_id = item
+                            .get("call_id")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|id| !id.is_empty())
+                            .map(ToString::to_string);
+                        let name = item
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                            .map(ToString::to_string);
+                        if let (Some(call_id), Some(name)) = (call_id, name) {
+                            if let Some(item_id) = item_id {
+                                item_to_call_id.insert(item_id, call_id.clone());
+                            }
+                            let arguments = item
+                                .get("arguments")
+                                .and_then(Value::as_str)
+                                .map(ToString::to_string)
+                                .unwrap_or_else(|| "{}".to_string());
+                            tool_calls_by_call_id.insert(
+                                call_id.clone(),
+                                ProviderToolCall {
+                                    id: call_id,
+                                    name,
+                                    arguments,
+                                },
+                            );
+                        }
+                    } else if fallback_text.is_none()
+                        && item.get("type").and_then(Value::as_str) == Some("message")
+                    {
+                        if let Some(content) = item.get("content").and_then(Value::as_array) {
+                            for part in content {
+                                if let Some(text) =
+                                    first_nonempty(part.get("text").and_then(Value::as_str))
+                                {
+                                    fallback_text = Some(text);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Some("response.function_call_arguments.delta") => {
+                let item_id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty());
+                let delta = event
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                if let Some(item_id) = item_id {
+                    if let Some(call_id) = item_to_call_id.get(item_id) {
+                        if let Some(call) = tool_calls_by_call_id.get_mut(call_id) {
+                            call.arguments.push_str(&delta);
+                        }
+                    }
+                }
+            }
+            Some("response.function_call_arguments.done") => {
+                let item_id = event
+                    .get("item_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty());
+                let arguments = event
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+                if let (Some(item_id), Some(arguments)) = (item_id, arguments) {
+                    if let Some(call_id) = item_to_call_id.get(item_id) {
+                        if let Some(call) = tool_calls_by_call_id.get_mut(call_id) {
+                            call.arguments = arguments;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+
         if matches!(event_type, Some("response.completed" | "response.done")) {
             if let Some(response) = event
                 .get("response")
@@ -989,7 +1103,21 @@ fn parse_sse_response(body: &str) -> anyhow::Result<Option<ResponsesResponse>> {
         process_chunk(&buffer)?;
     }
 
-    Ok(completed_response)
+    let Some(response) = completed_response else {
+        return Ok(None);
+    };
+
+    let mut parsed = parse_responses_chat_response(response);
+    if saw_text_delta {
+        parsed.text = nonempty_preserve(Some(&text_delta_accumulator));
+    } else if parsed.text.is_none() {
+        parsed.text = fallback_text;
+    }
+    if !tool_calls_by_call_id.is_empty() {
+        parsed.tool_calls = tool_calls_by_call_id.into_values().collect();
+    }
+
+    Ok(Some(parsed))
 }
 
 fn extract_stream_error_message(event: &Value) -> Option<String> {
@@ -1331,17 +1459,18 @@ impl OpenAiCodexProvider {
             .text()
             .await
             .map_err(|err| anyhow::anyhow!("error reading OpenAI Codex response body: {err}"))?;
-        let parsed = if let Some(parsed) = parse_sse_response(&body)? {
+        let parsed = if let Some(parsed) = parse_sse_chat_response(&body)? {
             parsed
         } else {
-            serde_json::from_str(&body).map_err(|err| {
+            let parsed: ResponsesResponse = serde_json::from_str(&body).map_err(|err| {
                 anyhow::anyhow!(
                     "OpenAI Codex JSON parse failed: {err}. Payload: {}",
                     super::sanitize_api_error(&body)
                 )
-            })?
+            })?;
+            parse_responses_chat_response(parsed)
         };
-        Ok(parse_responses_chat_response(parsed))
+        Ok(parsed)
     }
 }
 
@@ -1648,6 +1777,66 @@ data: [DONE]
 "#;
 
         assert_eq!(parse_sse_text(payload).unwrap().as_deref(), Some("Done"));
+    }
+
+    #[test]
+    fn parse_sse_chat_response_reconstructs_text_from_events() {
+        let payload = r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_123","output":[]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"msg_123","type":"message","status":"in_progress","content":[],"role":"assistant"},"output_index":0}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"HEL","item_id":"msg_123","output_index":0}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"LO","item_id":"msg_123","output_index":0}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_123","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}
+
+data: [DONE]
+"#;
+
+        let parsed = parse_sse_chat_response(payload)
+            .unwrap()
+            .expect("chat response should parse");
+        assert_eq!(parsed.text.as_deref(), Some("HELLO"));
+        assert_eq!(parsed.tool_calls.len(), 0);
+        assert_eq!(parsed.usage.as_ref().and_then(|u| u.input_tokens), Some(1));
+    }
+
+    #[test]
+    fn parse_sse_chat_response_reconstructs_function_calls_from_events() {
+        let payload = r#"event: response.created
+data: {"type":"response.created","response":{"id":"resp_123","output":[]}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"fc_123","type":"function_call","status":"in_progress","arguments":"","call_id":"call_123","name":"shell"},"output_index":0}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"{\"","item_id":"fc_123","output_index":0}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"command\":\"date\"}","item_id":"fc_123","output_index":0}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"fc_123","type":"function_call","status":"completed","arguments":"{\"command\":\"date\"}","call_id":"call_123","name":"shell"},"output_index":0}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_123","output":[]}}
+
+data: [DONE]
+"#;
+
+        let parsed = parse_sse_chat_response(payload)
+            .unwrap()
+            .expect("chat response should parse");
+        assert_eq!(parsed.tool_calls.len(), 1);
+        assert_eq!(parsed.tool_calls[0].id, "call_123");
+        assert_eq!(parsed.tool_calls[0].name, "shell");
+        assert_eq!(parsed.tool_calls[0].arguments, "{\"command\":\"date\"}");
     }
 
     #[test]
