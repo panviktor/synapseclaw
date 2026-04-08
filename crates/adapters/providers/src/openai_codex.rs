@@ -556,13 +556,65 @@ fn append_tool_result_input(input: &mut Vec<Value>, content: &str) {
     }));
 }
 
+fn make_schema_nullable(schema: Value) -> Value {
+    match schema {
+        Value::Object(mut obj) => match obj.get_mut("type") {
+            Some(Value::String(kind)) if kind != "null" => {
+                let original = kind.clone();
+                *obj.get_mut("type").expect("type just matched") =
+                    Value::Array(vec![Value::String(original), Value::String("null".into())]);
+                Value::Object(obj)
+            }
+            Some(Value::Array(kinds)) => {
+                if !kinds.iter().any(|value| value == "null") {
+                    kinds.push(Value::String("null".into()));
+                }
+                Value::Object(obj)
+            }
+            _ => Value::Object(serde_json::Map::from_iter([(
+                "anyOf".to_string(),
+                Value::Array(vec![
+                    Value::Object(obj),
+                    serde_json::json!({ "type": "null" }),
+                ]),
+            )])),
+        },
+        other => serde_json::json!({
+            "anyOf": [
+                other,
+                { "type": "null" }
+            ]
+        }),
+    }
+}
+
 fn normalize_strict_tool_schema(schema: Value) -> Value {
     match schema {
         Value::Object(mut obj) => {
+            let original_required = obj
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(ToString::to_string)
+                        .collect::<std::collections::HashSet<_>>()
+                })
+                .unwrap_or_default();
+
             if let Some(Value::Object(properties)) = obj.get_mut("properties") {
                 let normalized = properties
                     .iter_mut()
-                    .map(|(key, value)| (key.clone(), normalize_strict_tool_schema(value.take())))
+                    .map(|(key, value)| {
+                        let normalized = normalize_strict_tool_schema(value.take());
+                        let normalized = if original_required.contains(key) {
+                            normalized
+                        } else {
+                            make_schema_nullable(normalized)
+                        };
+                        (key.clone(), normalized)
+                    })
                     .collect();
                 *properties = normalized;
             }
@@ -601,6 +653,12 @@ fn normalize_strict_tool_schema(schema: Value) -> Value {
                 && (obj.contains_key("properties") || obj.contains_key("required"));
             if should_close_object {
                 obj.insert("additionalProperties".to_string(), Value::Bool(false));
+                if let Some(Value::Object(properties)) = obj.get("properties") {
+                    obj.insert(
+                        "required".to_string(),
+                        Value::Array(properties.keys().cloned().map(Value::String).collect()),
+                    );
+                }
             }
 
             Value::Object(obj)
@@ -1796,6 +1854,41 @@ data: [DONE]
         assert_eq!(
             normalized["properties"]["options"]["additionalProperties"],
             Value::Bool(false)
+        );
+        assert_eq!(
+            normalized["required"],
+            Value::Array(vec![
+                Value::String("command".into()),
+                Value::String("options".into())
+            ])
+        );
+    }
+
+    #[test]
+    fn normalize_strict_tool_schema_makes_optional_properties_nullable() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "command": { "type": "string" },
+                "cwd": { "type": "string" }
+            },
+            "required": ["command"]
+        });
+
+        let normalized = normalize_strict_tool_schema(schema);
+        assert_eq!(
+            normalized["properties"]["cwd"]["type"],
+            Value::Array(vec![
+                Value::String("string".into()),
+                Value::String("null".into())
+            ])
+        );
+        assert_eq!(
+            normalized["required"],
+            Value::Array(vec![
+                Value::String("command".into()),
+                Value::String("cwd".into())
+            ])
         );
     }
 
