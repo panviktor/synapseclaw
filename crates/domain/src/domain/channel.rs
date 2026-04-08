@@ -100,11 +100,21 @@ pub struct OutboundIntent {
 impl OutboundIntent {
     /// Create a simple text notification intent.
     pub fn notify(channel: impl Into<String>, recipient: impl Into<String>, text: String) -> Self {
+        Self::notify_in_thread(channel, recipient, None, text)
+    }
+
+    /// Create a simple text notification intent, optionally preserving thread/topic context.
+    pub fn notify_in_thread(
+        channel: impl Into<String>,
+        recipient: impl Into<String>,
+        thread_ref: Option<String>,
+        text: String,
+    ) -> Self {
         Self {
             intent_kind: IntentKind::Notify,
             target_channel: channel.into(),
             target_recipient: recipient.into(),
-            thread_ref: None,
+            thread_ref,
             content: RenderableContent::Text(text),
             required_capabilities: vec![ChannelCapability::SendText],
             degradation_policy: DegradationPolicy::default(),

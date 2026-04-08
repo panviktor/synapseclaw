@@ -112,7 +112,13 @@ pub async fn run_with_shared_memory(
             None, // Agents create their own IpcClient (no shared daemon client)
             None,
             surreal_handle,
-            None, None, None, // orchestration tool ports (CLI has no live conversation)
+            None,
+            None,
+            None,
+            None, // orchestration tool ports (CLI has no live conversation)
+            None,
+            None,
+            None,
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -456,7 +462,7 @@ pub async fn run_with_shared_memory(
         let excluded_tools =
             compute_excluded_mcp_tools(&tools_registry, &config.agent.tool_filter_groups, &msg);
 
-        let response = run_tool_call_loop(
+        let loop_result = run_tool_call_loop(
             provider.as_ref(),
             &mut history,
             &tools_registry,
@@ -478,6 +484,7 @@ pub async fn run_with_shared_memory(
             run_ctx.as_ref(),
         )
         .await?;
+        let response = loop_result.response;
         final_output = response.clone();
         println!("{response}");
         observer.record_event(&ObserverEvent::TurnComplete);
@@ -633,7 +640,7 @@ pub async fn run_with_shared_memory(
             )
             .await
             {
-                Ok(resp) => resp,
+                Ok(loop_result) => loop_result.response,
                 Err(e) => {
                     eprintln!("\nError: {e}\n");
                     continue;
@@ -738,7 +745,13 @@ pub async fn process_message(
         None,
         None,
         surreal_handle_pm,
-        None, None, None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
     );
     // ── Wire MCP tools (non-fatal) — process_message path ────────
     // NOTE: Same ordering contract as the CLI path above — MCP tools must be

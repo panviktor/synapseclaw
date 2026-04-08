@@ -5,6 +5,9 @@ use std::fs;
 use std::sync::Arc;
 use synapse_domain::config::schema::{Config, ProxyConfig, ProxyScope};
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 use synapse_domain::domain::util::MaybeSet;
 use synapse_infra::config_io::ConfigIO;
 use synapse_providers::proxy::ProxyConfigExt;
@@ -395,6 +398,23 @@ impl Tool for ProxyConfigTool {
                 }
             }
         })
+    }
+
+    fn extract_facts(&self, _args: &Value, result: Option<&ToolResult>) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::ConfigFile,
+                operation: ResourceOperation::Configure,
+                locator: self.config.config_path.display().to_string(),
+                host: None,
+                metadata: ResourceMetadata::default(),
+            }),
+        }]
     }
 
     async fn execute(&self, args: Value) -> anyhow::Result<ToolResult> {

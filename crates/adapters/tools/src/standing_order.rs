@@ -4,29 +4,205 @@
 //! bound to the current conversation.
 
 use async_trait::async_trait;
-use parking_lot::RwLock;
 use serde_json::json;
 use std::sync::Arc;
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::standing_order::{StandingOrder, StandingOrderKind};
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
-use synapse_domain::ports::tool::{Tool, ToolResult};
+use synapse_domain::ports::standing_order_store::StandingOrderStorePort;
+use synapse_domain::ports::tool::{Tool, ToolExecution, ToolResult};
 
 pub struct StandingOrderTool {
     context: Option<Arc<dyn ConversationContextPort>>,
-    store: Arc<RwLock<Vec<StandingOrder>>>,
+    store: Arc<dyn StandingOrderStorePort>,
+    created_by: String,
 }
 
 impl StandingOrderTool {
-    pub fn new(context: Option<Arc<dyn ConversationContextPort>>) -> Self {
+    pub fn new(
+        context: Option<Arc<dyn ConversationContextPort>>,
+        store: Arc<dyn StandingOrderStorePort>,
+        created_by: impl Into<String>,
+    ) -> Self {
         Self {
             context,
-            store: Arc::new(RwLock::new(Vec::new())),
+            store,
+            created_by: created_by.into(),
         }
     }
 
-    /// Get a read-only snapshot of all orders (for heartbeat consumption).
-    pub fn orders(&self) -> Vec<StandingOrder> {
-        self.store.read().clone()
+    async fn execute_action(
+        &self,
+        args: &serde_json::Value,
+    ) -> anyhow::Result<(ToolResult, Vec<TypedToolFact>)> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("list");
+
+        match action {
+            "subscribe" => {
+                let kind_str = args
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("restart_report");
+                let kind = match kind_str {
+                    "heartbeat_report" => StandingOrderKind::HeartbeatReport,
+                    _ => StandingOrderKind::RestartReport,
+                };
+
+                let (channel, recipient, thread) = match self
+                    .context
+                    .as_ref()
+                    .and_then(|c| c.get_current())
+                {
+                    Some(ctx) => (ctx.source_adapter, ctx.reply_ref, ctx.thread_ref),
+                    None => {
+                        return Ok((
+                            ToolResult {
+                                output: "No current conversation context. Standing orders must be created from a live conversation.".into(),
+                                success: false,
+                                error: None,
+                            },
+                            Vec::new(),
+                        ));
+                    }
+                };
+
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let id = format!(
+                    "so_{:x}",
+                    now.wrapping_mul(6364136223846793005).wrapping_add(1)
+                );
+
+                let order = StandingOrder {
+                    id: id.clone(),
+                    kind,
+                    delivery_channel: channel.clone(),
+                    delivery_recipient: recipient.clone(),
+                    delivery_thread: thread.clone(),
+                    enabled: true,
+                    created_by: self.created_by.clone(),
+                    created_at: now,
+                };
+
+                self.store.upsert(order)?;
+
+                Ok((
+                    ToolResult {
+                        output: format!(
+                            "Standing order {id} created: {kind_str} → {channel}:{recipient}"
+                        ),
+                        success: true,
+                        error: None,
+                    },
+                    vec![TypedToolFact::focus(
+                        self.name().to_string(),
+                        vec![FocusEntity {
+                            kind: "standing_order".into(),
+                            name: id,
+                            metadata: Some(kind_str.to_string()),
+                        }],
+                        Vec::new(),
+                    )],
+                ))
+            }
+            "list" => {
+                let orders = self.store.list();
+                if orders.is_empty() {
+                    return Ok((
+                        ToolResult {
+                            output: "No standing orders.".into(),
+                            success: true,
+                            error: None,
+                        },
+                        Vec::new(),
+                    ));
+                }
+                let mut out = String::from("Standing orders:\n");
+                for o in &orders {
+                    let kind = match &o.kind {
+                        StandingOrderKind::RestartReport => "restart_report",
+                        StandingOrderKind::HeartbeatReport => "heartbeat_report",
+                        StandingOrderKind::ScheduledPrompt { .. } => "scheduled",
+                        StandingOrderKind::CustomEvent { .. } => "custom",
+                    };
+                    let status = if o.enabled { "✅" } else { "⏸️" };
+                    out.push_str(&format!(
+                        "  {status} {} [{}] → {}:{}\n",
+                        o.id, kind, o.delivery_channel, o.delivery_recipient
+                    ));
+                }
+                let facts = vec![TypedToolFact::focus(
+                    self.name().to_string(),
+                    orders
+                        .iter()
+                        .take(3)
+                        .map(|order| FocusEntity {
+                            kind: "standing_order".into(),
+                            name: order.id.clone(),
+                            metadata: Some(match &order.kind {
+                                StandingOrderKind::RestartReport => "restart_report".into(),
+                                StandingOrderKind::HeartbeatReport => "heartbeat_report".into(),
+                                StandingOrderKind::ScheduledPrompt { .. } => "scheduled".into(),
+                                StandingOrderKind::CustomEvent { .. } => "custom".into(),
+                            }),
+                        })
+                        .collect(),
+                    Vec::new(),
+                )];
+                Ok((
+                    ToolResult {
+                        output: out,
+                        success: true,
+                        error: None,
+                    },
+                    facts,
+                ))
+            }
+            "cancel" => {
+                let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                if self.store.remove(id)? {
+                    Ok((
+                        ToolResult {
+                            output: format!("Standing order {id} cancelled"),
+                            success: true,
+                            error: None,
+                        },
+                        vec![TypedToolFact::focus(
+                            self.name().to_string(),
+                            vec![FocusEntity {
+                                kind: "standing_order".into(),
+                                name: id.to_string(),
+                                metadata: Some("cancelled".into()),
+                            }],
+                            Vec::new(),
+                        )],
+                    ))
+                } else {
+                    Ok((
+                        ToolResult {
+                            output: format!("Standing order {id} not found"),
+                            success: false,
+                            error: None,
+                        },
+                        Vec::new(),
+                    ))
+                }
+            }
+            _ => Ok((
+                ToolResult {
+                    output: format!("Unknown action: {action}. Use: subscribe, list, cancel"),
+                    success: false,
+                    error: None,
+                },
+                Vec::new(),
+            )),
+        }
     }
 }
 
@@ -66,102 +242,12 @@ impl Tool for StandingOrderTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+        let (result, _) = self.execute_action(&args).await?;
+        Ok(result)
+    }
 
-        match action {
-            "subscribe" => {
-                let kind_str = args.get("kind").and_then(|v| v.as_str()).unwrap_or("restart_report");
-                let kind = match kind_str {
-                    "heartbeat_report" => StandingOrderKind::HeartbeatReport,
-                    _ => StandingOrderKind::RestartReport,
-                };
-
-                // Resolve delivery target from current conversation
-                let (channel, recipient, thread) = match self.context.as_ref().and_then(|c| c.get_current()) {
-                    Some(ctx) => (ctx.source_adapter, ctx.reply_ref, ctx.thread_ref),
-                    None => {
-                        return Ok(ToolResult {
-                            output: "No current conversation context. Standing orders must be created from a live conversation.".into(),
-                            success: false,
-                            error: None,
-                        });
-                    }
-                };
-
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0);
-                let id = format!("so_{:x}", now.wrapping_mul(6364136223846793005).wrapping_add(1));
-
-                let order = StandingOrder {
-                    id: id.clone(),
-                    kind,
-                    delivery_channel: channel.clone(),
-                    delivery_recipient: recipient.clone(),
-                    delivery_thread: thread,
-                    enabled: true,
-                    created_by: "agent".into(),
-                    created_at: now,
-                };
-
-                self.store.write().push(order);
-
-                Ok(ToolResult {
-                    output: format!("Standing order {id} created: {kind_str} → {channel}:{recipient}"),
-                    success: true,
-                    error: None,
-                })
-            }
-            "list" => {
-                let orders = self.store.read();
-                if orders.is_empty() {
-                    return Ok(ToolResult {
-                        output: "No standing orders.".into(),
-                        success: true,
-                        error: None,
-                    });
-                }
-                let mut out = String::from("Standing orders:\n");
-                for o in orders.iter() {
-                    let kind = match &o.kind {
-                        StandingOrderKind::RestartReport => "restart_report",
-                        StandingOrderKind::HeartbeatReport => "heartbeat_report",
-                        StandingOrderKind::ScheduledPrompt { .. } => "scheduled",
-                        StandingOrderKind::CustomEvent { .. } => "custom",
-                    };
-                    let status = if o.enabled { "✅" } else { "⏸️" };
-                    out.push_str(&format!(
-                        "  {status} {} [{}] → {}:{}\n",
-                        o.id, kind, o.delivery_channel, o.delivery_recipient
-                    ));
-                }
-                Ok(ToolResult { output: out, success: true, error: None })
-            }
-            "cancel" => {
-                let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                let mut orders = self.store.write();
-                let before = orders.len();
-                orders.retain(|o| o.id != id);
-                if orders.len() < before {
-                    Ok(ToolResult {
-                        output: format!("Standing order {id} cancelled"),
-                        success: true,
-                        error: None,
-                    })
-                } else {
-                    Ok(ToolResult {
-                        output: format!("Standing order {id} not found"),
-                        success: false,
-                        error: None,
-                    })
-                }
-            }
-            _ => Ok(ToolResult {
-                output: format!("Unknown action: {action}. Use: subscribe, list, cancel"),
-                success: false,
-                error: None,
-            }),
-        }
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
+        let (result, facts) = self.execute_action(&args).await?;
+        Ok(ToolExecution { result, facts })
     }
 }

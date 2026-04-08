@@ -1139,12 +1139,14 @@ fn xml_format_results_includes_status_and_output() {
             output: "file1.txt\nfile2.txt".into(),
             success: true,
             tool_call_id: None,
+            tool_facts: vec![],
         },
         ToolExecutionResult {
             name: "file_read".into(),
             output: "Error: file not found".into(),
             success: false,
             tool_call_id: None,
+            tool_facts: vec![],
         },
     ];
 
@@ -1170,12 +1172,14 @@ fn native_format_results_maps_tool_call_ids() {
             output: "out1".into(),
             success: true,
             tool_call_id: Some("tc-001".into()),
+            tool_facts: vec![],
         },
         ToolExecutionResult {
             name: "b".into(),
             output: "out2".into(),
             success: true,
             tool_call_id: Some("tc-002".into()),
+            tool_facts: vec![],
         },
     ];
 

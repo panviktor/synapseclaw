@@ -23,6 +23,54 @@ pub type AgentId = String;
 pub type MemoryId = String;
 pub type SessionId = String;
 
+// ── Embedding Profile ───────────────────────────────────────────
+
+/// Distance metric expected by an embedding family.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingDistanceMetric {
+    #[default]
+    Cosine,
+    Dot,
+    Euclidean,
+}
+
+/// Retrieval calibration metadata for an embedding model/profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmbeddingProfile {
+    pub profile_id: String,
+    pub provider_family: String,
+    pub model_id: String,
+    pub dimensions: usize,
+    pub distance_metric: EmbeddingDistanceMetric,
+    pub normalize_output: bool,
+    pub query_prefix: Option<String>,
+    pub document_prefix: Option<String>,
+    pub supports_multilingual: bool,
+    pub supports_code: bool,
+    pub recommended_chunk_chars: usize,
+    pub recommended_top_k: usize,
+}
+
+impl Default for EmbeddingProfile {
+    fn default() -> Self {
+        Self {
+            profile_id: "none:none:0".into(),
+            provider_family: "none".into(),
+            model_id: "none".into(),
+            dimensions: 0,
+            distance_metric: EmbeddingDistanceMetric::Cosine,
+            normalize_output: false,
+            query_prefix: None,
+            document_prefix: None,
+            supports_multilingual: false,
+            supports_code: false,
+            recommended_chunk_chars: 800,
+            recommended_top_k: 8,
+        }
+    }
+}
+
 // ── Memory Category (backward-compatible + extended) ─────────────
 
 /// Memory category — determines storage tier and retrieval scope.
@@ -236,6 +284,64 @@ pub struct TemporalFact {
 
 // ── Skill (procedural memory) ────────────────────────────────────
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillOrigin {
+    Manual,
+    Imported,
+    #[default]
+    Learned,
+}
+
+impl fmt::Display for SkillOrigin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Manual => write!(f, "manual"),
+            Self::Imported => write!(f, "imported"),
+            Self::Learned => write!(f, "learned"),
+        }
+    }
+}
+
+impl SkillOrigin {
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "manual" => Self::Manual,
+            "imported" => Self::Imported,
+            _ => Self::Learned,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillStatus {
+    #[default]
+    Active,
+    Candidate,
+    Deprecated,
+}
+
+impl fmt::Display for SkillStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Active => write!(f, "active"),
+            Self::Candidate => write!(f, "candidate"),
+            Self::Deprecated => write!(f, "deprecated"),
+        }
+    }
+}
+
+impl SkillStatus {
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "candidate" => Self::Candidate,
+            "deprecated" => Self::Deprecated,
+            _ => Self::Active,
+        }
+    }
+}
+
 /// A learned procedure — created from successful pipeline runs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
@@ -244,10 +350,20 @@ pub struct Skill {
     pub description: String,
     /// Markdown step-by-step procedure.
     pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_family: Option<String>,
+    #[serde(default)]
+    pub tool_pattern: Vec<String>,
+    #[serde(default)]
+    pub lineage_task_families: Vec<String>,
     pub tags: Vec<String>,
     pub success_count: u32,
     pub fail_count: u32,
     pub version: u32,
+    #[serde(default)]
+    pub origin: SkillOrigin,
+    #[serde(default)]
+    pub status: SkillStatus,
     pub created_by: AgentId,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -258,7 +374,12 @@ pub struct Skill {
 pub struct SkillUpdate {
     pub increment_success: bool,
     pub increment_fail: bool,
+    pub new_description: Option<String>,
     pub new_content: Option<String>,
+    pub new_task_family: Option<Option<String>>,
+    pub new_tool_pattern: Option<Vec<String>>,
+    pub new_lineage_task_families: Option<Vec<String>>,
+    pub new_status: Option<SkillStatus>,
 }
 
 // ── Reflection ───────────────────────────────────────────────────
@@ -303,6 +424,7 @@ pub struct MemoryQuery {
     pub text: String,
     pub embedding: Option<Vec<f32>>,
     pub agent_id: AgentId,
+    pub categories: Vec<MemoryCategory>,
     pub include_shared: bool,
     pub time_range: Option<(DateTime<Utc>, DateTime<Utc>)>,
     pub limit: usize,

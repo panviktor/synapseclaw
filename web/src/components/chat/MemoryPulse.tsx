@@ -1,15 +1,19 @@
+import type { ReactNode } from 'react';
 import { Activity, BookMarked, BrainCircuit, Gauge, Layers3, Sparkles, Target, X } from 'lucide-react';
 import type {
   ChatSessionInfo,
   ContextBudgetResponse,
   MemoryStatsResponse,
+  MemoryProjectionsResponse,
   PostTurnReportEvent,
 } from '@/types/api';
 
 interface MemoryPulseProps {
   stats: MemoryStatsResponse | null;
   budget: ContextBudgetResponse | null;
+  projections: MemoryProjectionsResponse | null;
   lastReport: PostTurnReportEvent | null;
+  recentReports?: PostTurnReportEvent[];
   session: ChatSessionInfo | null;
   agentLabel: string;
   onClose?: () => void;
@@ -28,6 +32,24 @@ function allocationShare(value: number, total: number): number {
   return Math.max(10, Math.round((value / total) * 100));
 }
 
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function formatLabel(value: string): string {
+  return value.replace(/[_-]+/g, ' ');
+}
+
+function previewProjection(text: string | null | undefined, maxLines: number = 4): string | null {
+  if (!text?.trim()) return null;
+  const lines = text
+    .trim()
+    .split('\n')
+    .filter((line) => line.trim().length > 0);
+  if (lines.length <= maxLines) return lines.join('\n');
+  return `${lines.slice(0, maxLines).join('\n')}\n…`;
+}
+
 function latestLearningText(report: PostTurnReportEvent | null): string {
   if (!report) return 'No learning event yet for this agent in the current stream.';
   if (report.explicit_kind) return report.explicit_kind.replace(/_/g, ' ');
@@ -44,10 +66,81 @@ function latestLearningTone(report: PostTurnReportEvent | null): string {
   return 'text-[var(--text-primary)]';
 }
 
+function eventLabel(event: PostTurnReportEvent): string {
+  if (event.explicit_kind) return event.explicit_kind.replace(/_/g, ' ');
+  if (event.explicit_mutation) return 'explicit mutation';
+  if (event.reflection_started) return 'reflection';
+  if (event.consolidation_started) return 'consolidation';
+  return 'passive turn';
+}
+
+function formatEventTime(iso?: string): string {
+  if (!iso) return 'pending';
+  return new Date(iso).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function maintenanceActionCount(projections: MemoryProjectionsResponse | null): number {
+  if (!projections) return 0;
+  return [
+    projections.learning_maintenance_plan?.run_importance_decay,
+    projections.learning_maintenance_plan?.run_gc,
+    projections.learning_maintenance_plan?.run_run_recipe_review,
+    projections.learning_maintenance_plan?.run_precedent_compaction,
+    projections.learning_maintenance_plan?.run_failure_pattern_compaction,
+    projections.learning_maintenance_plan?.run_skill_review,
+    projections.learning_maintenance_plan?.run_prompt_optimization,
+  ].filter(Boolean).length;
+}
+
+function deriveMaintenanceLoad(projections: MemoryProjectionsResponse | null): number {
+  if (!projections) return 0;
+  const snapshot = projections.learning_maintenance_snapshot;
+  return clampPercent(
+    maintenanceActionCount(projections) * 12 +
+      snapshot.procedural_contradiction_count * 7 +
+      snapshot.failure_pattern_blocking_count * 5 +
+      snapshot.precedent_compact_candidate_count * 3 +
+      snapshot.failure_pattern_compact_candidate_count * 3 +
+      snapshot.candidate_skill_count * 4 +
+      snapshot.skipped_cycles_since_maintenance * 4 +
+      (snapshot.prompt_optimization_due ? 10 : 0),
+  );
+}
+
+function deriveConflictPressure(projections: MemoryProjectionsResponse | null): number {
+  if (!projections) return 0;
+  const snapshot = projections.learning_maintenance_snapshot;
+  return clampPercent(
+    projections.procedural_contradictions.length * 18 +
+      snapshot.failure_pattern_blocking_count * 10 +
+      snapshot.precedent_preserve_branch_count * 6,
+  );
+}
+
+function deriveReadiness(projections: MemoryProjectionsResponse | null): number {
+  if (!projections) return 0;
+  const penalty = deriveMaintenanceLoad(projections) * 0.45 + deriveConflictPressure(projections) * 0.55;
+  return clampPercent(100 - penalty);
+}
+
+function TinyBadge({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-full border border-[var(--border-default)] bg-[var(--glow-secondary)] px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+      {children}
+    </span>
+  );
+}
+
 export default function MemoryPulse({
   stats,
   budget,
+  projections,
   lastReport,
+  recentReports = [],
   session,
   agentLabel,
   onClose,
@@ -58,6 +151,10 @@ export default function MemoryPulse({
     budget?.recall_total_max_chars ?? 0,
     budget?.enrichment_total_max_chars ?? 0,
   );
+  const nearbyShare = allocationShare(
+    (budget?.nearby_max_entries ?? 0) * Math.min(160, budget?.recall_entry_max_chars ?? 0),
+    budget?.enrichment_total_max_chars ?? 0,
+  );
   const skillsShare = allocationShare(
     budget?.skills_total_max_chars ?? 0,
     budget?.enrichment_total_max_chars ?? 0,
@@ -66,26 +163,41 @@ export default function MemoryPulse({
     budget?.entities_total_max_chars ?? 0,
     budget?.enrichment_total_max_chars ?? 0,
   );
+  const maintenanceReasons = projections?.learning_maintenance_plan?.reasons ?? [];
+  const reviewActionCount = maintenanceActionCount(projections);
+  const topEffectiveSkills = projections?.effective_skills.slice(0, 3) ?? [];
+  const topContradictions = projections?.procedural_contradictions.slice(0, 2) ?? [];
+  const workingStatePreview = previewProjection(projections?.working_state?.projection, 5);
+  const profilePreview = previewProjection(projections?.current_user_profile?.projection, 5);
+  const readiness = deriveReadiness(projections);
+  const conflictPressure = deriveConflictPressure(projections);
+  const maintenanceLoad = deriveMaintenanceLoad(projections);
 
   return (
     <aside className="flex h-full flex-col overflow-hidden bg-[var(--bg-secondary)]">
-      <div className="border-b border-[var(--border-default)] px-4 py-4">
-        <div className="flex items-start justify-between gap-3">
+      <div className="relative overflow-hidden border-b border-[var(--border-default)] bg-[linear-gradient(135deg,var(--glow-primary),transparent_35%),var(--bg-card)] px-4 py-4">
+        <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-[var(--accent-primary)]/70 to-transparent" />
+        <div className="relative flex items-start justify-between gap-3">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
-              Memory Pulse
+              Atlas Memoriae
             </p>
             <h2 className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
               {agentLabel}
             </h2>
             <p className="mt-1 text-xs text-[var(--text-muted)]">
-              Live memory surface, learning state, and context envelope.
+              Live cortical pulse for learning, working state, and prompt budget.
             </p>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              <TinyBadge>Praefrontalis</TinyBadge>
+              <TinyBadge>Hippocampus</TinyBadge>
+              <TinyBadge>Amygdala</TinyBadge>
+            </div>
           </div>
           {onClose && (
             <button
               onClick={onClose}
-              className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-card)] p-2 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
+              className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-card)]/80 p-2 text-[var(--text-muted)] transition-colors hover:text-[var(--text-primary)]"
               aria-label="Close memory pulse"
             >
               <X className="h-4 w-4" />
@@ -99,7 +211,12 @@ export default function MemoryPulse({
           <div className="border-b border-[var(--border-default)] px-4 py-3">
             <div className="flex items-center gap-2">
               <Sparkles className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">Latest Learning</h3>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Amygdala
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Learning Pulse</h3>
+              </div>
             </div>
           </div>
           <div className="space-y-3 px-4 py-4">
@@ -137,6 +254,132 @@ export default function MemoryPulse({
                 reflected
               </span>
             </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Readiness</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                  {readiness}%
+                </p>
+              </div>
+              <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Stability</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                  {clampPercent(100 - conflictPressure)}%
+                </p>
+              </div>
+              <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                <p className="text-[10px] uppercase tracking-[0.18em] text-[var(--text-placeholder)]">Maintenance</p>
+                <p className="mt-1 text-base font-semibold text-[var(--text-primary)]">
+                  {maintenanceLoad}%
+                </p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {[
+                { label: 'Readiness', value: readiness },
+                { label: 'Stability', value: clampPercent(100 - conflictPressure) },
+                { label: 'Maintenance load', value: maintenanceLoad },
+              ].map((item) => (
+                <div key={item.label} className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-[var(--text-secondary)]">{item.label}</span>
+                    <span className="font-semibold text-[var(--accent-primary)]">{item.value}%</span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-[var(--bg-hover)]">
+                    <div
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${item.value}%`,
+                        background: 'linear-gradient(90deg, var(--accent-primary), rgba(217, 90, 30, 0.45))',
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+            {maintenanceReasons.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {maintenanceReasons.slice(0, 4).map((reason) => (
+                  <TinyBadge key={reason}>{formatLabel(reason)}</TinyBadge>
+                ))}
+              </div>
+            )}
+            {topContradictions.length > 0 && (
+              <div className="space-y-2">
+                {topContradictions.map((item) => (
+                  <div
+                    key={`${item.recipe_task_family}-${item.failure_representative_key}`}
+                    className="rounded-2xl border border-[rgba(217,90,30,0.18)] bg-[linear-gradient(180deg,rgba(255,247,240,0.96),rgba(255,250,245,0.9))] px-3 py-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-[var(--text-primary)]">
+                        {formatLabel(item.recipe_task_family)}
+                      </span>
+                      <TinyBadge>{Math.round(item.overlap * 100)}% overlap</TinyBadge>
+                    </div>
+                    <p className="mt-1 text-[11px] leading-5 text-[var(--text-muted)]">
+                      {item.failed_tools.slice(0, 3).join(' -> ')} collides with {item.failure_representative_key}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+            {recentReports.length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-placeholder)]">
+                    Runtime trace
+                  </p>
+                  <TinyBadge>{reviewActionCount} review lanes</TinyBadge>
+                </div>
+                <div className="space-y-2">
+                  {recentReports.slice(0, 4).map((event, index) => (
+                    <div
+                      key={`${event.agent_id}-${event.timestamp ?? index}-${event.signal}`}
+                      className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className={`text-xs font-medium ${latestLearningTone(event)}`}>{event.signal}</p>
+                          <p className="mt-1 text-[11px] text-[var(--text-muted)]">{eventLabel(event)}</p>
+                        </div>
+                        <span className="text-[10px] text-[var(--text-placeholder)]">
+                          {formatEventTime(event.timestamp)}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="glass-card overflow-hidden">
+          <div className="border-b border-[var(--border-default)] px-4 py-3">
+            <div className="flex items-center gap-2">
+              <BookMarked className="h-4 w-4 text-[var(--accent-primary)]" />
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Praefrontalis
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Working State</h3>
+              </div>
+            </div>
+          </div>
+          <div className="space-y-3 px-4 py-4">
+            <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">State projection</p>
+              <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--text-secondary)]">
+                {workingStatePreview ?? 'No working-state projection is active for this chat scope yet.'}
+              </pre>
+            </div>
+            <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+              <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Profile defaults</p>
+              <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--text-secondary)]">
+                {profilePreview ?? 'No structured user-profile projection is available for this scope yet.'}
+              </pre>
+            </div>
           </div>
         </section>
 
@@ -144,7 +387,12 @@ export default function MemoryPulse({
           <div className="border-b border-[var(--border-default)] px-4 py-3">
             <div className="flex items-center gap-2">
               <BrainCircuit className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">Memory Surface</h3>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Hippocampus
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Memory Surface</h3>
+              </div>
             </div>
           </div>
           <div className="space-y-4 px-4 py-4">
@@ -229,8 +477,56 @@ export default function MemoryPulse({
         <section className="glass-card overflow-hidden">
           <div className="border-b border-[var(--border-default)] px-4 py-3">
             <div className="flex items-center gap-2">
+              <Layers3 className="h-4 w-4 text-[var(--accent-primary)]" />
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Neocortex
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Procedural Surface</h3>
+              </div>
+            </div>
+          </div>
+          <div className="space-y-3 px-4 py-4">
+            {topEffectiveSkills.length > 0 ? (
+              <>
+                <div className="flex flex-wrap gap-1.5">
+                  {topEffectiveSkills.map((skill) => (
+                    <TinyBadge key={`${skill.name}-${skill.origin}`}>{skill.name}</TinyBadge>
+                  ))}
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Recipes</p>
+                    <p className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+                      {projections?.run_recipes.length ?? 0}
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
+                    <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Clusters</p>
+                    <p className="mt-1 text-lg font-semibold text-[var(--text-primary)]">
+                      {(projections?.recipe_clusters.length ?? 0) + (projections?.precedent_clusters.length ?? 0)}
+                    </p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p className="text-xs text-[var(--text-muted)]">
+                No effective procedural surface has been promoted yet.
+              </p>
+            )}
+          </div>
+        </section>
+
+        <section className="glass-card overflow-hidden">
+          <div className="border-b border-[var(--border-default)] px-4 py-3">
+            <div className="flex items-center gap-2">
               <Gauge className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">Context Budget</h3>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Praefrontalis
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Context Budget</h3>
+              </div>
             </div>
           </div>
           <div className="space-y-4 px-4 py-4">
@@ -253,6 +549,11 @@ export default function MemoryPulse({
                     label: 'Recall',
                     share: recallShare,
                     meta: `${budget.recall_max_entries} entries · ${formatChars(budget.recall_total_max_chars)}`,
+                  },
+                  {
+                    label: 'Nearby',
+                    share: nearbyShare,
+                    meta: `${budget.nearby_max_entries} echo lanes`,
                   },
                   {
                     label: 'Skills',
@@ -296,7 +597,12 @@ export default function MemoryPulse({
           <div className="border-b border-[var(--border-default)] px-4 py-3">
             <div className="flex items-center gap-2">
               <Target className="h-4 w-4 text-[var(--accent-primary)]" />
-              <h3 className="text-sm font-semibold text-[var(--text-primary)]">Session Lens</h3>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--text-placeholder)]">
+                  Corpus Sessionis
+                </p>
+                <h3 className="text-sm font-semibold text-[var(--text-primary)]">Session Lens</h3>
+              </div>
             </div>
           </div>
           <div className="space-y-3 px-4 py-4">

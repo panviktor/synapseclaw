@@ -153,5 +153,6 @@ pub fn cron_delivery_config_from(
         mode: delivery.mode.clone(),
         channel: delivery.channel.clone(),
         to: delivery.to.clone(),
+        thread_ref: delivery.thread_ref.clone(),
     }
 }

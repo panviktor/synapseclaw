@@ -3,6 +3,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Maximum PDF file size (50 MB).
 const MAX_PDF_BYTES: u64 = 50 * 1024 * 1024;
@@ -226,6 +229,32 @@ impl Tool for PdfReadTool {
             })
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let path = match args.get("path").and_then(|value| value.as_str()) {
+            Some(path) if !path.trim().is_empty() => path.trim().to_string(),
+            _ => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::Pdf,
+                operation: ResourceOperation::Read,
+                locator: path,
+                host: None,
+                metadata: ResourceMetadata::default(),
+            }),
+        }]
+    }
 }
 
 #[cfg(test)]
@@ -376,6 +405,29 @@ mod tests {
             "expected rate limit, got: {:?}",
             r3.error
         );
+    }
+
+    #[test]
+    fn extract_facts_emits_pdf_document() {
+        let tool = PdfReadTool::new(test_security(std::env::temp_dir()));
+        let facts = tool.extract_facts(
+            &json!({"path": "docs/spec.pdf", "max_chars": 1234}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "pdf_document");
+        assert_eq!(projected[0].name, "docs/spec.pdf");
+        assert_eq!(projected[0].metadata.as_deref(), Some("read"));
+        assert!(facts[0]
+            .projected_subjects()
+            .iter()
+            .any(|subject| subject == "docs/spec.pdf"));
     }
 
     #[cfg(unix)]

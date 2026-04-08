@@ -105,6 +105,16 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store: Arc::new(
+            synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+        ),
+        user_profile_store: Arc::new(
+            synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+        ),
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -658,7 +668,11 @@ impl UnifiedMemoryPort for TrackingMemory {
     async fn consolidate_turn(&self, _: &str, _: &str) -> Result<(), MemoryError> {
         Ok(())
     }
-    async fn forget(&self, _: &str, _: &synapse_domain::domain::memory::AgentId) -> Result<bool, MemoryError> {
+    async fn forget(
+        &self,
+        _: &str,
+        _: &synapse_domain::domain::memory::AgentId,
+    ) -> Result<bool, MemoryError> {
         Ok(false)
     }
     async fn get(
@@ -725,6 +739,16 @@ async fn webhook_idempotency_skips_duplicate_provider_calls() {
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store: Arc::new(
+            synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+        ),
+        user_profile_store: Arc::new(
+            synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+        ),
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -818,6 +842,16 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store: Arc::new(
+            synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+        ),
+        user_profile_store: Arc::new(
+            synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+        ),
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -923,6 +957,16 @@ async fn webhook_secret_hash_rejects_missing_header() {
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store: Arc::new(
+            synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+        ),
+        user_profile_store: Arc::new(
+            synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+        ),
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -1000,6 +1044,16 @@ async fn webhook_secret_hash_rejects_invalid_header() {
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store: Arc::new(
+            synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+        ),
+        user_profile_store: Arc::new(
+            synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+        ),
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -1082,6 +1136,16 @@ async fn webhook_secret_hash_accepts_valid_header() {
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store: Arc::new(
+            synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+        ),
+        user_profile_store: Arc::new(
+            synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+        ),
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -1169,6 +1233,16 @@ async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store: Arc::new(
+            synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+        ),
+        user_profile_store: Arc::new(
+            synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+        ),
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -1252,6 +1326,16 @@ async fn nextcloud_talk_webhook_rejects_invalid_signature() {
         tools_registry: Arc::new(Vec::new()),
         cost_tracker: None,
         event_tx: tokio::sync::broadcast::channel(16).0,
+        dialogue_state_store: Arc::new(
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
+        ),
+        run_recipe_store: Arc::new(
+            synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
+        ),
+        user_profile_store: Arc::new(
+            synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+        ),
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,

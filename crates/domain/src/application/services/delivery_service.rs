@@ -21,6 +21,7 @@ use std::sync::Arc;
 pub struct DeliveryTarget {
     pub channel: String,
     pub recipient: String,
+    pub thread_ref: Option<String>,
 }
 
 /// Delivery service — owns all outbound delivery policy.
@@ -63,6 +64,7 @@ impl DeliveryService {
                 Ok(Some(DeliveryTarget {
                     channel: ch.to_string(),
                     recipient: to.to_string(),
+                    thread_ref: None,
                 }))
             }
             (Some(_), None) => bail!("heartbeat.to is required when heartbeat.target is set"),
@@ -89,6 +91,7 @@ impl DeliveryService {
             return Some(DeliveryTarget {
                 channel: ch.clone(),
                 recipient: to.to_string(),
+                thread_ref: None,
             });
         }
 
@@ -111,6 +114,7 @@ impl DeliveryService {
                     return Some(DeliveryTarget {
                         channel: candidate.channel_name.clone(),
                         recipient: rcpt.clone(),
+                        thread_ref: None,
                     });
                 }
             }
@@ -130,7 +134,12 @@ impl DeliveryService {
 
     /// Deliver an announcement text to a target via the registry.
     pub async fn deliver(&self, target: &DeliveryTarget, text: &str) -> Result<()> {
-        let intent = OutboundIntent::notify(&target.channel, &target.recipient, text.to_string());
+        let intent = OutboundIntent::notify_in_thread(
+            &target.channel,
+            &target.recipient,
+            target.thread_ref.clone(),
+            text.to_string(),
+        );
         self.registry.deliver(&intent).await
     }
 
@@ -161,6 +170,7 @@ impl DeliveryService {
             &DeliveryTarget {
                 channel: channel.to_string(),
                 recipient: target.to_string(),
+                thread_ref: delivery.thread_ref.clone(),
             },
             output,
         )
@@ -256,6 +266,7 @@ mod tests {
         let target = svc.resolve_heartbeat_target(&hb, &[]).unwrap().unwrap();
         assert_eq!(target.channel, "matrix");
         assert_eq!(target.recipient, "!room:example.com");
+        assert_eq!(target.thread_ref, None);
     }
 
     #[test]
@@ -360,6 +371,7 @@ mod tests {
         let hb_target = Some(DeliveryTarget {
             channel: "matrix".into(),
             recipient: "!room:example.com".into(),
+            thread_ref: None,
         });
         let dm = svc.resolve_deadman_target(&hb, &hb_target).unwrap();
         assert_eq!(dm.channel, "telegram");
@@ -374,6 +386,7 @@ mod tests {
         let hb_target = Some(DeliveryTarget {
             channel: "matrix".into(),
             recipient: "!room:example.com".into(),
+            thread_ref: None,
         });
         let dm = svc
             .resolve_deadman_target(&HeartbeatConfig::default(), &hb_target)
@@ -400,6 +413,7 @@ mod tests {
         let target = DeliveryTarget {
             channel: "matrix".into(),
             recipient: "!room:example.com".into(),
+            thread_ref: None,
         };
 
         svc.deliver(&target, "test message").await.unwrap();
@@ -420,6 +434,7 @@ mod tests {
             mode: "silent".into(),
             channel: None,
             to: None,
+            thread_ref: None,
         };
 
         svc.deliver_cron_output(&delivery, "output").await.unwrap();
@@ -434,6 +449,7 @@ mod tests {
             mode: "announce".into(),
             channel: None,
             to: Some("target".into()),
+            thread_ref: None,
         };
 
         let err = svc
@@ -451,6 +467,7 @@ mod tests {
             mode: "announce".into(),
             channel: Some("matrix".into()),
             to: None,
+            thread_ref: None,
         };
 
         let err = svc
@@ -468,6 +485,7 @@ mod tests {
             mode: "announce".into(),
             channel: Some("telegram".into()),
             to: Some("123456".into()),
+            thread_ref: None,
         };
 
         svc.deliver_cron_output(&delivery, "cron output")

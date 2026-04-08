@@ -27,7 +27,7 @@ pub struct CurrentConversationContext {
 ///
 /// Used by cron delivery, `message_send` tool, standing orders, and
 /// any future proactive flow that needs to target a conversation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConversationDeliveryTarget {
     /// Deliver to wherever the current message came from.
@@ -63,7 +63,10 @@ mod tests {
         let json = serde_json::to_string(&target).unwrap();
         assert!(json.contains("current_conversation"));
         let parsed: ConversationDeliveryTarget = serde_json::from_str(&json).unwrap();
-        assert!(matches!(parsed, ConversationDeliveryTarget::CurrentConversation));
+        assert!(matches!(
+            parsed,
+            ConversationDeliveryTarget::CurrentConversation
+        ));
     }
 
     #[test]
@@ -76,7 +79,11 @@ mod tests {
         let json = serde_json::to_string(&target).unwrap();
         let parsed: ConversationDeliveryTarget = serde_json::from_str(&json).unwrap();
         match parsed {
-            ConversationDeliveryTarget::Explicit { channel, recipient, thread_ref } => {
+            ConversationDeliveryTarget::Explicit {
+                channel,
+                recipient,
+                thread_ref,
+            } => {
                 assert_eq!(channel, "matrix");
                 assert_eq!(recipient, "!room:example.com");
                 assert_eq!(thread_ref, Some("$event123".into()));
@@ -96,7 +103,11 @@ mod tests {
         };
         let target = ctx.to_explicit_target();
         match target {
-            ConversationDeliveryTarget::Explicit { channel, recipient, thread_ref } => {
+            ConversationDeliveryTarget::Explicit {
+                channel,
+                recipient,
+                thread_ref,
+            } => {
                 assert_eq!(channel, "telegram");
                 assert_eq!(recipient, "12345");
                 assert!(thread_ref.is_none());

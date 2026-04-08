@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::config::AutonomyLevel;
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 
 /// Git operations tool for structured repository management.
 /// Provides safe, parsed git operations with JSON output.
@@ -565,6 +567,43 @@ impl Tool for GitOperationsTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let operation = match args.get("operation").and_then(|value| value.as_str()) {
+            Some(operation) if !operation.trim().is_empty() => operation.trim(),
+            _ => return Vec::new(),
+        };
+
+        let mut fact = TypedToolFact::focus(
+            self.name().to_string(),
+            vec![FocusEntity {
+                kind: "git_repository".into(),
+                name: self.workspace_dir.display().to_string(),
+                metadata: Some(operation.to_string()),
+            }],
+            Vec::new(),
+        );
+
+        if let Some(branch) = args.get("branch").and_then(|value| value.as_str()) {
+            if !branch.trim().is_empty() {
+                fact.push_focus_entity(FocusEntity {
+                    kind: "git_branch".into(),
+                    name: branch.trim().to_string(),
+                    metadata: Some("target".into()),
+                });
+            }
+        }
+
+        vec![fact]
+    }
 }
 
 #[cfg(test)]
@@ -802,6 +841,29 @@ mod tests {
             .as_deref()
             .unwrap_or("")
             .contains("Unknown operation"));
+    }
+
+    #[test]
+    fn extract_facts_emits_git_context() {
+        let tmp = TempDir::new().unwrap();
+        let tool = test_tool(tmp.path());
+        let facts = tool.extract_facts(
+            &json!({
+                "operation": "checkout",
+                "branch": "feature/x"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0]
+            .focus_entities()
+            .iter()
+            .any(|entity| entity.kind == "git_branch" && entity.name == "feature/x"));
     }
 
     #[test]

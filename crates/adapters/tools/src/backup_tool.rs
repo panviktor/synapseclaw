@@ -4,6 +4,9 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 use tokio::fs;
 
 /// Workspace backup tool: create, list, verify, and restore timestamped backups
@@ -254,6 +257,54 @@ impl Tool for BackupTool {
             },
             "required": ["command"]
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let command = match args.get("command").and_then(|value| value.as_str()) {
+            Some(command) if !command.trim().is_empty() => command.trim(),
+            _ => return Vec::new(),
+        };
+
+        let mut facts = vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::Directory,
+                operation: ResourceOperation::Snapshot,
+                locator: self.workspace_dir.display().to_string(),
+                host: None,
+                metadata: ResourceMetadata::default(),
+            }),
+        }];
+
+        if let Some(name) = args.get("backup_name").and_then(|value| value.as_str()) {
+            if !name.trim().is_empty() {
+                facts.push(TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BackupSnapshot,
+                        operation: match command {
+                            "create" => ResourceOperation::Snapshot,
+                            "verify" => ResourceOperation::Verify,
+                            "restore" => ResourceOperation::Restore,
+                            _ => ResourceOperation::Inspect,
+                        },
+                        locator: name.trim().to_string(),
+                        host: None,
+                        metadata: ResourceMetadata::default(),
+                    }),
+                });
+            }
+        }
+
+        facts
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

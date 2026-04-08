@@ -1,6 +1,6 @@
 # Phase 4.6: Agent Product Intelligence
 
-Phase 4.5: pipeline hardening | **Phase 4.6: agent product intelligence** | next: TBD
+Phase 4.5: pipeline hardening | **Phase 4.6: agent product intelligence** | next: Phase 4.7
 
 ---
 

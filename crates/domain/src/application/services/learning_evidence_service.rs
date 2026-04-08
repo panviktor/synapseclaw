@@ -1,0 +1,158 @@
+//! Learning evidence envelope built from typed runtime facts.
+//!
+//! This is the cheap bridge between Phase 4.8 typed runtime state and Phase 4.9
+//! self-learning. It deliberately avoids extra model calls on the hot path.
+
+use crate::domain::tool_fact::{ToolFactPayload, TypedToolFact};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LearningEvidenceFacet {
+    Focus,
+    Outcome,
+    Delivery,
+    Resource,
+    Schedule,
+    UserProfile,
+    Search,
+    Workspace,
+    Knowledge,
+    Project,
+    Security,
+    Routing,
+    Notification,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct LearningEvidenceEnvelope {
+    pub typed_fact_count: usize,
+    pub outcome_count: usize,
+    pub failure_outcome_count: usize,
+    pub projected_subject_count: usize,
+    pub focus_entity_count: usize,
+    pub profile_update_count: usize,
+    pub facets: Vec<LearningEvidenceFacet>,
+}
+
+impl LearningEvidenceEnvelope {
+    pub fn has_actionable_evidence(&self) -> bool {
+        self.typed_fact_count > 0
+            || self.projected_subject_count > 0
+            || self.focus_entity_count > 0
+            || self.profile_update_count > 0
+    }
+
+    pub fn has_failure_outcomes(&self) -> bool {
+        self.failure_outcome_count > 0
+    }
+}
+
+pub fn build_learning_evidence(tool_facts: &[TypedToolFact]) -> LearningEvidenceEnvelope {
+    let mut envelope = LearningEvidenceEnvelope {
+        typed_fact_count: tool_facts.len(),
+        ..Default::default()
+    };
+
+    for fact in tool_facts {
+        push_facet(&mut envelope.facets, facet_for_payload(&fact.payload));
+        if let ToolFactPayload::Outcome(outcome) = &fact.payload {
+            envelope.outcome_count += 1;
+            if outcome.status.is_failure() {
+                envelope.failure_outcome_count += 1;
+            }
+        }
+        envelope.projected_subject_count += fact.projected_subjects().len();
+        envelope.focus_entity_count += fact.projected_focus_entities().len();
+        if matches!(fact.payload, ToolFactPayload::UserProfile(_)) {
+            envelope.profile_update_count += 1;
+        }
+    }
+
+    envelope
+}
+
+fn facet_for_payload(payload: &ToolFactPayload) -> LearningEvidenceFacet {
+    match payload {
+        ToolFactPayload::Focus(_) => LearningEvidenceFacet::Focus,
+        ToolFactPayload::Outcome(_) => LearningEvidenceFacet::Outcome,
+        ToolFactPayload::Delivery(_) => LearningEvidenceFacet::Delivery,
+        ToolFactPayload::Resource(_) => LearningEvidenceFacet::Resource,
+        ToolFactPayload::Schedule(_) => LearningEvidenceFacet::Schedule,
+        ToolFactPayload::UserProfile(_) => LearningEvidenceFacet::UserProfile,
+        ToolFactPayload::Search(_) => LearningEvidenceFacet::Search,
+        ToolFactPayload::Workspace(_) => LearningEvidenceFacet::Workspace,
+        ToolFactPayload::Knowledge(_) => LearningEvidenceFacet::Knowledge,
+        ToolFactPayload::Project(_) => LearningEvidenceFacet::Project,
+        ToolFactPayload::Security(_) => LearningEvidenceFacet::Security,
+        ToolFactPayload::Routing(_) => LearningEvidenceFacet::Routing,
+        ToolFactPayload::Notification(_) => LearningEvidenceFacet::Notification,
+    }
+}
+
+fn push_facet(facets: &mut Vec<LearningEvidenceFacet>, facet: LearningEvidenceFacet) {
+    if !facets.contains(&facet) {
+        facets.push(facet);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::conversation_target::ConversationDeliveryTarget;
+    use crate::domain::dialogue_state::FocusEntity;
+    use crate::domain::tool_fact::{
+        DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation,
+        ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
+    };
+
+    #[test]
+    fn builds_evidence_from_typed_facts() {
+        let evidence = build_learning_evidence(&[
+            TypedToolFact {
+                tool_id: "message_send".into(),
+                payload: ToolFactPayload::Delivery(DeliveryFact {
+                    target: DeliveryTargetKind::Explicit(ConversationDeliveryTarget::Explicit {
+                        channel: "telegram".into(),
+                        recipient: "@synapseclaw".into(),
+                        thread_ref: None,
+                    }),
+                    content_bytes: Some(32),
+                }),
+            },
+            TypedToolFact {
+                tool_id: "user_profile".into(),
+                payload: ToolFactPayload::UserProfile(UserProfileFact {
+                    field: UserProfileField::Timezone,
+                    operation: ProfileOperation::Set,
+                    value: Some("Europe/Berlin".into()),
+                }),
+            },
+            TypedToolFact::outcome("message_send", OutcomeStatus::ReportedFailure, Some(125)),
+            TypedToolFact {
+                tool_id: "focus".into(),
+                payload: ToolFactPayload::Focus(FocusFact {
+                    entities: vec![FocusEntity {
+                        kind: "city".into(),
+                        name: "Berlin".into(),
+                        metadata: None,
+                    }],
+                    subjects: vec!["Berlin".into()],
+                }),
+            },
+        ]);
+
+        assert_eq!(evidence.typed_fact_count, 4);
+        assert_eq!(evidence.outcome_count, 1);
+        assert_eq!(evidence.failure_outcome_count, 1);
+        assert_eq!(evidence.profile_update_count, 1);
+        assert!(evidence.focus_entity_count >= 1);
+        assert!(evidence.projected_subject_count >= 2);
+        assert!(evidence.facets.contains(&LearningEvidenceFacet::Delivery));
+        assert!(evidence.facets.contains(&LearningEvidenceFacet::Outcome));
+        assert!(evidence
+            .facets
+            .contains(&LearningEvidenceFacet::UserProfile));
+        assert!(evidence.facets.contains(&LearningEvidenceFacet::Focus));
+        assert!(evidence.has_actionable_evidence());
+    }
+}

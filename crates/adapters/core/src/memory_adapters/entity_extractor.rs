@@ -143,7 +143,7 @@ pub async fn store_extraction(
         );
         let mut final_confidence = rel.confidence;
         let mut fact_embedding: Option<Vec<f32>> = None;
-        let audn_action = match memory.embed(&fact_text).await {
+        let audn_action = match memory.embed_document(&fact_text).await {
             Ok(embedding) if !embedding.is_empty() => {
                 fact_embedding = Some(embedding.clone()); // capture for reuse in add_fact
                 match memory.find_similar_facts(&embedding, 5).await {

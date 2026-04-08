@@ -129,7 +129,6 @@ async fn execute_one_tool_resolves_unique_activated_tool_suffix() {
     assert_eq!(invocations.load(Ordering::SeqCst), 1);
 }
 
-use synapse_memory::{MemoryCategory, UnifiedMemoryPort};
 use synapse_observability::NoopObserver;
 use synapse_providers::traits::ProviderCapabilities;
 use synapse_providers::ChatResponse;
@@ -547,7 +546,7 @@ async fn run_tool_call_loop_accepts_valid_multimodal_request_flow() {
     .await
     .expect("valid multimodal payload should pass");
 
-    assert_eq!(result, "vision-ok");
+    assert_eq!(result.response, "vision-ok");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
@@ -676,7 +675,7 @@ async fn run_tool_call_loop_executes_multiple_tools_with_ordered_results() {
     .await
     .expect("parallel execution should complete");
 
-    assert_eq!(result, "done");
+    assert_eq!(result.response, "done");
     assert!(
         max_active.load(Ordering::SeqCst) >= 1,
         "tools should execute successfully"
@@ -748,7 +747,7 @@ async fn run_tool_call_loop_deduplicates_repeated_tool_calls() {
     .await
     .expect("loop should finish after deduplicating repeated calls");
 
-    assert_eq!(result, "done");
+    assert_eq!(result.response, "done");
     assert_eq!(
         invocations.load(Ordering::SeqCst),
         1,
@@ -817,7 +816,7 @@ async fn run_tool_call_loop_allows_low_risk_shell_in_non_interactive_mode() {
     .await
     .expect("non-interactive shell should succeed for low-risk command");
 
-    assert_eq!(result, "done");
+    assert_eq!(result.response, "done");
 
     let tool_results = history
         .iter()
@@ -876,7 +875,7 @@ async fn run_tool_call_loop_dedup_exempt_allows_repeated_calls() {
     .await
     .expect("loop should finish with exempt tool executing twice");
 
-    assert_eq!(result, "done");
+    assert_eq!(result.response, "done");
     assert_eq!(
         invocations.load(Ordering::SeqCst),
         2,
@@ -1011,7 +1010,7 @@ async fn run_tool_call_loop_native_mode_preserves_fallback_tool_call_ids() {
     .await
     .expect("native fallback id flow should complete");
 
-    assert_eq!(result, "done");
+    assert_eq!(result.response, "done");
     assert_eq!(invocations.load(Ordering::SeqCst), 1);
     assert!(
         history.iter().any(|msg| {
@@ -2931,7 +2930,7 @@ async fn run_tool_call_loop_surfaces_tool_failure_reason_in_on_delta() {
         "on_delta messages should include ❌ for failed tool calls, got: {all_deltas}"
     );
 
-    assert_eq!(result, "I could not execute that command.");
+    assert_eq!(result.response, "I could not execute that command.");
 }
 
 // ── filter_by_allowed_tools tests ─────────────────────────────────────

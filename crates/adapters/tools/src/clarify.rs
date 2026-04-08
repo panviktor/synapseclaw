@@ -6,6 +6,8 @@
 
 use async_trait::async_trait;
 use serde_json::json;
+use synapse_domain::domain::dialogue_state::FocusEntity;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 
 pub struct ClarifyTool;
@@ -63,12 +65,7 @@ impl Tool for ClarifyTool {
         let options: Vec<&str> = args
             .get("options")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .take(5)
-                    .collect()
-            })
+            .map(|arr| arr.iter().filter_map(|v| v.as_str()).take(5).collect())
             .unwrap_or_default();
 
         let recommendation = args.get("recommendation").and_then(|v| v.as_str());
@@ -98,5 +95,60 @@ impl Tool for ClarifyTool {
             success: true,
             error: None,
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        _result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        let question = args
+            .get("question")
+            .and_then(|value| value.as_str())
+            .unwrap_or("Could you clarify?");
+        let option_count = args
+            .get("options")
+            .and_then(|value| value.as_array())
+            .map_or(0usize, |options| options.len().min(5));
+
+        vec![TypedToolFact::focus(
+            self.name().to_string(),
+            vec![FocusEntity {
+                kind: "clarification_request".into(),
+                name: question.to_string(),
+                metadata: Some(if option_count > 0 {
+                    "multiple_choice".to_string()
+                } else {
+                    "open_ended".to_string()
+                }),
+            }],
+            Vec::new(),
+        )]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_facts_emits_clarification_request() {
+        let tool = ClarifyTool::new();
+        let facts = tool.extract_facts(
+            &json!({
+                "question": "Berlin or Tbilisi?",
+                "options": ["Berlin", "Tbilisi"],
+                "recommendation": "Berlin"
+            }),
+            None,
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].focus_entities()[0].kind, "clarification_request");
+        assert_eq!(
+            facts[0].focus_entities()[0].metadata.as_deref(),
+            Some("multiple_choice")
+        );
+        assert!(facts[0].subjects().is_empty());
     }
 }

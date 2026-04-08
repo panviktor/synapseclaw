@@ -1,10 +1,12 @@
 use super::traits::{Tool, ToolResult};
+use crate::cron_facts;
 use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_cron::{CronJobPatch, Db, Surreal};
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::ports::tool::ToolExecution;
 
 pub struct CronUpdateTool {
     config: Arc<Config>,
@@ -49,6 +51,99 @@ impl CronUpdateTool {
         }
 
         None
+    }
+
+    async fn execute_action(&self, args: &serde_json::Value) -> anyhow::Result<ToolExecution> {
+        if !self.config.cron.enabled {
+            return Ok(ToolExecution {
+                result: ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some("cron is disabled by config (cron.enabled=false)".to_string()),
+                },
+                facts: Vec::new(),
+            });
+        }
+
+        let job_id = match args.get("job_id").and_then(serde_json::Value::as_str) {
+            Some(v) if !v.trim().is_empty() => v,
+            _ => {
+                return Ok(ToolExecution {
+                    result: ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("Missing 'job_id' parameter".to_string()),
+                    },
+                    facts: Vec::new(),
+                });
+            }
+        };
+
+        let patch_val = match args.get("patch") {
+            Some(v) => v.clone(),
+            None => {
+                return Ok(ToolExecution {
+                    result: ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some("Missing 'patch' parameter".to_string()),
+                    },
+                    facts: Vec::new(),
+                });
+            }
+        };
+
+        let patch = match serde_json::from_value::<CronJobPatch>(patch_val) {
+            Ok(patch) => patch,
+            Err(e) => {
+                return Ok(ToolExecution {
+                    result: ToolResult {
+                        success: false,
+                        output: String::new(),
+                        error: Some(format!("Invalid patch payload: {e}")),
+                    },
+                    facts: Vec::new(),
+                });
+            }
+        };
+        let approved = args
+            .get("approved")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        if let Some(blocked) = self.enforce_mutation_allowed("cron_update") {
+            return Ok(ToolExecution {
+                result: blocked,
+                facts: Vec::new(),
+            });
+        }
+
+        match synapse_cron::update_shell_job_with_approval(
+            &self.db,
+            &self.config,
+            job_id,
+            patch,
+            approved,
+        )
+        .await
+        {
+            Ok(job) => Ok(ToolExecution {
+                result: ToolResult {
+                    success: true,
+                    output: serde_json::to_string_pretty(&job)?,
+                    error: None,
+                },
+                facts: vec![cron_facts::build_job_fact(self.name(), "update", &job)],
+            }),
+            Err(e) => Ok(ToolExecution {
+                result: ToolResult {
+                    success: false,
+                    output: String::new(),
+                    error: Some(e.to_string()),
+                },
+                facts: Vec::new(),
+            }),
+        }
     }
 }
 
@@ -177,75 +272,11 @@ impl Tool for CronUpdateTool {
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
-        if !self.config.cron.enabled {
-            return Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some("cron is disabled by config (cron.enabled=false)".to_string()),
-            });
-        }
+        Ok(self.execute_action(&args).await?.result)
+    }
 
-        let job_id = match args.get("job_id").and_then(serde_json::Value::as_str) {
-            Some(v) if !v.trim().is_empty() => v,
-            _ => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some("Missing 'job_id' parameter".to_string()),
-                });
-            }
-        };
-
-        let patch_val = match args.get("patch") {
-            Some(v) => v.clone(),
-            None => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some("Missing 'patch' parameter".to_string()),
-                });
-            }
-        };
-
-        let patch = match serde_json::from_value::<CronJobPatch>(patch_val) {
-            Ok(patch) => patch,
-            Err(e) => {
-                return Ok(ToolResult {
-                    success: false,
-                    output: String::new(),
-                    error: Some(format!("Invalid patch payload: {e}")),
-                });
-            }
-        };
-        let approved = args
-            .get("approved")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-
-        if let Some(blocked) = self.enforce_mutation_allowed("cron_update") {
-            return Ok(blocked);
-        }
-
-        match synapse_cron::update_shell_job_with_approval(
-            &self.db,
-            &self.config,
-            job_id,
-            patch,
-            approved,
-        )
-        .await
-        {
-            Ok(job) => Ok(ToolResult {
-                success: true,
-                output: serde_json::to_string_pretty(&job)?,
-                error: None,
-            }),
-            Err(e) => Ok(ToolResult {
-                success: false,
-                output: String::new(),
-                error: Some(e.to_string()),
-            }),
-        }
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
+        self.execute_action(&args).await
     }
 }
 

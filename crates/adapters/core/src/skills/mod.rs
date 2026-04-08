@@ -32,6 +32,48 @@ pub struct Skill {
     pub location: Option<PathBuf>,
 }
 
+pub fn infer_loaded_skill_origin(skill: &Skill) -> &'static str {
+    if skill.tags.iter().any(|tag| tag == "open-skills")
+        || skill.author.as_deref() == Some("besoeasy/open-skills")
+    {
+        "imported"
+    } else {
+        "manual"
+    }
+}
+
+pub fn format_loaded_skill_projection(skill: &Skill, workspace_dir: &Path) -> String {
+    let mut lines = vec![
+        "[skill]".to_string(),
+        format!("- name: {}", skill.name),
+        format!("- origin: {}", infer_loaded_skill_origin(skill)),
+        "- status: active".to_string(),
+        format!("- version: {}", skill.version),
+        format!(
+            "- location: {}",
+            render_skill_location(skill, workspace_dir, true)
+        ),
+    ];
+    if let Some(author) = skill
+        .author
+        .as_deref()
+        .filter(|author| !author.trim().is_empty())
+    {
+        lines.push(format!("- author: {author}"));
+    }
+    if !skill.description.trim().is_empty() {
+        lines.push("- description:".to_string());
+        lines.push(indent_multiline(skill.description.trim(), 2));
+    }
+    if !skill.prompts.is_empty() {
+        lines.push(format!("- instruction_count: {}", skill.prompts.len()));
+    }
+    if !skill.tools.is_empty() {
+        lines.push(format!("- tool_count: {}", skill.tools.len()));
+    }
+    format!("{}\n", lines.join("\n"))
+}
+
 /// A tool defined by a skill (shell command, HTTP call, etc.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillTool {
@@ -79,6 +121,15 @@ struct SkillMarkdownMeta {
 
 fn default_version() -> String {
     "0.1.0".to_string()
+}
+
+fn indent_multiline(value: &str, spaces: usize) -> String {
+    let prefix = " ".repeat(spaces);
+    value
+        .lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Load all skills from the workspace skills directory

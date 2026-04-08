@@ -7,10 +7,7 @@
 use crate::ports::memory::UnifiedMemoryPort;
 
 /// Labels that can be bootstrapped from workspace files.
-const BOOTSTRAP_LABELS: &[(&str, &str)] = &[
-    ("user_knowledge", "USER.md"),
-    ("persona", "SOUL.md"),
-];
+const BOOTSTRAP_LABELS: &[(&str, &str)] = &[("user_knowledge", "USER.md"), ("persona", "SOUL.md")];
 
 /// Default placeholder when no workspace file exists.
 const USER_KNOWLEDGE_PLACEHOLDER: &str =

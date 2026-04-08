@@ -6,6 +6,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Maximum time to wait for a screenshot command to complete.
 const SCREENSHOT_TIMEOUT_SECS: u64 = 15;
@@ -239,6 +242,38 @@ impl Tool for ScreenshotTool {
                 }
             }
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let filename = args
+            .get("filename")
+            .and_then(|value| value.as_str())
+            .map_or_else(|| format!("screenshot_{timestamp}.png"), String::from);
+        let safe_name = PathBuf::from(&filename).file_name().map_or_else(
+            || format!("screenshot_{timestamp}.png"),
+            |name| name.to_string_lossy().to_string(),
+        );
+        let output_path = self.security.workspace_dir.join(&safe_name);
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::Image,
+                operation: ResourceOperation::Snapshot,
+                locator: output_path.display().to_string(),
+                host: None,
+                metadata: ResourceMetadata::default(),
+            }),
+        }]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

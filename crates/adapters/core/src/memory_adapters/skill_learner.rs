@@ -5,7 +5,7 @@
 
 use chrono::Utc;
 use synapse_domain::domain::memory::{
-    MemoryError, Reflection, ReflectionOutcome, Skill, SkillUpdate,
+    MemoryError, Reflection, ReflectionOutcome, Skill, SkillOrigin, SkillStatus, SkillUpdate,
 };
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_providers::traits::Provider;
@@ -127,7 +127,12 @@ pub async fn reflect_on_run(
                     let update = SkillUpdate {
                         increment_success: summary.outcome == ReflectionOutcome::Success,
                         increment_fail: summary.outcome == ReflectionOutcome::Failure,
+                        new_description: None,
                         new_content: Some(content.clone()),
+                        new_task_family: None,
+                        new_tool_pattern: None,
+                        new_lineage_task_families: None,
+                        new_status: None,
                     };
                     memory
                         .update_skill(&existing.id, update, &agent_id.to_string())
@@ -141,10 +146,15 @@ pub async fn reflect_on_run(
                         name: name.clone(),
                         description: analysis.lesson,
                         content: content.clone(),
+                        task_family: None,
+                        lineage_task_families: Vec::new(),
+                        tool_pattern: Vec::new(),
                         tags: vec![],
                         success_count: u32::from(summary.outcome == ReflectionOutcome::Success),
                         fail_count: u32::from(summary.outcome == ReflectionOutcome::Failure),
                         version: 1,
+                        origin: SkillOrigin::Learned,
+                        status: SkillStatus::Active,
                         created_by: agent_id.to_string(),
                         created_at: Utc::now(),
                         updated_at: Utc::now(),

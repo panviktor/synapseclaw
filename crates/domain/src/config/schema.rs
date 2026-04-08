@@ -3373,6 +3373,9 @@ pub struct PromptBudgetConfig {
     /// Max recalled episodic memory entries per turn.
     #[serde(default = "default_recall_max_entries")]
     pub recall_max_entries: usize,
+    /// Max nearby/echo entries surfaced around top recall.
+    #[serde(default = "default_nearby_max_entries")]
+    pub nearby_max_entries: usize,
     /// Max chars per recalled entry (truncated with ellipsis).
     #[serde(default = "default_recall_entry_max_chars")]
     pub recall_entry_max_chars: usize,
@@ -3401,6 +3404,9 @@ pub struct PromptBudgetConfig {
 
 fn default_recall_max_entries() -> usize {
     5
+}
+fn default_nearby_max_entries() -> usize {
+    2
 }
 fn default_recall_entry_max_chars() -> usize {
     800
@@ -3431,6 +3437,7 @@ impl Default for PromptBudgetConfig {
     fn default() -> Self {
         Self {
             recall_max_entries: default_recall_max_entries(),
+            nearby_max_entries: default_nearby_max_entries(),
             recall_entry_max_chars: default_recall_entry_max_chars(),
             recall_total_max_chars: default_recall_total_max_chars(),
             skills_max_count: default_skills_max_count(),
@@ -3448,6 +3455,7 @@ impl PromptBudgetConfig {
     pub fn to_prompt_budget(&self) -> crate::application::services::turn_context::PromptBudget {
         crate::application::services::turn_context::PromptBudget {
             recall_max_entries: self.recall_max_entries,
+            nearby_max_entries: self.nearby_max_entries,
             recall_entry_max_chars: self.recall_entry_max_chars,
             recall_total_max_chars: self.recall_total_max_chars,
             recall_min_relevance: 0.0, // set from MemoryConfig.min_relevance_score by caller

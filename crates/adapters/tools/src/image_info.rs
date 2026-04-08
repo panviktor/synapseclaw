@@ -5,6 +5,9 @@ use std::fmt::Write;
 use std::path::Path;
 use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Maximum file size we will read and base64-encode (5 MB).
 const MAX_IMAGE_BYTES: u64 = 5_242_880;
@@ -143,6 +146,35 @@ impl Tool for ImageInfoTool {
             },
             "required": ["path"]
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let path = match args.get("path").and_then(|value| value.as_str()) {
+            Some(path) if !path.trim().is_empty() => path.trim().to_string(),
+            _ => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::Image,
+                operation: ResourceOperation::Inspect,
+                locator: path,
+                host: None,
+                metadata: ResourceMetadata {
+                    include_base64: args.get("include_base64").and_then(|value| value.as_bool()),
+                    ..ResourceMetadata::default()
+                },
+            }),
+        }]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

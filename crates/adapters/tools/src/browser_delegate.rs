@@ -14,6 +14,9 @@ use async_trait::async_trait;
 use regex::Regex;
 use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 use synapse_domain::ports::tool::{Tool, ToolResult};
 use tokio::time::{timeout, Duration};
 
@@ -303,6 +306,47 @@ impl Tool for BrowserDelegateTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        match args.get("task").and_then(serde_json::Value::as_str) {
+            Some(task) if !task.trim().is_empty() => {}
+            _ => return Vec::new(),
+        }
+
+        if let Some(url) = args
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if self.validate_url(url).is_ok() {
+                let host = url
+                    .parse::<reqwest::Url>()
+                    .ok()
+                    .and_then(|parsed| parsed.host_str().map(str::to_string));
+                return vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserPage,
+                        operation: ResourceOperation::Open,
+                        locator: url.to_string(),
+                        host,
+                        metadata: ResourceMetadata::default(),
+                    }),
+                }];
+            }
+        }
+
+        Vec::new()
+    }
 }
 
 /// Pre-built task templates for common corporate tools.
@@ -453,6 +497,30 @@ mod tests {
     fn validate_url_rejects_invalid_url() {
         let tool = test_tool(default_test_config());
         assert!(tool.validate_url("not-a-url").is_err());
+    }
+
+    #[test]
+    fn extract_facts_emits_browser_delegate_context() {
+        let tool = test_tool(config_with_domains(vec!["example.com".into()], vec![]));
+        let facts = tool.extract_facts(
+            &serde_json::json!({
+                "task": "Open the dashboard and summarize errors",
+                "url": "https://example.com/dashboard",
+                "extract_format": "summary"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0]
+            .projected_focus_entities()
+            .iter()
+            .any(|entity| entity.kind == "browser_page"
+                && entity.name == "https://example.com/dashboard"));
     }
 
     // ── Command building ────────────────────────────────────────────

@@ -27,10 +27,7 @@ pub async fn evaluate_candidate(
     thresholds: &MutationThresholds,
 ) -> MutationDecision {
     // Fetch shortlist of similar existing memories
-    let existing = match mem
-        .recall(&candidate.text, 3, None)
-        .await
-    {
+    let existing = match mem.recall(&candidate.text, 3, None).await {
         Ok(entries) => entries,
         Err(_) => {
             // If recall fails, default to Add (safe — no data loss)
@@ -54,16 +51,28 @@ pub async fn evaluate_candidate(
         };
     }
 
-    // Find the closest match
-    let best = existing
+    // Find the closest match, preferring the same category when possible.
+    let best_same_category = existing
         .iter()
         .filter(|e| e.score.is_some())
+        .filter(|e| same_category(&candidate.category, &e.category))
         .max_by(|a, b| {
             a.score
                 .unwrap_or(0.0)
                 .partial_cmp(&b.score.unwrap_or(0.0))
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+    let best = best_same_category.or_else(|| {
+        existing
+            .iter()
+            .filter(|e| e.score.is_some())
+            .max_by(|a, b| {
+                a.score
+                    .unwrap_or(0.0)
+                    .partial_cmp(&b.score.unwrap_or(0.0))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
 
     let (best_entry, best_score) = match best {
         Some(e) => (e, e.score.unwrap_or(0.0)),
@@ -80,10 +89,13 @@ pub async fn evaluate_candidate(
 
     // Apply AUDN thresholds
     let (action, reason) = if best_score >= thresholds.noop_threshold {
-        (MutationAction::Noop, format!(
-            "near-duplicate (score {best_score:.3}), existing: {}",
-            truncate(&best_entry.content, 80)
-        ))
+        (
+            MutationAction::Noop,
+            format!(
+                "near-duplicate (score {best_score:.3}), existing: {}",
+                truncate(&best_entry.content, 80)
+            ),
+        )
     } else if best_score >= thresholds.update_threshold
         && same_category(&candidate.category, &best_entry.category)
     {
@@ -110,9 +122,10 @@ pub async fn evaluate_candidate(
             )
         }
     } else {
-        (MutationAction::Add, format!(
-            "sufficiently distinct (best score {best_score:.3})"
-        ))
+        (
+            MutationAction::Add,
+            format!("sufficiently distinct (best score {best_score:.3})"),
+        )
     };
 
     tracing::debug!(
@@ -241,7 +254,10 @@ pub async fn apply_decision_with_event(
 // ── Helpers ──────────────────────────────────────────────────────
 
 fn same_category(a: &MemoryCategory, b: &MemoryCategory) -> bool {
-    std::mem::discriminant(a) == std::mem::discriminant(b)
+    match (a, b) {
+        (MemoryCategory::Custom(left), MemoryCategory::Custom(right)) => left == right,
+        _ => std::mem::discriminant(a) == std::mem::discriminant(b),
+    }
 }
 
 /// Simple heuristic: if both texts share subject but differ in predicate/value,
@@ -307,6 +323,14 @@ mod tests {
         assert!(!same_category(
             &MemoryCategory::Core,
             &MemoryCategory::Daily
+        ));
+        assert!(same_category(
+            &MemoryCategory::Custom("precedent".into()),
+            &MemoryCategory::Custom("precedent".into())
+        ));
+        assert!(!same_category(
+            &MemoryCategory::Custom("precedent".into()),
+            &MemoryCategory::Custom("project".into())
         ));
     }
 

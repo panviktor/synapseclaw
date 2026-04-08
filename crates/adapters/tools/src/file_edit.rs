@@ -3,6 +3,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Edit a file by replacing an exact string match with new content.
 ///
@@ -220,6 +223,31 @@ impl Tool for FileEditTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let path = match args.get("path").and_then(|value| value.as_str()) {
+            Some(path) if !path.trim().is_empty() => path.trim().to_string(),
+            _ => return Vec::new(),
+        };
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::File,
+                operation: ResourceOperation::Edit,
+                locator: path,
+                host: None,
+                metadata: ResourceMetadata::default(),
+            }),
+        }]
+    }
 }
 
 #[cfg(test)]
@@ -362,6 +390,33 @@ mod tests {
         assert_eq!(content, "aaa bbb aaa");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[test]
+    fn extract_facts_emits_workspace_file_edit() {
+        let tool = FileEditTool::new(test_security(std::env::temp_dir()));
+        let facts = tool.extract_facts(
+            &json!({
+                "path": "src/main.rs",
+                "old_string": "fn old() {}",
+                "new_string": "fn new() {}"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "workspace_file");
+        assert_eq!(projected[0].name, "src/main.rs");
+        assert_eq!(projected[0].metadata.as_deref(), Some("edit"));
+        assert!(facts[0]
+            .projected_subjects()
+            .iter()
+            .any(|subject| subject == "src/main.rs"));
     }
 
     #[tokio::test]

@@ -101,6 +101,7 @@ export interface MemoryStatsResponse {
 
 export interface ContextBudgetResponse {
   recall_max_entries: number;
+  nearby_max_entries: number;
   recall_entry_max_chars: number;
   recall_total_max_chars: number;
   skills_max_count: number;
@@ -110,6 +111,150 @@ export interface ContextBudgetResponse {
   enrichment_total_max_chars: number;
   continuation_policy: string;
   min_relevance_score: number;
+}
+
+export interface ProjectionRef {
+  projection: string | null;
+  key?: string;
+  kind?: string;
+  task_family?: string;
+  representative_key?: string;
+  representative_task_family?: string;
+  member_count?: number;
+  member_keys?: string[];
+  member_task_families?: string[];
+  lineage_task_families?: string[];
+}
+
+export interface SkillSurfaceEntry {
+  name: string;
+  status: string;
+  source: string;
+  priority: number;
+  origin: string;
+  effective: boolean;
+  shadowed_by: string | null;
+  projection: string | null;
+}
+
+export interface UserProfileProjectionResponse {
+  key: string;
+  projection: string;
+}
+
+export interface WorkingStateProjectionResponse {
+  session_key: string;
+  projection: string;
+}
+
+export interface ProceduralContradictionResponse {
+  recipe_task_family: string;
+  recipe_lineage_task_families: string[];
+  recipe_cluster_size: number;
+  failure_representative_key: string;
+  failure_cluster_size: number;
+  failed_tools: string[];
+  overlap: number;
+}
+
+export interface ProceduralClusterReviewResponse {
+  kind: string;
+  representative_key: string;
+  member_count: number;
+  action: string;
+  reason: string;
+}
+
+export interface LearningMaintenanceSnapshotResponse {
+  recent_run_recipe_count: number;
+  run_recipe_cluster_count: number;
+  procedural_contradiction_count: number;
+  recent_precedent_count: number;
+  precedent_cluster_count: number;
+  precedent_compact_candidate_count: number;
+  precedent_preserve_branch_count: number;
+  recent_reflection_count: number;
+  recent_failure_pattern_count: number;
+  failure_pattern_cluster_count: number;
+  failure_pattern_compact_candidate_count: number;
+  failure_pattern_blocking_count: number;
+  recent_skill_count: number;
+  candidate_skill_count: number;
+  skipped_cycles_since_maintenance: number;
+  prompt_optimization_due: boolean;
+}
+
+export interface LearningMaintenancePlanResponse {
+  run_importance_decay: boolean;
+  run_gc: boolean;
+  run_run_recipe_review: boolean;
+  run_precedent_compaction: boolean;
+  run_failure_pattern_compaction: boolean;
+  run_skill_review: boolean;
+  run_prompt_optimization: boolean;
+  reasons: string[];
+}
+
+export interface SkillReviewDecisionResponse {
+  skill_id: string;
+  skill_name: string;
+  lineage_task_families: string[];
+  action: string;
+  target_status: string;
+  reason: string;
+}
+
+export interface RunRecipeResponse {
+  agent_id: string;
+  task_family: string;
+  sample_request: string;
+  summary: string;
+  tool_pattern: string[];
+  lineage_task_families: string[];
+  success_count: number;
+  updated_at: number;
+}
+
+export interface RunRecipeReviewDecisionResponse {
+  canonical_recipe: RunRecipeResponse;
+  removed_task_families: string[];
+  cluster_task_families: string[];
+  reason: string;
+  promotion_blocked: boolean;
+  promotion_block_reason: string | null;
+}
+
+export interface MemoryProjectionsResponse {
+  agent_id: string;
+  current_user_profile: UserProfileProjectionResponse | null;
+  learning_digest: string | null;
+  learning_maintenance: string | null;
+  learning_maintenance_snapshot: LearningMaintenanceSnapshotResponse;
+  learning_maintenance_plan: LearningMaintenancePlanResponse;
+  procedural_contradictions: ProceduralContradictionResponse[];
+  procedural_contradiction_projection: string | null;
+  procedural_cluster_review: string | null;
+  precedent_cluster_reviews: ProceduralClusterReviewResponse[];
+  failure_pattern_cluster_reviews: ProceduralClusterReviewResponse[];
+  core_memory: string | null;
+  working_state: WorkingStateProjectionResponse | null;
+  recent_sessions: ProjectionRef[];
+  skill_conflict_policy: string | null;
+  skill_review: string | null;
+  skill_review_decisions: SkillReviewDecisionResponse[];
+  run_recipe_review: string | null;
+  run_recipe_review_decisions: RunRecipeReviewDecisionResponse[];
+  configured_skills: SkillSurfaceEntry[];
+  recent_skills: SkillSurfaceEntry[];
+  skill_surface: SkillSurfaceEntry[];
+  effective_skills: SkillSurfaceEntry[];
+  run_recipes: ProjectionRef[];
+  recipe_clusters: ProjectionRef[];
+  recent_precedents: ProjectionRef[];
+  precedent_clusters: ProjectionRef[];
+  recent_reflections: ProjectionRef[];
+  recent_failure_patterns: ProjectionRef[];
+  failure_pattern_clusters: ProjectionRef[];
 }
 
 export interface PostTurnReportEvent extends SSEEvent {

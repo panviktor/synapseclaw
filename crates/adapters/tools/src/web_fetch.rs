@@ -5,6 +5,9 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Web fetch tool: fetches a web page and converts HTML to plain text for LLM consumption.
 ///
@@ -262,6 +265,40 @@ impl Tool for WebFetchTool {
             output,
             error: None,
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let raw_url = match args.get("url").and_then(|value| value.as_str()) {
+            Some(url) => url,
+            None => return Vec::new(),
+        };
+        let validated_url = match self.validate_url(raw_url) {
+            Ok(url) => url,
+            Err(_) => return Vec::new(),
+        };
+        let host = match extract_host(&validated_url) {
+            Ok(host) => host,
+            Err(_) => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::WebResource,
+                operation: ResourceOperation::Fetch,
+                locator: validated_url,
+                host: Some(host),
+                metadata: ResourceMetadata::default(),
+            }),
+        }]
     }
 }
 
@@ -825,6 +862,30 @@ mod tests {
         assert!(!append_chunk_with_cap(&mut buffer, b"hello", 8));
         assert!(append_chunk_with_cap(&mut buffer, b"world", 8));
         assert_eq!(buffer, b"hellowor");
+    }
+
+    #[test]
+    fn extract_facts_emits_web_resource() {
+        let tool = test_tool(vec!["example.com"]);
+        let facts = tool.extract_facts(
+            &json!({"url": "https://example.com/docs"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "web_resource");
+        assert_eq!(projected[0].name, "https://example.com/docs");
+        assert_eq!(projected[0].metadata.as_deref(), Some("example.com"));
+        let subjects = facts[0].projected_subjects();
+        assert!(subjects
+            .iter()
+            .any(|subject| subject == "https://example.com/docs"));
+        assert!(subjects.iter().any(|subject| subject == "example.com"));
     }
 
     #[test]

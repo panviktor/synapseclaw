@@ -125,6 +125,11 @@ fn create_embedding_provider(
     }
 
     let provider_name = config.embedding_provider.as_str();
+    let profile = embeddings::build_embedding_profile(
+        provider_name,
+        &config.embedding_model,
+        config.embedding_dimensions,
+    );
 
     // llama.cpp: no API key needed
     if provider_name == "llama.cpp" || provider_name.starts_with("llama.cpp:") {
@@ -135,6 +140,7 @@ fn create_embedding_provider(
             url,
             &config.embedding_model,
             config.embedding_dimensions,
+            profile,
         ));
         return Arc::new(embeddings::CachedEmbeddingProvider::new(
             inner,
@@ -159,6 +165,7 @@ fn create_embedding_provider(
             &key,
             &config.embedding_model,
             config.embedding_dimensions,
+            profile,
         ));
         Arc::new(embeddings::CachedEmbeddingProvider::new(
             inner,
@@ -365,6 +372,15 @@ impl synapse_domain::ports::memory::UnifiedMemoryPort for NoopUnifiedMemory {
     }
     async fn embed(&self, _: &str) -> Result<Vec<f32>, MemoryError> {
         Ok(vec![])
+    }
+    async fn embed_query(&self, _: &str) -> Result<Vec<f32>, MemoryError> {
+        Ok(vec![])
+    }
+    async fn embed_document(&self, _: &str) -> Result<Vec<f32>, MemoryError> {
+        Ok(vec![])
+    }
+    fn embedding_profile(&self) -> synapse_domain::domain::memory::EmbeddingProfile {
+        synapse_domain::domain::memory::EmbeddingProfile::default()
     }
     async fn store(
         &self,

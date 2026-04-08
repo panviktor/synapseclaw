@@ -40,10 +40,7 @@ pub enum StandingOrderKind {
         cron_expression: String,
     },
     /// Trigger on a custom system event.
-    CustomEvent {
-        event_name: String,
-        prompt: String,
-    },
+    CustomEvent { event_name: String, prompt: String },
 }
 
 /// System events that can trigger standing orders.

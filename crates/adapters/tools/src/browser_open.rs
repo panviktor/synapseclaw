@@ -3,6 +3,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Open approved HTTPS URLs in the system default browser (no scraping, no DOM automation).
 pub struct BrowserOpenTool {
@@ -121,6 +124,40 @@ impl Tool for BrowserOpenTool {
                 error: Some(format!("Failed to open system browser: {e}")),
             }),
         }
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let raw_url = match args.get("url").and_then(|value| value.as_str()) {
+            Some(url) => url,
+            None => return Vec::new(),
+        };
+        let validated_url = match self.validate_url(raw_url) {
+            Ok(url) => url,
+            Err(_) => return Vec::new(),
+        };
+        let host = match extract_host(&validated_url) {
+            Ok(host) => host,
+            Err(_) => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::BrowserPage,
+                operation: ResourceOperation::Open,
+                locator: validated_url,
+                host: Some(host),
+                metadata: ResourceMetadata::default(),
+            }),
+        }]
     }
 }
 
@@ -499,6 +536,30 @@ mod tests {
         assert_eq!(parse_ipv4("1.2.3"), None);
         assert_eq!(parse_ipv4("1.2.3.999"), None);
         assert_eq!(parse_ipv4("not-an-ip"), None);
+    }
+
+    #[test]
+    fn extract_facts_emits_browser_page() {
+        let tool = test_tool(vec!["example.com"]);
+        let facts = tool.extract_facts(
+            &json!({"url": "https://docs.example.com/guide"}),
+            Some(&ToolResult {
+                success: true,
+                output: String::new(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "browser_page");
+        assert_eq!(projected[0].name, "https://docs.example.com/guide");
+        assert_eq!(projected[0].metadata.as_deref(), Some("docs.example.com"));
+        let subjects = facts[0].projected_subjects();
+        assert!(subjects
+            .iter()
+            .any(|subject| subject == "https://docs.example.com/guide"));
+        assert!(subjects.iter().any(|subject| subject == "docs.example.com"));
     }
 
     #[tokio::test]

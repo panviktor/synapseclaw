@@ -3,7 +3,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
+use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    DeliveryFact, DeliveryTargetKind, ToolFactPayload, TypedToolFact,
+};
 
 const TELEGRAM_API_BASE: &str = "https://api.telegram.org/bot";
 const TELEGRAM_REQUEST_TIMEOUT_SECS: u64 = 15;
@@ -220,6 +224,41 @@ impl Tool for TelegramPostTool {
             })
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let chat_id = match args
+            .get("chat_id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(chat_id) => chat_id,
+            None => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Delivery(DeliveryFact {
+                target: DeliveryTargetKind::Explicit(ConversationDeliveryTarget::Explicit {
+                    channel: "telegram".into(),
+                    recipient: chat_id.to_string(),
+                    thread_ref: None,
+                }),
+                content_bytes: args
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .map(str::len),
+            }),
+        }]
+    }
 }
 
 #[cfg(test)]
@@ -332,5 +371,34 @@ mod tests {
         );
         let token = tool.get_bot_token().await.unwrap();
         assert_eq!(token, "quoted-token-123");
+    }
+
+    #[test]
+    fn extract_facts_emits_delivery_target() {
+        let tool = TelegramPostTool::new(
+            test_security(AutonomyLevel::Full, 100),
+            PathBuf::from("/tmp"),
+        );
+        let facts = tool.extract_facts(
+            &json!({
+                "chat_id": "@synapseclaw",
+                "text": "hello",
+                "parse_mode": "Markdown"
+            }),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "delivery_target");
+        assert_eq!(projected[0].name, "@synapseclaw");
+        assert_eq!(projected[0].metadata.as_deref(), Some("telegram"));
+        let subjects = facts[0].projected_subjects();
+        assert!(subjects.iter().any(|subject| subject == "telegram"));
+        assert!(subjects.iter().any(|subject| subject == "@synapseclaw"));
     }
 }

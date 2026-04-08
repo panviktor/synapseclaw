@@ -111,6 +111,13 @@ impl Tool for ArcDelegatingTool {
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.inner.execute(args).await
     }
+
+    async fn execute_with_facts(
+        &self,
+        args: serde_json::Value,
+    ) -> anyhow::Result<synapse_domain::ports::tool::ToolExecution> {
+        self.inner.execute_with_facts(args).await
+    }
 }
 
 fn boxed_registry_from_arcs(tools: Vec<Arc<dyn Tool>>) -> Vec<Box<dyn Tool>> {
@@ -182,6 +189,10 @@ pub fn all_tools(
         None,
         None,
         None,
+        None,
+        None,
+        None,
+        None,
     )
 }
 
@@ -208,14 +219,96 @@ pub fn all_tools_with_runtime(
     shared_ipc_client: Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
     agent_runner: Option<Arc<dyn synapse_domain::ports::agent_runner::AgentRunnerPort>>,
     cron_db: Option<Arc<surrealdb::Surreal<surrealdb::engine::local::Db>>>,
-    conversation_context: Option<Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>>,
-    conversation_store: Option<Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>>,
+    conversation_context: Option<
+        Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>,
+    >,
+    conversation_store: Option<
+        Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>,
+    >,
     channel_registry: Option<Arc<dyn synapse_domain::ports::channel_registry::ChannelRegistryPort>>,
+    standing_order_store: Option<
+        Arc<dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort>,
+    >,
+    user_profile_store: Option<
+        Arc<dyn synapse_domain::ports::user_profile_store::UserProfileStorePort>,
+    >,
+    user_profile_context: Option<
+        Arc<dyn synapse_domain::ports::user_profile_context::UserProfileContextPort>,
+    >,
+    run_recipe_store: Option<Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>>,
 ) -> (
     Vec<Box<dyn Tool>>,
     Option<DelegateParentToolsHandle>,
     Option<Arc<dyn synapse_domain::ports::ipc_client::IpcClientPort>>,
 ) {
+    let standing_order_store: Arc<
+        dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort,
+    > = if let Some(store) = standing_order_store {
+        store
+    } else {
+        let store_path = config
+            .config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("standing_orders.json");
+        match synapse_infra::standing_order_store::FileStandingOrderStore::new(&store_path) {
+            Ok(store) => Arc::new(store),
+            Err(error) => {
+                tracing::warn!(
+                    path = %store_path.display(),
+                    %error,
+                    "Failed to initialize persistent standing order store, falling back to memory"
+                );
+                Arc::new(
+                    synapse_domain::ports::standing_order_store::InMemoryStandingOrderStore::new(),
+                )
+            }
+        }
+    };
+    let user_profile_store: Arc<
+        dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
+    > = if let Some(store) = user_profile_store {
+        store
+    } else {
+        let store_path = config
+            .config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("user_profiles.json");
+        match synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path) {
+            Ok(store) => Arc::new(store),
+            Err(error) => {
+                tracing::warn!(
+                    path = %store_path.display(),
+                    %error,
+                    "Failed to initialize persistent user profile store, falling back to memory"
+                );
+                Arc::new(synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new())
+            }
+        }
+    };
+    let run_recipe_store: Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort> =
+        if let Some(store) = run_recipe_store {
+            store
+        } else {
+            let store_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("run_recipes.json");
+            match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    tracing::warn!(
+                        path = %store_path.display(),
+                        %error,
+                        "Failed to initialize persistent run recipe store, falling back to memory"
+                    );
+                    Arc::new(synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new())
+                }
+            }
+        };
+
     let has_shell_access = runtime.has_shell_access();
     let mut tool_arcs: Vec<Arc<dyn Tool>> = vec![
         Arc::new(ShellTool::new(security.clone(), runtime)),
@@ -233,6 +326,7 @@ pub fn all_tools_with_runtime(
                 config.clone(),
                 security.clone(),
                 db.clone(),
+                conversation_context.clone(),
             )) as Arc<dyn Tool>,
             Arc::new(CronListTool::new(config.clone(), db.clone())),
             Arc::new(CronRemoveTool::new(
@@ -259,7 +353,10 @@ pub fn all_tools_with_runtime(
 
     tool_arcs.extend([
         Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())) as Arc<dyn Tool>,
-        Arc::new(MemoryRecallTool::new(memory.clone())),
+        Arc::new(MemoryRecallTool::new(
+            memory.clone(),
+            crate::agent::loop_::resolve_agent_id(root_config),
+        )),
         Arc::new(MemoryForgetTool::new(
             memory.clone(),
             security.clone(),
@@ -710,6 +807,12 @@ pub fn all_tools_with_runtime(
     tool_arcs.push(Arc::new(synapse_tools::todo::TodoTool::new(
         conversation_context.clone(),
     )));
+    tool_arcs.push(Arc::new(synapse_tools::user_profile::UserProfileTool::new(
+        Arc::clone(&user_profile_store),
+        security.clone(),
+        conversation_context.clone(),
+        user_profile_context,
+    )));
     if let (Some(ctx), Some(reg)) = (conversation_context.as_ref(), channel_registry.as_ref()) {
         tool_arcs.push(Arc::new(synapse_tools::message_send::MessageSendTool::new(
             Arc::clone(ctx),
@@ -717,11 +820,24 @@ pub fn all_tools_with_runtime(
         )));
     }
     if let Some(store) = conversation_store {
-        tool_arcs.push(Arc::new(synapse_tools::session_search::SessionSearchTool::new(store)));
+        tool_arcs.push(Arc::new(
+            synapse_tools::session_search::SessionSearchTool::new(Arc::clone(&memory), store),
+        ));
     }
-    tool_arcs.push(Arc::new(synapse_tools::standing_order::StandingOrderTool::new(
-        conversation_context,
-    )));
+    tool_arcs.push(Arc::new(
+        synapse_tools::precedent_search::PrecedentSearchTool::new(
+            Arc::clone(&memory),
+            Arc::clone(&run_recipe_store),
+            crate::agent::loop_::resolve_agent_id(config.as_ref()),
+        ),
+    ));
+    tool_arcs.push(Arc::new(
+        synapse_tools::standing_order::StandingOrderTool::new(
+            conversation_context,
+            standing_order_store,
+            crate::agent::loop_::resolve_agent_id(config.as_ref()),
+        ),
+    ));
 
     (
         boxed_registry_from_arcs(tool_arcs),

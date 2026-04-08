@@ -11,11 +11,12 @@
 //! - [`UnifiedMemoryPort`] — facade for cross-tier hybrid search + convenience ops
 
 use crate::domain::memory::{
-    AgentId, ConsolidationReport, CoreMemoryBlock, Entity, HybridSearchResult, MemoryCategory,
-    MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, SearchResult, SessionId, Skill,
-    SkillUpdate, TemporalFact, Visibility,
+    AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity, HybridSearchResult,
+    MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, SearchResult,
+    SessionId, Skill, SkillUpdate, TemporalFact, Visibility,
 };
 use async_trait::async_trait;
+use std::collections::HashSet;
 
 // ── Working Memory (core blocks, always in prompt) ───────────────
 
@@ -124,6 +125,39 @@ pub trait SkillMemoryPort: Send + Sync {
     /// Get skill by name, scoped to agent.
     async fn get_skill(&self, name: &str, agent_id: &AgentId)
         -> Result<Option<Skill>, MemoryError>;
+
+    /// List recent/active skills for an agent.
+    async fn list_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        self.find_skills(&MemoryQuery {
+            text: String::new(),
+            embedding: None,
+            agent_id: agent_id.clone(),
+            categories: Vec::new(),
+            include_shared: false,
+            time_range: None,
+            limit,
+        })
+        .await
+    }
+
+    /// List skills updated recently for an agent.
+    async fn list_recent_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        Ok(self
+            .list_skills(agent_id, limit)
+            .await?
+            .into_iter()
+            .filter(|skill| skill.updated_at >= updated_since)
+            .collect())
+    }
 }
 
 // ── Reflection (self-improvement) ────────────────────────────────
@@ -176,6 +210,12 @@ pub trait ConsolidationPort: Send + Sync {
 ///
 /// Agents and services use this as the single memory interface.
 /// Tool implementations hold `Arc<dyn UnifiedMemoryPort>`.
+#[derive(Debug, Clone)]
+pub struct ScopedClusterCandidates {
+    pub entries: Vec<MemoryEntry>,
+    pub similarity_lookup: std::collections::HashMap<String, Vec<SearchResult>>,
+}
+
 #[async_trait]
 pub trait UnifiedMemoryPort:
     WorkingMemoryPort
@@ -190,8 +230,138 @@ pub trait UnifiedMemoryPort:
     /// Cross-tier hybrid search with RRF fusion.
     async fn hybrid_search(&self, query: &MemoryQuery) -> Result<HybridSearchResult, MemoryError>;
 
+    /// Find similar episodes for an existing entry.
+    async fn similar_episodes_for_entry(
+        &self,
+        entry: &MemoryEntry,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        let mut result = self
+            .hybrid_search(&MemoryQuery {
+                text: entry.content.clone(),
+                embedding: None,
+                agent_id: agent_id.to_string(),
+                categories: vec![category.clone()],
+                include_shared,
+                time_range: None,
+                limit: limit.saturating_mul(2).max(limit),
+            })
+            .await?;
+        result
+            .episodes
+            .retain(|candidate| candidate.entry.key != entry.key);
+        result.episodes.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        result.episodes.truncate(limit);
+        Ok(result.episodes)
+    }
+
+    /// Find similar episodes for multiple existing entries.
+    async fn similar_episodes_for_entries(
+        &self,
+        entries: &[MemoryEntry],
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<std::collections::HashMap<String, Vec<SearchResult>>, MemoryError> {
+        let mut results = std::collections::HashMap::new();
+        for entry in entries {
+            results.insert(
+                entry.key.clone(),
+                self.similar_episodes_for_entry(entry, agent_id, category, limit, include_shared)
+                    .await?,
+            );
+        }
+        Ok(results)
+    }
+
+    /// Build a scoped candidate substrate for procedural cluster planning.
+    ///
+    /// The default implementation keeps existing behavior: fetch the scoped
+    /// seed set, then reuse `similar_episodes_for_entries`, finally trimming
+    /// neighbors back down to the known scoped keys.
+    async fn scoped_cluster_candidates(
+        &self,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        shortlist_limit: usize,
+        include_shared: bool,
+        updated_since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<ScopedClusterCandidates, MemoryError> {
+        let entries = match updated_since {
+            Some(updated_since) => {
+                self.list_recent_scoped(Some(category), None, limit, include_shared, updated_since)
+                    .await?
+            }
+            None => {
+                self.list_scoped(Some(category), None, limit, include_shared)
+                    .await?
+            }
+        };
+        if entries.len() < 2 {
+            return Ok(ScopedClusterCandidates {
+                entries,
+                similarity_lookup: std::collections::HashMap::new(),
+            });
+        }
+
+        let known_keys = entries
+            .iter()
+            .map(|entry| entry.key.clone())
+            .collect::<HashSet<_>>();
+        let similarity_lookup = self
+            .similar_episodes_for_entries(
+                &entries,
+                agent_id,
+                category,
+                shortlist_limit,
+                include_shared,
+            )
+            .await?
+            .into_iter()
+            .map(|(key, values)| {
+                (
+                    key,
+                    values
+                        .into_iter()
+                        .filter(|result| known_keys.contains(&result.entry.key))
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+
+        Ok(ScopedClusterCandidates {
+            entries,
+            similarity_lookup,
+        })
+    }
+
     /// Generate an embedding vector for text.
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError>;
+
+    /// Generate a query embedding, applying model-specific calibration if needed.
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embed(text).await
+    }
+
+    /// Generate a document embedding, applying model-specific calibration if needed.
+    async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embed(text).await
+    }
+
+    /// Retrieval calibration metadata for the active embedding model.
+    fn embedding_profile(&self) -> EmbeddingProfile {
+        EmbeddingProfile::default()
+    }
 
     // ── Convenience methods for inbound message flow ─────────────
 
@@ -224,6 +394,32 @@ pub trait UnifiedMemoryPort:
 
     /// Get a single memory entry by exact key, scoped to agent.
     async fn get(&self, key: &str, agent_id: &AgentId) -> Result<Option<MemoryEntry>, MemoryError>;
+
+    /// List memory entries with explicit shared/global visibility control.
+    async fn list_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let _ = include_shared;
+        self.list(category, session_id, limit).await
+    }
+
+    /// List recent memory entries with explicit shared/global visibility control.
+    async fn list_recent_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let _ = updated_since;
+        self.list_scoped(category, session_id, limit, include_shared)
+            .await
+    }
 
     /// List memory entries, optionally filtered by category and/or session.
     async fn list(
@@ -274,7 +470,8 @@ pub trait UnifiedMemoryPort:
     /// Returns empty vec if not supported (patterns fall back to built-in defaults).
     async fn list_signal_patterns(
         &self,
-    ) -> Result<Vec<crate::application::services::learning_signals::SignalPattern>, MemoryError> {
+    ) -> Result<Vec<crate::application::services::learning_signals::SignalPattern>, MemoryError>
+    {
         Ok(vec![])
     }
 

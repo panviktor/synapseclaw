@@ -192,6 +192,34 @@ impl SkillMemoryPort for InstrumentedMemory {
         );
         r
     }
+    async fn list_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        let t = Instant::now();
+        let r = self.inner.list_skills(agent_id, limit).await;
+        log_op("list_skills", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
+        r
+    }
+    async fn list_recent_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .list_recent_skills(agent_id, limit, updated_since)
+            .await;
+        log_op(
+            "list_recent_skills",
+            t,
+            r.as_ref().map(|v| v.len()).unwrap_or(0),
+        );
+        r
+    }
 }
 
 #[async_trait]
@@ -269,11 +297,70 @@ impl UnifiedMemoryPort for InstrumentedMemory {
         );
         r
     }
+    async fn similar_episodes_for_entry(
+        &self,
+        entry: &MemoryEntry,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .similar_episodes_for_entry(entry, agent_id, category, limit, include_shared)
+            .await;
+        log_op(
+            "similar_episodes_for_entry",
+            t,
+            r.as_ref().map(|items| items.len()).unwrap_or(0),
+        );
+        r
+    }
+    async fn similar_episodes_for_entries(
+        &self,
+        entries: &[MemoryEntry],
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<std::collections::HashMap<String, Vec<SearchResult>>, MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .similar_episodes_for_entries(entries, agent_id, category, limit, include_shared)
+            .await;
+        let count = r
+            .as_ref()
+            .map(|lookup| lookup.values().map(Vec::len).sum())
+            .unwrap_or(0);
+        log_op("similar_episodes_for_entries", t, count);
+        r
+    }
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         let t = Instant::now();
         let r = self.inner.embed(text).await;
         log_op("embed", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
         r
+    }
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        let t = Instant::now();
+        let r = self.inner.embed_query(text).await;
+        log_op("embed_query", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
+        r
+    }
+    async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        let t = Instant::now();
+        let r = self.inner.embed_document(text).await;
+        log_op(
+            "embed_document",
+            t,
+            r.as_ref().map(|v| v.len()).unwrap_or(0),
+        );
+        r
+    }
+    fn embedding_profile(&self) -> EmbeddingProfile {
+        self.inner.embedding_profile()
     }
     async fn store(
         &self,
@@ -317,6 +404,41 @@ impl UnifiedMemoryPort for InstrumentedMemory {
             "get",
             t,
             r.as_ref().map(|o| usize::from(o.is_some())).unwrap_or(0),
+        );
+        r
+    }
+    async fn list_scoped(
+        &self,
+        cat: Option<&MemoryCategory>,
+        sid: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .list_scoped(cat, sid, limit, include_shared)
+            .await;
+        log_op("list_scoped", t, r.as_ref().map(|v| v.len()).unwrap_or(0));
+        r
+    }
+    async fn list_recent_scoped(
+        &self,
+        cat: Option<&MemoryCategory>,
+        sid: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        let t = Instant::now();
+        let r = self
+            .inner
+            .list_recent_scoped(cat, sid, limit, include_shared, updated_since)
+            .await;
+        log_op(
+            "list_recent_scoped",
+            t,
+            r.as_ref().map(|v| v.len()).unwrap_or(0),
         );
         r
     }

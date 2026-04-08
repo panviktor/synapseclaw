@@ -13,6 +13,7 @@ import type {
   ChannelMessageInfo,
   MemoryStatsResponse,
   ContextBudgetResponse,
+  MemoryProjectionsResponse,
 } from '../types/api';
 import { clearToken, getToken, setToken } from './auth';
 
@@ -306,42 +307,14 @@ export function getContextBudget(agentId?: string | null): Promise<ContextBudget
   return apiFetch<ContextBudgetResponse>(withAgentPrefix('/api/memory/context-budget', agentId));
 }
 
-// ---------------------------------------------------------------------------
-// Learning Signal Patterns
-// ---------------------------------------------------------------------------
-
-export interface SignalPattern {
-  id: string;
-  signal_type: string;
-  pattern: string;
-  match_mode: string;
-  language: string;
-  enabled: boolean;
-}
-
-export function getLearningPatterns(): Promise<SignalPattern[]> {
-  return apiFetch<{ patterns: SignalPattern[] }>('/api/memory/learning-patterns').then(
-    (data) => data.patterns ?? [],
+export function getMemoryProjections(
+  agentId?: string | null,
+  limit: number = 8,
+): Promise<MemoryProjectionsResponse> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  return apiFetch<MemoryProjectionsResponse>(
+    withAgentPrefix(`/api/memory/projections?${params.toString()}`, agentId),
   );
-}
-
-export function addLearningPattern(pattern: Omit<SignalPattern, 'id'>): Promise<{ id: string }> {
-  return apiFetch<{ id: string }>('/api/memory/learning-patterns', {
-    method: 'POST',
-    body: JSON.stringify(pattern),
-  });
-}
-
-export function deleteLearningPattern(id: string): Promise<void> {
-  return apiFetch<void>(`/api/memory/learning-patterns/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  });
-}
-
-export function seedLearningPatterns(): Promise<{ seeded: number }> {
-  return apiFetch<{ seeded: number }>('/api/memory/learning-patterns/seed', {
-    method: 'POST',
-  });
 }
 
 // ---------------------------------------------------------------------------

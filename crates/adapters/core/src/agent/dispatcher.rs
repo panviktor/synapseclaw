@@ -1,6 +1,7 @@
 use crate::tools::{Tool, ToolSpec};
 use serde_json::Value;
 use std::fmt::Write;
+use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_providers::{ChatMessage, ChatResponse, ConversationMessage, ToolResultMessage};
 
 #[derive(Debug, Clone)]
@@ -16,6 +17,7 @@ pub struct ToolExecutionResult {
     pub output: String,
     pub success: bool,
     pub tool_call_id: Option<String>,
+    pub tool_facts: Vec<TypedToolFact>,
 }
 
 pub trait ToolDispatcher: Send + Sync {
@@ -327,6 +329,7 @@ mod tests {
             output: "hello".into(),
             success: true,
             tool_call_id: Some("tc1".into()),
+            tool_facts: vec![],
         }]);
         match msg {
             ConversationMessage::ToolResults(results) => {
@@ -345,6 +348,7 @@ mod tests {
             output: "ok".into(),
             success: true,
             tool_call_id: None,
+            tool_facts: vec![],
         }]);
         let rendered = match msg {
             ConversationMessage::Chat(chat) => chat.content,
@@ -362,6 +366,7 @@ mod tests {
             output: "ok".into(),
             success: true,
             tool_call_id: Some("tc-1".into()),
+            tool_facts: vec![],
         }]);
 
         match msg {

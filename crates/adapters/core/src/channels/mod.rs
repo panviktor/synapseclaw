@@ -85,7 +85,11 @@ impl Observer for ChannelNotifyObserver {
                 };
                 let _ = self.tx.send(format!("\u{1F527} `{tool}`{detail}"));
             }
-            ObserverEvent::ToolResult { tool, output, success } => {
+            ObserverEvent::ToolResult {
+                tool,
+                output,
+                success,
+            } => {
                 let status = if *success { "\u{2705}" } else { "\u{274C}" };
                 let preview = truncate_with_ellipsis(output, 200);
                 let _ = self.tx.send(format!("{status} `{tool}`: {preview}"));
@@ -243,9 +247,17 @@ struct ChannelRuntimeContext {
     /// SSE event sender — shared from gateway when running in daemon mode.
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     /// Current conversation context for tools.
-    conversation_context: Option<Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>>,
+    conversation_context:
+        Option<Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>>,
     /// Dialogue state store for session-scoped working memory.
-    dialogue_state_store: Option<Arc<synapse_domain::application::services::dialogue_state_service::DialogueStateStore>>,
+    dialogue_state_store: Option<
+        Arc<synapse_domain::application::services::dialogue_state_service::DialogueStateStore>,
+    >,
+    /// Persistent successful execution patterns reused for repeat-work prompts.
+    run_recipe_store: Option<Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>>,
+    /// Structured user profile store for stable user defaults.
+    user_profile_store:
+        Option<Arc<dyn synapse_domain::ports::user_profile_store::UserProfileStorePort>>,
     show_tool_calls: bool,
     session_store: Option<Arc<dyn LocalSessionBackend>>,
     summary_config: Arc<synapse_domain::config::schema::SummaryConfig>,
@@ -1242,8 +1254,8 @@ async fn handle_message_via_orchestrator(
 
     use crate::runtime::{agent_runtime_adapter, hooks_adapter};
     use synapse_channels::inbound::{
-        channel_output_adapter, conversation_history_adapter, route_selection_adapter,
-        session_summary_adapter,
+        channel_output_adapter, conversation_history_adapter, conversation_store_adapter,
+        route_selection_adapter, session_summary_adapter,
     };
     use synapse_domain::application::use_cases::handle_inbound_message as uc;
     use synapse_domain::ports::hooks::NoOpHooks;
@@ -1299,42 +1311,45 @@ async fn handle_message_via_orchestrator(
 
     // Raw tool trace is an explicit opt-in. Default channel UX stays compact and
     // human-readable; full telemetry belongs in the web/operator UI.
-    let observer_for_runtime: Arc<dyn Observer> = if synapse_domain::application::services::channel_presentation::tool_trace_enabled(presentation_mode) {
-        if let Some(ch) = target_channel.clone() {
-        let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let reply_target = original_msg.reply_target.clone();
-        let thread_ts = original_msg.thread_ts.clone();
-        let session_store_for_tools = ctx.session_store.clone();
-        let conversation_key = envelope.conversation_ref.clone();
-        tokio::spawn(async move {
-            while let Some(tool_msg) = tool_rx.recv().await {
-                // Send to channel
-                let send = SendMessage::new(&tool_msg, &reply_target)
-                    .in_thread(thread_ts.clone());
-                if let Err(e) = ch.send(&send).await {
-                    tracing::debug!("tool notify send failed: {e}");
-                }
-                // Persist in session history so web dashboard can see it
-                if let Some(ref store) = session_store_for_tools {
-                    let msg = ChatMessage {
-                        role: "assistant".to_string(),
-                        content: tool_msg,
-                    };
-                    let _ = store.append(&conversation_key, &msg).await;
-                }
+    let observer_for_runtime: Arc<dyn Observer> =
+        if synapse_domain::application::services::channel_presentation::tool_trace_enabled(
+            presentation_mode,
+        ) {
+            if let Some(ch) = target_channel.clone() {
+                let (tool_tx, mut tool_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+                let reply_target = original_msg.reply_target.clone();
+                let thread_ts = original_msg.thread_ts.clone();
+                let session_store_for_tools = ctx.session_store.clone();
+                let conversation_key = envelope.conversation_ref.clone();
+                tokio::spawn(async move {
+                    while let Some(tool_msg) = tool_rx.recv().await {
+                        // Send to channel
+                        let send =
+                            SendMessage::new(&tool_msg, &reply_target).in_thread(thread_ts.clone());
+                        if let Err(e) = ch.send(&send).await {
+                            tracing::debug!("tool notify send failed: {e}");
+                        }
+                        // Persist in session history so web dashboard can see it
+                        if let Some(ref store) = session_store_for_tools {
+                            let msg = ChatMessage {
+                                role: "assistant".to_string(),
+                                content: tool_msg,
+                            };
+                            let _ = store.append(&conversation_key, &msg).await;
+                        }
+                    }
+                });
+                Arc::new(ChannelNotifyObserver {
+                    inner: Arc::clone(&ctx.observer),
+                    tx: tool_tx,
+                    tools_used: std::sync::atomic::AtomicBool::new(false),
+                })
+            } else {
+                Arc::clone(&ctx.observer)
             }
-        });
-        Arc::new(ChannelNotifyObserver {
-            inner: Arc::clone(&ctx.observer),
-            tx: tool_tx,
-            tools_used: std::sync::atomic::AtomicBool::new(false),
-        })
         } else {
             Arc::clone(&ctx.observer)
-        }
-    } else {
-        Arc::clone(&ctx.observer)
-    };
+        };
 
     let agent_runtime: Arc<dyn synapse_domain::ports::agent_runtime::AgentRuntimePort> =
         Arc::new(agent_runtime_adapter::ChannelAgentRuntime {
@@ -1366,6 +1381,13 @@ async fn handle_message_via_orchestrator(
         Arc::new(session_summary_adapter::SessionStoreAdapter::new(
             Arc::clone(store),
         )) as Arc<dyn synapse_domain::ports::session_summary::SessionSummaryPort>
+    });
+    let conversation_store: Option<
+        Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>,
+    > = ctx.session_store.as_ref().map(|store| {
+        Arc::new(
+            conversation_store_adapter::SessionBackendConversationStore::new(Arc::clone(store)),
+        ) as Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>
     });
 
     let model_routes: Vec<(String, String, String)> = ctx
@@ -1443,9 +1465,8 @@ async fn handle_message_via_orchestrator(
         },
         continuation_policy: ctx.prompt_budget_config.to_continuation_policy(),
         presentation_mode,
-        // Signal patterns: snapshot from startup. Edits via /api/memory/learning-patterns
-        // apply to web immediately but require service restart for channels.
-        // Future: add surreal handle to ctx for per-message reload.
+        // Signal patterns are loaded once into the shared runtime context.
+        // Future: refresh them through a typed config/runtime update path.
     };
 
     let memory_port: Option<Arc<dyn synapse_domain::ports::memory::UnifiedMemoryPort>> =
@@ -1462,7 +1483,10 @@ async fn handle_message_via_orchestrator(
         memory: memory_port,
         event_tx: ctx.event_tx.clone(),
         conversation_context: ctx.conversation_context.clone(),
+        conversation_store,
         dialogue_state_store: ctx.dialogue_state_store.clone(),
+        run_recipe_store: ctx.run_recipe_store.clone(),
+        user_profile_store: ctx.user_profile_store.clone(),
     };
 
     // ── Phase 4.1: Check if message should trigger a pipeline ─────
@@ -2903,7 +2927,53 @@ pub async fn start_channels(
     shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
     shared_surreal: Option<Arc<synapse_memory::Surreal<synapse_memory::SurrealDb>>>,
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    standing_order_store: Option<
+        Arc<dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort>,
+    >,
+    run_recipe_store: Option<Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>>,
 ) -> Result<()> {
+    let run_recipe_store: Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort> =
+        if let Some(store) = run_recipe_store {
+            store
+        } else {
+            let store_path = config
+                .config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("run_recipes.json");
+            match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path) {
+                Ok(store) => Arc::new(store),
+                Err(error) => {
+                    tracing::warn!(
+                        path = %store_path.display(),
+                        %error,
+                        "Failed to initialize persistent run recipe store, falling back to memory"
+                    );
+                    Arc::new(synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new())
+                }
+            }
+        };
+    let user_profile_store: Arc<
+        dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
+    > = {
+        let store_path = config
+            .config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("user_profiles.json");
+        match synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path) {
+            Ok(store) => Arc::new(store),
+            Err(error) => {
+                tracing::warn!(
+                    path = %store_path.display(),
+                    %error,
+                    "Failed to initialize persistent user profile store, falling back to memory"
+                );
+                Arc::new(synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new())
+            }
+        }
+    };
+
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
         auth_profile_override: None,
@@ -2996,8 +3066,38 @@ pub async fn start_channels(
     };
     // Build system prompt from workspace identity files + skills
     let workspace = config.workspace_dir.clone();
-    let shared_conversation_context: Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort> =
-        Arc::new(synapse_domain::ports::conversation_context::InMemoryConversationContext::new());
+    let channel_session_store: Option<Arc<dyn LocalSessionBackend>> =
+        if config.channels_config.session_persistence {
+            if let Some(ref db) = shared_surreal {
+                tracing::info!("📂 Session persistence enabled (SurrealDB)");
+                Some(
+                    Arc::new(session_surreal::SurrealSessionBackend::new(Arc::clone(db)))
+                        as Arc<dyn LocalSessionBackend>,
+                )
+            } else {
+                match session_store::SessionStore::new(&config.workspace_dir) {
+                    Ok(store) => {
+                        tracing::info!("📂 Session persistence enabled (JSONL fallback)");
+                        Some(Arc::new(store) as Arc<dyn LocalSessionBackend>)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Session persistence disabled: {e}");
+                        None
+                    }
+                }
+            }
+        } else {
+            None
+        };
+    let channel_conversation_store: Option<
+        Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>,
+    > = channel_session_store.as_ref().map(|store| {
+        Arc::new(synapse_channels::inbound::conversation_store_adapter::SessionBackendConversationStore::new(Arc::clone(store)))
+            as Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>
+    });
+    let shared_conversation_context: Arc<
+        dyn synapse_domain::ports::conversation_context::ConversationContextPort,
+    > = Arc::new(synapse_domain::ports::conversation_context::InMemoryConversationContext::new());
     let (mut built_tools, delegate_handle_ch, ipc_client_for_key_reg): (Vec<Box<dyn Tool>>, _, _) =
         tools::all_tools_with_runtime(
             Arc::new(config.clone()),
@@ -3017,8 +3117,12 @@ pub async fn start_channels(
             None,
             shared_surreal.clone(),
             Some(shared_conversation_context.clone()),
-            None, // conversation_store — not available in channel context yet
+            channel_conversation_store,
             None, // channel_registry — wired later if needed
+            standing_order_store,
+            Some(Arc::clone(&user_profile_store)),
+            None, // user_profile_context — channels derive keys from current conversation
+            Some(Arc::clone(&run_recipe_store)),
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -3483,31 +3587,13 @@ pub async fn start_channels(
         event_tx,
         conversation_context: Some(shared_conversation_context.clone()),
         dialogue_state_store: Some(Arc::new(
-            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(),
+            synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
+            ),
         )),
+        run_recipe_store: Some(run_recipe_store),
+        user_profile_store: Some(user_profile_store),
         show_tool_calls: config.channels_config.show_tool_calls,
-        session_store: if config.channels_config.session_persistence {
-            if let Some(ref db) = shared_surreal {
-                tracing::info!("📂 Session persistence enabled (SurrealDB)");
-                Some(
-                    Arc::new(session_surreal::SurrealSessionBackend::new(Arc::clone(db)))
-                        as Arc<dyn LocalSessionBackend>,
-                )
-            } else {
-                match session_store::SessionStore::new(&config.workspace_dir) {
-                    Ok(store) => {
-                        tracing::info!("📂 Session persistence enabled (JSONL fallback)");
-                        Some(Arc::new(store) as Arc<dyn LocalSessionBackend>)
-                    }
-                    Err(e) => {
-                        tracing::warn!("Session persistence disabled: {e}");
-                        None
-                    }
-                }
-            }
-        } else {
-            None
-        },
+        session_store: channel_session_store,
         summary_config: Arc::new(config.summary.clone()),
         summary_model: config.summary_model.clone(),
         approval_manager: Arc::new(ApprovalManager::for_non_interactive(&config.autonomy)),
@@ -4000,6 +4086,8 @@ mod tests {
             event_tx: None,
             conversation_context: None,
             dialogue_state_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4107,6 +4195,8 @@ mod tests {
             event_tx: None,
             conversation_context: None,
             dialogue_state_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4222,6 +4312,8 @@ mod tests {
             event_tx: None,
             conversation_context: None,
             dialogue_state_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
@@ -4348,6 +4440,8 @@ mod tests {
             event_tx: None,
             conversation_context: None,
             dialogue_state_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
             show_tool_calls: true,
             session_store: None,
             summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),

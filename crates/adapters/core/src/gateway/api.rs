@@ -9,7 +9,8 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Json},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use synapse_infra::config_io::ConfigIO;
 
 const MASKED_SECRET: &str = "***MASKED***";
@@ -54,6 +55,55 @@ pub struct MemoryQuery {
     pub category: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct MemoryProjectionQuery {
+    pub session_key: Option<String>,
+    pub limit: Option<usize>,
+}
+
+fn skill_origin_priority(origin: &str) -> u8 {
+    match origin {
+        "manual" => 3,
+        "imported" => 2,
+        "learned" => 1,
+        _ => 0,
+    }
+}
+
+fn normalize_skill_name(name: &str) -> String {
+    name.trim().to_ascii_lowercase()
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SkillSurfaceEntry {
+    name: String,
+    origin: String,
+    status: String,
+    source: String,
+    priority: u8,
+    effective: bool,
+    shadowed_by: Option<String>,
+    projection: String,
+}
+
+fn mark_shadowed_skills(entries: &mut [SkillSurfaceEntry]) {
+    let mut winners: HashMap<String, String> = HashMap::new();
+    for entry in entries.iter_mut() {
+        let key = normalize_skill_name(&entry.name);
+        if let Some(shadowed_by) = winners.get(&key) {
+            entry.effective = false;
+            entry.shadowed_by = Some(shadowed_by.clone());
+        } else {
+            entry.effective = true;
+            entry.shadowed_by = None;
+            winners.insert(
+                key,
+                format!("{} ({}/{})", entry.name, entry.origin, entry.source),
+            );
+        }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct MemoryStoreBody {
     pub key: String,
@@ -63,6 +113,11 @@ pub struct MemoryStoreBody {
 
 #[derive(Deserialize)]
 pub struct CronRunsQuery {
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct HeartbeatRunsQuery {
     pub limit: Option<u32>,
 }
 
@@ -91,6 +146,19 @@ pub struct ChatMessagesQuery {
     pub limit: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub struct UserProfileUpsertBody {
+    pub preferred_language: Option<String>,
+    pub timezone: Option<String>,
+    pub default_city: Option<String>,
+    pub communication_style: Option<String>,
+    pub known_environments: Option<Vec<String>>,
+    pub default_delivery_target:
+        Option<synapse_domain::domain::conversation_target::ConversationDeliveryTarget>,
+    #[serde(default)]
+    pub clear_fields: Vec<String>,
+}
+
 // ── Handlers ────────────────────────────────────────────────────
 
 /// GET /api/status — system status overview
@@ -117,6 +185,7 @@ pub async fn handle_api_status(
         "summary_model": config.summary.model.as_ref().or(config.summary_model.as_ref()),
         "embedding_provider": config.memory.embedding_provider,
         "embedding_model": config.memory.embedding_model,
+        "embedding_profile": state.mem.embedding_profile(),
         "temperature": state.temperature,
         "uptime_seconds": health.uptime_seconds,
         "gateway_port": config.gateway.port,
@@ -227,7 +296,12 @@ pub async fn handle_api_agent_memory_stats_proxy(
         .unwrap_or_default();
 
     let url = format!("{}/api/memory/stats", agent.gateway_url);
-    match client.get(&url).bearer_auth(&agent.proxy_token).send().await {
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(body) => Json(body).into_response(),
             Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
@@ -264,7 +338,138 @@ pub async fn handle_api_agent_context_budget_proxy(
         .unwrap_or_default();
 
     let url = format!("{}/api/memory/context-budget", agent.gateway_url);
-    match client.get(&url).bearer_auth(&agent.proxy_token).send().await {
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// GET /api/agents/:agent_id/memory/projections — proxy readable memory projections.
+pub async fn handle_api_agent_memory_projections_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Query(params): Query<MemoryProjectionQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(a) => a,
+        None => {
+            return (StatusCode::NOT_FOUND, "Agent not found").into_response();
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/memory/projections", agent.gateway_url);
+    match client
+        .get(&url)
+        .query(&params)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// GET /api/agents/:agent_id/heartbeat — proxy heartbeat overview from a specific agent.
+pub async fn handle_api_agent_heartbeat_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(agent) => agent,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/heartbeat", agent.gateway_url);
+    match client
+        .get(&url)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
+            Ok(body) => Json(body).into_response(),
+            Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
+        },
+        Ok(resp) => (
+            StatusCode::BAD_GATEWAY,
+            format!("Agent returned {}", resp.status()),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::BAD_GATEWAY, "Agent unreachable").into_response(),
+    }
+}
+
+/// GET /api/agents/:agent_id/heartbeat/runs — proxy recent heartbeat runs.
+pub async fn handle_api_agent_heartbeat_runs_proxy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(agent_id): Path<String>,
+    Query(params): Query<HeartbeatRunsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let agent = match state.agent_registry.get(&agent_id) {
+        Some(agent) => agent,
+        None => return (StatusCode::NOT_FOUND, "Agent not found").into_response(),
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    let url = format!("{}/api/heartbeat/runs", agent.gateway_url);
+    match client
+        .get(&url)
+        .query(&params)
+        .bearer_auth(&agent.proxy_token)
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => match resp.json::<serde_json::Value>().await {
             Ok(body) => Json(body).into_response(),
             Err(_) => (StatusCode::BAD_GATEWAY, "Invalid response from agent").into_response(),
@@ -649,6 +854,175 @@ pub async fn handle_api_cron_delete(
     }
 }
 
+fn heartbeat_report_payload(
+    state: &AppState,
+) -> (
+    Option<
+        synapse_domain::application::services::system_event_projection_service::HeartbeatProjection,
+    >,
+    serde_json::Value,
+) {
+    let snapshot = crate::health::snapshot();
+    let components = snapshot
+        .components
+        .iter()
+        .map(|(name, status)| {
+            synapse_domain::application::services::system_event_projection_service::SystemEventComponentStatus {
+                name: name.clone(),
+                status: status.status.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let heartbeat = state.heartbeat_metrics.as_ref().map(|metrics| {
+        let metrics = metrics.lock();
+        synapse_domain::application::services::system_event_projection_service::HeartbeatProjection {
+            total_ticks: metrics.total_ticks,
+            consecutive_successes: metrics.consecutive_successes,
+            consecutive_failures: metrics.consecutive_failures,
+            avg_tick_duration_ms: metrics.avg_tick_duration_ms,
+            active_task_count: metrics.active_task_count,
+            executed_task_count: metrics.executed_task_count,
+            high_priority_task_count: metrics.high_priority_task_count,
+        }
+    });
+
+    let report = synapse_domain::application::services::system_event_projection_service::render_system_event_report(
+        &synapse_domain::application::services::system_event_projection_service::SystemEventProjectionInput {
+            event: synapse_domain::domain::standing_order::SystemEvent::HeartbeatTick,
+            timestamp_rfc3339: chrono::Utc::now().to_rfc3339(),
+            agent_id: Some(state.agent_id.clone()),
+            uptime_seconds: Some(snapshot.uptime_seconds),
+            components,
+            heartbeat: heartbeat.clone(),
+        },
+    );
+
+    let heartbeat_json = heartbeat.as_ref().map(|heartbeat| {
+        serde_json::json!({
+            "total_ticks": heartbeat.total_ticks,
+            "consecutive_successes": heartbeat.consecutive_successes,
+            "consecutive_failures": heartbeat.consecutive_failures,
+            "avg_tick_duration_ms": heartbeat.avg_tick_duration_ms,
+            "active_task_count": heartbeat.active_task_count,
+            "executed_task_count": heartbeat.executed_task_count,
+            "high_priority_task_count": heartbeat.high_priority_task_count,
+        })
+    });
+
+    (
+        heartbeat,
+        serde_json::json!({
+            "heartbeat": heartbeat_json,
+            "report": report,
+            "uptime_seconds": snapshot.uptime_seconds,
+            "components": snapshot.components,
+        }),
+    )
+}
+
+/// GET /api/heartbeat — heartbeat live metrics plus recent aggregate stats.
+pub async fn handle_api_heartbeat(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let (_heartbeat, base) = heartbeat_report_payload(&state);
+    let stats = if let Some(ref db) = state.surreal {
+        match crate::heartbeat::store::run_stats(db).await {
+            Ok((total, ok, error)) => serde_json::json!({
+                "total_runs": total,
+                "ok_runs": ok,
+                "error_runs": error,
+            }),
+            Err(err) => serde_json::json!({
+                "error": err.to_string(),
+            }),
+        }
+    } else {
+        serde_json::Value::Null
+    };
+
+    Json(serde_json::json!({
+        "enabled": config.heartbeat.enabled,
+        "agent_id": state.agent_id,
+        "live": base,
+        "stats": stats,
+    }))
+    .into_response()
+}
+
+/// GET /api/heartbeat/runs — recent heartbeat run history.
+pub async fn handle_api_heartbeat_runs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<HeartbeatRunsQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let db = match &state.surreal {
+        Some(db) => db,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(serde_json::json!({"error": "SurrealDB not available for heartbeat"})),
+            )
+                .into_response();
+        }
+    };
+
+    let limit = params.limit.unwrap_or(20).clamp(1, 100) as usize;
+    let (_heartbeat, base) = heartbeat_report_payload(&state);
+    let stats = match crate::heartbeat::store::run_stats(db).await {
+        Ok((total, ok, error)) => serde_json::json!({
+            "total_runs": total,
+            "ok_runs": ok,
+            "error_runs": error,
+        }),
+        Err(err) => serde_json::json!({
+            "error": err.to_string(),
+        }),
+    };
+
+    match crate::heartbeat::store::list_runs(db, limit).await {
+        Ok(runs) => {
+            let runs_json: Vec<serde_json::Value> = runs
+                .into_iter()
+                .map(|run| {
+                    serde_json::json!({
+                        "id": run.id,
+                        "task_text": run.task_text,
+                        "task_priority": run.task_priority,
+                        "started_at": run.started_at.to_rfc3339(),
+                        "finished_at": run.finished_at.to_rfc3339(),
+                        "status": run.status,
+                        "output": run.output,
+                        "duration_ms": run.duration_ms,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({
+                "agent_id": state.agent_id,
+                "live": base,
+                "stats": stats,
+                "runs": runs_json,
+            }))
+            .into_response()
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("Failed to list heartbeat runs: {err}")})),
+        )
+            .into_response(),
+    }
+}
+
 /// GET /api/integrations — list all integrations with status
 pub async fn handle_api_integrations(
     State(state): State<AppState>,
@@ -860,13 +1234,29 @@ pub async fn handle_api_memory_stats(
     let mut by_category = Vec::new();
     let categories = [
         ("core", synapse_domain::domain::memory::MemoryCategory::Core),
-        ("daily", synapse_domain::domain::memory::MemoryCategory::Daily),
-        ("conversation", synapse_domain::domain::memory::MemoryCategory::Conversation),
-        ("skill", synapse_domain::domain::memory::MemoryCategory::Skill),
-        ("reflection", synapse_domain::domain::memory::MemoryCategory::Reflection),
+        (
+            "daily",
+            synapse_domain::domain::memory::MemoryCategory::Daily,
+        ),
+        (
+            "conversation",
+            synapse_domain::domain::memory::MemoryCategory::Conversation,
+        ),
+        (
+            "skill",
+            synapse_domain::domain::memory::MemoryCategory::Skill,
+        ),
+        (
+            "reflection",
+            synapse_domain::domain::memory::MemoryCategory::Reflection,
+        ),
     ];
     for (name, cat) in &categories {
-        let count = mem.list(Some(cat), None, 10_000).await.map(|v| v.len()).unwrap_or(0) as u64;
+        let count = mem
+            .list(Some(cat), None, 10_000)
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0) as u64;
         by_category.push(serde_json::json!({"category": name, "count": count}));
     }
 
@@ -890,12 +1280,21 @@ pub async fn handle_api_memory_stats(
         text: String::new(),
         embedding: None,
         agent_id: state.agent_id.clone(),
+        categories: Vec::new(),
         include_shared: false,
         time_range: None,
         limit: 10_000,
     };
-    let entities = mem.search_entities(&entity_query).await.map(|v| v.len()).unwrap_or(0);
-    let skills = mem.find_skills(&entity_query).await.map(|v| v.len()).unwrap_or(0);
+    let entities = mem
+        .search_entities(&entity_query)
+        .await
+        .map(|v| v.len())
+        .unwrap_or(0);
+    let skills = mem
+        .find_skills(&entity_query)
+        .await
+        .map(|v| v.len())
+        .unwrap_or(0);
     let reflections = mem
         .get_relevant_reflections(&entity_query)
         .await
@@ -926,6 +1325,7 @@ pub async fn handle_api_context_budget(
     let budget = &config.memory.prompt_budget;
     Json(serde_json::json!({
         "recall_max_entries": budget.recall_max_entries,
+        "nearby_max_entries": budget.nearby_max_entries,
         "recall_entry_max_chars": budget.recall_entry_max_chars,
         "recall_total_max_chars": budget.recall_total_max_chars,
         "skills_max_count": budget.skills_max_count,
@@ -939,96 +1339,1008 @@ pub async fn handle_api_context_budget(
     .into_response()
 }
 
-// ── Learning Signal Patterns API ──────────────────────────────────
+/// GET /api/memory/projections — readable memory views for operators and UI.
+pub async fn handle_api_memory_projections(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(params): Query<MemoryProjectionQuery>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
 
-/// GET /api/memory/learning-patterns — list all signal patterns
-pub async fn handle_api_learning_patterns_list(
+    let limit = params.limit.unwrap_or(3).clamp(1, 10);
+    let config = state.config.lock().clone();
+    let current_user_profile = extract_bearer_token(&headers)
+        .map(super::ws::token_hash_prefix)
+        .and_then(|token_prefix| {
+            let key = format!("web:{token_prefix}");
+            state.user_profile_store.load(&key).map(|profile| {
+                serde_json::json!({
+                    "key": key,
+                    "projection": synapse_domain::application::services::user_profile_service::format_profile_projection(&profile),
+                })
+            })
+        });
+
+    let core_blocks = state
+        .mem
+        .get_core_blocks(&state.agent_id)
+        .await
+        .unwrap_or_default();
+    let core_projection =
+        synapse_domain::application::services::memory_projection_service::format_core_blocks_projection(
+            &core_blocks,
+        );
+
+    let working_state = params.session_key.as_ref().and_then(|session_key| {
+        state
+            .dialogue_state_store
+            .get(session_key)
+            .and_then(|state| {
+                synapse_domain::application::services::memory_projection_service::format_dialogue_state_projection(
+                    &state,
+                )
+            })
+            .map(|projection| {
+                serde_json::json!({
+                    "session_key": session_key,
+                    "projection": projection,
+                })
+            })
+    });
+
+    let recent_sessions = if let Some(store) = state.conversation_store.as_ref() {
+        let mut sessions = store.list_sessions(None).await;
+        sessions.sort_by(|left, right| right.last_active.cmp(&left.last_active));
+        let mut projected = Vec::new();
+        for session in sessions.into_iter().take(limit) {
+            let mut session_for_projection = session.clone();
+            if session_for_projection.summary.is_none() {
+                session_for_projection.summary =
+                    store.get_summary(&session_for_projection.key).await;
+            }
+            let events = store.get_events(&session_for_projection.key, 4).await;
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_session_projection(
+                    &session_for_projection,
+                    &events,
+                );
+            projected.push(serde_json::json!({
+                "key": session_for_projection.key,
+                "kind": session_for_projection.kind.to_string(),
+                "projection": projection,
+            }));
+        }
+        projected
+    } else {
+        Vec::new()
+    };
+
+    let maintenance_config =
+        crate::memory_adapters::consolidation_worker::ConsolidationWorkerConfig::default();
+    let recent_run_recipe_cutoff = (chrono::Utc::now().timestamp().max(0) as u64)
+        .saturating_sub(maintenance_config.activity_window.as_secs());
+    let mut all_run_recipes = state.run_recipe_store.list(&state.agent_id);
+    let mut recent_run_recipes = state
+        .run_recipe_store
+        .list_recent(&state.agent_id, recent_run_recipe_cutoff);
+    all_run_recipes.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    recent_run_recipes.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    let run_recipes = all_run_recipes
+        .iter()
+        .take(limit)
+        .cloned()
+        .into_iter()
+        .map(|recipe| {
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_run_recipe_projection(
+                    &recipe,
+                );
+            serde_json::json!({
+                "task_family": recipe.task_family,
+                "projection": projection,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let recipe_clusters_raw =
+        synapse_domain::application::services::run_recipe_cluster_service::plan_recipe_clusters(
+            &recent_run_recipes,
+            0.9,
+        );
+    let recipe_clusters = recipe_clusters_raw
+        .clone()
+    .into_iter()
+    .map(|cluster| {
+        serde_json::json!({
+            "representative_task_family": cluster.representative.task_family,
+            "lineage_task_families": cluster.representative.lineage_task_families,
+            "member_count": cluster.member_count(),
+            "member_task_families": cluster.member_task_families,
+            "projection": synapse_domain::application::services::memory_projection_service::format_run_recipe_cluster_projection(
+                &cluster,
+            ),
+        })
+    })
+    .collect::<Vec<_>>();
+
+    let mut configured_skills =
+        crate::skills::load_skills_with_config(&config.workspace_dir, &config)
+            .into_iter()
+            .map(|skill| {
+                let origin = crate::skills::infer_loaded_skill_origin(&skill).to_string();
+                SkillSurfaceEntry {
+                    name: skill.name.clone(),
+                    status: "active".to_string(),
+                    source: "configured".to_string(),
+                    priority: skill_origin_priority(&origin),
+                    origin,
+                    effective: false,
+                    shadowed_by: None,
+                    projection: crate::skills::format_loaded_skill_projection(
+                        &skill,
+                        &config.workspace_dir,
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+    configured_skills.sort_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+
+    let learned_skills = state
+        .mem
+        .list_skills(&state.agent_id, limit)
+        .await
+        .unwrap_or_default();
+    let recent_cutoff = chrono::Utc::now()
+        - chrono::Duration::seconds(maintenance_config.activity_window.as_secs() as i64);
+    let recent_learned_skills = state
+        .mem
+        .list_recent_skills(&state.agent_id, limit, recent_cutoff)
+        .await
+        .unwrap_or_default();
+    let recent_skills = learned_skills
+        .clone()
+        .into_iter()
+        .map(|skill| {
+            let origin = skill.origin.to_string();
+            SkillSurfaceEntry {
+                name: skill.name.clone(),
+                status: skill.status.to_string(),
+                source: "learned_memory".to_string(),
+                priority: skill_origin_priority(&origin),
+                origin,
+                effective: false,
+                shadowed_by: None,
+                projection: synapse_domain::application::services::memory_projection_service::format_skill_projection(
+                    &skill,
+                ),
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut skill_surface = configured_skills
+        .iter()
+        .cloned()
+        .chain(recent_skills.iter().cloned())
+        .collect::<Vec<_>>();
+    skill_surface.sort_by(|left, right| {
+        right
+            .priority
+            .cmp(&left.priority)
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    mark_shadowed_skills(&mut skill_surface);
+    let effective_skills = skill_surface
+        .iter()
+        .filter(|entry| entry.effective)
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let recent_precedents = state
+        .mem
+        .list_recent_scoped(
+            Some(&synapse_domain::domain::memory::MemoryCategory::Custom(
+                "precedent".into(),
+            )),
+            None,
+            limit,
+            false,
+            recent_cutoff,
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let key = entry.key.clone();
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_memory_entry_projection(
+                    "precedent",
+                    &entry,
+                );
+            serde_json::json!({
+                "key": key,
+                "projection": projection,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let recent_reflections = state
+        .mem
+        .list_recent_scoped(
+            Some(&synapse_domain::domain::memory::MemoryCategory::Reflection),
+            None,
+            limit,
+            false,
+            recent_cutoff,
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let key = entry.key.clone();
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_memory_entry_projection(
+                    "reflection",
+                    &entry,
+                );
+            serde_json::json!({
+                "key": key,
+                "projection": projection,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let recent_failure_patterns = state
+        .mem
+        .list_recent_scoped(
+            Some(&synapse_domain::domain::memory::MemoryCategory::Custom(
+                "failure_pattern".into(),
+            )),
+            None,
+            limit,
+            false,
+            recent_cutoff,
+        )
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|entry| {
+            let key = entry.key.clone();
+            let projection =
+                synapse_domain::application::services::memory_projection_service::format_memory_entry_projection(
+                    "failure-pattern",
+                    &entry,
+                );
+            serde_json::json!({
+                "key": key,
+                "projection": projection,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let precedent_clusters_raw = synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters_since(
+            state.mem.as_ref(),
+            &state.agent_id,
+            synapse_domain::application::services::procedural_cluster_service::ProceduralClusterKind::Precedent,
+            limit,
+            6,
+            0.95,
+            Some(recent_cutoff),
+        )
+        .await
+        .unwrap_or_default();
+    let precedent_clusters = precedent_clusters_raw
+        .iter()
+        .cloned()
+        .map(|cluster| {
+            serde_json::json!({
+                "representative_key": cluster.representative.key,
+                "member_count": cluster.member_count(),
+                "member_keys": cluster.member_keys,
+                "projection": synapse_domain::application::services::memory_projection_service::format_procedural_cluster_projection(
+                    "precedent-cluster",
+                    &cluster,
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let failure_pattern_clusters_raw = synapse_domain::application::services::procedural_cluster_service::plan_recent_clusters_since(
+            state.mem.as_ref(),
+            &state.agent_id,
+            synapse_domain::application::services::procedural_cluster_service::ProceduralClusterKind::FailurePattern,
+            limit,
+            6,
+            0.96,
+            Some(recent_cutoff),
+        )
+        .await
+        .unwrap_or_default();
+
+    let skill_review_decisions =
+        synapse_domain::application::services::skill_review_service::review_learned_skills_with_failures(
+            &recent_learned_skills,
+            &recent_run_recipes,
+            &failure_pattern_clusters_raw,
+        );
+    let skill_review = synapse_domain::application::services::memory_projection_service::format_skill_review_projection(
+        &skill_review_decisions,
+    );
+    let run_recipe_review_decisions =
+        synapse_domain::application::services::run_recipe_review_service::review_run_recipes_with_failures(
+            &recent_run_recipes,
+            &failure_pattern_clusters_raw,
+            &synapse_domain::application::services::run_recipe_review_service::RunRecipeReviewThresholds::default(),
+        );
+    let run_recipe_review = synapse_domain::application::services::memory_projection_service::format_run_recipe_review_projection(
+        &run_recipe_review_decisions,
+    );
+
+    let procedural_contradictions = synapse_domain::application::services::procedural_contradiction_service::find_recipe_failure_contradictions(
+        &recipe_clusters_raw,
+        &failure_pattern_clusters_raw,
+        0.75,
+    );
+    let procedural_contradiction_projection = synapse_domain::application::services::memory_projection_service::format_procedural_contradiction_projection(
+        &procedural_contradictions,
+    );
+    let precedent_cluster_reviews = synapse_domain::application::services::procedural_cluster_review_service::review_precedent_clusters(
+        &precedent_clusters_raw,
+        &failure_pattern_clusters_raw,
+    );
+    let failure_pattern_cluster_reviews = synapse_domain::application::services::procedural_cluster_review_service::review_failure_pattern_clusters(
+        &failure_pattern_clusters_raw,
+        &procedural_contradictions,
+    );
+    let procedural_cluster_review = synapse_domain::application::services::memory_projection_service::format_procedural_cluster_review_projection(
+        "procedural-cluster-review",
+        &precedent_cluster_reviews
+            .iter()
+            .cloned()
+            .chain(failure_pattern_cluster_reviews.iter().cloned())
+            .collect::<Vec<_>>(),
+    );
+    let procedural_contradiction_entries = procedural_contradictions
+        .iter()
+        .map(|contradiction| {
+            serde_json::json!({
+                "recipe_task_family": contradiction.recipe_task_family,
+                "recipe_lineage_task_families": contradiction.recipe_lineage_task_families,
+                "recipe_cluster_size": contradiction.recipe_cluster_size,
+                "failure_representative_key": contradiction.failure_representative_key,
+                "failure_cluster_size": contradiction.failure_cluster_size,
+                "failed_tools": contradiction.failed_tools,
+                "overlap": contradiction.overlap,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let failure_pattern_clusters = failure_pattern_clusters_raw
+        .iter()
+        .cloned()
+        .map(|cluster| {
+            serde_json::json!({
+                "representative_key": cluster.representative.key,
+                "member_count": cluster.member_count(),
+                "member_keys": cluster.member_keys,
+                "projection": synapse_domain::application::services::memory_projection_service::format_procedural_cluster_projection(
+                    "failure-pattern-cluster",
+                    &cluster,
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let learning_digest = synapse_domain::application::services::memory_projection_service::format_learning_digest_projection(
+        &synapse_domain::application::services::memory_projection_service::LearningDigestProjectionInput {
+            has_current_profile: current_user_profile.is_some(),
+            effective_skill_names: effective_skills
+                .iter()
+                .take(limit)
+                .map(|entry| entry.name.clone())
+                .collect(),
+            effective_skill_lineage_families: recent_learned_skills
+                .iter()
+                .filter(|skill| {
+                    effective_skills
+                        .iter()
+                        .any(|entry| entry.name == skill.name && entry.effective)
+                })
+                .flat_map(|skill| skill.lineage_task_families.iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            candidate_skill_count: skill_surface
+                .iter()
+                .filter(|entry| entry.status == "candidate")
+                .count(),
+            shadowed_skill_count: skill_surface
+                .iter()
+                .filter(|entry| !entry.effective)
+                .count(),
+            run_recipe_families: run_recipes
+                .iter()
+                .filter_map(|entry| entry.get("task_family").and_then(serde_json::Value::as_str))
+                .map(ToString::to_string)
+                .collect(),
+            run_recipe_lineage_families: recent_run_recipes
+                .iter()
+                .flat_map(|recipe| recipe.lineage_task_families.iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            run_recipe_cluster_count: recipe_clusters.len(),
+            procedural_contradiction_count: procedural_contradiction_entries.len(),
+            precedent_count: recent_precedents.len(),
+            precedent_cluster_count: precedent_clusters.len(),
+            failure_pattern_count: recent_failure_patterns.len(),
+            failure_pattern_cluster_count: failure_pattern_clusters.len(),
+        },
+    );
+    let learning_maintenance_snapshot =
+        crate::memory_adapters::consolidation_worker::sample_learning_maintenance_snapshot(
+            state.mem.as_ref(),
+            state.run_recipe_store.as_ref(),
+            &state.agent_id,
+            maintenance_config.activity_probe_limit,
+            maintenance_config.activity_window,
+            0,
+            false,
+        )
+        .await;
+    let learning_maintenance_plan =
+        synapse_domain::application::services::learning_maintenance_service::build_learning_maintenance_plan(
+            &learning_maintenance_snapshot,
+            &synapse_domain::application::services::learning_maintenance_service::LearningMaintenancePolicy::default(),
+        );
+    let learning_maintenance = synapse_domain::application::services::memory_projection_service::format_learning_maintenance_projection(
+        &learning_maintenance_snapshot,
+        &learning_maintenance_plan,
+    );
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "current_user_profile": current_user_profile,
+        "learning_digest": learning_digest,
+        "learning_maintenance": learning_maintenance,
+        "learning_maintenance_snapshot": learning_maintenance_snapshot,
+        "learning_maintenance_plan": learning_maintenance_plan,
+        "procedural_contradictions": procedural_contradiction_entries,
+        "procedural_contradiction_projection": procedural_contradiction_projection,
+        "procedural_cluster_review": procedural_cluster_review,
+        "precedent_cluster_reviews": precedent_cluster_reviews,
+        "failure_pattern_cluster_reviews": failure_pattern_cluster_reviews,
+        "core_memory": core_projection,
+        "working_state": working_state,
+        "recent_sessions": recent_sessions,
+        "skill_conflict_policy": synapse_domain::application::services::memory_projection_service::format_skill_conflict_policy_projection(),
+        "skill_review": skill_review,
+        "skill_review_decisions": skill_review_decisions,
+        "run_recipe_review": run_recipe_review,
+        "run_recipe_review_decisions": run_recipe_review_decisions,
+        "configured_skills": configured_skills,
+        "recent_skills": recent_skills,
+        "skill_surface": skill_surface,
+        "effective_skills": effective_skills,
+        "run_recipes": run_recipes,
+        "recipe_clusters": recipe_clusters,
+        "recent_precedents": recent_precedents,
+        "precedent_clusters": precedent_clusters,
+        "recent_reflections": recent_reflections,
+        "recent_failure_patterns": recent_failure_patterns,
+        "failure_pattern_clusters": failure_pattern_clusters,
+    }))
+    .into_response()
+}
+
+/// GET /api/memory/evals/everyday — deterministic everyday intelligence evals.
+pub async fn handle_api_memory_everyday_evals(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, &headers) {
         return e.into_response();
     }
-    let Some(ref db) = state.surreal else {
-        let defaults = synapse_domain::application::services::learning_signals::default_patterns();
-        return Json(serde_json::json!({ "patterns": defaults, "source": "builtin" }))
-            .into_response();
-    };
-    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
-    match adapter.list_signal_patterns().await {
-        Ok(patterns) => Json(serde_json::json!({ "patterns": patterns })).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
+
+    let scenarios =
+        synapse_domain::application::services::everyday_eval_harness::default_golden_scenarios();
+    let mut results = Vec::with_capacity(scenarios.len());
+    let mut by_confidence = std::collections::BTreeMap::<String, usize>::new();
+    let mut clarification_required = 0usize;
+
+    for scenario in scenarios {
+        let result =
+            synapse_domain::application::services::everyday_eval_harness::evaluate_scenario(
+                state.mem.as_ref(),
+                &scenario,
+            )
+            .await;
+        let confidence_key = resolution_confidence_name(result.resolution_plan.confidence);
+        *by_confidence.entry(confidence_key.to_string()).or_default() += 1;
+
+        let clarification = result.clarification_guidance.as_ref().map(|guidance| {
+            if guidance.required {
+                clarification_required += 1;
+            }
+            serde_json::json!({
+                "required": guidance.required,
+                "candidate_set": guidance.candidate_set,
+                "avoid_generic_questions": guidance.avoid_generic_questions,
+                "reason": guidance.reason,
+            })
+        });
+
+        results.push(serde_json::json!({
+            "id": result.scenario_id,
+            "selected_source": result.selected_source.map(resolution_source_name),
+            "source_order": result.resolution_plan.source_order.iter().copied().map(resolution_source_name).collect::<Vec<_>>(),
+            "confidence": confidence_key,
+            "clarification_reason": result.resolution_plan.clarification_reason.map(clarification_reason_name),
+            "clarification_shape": clarification_shape_name(result.clarification_shape),
+            "used_session_history": result.used_session_history,
+            "used_run_recipe": result.used_run_recipe,
+            "clarification": clarification,
+        }));
+    }
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "summary": {
+            "scenario_count": results.len(),
+            "clarification_required": clarification_required,
+            "by_confidence": by_confidence,
+        },
+        "results": results,
+    }))
+    .into_response()
+}
+
+/// GET /api/memory/evals/learning — deterministic self-learning evals.
+pub async fn handle_api_memory_learning_evals(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let scenarios =
+        synapse_domain::application::services::self_learning_eval_harness::default_golden_scenarios(
+        );
+    let mut results = Vec::with_capacity(scenarios.len());
+    let mut by_candidate_kind = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_accepted_candidate_kind = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_assessment_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_skill_promotion_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_skill_review_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_skill_review_action = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_skill_feedback_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_run_recipe_review_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_run_recipe_promotion_block_reason =
+        std::collections::BTreeMap::<String, usize>::new();
+    let mut by_precedent_mutation_action = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_precedent_cluster_review_action = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_failure_cluster_review_action = std::collections::BTreeMap::<String, usize>::new();
+    let mut by_maintenance_reason = std::collections::BTreeMap::<String, usize>::new();
+    let mut profile_updates = 0usize;
+    let mut recipe_candidates = 0usize;
+    let mut accepted_recipe_candidates = 0usize;
+    let mut failure_pattern_candidates = 0usize;
+    let mut accepted_failure_pattern_candidates = 0usize;
+    let mut accepted_skill_promotions = 0usize;
+    let mut accepted_skill_reviews = 0usize;
+    let mut accepted_skill_feedback = 0usize;
+    let mut procedural_contradiction_count = 0usize;
+
+    for scenario in scenarios {
+        let result =
+            synapse_domain::application::services::self_learning_eval_harness::evaluate_scenario(
+                &scenario,
+            );
+        for kind in &result.candidate_kinds {
+            *by_candidate_kind.entry((*kind).to_string()).or_default() += 1;
+        }
+        for kind in &result.accepted_candidate_kinds {
+            *by_accepted_candidate_kind
+                .entry((*kind).to_string())
+                .or_default() += 1;
+        }
+        for reason in &result.assessment_reasons {
+            *by_assessment_reason
+                .entry((*reason).to_string())
+                .or_default() += 1;
+        }
+        for reason in &result.skill_promotion_reasons {
+            *by_skill_promotion_reason
+                .entry((*reason).to_string())
+                .or_default() += 1;
+        }
+        for reason in &result.skill_review_reasons {
+            *by_skill_review_reason
+                .entry((*reason).to_string())
+                .or_default() += 1;
+        }
+        for decision in &result.skill_review_decisions {
+            *by_skill_review_action
+                .entry(skill_review_action_name(&decision.action).to_string())
+                .or_default() += 1;
+        }
+        for reason in &result.skill_feedback_reasons {
+            *by_skill_feedback_reason
+                .entry((*reason).to_string())
+                .or_default() += 1;
+        }
+        for decision in &result.run_recipe_review_decisions {
+            *by_run_recipe_review_reason
+                .entry(decision.reason.to_string())
+                .or_default() += 1;
+            if let Some(reason) = decision.promotion_block_reason {
+                *by_run_recipe_promotion_block_reason
+                    .entry(reason.to_string())
+                    .or_default() += 1;
+            }
+        }
+        for action in &result.precedent_mutation_actions {
+            *by_precedent_mutation_action
+                .entry((*action).to_string())
+                .or_default() += 1;
+        }
+        for review in &result.precedent_cluster_reviews {
+            *by_precedent_cluster_review_action
+                .entry(procedural_cluster_review_action_name(&review.action).to_string())
+                .or_default() += 1;
+        }
+        for review in &result.failure_cluster_reviews {
+            *by_failure_cluster_review_action
+                .entry(procedural_cluster_review_action_name(&review.action).to_string())
+                .or_default() += 1;
+        }
+        for reason in &result.maintenance_reasons {
+            *by_maintenance_reason
+                .entry((*reason).to_string())
+                .or_default() += 1;
+        }
+        if !result.profile_patch_is_noop {
+            profile_updates += 1;
+        }
+        recipe_candidates += result.run_recipe_candidate_count;
+        accepted_recipe_candidates += result.accepted_run_recipe_count;
+        failure_pattern_candidates += result.failure_pattern_candidate_count;
+        accepted_failure_pattern_candidates += result.accepted_failure_pattern_count;
+        accepted_skill_promotions += result.accepted_skill_promotion_count;
+        accepted_skill_reviews += result.accepted_skill_review_count;
+        accepted_skill_feedback += result.accepted_skill_feedback_count;
+        procedural_contradiction_count += result.procedural_contradictions.len();
+
+        match serde_json::to_value(&result) {
+            Ok(value) => results.push(value),
+            Err(error) => results.push(serde_json::json!({
+                "id": result.scenario_id,
+                "error": format!("failed to serialize learning eval result: {error}"),
+            })),
+        }
+    }
+
+    Json(serde_json::json!({
+        "agent_id": state.agent_id,
+        "summary": {
+            "scenario_count": results.len(),
+            "candidate_kinds": by_candidate_kind,
+            "accepted_candidate_kinds": by_accepted_candidate_kind,
+            "assessment_reasons": by_assessment_reason,
+            "skill_promotion_reasons": by_skill_promotion_reason,
+            "skill_review_reasons": by_skill_review_reason,
+            "skill_review_actions": by_skill_review_action,
+            "skill_feedback_reasons": by_skill_feedback_reason,
+            "run_recipe_review_reasons": by_run_recipe_review_reason,
+            "run_recipe_promotion_block_reasons": by_run_recipe_promotion_block_reason,
+            "precedent_mutation_actions": by_precedent_mutation_action,
+            "precedent_cluster_review_actions": by_precedent_cluster_review_action,
+            "failure_cluster_review_actions": by_failure_cluster_review_action,
+            "maintenance_reasons": by_maintenance_reason,
+            "profile_updates": profile_updates,
+            "recipe_candidates": recipe_candidates,
+            "accepted_recipe_candidates": accepted_recipe_candidates,
+            "failure_pattern_candidates": failure_pattern_candidates,
+            "accepted_failure_pattern_candidates": accepted_failure_pattern_candidates,
+            "accepted_skill_promotions": accepted_skill_promotions,
+            "accepted_skill_reviews": accepted_skill_reviews,
+            "accepted_skill_feedback": accepted_skill_feedback,
+            "procedural_contradiction_count": procedural_contradiction_count,
+        },
+        "results": results,
+    }))
+    .into_response()
+}
+
+/// GET /api/user-profiles — list structured user profiles
+pub async fn handle_api_user_profiles_list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let profiles = state
+        .user_profile_store
+        .list()
+        .into_iter()
+        .map(|(key, profile)| {
+            serde_json::json!({
+                "key": key,
+                "profile": profile,
+                "projection": synapse_domain::application::services::user_profile_service::format_profile_projection(&profile),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Json(serde_json::json!({ "profiles": profiles })).into_response()
+}
+
+fn resolution_source_name(
+    source: synapse_domain::application::services::resolution_router::ResolutionSource,
+) -> &'static str {
+    match source {
+        synapse_domain::application::services::resolution_router::ResolutionSource::CurrentConversation => {
+            "current_conversation"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::DialogueState => {
+            "dialogue_state"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::UserProfile => {
+            "user_profile"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::SessionHistory => {
+            "session_history"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::RunRecipe => {
+            "run_recipe"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionSource::LongTermMemory => {
+            "long_term_memory"
+        }
+    }
+}
+
+fn skill_review_action_name(
+    action: &synapse_domain::application::services::skill_review_service::SkillReviewAction,
+) -> &'static str {
+    match action {
+        synapse_domain::application::services::skill_review_service::SkillReviewAction::PromoteToActive => {
+            "promote_to_active"
+        }
+        synapse_domain::application::services::skill_review_service::SkillReviewAction::DowngradeToCandidate => {
+            "downgrade_to_candidate"
+        }
+        synapse_domain::application::services::skill_review_service::SkillReviewAction::Deprecate => {
+            "deprecate"
+        }
+    }
+}
+
+fn procedural_cluster_review_action_name(
+    action: &synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction,
+) -> &'static str {
+    match action {
+        synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction::Stable => {
+            "stable"
+        }
+        synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction::CompactCandidate => {
+            "compact_candidate"
+        }
+        synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction::PreserveBranch => {
+            "preserve_branch"
+        }
+        synapse_domain::application::services::procedural_cluster_review_service::ProceduralClusterReviewAction::BlocksProceduralPaths => {
+            "blocks_procedural_paths"
+        }
+    }
+}
+
+fn resolution_confidence_name(
+    confidence: synapse_domain::application::services::resolution_router::ResolutionConfidence,
+) -> &'static str {
+    match confidence {
+        synapse_domain::application::services::resolution_router::ResolutionConfidence::High => {
+            "high"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionConfidence::Medium => {
+            "medium"
+        }
+        synapse_domain::application::services::resolution_router::ResolutionConfidence::Low => {
+            "low"
+        }
+    }
+}
+
+fn clarification_reason_name(
+    reason: synapse_domain::application::services::resolution_router::ClarificationReason,
+) -> &'static str {
+    match reason {
+        synapse_domain::application::services::resolution_router::ClarificationReason::ResolverExhausted => {
+            "resolver_exhausted"
+        }
+        synapse_domain::application::services::resolution_router::ClarificationReason::LowConfidence => {
+            "low_confidence"
+        }
+        synapse_domain::application::services::resolution_router::ClarificationReason::AmbiguousCandidates => {
+            "ambiguous_candidates"
+        }
+    }
+}
+
+fn clarification_shape_name(
+    shape: synapse_domain::application::services::everyday_eval_harness::ClarificationShape,
+) -> &'static str {
+    match shape {
+        synapse_domain::application::services::everyday_eval_harness::ClarificationShape::None => {
+            "none"
+        }
+        synapse_domain::application::services::everyday_eval_harness::ClarificationShape::CandidateSet => {
+            "candidate_set"
+        }
+        synapse_domain::application::services::everyday_eval_harness::ClarificationShape::GenericRisk => {
+            "generic_risk"
+        }
+    }
+}
+
+/// GET /api/user-profiles/:key — fetch a structured user profile
+pub async fn handle_api_user_profile_get(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(key): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    match state.user_profile_store.load(&key) {
+        Some(profile) => Json(serde_json::json!({
+            "key": key,
+            "profile": profile,
+            "projection": synapse_domain::application::services::user_profile_service::format_profile_projection(&profile),
+        }))
+        .into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "User profile not found" })),
         )
             .into_response(),
     }
 }
 
-/// POST /api/memory/learning-patterns — add a new signal pattern
-pub async fn handle_api_learning_patterns_add(
+/// PUT /api/user-profiles/:key — upsert a structured user profile
+pub async fn handle_api_user_profile_put(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<synapse_domain::application::services::learning_signals::SignalPattern>,
+    Path(key): Path<String>,
+    Json(body): Json<UserProfileUpsertBody>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, &headers) {
         return e.into_response();
     }
-    let Some(ref db) = state.surreal else {
-        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "DB not available"}))).into_response();
+
+    let clear = |field: &str| body.clear_fields.iter().any(|item| item == field);
+    let patch = synapse_domain::application::services::user_profile_service::UserProfilePatch {
+        preferred_language: if clear("preferred_language") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.preferred_language {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        timezone: if clear("timezone") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.timezone {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        default_city: if clear("default_city") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.default_city {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        communication_style: if clear("communication_style") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.communication_style {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        known_environments: if clear("known_environments") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(values) = body.known_environments {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                values,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
+        default_delivery_target: if clear("default_delivery_target") {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
+        } else if let Some(value) = body.default_delivery_target {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
+                value,
+            )
+        } else {
+            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
+        },
     };
-    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
-    match adapter.add_signal_pattern(&body).await {
-        Ok(id) => (StatusCode::CREATED, Json(serde_json::json!({"id": id}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        )
+
+    let updated = synapse_domain::application::services::user_profile_service::apply_patch(
+        state.user_profile_store.load(&key),
+        &patch,
+    );
+
+    match updated {
+        Some(profile) => match state.user_profile_store.upsert(&key, profile.clone()) {
+            Ok(()) => Json(serde_json::json!({
+                "status": "ok",
+                "key": key,
+                "profile": profile,
+                "projection": synapse_domain::application::services::user_profile_service::format_profile_projection(&profile),
+            }))
             .into_response(),
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("User profile update failed: {error}") })),
+            )
+                .into_response(),
+        },
+        None => match state.user_profile_store.remove(&key) {
+            Ok(_) => Json(serde_json::json!({
+                "status": "ok",
+                "removed": true,
+                "key": key,
+            }))
+            .into_response(),
+            Err(error) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": format!("User profile update failed: {error}") })),
+            )
+                .into_response(),
+        },
     }
 }
 
-/// DELETE /api/memory/learning-patterns/{id} — delete a signal pattern
-pub async fn handle_api_learning_patterns_delete(
+/// DELETE /api/user-profiles/:key — delete a structured user profile
+pub async fn handle_api_user_profile_delete(
     State(state): State<AppState>,
     headers: HeaderMap,
-    axum::extract::Path(id): axum::extract::Path<String>,
+    Path(key): Path<String>,
 ) -> impl IntoResponse {
     if let Err(e) = require_auth(&state, &headers) {
         return e.into_response();
     }
-    let Some(ref db) = state.surreal else {
-        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "DB not available"}))).into_response();
-    };
-    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
-    match adapter.delete_signal_pattern(&id).await {
-        Ok(true) => Json(serde_json::json!({"deleted": true})).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Not found"}))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
-        )
-            .into_response(),
-    }
-}
 
-/// POST /api/memory/learning-patterns/seed — seed default patterns (if empty)
-pub async fn handle_api_learning_patterns_seed(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    if let Err(e) = require_auth(&state, &headers) {
-        return e.into_response();
-    }
-    let Some(ref db) = state.surreal else {
-        return (StatusCode::NOT_IMPLEMENTED, Json(serde_json::json!({"error": "DB not available"}))).into_response();
-    };
-    let adapter = synapse_memory::SurrealMemoryAdapter::from_existing(db.clone(), "api".into());
-    match adapter.seed_default_signal_patterns().await {
-        Ok(count) => Json(serde_json::json!({"seeded": count})).into_response(),
-        Err(e) => (
+    match state.user_profile_store.remove(&key) {
+        Ok(removed) => Json(serde_json::json!({
+            "status": "ok",
+            "removed": removed,
+            "key": key,
+        }))
+        .into_response(),
+        Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("{e}")})),
+            Json(serde_json::json!({ "error": format!("User profile delete failed: {error}") })),
         )
             .into_response(),
     }

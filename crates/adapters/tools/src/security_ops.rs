@@ -10,6 +10,9 @@ use std::path::PathBuf;
 
 use super::traits::{Tool, ToolResult};
 use synapse_domain::config::schema::SecurityOpsConfig;
+use synapse_domain::domain::tool_fact::{
+    SecurityAction, SecurityFact, ToolFactPayload, TypedToolFact,
+};
 use synapse_security::playbook::{
     evaluate_step, load_playbooks, severity_level, Playbook, StepStatus,
 };
@@ -406,6 +409,100 @@ impl Tool for SecurityOpsTool {
                 }
             }
         })
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let action = match args.get("action").and_then(|value| value.as_str()) {
+            Some(action) if !action.trim().is_empty() => action.trim(),
+            _ => return Vec::new(),
+        };
+
+        let payload = match action {
+            "triage_alert" => {
+                let alert = args.get("alert").and_then(|value| value.as_object());
+                ToolFactPayload::Security(SecurityFact {
+                    action: SecurityAction::TriageAlert,
+                    severity: alert
+                        .and_then(|alert| alert.get("severity"))
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned),
+                    subject: alert
+                        .and_then(|alert| alert.get("type"))
+                        .and_then(|value| value.as_str())
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(ToOwned::to_owned),
+                    step: None,
+                    client_name: None,
+                })
+            }
+            "run_playbook" => ToolFactPayload::Security(SecurityFact {
+                action: SecurityAction::RunPlaybook,
+                severity: args
+                    .get("alert_severity")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                subject: args
+                    .get("playbook")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                step: args.get("step").and_then(|value| value.as_u64()),
+                client_name: None,
+            }),
+            "parse_vulnerability" => ToolFactPayload::Security(SecurityFact {
+                action: SecurityAction::ParseVulnerability,
+                severity: None,
+                subject: None,
+                step: None,
+                client_name: None,
+            }),
+            "generate_report" => ToolFactPayload::Security(SecurityFact {
+                action: SecurityAction::GenerateReport,
+                severity: None,
+                subject: None,
+                step: None,
+                client_name: args
+                    .get("client_name")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+            }),
+            "alert_stats" => ToolFactPayload::Security(SecurityFact {
+                action: SecurityAction::AlertStats,
+                severity: None,
+                subject: None,
+                step: None,
+                client_name: None,
+            }),
+            "list_playbooks" => ToolFactPayload::Security(SecurityFact {
+                action: SecurityAction::ListPlaybooks,
+                severity: None,
+                subject: None,
+                step: None,
+                client_name: None,
+            }),
+            _ => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload,
+        }]
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

@@ -4,6 +4,16 @@ use regex::Regex;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use synapse_domain::domain::tool_fact::{SearchDomain, SearchFact, ToolFactPayload, TypedToolFact};
+use synapse_domain::ports::tool::ToolExecution;
+
+#[derive(Debug, Clone, PartialEq)]
+struct SearchHit {
+    title: String,
+    url: String,
+    summary: String,
+    score: Option<f64>,
+}
 
 /// Web search tool for searching the internet.
 /// Supports multiple providers: DuckDuckGo (free), Brave (requires API key),
@@ -136,10 +146,16 @@ impl WebSearchTool {
         }
 
         let html = response.text().await?;
-        self.parse_duckduckgo_results(&html, query)
+        let hits = self.parse_duckduckgo_hits(&html)?;
+        Ok(format_search_results("DuckDuckGo", query, None, &hits))
     }
 
     fn parse_duckduckgo_results(&self, html: &str, query: &str) -> anyhow::Result<String> {
+        let hits = self.parse_duckduckgo_hits(html)?;
+        Ok(format_search_results("DuckDuckGo", query, None, &hits))
+    }
+
+    fn parse_duckduckgo_hits(&self, html: &str) -> anyhow::Result<Vec<SearchHit>> {
         // Extract result links: <a class="result__a" href="...">Title</a>
         let link_regex = Regex::new(
             r#"<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>"#,
@@ -158,33 +174,29 @@ impl WebSearchTool {
             .take(self.max_results + 2)
             .collect();
 
-        if link_matches.is_empty() {
-            return Ok(format!("No results found for: {}", query));
-        }
-
-        let mut lines = vec![format!("Search results for: {} (via DuckDuckGo)", query)];
-
-        let count = link_matches.len().min(self.max_results);
-
-        for i in 0..count {
+        let mut hits = Vec::new();
+        for i in 0..link_matches.len().min(self.max_results) {
             let caps = &link_matches[i];
             let url_str = decode_ddg_redirect_url(&caps[1]);
             let title = strip_tags(&caps[2]);
+            let mut summary = String::new();
 
-            lines.push(format!("{}. {}", i + 1, title.trim()));
-            lines.push(format!("   {}", url_str.trim()));
-
-            // Add snippet if available
             if i < snippet_matches.len() {
                 let snippet = strip_tags(&snippet_matches[i][1]);
                 let snippet = snippet.trim();
                 if !snippet.is_empty() {
-                    lines.push(format!("   {}", snippet));
+                    summary = snippet.to_string();
                 }
             }
-        }
 
-        Ok(lines.join("\n"))
+            hits.push(SearchHit {
+                title: title.trim().to_string(),
+                url: url_str.trim().to_string(),
+                summary,
+                score: None,
+            });
+        }
+        Ok(hits)
     }
 
     fn resolve_tavily_api_key(&self) -> anyhow::Result<String> {
@@ -270,7 +282,13 @@ impl WebSearchTool {
         }
 
         let json: serde_json::Value = response.json().await?;
-        self.parse_tavily_results(&json, query)
+        let (answer, hits) = self.parse_tavily_hits(&json)?;
+        Ok(format_search_results(
+            "Tavily",
+            query,
+            answer.as_deref(),
+            &hits,
+        ))
     }
 
     fn parse_tavily_results(
@@ -278,39 +296,51 @@ impl WebSearchTool {
         json: &serde_json::Value,
         query: &str,
     ) -> anyhow::Result<String> {
-        let mut lines = vec![format!("Search results for: {} (via Tavily)", query)];
+        let (answer, hits) = self.parse_tavily_hits(json)?;
+        Ok(format_search_results(
+            "Tavily",
+            query,
+            answer.as_deref(),
+            &hits,
+        ))
+    }
 
-        if let Some(answer) = json.get("answer").and_then(|a| a.as_str()) {
-            if !answer.is_empty() {
-                lines.push(String::new());
-                lines.push(format!("AI Summary: {}", answer));
-                lines.push(String::new());
+    fn parse_tavily_hits(
+        &self,
+        json: &serde_json::Value,
+    ) -> anyhow::Result<(Option<String>, Vec<SearchHit>)> {
+        let answer = json
+            .get("answer")
+            .and_then(|answer| answer.as_str())
+            .map(str::trim)
+            .filter(|answer| !answer.is_empty())
+            .map(str::to_string);
+
+        let mut hits = Vec::new();
+        if let Some(results) = json.get("results").and_then(|results| results.as_array()) {
+            for result in results.iter().take(self.max_results) {
+                hits.push(SearchHit {
+                    title: result
+                        .get("title")
+                        .and_then(|title| title.as_str())
+                        .unwrap_or("No title")
+                        .to_string(),
+                    url: result
+                        .get("url")
+                        .and_then(|url| url.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    summary: result
+                        .get("content")
+                        .and_then(|content| content.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    score: result.get("score").and_then(|score| score.as_f64()),
+                });
             }
         }
 
-        if let Some(results) = json.get("results").and_then(|r| r.as_array()) {
-            for (i, result) in results.iter().take(self.max_results).enumerate() {
-                let title = result
-                    .get("title")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("No title");
-                let url = result.get("url").and_then(|u| u.as_str()).unwrap_or("");
-                let content = result.get("content").and_then(|c| c.as_str()).unwrap_or("");
-                let score = result.get("score").and_then(|s| s.as_f64()).unwrap_or(0.0);
-
-                lines.push(format!("{}. {} (relevance: {:.2})", i + 1, title, score));
-                lines.push(format!("   {}", url));
-                if !content.is_empty() {
-                    lines.push(format!("   {}", content));
-                }
-            }
-        }
-
-        if lines.len() <= 1 {
-            return Ok(format!("No results found for: {}", query));
-        }
-
-        Ok(lines.join("\n"))
+        Ok((answer, hits))
     }
 
     async fn search_brave(&self, query: &str) -> anyhow::Result<String> {
@@ -338,41 +368,152 @@ impl WebSearchTool {
         }
 
         let json: serde_json::Value = response.json().await?;
-        self.parse_brave_results(&json, query)
+        let hits = self.parse_brave_hits(&json)?;
+        Ok(format_search_results("Brave", query, None, &hits))
     }
 
     fn parse_brave_results(&self, json: &serde_json::Value, query: &str) -> anyhow::Result<String> {
+        let hits = self.parse_brave_hits(json)?;
+        Ok(format_search_results("Brave", query, None, &hits))
+    }
+
+    fn parse_brave_hits(&self, json: &serde_json::Value) -> anyhow::Result<Vec<SearchHit>> {
         let results = json
             .get("web")
             .and_then(|w| w.get("results"))
             .and_then(|r| r.as_array())
             .ok_or_else(|| anyhow::anyhow!("Invalid Brave API response"))?;
 
-        if results.is_empty() {
-            return Ok(format!("No results found for: {}", query));
-        }
+        Ok(results
+            .iter()
+            .take(self.max_results)
+            .map(|result| SearchHit {
+                title: result
+                    .get("title")
+                    .and_then(|title| title.as_str())
+                    .unwrap_or("No title")
+                    .to_string(),
+                url: result
+                    .get("url")
+                    .and_then(|url| url.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                summary: result
+                    .get("description")
+                    .and_then(|description| description.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                score: None,
+            })
+            .collect())
+    }
 
-        let mut lines = vec![format!("Search results for: {} (via Brave)", query)];
+    async fn execute_query(&self, query: &str) -> anyhow::Result<(ToolResult, Vec<SearchHit>)> {
+        let (provider_name, answer, hits) = match self.provider.as_str() {
+            "duckduckgo" | "ddg" => {
+                let encoded_query = urlencoding::encode(query);
+                let search_url = format!("https://html.duckduckgo.com/html/?q={}", encoded_query);
 
-        for (i, result) in results.iter().take(self.max_results).enumerate() {
-            let title = result
-                .get("title")
-                .and_then(|t| t.as_str())
-                .unwrap_or("No title");
-            let url = result.get("url").and_then(|u| u.as_str()).unwrap_or("");
-            let description = result
-                .get("description")
-                .and_then(|d| d.as_str())
-                .unwrap_or("");
+                let client = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(self.timeout_secs))
+                    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .build()?;
 
-            lines.push(format!("{}. {}", i + 1, title));
-            lines.push(format!("   {}", url));
-            if !description.is_empty() {
-                lines.push(format!("   {}", description));
+                let response = client.get(&search_url).send().await?;
+
+                if !response.status().is_success() {
+                    anyhow::bail!(
+                        "DuckDuckGo search failed with status: {}",
+                        response.status()
+                    );
+                }
+
+                let html = response.text().await?;
+                (
+                    "DuckDuckGo",
+                    None,
+                    self.parse_duckduckgo_hits(&html)?,
+                )
             }
-        }
+            "brave" => {
+                let api_key = self.resolve_brave_api_key()?;
+                let encoded_query = urlencoding::encode(query);
+                let search_url = format!(
+                    "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
+                    encoded_query, self.max_results
+                );
 
-        Ok(lines.join("\n"))
+                let client = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(self.timeout_secs))
+                    .build()?;
+
+                let response = client
+                    .get(&search_url)
+                    .header("Accept", "application/json")
+                    .header("X-Subscription-Token", &api_key)
+                    .send()
+                    .await?;
+
+                if !response.status().is_success() {
+                    anyhow::bail!("Brave search failed with status: {}", response.status());
+                }
+
+                let json: serde_json::Value = response.json().await?;
+                ("Brave", None, self.parse_brave_hits(&json)?)
+            }
+            "tavily" => {
+                let api_key = self.resolve_tavily_api_key()?;
+
+                let client = reqwest::Client::builder()
+                    .timeout(Duration::from_secs(self.timeout_secs))
+                    .build()?;
+
+                let body = json!({
+                    "query": query,
+                    "max_results": self.max_results,
+                    "search_depth": "advanced",
+                    "topic": "general",
+                    "include_answer": "basic",
+                    "include_raw_content": false,
+                    "include_images": false
+                });
+
+                let response = client
+                    .post("https://api.tavily.com/search")
+                    .header("Authorization", format!("Bearer {}", api_key))
+                    .json(&body)
+                    .send()
+                    .await?;
+
+                let status = response.status();
+                if !status.is_success() {
+                    let text = response.text().await.unwrap_or_default();
+                    match status.as_u16() {
+                        401 => anyhow::bail!("Tavily: invalid API key"),
+                        429 => anyhow::bail!("Tavily: rate limit exceeded, retry later"),
+                        432 => anyhow::bail!("Tavily: plan usage limit exceeded"),
+                        _ => anyhow::bail!("Tavily search failed ({}): {}", status, text),
+                    }
+                }
+
+                let json: serde_json::Value = response.json().await?;
+                let (answer, hits) = self.parse_tavily_hits(&json)?;
+                ("Tavily", answer, hits)
+            }
+            _ => anyhow::bail!(
+                "Unknown search provider: '{}'. Set tools.web_search.provider to 'duckduckgo', 'brave', or 'tavily' in config.toml",
+                self.provider
+            ),
+        };
+
+        Ok((
+            ToolResult {
+                success: true,
+                output: format_search_results(provider_name, query, answer.as_deref(), &hits),
+                error: None,
+            },
+            hits,
+        ))
     }
 }
 
@@ -427,23 +568,104 @@ impl Tool for WebSearchTool {
         }
 
         tracing::info!("Searching web for: {}", query);
+        Ok(self.execute_query(query).await?.0)
+    }
 
-        let result = match self.provider.as_str() {
-            "duckduckgo" | "ddg" => self.search_duckduckgo(query).await?,
-            "brave" => self.search_brave(query).await?,
-            "tavily" => self.search_tavily(query).await?,
-            _ => anyhow::bail!(
-                "Unknown search provider: '{}'. Set tools.web_search.provider to 'duckduckgo', 'brave', or 'tavily' in config.toml",
-                self.provider
-            ),
-        };
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
 
-        Ok(ToolResult {
-            success: true,
-            output: result,
-            error: None,
+        let query = args
+            .get("query")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+
+        if query.is_none() {
+            return Vec::new();
+        }
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Search(SearchFact {
+                domain: SearchDomain::Web,
+                query,
+                result_count: None,
+                primary_locator: None,
+            }),
+        }]
+    }
+
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
+        let query = args
+            .get("query")
+            .and_then(|q| q.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing required parameter: query"))?;
+
+        if query.trim().is_empty() {
+            anyhow::bail!("Search query cannot be empty");
+        }
+
+        let (result, hits) = self.execute_query(query).await?;
+        Ok(ToolExecution {
+            result,
+            facts: vec![TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Web,
+                    query: Some(query.to_string()),
+                    result_count: Some(hits.len()),
+                    primary_locator: hits.first().map(|hit| hit.url.clone()),
+                }),
+            }],
         })
     }
+}
+
+fn format_search_results(
+    provider_name: &str,
+    query: &str,
+    answer: Option<&str>,
+    hits: &[SearchHit],
+) -> String {
+    if hits.is_empty() {
+        return format!("No results found for: {}", query);
+    }
+
+    let mut lines = vec![format!(
+        "Search results for: {} (via {})",
+        query, provider_name
+    )];
+
+    if let Some(answer) = answer {
+        lines.push(String::new());
+        lines.push(format!("AI Summary: {}", answer));
+        lines.push(String::new());
+    }
+
+    for (index, hit) in hits.iter().enumerate() {
+        match hit.score {
+            Some(score) => lines.push(format!(
+                "{}. {} (relevance: {:.2})",
+                index + 1,
+                hit.title,
+                score
+            )),
+            None => lines.push(format!("{}. {}", index + 1, hit.title)),
+        }
+        lines.push(format!("   {}", hit.url));
+        if !hit.summary.trim().is_empty() {
+            lines.push(format!("   {}", hit.summary.trim()));
+        }
+    }
+
+    lines.join("\n")
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@
 //! provider implementations.
 
 use crate::domain::message::ChatMessage;
+use crate::domain::tool_fact::TypedToolFact;
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -17,6 +18,10 @@ pub struct AgentTurnResult {
     pub history: Vec<ChatMessage>,
     /// Whether tools were executed during this turn.
     pub tools_used: bool,
+    /// Structured tool names used during this turn.
+    pub tool_names: Vec<String>,
+    /// Structured tool facts emitted during the turn.
+    pub tool_facts: Vec<TypedToolFact>,
     /// Extracted tool context summary (for history display).
     pub tool_summary: String,
 }

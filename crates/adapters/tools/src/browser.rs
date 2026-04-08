@@ -14,7 +14,11 @@ use std::net::ToSocketAddrs;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::domain::dialogue_state::FocusEntity;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 use tokio::process::Command;
 use tracing::debug;
 
@@ -1089,6 +1093,188 @@ impl Tool for BrowserTool {
         };
 
         self.execute_action(action, backend).await
+    }
+
+    fn extract_facts(&self, args: &Value, result: Option<&ToolResult>) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let action_name = match args.get("action").and_then(Value::as_str) {
+            Some(action) if !action.trim().is_empty() => action.trim(),
+            _ => return Vec::new(),
+        };
+
+        match parse_browser_action(action_name, args) {
+            Ok(BrowserAction::Open { url }) => {
+                if self.validate_url(&url).is_err() {
+                    return Vec::new();
+                }
+                let host = match extract_host(&url) {
+                    Ok(host) => host,
+                    Err(_) => return Vec::new(),
+                };
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserPage,
+                        operation: ResourceOperation::Open,
+                        locator: url,
+                        host: Some(host),
+                        metadata: ResourceMetadata::default(),
+                    }),
+                }]
+            }
+            Ok(BrowserAction::Click { selector })
+            | Ok(BrowserAction::GetText { selector })
+            | Ok(BrowserAction::Hover { selector })
+            | Ok(BrowserAction::IsVisible { selector }) => {
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: browser_selector_operation(action_name),
+                        locator: selector,
+                        host: None,
+                        metadata: ResourceMetadata::default(),
+                    }),
+                }]
+            }
+            Ok(BrowserAction::Fill { selector, value }) => {
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: ResourceOperation::Type,
+                        locator: selector,
+                        host: None,
+                        metadata: ResourceMetadata {
+                            byte_count: Some(value.len()),
+                            ..ResourceMetadata::default()
+                        },
+                    }),
+                }]
+            }
+            Ok(BrowserAction::Type { selector, text }) => {
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: ResourceOperation::Type,
+                        locator: selector,
+                        host: None,
+                        metadata: ResourceMetadata {
+                            byte_count: Some(text.len()),
+                            ..ResourceMetadata::default()
+                        },
+                    }),
+                }]
+            }
+            Ok(BrowserAction::Snapshot { .. }) => vec![TypedToolFact {
+                tool_id: self.name().to_string(),
+                payload: ToolFactPayload::Resource(ResourceFact {
+                    kind: ResourceKind::BrowserPage,
+                    operation: ResourceOperation::Inspect,
+                    locator: "snapshot".into(),
+                    host: None,
+                    metadata: ResourceMetadata::default(),
+                }),
+            }],
+            Ok(BrowserAction::Screenshot { path, full_page }) => path
+                .map(|path| TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::Image,
+                        operation: ResourceOperation::Snapshot,
+                        locator: path,
+                        host: None,
+                        metadata: ResourceMetadata {
+                            include_base64: Some(full_page),
+                            ..ResourceMetadata::default()
+                        },
+                    }),
+                })
+                .into_iter()
+                .collect(),
+            Ok(BrowserAction::Wait { selector, ms, text }) => selector
+                .map(|selector| TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: ResourceOperation::Verify,
+                        locator: selector,
+                        host: None,
+                        metadata: ResourceMetadata {
+                            item_count: ms.map(|value| value as usize),
+                            byte_count: text.as_ref().map(|value| value.len()),
+                            ..ResourceMetadata::default()
+                        },
+                    }),
+                })
+                .into_iter()
+                .collect(),
+            Ok(BrowserAction::Press { .. }) => Vec::new(),
+            Ok(BrowserAction::Scroll { .. }) => Vec::new(),
+            Ok(BrowserAction::Find {
+                by,
+                value,
+                action,
+                fill_value,
+            }) => {
+                vec![TypedToolFact {
+                    tool_id: self.name().to_string(),
+                    payload: ToolFactPayload::Resource(ResourceFact {
+                        kind: ResourceKind::BrowserSelector,
+                        operation: browser_find_operation(&action),
+                        locator: format!("{by}:{value}"),
+                        host: None,
+                        metadata: ResourceMetadata {
+                            byte_count: fill_value.as_ref().map(|text| text.len()),
+                            ..ResourceMetadata::default()
+                        },
+                    }),
+                }]
+            }
+            Ok(BrowserAction::GetTitle | BrowserAction::GetUrl | BrowserAction::Close) => {
+                Vec::new()
+            }
+            Err(_) => {
+                let mut fact =
+                    TypedToolFact::focus(self.name().to_string(), Vec::new(), Vec::new());
+                if let Some(x) = args.get("x").and_then(Value::as_i64) {
+                    let name = match args.get("y").and_then(Value::as_i64) {
+                        Some(y) => format!("{x},{y}"),
+                        None => x.to_string(),
+                    };
+                    fact.push_focus_entity(FocusEntity {
+                        kind: "computer_coordinate".into(),
+                        name,
+                        metadata: args
+                            .get("button")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                    });
+                }
+                vec![fact]
+            }
+        }
+    }
+}
+
+fn browser_selector_operation(action_name: &str) -> ResourceOperation {
+    match action_name {
+        "click" => ResourceOperation::Click,
+        "get_text" | "hover" | "is_visible" => ResourceOperation::Inspect,
+        _ => ResourceOperation::Inspect,
+    }
+}
+
+fn browser_find_operation(action: &str) -> ResourceOperation {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "click" => ResourceOperation::Click,
+        "fill" => ResourceOperation::Type,
+        "text" | "hover" => ResourceOperation::Inspect,
+        _ => ResourceOperation::Inspect,
     }
 }
 
@@ -2471,6 +2657,51 @@ mod tests {
 
         // file:// URLs blocked (local file exfiltration risk)
         assert!(tool.validate_url("file:///tmp/test.html").is_err());
+    }
+
+    #[test]
+    fn extract_facts_emits_browser_page_for_open() {
+        let security = Arc::new(SecurityPolicy::default());
+        let tool = BrowserTool::new(security, vec!["example.com".into()], None);
+        let facts = tool.extract_facts(
+            &json!({"action": "open", "url": "https://example.com/docs"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "browser_page");
+        assert_eq!(projected[0].name, "https://example.com/docs");
+        assert_eq!(projected[0].metadata.as_deref(), Some("example.com"));
+        let subjects = facts[0].projected_subjects();
+        assert!(subjects
+            .iter()
+            .any(|subject| subject == "https://example.com/docs"));
+        assert!(subjects.iter().any(|subject| subject == "example.com"));
+    }
+
+    #[test]
+    fn extract_facts_emits_selector_for_click() {
+        let security = Arc::new(SecurityPolicy::default());
+        let tool = BrowserTool::new(security, vec!["example.com".into()], None);
+        let facts = tool.extract_facts(
+            &json!({"action": "click", "selector": "@e2"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0]
+            .projected_focus_entities()
+            .iter()
+            .any(|entity| entity.kind == "browser_selector" && entity.name == "@e2"));
     }
 
     #[test]

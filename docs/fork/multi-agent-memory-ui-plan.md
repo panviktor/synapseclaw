@@ -238,6 +238,31 @@ This gives the feeling of "jumping into another mind" without overdesigning it.
 
 **Base surface**: [`Memory.tsx`](../../web/src/pages/Memory.tsx)
 
+Current implementation status:
+
+- the older raw memory table has been reworked into `Atlas Memoriae`
+- the surface is now organized into `Praefrontalis`, `Hippocampus`,
+  `Neocortex`, `Amygdala`, and `Archivum`
+- projections already expose working state, recipes, skills, contradictions,
+  maintenance, clusters, and review decisions as readable operator surfaces
+- `MemoryPulse` in chat now shares the same visual language instead of feeling
+  like a separate admin widget
+
+The remaining UI work is polish:
+
+- tighter mobile/layout refinement
+- motion/detail consistency across workbench and atlas
+- optional extra visualizations for lineage and maintenance cadence
+- the main chambers are now:
+  - `Praefrontalis`
+  - `Hippocampus`
+  - `Neocortex`
+  - `Amygdala`
+  - `Archivum`
+- structured review surfaces for skills, recipes, contradictions, and cluster
+  actions are already visible in the shipped UI
+- the raw archive is still preserved as an operator control surface, not removed
+
 The current table is useful but too storage-centric. Turn it into **Memory Studio** with tabs:
 
 - `Working`
@@ -581,6 +606,12 @@ Deliverables:
 - tabbed studio
 - skills/reflections/optimizations surfaces
 - working memory diffs
+
+Status:
+
+- largely implemented through the new `Atlas Memoriae` chamber-based redesign
+- remaining work is polish and follow-up operator surfaces, not a greenfield
+  redesign anymore
 
 Prerequisite:
 

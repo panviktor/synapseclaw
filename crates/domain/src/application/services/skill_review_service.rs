@@ -1,0 +1,741 @@
+//! Deferred review and compaction for learned skills.
+//!
+//! This keeps the skill surface clean without invoking another model:
+//! repeated successful candidates can become active, while weak, shadowed, or
+//! duplicate learned skills get deprecated.
+
+use crate::application::services::run_recipe_cluster_service::{
+    plan_recipe_clusters, RunRecipeCluster,
+};
+use crate::application::services::{
+    failure_similarity_service, procedural_cluster_service::ProceduralCluster,
+};
+use crate::domain::memory::{MemoryId, Skill, SkillOrigin, SkillStatus};
+use crate::domain::run_recipe::RunRecipe;
+use std::cmp::Ordering;
+
+const ACTIVE_SUCCESS_THRESHOLD: u32 = 5;
+const FAILURE_DOMINANT_THRESHOLD: u32 = 2;
+const SKILL_RECIPE_SUPPORT_THRESHOLD: f64 = 0.66;
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub enum SkillReviewAction {
+    PromoteToActive,
+    DowngradeToCandidate,
+    Deprecate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SkillReviewDecision {
+    pub skill_id: MemoryId,
+    pub skill_name: String,
+    pub lineage_task_families: Vec<String>,
+    pub action: SkillReviewAction,
+    pub target_status: SkillStatus,
+    pub reason: &'static str,
+}
+
+pub fn review_learned_skills(skills: &[Skill], recipes: &[RunRecipe]) -> Vec<SkillReviewDecision> {
+    review_learned_skills_with_failures(skills, recipes, &[])
+}
+
+pub fn review_learned_skills_with_failures(
+    skills: &[Skill],
+    recipes: &[RunRecipe],
+    failure_clusters: &[ProceduralCluster],
+) -> Vec<SkillReviewDecision> {
+    let recipe_clusters = plan_recipe_clusters(recipes, 0.9);
+    skills
+        .iter()
+        .filter(|skill| skill.origin == SkillOrigin::Learned)
+        .filter(|skill| skill.status != SkillStatus::Deprecated)
+        .filter_map(|skill| review_learned_skill(skill, skills, &recipe_clusters, failure_clusters))
+        .collect()
+}
+
+fn review_learned_skill(
+    skill: &Skill,
+    all_skills: &[Skill],
+    recipe_clusters: &[RunRecipeCluster],
+    failure_clusters: &[ProceduralCluster],
+) -> Option<SkillReviewDecision> {
+    if is_shadowed_by_higher_priority_active_skill(skill, all_skills) {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "shadowed_by_higher_priority_active_skill",
+        });
+    }
+
+    if is_duplicate_of_preferred_learned_skill(skill, all_skills) {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "duplicate_learned_skill",
+        });
+    }
+
+    if skill.status == SkillStatus::Active
+        && has_exact_recipe_cluster_support(skill, recipe_clusters)
+        && exact_recipe_support_conflicts_with_failures(skill, recipe_clusters, failure_clusters)
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::DowngradeToCandidate,
+            target_status: SkillStatus::Candidate,
+            reason: "active_supported_recipe_cluster_contradicted_by_failure_clusters",
+        });
+    }
+
+    if skill.status == SkillStatus::Active
+        && conflicting_failure_cluster_count(skill, failure_clusters) > 0
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::DowngradeToCandidate,
+            target_status: SkillStatus::Candidate,
+            reason: "active_skill_contradicted_by_failure_clusters",
+        });
+    }
+
+    if skill.status == SkillStatus::Candidate
+        && has_exact_recipe_cluster_support(skill, recipe_clusters)
+        && exact_recipe_support_conflicts_with_failures(skill, recipe_clusters, failure_clusters)
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "supported_recipe_cluster_contradicted_by_failure_clusters",
+        });
+    }
+
+    if skill.status == SkillStatus::Candidate
+        && !has_exact_recipe_cluster_support(skill, recipe_clusters)
+        && conflicting_failure_cluster_count(skill, failure_clusters) > 0
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "contradicted_by_failure_clusters",
+        });
+    }
+
+    if skill.status == SkillStatus::Candidate
+        && !recipe_clusters.is_empty()
+        && !has_exact_recipe_cluster_support(skill, recipe_clusters)
+        && supporting_recipe_cluster_count(skill, recipe_clusters) == 0
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "unsupported_by_recipe_clusters",
+        });
+    }
+
+    if skill.status == SkillStatus::Candidate
+        && !has_exact_recipe_cluster_support(skill, recipe_clusters)
+        && supporting_recipe_cluster_count(skill, recipe_clusters) >= 2
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "ambiguous_recipe_cluster_support",
+        });
+    }
+
+    if skill.status == SkillStatus::Candidate
+        && skill.success_count >= ACTIVE_SUCCESS_THRESHOLD
+        && skill.success_count > skill.fail_count
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::PromoteToActive,
+            target_status: SkillStatus::Active,
+            reason: "repeated_successes",
+        });
+    }
+
+    if skill.status == SkillStatus::Candidate
+        && skill.fail_count >= FAILURE_DOMINANT_THRESHOLD
+        && skill.fail_count > skill.success_count
+    {
+        return Some(SkillReviewDecision {
+            skill_id: skill.id.clone(),
+            skill_name: skill.name.clone(),
+            lineage_task_families: skill_lineage_task_families(skill),
+            action: SkillReviewAction::Deprecate,
+            target_status: SkillStatus::Deprecated,
+            reason: "failure_dominant_candidate",
+        });
+    }
+
+    None
+}
+
+fn is_shadowed_by_higher_priority_active_skill(skill: &Skill, all_skills: &[Skill]) -> bool {
+    all_skills.iter().any(|other| {
+        other.id != skill.id
+            && other.status == SkillStatus::Active
+            && skill_priority(other) > skill_priority(skill)
+            && skills_overlap(skill, other)
+    })
+}
+
+fn is_duplicate_of_preferred_learned_skill(skill: &Skill, all_skills: &[Skill]) -> bool {
+    all_skills.iter().any(|other| {
+        other.id != skill.id
+            && other.origin == SkillOrigin::Learned
+            && other.status != SkillStatus::Deprecated
+            && skills_overlap(skill, other)
+            && preferred_skill_cmp(other, skill) == Ordering::Greater
+    })
+}
+
+fn supporting_recipe_cluster_count(skill: &Skill, recipe_clusters: &[RunRecipeCluster]) -> usize {
+    recipe_clusters
+        .iter()
+        .filter(|cluster| recipe_cluster_supports_skill(skill, cluster))
+        .count()
+}
+
+fn has_exact_recipe_cluster_support(skill: &Skill, recipe_clusters: &[RunRecipeCluster]) -> bool {
+    recipe_clusters
+        .iter()
+        .any(|cluster| recipe_cluster_exactly_supports_skill(skill, cluster))
+}
+
+fn conflicting_failure_cluster_count(
+    skill: &Skill,
+    failure_clusters: &[ProceduralCluster],
+) -> usize {
+    failure_clusters
+        .iter()
+        .filter(|cluster| failure_cluster_conflicts_with_skill(skill, cluster))
+        .count()
+}
+
+fn exact_recipe_support_conflicts_with_failures(
+    skill: &Skill,
+    recipe_clusters: &[RunRecipeCluster],
+    failure_clusters: &[ProceduralCluster],
+) -> bool {
+    recipe_clusters
+        .iter()
+        .filter(|cluster| recipe_cluster_exactly_supports_skill(skill, cluster))
+        .any(|cluster| {
+            failure_clusters.iter().any(|failure_cluster| {
+                failure_cluster_conflicts_with_tool_pattern(
+                    &cluster.representative.tool_pattern,
+                    failure_cluster,
+                )
+            })
+        })
+}
+
+fn failure_cluster_conflicts_with_skill(skill: &Skill, cluster: &ProceduralCluster) -> bool {
+    failure_cluster_conflicts_with_tool_pattern(&skill.tool_pattern, cluster)
+}
+
+fn failure_cluster_conflicts_with_tool_pattern(
+    tool_pattern: &[String],
+    cluster: &ProceduralCluster,
+) -> bool {
+    let failed_tools =
+        failure_similarity_service::failure_summary_failed_tools(&cluster.representative.content);
+    !failed_tools.is_empty() && tool_pattern_overlap(tool_pattern, &failed_tools) >= 0.75
+}
+
+fn recipe_cluster_supports_skill(skill: &Skill, cluster: &RunRecipeCluster) -> bool {
+    recipe_cluster_exactly_supports_skill(skill, cluster)
+        || tool_pattern_overlap(&skill.tool_pattern, &cluster.representative.tool_pattern)
+            >= SKILL_RECIPE_SUPPORT_THRESHOLD
+}
+
+fn recipe_cluster_exactly_supports_skill(skill: &Skill, cluster: &RunRecipeCluster) -> bool {
+    families_overlap(
+        &skill_lineage_task_families(skill),
+        &recipe_cluster_task_families(cluster),
+    )
+}
+
+fn skills_overlap(left: &Skill, right: &Skill) -> bool {
+    left.name.eq_ignore_ascii_case(&right.name)
+        || families_overlap(
+            &skill_lineage_task_families(left),
+            &skill_lineage_task_families(right),
+        )
+        || tool_pattern_overlap(&left.tool_pattern, &right.tool_pattern) >= 0.75
+}
+
+fn recipe_cluster_task_families(cluster: &RunRecipeCluster) -> Vec<String> {
+    let mut families = Vec::new();
+    for value in std::iter::once(&cluster.representative.task_family)
+        .chain(cluster.representative.lineage_task_families.iter())
+        .chain(cluster.member_task_families.iter())
+    {
+        if !value.trim().is_empty() && !families.iter().any(|current| current == value) {
+            families.push(value.clone());
+        }
+    }
+    families
+}
+
+fn skill_lineage_task_families(skill: &Skill) -> Vec<String> {
+    let mut families = Vec::new();
+    if let Some(task_family) = &skill.task_family {
+        if !task_family.trim().is_empty() {
+            families.push(task_family.clone());
+        }
+    }
+    for value in &skill.lineage_task_families {
+        if !value.trim().is_empty() && !families.iter().any(|current| current == value) {
+            families.push(value.clone());
+        }
+    }
+    families
+}
+
+fn families_overlap(left: &[String], right: &[String]) -> bool {
+    left.iter().any(|left_family| {
+        right
+            .iter()
+            .any(|right_family| left_family.eq_ignore_ascii_case(right_family))
+    })
+}
+
+fn tool_pattern_overlap(left: &[String], right: &[String]) -> f64 {
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let shared = left
+        .iter()
+        .filter(|tool| right.iter().any(|other| other.eq_ignore_ascii_case(tool)))
+        .count() as f64;
+    let mut union = Vec::new();
+    for tool in left.iter().chain(right.iter()) {
+        if !union
+            .iter()
+            .any(|existing: &String| existing.eq_ignore_ascii_case(tool))
+        {
+            union.push(tool.clone());
+        }
+    }
+    if union.is_empty() {
+        0.0
+    } else {
+        shared / union.len() as f64
+    }
+}
+
+fn preferred_skill_cmp(left: &Skill, right: &Skill) -> Ordering {
+    skill_status_rank(&left.status)
+        .cmp(&skill_status_rank(&right.status))
+        .then(left.success_count.cmp(&right.success_count))
+        .then(right.fail_count.cmp(&left.fail_count))
+        .then(left.updated_at.cmp(&right.updated_at))
+        .then_with(|| right.id.cmp(&left.id))
+}
+
+fn skill_status_rank(status: &SkillStatus) -> u8 {
+    match status {
+        SkillStatus::Active => 2,
+        SkillStatus::Candidate => 1,
+        SkillStatus::Deprecated => 0,
+    }
+}
+
+fn skill_priority(skill: &Skill) -> u8 {
+    match skill.origin {
+        SkillOrigin::Manual => 3,
+        SkillOrigin::Imported => 2,
+        SkillOrigin::Learned => 1,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+
+    fn sample_skill(
+        id: &str,
+        name: &str,
+        origin: SkillOrigin,
+        status: SkillStatus,
+        success_count: u32,
+        fail_count: u32,
+    ) -> Skill {
+        Skill {
+            id: id.into(),
+            name: name.into(),
+            description: "desc".into(),
+            content: "content".into(),
+            task_family: Some(name.into()),
+            lineage_task_families: vec![name.into()],
+            tool_pattern: vec!["web_search".into(), "message_send".into()],
+            tags: vec![],
+            success_count,
+            fail_count,
+            version: 1,
+            origin,
+            status,
+            created_by: "agent".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn promotes_repeated_candidate_skill() {
+        let decisions = review_learned_skills(
+            &[sample_skill(
+                "sk1",
+                "search_delivery",
+                SkillOrigin::Learned,
+                SkillStatus::Candidate,
+                5,
+                1,
+            )],
+            &[RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                lineage_task_families: vec!["search_delivery".into()],
+                sample_request: "find the status page and send it".into(),
+                summary: "Use web search and message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 5,
+                updated_at: 1,
+            }],
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].action, SkillReviewAction::PromoteToActive);
+        assert_eq!(decisions[0].target_status, SkillStatus::Active);
+    }
+
+    #[test]
+    fn deprecates_candidate_shadowed_by_manual_skill() {
+        let decisions = review_learned_skills(
+            &[
+                sample_skill(
+                    "sk1",
+                    "search_delivery",
+                    SkillOrigin::Learned,
+                    SkillStatus::Candidate,
+                    4,
+                    0,
+                ),
+                sample_skill(
+                    "sk2",
+                    "search_delivery",
+                    SkillOrigin::Manual,
+                    SkillStatus::Active,
+                    1,
+                    0,
+                ),
+            ],
+            &[],
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].action, SkillReviewAction::Deprecate);
+        assert_eq!(
+            decisions[0].reason,
+            "shadowed_by_higher_priority_active_skill"
+        );
+    }
+
+    #[test]
+    fn deprecates_failure_dominant_candidate() {
+        let decisions = review_learned_skills(
+            &[sample_skill(
+                "sk1",
+                "search_delivery",
+                SkillOrigin::Learned,
+                SkillStatus::Candidate,
+                1,
+                3,
+            )],
+            &[],
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].action, SkillReviewAction::Deprecate);
+        assert_eq!(decisions[0].target_status, SkillStatus::Deprecated);
+        assert_eq!(decisions[0].reason, "failure_dominant_candidate");
+    }
+
+    #[test]
+    fn deprecates_duplicate_weaker_learned_skill() {
+        let older_candidate = sample_skill(
+            "sk1",
+            "search_delivery_candidate",
+            SkillOrigin::Learned,
+            SkillStatus::Candidate,
+            3,
+            0,
+        );
+        let mut stronger_active = sample_skill(
+            "sk2",
+            "search_delivery",
+            SkillOrigin::Learned,
+            SkillStatus::Active,
+            7,
+            1,
+        );
+        stronger_active.task_family = Some("search_delivery".into());
+
+        let decisions = review_learned_skills(&[older_candidate, stronger_active], &[]);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].action, SkillReviewAction::Deprecate);
+        assert_eq!(decisions[0].reason, "duplicate_learned_skill");
+    }
+
+    #[test]
+    fn deprecates_candidate_without_recipe_cluster_support() {
+        let decisions = review_learned_skills(
+            &[sample_skill(
+                "sk1",
+                "search_delivery",
+                SkillOrigin::Learned,
+                SkillStatus::Candidate,
+                3,
+                0,
+            )],
+            &[RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "backup_delivery".into(),
+                lineage_task_families: vec!["backup_delivery".into()],
+                sample_request: "run backup and send it".into(),
+                summary: "Use shell and message_send".into(),
+                tool_pattern: vec!["shell".into(), "message_send".into()],
+                success_count: 4,
+                updated_at: 1,
+            }],
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].reason, "unsupported_by_recipe_clusters");
+    }
+
+    #[test]
+    fn keeps_candidate_with_lineage_backed_recipe_cluster_support() {
+        let mut skill = sample_skill(
+            "sk1",
+            "status_delivery",
+            SkillOrigin::Learned,
+            SkillStatus::Candidate,
+            3,
+            0,
+        );
+        skill.task_family = Some("status_delivery".into());
+        skill.lineage_task_families = vec!["status_delivery".into(), "delivery_search".into()];
+
+        let decisions = review_learned_skills(
+            &[skill],
+            &[RunRecipe {
+                agent_id: "agent".into(),
+                task_family: "search_delivery".into(),
+                lineage_task_families: vec!["search_delivery".into(), "delivery_search".into()],
+                sample_request: "find and send".into(),
+                summary: "Use web_search and message_send".into(),
+                tool_pattern: vec!["web_search".into(), "message_send".into()],
+                success_count: 4,
+                updated_at: 1,
+            }],
+        );
+
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn deprecates_candidate_with_ambiguous_recipe_cluster_support() {
+        let mut skill = sample_skill(
+            "sk1",
+            "search_fetch_delivery",
+            SkillOrigin::Learned,
+            SkillStatus::Candidate,
+            3,
+            0,
+        );
+        skill.task_family = Some("search_fetch_delivery".into());
+        skill.tool_pattern = vec![
+            "web_search".into(),
+            "web_fetch".into(),
+            "message_send".into(),
+        ];
+
+        let decisions = review_learned_skills(
+            &[skill],
+            &[
+                RunRecipe {
+                    agent_id: "agent".into(),
+                    task_family: "search_delivery".into(),
+                    lineage_task_families: vec!["search_delivery".into()],
+                    sample_request: "find and send".into(),
+                    summary: "Use web_search and message_send".into(),
+                    tool_pattern: vec!["web_search".into(), "message_send".into()],
+                    success_count: 4,
+                    updated_at: 1,
+                },
+                RunRecipe {
+                    agent_id: "agent".into(),
+                    task_family: "fetch_delivery".into(),
+                    lineage_task_families: vec!["fetch_delivery".into()],
+                    sample_request: "fetch and send".into(),
+                    summary: "Use web_fetch and message_send".into(),
+                    tool_pattern: vec!["web_fetch".into(), "message_send".into()],
+                    success_count: 4,
+                    updated_at: 2,
+                },
+            ],
+        );
+
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].reason, "ambiguous_recipe_cluster_support");
+    }
+
+    #[test]
+    fn deprecates_candidate_contradicted_by_failure_clusters() {
+        let mut skill = sample_skill(
+            "sk1",
+            "search_delivery",
+            SkillOrigin::Learned,
+            SkillStatus::Candidate,
+            3,
+            0,
+        );
+        skill.tool_pattern = vec!["web_fetch".into(), "message_send".into()];
+
+        let failure_cluster = ProceduralCluster {
+            representative: crate::domain::memory::MemoryEntry {
+                id: "m1".into(),
+                key: "m1".into(),
+                content: "failed_tools=web_fetch -> message_send | outcomes=runtime_error".into(),
+                category: crate::domain::memory::MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            member_keys: vec!["m1".into()],
+        };
+
+        let decisions = review_learned_skills_with_failures(&[skill], &[], &[failure_cluster]);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].reason, "contradicted_by_failure_clusters");
+    }
+
+    #[test]
+    fn deprecates_candidate_when_supported_recipe_cluster_conflicts_with_failures() {
+        let skill = sample_skill(
+            "sk1",
+            "fetch_page",
+            SkillOrigin::Learned,
+            SkillStatus::Candidate,
+            4,
+            0,
+        );
+
+        let recipe = RunRecipe {
+            agent_id: "agent".into(),
+            task_family: "fetch_page".into(),
+            lineage_task_families: vec!["fetch_page".into()],
+            sample_request: "fetch the page".into(),
+            summary: "Use web_search and message_send".into(),
+            tool_pattern: vec!["web_search".into(), "message_send".into()],
+            success_count: 4,
+            updated_at: 1,
+        };
+
+        let failure_cluster = ProceduralCluster {
+            representative: crate::domain::memory::MemoryEntry {
+                id: "m1".into(),
+                key: "m1".into(),
+                content: "failed_tools=web_search -> message_send | outcomes=runtime_error".into(),
+                category: crate::domain::memory::MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            member_keys: vec!["m1".into()],
+        };
+
+        let decisions =
+            review_learned_skills_with_failures(&[skill], &[recipe], &[failure_cluster]);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(
+            decisions[0].reason,
+            "supported_recipe_cluster_contradicted_by_failure_clusters"
+        );
+    }
+
+    #[test]
+    fn downgrades_active_skill_when_supported_recipe_cluster_conflicts_with_failures() {
+        let skill = sample_skill(
+            "sk1",
+            "fetch_page",
+            SkillOrigin::Learned,
+            SkillStatus::Active,
+            6,
+            1,
+        );
+
+        let recipe = RunRecipe {
+            agent_id: "agent".into(),
+            task_family: "fetch_page".into(),
+            lineage_task_families: vec!["fetch_page".into()],
+            sample_request: "fetch the page".into(),
+            summary: "Use web_search and message_send".into(),
+            tool_pattern: vec!["web_search".into(), "message_send".into()],
+            success_count: 6,
+            updated_at: 1,
+        };
+
+        let failure_cluster = ProceduralCluster {
+            representative: crate::domain::memory::MemoryEntry {
+                id: "m1".into(),
+                key: "m1".into(),
+                content: "failed_tools=web_search -> message_send | outcomes=runtime_error".into(),
+                category: crate::domain::memory::MemoryCategory::Custom("failure_pattern".into()),
+                timestamp: "2026-01-01T00:00:00Z".into(),
+                session_id: None,
+                score: None,
+            },
+            member_keys: vec!["m1".into()],
+        };
+
+        let decisions =
+            review_learned_skills_with_failures(&[skill], &[recipe], &[failure_cluster]);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(decisions[0].action, SkillReviewAction::DowngradeToCandidate);
+        assert_eq!(decisions[0].target_status, SkillStatus::Candidate);
+        assert_eq!(
+            decisions[0].reason,
+            "active_supported_recipe_cluster_contradicted_by_failure_clusters"
+        );
+    }
+}

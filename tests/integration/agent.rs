@@ -7,7 +7,9 @@
 //!
 //! Ref: https://github.com/panviktor/synapseclaw/issues/618 (item 6)
 
-use crate::support::helpers::{build_agent, build_agent_xml, build_recording_agent, text_response, tool_response};
+use crate::support::helpers::{
+    build_agent, build_agent_xml, build_recording_agent, text_response, tool_response,
+};
 use crate::support::{CountingTool, EchoTool, MockProvider, RecordingProvider};
 use synapseclaw::providers::traits::ChatMessage;
 use synapseclaw::providers::{ChatResponse, ConversationMessage, ToolCall};

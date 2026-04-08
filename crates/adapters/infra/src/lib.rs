@@ -8,6 +8,9 @@ pub mod config_io;
 pub mod docker;
 pub mod identity;
 pub mod native;
+pub mod run_recipe_store;
+pub mod standing_order_store;
+pub mod user_profile_store;
 pub mod workspace;
 pub mod workspace_io;
 

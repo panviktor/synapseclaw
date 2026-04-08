@@ -8,7 +8,6 @@ import { useTheme } from '@/hooks/useTheme';
 const routeTitles: Array<{ prefix: string; title: string }> = [
   { prefix: '/ipc/fleet', title: 'nav.ipc_fleet' },
   { prefix: '/ipc/activity', title: 'nav.ipc_activity' },
-  { prefix: '/learning-patterns', title: 'Learning Patterns' },
   { prefix: '/agents', title: 'nav.agents' },
   { prefix: '/', title: 'nav.dashboard' },
   { prefix: '/agent', title: 'nav.agent' },

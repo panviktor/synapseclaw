@@ -122,7 +122,10 @@ pub fn classify_signal_with_patterns(message: &str, patterns: &[SignalPattern]) 
 
     // Check in priority order: correction > memory > instruction
     for signal_type in &["correction", "memory", "instruction"] {
-        for pat in patterns.iter().filter(|p| p.enabled && p.signal_type == *signal_type) {
+        for pat in patterns
+            .iter()
+            .filter(|p| p.enabled && p.signal_type == *signal_type)
+        {
             let matched = match MatchMode::parse(&pat.match_mode) {
                 MatchMode::StartsWith => trimmed.starts_with(&pat.pattern),
                 MatchMode::Contains => trimmed.contains(&pat.pattern),
@@ -153,10 +156,21 @@ fn build_defaults() -> Vec<SignalPattern> {
 
     // Corrections
     for pat in &[
-        "actually,", "actually ", "correction:", "correction ",
-        "that's wrong", "that's not right", "that's incorrect",
-        "not quite,", "no, ", "wrong,", "wrong.",
-        "let me correct", "i was wrong", "i meant ", "i misspoke",
+        "actually,",
+        "actually ",
+        "correction:",
+        "correction ",
+        "that's wrong",
+        "that's not right",
+        "that's incorrect",
+        "not quite,",
+        "no, ",
+        "wrong,",
+        "wrong.",
+        "let me correct",
+        "i was wrong",
+        "i meant ",
+        "i misspoke",
         "you misunderstood",
     ] {
         patterns.push(SignalPattern {
@@ -170,7 +184,10 @@ fn build_defaults() -> Vec<SignalPattern> {
     }
     // Correction contains patterns
     for pat in &[
-        "that's wrong", "that's not right", "that's incorrect", "let me correct",
+        "that's wrong",
+        "that's not right",
+        "that's incorrect",
+        "let me correct",
     ] {
         patterns.push(SignalPattern {
             id: String::new(),
@@ -184,9 +201,20 @@ fn build_defaults() -> Vec<SignalPattern> {
 
     // Memory requests
     for pat in &[
-        "remember ", "remember:", "remember,", "store:", "save this",
-        "save that", "note:", "note that", "take note", "jot down",
-        "keep in mind", "don't forget", "important:", "important,",
+        "remember ",
+        "remember:",
+        "remember,",
+        "store:",
+        "save this",
+        "save that",
+        "note:",
+        "note that",
+        "take note",
+        "jot down",
+        "keep in mind",
+        "don't forget",
+        "important:",
+        "important,",
     ] {
         patterns.push(SignalPattern {
             id: String::new(),
@@ -211,10 +239,22 @@ fn build_defaults() -> Vec<SignalPattern> {
 
     // Instructions
     for pat in &[
-        "i prefer ", "i like ", "i don't like ", "i dislike ", "i hate ",
-        "i want ", "i need ", "i always ", "i never ",
-        "always ", "never ", "from now on", "going forward",
-        "in the future", "my preference is", "my style is",
+        "i prefer ",
+        "i like ",
+        "i don't like ",
+        "i dislike ",
+        "i hate ",
+        "i want ",
+        "i need ",
+        "i always ",
+        "i never ",
+        "always ",
+        "never ",
+        "from now on",
+        "going forward",
+        "in the future",
+        "my preference is",
+        "my style is",
     ] {
         patterns.push(SignalPattern {
             id: String::new(),

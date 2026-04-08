@@ -25,6 +25,8 @@ pub struct CronDeliveryConfig {
     pub channel: Option<String>,
     /// Target recipient.
     pub to: Option<String>,
+    /// Optional thread/topic reference for thread-capable channels.
+    pub thread_ref: Option<String>,
 }
 
 /// A candidate for auto-detection: channel name + optional recipient.

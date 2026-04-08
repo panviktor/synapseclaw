@@ -11,13 +11,14 @@ use surrealdb::engine::local::{Db, SurrealKv};
 use surrealdb::Surreal;
 
 use synapse_domain::domain::memory::{
-    AgentId, ConsolidationReport, CoreMemoryBlock, Entity, HybridSearchResult, MemoryCategory,
-    MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, ReflectionOutcome, SearchResult,
-    SessionId, Skill, SkillUpdate, TemporalFact,
+    AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingProfile, Entity, HybridSearchResult,
+    MemoryCategory, MemoryEntry, MemoryError, MemoryId, MemoryQuery, Reflection, ReflectionOutcome,
+    SearchResult, SearchSource, SessionId, Skill, SkillOrigin, SkillStatus, SkillUpdate,
+    TemporalFact,
 };
 use synapse_domain::ports::memory::{
-    ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
-    UnifiedMemoryPort, WorkingMemoryPort,
+    ConsolidationPort, EpisodicMemoryPort, ReflectionPort, ScopedClusterCandidates,
+    SemanticMemoryPort, SkillMemoryPort, UnifiedMemoryPort, WorkingMemoryPort,
 };
 
 use crate::embeddings::EmbeddingProvider;
@@ -41,6 +42,11 @@ pub struct SurrealMemoryAdapter {
 }
 
 impl SurrealMemoryAdapter {
+    fn active_embedding_profile_id(&self) -> Option<String> {
+        let profile = self.embedder.profile();
+        (profile.dimensions > 0 && profile.provider_family != "none").then_some(profile.profile_id)
+    }
+
     /// Create a new adapter, initializing the DB and applying the schema.
     pub async fn new(
         data_dir: &str,
@@ -81,6 +87,265 @@ impl SurrealMemoryAdapter {
     /// Used by other components (IPC, cron, chat, etc.) to share the same DB.
     pub fn db(&self) -> Arc<Surreal<Db>> {
         Arc::clone(&self.db)
+    }
+
+    fn score_episode_rows_with_retention(
+        rows: &[serde_json::Value],
+        score_key: &str,
+        source: SearchSource,
+    ) -> Vec<SearchResult> {
+        use synapse_domain::application::services::retention::{
+            compute_retention_score, RetentionPolicy, RetentionWeights,
+        };
+
+        let policy = RetentionPolicy::default();
+        let weights = RetentionWeights::default();
+        let row_map = rows
+            .iter()
+            .map(|row| (json_str(row, "id"), row))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        let mut results = rows
+            .iter()
+            .filter_map(|row| {
+                let entry = row_to_entry(row)?;
+                let relevance = row.get(score_key).and_then(|s| s.as_f64()).unwrap_or(0.0);
+                Some(SearchResult {
+                    entry,
+                    score: relevance as f32,
+                    source: source.clone(),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        for result in &mut results {
+            let age_hours =
+                if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&result.entry.timestamp) {
+                    (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
+                        .num_hours()
+                        .max(0) as f64
+                } else {
+                    0.0
+                };
+            let access_count = row_map
+                .get(&result.entry.id)
+                .and_then(|row| row.get("access_count"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let retention = compute_retention_score(
+                result.score as f64,
+                age_hours,
+                access_count,
+                &result.entry.category,
+                &policy,
+                &weights,
+            );
+            result.score = retention.total as f32;
+        }
+
+        results.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        results
+    }
+
+    async fn search_episode_vector_neighbors(
+        &self,
+        embedding: &[f32],
+        agent_id: &str,
+        category_filters: &[String],
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        if embedding.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let scope_clause = episode_scope_clause(include_shared);
+        let embedding_profile_id = self.active_embedding_profile_id();
+        let mut vec_resp = self
+            .db
+            .query(format!(
+                "SELECT *,
+                    vector::similarity::cosine(embedding, $emb) AS vec_score
+                 FROM episode
+                 WHERE embedding <|$limit,64|> $emb
+                 AND embedding_profile_id = $profile
+                 AND (array::len($categories) = 0 OR category INSIDE $categories)
+                 AND {scope_clause}
+                 ORDER BY vec_score DESC
+                 LIMIT $limit"
+            ))
+            .bind(("emb", embedding.to_vec()))
+            .bind(("profile", embedding_profile_id))
+            .bind(("categories", category_filters.to_vec()))
+            .bind(("agent", agent_id.to_string()))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let vec_rows: Vec<serde_json::Value> = vec_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        Ok(Self::score_episode_rows_with_retention(
+            &vec_rows,
+            "vec_score",
+            SearchSource::Vector,
+        ))
+    }
+
+    async fn clear_vector_fields(&self, tables: &[&str]) {
+        for table in tables {
+            let query = format!(
+                "UPDATE {table} SET embedding = NONE, embedding_profile_id = NONE WHERE embedding IS NOT NONE"
+            );
+            if let Err(e) = self.db.query(&query).await {
+                tracing::warn!(
+                    table,
+                    "memory: failed to clear stale embeddings before reindex: {e}"
+                );
+            }
+        }
+    }
+
+    async fn reindex_profile_bound_vectors(&self) -> Result<(), MemoryError> {
+        let Some(profile_id) = self.active_embedding_profile_id() else {
+            return Ok(());
+        };
+
+        let mut reindexed = 0usize;
+
+        let mut episode_resp = self
+            .db
+            .query(
+                "SELECT id, content FROM episode
+                 WHERE content != NONE
+                 AND (embedding_profile_id != $profile OR embedding_profile_id IS NONE)",
+            )
+            .bind(("profile", profile_id.clone()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let episode_rows: Vec<serde_json::Value> = episode_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        for row in episode_rows {
+            let id = json_str(&row, "id");
+            let content = json_str(&row, "content");
+            if content.trim().is_empty() {
+                continue;
+            }
+            if let Ok(embedding) = self.embedder.embed_document(&content).await {
+                self.db
+                    .query(
+                        "UPDATE type::record('episode', $id) SET
+                            embedding = $embedding,
+                            embedding_profile_id = $profile",
+                    )
+                    .bind(("id", id))
+                    .bind(("embedding", embedding))
+                    .bind(("profile", profile_id.clone()))
+                    .await
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                reindexed += 1;
+            }
+        }
+
+        let mut entity_resp = self
+            .db
+            .query(
+                "SELECT id, name, summary FROM entity
+                 WHERE name != NONE
+                 AND (embedding_profile_id != $profile OR embedding_profile_id IS NONE)",
+            )
+            .bind(("profile", profile_id.clone()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let entity_rows: Vec<serde_json::Value> = entity_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        for row in entity_rows {
+            let id = json_str(&row, "id");
+            let name = json_str(&row, "name");
+            let summary = row.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+            let text = format!("{name} {summary}");
+            if text.trim().is_empty() {
+                continue;
+            }
+            if let Ok(embedding) = self.embedder.embed_document(&text).await {
+                self.db
+                    .query(
+                        "UPDATE type::record('entity', $id) SET
+                            embedding = $embedding,
+                            embedding_profile_id = $profile",
+                    )
+                    .bind(("id", id))
+                    .bind(("embedding", embedding))
+                    .bind(("profile", profile_id.clone()))
+                    .await
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                reindexed += 1;
+            }
+        }
+
+        let mut fact_resp = self
+            .db
+            .query(
+                "SELECT id, subject, predicate, object FROM fact
+                 WHERE (embedding_profile_id != $profile OR embedding_profile_id IS NONE)",
+            )
+            .bind(("profile", profile_id.clone()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let fact_rows: Vec<serde_json::Value> = fact_resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        for row in fact_rows {
+            let id = json_str(&row, "id");
+            let subject = json_str(&row, "subject");
+            let predicate = json_str(&row, "predicate");
+            let object = json_str(&row, "object");
+            let text = format!("{subject} {predicate} {object}");
+            if text.trim().is_empty() {
+                continue;
+            }
+            if let Ok(embedding) = self.embedder.embed_document(&text).await {
+                self.db
+                    .query(
+                        "UPDATE type::record('fact', $id) SET
+                            embedding = $embedding,
+                            embedding_profile_id = $profile",
+                    )
+                    .bind(("id", id))
+                    .bind(("embedding", embedding))
+                    .bind(("profile", profile_id.clone()))
+                    .await
+                    .map_err(|e| MemoryError::Storage(e.to_string()))?;
+                reindexed += 1;
+            }
+        }
+
+        tracing::info!(profile = %profile_id, count = reindexed, "memory: embedding profile reindex complete");
+        Ok(())
+    }
+
+    fn spawn_profile_bound_reindex(&self) {
+        let db = Arc::clone(&self.db);
+        let embedder = Arc::clone(&self.embedder);
+        let agent_id = self.agent_id.clone();
+
+        tokio::spawn(async move {
+            let adapter = SurrealMemoryAdapter {
+                db,
+                embedder,
+                agent_id,
+            };
+            if let Err(error) = adapter.reindex_profile_bound_vectors().await {
+                tracing::warn!(%error, "memory: background embedding profile reindex failed");
+            }
+        });
     }
 
     async fn apply_schema(&self) -> Result<(), MemoryError> {
@@ -144,6 +409,11 @@ impl SurrealMemoryAdapter {
                 Err(_) => true, // can't probe, recreate to be safe
             };
 
+            if need_recreate {
+                self.clear_vector_fields(&["episode", "entity", "fact", "skill", "reflection"])
+                    .await;
+            }
+
             for (table, idx) in [
                 ("episode", "idx_ep_vector"),
                 ("entity", "idx_ent_vector"),
@@ -170,6 +440,11 @@ impl SurrealMemoryAdapter {
             } else {
                 tracing::debug!(dim, "HNSW vector indexes verified");
             }
+
+            // Do not block daemon startup on large profile-bound reindex jobs.
+            // The gateway/scheduler can come up immediately while stale vectors
+            // are refreshed in the background.
+            self.spawn_profile_bound_reindex();
         }
 
         // Migrate stale agent_ids to the current agent_id.
@@ -274,6 +549,50 @@ impl SurrealMemoryAdapter {
     fn rows_to_entries(rows: Vec<serde_json::Value>) -> Vec<MemoryEntry> {
         rows.into_iter().filter_map(|v| row_to_entry(&v)).collect()
     }
+
+    async fn load_scoped_episode_rows(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Vec<serde_json::Value>, MemoryError> {
+        let mut conditions = vec![episode_scope_clause(include_shared).to_string()];
+        if category.is_some() {
+            conditions.push("category = $cat".to_string());
+        }
+        if session_id.is_some() {
+            conditions.push("session_id = $sid".to_string());
+        }
+        if updated_since.is_some() {
+            conditions.push("created_at >= $updated_since".to_string());
+        }
+
+        let q = format!(
+            "SELECT * FROM episode WHERE {} ORDER BY created_at DESC LIMIT $limit",
+            conditions.join(" AND ")
+        );
+
+        let mut query = self
+            .db
+            .query(&q)
+            .bind(("agent", self.me().to_string()))
+            .bind(("cat", category.map(|c| c.to_string()).unwrap_or_default()))
+            .bind(("sid", session_id.unwrap_or("").to_string()))
+            .bind(("limit", limit));
+        if let Some(updated_since) = updated_since {
+            query = query.bind(("updated_since", updated_since.to_rfc3339()));
+        }
+
+        let mut resp = query
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let rows: Vec<serde_json::Value> = resp
+            .take(0)
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        Ok(rows)
+    }
 }
 
 // ── JSON → domain type helpers ───────────────────────────────────
@@ -291,6 +610,50 @@ fn row_to_entry(v: &serde_json::Value) -> Option<MemoryEntry> {
             .map(String::from),
         score: v.get("bm25_score").and_then(|s| s.as_f64()),
     })
+}
+
+fn row_to_embedding(v: &serde_json::Value) -> Option<Vec<f32>> {
+    v.get("embedding")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<Vec<f32>>(value).ok())
+        .filter(|embedding| !embedding.is_empty())
+}
+
+fn episode_scope_clause(include_shared: bool) -> &'static str {
+    if include_shared {
+        "(agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)"
+    } else {
+        "agent_id = $agent"
+    }
+}
+
+#[cfg(test)]
+mod episode_scope_tests {
+    use super::{episode_scope_clause, recall_search_limit};
+
+    #[test]
+    fn local_scope_excludes_shared_entries() {
+        assert_eq!(episode_scope_clause(false), "agent_id = $agent");
+    }
+
+    #[test]
+    fn shared_scope_keeps_shared_visibility_clause() {
+        assert_eq!(
+            episode_scope_clause(true),
+            "(agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)"
+        );
+    }
+
+    #[test]
+    fn scoped_recall_overfetches_before_session_filtering() {
+        assert_eq!(recall_search_limit(5, true), 15);
+        assert_eq!(recall_search_limit(1, true), 5);
+    }
+
+    #[test]
+    fn unscoped_recall_keeps_requested_limit() {
+        assert_eq!(recall_search_limit(5, false), 5);
+    }
 }
 
 fn row_to_core_block(v: &serde_json::Value) -> Option<CoreMemoryBlock> {
@@ -344,6 +707,28 @@ fn row_to_skill(v: &serde_json::Value) -> Option<Skill> {
         name: json_str(v, "name"),
         description: json_str(v, "description"),
         content: json_str(v, "content"),
+        task_family: v
+            .get("task_family")
+            .and_then(|raw| raw.as_str())
+            .map(String::from),
+        tool_pattern: v
+            .get("tool_pattern")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        lineage_task_families: v
+            .get("lineage_task_families")
+            .and_then(|t| t.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default(),
         tags: v
             .get("tags")
             .and_then(|t| t.as_array())
@@ -356,6 +741,16 @@ fn row_to_skill(v: &serde_json::Value) -> Option<Skill> {
         success_count: v.get("success_count").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
         fail_count: v.get("fail_count").and_then(|n| n.as_u64()).unwrap_or(0) as u32,
         version: v.get("version").and_then(|n| n.as_u64()).unwrap_or(1) as u32,
+        origin: v
+            .get("origin")
+            .and_then(|raw| raw.as_str())
+            .map(SkillOrigin::from_str_lossy)
+            .unwrap_or_default(),
+        status: v
+            .get("status")
+            .and_then(|raw| raw.as_str())
+            .map(SkillStatus::from_str_lossy)
+            .unwrap_or_default(),
         created_by: json_str(v, "created_by"),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
@@ -505,10 +900,11 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         } else {
             entry.id.clone()
         };
+        let embedding_profile_id = self.active_embedding_profile_id();
 
         // Generate embedding if provider is available (best-effort).
         let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
-            match self.embedder.embed_one(&entry.content).await {
+            match self.embedder.embed_document(&entry.content).await {
                 Ok(emb) => {
                     tracing::info!(dims = emb.len(), "memory.embedding.stored");
                     Some(emb)
@@ -534,7 +930,8 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
                     importance = 0.5,
                     created_at = time::now(),
                     visibility = 'private',
-                    embedding = $embedding",
+                    embedding = $embedding,
+                    embedding_profile_id = $embedding_profile_id",
             )
             .bind(("agent", self.me().to_string()))
             .bind(("key", entry.key))
@@ -542,6 +939,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             .bind(("category", entry.category.to_string()))
             .bind(("session_id", entry.session_id))
             .bind(("embedding", embedding))
+            .bind(("embedding_profile_id", embedding_profile_id))
             .await
             .map_err(|e| MemoryError::Storage(format!("store_episode transport: {e}")))?;
 
@@ -602,17 +1000,26 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
     }
 
     async fn search_episodes(&self, query: &MemoryQuery) -> Result<Vec<SearchResult>, MemoryError> {
+        let category_filters = query
+            .categories
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let scope_clause = episode_scope_clause(query.include_shared);
+
         // BM25 keyword search
         let mut bm25_resp = self
             .db
-            .query(
+            .query(format!(
                 "SELECT *, search::score(1) AS bm25_score FROM episode
                  WHERE content @1@ $text
-                 AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
+                 AND (array::len($categories) = 0 OR category INSIDE $categories)
+                 AND {scope_clause}
                  ORDER BY bm25_score DESC
-                 LIMIT $limit",
-            )
+                 LIMIT $limit"
+            ))
             .bind(("text", query.text.clone()))
+            .bind(("categories", category_filters.clone()))
             .bind(("agent", query.agent_id.clone()))
             .bind(("limit", query.limit))
             .await
@@ -624,7 +1031,7 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         let query_embedding = if self.embedder.dimensions() > 0 {
             match &query.embedding {
                 Some(emb) => Some(emb.clone()),
-                None => match self.embedder.embed_one(&query.text).await {
+                None => match self.embedder.embed_query(&query.text).await {
                     Ok(emb) => Some(emb),
                     Err(e) => {
                         tracing::warn!(op = "search_episodes", "Embedding failed: {e}");
@@ -637,18 +1044,23 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
         };
 
         let vec_rows = if let Some(ref emb) = query_embedding {
+            let embedding_profile_id = self.active_embedding_profile_id();
             let mut vec_resp = self
                 .db
-                .query(
+                .query(format!(
                     "SELECT *,
                         vector::similarity::cosine(embedding, $emb) AS vec_score
                      FROM episode
                      WHERE embedding <|$limit,64|> $emb
-                     AND (agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)
+                     AND embedding_profile_id = $profile
+                     AND (array::len($categories) = 0 OR category INSIDE $categories)
+                     AND {scope_clause}
                      ORDER BY vec_score DESC
-                     LIMIT $limit",
-                )
+                     LIMIT $limit"
+                ))
                 .bind(("emb", emb.clone()))
+                .bind(("profile", embedding_profile_id))
+                .bind(("categories", category_filters.clone()))
                 .bind(("agent", query.agent_id.clone()))
                 .bind(("limit", query.limit))
                 .await
@@ -727,15 +1139,14 @@ impl EpisodicMemoryPort for SurrealMemoryAdapter {
             let policy = RetentionPolicy::default();
             let weights = RetentionWeights::default();
             for r in &mut results {
-                let age_hours = if let Ok(ts) =
-                    chrono::DateTime::parse_from_rfc3339(&r.entry.timestamp)
-                {
-                    (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
-                        .num_hours()
-                        .max(0) as f64
-                } else {
-                    0.0
-                };
+                let age_hours =
+                    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(&r.entry.timestamp) {
+                        (chrono::Utc::now() - ts.with_timezone(&chrono::Utc))
+                            .num_hours()
+                            .max(0) as f64
+                    } else {
+                        0.0
+                    };
                 // Extract access_count from the search row (stored in episode table).
                 let access_count = row_map
                     .get(&r.entry.id)
@@ -794,6 +1205,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
         } else {
             entity.id.clone()
         };
+        let embedding_profile_id = self.active_embedding_profile_id();
 
         // Generate embedding for entity name + summary (best-effort).
         let embed_text = format!(
@@ -802,7 +1214,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             entity.summary.as_deref().unwrap_or("")
         );
         let embedding: Option<Vec<f32>> = if self.embedder.dimensions() > 0 {
-            match self.embedder.embed_one(&embed_text).await {
+            match self.embedder.embed_document(&embed_text).await {
                 Ok(emb) => Some(emb),
                 Err(e) => {
                     tracing::warn!(op = "upsert_entity", "Embedding failed: {e}");
@@ -821,6 +1233,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                         properties = $props,
                         summary = $summary,
                         embedding = $embedding,
+                        embedding_profile_id = $embedding_profile_id,
                         updated_at = time::now()
                     WHERE string::lowercase(name) = string::lowercase($name) AND created_by = $agent;
                 } ELSE {
@@ -830,6 +1243,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                         properties = $props,
                         summary = $summary,
                         embedding = $embedding,
+                        embedding_profile_id = $embedding_profile_id,
                         created_by = $agent,
                         created_at = time::now(),
                         updated_at = time::now();
@@ -840,6 +1254,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             .bind(("props", entity.properties))
             .bind(("summary", entity.summary))
             .bind(("embedding", embedding))
+            .bind(("embedding_profile_id", embedding_profile_id))
             .bind(("agent", entity.created_by))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
@@ -867,11 +1282,12 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
 
         // 2. Embedding similarity fallback (>0.85 threshold)
         if self.embedder.dimensions() > 0 {
-            let emb_result = self.embedder.embed_one(name).await;
+            let emb_result = self.embedder.embed_document(name).await;
             if let Err(ref e) = emb_result {
                 tracing::warn!(op = "find_entity", "Embedding failed: {e}");
             }
             if let Ok(emb) = emb_result {
+                let embedding_profile_id = self.active_embedding_profile_id();
                 let mut vec_resp = self
                     .db
                     .query(
@@ -879,10 +1295,12 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                             vector::similarity::cosine(embedding, $emb) AS sim
                          FROM entity
                          WHERE embedding <|3,32|> $emb
+                         AND embedding_profile_id = $profile
                          ORDER BY sim DESC
                          LIMIT 1",
                     )
                     .bind(("emb", emb))
+                    .bind(("profile", embedding_profile_id))
                     .await
                     .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
@@ -905,6 +1323,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
         } else {
             fact.id.clone()
         };
+        let embedding_profile_id = self.active_embedding_profile_id();
 
         // Use pre-computed embedding if provided (from AUDN in entity_extractor).
         // Fallback: embed using predicate text (for knowledge_tool and other callers).
@@ -912,7 +1331,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             fact.embedding.clone()
         } else if self.embedder.dimensions() > 0 {
             let fact_text = format!("{} {} {}", fact.subject, fact.predicate, fact.object);
-            match self.embedder.embed_one(&fact_text).await {
+            match self.embedder.embed_document(&fact_text).await {
                 Ok(emb) => Some(emb),
                 Err(e) => {
                     tracing::warn!(op = "add_fact", "Embedding failed: {e}");
@@ -934,7 +1353,8 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
                     recorded_at = time::now(),
                     source_episode = $source,
                     created_by = $agent,
-                    embedding = $embedding",
+                    embedding = $embedding,
+                    embedding_profile_id = $embedding_profile_id",
             )
             .bind(("subj", fact.subject))
             .bind(("pred", fact.predicate))
@@ -943,6 +1363,7 @@ impl SemanticMemoryPort for SurrealMemoryAdapter {
             .bind(("source", fact.source_episode))
             .bind(("agent", fact.created_by))
             .bind(("embedding", embedding))
+            .bind(("embedding_profile_id", embedding_profile_id))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
 
@@ -1048,10 +1469,15 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
                     name = $name,
                     description = $desc,
                     content = $content,
+                    task_family = $task_family,
+                    tool_pattern = $tool_pattern,
+                    lineage_task_families = $lineage_task_families,
                     tags = $tags,
                     success_count = $sc,
                     fail_count = $fc,
                     version = $ver,
+                    origin = $origin,
+                    status = $status,
                     created_by = $agent,
                     created_at = time::now(),
                     updated_at = time::now()",
@@ -1059,10 +1485,15 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .bind(("name", skill.name))
             .bind(("desc", skill.description))
             .bind(("content", skill.content))
+            .bind(("task_family", skill.task_family))
+            .bind(("tool_pattern", skill.tool_pattern))
+            .bind(("lineage_task_families", skill.lineage_task_families))
             .bind(("tags", skill.tags))
             .bind(("sc", skill.success_count as i64))
             .bind(("fc", skill.fail_count as i64))
             .bind(("ver", skill.version as i64))
+            .bind(("origin", skill.origin.to_string()))
+            .bind(("status", skill.status.to_string()))
             .bind(("agent", skill.created_by))
             .await
             .map_err(|e| MemoryError::Storage(e.to_string()))?;
@@ -1076,6 +1507,7 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .query(
                 "SELECT * FROM skill
                  WHERE (name CONTAINS $text OR description CONTAINS $text)
+                 AND (status IS NONE OR status != 'deprecated')
                  AND created_by = $agent
                  ORDER BY success_count DESC
                  LIMIT $limit",
@@ -1103,8 +1535,31 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
         if update.increment_fail {
             parts.push("fail_count += 1".to_string());
         }
+        if update.new_description.is_some() {
+            parts.push("description = $description".to_string());
+        }
         if update.new_content.is_some() {
             parts.push("content = $content".to_string());
+        }
+        if update.new_task_family.is_some() {
+            parts.push("task_family = $task_family".to_string());
+        }
+        if update.new_tool_pattern.is_some() {
+            parts.push("tool_pattern = $tool_pattern".to_string());
+        }
+        if update.new_lineage_task_families.is_some() {
+            parts.push("lineage_task_families = $lineage_task_families".to_string());
+        }
+        if update.new_status.is_some() {
+            parts.push("status = $status".to_string());
+        }
+        if update.new_description.is_some()
+            || update.new_content.is_some()
+            || update.new_task_family.is_some()
+            || update.new_tool_pattern.is_some()
+            || update.new_lineage_task_families.is_some()
+            || update.new_status.is_some()
+        {
             parts.push("version += 1".to_string());
         }
 
@@ -1118,8 +1573,23 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
             .query(&q)
             .bind(("id", skill_id.clone()))
             .bind(("agent", agent_id.clone()));
+        if let Some(ref description) = update.new_description {
+            query = query.bind(("description", description.clone()));
+        }
         if let Some(ref content) = update.new_content {
             query = query.bind(("content", content.clone()));
+        }
+        if let Some(ref task_family) = update.new_task_family {
+            query = query.bind(("task_family", task_family.clone()));
+        }
+        if let Some(ref tool_pattern) = update.new_tool_pattern {
+            query = query.bind(("tool_pattern", tool_pattern.clone()));
+        }
+        if let Some(ref lineage_task_families) = update.new_lineage_task_families {
+            query = query.bind(("lineage_task_families", lineage_task_families.clone()));
+        }
+        if let Some(ref status) = update.new_status {
+            query = query.bind(("status", status.to_string()));
         }
 
         query
@@ -1143,6 +1613,55 @@ impl SkillMemoryPort for SurrealMemoryAdapter {
 
         let rows = take_json!(resp, 0);
         Ok(rows.first().and_then(row_to_skill))
+    }
+
+    async fn list_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM skill
+                 WHERE created_by = $agent
+                 AND (status IS NONE OR status != 'deprecated')
+                 ORDER BY success_count DESC, updated_at DESC
+                 LIMIT $limit",
+            )
+            .bind(("agent", agent_id.clone()))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(rows.iter().filter_map(row_to_skill).collect())
+    }
+
+    async fn list_recent_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        let mut resp = self
+            .db
+            .query(
+                "SELECT * FROM skill
+                 WHERE created_by = $agent
+                 AND (status IS NONE OR status != 'deprecated')
+                 AND updated_at >= $updated_since
+                 ORDER BY updated_at DESC, success_count DESC
+                 LIMIT $limit",
+            )
+            .bind(("agent", agent_id.clone()))
+            .bind(("updated_since", updated_since))
+            .bind(("limit", limit))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+
+        let rows = take_json!(resp, 0);
+        Ok(rows.iter().filter_map(row_to_skill).collect())
     }
 }
 
@@ -1385,11 +1904,235 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         })
     }
 
+    async fn similar_episodes_for_entry(
+        &self,
+        entry: &MemoryEntry,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        let mut resp = self
+            .db
+            .query("SELECT embedding FROM episode WHERE key = $key AND agent_id = $agent LIMIT 1")
+            .bind(("key", entry.key.clone()))
+            .bind(("agent", agent_id.to_string()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let rows = take_json!(resp, 0);
+        let stored_embedding = rows
+            .first()
+            .and_then(|row| row.get("embedding"))
+            .cloned()
+            .and_then(|value| serde_json::from_value::<Vec<f32>>(value).ok())
+            .filter(|embedding| !embedding.is_empty());
+        let category_filters = vec![category.to_string()];
+        let mut episodes = if let Some(stored_embedding) = stored_embedding {
+            self.search_episode_vector_neighbors(
+                &stored_embedding,
+                agent_id,
+                &category_filters,
+                limit.saturating_mul(2).max(limit),
+                include_shared,
+            )
+            .await?
+        } else {
+            self.search_episodes(&MemoryQuery {
+                text: entry.content.clone(),
+                embedding: None,
+                agent_id: agent_id.to_string(),
+                categories: vec![category.clone()],
+                include_shared,
+                time_range: None,
+                limit: limit.saturating_mul(2).max(limit),
+            })
+            .await?
+        };
+        episodes.retain(|candidate| candidate.entry.key != entry.key);
+        episodes.sort_by(|left, right| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        episodes.truncate(limit);
+        Ok(episodes)
+    }
+
+    async fn similar_episodes_for_entries(
+        &self,
+        entries: &[MemoryEntry],
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<std::collections::HashMap<String, Vec<SearchResult>>, MemoryError> {
+        let keys = entries
+            .iter()
+            .map(|entry| entry.key.clone())
+            .collect::<Vec<_>>();
+        let mut resp = self
+            .db
+            .query(
+                "SELECT key, embedding FROM episode WHERE key INSIDE $keys AND agent_id = $agent",
+            )
+            .bind(("keys", keys))
+            .bind(("agent", agent_id.to_string()))
+            .await
+            .map_err(|e| MemoryError::Storage(e.to_string()))?;
+        let rows = take_json!(resp, 0);
+        let embedding_lookup = rows
+            .iter()
+            .filter_map(|row| {
+                let key = row.get("key").and_then(|value| value.as_str())?.to_string();
+                let embedding = row
+                    .get("embedding")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value::<Vec<f32>>(value).ok())
+                    .filter(|embedding| !embedding.is_empty())?;
+                Some((key, embedding))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let category_filters = vec![category.to_string()];
+
+        let mut results = std::collections::HashMap::new();
+        for entry in entries {
+            let mut episodes = if let Some(stored_embedding) = embedding_lookup.get(&entry.key) {
+                self.search_episode_vector_neighbors(
+                    stored_embedding,
+                    agent_id,
+                    &category_filters,
+                    limit.saturating_mul(2).max(limit),
+                    include_shared,
+                )
+                .await?
+            } else {
+                self.search_episodes(&MemoryQuery {
+                    text: entry.content.clone(),
+                    embedding: None,
+                    agent_id: agent_id.to_string(),
+                    categories: vec![category.clone()],
+                    include_shared,
+                    time_range: None,
+                    limit: limit.saturating_mul(2).max(limit),
+                })
+                .await?
+            };
+            episodes.retain(|candidate| candidate.entry.key != entry.key);
+            episodes.sort_by(|left, right| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            episodes.truncate(limit);
+            results.insert(entry.key.clone(), episodes);
+        }
+        Ok(results)
+    }
+
+    async fn scoped_cluster_candidates(
+        &self,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        shortlist_limit: usize,
+        include_shared: bool,
+        updated_since: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<ScopedClusterCandidates, MemoryError> {
+        let rows = self
+            .load_scoped_episode_rows(Some(category), None, limit, include_shared, updated_since)
+            .await?;
+        let entries = Self::rows_to_entries(rows.clone());
+        if entries.len() < 2 {
+            return Ok(ScopedClusterCandidates {
+                entries,
+                similarity_lookup: std::collections::HashMap::new(),
+            });
+        }
+
+        let embedded_entries = rows
+            .iter()
+            .filter_map(|row| {
+                Some((
+                    json_str(row, "key"),
+                    row_to_entry(row)?,
+                    row_to_embedding(row)?,
+                ))
+            })
+            .collect::<Vec<_>>();
+
+        let mut similarity_lookup = std::collections::HashMap::new();
+        for (key, _entry, embedding) in &embedded_entries {
+            let mut shortlist = embedded_entries
+                .iter()
+                .filter(|(other_key, _, _)| other_key != key)
+                .map(|(_, other_entry, other_embedding)| SearchResult {
+                    entry: other_entry.clone(),
+                    score: crate::vector::cosine_similarity(embedding, other_embedding),
+                    source: SearchSource::Vector,
+                })
+                .collect::<Vec<_>>();
+            shortlist.sort_by(|left, right| {
+                right
+                    .score
+                    .partial_cmp(&left.score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            shortlist.truncate(shortlist_limit);
+            similarity_lookup.insert(key.clone(), shortlist);
+        }
+
+        let embedded_keys = embedded_entries
+            .iter()
+            .map(|(key, _, _)| key.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for entry in &entries {
+            if embedded_keys.contains(&entry.key) {
+                continue;
+            }
+            similarity_lookup.insert(
+                entry.key.clone(),
+                self.similar_episodes_for_entry(
+                    entry,
+                    agent_id,
+                    category,
+                    shortlist_limit,
+                    include_shared,
+                )
+                .await?,
+            );
+        }
+
+        Ok(ScopedClusterCandidates {
+            entries,
+            similarity_lookup,
+        })
+    }
+
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         self.embedder
             .embed_one(text)
             .await
             .map_err(|e| MemoryError::Embedding(e.to_string()))
+    }
+
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embedder
+            .embed_query(text)
+            .await
+            .map_err(|e| MemoryError::Embedding(e.to_string()))
+    }
+
+    async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.embedder
+            .embed_document(text)
+            .await
+            .map_err(|e| MemoryError::Embedding(e.to_string()))
+    }
+
+    fn embedding_profile(&self) -> EmbeddingProfile {
+        self.embedder.profile()
     }
 
     async fn store(
@@ -1422,9 +2165,10 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
             text: query.to_string(),
             embedding: None,
             agent_id: self.me().to_string(),
+            categories: Vec::new(),
             include_shared: true,
             time_range: None,
-            limit,
+            limit: recall_search_limit(limit, session_id.is_some()),
         };
 
         let results = self.search_episodes(&mq).await?;
@@ -1447,7 +2191,7 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
                 for id in ids {
                     let _ = db
                         .query(
-                            "UPDATE type::thing('episode', $id) SET \
+                            "UPDATE type::record('episode', $id) SET \
                              access_count = (access_count ?? 0) + 1, \
                              last_accessed = time::now()",
                         )
@@ -1494,33 +2238,40 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         session_id: Option<&str>,
         limit: usize,
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
-        let mut conditions = vec![
-            "(agent_id = $agent OR visibility = 'global' OR $agent INSIDE shared_with)".to_string(),
-        ];
-        if category.is_some() {
-            conditions.push("category = $cat".to_string());
-        }
-        if session_id.is_some() {
-            conditions.push("session_id = $sid".to_string());
-        }
+        self.list_scoped(category, session_id, limit, true).await
+    }
 
-        let q = format!(
-            "SELECT * FROM episode WHERE {} ORDER BY created_at DESC LIMIT $limit",
-            conditions.join(" AND ")
-        );
+    async fn list_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        Ok(SurrealMemoryAdapter::rows_to_entries(
+            self.load_scoped_episode_rows(category, session_id, limit, include_shared, None)
+                .await?,
+        ))
+    }
 
-        let mut resp = self
-            .db
-            .query(&q)
-            .bind(("agent", self.me().to_string()))
-            .bind(("cat", category.map(|c| c.to_string()).unwrap_or_default()))
-            .bind(("sid", session_id.unwrap_or("").to_string()))
-            .bind(("limit", limit))
-            .await
-            .map_err(|e| MemoryError::Storage(e.to_string()))?;
-
-        let rows = take_json!(resp, 0);
-        Ok(SurrealMemoryAdapter::rows_to_entries(rows))
+    async fn list_recent_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        Ok(SurrealMemoryAdapter::rows_to_entries(
+            self.load_scoped_episode_rows(
+                category,
+                session_id,
+                limit,
+                include_shared,
+                Some(updated_since),
+            )
+            .await?,
+        ))
     }
 
     async fn consolidate_turn(
@@ -1549,12 +2300,14 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
                     vector::similarity::cosine(embedding, $emb) AS sim
                  FROM fact
                  WHERE embedding <|$limit,64|> $emb
+                 AND embedding_profile_id = $profile
                  AND valid_to IS NONE
                  AND (created_by = $agent OR created_by IS NONE)
                  ORDER BY sim DESC
                  LIMIT $limit",
             )
             .bind(("emb", embedding.to_vec()))
+            .bind(("profile", self.active_embedding_profile_id()))
             .bind(("agent", self.me().to_string()))
             .bind(("limit", limit))
             .await
@@ -1608,7 +2361,10 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
 
     async fn list_signal_patterns(
         &self,
-    ) -> Result<Vec<synapse_domain::application::services::learning_signals::SignalPattern>, MemoryError> {
+    ) -> Result<
+        Vec<synapse_domain::application::services::learning_signals::SignalPattern>,
+        MemoryError,
+    > {
         // Delegate to the inherent method on SurrealMemoryAdapter
         SurrealMemoryAdapter::list_signal_patterns(self).await
     }
@@ -1627,7 +2383,7 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
         };
         self.db
             .query(
-                "UPDATE type::thing('episode', $id) SET \
+                "UPDATE type::record('episode', $id) SET \
                  visibility = $vis, shared_with = $agents \
                  WHERE agent_id = $owner",
             )
@@ -1648,14 +2404,24 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
     }
 }
 
+fn recall_search_limit(limit: usize, scoped_to_session: bool) -> usize {
+    if !scoped_to_session {
+        return limit;
+    }
+
+    limit.saturating_mul(3).max(limit.saturating_add(4))
+}
+
 // ── Learning Signal Patterns ─────────────────────────────────────
 
 impl SurrealMemoryAdapter {
     /// Load all signal patterns from DB.
     pub async fn list_signal_patterns(
         &self,
-    ) -> Result<Vec<synapse_domain::application::services::learning_signals::SignalPattern>, synapse_domain::domain::memory::MemoryError>
-    {
+    ) -> Result<
+        Vec<synapse_domain::application::services::learning_signals::SignalPattern>,
+        synapse_domain::domain::memory::MemoryError,
+    > {
         use synapse_domain::application::services::learning_signals::SignalPattern;
         let mut resp = self
             .db
@@ -1672,7 +2438,11 @@ impl SurrealMemoryAdapter {
                     id: v.get("id")?.to_string().trim_matches('"').to_string(),
                     signal_type: v.get("signal_type")?.as_str()?.to_string(),
                     pattern: v.get("pattern")?.as_str()?.to_string(),
-                    match_mode: v.get("match_mode")?.as_str().unwrap_or("starts_with").to_string(),
+                    match_mode: v
+                        .get("match_mode")?
+                        .as_str()
+                        .unwrap_or("starts_with")
+                        .to_string(),
                     language: v.get("language")?.as_str().unwrap_or("en").to_string(),
                     enabled: v.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
                 })
@@ -1722,7 +2492,7 @@ impl SurrealMemoryAdapter {
     ) -> Result<bool, synapse_domain::domain::memory::MemoryError> {
         let mut resp = self
             .db
-            .query("DELETE FROM learning_signal_pattern WHERE id = type::thing('learning_signal_pattern', $id) RETURN BEFORE")
+            .query("DELETE FROM learning_signal_pattern WHERE id = type::record('learning_signal_pattern', $id) RETURN BEFORE")
             .bind(("id", id.to_string()))
             .await
             .map_err(|e| synapse_domain::domain::memory::MemoryError::Storage(e.to_string()))?;
@@ -1733,7 +2503,9 @@ impl SurrealMemoryAdapter {
     }
 
     /// Seed default patterns if table is empty.
-    pub async fn seed_default_signal_patterns(&self) -> Result<usize, synapse_domain::domain::memory::MemoryError> {
+    pub async fn seed_default_signal_patterns(
+        &self,
+    ) -> Result<usize, synapse_domain::domain::memory::MemoryError> {
         let existing = self.list_signal_patterns().await?;
         if !existing.is_empty() {
             return Ok(0);

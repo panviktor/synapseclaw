@@ -77,4 +77,8 @@ Last refreshed: **April 3, 2026**.
 - [memory-unification-plan.md](fork/memory-unification-plan.md)
 - [ipc-phase4_6-plan.md](fork/ipc-phase4_6-plan.md)
 - [ipc-phase4_6-research.md](fork/ipc-phase4_6-research.md)
+- [ipc-phase4_7-plan.md](fork/ipc-phase4_7-plan.md)
+- [ipc-phase4_8-plan.md](fork/ipc-phase4_8-plan.md)
+- [ipc-phase4_9-plan.md](fork/ipc-phase4_9-plan.md)
+- [ideas/README.md](fork/ideas/README.md)
 - [multi-agent-memory-ui-plan.md](fork/multi-agent-memory-ui-plan.md)

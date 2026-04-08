@@ -140,6 +140,23 @@ impl SkillMemoryPort for ConsolidatingMemory {
     ) -> Result<Option<Skill>, MemoryError> {
         self.inner.get_skill(name, agent_id).await
     }
+    async fn list_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        self.inner.list_skills(agent_id, limit).await
+    }
+    async fn list_recent_skills(
+        &self,
+        agent_id: &AgentId,
+        limit: usize,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<Skill>, MemoryError> {
+        self.inner
+            .list_recent_skills(agent_id, limit, updated_since)
+            .await
+    }
 }
 
 #[async_trait]
@@ -187,8 +204,41 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     async fn hybrid_search(&self, query: &MemoryQuery) -> Result<HybridSearchResult, MemoryError> {
         self.inner.hybrid_search(query).await
     }
+    async fn similar_episodes_for_entry(
+        &self,
+        entry: &MemoryEntry,
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<SearchResult>, MemoryError> {
+        self.inner
+            .similar_episodes_for_entry(entry, agent_id, category, limit, include_shared)
+            .await
+    }
+    async fn similar_episodes_for_entries(
+        &self,
+        entries: &[MemoryEntry],
+        agent_id: &str,
+        category: &MemoryCategory,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<std::collections::HashMap<String, Vec<SearchResult>>, MemoryError> {
+        self.inner
+            .similar_episodes_for_entries(entries, agent_id, category, limit, include_shared)
+            .await
+    }
     async fn embed(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
         self.inner.embed(text).await
+    }
+    async fn embed_query(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.inner.embed_query(text).await
+    }
+    async fn embed_document(&self, text: &str) -> Result<Vec<f32>, MemoryError> {
+        self.inner.embed_document(text).await
+    }
+    fn embedding_profile(&self) -> EmbeddingProfile {
+        self.inner.embedding_profile()
     }
     async fn store(
         &self,
@@ -212,6 +262,29 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     }
     async fn get(&self, key: &str, agent_id: &AgentId) -> Result<Option<MemoryEntry>, MemoryError> {
         self.inner.get(key, agent_id).await
+    }
+    async fn list_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        self.inner
+            .list_scoped(category, session_id, limit, include_shared)
+            .await
+    }
+    async fn list_recent_scoped(
+        &self,
+        category: Option<&MemoryCategory>,
+        session_id: Option<&str>,
+        limit: usize,
+        include_shared: bool,
+        updated_since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<MemoryEntry>, MemoryError> {
+        self.inner
+            .list_recent_scoped(category, session_id, limit, include_shared, updated_since)
+            .await
     }
     async fn list(
         &self,

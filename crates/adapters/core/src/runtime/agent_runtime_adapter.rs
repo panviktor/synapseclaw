@@ -39,8 +39,6 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         timeout_secs: u64,
         on_delta: Option<tokio::sync::mpsc::Sender<String>>,
     ) -> Result<AgentTurnResult> {
-        let history_before = history.len();
-
         // Compute timeout budget (scale by max iterations)
         let iterations = max_iterations.max(1) as u64;
         let scale = iterations.min(5);
@@ -73,7 +71,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         ));
 
         // Apply timeout if configured
-        let response = if budget_secs > 0 {
+        let loop_result = if budget_secs > 0 {
             match tokio::time::timeout(std::time::Duration::from_secs(budget_secs), fut).await {
                 Ok(result) => result?,
                 Err(_) => {
@@ -84,15 +82,18 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             fut.await?
         };
 
-        let tools_used = history.len() > history_before + 1;
-
-        // Extract tool context summary from history
-        let tool_summary = extract_tool_summary(&history, history_before);
+        let response = loop_result.response;
+        let tool_names = loop_result.tool_names;
+        let tool_facts = loop_result.tool_facts;
+        let tools_used = !tool_names.is_empty();
+        let tool_summary = format_tool_summary(&tool_names);
 
         Ok(AgentTurnResult {
             response,
             history,
             tools_used,
+            tool_names,
+            tool_facts,
             tool_summary,
         })
     }
@@ -102,29 +103,10 @@ impl AgentRuntimePort for ChannelAgentRuntime {
     }
 }
 
-/// Extract a condensed tool context summary from history turns added during the tool loop.
-fn extract_tool_summary(history: &[ChatMessage], start_idx: usize) -> String {
-    let mut summary_parts = Vec::new();
-
-    for msg in history.iter().skip(start_idx) {
-        // Look for tool_call and tool_result patterns
-        if msg.role == "assistant" && msg.content.contains("tool_call") {
-            // Extract tool name from the content if possible
-            if let Some(name_start) = msg.content.find("\"name\":\"") {
-                let rest = &msg.content[name_start + 8..];
-                if let Some(name_end) = rest.find('"') {
-                    let tool_name = &rest[..name_end];
-                    if !summary_parts.contains(&tool_name.to_string()) {
-                        summary_parts.push(tool_name.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    if summary_parts.is_empty() {
+fn format_tool_summary(tool_names: &[String]) -> String {
+    if tool_names.is_empty() {
         String::new()
     } else {
-        format!("[Used tools: {}]", summary_parts.join(", "))
+        format!("[Used tools: {}]", tool_names.join(", "))
     }
 }

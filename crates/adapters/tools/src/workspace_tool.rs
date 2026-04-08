@@ -9,6 +9,9 @@ use std::fmt::Write;
 use std::sync::Arc;
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ToolFactPayload, TypedToolFact, WorkspaceAction, WorkspaceFact,
+};
 use synapse_infra::workspace::WorkspaceManager;
 use tokio::sync::RwLock;
 
@@ -252,6 +255,44 @@ impl Tool for WorkspaceTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let action = match args.get("action").and_then(|value| value.as_str()) {
+            Some(action) if !action.trim().is_empty() => action.trim(),
+            _ => return Vec::new(),
+        };
+
+        let action = match action {
+            "list" => WorkspaceAction::List,
+            "switch" => WorkspaceAction::Switch,
+            "create" => WorkspaceAction::Create,
+            "info" => WorkspaceAction::Info,
+            "export" => WorkspaceAction::Export,
+            _ => return Vec::new(),
+        };
+
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Workspace(WorkspaceFact {
+                action,
+                name: args
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
+                item_count: None,
+            }),
+        }]
+    }
 }
 
 #[cfg(test)]
@@ -352,5 +393,29 @@ mod tests {
             .unwrap();
         assert!(!result.success);
         assert!(result.error.unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn extract_facts_emits_workspace_context() {
+        let tmp = TempDir::new().unwrap();
+        let tool = test_tool(&tmp);
+        let facts = tool.extract_facts(
+            &json!({"action": "switch", "name": "client_a"}),
+            Some(&ToolResult {
+                success: true,
+                output: "ok".into(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        assert!(facts[0]
+            .projected_focus_entities()
+            .iter()
+            .any(|entity| entity.kind == "workspace" && entity.name == "client_a"));
+        assert!(facts[0]
+            .projected_subjects()
+            .iter()
+            .any(|subject| subject == "client_a"));
     }
 }

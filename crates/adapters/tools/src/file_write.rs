@@ -3,6 +3,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use synapse_domain::domain::security_policy::SecurityPolicy;
+use synapse_domain::domain::tool_fact::{
+    ResourceFact, ResourceKind, ResourceMetadata, ResourceOperation, ToolFactPayload, TypedToolFact,
+};
 
 /// Write file contents with path sandboxing
 pub struct FileWriteTool {
@@ -159,6 +162,37 @@ impl Tool for FileWriteTool {
             }),
         }
     }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        if matches!(result, Some(result) if !result.success) {
+            return Vec::new();
+        }
+
+        let path = match args.get("path").and_then(|value| value.as_str()) {
+            Some(path) if !path.trim().is_empty() => path,
+            _ => return Vec::new(),
+        };
+        vec![TypedToolFact {
+            tool_id: self.name().to_string(),
+            payload: ToolFactPayload::Resource(ResourceFact {
+                kind: ResourceKind::File,
+                operation: ResourceOperation::Write,
+                locator: path.to_string(),
+                host: None,
+                metadata: ResourceMetadata {
+                    byte_count: args
+                        .get("content")
+                        .and_then(|value| value.as_str())
+                        .map(str::len),
+                    ..Default::default()
+                },
+            }),
+        }]
+    }
 }
 
 #[cfg(test)]
@@ -312,6 +346,29 @@ mod tests {
         let tool = FileWriteTool::new(test_security(std::env::temp_dir()));
         let result = tool.execute(json!({"path": "file.txt"})).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn extract_facts_emits_file_resource() {
+        let tool = FileWriteTool::new(test_security(std::env::temp_dir()));
+        let facts = tool.extract_facts(
+            &json!({"path": "notes/todo.txt", "content": "hello"}),
+            Some(&ToolResult {
+                success: true,
+                output: String::new(),
+                error: None,
+            }),
+        );
+
+        assert_eq!(facts.len(), 1);
+        let projected = facts[0].projected_focus_entities();
+        assert_eq!(projected[0].kind, "file_resource");
+        assert_eq!(projected[0].name, "notes/todo.txt");
+        assert_eq!(projected[0].metadata.as_deref(), Some("write"));
+        assert!(facts[0]
+            .projected_subjects()
+            .iter()
+            .any(|subject| subject == "notes/todo.txt"));
     }
 
     #[tokio::test]

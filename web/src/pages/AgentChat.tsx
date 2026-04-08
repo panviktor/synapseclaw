@@ -24,6 +24,7 @@ import type {
   StatusResponse,
   MemoryStatsResponse,
   ContextBudgetResponse,
+  MemoryProjectionsResponse,
   PostTurnReportEvent,
 } from '@/types/api';
 import { WebSocketClient } from '@/lib/ws';
@@ -36,6 +37,7 @@ import {
   deleteChannelSession,
   getMemoryStats,
   getContextBudget,
+  getMemoryProjections,
   type AgentEntry,
 } from '@/lib/api';
 import SessionSidebar from '@/components/chat/SessionSidebar';
@@ -89,6 +91,7 @@ export default function AgentChat() {
   );
   const [memoryStats, setMemoryStats] = useState<MemoryStatsResponse | null>(null);
   const [contextBudget, setContextBudget] = useState<ContextBudgetResponse | null>(null);
+  const [memoryProjections, setMemoryProjections] = useState<MemoryProjectionsResponse | null>(null);
   const [memoryPulseOpen, setMemoryPulseOpen] = useState(false);
   const [sessionSidebarOpen, setSessionSidebarOpen] = useState(false);
   const [localSessionCount, setLocalSessionCount] = useState(0);
@@ -125,15 +128,18 @@ export default function AgentChat() {
 
   const loadMemorySurface = useCallback(async (agentId: string | null) => {
     try {
-      const [statsResponse, budgetResponse] = await Promise.all([
+      const [statsResponse, budgetResponse, projectionsResponse] = await Promise.all([
         getMemoryStats(agentId),
         getContextBudget(agentId),
+        getMemoryProjections(agentId, 6),
       ]);
       setMemoryStats(statsResponse);
       setContextBudget(budgetResponse);
+      setMemoryProjections(projectionsResponse);
     } catch {
       setMemoryStats(null);
       setContextBudget(null);
+      setMemoryProjections(null);
     }
   }, []);
 
@@ -594,6 +600,18 @@ export default function AgentChat() {
               typeof event.agent_id === 'string' &&
               event.agent_id === effectiveAgentId,
           ) ?? null;
+  const recentLearningEvents =
+    effectiveAgentId === null
+      ? []
+      : [...learningEvents]
+          .reverse()
+          .filter(
+            (event): event is PostTurnReportEvent =>
+              event.type === 'post_turn_report' &&
+              typeof event.agent_id === 'string' &&
+              event.agent_id === effectiveAgentId,
+          )
+          .slice(0, 6);
   const activeAgentInfo = activeAgent ? agents.find((agent) => agent.agent_id === activeAgent) ?? null : null;
   const activeAgentLabel = activeAgentInfo?.agent_id ?? activeAgent ?? 'Local Runtime';
   const sessionTitle =
@@ -1023,7 +1041,9 @@ export default function AgentChat() {
             <MemoryPulse
               stats={memoryStats}
               budget={contextBudget}
+              projections={memoryProjections}
               lastReport={latestLearningEvent}
+              recentReports={recentLearningEvents}
               session={selectedSession}
               agentLabel={activeAgentLabel}
             />
@@ -1042,7 +1062,9 @@ export default function AgentChat() {
             <MemoryPulse
               stats={memoryStats}
               budget={contextBudget}
+              projections={memoryProjections}
               lastReport={latestLearningEvent}
+              recentReports={recentLearningEvents}
               session={selectedSession}
               agentLabel={activeAgentLabel}
               onClose={() => setMemoryPulseOpen(false)}

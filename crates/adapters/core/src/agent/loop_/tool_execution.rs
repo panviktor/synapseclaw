@@ -2,6 +2,10 @@
 
 use super::tool_call_parsing::*;
 use super::*;
+use synapse_domain::application::services::loop_detection::{
+    hash_args, LoopAction, LoopDetector, ToolInvocation,
+};
+use synapse_domain::domain::tool_fact::{OutcomeStatus, TypedToolFact};
 
 #[derive(Debug)]
 pub(crate) struct ToolLoopCancelled;
@@ -60,6 +64,26 @@ pub(crate) async fn agent_turn(
         None,
     )
     .await
+    .map(|result| result.response)
+}
+
+#[derive(Debug)]
+pub(crate) struct ToolLoopResult {
+    pub(crate) response: String,
+    pub(crate) tool_names: Vec<String>,
+    pub(crate) tool_facts: Vec<TypedToolFact>,
+}
+
+fn collect_tool_facts(
+    tool_name: &str,
+    status: OutcomeStatus,
+    duration: Duration,
+    explicit_facts: Vec<TypedToolFact>,
+) -> Vec<TypedToolFact> {
+    let mut facts = explicit_facts;
+    let duration_ms = u64::try_from(duration.as_millis()).ok();
+    facts.push(TypedToolFact::outcome(tool_name, status, duration_ms));
+    facts
 }
 
 pub(crate) async fn execute_one_tool(
@@ -92,6 +116,8 @@ pub(crate) async fn execute_one_tool(
     let Some(tool) = static_tool.or(activated_arc.as_deref()) else {
         let reason = format!("Unknown tool: {call_name}");
         let duration = start.elapsed();
+        let tool_facts =
+            collect_tool_facts(call_name, OutcomeStatus::UnknownTool, duration, Vec::new());
         observer.record_event(&ObserverEvent::ToolCall {
             tool: call_name.to_string(),
             duration,
@@ -107,6 +133,7 @@ pub(crate) async fn execute_one_tool(
             success: false,
             error_reason: Some(scrub_credentials(&reason)),
             duration,
+            tool_facts,
         });
     };
 
@@ -141,16 +168,19 @@ pub(crate) async fn execute_one_tool(
                 output: format!("[blocked] {reason}"),
                 success: false,
             });
+            let tool_facts =
+                collect_tool_facts(call_name, OutcomeStatus::Blocked, duration, Vec::new());
             return Ok(ToolExecutionOutcome {
                 output: format!("[blocked] {reason}"),
                 success: false,
                 error_reason: Some(reason),
                 duration,
+                tool_facts,
             });
         }
     }
 
-    let tool_future = tool.execute(call_arguments);
+    let tool_future = tool.execute_with_facts(call_arguments.clone());
     let tool_result = if let Some(token) = cancellation_token {
         tokio::select! {
             () = token.cancelled() => return Err(ToolLoopCancelled.into()),
@@ -161,8 +191,19 @@ pub(crate) async fn execute_one_tool(
     };
 
     match tool_result {
-        Ok(r) => {
+        Ok(execution) => {
             let duration = start.elapsed();
+            let r = execution.result;
+            let tool_facts = collect_tool_facts(
+                call_name,
+                if r.success {
+                    OutcomeStatus::Succeeded
+                } else {
+                    OutcomeStatus::ReportedFailure
+                },
+                duration,
+                execution.facts,
+            );
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -183,6 +224,7 @@ pub(crate) async fn execute_one_tool(
                     success: true,
                     error_reason: None,
                     duration,
+                    tool_facts,
                 })
             } else {
                 let reason = r.error.unwrap_or(r.output);
@@ -196,11 +238,14 @@ pub(crate) async fn execute_one_tool(
                     success: false,
                     error_reason: Some(scrub_credentials(&reason)),
                     duration,
+                    tool_facts,
                 })
             }
         }
         Err(e) => {
             let duration = start.elapsed();
+            let tool_facts =
+                collect_tool_facts(call_name, OutcomeStatus::RuntimeError, duration, Vec::new());
             observer.record_event(&ObserverEvent::ToolCall {
                 tool: call_name.to_string(),
                 duration,
@@ -220,6 +265,7 @@ pub(crate) async fn execute_one_tool(
                 success: false,
                 error_reason: Some(scrub_credentials(&reason)),
                 duration,
+                tool_facts,
             })
         }
     }
@@ -230,6 +276,7 @@ pub(crate) struct ToolExecutionOutcome {
     pub(crate) success: bool,
     pub(crate) error_reason: Option<String>,
     pub(crate) duration: Duration,
+    pub(crate) tool_facts: Vec<TypedToolFact>,
 }
 
 pub(crate) fn should_execute_tools_in_parallel(
@@ -356,7 +403,7 @@ pub(crate) async fn run_tool_call_loop(
     dedup_exempt_tools: &[String],
     activated_tools: Option<&std::sync::Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     run_ctx: Option<&std::sync::Arc<crate::agent::run_context::RunContext>>,
-) -> Result<String> {
+) -> Result<ToolLoopResult> {
     let max_iterations = if max_tool_iterations == 0 {
         DEFAULT_MAX_TOOL_ITERATIONS
     } else {
@@ -367,6 +414,9 @@ pub(crate) async fn run_tool_call_loop(
     let turn_start = std::time::Instant::now();
     let mut seen_tool_signatures: HashSet<(String, String)> = HashSet::new();
     let mut total_tool_calls = 0usize;
+    let mut loop_detector = LoopDetector::new();
+    let mut collected_tool_facts = Vec::<TypedToolFact>::new();
+    let mut collected_tool_names = Vec::<String>::new();
 
     tracing::info!(
         model,
@@ -675,7 +725,11 @@ pub(crate) async fn run_tool_call_loop(
                 response_len = display_text.len(),
                 "agent.turn.complete"
             );
-            return Ok(display_text);
+            return Ok(ToolLoopResult {
+                response: display_text,
+                tool_names: collected_tool_names,
+                tool_facts: collected_tool_facts,
+            });
         }
 
         // Print any text the LLM produced alongside tool calls (unless silent)
@@ -701,6 +755,7 @@ pub(crate) async fn run_tool_call_loop(
         let mut individual_results: Vec<(Option<String>, String)> = Vec::new();
         let mut ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome)>> =
             (0..tool_calls.len()).map(|_| None).collect();
+        let mut loop_action = LoopAction::Continue;
         let allow_parallel_execution = should_execute_tools_in_parallel(&tool_calls, approval);
         let mut executable_indices: Vec<usize> = Vec::new();
         let mut executable_calls: Vec<ParsedToolCall> = Vec::new();
@@ -748,6 +803,12 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(scrub_credentials(&reason)),
                                 duration: Duration::ZERO,
+                                tool_facts: collect_tool_facts(
+                                    &call.name,
+                                    OutcomeStatus::Blocked,
+                                    Duration::ZERO,
+                                    Vec::new(),
+                                ),
                             },
                         ));
                         continue;
@@ -806,6 +867,12 @@ pub(crate) async fn run_tool_call_loop(
                                 success: false,
                                 error_reason: Some(denied),
                                 duration: Duration::ZERO,
+                                tool_facts: collect_tool_facts(
+                                    &tool_name,
+                                    OutcomeStatus::Blocked,
+                                    Duration::ZERO,
+                                    Vec::new(),
+                                ),
                             },
                         ));
                         continue;
@@ -847,6 +914,12 @@ pub(crate) async fn run_tool_call_loop(
                         success: false,
                         error_reason: Some(duplicate),
                         duration: Duration::ZERO,
+                        tool_facts: collect_tool_facts(
+                            &tool_name,
+                            OutcomeStatus::Blocked,
+                            Duration::ZERO,
+                            Vec::new(),
+                        ),
                     },
                 ));
                 continue;
@@ -925,6 +998,19 @@ pub(crate) async fn run_tool_call_loop(
             .zip(executable_calls.iter())
             .zip(executed_outcomes.into_iter())
         {
+            let detector_action = loop_detector.record(ToolInvocation {
+                tool_name: call.name.clone(),
+                args_hash: hash_args(&call.arguments),
+                success: outcome.success,
+            });
+            loop_action = match (loop_action, detector_action) {
+                (LoopAction::ForceStop, _) | (_, LoopAction::ForceStop) => LoopAction::ForceStop,
+                (LoopAction::SuggestClarify, _) | (_, LoopAction::SuggestClarify) => {
+                    LoopAction::SuggestClarify
+                }
+                _ => LoopAction::Continue,
+            };
+
             runtime_trace::record_event(
                 "tool_call_result",
                 Some(channel_name),
@@ -971,6 +1057,13 @@ pub(crate) async fn run_tool_call_loop(
                 let _ = tx.send(progress_msg).await;
             }
 
+            collected_tool_facts.extend(outcome.tool_facts.clone());
+            if !collected_tool_names
+                .iter()
+                .any(|existing| existing == &call.name)
+            {
+                collected_tool_names.push(call.name.clone());
+            }
             ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome));
         }
 
@@ -1014,6 +1107,38 @@ pub(crate) async fn run_tool_call_loop(
                     "content": result,
                 });
                 history.push(ChatMessage::tool(tool_msg.to_string()));
+            }
+        }
+
+        match loop_action {
+            LoopAction::Continue => {}
+            LoopAction::SuggestClarify => {
+                let clarify = "I’m repeating the same tool steps without making progress. Please clarify the exact target or desired outcome.";
+                history.push(ChatMessage::assistant(clarify));
+                tracing::warn!(
+                    iterations = iteration + 1,
+                    tool_calls = total_tool_calls,
+                    "agent.turn.loop_detected_clarify"
+                );
+                return Ok(ToolLoopResult {
+                    response: clarify.to_string(),
+                    tool_names: collected_tool_names,
+                    tool_facts: collected_tool_facts,
+                });
+            }
+            LoopAction::ForceStop => {
+                let stop = "I hit too many tool steps without reaching a stable result. Please narrow the request or specify the exact target.";
+                history.push(ChatMessage::assistant(stop));
+                tracing::warn!(
+                    iterations = iteration + 1,
+                    tool_calls = total_tool_calls,
+                    "agent.turn.loop_detected_stop"
+                );
+                return Ok(ToolLoopResult {
+                    response: stop.to_string(),
+                    tool_names: collected_tool_names,
+                    tool_facts: collected_tool_facts,
+                });
             }
         }
     }

@@ -4,6 +4,7 @@
 //! The trait lives in the domain so application services can reason about tools
 //! without depending on concrete infrastructure implementations.
 
+use crate::domain::tool_fact::TypedToolFact;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -14,6 +15,13 @@ pub struct ToolResult {
     pub success: bool,
     pub output: String,
     pub error: Option<String>,
+}
+
+/// Result of a tool execution plus explicit structured facts.
+#[derive(Debug, Clone)]
+pub struct ToolExecution {
+    pub result: ToolResult,
+    pub facts: Vec<TypedToolFact>,
 }
 
 /// Description of a tool for the LLM (function-calling spec).
@@ -38,6 +46,31 @@ pub trait Tool: Send + Sync {
 
     /// Execute the tool with given arguments.
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult>;
+
+    /// Execute the tool and return both the result and explicit runtime facts.
+    ///
+    /// The default implementation executes the tool and then asks the tool
+    /// for typed facts. Tools that know result semantics should override this
+    /// to emit facts directly from structured results instead of reconstructing
+    /// them afterward.
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
+        let result = self.execute(args.clone()).await?;
+        let facts = self.extract_facts(&args, Some(&result));
+        Ok(ToolExecution { result, facts })
+    }
+
+    /// Emit explicit structured runtime facts for dialogue state / resolution.
+    ///
+    /// Generic slot collection happens outside the tool. Override this only when
+    /// the tool owns real semantic meaning and can expose it without inferring
+    /// it from arbitrary JSON key names.
+    fn extract_facts(
+        &self,
+        _args: &serde_json::Value,
+        _result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        Vec::new()
+    }
 
     /// Get the full spec for LLM registration.
     fn spec(&self) -> ToolSpec {
@@ -68,5 +101,17 @@ impl Tool for ArcToolRef {
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.0.execute(args).await
+    }
+
+    async fn execute_with_facts(&self, args: serde_json::Value) -> anyhow::Result<ToolExecution> {
+        self.0.execute_with_facts(args).await
+    }
+
+    fn extract_facts(
+        &self,
+        args: &serde_json::Value,
+        result: Option<&ToolResult>,
+    ) -> Vec<TypedToolFact> {
+        self.0.extract_facts(args, result)
     }
 }
