@@ -791,6 +791,75 @@ fn parse_sse_text(body: &str) -> anyhow::Result<Option<String>> {
     Ok(fallback_text)
 }
 
+fn parse_sse_response(body: &str) -> anyhow::Result<Option<ResponsesResponse>> {
+    let mut completed_response = None;
+    let mut buffer = body.to_string();
+
+    let mut process_event = |event: Value| -> anyhow::Result<()> {
+        if let Some(message) = extract_stream_error_message(&event) {
+            return Err(anyhow::anyhow!("OpenAI Codex stream error: {message}"));
+        }
+        let event_type = event.get("type").and_then(Value::as_str);
+        if matches!(event_type, Some("response.completed" | "response.done")) {
+            if let Some(response) = event
+                .get("response")
+                .and_then(|value| serde_json::from_value::<ResponsesResponse>(value.clone()).ok())
+            {
+                completed_response = Some(response);
+            }
+        }
+        Ok(())
+    };
+
+    let mut process_chunk = |chunk: &str| -> anyhow::Result<()> {
+        let data_lines: Vec<String> = chunk
+            .lines()
+            .filter_map(|line| line.strip_prefix("data:"))
+            .map(|line| line.trim().to_string())
+            .collect();
+        if data_lines.is_empty() {
+            return Ok(());
+        }
+
+        let joined = data_lines.join("\n");
+        let trimmed = joined.trim();
+        if trimmed.is_empty() || trimmed == "[DONE]" {
+            return Ok(());
+        }
+
+        if let Ok(event) = serde_json::from_str::<Value>(trimmed) {
+            return process_event(event);
+        }
+
+        for line in data_lines {
+            let line = line.trim();
+            if line.is_empty() || line == "[DONE]" {
+                continue;
+            }
+            if let Ok(event) = serde_json::from_str::<Value>(line) {
+                process_event(event)?;
+            }
+        }
+
+        Ok(())
+    };
+
+    loop {
+        let Some(idx) = buffer.find("\n\n") else {
+            break;
+        };
+        let chunk = buffer[..idx].to_string();
+        buffer = buffer[idx + 2..].to_string();
+        process_chunk(&chunk)?;
+    }
+
+    if !buffer.trim().is_empty() {
+        process_chunk(&buffer)?;
+    }
+
+    Ok(completed_response)
+}
+
 fn extract_stream_error_message(event: &Value) -> Option<String> {
     let event_type = event.get("type").and_then(Value::as_str);
 
@@ -1108,7 +1177,7 @@ impl OpenAiCodexProvider {
             input,
             instructions,
             store: false,
-            stream: false,
+            stream: true,
             text: ResponsesTextOptions {
                 verbosity: "medium".to_string(),
             },
@@ -1130,12 +1199,16 @@ impl OpenAiCodexProvider {
             .text()
             .await
             .map_err(|err| anyhow::anyhow!("error reading OpenAI Codex response body: {err}"))?;
-        let parsed: ResponsesResponse = serde_json::from_str(&body).map_err(|err| {
-            anyhow::anyhow!(
-                "OpenAI Codex JSON parse failed: {err}. Payload: {}",
-                super::sanitize_api_error(&body)
-            )
-        })?;
+        let parsed = if let Some(parsed) = parse_sse_response(&body)? {
+            parsed
+        } else {
+            serde_json::from_str(&body).map_err(|err| {
+                anyhow::anyhow!(
+                    "OpenAI Codex JSON parse failed: {err}. Payload: {}",
+                    super::sanitize_api_error(&body)
+                )
+            })?
+        };
         Ok(parse_responses_chat_response(parsed))
     }
 }
