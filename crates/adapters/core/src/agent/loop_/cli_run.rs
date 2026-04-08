@@ -119,6 +119,7 @@ pub async fn run_with_shared_memory(
             None,
             None,
             None,
+            None,
         );
 
     // ── Phase 3B: Auto-register Ed25519 public key with broker ────
@@ -745,6 +746,7 @@ pub async fn process_message(
         None,
         None,
         surreal_handle_pm,
+        None,
         None,
         None,
         None,

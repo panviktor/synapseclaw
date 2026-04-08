@@ -23,6 +23,9 @@ use synapse_domain::config::schema::Config;
 use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
+use synapse_domain::ports::turn_defaults_context::{
+    InMemoryTurnDefaultsContext, TurnDefaultsContextPort,
+};
 use synapse_domain::ports::user_profile_context::{
     InMemoryUserProfileContext, UserProfileContextPort,
 };
@@ -92,6 +95,7 @@ pub struct Agent {
     user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
     user_profile_key: Option<String>,
     user_profile_context: Arc<dyn UserProfileContextPort>,
+    turn_defaults_context: Arc<dyn TurnDefaultsContextPort>,
 }
 
 pub struct AgentBuilder {
@@ -125,6 +129,7 @@ pub struct AgentBuilder {
     user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
     user_profile_key: Option<String>,
     user_profile_context: Option<Arc<dyn UserProfileContextPort>>,
+    turn_defaults_context: Option<Arc<dyn TurnDefaultsContextPort>>,
 }
 
 impl AgentBuilder {
@@ -160,6 +165,7 @@ impl AgentBuilder {
             user_profile_store: None,
             user_profile_key: None,
             user_profile_context: None,
+            turn_defaults_context: None,
         }
     }
 
@@ -328,6 +334,14 @@ impl AgentBuilder {
         self
     }
 
+    pub fn turn_defaults_context(
+        mut self,
+        context: Option<Arc<dyn TurnDefaultsContextPort>>,
+    ) -> Self {
+        self.turn_defaults_context = context;
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let mut tools = self
             .tools
@@ -341,6 +355,9 @@ impl AgentBuilder {
             .user_profile_context
             .unwrap_or_else(|| Arc::new(InMemoryUserProfileContext::new()));
         user_profile_context.set_current_key(self.user_profile_key.clone());
+        let turn_defaults_context = self
+            .turn_defaults_context
+            .unwrap_or_else(|| Arc::new(InMemoryTurnDefaultsContext::new()));
 
         Ok(Agent {
             provider: self
@@ -392,6 +409,7 @@ impl AgentBuilder {
             user_profile_store: self.user_profile_store,
             user_profile_key: self.user_profile_key,
             user_profile_context,
+            turn_defaults_context,
         })
     }
 }
@@ -560,6 +578,8 @@ impl Agent {
         };
         let user_profile_context: Arc<dyn UserProfileContextPort> =
             Arc::new(InMemoryUserProfileContext::new());
+        let turn_defaults_context: Arc<dyn TurnDefaultsContextPort> =
+            Arc::new(InMemoryTurnDefaultsContext::new());
 
         let (tools, _delegate_handle, _) = tools::all_tools_with_runtime(
             Arc::new(config.clone()),
@@ -584,6 +604,7 @@ impl Agent {
             None, // standing_order_store
             Some(Arc::clone(&resolved_user_profile_store)),
             Some(Arc::clone(&user_profile_context)),
+            Some(Arc::clone(&turn_defaults_context)),
             None, // run_recipe_store
         );
 
@@ -701,6 +722,7 @@ impl Agent {
             .conversation_store(conversation_store)
             .user_profile_store(Some(resolved_user_profile_store))
             .user_profile_context(Some(user_profile_context))
+            .turn_defaults_context(Some(turn_defaults_context))
             .skills(crate::skills::load_skills_with_config(
                 &config.workspace_dir,
                 config,
@@ -973,6 +995,16 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        struct TurnDefaultsGuard {
+            port: Arc<dyn TurnDefaultsContextPort>,
+        }
+
+        impl Drop for TurnDefaultsGuard {
+            fn drop(&mut self) {
+                self.port.set_current(None);
+            }
+        }
+
         self.last_turn_usage = None;
         self.last_turn_tool_facts.clear();
         if self.history.is_empty() {
@@ -1006,6 +1038,15 @@ impl Agent {
         let interpretation_block = turn_interpretation.as_ref().and_then(|interpretation| {
             turn_interpretation::format_turn_interpretation(&interpretation)
         });
+        let resolved_turn_defaults =
+            synapse_domain::application::services::turn_defaults_resolution::resolve_turn_defaults(
+                turn_interpretation.as_ref(),
+            );
+        self.turn_defaults_context
+            .set_current(Some(resolved_turn_defaults));
+        let _turn_defaults_guard = TurnDefaultsGuard {
+            port: Arc::clone(&self.turn_defaults_context),
+        };
         // ── Unified turn context assembly ──
         let continuation = if self.turn_count > 0 {
             Some(&self.continuation_policy)

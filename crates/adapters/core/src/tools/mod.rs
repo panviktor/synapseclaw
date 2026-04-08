@@ -193,6 +193,7 @@ pub fn all_tools(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -234,6 +235,9 @@ pub fn all_tools_with_runtime(
     >,
     user_profile_context: Option<
         Arc<dyn synapse_domain::ports::user_profile_context::UserProfileContextPort>,
+    >,
+    turn_defaults_context: Option<
+        Arc<dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort>,
     >,
     run_recipe_store: Option<Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort>>,
 ) -> (
@@ -813,9 +817,14 @@ pub fn all_tools_with_runtime(
         conversation_context.clone(),
         user_profile_context,
     )));
-    if let (Some(ctx), Some(reg)) = (conversation_context.as_ref(), channel_registry.as_ref()) {
+    if let (Some(ctx), Some(defaults), Some(reg)) = (
+        conversation_context.as_ref(),
+        turn_defaults_context.as_ref(),
+        channel_registry.as_ref(),
+    ) {
         tool_arcs.push(Arc::new(synapse_tools::message_send::MessageSendTool::new(
             Arc::clone(ctx),
+            Arc::clone(defaults),
             Arc::clone(reg),
         )));
     }

@@ -249,6 +249,9 @@ struct ChannelRuntimeContext {
     /// Current conversation context for tools.
     conversation_context:
         Option<Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>>,
+    /// Resolved typed defaults for the current turn.
+    turn_defaults_context:
+        Option<Arc<dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort>>,
     /// Dialogue state store for session-scoped working memory.
     dialogue_state_store: Option<
         Arc<synapse_domain::application::services::dialogue_state_service::DialogueStateStore>,
@@ -1453,6 +1456,7 @@ async fn handle_message_via_orchestrator(
         memory: memory_port,
         event_tx: ctx.event_tx.clone(),
         conversation_context: ctx.conversation_context.clone(),
+        turn_defaults_context: ctx.turn_defaults_context.clone(),
         conversation_store,
         dialogue_state_store: ctx.dialogue_state_store.clone(),
         run_recipe_store: ctx.run_recipe_store.clone(),
@@ -3062,6 +3066,9 @@ pub async fn start_channels(
     let shared_conversation_context: Arc<
         dyn synapse_domain::ports::conversation_context::ConversationContextPort,
     > = Arc::new(synapse_domain::ports::conversation_context::InMemoryConversationContext::new());
+    let shared_turn_defaults_context: Arc<
+        dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort,
+    > = Arc::new(synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new());
     let (mut built_tools, delegate_handle_ch, ipc_client_for_key_reg): (Vec<Box<dyn Tool>>, _, _) =
         tools::all_tools_with_runtime(
             Arc::new(config.clone()),
@@ -3086,6 +3093,7 @@ pub async fn start_channels(
             standing_order_store,
             Some(Arc::clone(&user_profile_store)),
             None, // user_profile_context — channels derive keys from current conversation
+            Some(Arc::clone(&shared_turn_defaults_context)),
             Some(Arc::clone(&run_recipe_store)),
         );
 
@@ -3550,6 +3558,7 @@ pub async fn start_channels(
         prompt_budget_config: config.memory.prompt_budget.clone(),
         event_tx,
         conversation_context: Some(shared_conversation_context.clone()),
+        turn_defaults_context: Some(shared_turn_defaults_context.clone()),
         dialogue_state_store: Some(Arc::new(
             synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
             ),
@@ -4048,6 +4057,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
             conversation_context: None,
+            turn_defaults_context: None,
             dialogue_state_store: None,
             run_recipe_store: None,
             user_profile_store: None,
@@ -4157,6 +4167,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
             conversation_context: None,
+            turn_defaults_context: None,
             dialogue_state_store: None,
             run_recipe_store: None,
             user_profile_store: None,
@@ -4274,6 +4285,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
             conversation_context: None,
+            turn_defaults_context: None,
             dialogue_state_store: None,
             run_recipe_store: None,
             user_profile_store: None,
@@ -4402,6 +4414,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             event_tx: None,
             conversation_context: None,
+            turn_defaults_context: None,
             dialogue_state_store: None,
             run_recipe_store: None,
             user_profile_store: None,
@@ -4543,13 +4556,22 @@ mod tests {
             prompt.contains("Name: SynapseClaw"),
             "missing IDENTITY content"
         );
-        assert!(!prompt.contains("### SOUL.md"), "SOUL.md should not be injected");
-        assert!(!prompt.contains("### USER.md"), "USER.md should not be injected");
+        assert!(
+            !prompt.contains("### SOUL.md"),
+            "SOUL.md should not be injected"
+        );
+        assert!(
+            !prompt.contains("### USER.md"),
+            "USER.md should not be injected"
+        );
         assert!(
             !prompt.contains("### AGENTS.md"),
             "AGENTS.md should not be injected"
         );
-        assert!(!prompt.contains("### TOOLS.md"), "TOOLS.md should not be injected");
+        assert!(
+            !prompt.contains("### TOOLS.md"),
+            "TOOLS.md should not be injected"
+        );
         assert!(
             !prompt.contains("### HEARTBEAT.md"),
             "HEARTBEAT.md should not be injected"

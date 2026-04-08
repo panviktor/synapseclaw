@@ -24,6 +24,7 @@ use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::route_selection::RouteSelectionPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
 use crate::ports::session_summary::SessionSummaryPort;
+use crate::ports::turn_defaults_context::TurnDefaultsContextPort;
 use crate::ports::user_profile_store::UserProfileStorePort;
 use anyhow::Result;
 use std::sync::Arc;
@@ -95,6 +96,8 @@ pub struct InboundMessagePorts {
     /// Current conversation context for tools that need "here".
     pub conversation_context:
         Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
+    /// Resolved typed defaults for the current turn.
+    pub turn_defaults_context: Option<Arc<dyn TurnDefaultsContextPort>>,
     pub conversation_store: Option<Arc<dyn ConversationStorePort>>,
     /// Dialogue state store for session-scoped working memory.
     pub dialogue_state_store: Option<Arc<DialogueStateStore>>,
@@ -284,6 +287,10 @@ async fn handle_regular_message(
             history.push(ChatMessage::system(block));
         }
     }
+    let resolved_turn_defaults =
+        crate::application::services::turn_defaults_resolution::resolve_turn_defaults(
+            interpretation.as_ref(),
+        );
 
     // #6: Add prior turns (with #23 vision normalization)
     let prior_turns = ports.history.get_history(conversation_key);
@@ -408,6 +415,7 @@ async fn handle_regular_message(
                         caps,
                         config,
                         ports,
+                        resolved_turn_defaults.clone(),
                         &route,
                         history,
                     )
@@ -458,6 +466,7 @@ async fn handle_regular_message(
                         caps,
                         config,
                         ports,
+                        resolved_turn_defaults.clone(),
                         &route,
                         history,
                     )
@@ -481,6 +490,7 @@ async fn handle_regular_message(
         caps,
         config,
         ports,
+        resolved_turn_defaults,
         &route,
         history,
     )
@@ -495,6 +505,7 @@ async fn execute_agent_turn(
     caps: &[ChannelCapability],
     config: &InboundMessageConfig,
     ports: &InboundMessagePorts,
+    resolved_turn_defaults: crate::domain::turn_defaults::ResolvedTurnDefaults,
     route: &crate::ports::route_selection::RouteSelection,
     history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
@@ -503,6 +514,18 @@ async fn execute_agent_turn(
     }
 
     impl Drop for ConversationContextGuard {
+        fn drop(&mut self) {
+            if let Some(port) = &self.port {
+                port.set_current(None);
+            }
+        }
+    }
+
+    struct TurnDefaultsGuard {
+        port: Option<Arc<dyn TurnDefaultsContextPort>>,
+    }
+
+    impl Drop for TurnDefaultsGuard {
         fn drop(&mut self) {
             if let Some(port) = &self.port {
                 port.set_current(None);
@@ -526,6 +549,14 @@ async fn execute_agent_turn(
         }
     } else {
         ConversationContextGuard { port: None }
+    };
+    let _turn_defaults_guard = if let Some(defaults_port) = ports.turn_defaults_context.clone() {
+        defaults_port.set_current(Some(resolved_turn_defaults));
+        TurnDefaultsGuard {
+            port: Some(defaults_port),
+        }
+    } else {
+        TurnDefaultsGuard { port: None }
     };
 
     // ── #11: Ack reaction + typing ───────────────────────────────
@@ -1091,6 +1122,7 @@ mod tests {
             memory: None,
             event_tx: None,
             conversation_context: None,
+            turn_defaults_context: None,
             conversation_store: None,
             dialogue_state_store: None,
             run_recipe_store: None,

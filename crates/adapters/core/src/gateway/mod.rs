@@ -549,6 +549,7 @@ pub async fn run_gateway(
         None, // orchestration tool ports — gateway tools are for spec listing
         None, // user_profile_store
         None, // user_profile_context
+        None, // turn_defaults_context
         None, // run_recipe_store
     );
     let tools_registry: Arc<Vec<ToolSpec>> =

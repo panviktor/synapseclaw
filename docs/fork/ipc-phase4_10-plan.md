@@ -480,6 +480,16 @@ Expected outcome:
 
 ## Implementation Order
 
+### Current status
+
+- landed:
+  - Slice 1: provider-facing context accounting and observability
+  - Slice 2: typed implicit delivery-target resolution through runtime state
+- next:
+  - condensation primitives for older dialogue, large docs, and repo brief
+  - broader typed default resolution (`default_city`, workspace/resource anchors)
+  - progressive scoped instruction loading
+
 ### Slice 1
 
 - document Phase 4.10
@@ -488,8 +498,9 @@ Expected outcome:
 
 ### Slice 2
 
-- remove remaining implicit bootstrap assumptions
-- stabilize cold-start bootstrap snapshot
+- resolve implicit delivery target from typed turn state instead of prompt prose
+- expose per-turn defaults through a scoped runtime context port
+- wire `message_send` to prefer recent delivery target, then profile default
 
 ### Slice 3
 
