@@ -29,6 +29,8 @@ use synapse_observability::{self, Observer, ObserverEvent};
 use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
 use synapse_security::security_policy_from_config;
 
+const PROVIDER_CONTEXT_CHAT_MESSAGES: usize = 6;
+
 fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
@@ -44,6 +46,75 @@ fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
             serde_json::Value::Array(items.iter().map(canonicalize_tool_args).collect())
         }
         other => other.clone(),
+    }
+}
+
+fn format_delivery_target(
+    target: &synapse_domain::domain::conversation_target::ConversationDeliveryTarget,
+) -> String {
+    match target {
+        synapse_domain::domain::conversation_target::ConversationDeliveryTarget::CurrentConversation => {
+            "current_conversation".to_string()
+        }
+        synapse_domain::domain::conversation_target::ConversationDeliveryTarget::Explicit {
+            channel,
+            recipient,
+            thread_ref,
+        } => match thread_ref {
+            Some(thread_ref) => format!("{channel}:{recipient}#{thread_ref}"),
+            None => format!("{channel}:{recipient}"),
+        },
+    }
+}
+
+fn format_resolution_defaults(
+    interpretation: Option<&turn_interpretation::TurnInterpretation>,
+) -> Option<String> {
+    let interpretation = interpretation?;
+    let mut lines = Vec::new();
+
+    if let Some(profile) = interpretation.user_profile.as_ref() {
+        if let Some(city) = profile.default_city.as_deref() {
+            lines.push("[resolution-defaults]".to_string());
+            lines.push(format!("- implicit_city: {city}"));
+            lines.push(
+                "- when the user omits a city for weather, local time, or timezone requests, use implicit_city unless the current turn names another location".to_string(),
+            );
+        }
+
+        if let Some(target) = profile.default_delivery_target.as_ref() {
+            if lines.is_empty() {
+                lines.push("[resolution-defaults]".to_string());
+            }
+            lines.push(format!(
+                "- implicit_delivery_target: {}",
+                format_delivery_target(target)
+            ));
+            lines.push(
+                "- when the user asks to send or reply \"there\" without naming a destination, use implicit_delivery_target unless the current turn names another target".to_string(),
+            );
+        }
+    }
+
+    if let Some(state) = interpretation.dialogue_state.as_ref() {
+        if let Some(target) = state.recent_delivery_target.as_ref() {
+            if lines.is_empty() {
+                lines.push("[resolution-defaults]".to_string());
+            }
+            lines.push(format!(
+                "- recent_delivery_target: {}",
+                format_delivery_target(target)
+            ));
+            lines.push(
+                "- when the user says \"there\" and no newer destination is named, prefer recent_delivery_target".to_string(),
+            );
+        }
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(format!("{}\n", lines.join("\n")))
     }
 }
 
@@ -385,6 +456,14 @@ impl AgentBuilder {
 impl Agent {
     pub fn builder() -> AgentBuilder {
         AgentBuilder::new()
+    }
+
+    fn build_provider_messages(&self) -> Vec<ChatMessage> {
+        build_provider_messages(
+            self.tool_dispatcher.as_ref(),
+            &self.history,
+            PROVIDER_CONTEXT_CHAT_MESSAGES,
+        )
     }
 
     pub fn history(&self) -> &[ConversationMessage] {
@@ -983,6 +1062,7 @@ impl Agent {
         let interpretation_block = turn_interpretation.as_ref().and_then(|interpretation| {
             turn_interpretation::format_turn_interpretation(&interpretation)
         });
+        let resolution_defaults_block = format_resolution_defaults(turn_interpretation.as_ref());
         // ── Unified turn context assembly ──
         let continuation = if self.turn_count > 0 {
             Some(&self.continuation_policy)
@@ -1025,6 +1105,19 @@ impl Agent {
             self.history.retain(|msg| {
                 if let ConversationMessage::Chat(chat) = msg {
                     !(chat.role == "system" && chat.content.starts_with(INTERPRETATION_MARKER))
+                } else {
+                    true
+                }
+            });
+            self.history
+                .push(ConversationMessage::Chat(ChatMessage::system(block)));
+        }
+        if let Some(block) = resolution_defaults_block {
+            const RESOLUTION_DEFAULTS_MARKER: &str = "[resolution-defaults]\n";
+            self.history.retain(|msg| {
+                if let ConversationMessage::Chat(chat) = msg {
+                    !(chat.role == "system"
+                        && chat.content.starts_with(RESOLUTION_DEFAULTS_MARKER))
                 } else {
                     true
                 }
@@ -1077,7 +1170,7 @@ impl Agent {
             HashMap::new();
 
         for _ in 0..self.config.max_tool_iterations {
-            let mut messages = self.tool_dispatcher.to_provider_messages(&self.history);
+            let mut messages = self.build_provider_messages();
 
             // Inject enrichment prefix on the last user message for the provider
             // call — not persisted in history.
@@ -1288,6 +1381,53 @@ impl Agent {
         listen_handle.abort();
         Ok(())
     }
+}
+
+fn build_provider_messages(
+    dispatcher: &dyn ToolDispatcher,
+    history: &[ConversationMessage],
+    recent_chat_limit: usize,
+) -> Vec<ChatMessage> {
+    let latest_user_index = history.iter().rposition(|msg| {
+        matches!(
+            msg,
+            ConversationMessage::Chat(chat) if chat.role == "user"
+        )
+    });
+
+    let mut provider_messages: Vec<ChatMessage> = history
+        .iter()
+        .filter_map(|msg| match msg {
+            ConversationMessage::Chat(chat) if chat.role == "system" => Some(chat.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let (prefix, current_turn) = match latest_user_index {
+        Some(index) => history.split_at(index),
+        None => (history, &[][..]),
+    };
+
+    let recent_chat_context = prefix
+        .iter()
+        .filter_map(|msg| match msg {
+            ConversationMessage::Chat(chat)
+                if chat.role == "user" || chat.role == "assistant" =>
+            {
+                Some(ConversationMessage::Chat(chat.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    let context_start = recent_chat_context
+        .len()
+        .saturating_sub(recent_chat_limit);
+    provider_messages.extend(dispatcher.to_provider_messages(
+        &recent_chat_context[context_start..],
+    ));
+    provider_messages.extend(dispatcher.to_provider_messages(current_turn));
+    provider_messages
 }
 
 pub async fn run(

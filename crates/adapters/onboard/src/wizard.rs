@@ -5111,21 +5111,21 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
         "# AGENTS.md — {agent} Personal Assistant\n\n\
          ## Every Session (required)\n\n\
          Before doing anything else:\n\n\
-         1. Read `SOUL.md` — this is who you are\n\
-         2. Read `USER.md` — this is who you're helping\n\
-         3. Use `memory_recall` for recent context (daily notes are on-demand)\n\
-         4. If in MAIN SESSION (direct chat): `MEMORY.md` is already injected\n\n\
+         1. Trust the system prompt, core memory blocks, and current turn context as your primary continuity\n\
+         2. Use `memory_recall` for recent context when needed\n\
+         3. Inspect workspace docs only when the user explicitly asks or the task requires file work\n\n\
          Don't ask permission. Just do it.\n\n\
          ## Memory System\n\n\
-         You wake up fresh each session. These files ARE your continuity:\n\n\
-         - **Daily notes:** `memory/YYYY-MM-DD.md` — raw logs (accessed via memory tools)\n\
-         - **Long-term:** `MEMORY.md` — curated memories (auto-injected in main session)\n\n\
+         You wake up fresh each session. Persistent continuity comes from the memory system:\n\n\
+         - **Core memory:** `core_memory_update`\n\
+         - **Stored memory:** `memory_store` + `memory_recall`\n\
+         - **Daily notes:** `memory/YYYY-MM-DD.md` — raw logs when explicitly needed\n\n\
          Capture what matters. Decisions, context, things to remember.\n\
          Skip secrets unless asked to keep them.\n\n\
          ### Write It Down — No Mental Notes!\n\
-         - Memory is limited — if you want to remember something, WRITE IT TO A FILE\n\
-         - \"Mental notes\" don't survive session restarts. Files do.\n\
-         - When someone says \"remember this\" -> update daily file or MEMORY.md\n\
+         - Memory is limited — if you want to remember something, WRITE IT TO THE MEMORY SYSTEM\n\
+         - \"Mental notes\" don't survive session restarts. Stored memory does.\n\
+         - When someone says \"remember this\" -> use `core_memory_update`, `memory_store`, or daily notes\n\
          - When you learn a lesson -> update AGENTS.md, TOOLS.md, or the relevant skill\n\n\
          ## Safety\n\n\
          - Don't exfiltrate private data. Ever.\n\
@@ -5143,7 +5143,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          Keep local notes (SSH hosts, device names, etc.) in `TOOLS.md`.\n\n\
          ## Crash Recovery\n\n\
          - If a run stops unexpectedly, recover context before acting.\n\
-         - Check `MEMORY.md` + latest `memory/*.md` notes to avoid duplicate work.\n\
+         - Check `memory_recall` + latest `memory/*.md` notes to avoid duplicate work.\n\
          - Resume from the last confirmed step, not from scratch.\n\n\
          ## Sub-task Scoping\n\n\
          - Break complex work into focused sub-tasks with clear success criteria.\n\
@@ -5196,8 +5196,10 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - When in doubt, ask before acting externally.\n\
          - You're not the user's voice — be careful in group chats.\n\n\
          ## Continuity\n\n\
-         Each session, you wake up fresh. These files ARE your memory.\n\
-         Read them. Update them. They're how you persist.\n\n\
+         Each session starts from the current system prompt and persistent memory.\n\
+         These workspace files are injected into that prompt automatically.\n\
+         Use memory tools to persist preferences and task state.\n\
+         Only edit these files when you are explicitly curating workspace docs.\n\n\
          ---\n\n\
          *This file is yours to evolve. As you learn who you are, update it.*\n"
     );
@@ -5269,27 +5271,6 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          you're you now.\n"
     );
 
-    let memory = "\
-         # MEMORY.md — Long-Term Memory\n\n\
-         *Your curated memories. The distilled essence, not raw logs.*\n\n\
-         ## How This Works\n\
-         - Daily files (`memory/YYYY-MM-DD.md`) capture raw events (on-demand via tools)\n\
-         - This file captures what's WORTH KEEPING long-term\n\
-         - This file is auto-injected into your system prompt each session\n\
-         - Keep it concise — every character here costs tokens\n\n\
-         ## Security\n\
-         - ONLY loaded in main session (direct chat with your human)\n\
-         - NEVER loaded in group chats or shared contexts\n\n\
-         ---\n\n\
-         ## Key Facts\n\
-         (Add important facts about your human here)\n\n\
-         ## Decisions & Preferences\n\
-         (Record decisions and preferences here)\n\n\
-         ## Lessons Learned\n\
-         (Document mistakes and insights here)\n\n\
-         ## Open Loops\n\
-         (Track unfinished tasks and follow-ups here)\n";
-
     let files: Vec<(&str, String)> = vec![
         ("IDENTITY.md", identity),
         ("AGENTS.md", agents),
@@ -5298,7 +5279,6 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
         ("USER.md", user_md),
         ("TOOLS.md", tools.to_string()),
         ("BOOTSTRAP.md", bootstrap),
-        ("MEMORY.md", memory.to_string()),
     ];
 
     // Create subdirectories
@@ -5820,7 +5800,6 @@ mod tests {
             "USER.md",
             "TOOLS.md",
             "BOOTSTRAP.md",
-            "MEMORY.md",
         ];
         for f in &expected {
             assert!(tmp.path().join(f).exists(), "missing file: {f}");
@@ -6090,7 +6069,6 @@ mod tests {
             "USER.md",
             "TOOLS.md",
             "BOOTSTRAP.md",
-            "MEMORY.md",
         ] {
             let content = tokio::fs::read_to_string(tmp.path().join(f)).await.unwrap();
             assert!(!content.trim().is_empty(), "{f} should not be empty");
@@ -6118,24 +6096,17 @@ mod tests {
         );
     }
 
-    // ── scaffold_workspace: MEMORY.md warns about token cost ────
+    // ── scaffold_workspace: MEMORY.md is no longer scaffolded ───
 
     #[tokio::test]
-    async fn memory_md_warns_about_token_cost() {
+    async fn scaffold_does_not_create_memory_md() {
         let tmp = TempDir::new().unwrap();
         let ctx = ProjectContext::default();
         scaffold_workspace(tmp.path(), &ctx).await.unwrap();
 
-        let memory = tokio::fs::read_to_string(tmp.path().join("MEMORY.md"))
-            .await
-            .unwrap();
         assert!(
-            memory.contains("costs tokens"),
-            "MEMORY.md should warn about token cost"
-        );
-        assert!(
-            memory.contains("auto-injected"),
-            "MEMORY.md should mention it's auto-injected"
+            !tmp.path().join("MEMORY.md").exists(),
+            "MEMORY.md should not be created by scaffold"
         );
     }
 

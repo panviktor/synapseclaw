@@ -124,7 +124,7 @@ Notes:
 - The setup turn now completes successfully instead of timing out.
 - The earlier `user_profile` failure on `clear_fields = null` is gone.
 - The follow-up weather turn returns the correct default city (`Berlin`) with no duplicate tool events.
-- Remaining quality issue: the planner still bootstraps through `USER.md` / `MEMORY.md` before acting.
+- Remaining quality issue from that older pass: the planner still bootstrapped through workspace docs before acting.
 
 ### 8. Service Check Retest
 Status: pass with planner caveat
@@ -134,12 +134,62 @@ Notes:
 - Restoring user-bus environment fixed `systemctl --user is-active synapseclaw.service`; it now returns `active`.
 - Remaining quality issue: the planner still first attempts an overcomplicated multi-line shell script that security policy correctly blocks, then recovers via simpler commands.
 
+### 9. Provider-Context Compaction Retest
+Status: partial pass
+Notes:
+- After switching the live agent loop to compact provider-facing history, ordinary memory-setting turns no longer replay the old bootstrap-heavy path.
+- `Atlas` working-chain setup now uses only:
+  - `memory_store`
+  - `core_memory_update`
+  and returns a clean assistant reply.
+- The follow-up recall turn answers directly with no bootstrap-file reads.
+- Cross-session isolation also passes:
+  - `Atlas` remains isolated in its session
+  - `Borealis` remains isolated in its session
+  - no cross-contamination was observed in the final assistant replies.
+
+### 10. Asian-Language Runtime Retest
+Status: mixed pass
+Notes:
+- CJK task-state storage/recall works end-to-end:
+  - `项目 青龙`
+  - `feature/支付修复`
+  - `登录回调循环`
+  were stored and recalled correctly.
+- The UTF-8 trimming crash in Surreal core-memory append path is fixed; no new boundary issues were observed.
+- A new durable preference update also completed successfully:
+  - `default_city = Tokyo (東京)`
+- Remaining bug:
+  - a fresh weather/time turn still picked `Berlin` instead of `Tokyo`, even though a direct follow-up recall question correctly answered `Tokyo`.
+  - This is no longer a prompt-replay bug; it is now a planner/runtime preference-application bug.
+
+### 11. Matrix Delivery Retest After Compaction
+Status: pass with planner caveat
+Notes:
+- The agent successfully delivered `SYNAPSECLAW MATRIX COMPACT CHECK 2026-04-08T17:20Z`.
+- Final response included the correct Matrix room id and event id.
+- The planner path is still too noisy:
+  - `user_profile(get)`
+  - `glob_search`
+  - `file_read(send_matrix_test_report.py)`
+  - blocked `shell` attempt
+  - then recovered via `file_write + shell`
+- This confirms Matrix delivery itself is healthy, but configured delivery targets are still not surfaced strongly enough to avoid workspace archaeology.
+
 ## Updated Summary
 
 - The original live blocker was real: `chat.send` completion was being held open by synchronous post-response bookkeeping.
 - After moving the success-tail to background work, the previously failing everyday flows now complete reliably.
 - Duplicate live tool events are no longer reproduced in the current regression pack.
-- The current backlog is no longer “memory does not work”; it is narrower:
-  - planner overuse of bootstrap files and workspace archaeology
+- Provider-facing prompt replay is now materially smaller on ordinary memory turns:
+  - no `SOUL.md`
+  - no `USER.md`
+  - no `AGENTS.md`
+  - no `TOOLS.md`
+  - no `MEMORY.md`
+  reads were observed in the clean `Atlas` / `Borealis` / `青龙` working-chain scenarios.
+- The current backlog is now narrower and more specific:
+  - planner overuse of workspace archaeology on some delivery/external-action turns
+  - weather/time planner not consistently applying `default_city`
   - overly complex shell plans for simple ops checks
-  - retrieval contamination / memory hygiene on some local tasks
+  - remaining retrieval contamination / memory hygiene on some local tasks

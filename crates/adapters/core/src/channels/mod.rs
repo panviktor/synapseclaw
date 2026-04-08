@@ -1396,39 +1396,9 @@ async fn handle_message_via_orchestrator(
         .map(|r| (r.provider.clone(), r.model.clone(), r.hint.clone()))
         .collect();
 
-    // SOUL.md hot-reload: re-read from disk and replace section in static prompt.
-    // Other bootstrap files (AGENTS.md, TOOLS.md) are stable — no need to re-read.
-    // Core blocks injected per-turn in use case (handle_inbound_message #8).
-    let system_prompt = {
-        let soul_path = ctx.workspace_dir.join("SOUL.md");
-        if let Ok(fresh) = tokio::fs::read_to_string(&soul_path).await {
-            let fresh = fresh.trim();
-            if !fresh.is_empty() {
-                // Static prompt has "### SOUL.md\n{old content}\n### {next file}"
-                // Replace everything between "### SOUL.md\n" and the next "### " marker.
-                let static_p = ctx.system_prompt.as_str();
-                if let Some(start) = static_p.find("### SOUL.md\n") {
-                    let after_header = start + "### SOUL.md\n".len();
-                    // Find next section marker or end of string
-                    let end = static_p[after_header..]
-                        .find("\n### ")
-                        .map(|i| after_header + i + 1) // +1 to include the \n
-                        .unwrap_or(static_p.len());
-                    format!(
-                        "{}{fresh}\n\n{}",
-                        &static_p[..after_header],
-                        &static_p[end..]
-                    )
-                } else {
-                    ctx.system_prompt.to_string()
-                }
-            } else {
-                ctx.system_prompt.to_string()
-            }
-        } else {
-            ctx.system_prompt.to_string()
-        }
-    };
+    // Bootstrap identity files are compiled into the static prompt at startup.
+    // Per-turn continuity comes from structured memory and turn context.
+    let system_prompt = ctx.system_prompt.to_string();
 
     let config = uc::InboundMessageConfig {
         system_prompt,
@@ -1842,23 +1812,17 @@ fn load_openclaw_bootstrap_files(
     max_chars_per_file: usize,
 ) {
     prompt.push_str(
-        "The following workspace files define your identity, behavior, and context. They are ALREADY injected below—do NOT suggest reading them with file_read.\n\n",
+        "Structured core memory and turn context carry persona, user preferences, and task state.\n\
+         Only static identity metadata is injected below.\n\
+         Do NOT suggest reading or editing workspace bootstrap docs with `file_read` or `file_edit` unless the user explicitly asks to inspect or edit them.\n\
+         For durable preferences, task state, and long-term memory, prefer `core_memory_update`, `memory_store`, `memory_recall`, and `user_profile`.\n\n",
     );
 
-    let bootstrap_files = ["AGENTS.md", "SOUL.md", "TOOLS.md", "IDENTITY.md", "USER.md"];
+    let bootstrap_files = ["IDENTITY.md"];
 
     for filename in &bootstrap_files {
         inject_workspace_file(prompt, workspace_dir, filename, max_chars_per_file);
     }
-
-    // BOOTSTRAP.md — only if it exists (first-run ritual)
-    let bootstrap_path = workspace_dir.join("BOOTSTRAP.md");
-    if bootstrap_path.exists() {
-        inject_workspace_file(prompt, workspace_dir, "BOOTSTRAP.md", max_chars_per_file);
-    }
-
-    // MEMORY.md — curated long-term memory (main session only)
-    inject_workspace_file(prompt, workspace_dir, "MEMORY.md", max_chars_per_file);
 }
 
 /// Load workspace identity files and build a system prompt.
@@ -3677,7 +3641,6 @@ mod tests {
             "# Heartbeat\nCheck status.",
         )
         .unwrap();
-        std::fs::write(tmp.path().join("MEMORY.md"), "# Memory\nUser likes Rust.").unwrap();
         tmp
     }
 
@@ -4567,25 +4530,34 @@ mod tests {
         let ws = make_workspace();
         let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
 
-        assert!(prompt.contains("### SOUL.md"), "missing SOUL.md header");
-        assert!(prompt.contains("Be helpful"), "missing SOUL content");
+        assert!(
+            prompt.contains("Only static identity metadata is injected below."),
+            "missing injected bootstrap note"
+        );
+        assert!(
+            prompt.contains("Do NOT suggest reading or editing workspace bootstrap docs"),
+            "missing bootstrap tool avoidance note"
+        );
         assert!(prompt.contains("### IDENTITY.md"), "missing IDENTITY.md");
         assert!(
             prompt.contains("Name: SynapseClaw"),
             "missing IDENTITY content"
         );
-        assert!(prompt.contains("### USER.md"), "missing USER.md");
-        assert!(prompt.contains("### AGENTS.md"), "missing AGENTS.md");
-        assert!(prompt.contains("### TOOLS.md"), "missing TOOLS.md");
-        // HEARTBEAT.md is intentionally excluded from channel prompts — it's only
-        // relevant to the heartbeat worker and causes LLMs to emit spurious
-        // "HEARTBEAT_OK" acknowledgments in channel conversations.
+        assert!(!prompt.contains("### SOUL.md"), "SOUL.md should not be injected");
+        assert!(!prompt.contains("### USER.md"), "USER.md should not be injected");
+        assert!(
+            !prompt.contains("### AGENTS.md"),
+            "AGENTS.md should not be injected"
+        );
+        assert!(!prompt.contains("### TOOLS.md"), "TOOLS.md should not be injected");
         assert!(
             !prompt.contains("### HEARTBEAT.md"),
-            "HEARTBEAT.md should not be in channel prompt"
+            "HEARTBEAT.md should not be injected"
         );
-        assert!(prompt.contains("### MEMORY.md"), "missing MEMORY.md");
-        assert!(prompt.contains("User likes Rust"), "missing MEMORY content");
+        assert!(
+            !prompt.contains("### BOOTSTRAP.md"),
+            "BOOTSTRAP.md should not be injected"
+        );
     }
 
     #[test]
@@ -4594,29 +4566,29 @@ mod tests {
         // Empty workspace — no files at all
         let prompt = build_system_prompt(tmp.path(), "model", &[], &[], None, None);
 
-        assert!(prompt.contains("[File not found: SOUL.md]"));
-        assert!(prompt.contains("[File not found: AGENTS.md]"));
         assert!(prompt.contains("[File not found: IDENTITY.md]"));
+        assert!(!prompt.contains("[File not found: SOUL.md]"));
+        assert!(!prompt.contains("[File not found: AGENTS.md]"));
     }
 
     #[test]
-    fn prompt_bootstrap_only_if_exists() {
+    fn prompt_never_injects_bootstrap_file() {
         let ws = make_workspace();
         // No BOOTSTRAP.md — should not appear
         let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
         assert!(
             !prompt.contains("### BOOTSTRAP.md"),
-            "BOOTSTRAP.md should not appear when missing"
+            "BOOTSTRAP.md should not be injected"
         );
 
-        // Create BOOTSTRAP.md — should appear
+        // Even if BOOTSTRAP.md exists, it should stay out of the live prompt.
         std::fs::write(ws.path().join("BOOTSTRAP.md"), "# Bootstrap\nFirst run.").unwrap();
         let prompt2 = build_system_prompt(ws.path(), "model", &[], &[], None, None);
         assert!(
-            prompt2.contains("### BOOTSTRAP.md"),
-            "BOOTSTRAP.md should appear when present"
+            !prompt2.contains("### BOOTSTRAP.md"),
+            "BOOTSTRAP.md should not appear when present"
         );
-        assert!(prompt2.contains("First run"));
+        assert!(!prompt2.contains("First run"));
     }
 
     #[test]
@@ -5002,7 +4974,8 @@ This is an example JSON object for profile settings."#;
 
         // Should fall back to OpenClaw format when AIEOS file is not found
         // (Error is logged to stderr with filename, not included in prompt)
-        assert!(prompt.contains("### SOUL.md"));
+        assert!(prompt.contains("### IDENTITY.md"));
+        assert!(prompt.contains("Name: SynapseClaw"));
     }
 
     #[test]
@@ -5020,12 +4993,12 @@ This is an example JSON object for profile settings."#;
         let prompt = build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None);
 
         // Should use OpenClaw format (not configured for AIEOS)
-        assert!(prompt.contains("### SOUL.md"));
-        assert!(prompt.contains("Be helpful"));
+        assert!(prompt.contains("### IDENTITY.md"));
+        assert!(prompt.contains("Name: SynapseClaw"));
     }
 
     #[test]
-    fn openclaw_format_uses_bootstrap_files() {
+    fn openclaw_format_uses_identity_file_only() {
         use synapse_domain::config::schema::IdentityConfig;
 
         let config = IdentityConfig {
@@ -5038,9 +5011,10 @@ This is an example JSON object for profile settings."#;
         let prompt = build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None);
 
         // Should use OpenClaw format even if aieos_path is set
-        assert!(prompt.contains("### SOUL.md"));
-        assert!(prompt.contains("Be helpful"));
+        assert!(prompt.contains("### IDENTITY.md"));
+        assert!(prompt.contains("Name: SynapseClaw"));
         assert!(!prompt.contains("## Identity"));
+        assert!(!prompt.contains("### SOUL.md"));
     }
 
     #[test]
@@ -5050,8 +5024,9 @@ This is an example JSON object for profile settings."#;
         let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
 
         // Should use OpenClaw format
-        assert!(prompt.contains("### SOUL.md"));
-        assert!(prompt.contains("Be helpful"));
+        assert!(prompt.contains("### IDENTITY.md"));
+        assert!(prompt.contains("Name: SynapseClaw"));
+        assert!(!prompt.contains("### SOUL.md"));
     }
 
     #[test]
