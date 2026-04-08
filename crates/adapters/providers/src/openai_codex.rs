@@ -697,7 +697,7 @@ fn convert_tools(tools: Option<&[ToolSpec]>) -> Option<Vec<ResponsesToolSpec>> {
                 name: tool.name.clone(),
                 description: tool.description.clone(),
                 parameters: normalize_strict_tool_schema(tool.parameters.clone()),
-                strict: true,
+                strict: false,
             })
             .collect()
     })
