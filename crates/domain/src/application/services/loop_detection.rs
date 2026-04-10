@@ -9,6 +9,7 @@
 pub struct ToolInvocation {
     pub tool_name: String,
     pub args_hash: u64,
+    pub progress_hash: Option<u64>,
     pub success: bool,
 }
 
@@ -60,6 +61,16 @@ impl LoopDetector {
             if all_same {
                 return LoopAction::SuggestClarify;
             }
+
+            let same_progress = recent.windows(2).all(|w| {
+                w[0].tool_name == w[1].tool_name
+                    && w[0].success == w[1].success
+                    && w[0].progress_hash.is_some()
+                    && w[0].progress_hash == w[1].progress_hash
+            });
+            if same_progress {
+                return LoopAction::SuggestClarify;
+            }
         }
 
         // Check for alternating pair (A→B→A→B)
@@ -95,6 +106,19 @@ pub fn hash_args(args: &serde_json::Value) -> u64 {
     hasher.finish()
 }
 
+pub fn hash_strings(values: &[String]) -> Option<u64> {
+    if values.is_empty() {
+        return None;
+    }
+
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for value in values {
+        value.hash(&mut hasher);
+    }
+    Some(hasher.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +129,7 @@ mod tests {
         let action = d.record(ToolInvocation {
             tool_name: "shell".into(),
             args_hash: 123,
+            progress_hash: None,
             success: true,
         });
         assert_eq!(action, LoopAction::Continue);
@@ -117,12 +142,14 @@ mod tests {
             d.record(ToolInvocation {
                 tool_name: "shell".into(),
                 args_hash: 42,
+                progress_hash: None,
                 success: false,
             });
         }
         let action = d.record(ToolInvocation {
             tool_name: "shell".into(),
             args_hash: 42,
+            progress_hash: None,
             success: false,
         });
         // 4th call, last 3 are identical → SuggestClarify
@@ -137,6 +164,7 @@ mod tests {
             d.record(ToolInvocation {
                 tool_name: format!("tool_{i}"),
                 args_hash: i as u64,
+                progress_hash: None,
                 success: true,
             });
         }
@@ -149,5 +177,27 @@ mod tests {
         let h1 = hash_args(&args);
         let h2 = hash_args(&args);
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn repeated_progress_signature_triggers_clarify_even_when_args_drift() {
+        let mut d = LoopDetector::new();
+        let progress_hash = hash_strings(&["anchor-a".to_string(), "anchor-b".to_string()]);
+        for idx in 0..3 {
+            d.record(ToolInvocation {
+                tool_name: "memory_recall".into(),
+                args_hash: 100 + idx,
+                progress_hash,
+                success: true,
+            });
+        }
+        let action = d.record(ToolInvocation {
+            tool_name: "memory_recall".into(),
+            args_hash: 404,
+            progress_hash,
+            success: true,
+        });
+
+        assert_eq!(action, LoopAction::SuggestClarify);
     }
 }

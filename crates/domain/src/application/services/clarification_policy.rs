@@ -105,6 +105,7 @@ mod tests {
             }),
             clarification_candidates: vec!["Berlin".into(), "Tbilisi".into()],
             reference_candidates: vec![],
+            configured_delivery_target: None,
             current_conversation: None,
         };
 

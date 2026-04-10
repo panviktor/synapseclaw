@@ -2,10 +2,14 @@
 
 use super::tool_call_parsing::*;
 use super::*;
+use crate::agent::tool_repair_classification::classify_tool_execution_error;
 use synapse_domain::application::services::loop_detection::{
-    hash_args, LoopAction, LoopDetector, ToolInvocation,
+    hash_args, hash_strings, LoopAction, LoopDetector, ToolInvocation,
 };
+use synapse_domain::application::services::tool_repair::build_tool_repair_trace;
 use synapse_domain::domain::tool_fact::{OutcomeStatus, TypedToolFact};
+use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairTrace};
+use uuid::Uuid;
 
 #[derive(Debug)]
 pub(crate) struct ToolLoopCancelled;
@@ -72,6 +76,8 @@ pub(crate) struct ToolLoopResult {
     pub(crate) response: String,
     pub(crate) tool_names: Vec<String>,
     pub(crate) tool_facts: Vec<TypedToolFact>,
+    pub(crate) last_tool_repair: Option<ToolRepairTrace>,
+    pub(crate) tool_repairs: Vec<ToolRepairTrace>,
 }
 
 fn collect_tool_facts(
@@ -84,6 +90,25 @@ fn collect_tool_facts(
     let duration_ms = u64::try_from(duration.as_millis()).ok();
     facts.push(TypedToolFact::outcome(tool_name, status, duration_ms));
     facts
+}
+
+fn progress_hash_for_tool_facts(facts: &[TypedToolFact]) -> Option<u64> {
+    let mut subjects = facts
+        .iter()
+        .filter(|fact| {
+            !matches!(
+                &fact.payload,
+                synapse_domain::domain::tool_fact::ToolFactPayload::Outcome(_)
+            )
+        })
+        .flat_map(TypedToolFact::projected_subjects)
+        .map(|subject| subject.trim().to_lowercase())
+        .filter(|subject| !subject.is_empty())
+        .collect::<Vec<_>>();
+
+    subjects.sort();
+    subjects.dedup();
+    hash_strings(&subjects)
 }
 
 pub(crate) async fn execute_one_tool(
@@ -134,6 +159,11 @@ pub(crate) async fn execute_one_tool(
             error_reason: Some(scrub_credentials(&reason)),
             duration,
             tool_facts,
+            repair_trace: Some(build_tool_repair_trace(
+                call_name,
+                ToolFailureKind::UnknownTool,
+                Some(&reason),
+            )),
         });
     };
 
@@ -173,9 +203,14 @@ pub(crate) async fn execute_one_tool(
             return Ok(ToolExecutionOutcome {
                 output: format!("[blocked] {reason}"),
                 success: false,
-                error_reason: Some(reason),
+                error_reason: Some(reason.clone()),
                 duration,
                 tool_facts,
+                repair_trace: Some(build_tool_repair_trace(
+                    call_name,
+                    ToolFailureKind::PolicyBlocked,
+                    Some(&reason),
+                )),
             });
         }
     }
@@ -225,6 +260,7 @@ pub(crate) async fn execute_one_tool(
                     error_reason: None,
                     duration,
                     tool_facts,
+                    repair_trace: None,
                 })
             } else {
                 let reason = r.error.unwrap_or(r.output);
@@ -239,6 +275,11 @@ pub(crate) async fn execute_one_tool(
                     error_reason: Some(scrub_credentials(&reason)),
                     duration,
                     tool_facts,
+                    repair_trace: Some(build_tool_repair_trace(
+                        call_name,
+                        ToolFailureKind::ReportedFailure,
+                        Some(&reason),
+                    )),
                 })
             }
         }
@@ -266,6 +307,7 @@ pub(crate) async fn execute_one_tool(
                 error_reason: Some(scrub_credentials(&reason)),
                 duration,
                 tool_facts,
+                repair_trace: Some(classify_tool_execution_error(call_name, &e)),
             })
         }
     }
@@ -277,6 +319,7 @@ pub(crate) struct ToolExecutionOutcome {
     pub(crate) error_reason: Option<String>,
     pub(crate) duration: Duration,
     pub(crate) tool_facts: Vec<TypedToolFact>,
+    pub(crate) repair_trace: Option<ToolRepairTrace>,
 }
 
 pub(crate) fn should_execute_tools_in_parallel(
@@ -417,6 +460,8 @@ pub(crate) async fn run_tool_call_loop(
     let mut loop_detector = LoopDetector::new();
     let mut collected_tool_facts = Vec::<TypedToolFact>::new();
     let mut collected_tool_names = Vec::<String>::new();
+    let mut last_tool_repair = None::<ToolRepairTrace>;
+    let mut collected_tool_repairs = Vec::<ToolRepairTrace>::new();
 
     tracing::info!(
         model,
@@ -554,7 +599,8 @@ pub(crate) async fn run_tool_call_loop(
                     let mut parsed_text = String::new();
 
                     if calls.is_empty() {
-                        let (fallback_text, fallback_calls) = parse_tool_calls(&response_text);
+                        let (fallback_text, fallback_calls) =
+                            parse_canonical_tool_calls(&response_text);
                         if !fallback_text.is_empty() {
                             parsed_text = fallback_text;
                         }
@@ -730,6 +776,8 @@ pub(crate) async fn run_tool_call_loop(
                 response: display_text,
                 tool_names: collected_tool_names,
                 tool_facts: collected_tool_facts,
+                last_tool_repair,
+                tool_repairs: collected_tool_repairs,
             });
         }
 
@@ -810,6 +858,11 @@ pub(crate) async fn run_tool_call_loop(
                                     Duration::ZERO,
                                     Vec::new(),
                                 ),
+                                repair_trace: Some(build_tool_repair_trace(
+                                    &call.name,
+                                    ToolFailureKind::PolicyBlocked,
+                                    Some(&reason),
+                                )),
                             },
                         ));
                         continue;
@@ -874,6 +927,11 @@ pub(crate) async fn run_tool_call_loop(
                                     Duration::ZERO,
                                     Vec::new(),
                                 ),
+                                repair_trace: Some(build_tool_repair_trace(
+                                    &tool_name,
+                                    ToolFailureKind::PolicyBlocked,
+                                    Some("Denied by user."),
+                                )),
                             },
                         ));
                         continue;
@@ -921,6 +979,11 @@ pub(crate) async fn run_tool_call_loop(
                             Duration::ZERO,
                             Vec::new(),
                         ),
+                        repair_trace: Some(build_tool_repair_trace(
+                            &tool_name,
+                            ToolFailureKind::DuplicateInvocation,
+                            Some("duplicate invocation in the same turn"),
+                        )),
                     },
                 ));
                 continue;
@@ -1002,6 +1065,7 @@ pub(crate) async fn run_tool_call_loop(
             let detector_action = loop_detector.record(ToolInvocation {
                 tool_name: call.name.clone(),
                 args_hash: hash_args(&call.arguments),
+                progress_hash: progress_hash_for_tool_facts(&outcome.tool_facts),
                 success: outcome.success,
             });
             loop_action = match (loop_action, detector_action) {
@@ -1059,6 +1123,10 @@ pub(crate) async fn run_tool_call_loop(
             }
 
             collected_tool_facts.extend(outcome.tool_facts.clone());
+            if let Some(trace) = outcome.repair_trace.clone() {
+                last_tool_repair = Some(trace.clone());
+                collected_tool_repairs.push(trace);
+            }
             if !collected_tool_names
                 .iter()
                 .any(|existing| existing == &call.name)
@@ -1125,6 +1193,8 @@ pub(crate) async fn run_tool_call_loop(
                     response: clarify.to_string(),
                     tool_names: collected_tool_names,
                     tool_facts: collected_tool_facts,
+                    last_tool_repair,
+                    tool_repairs: collected_tool_repairs,
                 });
             }
             LoopAction::ForceStop => {
@@ -1139,6 +1209,8 @@ pub(crate) async fn run_tool_call_loop(
                     response: stop.to_string(),
                     tool_names: collected_tool_names,
                     tool_facts: collected_tool_facts,
+                    last_tool_repair,
+                    tool_repairs: collected_tool_repairs,
                 });
             }
         }

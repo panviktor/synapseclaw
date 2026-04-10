@@ -277,7 +277,10 @@ pub async fn run_with_shared_memory(
     let model_name = model_override
         .as_deref()
         .or(config.default_model.as_deref())
-        .unwrap_or("anthropic/claude-sonnet-4");
+        .unwrap_or_else(|| {
+            synapse_domain::config::model_catalog::provider_default_model(provider_name)
+                .unwrap_or("default")
+        });
 
     let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
 
@@ -368,7 +371,7 @@ pub async fn run_with_shared_memory(
     ));
     tool_descs.push((
         "model_routing_config",
-        "Configure default model, scenario routing, and delegate agents. Use for natural-language requests like: 'set conversation to kimi and coding to gpt-5.3-codex'.",
+        "Configure default model, presets, scenario routing, and delegate agents. Use for natural-language requests like: 'set conversation to the cheap lane and coding to the main lane'.",
     ));
     if !config.agents.is_empty() {
         tool_descs.push((
@@ -423,8 +426,13 @@ pub async fn run_with_shared_memory(
     if let Some(msg) = message {
         // Auto-save user message to memory (skip short/trivial messages)
         if config.memory.auto_save
-            && msg.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS
-            && !synapse_domain::domain::util::should_skip_autosave_content(&msg)
+            && matches!(
+                synapse_domain::application::services::memory_quality_governor::assess_autosave_write(
+                    &msg,
+                    synapse_domain::application::services::inbound_message_service::AUTOSAVE_MIN_MESSAGE_CHARS,
+                ),
+                synapse_domain::application::services::memory_quality_governor::AutosaveWriteVerdict::Write
+            )
         {
             let user_key = autosave_memory_key("user_msg");
             let _ = mem
@@ -578,8 +586,13 @@ pub async fn run_with_shared_memory(
 
             // Auto-save conversation turns (skip short/trivial messages)
             if config.memory.auto_save
-                && user_input.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS
-                && !synapse_domain::domain::util::should_skip_autosave_content(&user_input)
+                && matches!(
+                    synapse_domain::application::services::memory_quality_governor::assess_autosave_write(
+                        &user_input,
+                        synapse_domain::application::services::inbound_message_service::AUTOSAVE_MIN_MESSAGE_CHARS,
+                    ),
+                    synapse_domain::application::services::memory_quality_governor::AutosaveWriteVerdict::Write
+                )
             {
                 let user_key = autosave_memory_key("user_msg");
                 let _ = mem
@@ -823,10 +836,11 @@ pub async fn process_message(
     }
 
     let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
-    let model_name = config
-        .default_model
-        .clone()
-        .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514".into());
+    let model_name = config.default_model.clone().unwrap_or_else(|| {
+        synapse_domain::config::model_catalog::provider_default_model(provider_name)
+            .unwrap_or("default")
+            .to_string()
+    });
     let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
     let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
         provider_name,

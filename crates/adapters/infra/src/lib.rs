@@ -7,6 +7,7 @@ pub mod approval;
 pub mod config_io;
 pub mod docker;
 pub mod identity;
+pub mod model_catalog_io;
 pub mod native;
 pub mod run_recipe_store;
 pub mod standing_order_store;

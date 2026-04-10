@@ -80,8 +80,11 @@ impl MemoryRecallTool {
                             },
                         )
                     })
-                    .take(limit)
                     .collect::<Vec<_>>();
+                let entries =
+                    synapse_domain::application::services::retrieval_service::rerank_memory_matches(
+                        query, None, entries, limit,
+                    );
 
                 if entries.is_empty() {
                     return Ok((
@@ -190,6 +193,10 @@ impl Tool for MemoryRecallTool {
             },
             "required": ["query"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::MemoryMutation)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

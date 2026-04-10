@@ -16,14 +16,17 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 const DEFAULT_CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
+const OFFICIAL_OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
 const CODEX_RESPONSES_URL_ENV: &str = "SYNAPSECLAW_CODEX_RESPONSES_URL";
 const CODEX_BASE_URL_ENV: &str = "SYNAPSECLAW_CODEX_BASE_URL";
 const CODEX_ACCESS_TOKEN_ENV: &str = "SYNAPSECLAW_OPENAI_CODEX_ACCESS_TOKEN";
 const CODEX_REFRESH_TOKEN_ENV: &str = "SYNAPSECLAW_OPENAI_CODEX_REFRESH_TOKEN";
 const CODEX_ACCOUNT_ID_ENV: &str = "SYNAPSECLAW_OPENAI_CODEX_ACCOUNT_ID";
 const CODEX_HOME_ENV: &str = "CODEX_HOME";
+const CODEX_PREVIOUS_RESPONSE_ID_ENV: &str = "SYNAPSECLAW_CODEX_ENABLE_PREVIOUS_RESPONSE_ID";
 const DEFAULT_CODEX_INSTRUCTIONS: &str =
     "You are SynapseClaw, a concise and helpful coding assistant.";
 const CODEX_TOKEN_REFRESH_SKEW_SECS: i64 = 90;
@@ -36,6 +39,7 @@ pub struct OpenAiCodexProvider {
     gateway_api_key: Option<String>,
     reasoning_effort: Option<String>,
     client: Client,
+    last_response_id: Mutex<Option<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -48,6 +52,8 @@ struct ResponsesRequest {
     text: ResponsesTextOptions,
     reasoning: ResponsesReasoningOptions,
     include: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    previous_response_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ResponsesToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,6 +139,12 @@ struct ResponsesUsage {
     input_tokens_details: Option<ResponsesInputTokensDetails>,
 }
 
+#[derive(Debug)]
+struct ParsedResponsesChat {
+    response: ProviderChatResponse,
+    response_id: Option<String>,
+}
+
 #[derive(Debug, Default, Deserialize)]
 struct ResponsesInputTokensDetails {
     #[serde(default)]
@@ -188,7 +200,58 @@ impl OpenAiCodexProvider {
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .build()
                 .unwrap_or_else(|_| Client::new()),
+            last_response_id: Mutex::new(None),
         })
+    }
+
+    fn continuation_enabled(&self) -> bool {
+        std::env::var(CODEX_PREVIOUS_RESPONSE_ID_ENV)
+            .ok()
+            .and_then(|value| first_nonempty(Some(&value)))
+            .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+    }
+
+    fn previous_response_id(&self) -> Option<String> {
+        self.last_response_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn store_response_id(&self, response_id: Option<String>) {
+        *self
+            .last_response_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = response_id;
+    }
+
+    fn use_gateway_api_key_auth(&self) -> bool {
+        self.custom_endpoint && self.gateway_api_key.is_some()
+    }
+
+    fn uses_official_openai_responses_api(&self) -> bool {
+        canonical_endpoint(&self.responses_url) == canonical_endpoint(OFFICIAL_OPENAI_RESPONSES_URL)
+    }
+
+    fn uses_codex_transport_headers(&self) -> bool {
+        !self.custom_endpoint
+    }
+
+    fn uses_gateway_passthrough_headers(&self) -> bool {
+        self.use_gateway_api_key_auth() && !self.uses_official_openai_responses_api()
+    }
+
+    fn response_store_enabled(&self) -> bool {
+        self.custom_endpoint && self.continuation_enabled()
+    }
+
+    fn response_include_fields(&self) -> Vec<String> {
+        if self.uses_codex_transport_headers() {
+            vec!["reasoning.encrypted_content".to_string()]
+        } else {
+            Vec::new()
+        }
     }
 }
 
@@ -466,6 +529,34 @@ fn build_responses_input(messages: &[ChatMessage]) -> (String, Vec<Value>) {
     (instructions, input)
 }
 
+fn build_responses_delta_input(messages: &[ChatMessage]) -> Vec<Value> {
+    let non_system_messages: Vec<ChatMessage> = messages
+        .iter()
+        .filter(|message| message.role != "system")
+        .cloned()
+        .collect();
+    let Some(last_message) = non_system_messages.last() else {
+        return Vec::new();
+    };
+
+    let start = match last_message.role.as_str() {
+        "tool" => non_system_messages
+            .iter()
+            .rposition(|message| message.role != "tool")
+            .map(|idx| idx + 1)
+            .unwrap_or(0),
+        "user" => non_system_messages
+            .iter()
+            .rposition(|message| message.role != "user")
+            .map(|idx| idx + 1)
+            .unwrap_or(0),
+        "assistant" => non_system_messages.len().saturating_sub(1),
+        _ => 0,
+    };
+    let (_, input) = build_responses_input(&non_system_messages[start..]);
+    input
+}
+
 fn append_assistant_input(input: &mut Vec<Value>, content: &str) {
     if let Ok(value) = serde_json::from_str::<Value>(content) {
         let text = value
@@ -737,7 +828,177 @@ fn extract_responses_reasoning(response: &ResponsesResponse) -> Option<String> {
         .and_then(|item| item.encrypted_content.clone())
 }
 
-fn parse_responses_chat_response(response: ResponsesResponse) -> ProviderChatResponse {
+fn strip_think_tags(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    loop {
+        if let Some(start) = rest.find("<think>") {
+            result.push_str(&rest[..start]);
+            if let Some(end) = rest[start..].find("</think>") {
+                rest = &rest[start + end + "</think>".len()..];
+            } else {
+                break;
+            }
+        } else {
+            result.push_str(rest);
+            break;
+        }
+    }
+    result
+}
+
+fn parse_json_prefix_value(raw: &str) -> Option<(Value, usize)> {
+    let trimmed = raw.trim_start();
+    let leading = raw.len().saturating_sub(trimmed.len());
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut stream = serde_json::Deserializer::from_str(trimmed).into_iter::<Value>();
+    let value = stream.next()?.ok()?;
+    Some((value, leading + stream.byte_offset()))
+}
+
+fn provider_text_tool_call_from_value(
+    value: &Value,
+    generated_id: impl FnOnce() -> String,
+) -> Option<ProviderToolCall> {
+    if let Some(function) = value.get("function").and_then(Value::as_object) {
+        let name = function
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())?;
+        let arguments = match function.get("arguments") {
+            Some(Value::String(raw)) => raw.clone(),
+            Some(other) => serde_json::to_string(other).ok()?,
+            None => "{}".to_string(),
+        };
+        let id = function
+            .get("id")
+            .or_else(|| value.get("id"))
+            .or_else(|| value.get("call_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(generated_id);
+        return Some(ProviderToolCall {
+            id,
+            name: name.to_string(),
+            arguments,
+        });
+    }
+
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    let arguments = match value.get("arguments") {
+        Some(Value::String(raw)) => raw.clone(),
+        Some(other) => serde_json::to_string(other).ok()?,
+        None => "{}".to_string(),
+    };
+    let id = value
+        .get("id")
+        .or_else(|| value.get("call_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(generated_id);
+    Some(ProviderToolCall {
+        id,
+        name: name.to_string(),
+        arguments,
+    })
+}
+
+fn recover_text_tool_calls(text: &str) -> (Option<String>, Vec<ProviderToolCall>) {
+    let cleaned = strip_think_tags(text);
+    let mut text_parts = Vec::new();
+    let mut calls = Vec::new();
+    let mut remaining = cleaned.as_str();
+
+    while let Some(start) = remaining.find("<tool_call>") {
+        let before = &remaining[..start];
+        if !before.trim().is_empty() {
+            text_parts.push(before.trim().to_string());
+        }
+
+        let Some(end) = remaining[start..].find("</tool_call>") else {
+            break;
+        };
+
+        let inner = &remaining[start + "<tool_call>".len()..start + end];
+        match parse_json_prefix_value(inner) {
+            Some((value, consumed)) => {
+                let idx = calls.len() + 1;
+                if let Some(call) =
+                    provider_text_tool_call_from_value(&value, || format!("codex_text_call_{idx}"))
+                {
+                    let trailing = inner[consumed..].trim();
+                    if !trailing.is_empty() {
+                        tracing::warn!(
+                            trailing = super::sanitize_api_error(trailing),
+                            "OpenAI Codex text tool envelope had trailing characters; ignored in adapter"
+                        );
+                    }
+                    calls.push(call);
+                } else {
+                    tracing::warn!(
+                        payload = super::sanitize_api_error(inner),
+                        "OpenAI Codex text tool envelope did not match canonical adapter shape"
+                    );
+                }
+            }
+            None => {
+                tracing::warn!(
+                    payload = super::sanitize_api_error(inner),
+                    "OpenAI Codex text tool envelope was not valid JSON"
+                );
+            }
+        }
+        remaining = &remaining[start + end + "</tool_call>".len()..];
+    }
+
+    if !remaining.trim().is_empty() {
+        text_parts.push(remaining.trim().to_string());
+    }
+
+    let text = text_parts.join("\n");
+    let text = first_nonempty(Some(&text));
+    (text, calls)
+}
+
+fn normalize_text_tool_call_fallback(mut response: ProviderChatResponse) -> ProviderChatResponse {
+    if !response.tool_calls.is_empty() {
+        return response;
+    }
+
+    let Some(text) = response.text.as_deref() else {
+        return response;
+    };
+    if !text.contains("<tool_call>") {
+        return response;
+    }
+
+    let (cleaned_text, calls) = recover_text_tool_calls(text);
+    if calls.is_empty() {
+        return response;
+    }
+
+    tracing::warn!(
+        fallback_calls = calls.len(),
+        "OpenAI Codex returned canonical tool envelopes in text; normalized in provider adapter"
+    );
+    response.text = cleaned_text;
+    response.tool_calls = calls;
+    response
+}
+
+fn parse_responses_chat_response(response: ResponsesResponse) -> ParsedResponsesChat {
     let usage = response.usage.as_ref().map(|usage| TokenUsage {
         input_tokens: usage.input_tokens,
         output_tokens: usage.output_tokens,
@@ -747,11 +1008,14 @@ fn parse_responses_chat_response(response: ResponsesResponse) -> ProviderChatRes
             .and_then(|details| details.cached_tokens),
     });
 
-    ProviderChatResponse {
-        text: extract_responses_text(&response),
-        tool_calls: extract_responses_tool_calls(&response),
-        usage,
-        reasoning_content: extract_responses_reasoning(&response),
+    ParsedResponsesChat {
+        response: normalize_text_tool_call_fallback(ProviderChatResponse {
+            text: extract_responses_text(&response),
+            tool_calls: extract_responses_tool_calls(&response),
+            usage,
+            reasoning_content: extract_responses_reasoning(&response),
+        }),
+        response_id: response.id,
     }
 }
 
@@ -924,7 +1188,7 @@ fn parse_sse_text(body: &str) -> anyhow::Result<Option<String>> {
     Ok(fallback_text)
 }
 
-fn parse_sse_chat_response(body: &str) -> anyhow::Result<Option<ProviderChatResponse>> {
+fn parse_sse_chat_response(body: &str) -> anyhow::Result<Option<ParsedResponsesChat>> {
     let mut completed_response = None;
     let mut saw_text_delta = false;
     let mut text_delta_accumulator = String::new();
@@ -1109,15 +1373,42 @@ fn parse_sse_chat_response(body: &str) -> anyhow::Result<Option<ProviderChatResp
 
     let mut parsed = parse_responses_chat_response(response);
     if saw_text_delta {
-        parsed.text = nonempty_preserve(Some(&text_delta_accumulator));
-    } else if parsed.text.is_none() {
-        parsed.text = fallback_text;
+        parsed.response.text = nonempty_preserve(Some(&text_delta_accumulator));
+    } else if parsed.response.text.is_none() {
+        parsed.response.text = fallback_text;
     }
     if !tool_calls_by_call_id.is_empty() {
-        parsed.tool_calls = tool_calls_by_call_id.into_values().collect();
+        parsed.response.tool_calls = tool_calls_by_call_id.into_values().collect();
     }
 
+    parsed.response = normalize_text_tool_call_fallback(parsed.response);
     Ok(Some(parsed))
+}
+
+fn collect_sse_event_types(body: &str) -> Vec<String> {
+    let mut event_types = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+
+    for line in body.lines() {
+        let Some(payload) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let payload = payload.trim();
+        if payload.is_empty() || payload == "[DONE]" {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(payload) else {
+            continue;
+        };
+        let Some(event_type) = value.get("type").and_then(Value::as_str) else {
+            continue;
+        };
+        if seen.insert(event_type.to_string()) {
+            event_types.push(event_type.to_string());
+        }
+    }
+
+    event_types
 }
 
 fn extract_stream_error_message(event: &Value) -> Option<String> {
@@ -1269,7 +1560,7 @@ async fn decode_responses_body(response: reqwest::Response) -> anyhow::Result<St
 
 impl OpenAiCodexProvider {
     async fn send_request(&self, request: &ResponsesRequest) -> anyhow::Result<reqwest::Response> {
-        let use_gateway_api_key_auth = self.custom_endpoint && self.gateway_api_key.is_some();
+        let use_gateway_api_key_auth = self.use_gateway_api_key_auth();
         let external_auth = resolve_external_access_token(&self.client).await?;
         if external_auth.is_some() {
             tracing::info!("using external OpenAI Codex auth source");
@@ -1358,8 +1649,6 @@ impl OpenAiCodexProvider {
             .client
             .post(&self.responses_url)
             .header("Authorization", format!("Bearer {bearer_token}"))
-            .header("OpenAI-Beta", "responses=experimental")
-            .header("originator", "pi")
             .header(
                 "accept",
                 if request.stream {
@@ -1370,11 +1659,19 @@ impl OpenAiCodexProvider {
             )
             .header("Content-Type", "application/json");
 
-        if let Some(account_id) = account_id.as_deref() {
-            request_builder = request_builder.header("chatgpt-account-id", account_id);
+        if self.uses_codex_transport_headers() {
+            request_builder = request_builder
+                .header("OpenAI-Beta", "responses=experimental")
+                .header("originator", "pi");
         }
 
-        if use_gateway_api_key_auth {
+        if self.uses_codex_transport_headers() {
+            if let Some(account_id) = account_id.as_deref() {
+                request_builder = request_builder.header("chatgpt-account-id", account_id);
+            }
+        }
+
+        if self.uses_gateway_passthrough_headers() {
             if let Some(access_token) = access_token.as_deref() {
                 request_builder = request_builder.header("x-openai-access-token", access_token);
             }
@@ -1403,7 +1700,7 @@ impl OpenAiCodexProvider {
             model: normalized_model.to_string(),
             input,
             instructions,
-            store: false,
+            store: self.response_store_enabled(),
             stream: true,
             text: ResponsesTextOptions {
                 verbosity: "medium".to_string(),
@@ -1415,7 +1712,8 @@ impl OpenAiCodexProvider {
                 ),
                 summary: "auto".to_string(),
             },
-            include: vec!["reasoning.encrypted_content".to_string()],
+            include: self.response_include_fields(),
+            previous_response_id: None,
             tools: None,
             tool_choice: None,
             parallel_tool_calls: false,
@@ -1426,17 +1724,44 @@ impl OpenAiCodexProvider {
 
     async fn send_responses_chat_request(
         &self,
-        input: Vec<Value>,
+        messages: &[ChatMessage],
         instructions: String,
         tools: Option<Vec<ResponsesToolSpec>>,
         model: &str,
     ) -> anyhow::Result<ProviderChatResponse> {
         let normalized_model = normalize_model_id(model);
+        let requested_tool_count = tools.as_ref().map(|items| items.len()).unwrap_or(0);
+        let full_input = build_responses_input(messages).1;
+        let (input, previous_response_id) = if self.continuation_enabled() {
+            match self.previous_response_id() {
+                Some(previous_response_id) => {
+                    let delta_input = build_responses_delta_input(messages);
+                    if delta_input.is_empty() {
+                        tracing::warn!(
+                            "OpenAI Codex continuation state existed but no delta input could be derived; resetting to full replay"
+                        );
+                        (full_input, None)
+                    } else {
+                        (delta_input, Some(previous_response_id))
+                    }
+                }
+                None => (full_input, None),
+            }
+        } else {
+            (full_input, None)
+        };
+        let continuation_mode = if !self.continuation_enabled() {
+            "disabled"
+        } else if previous_response_id.is_some() {
+            "delta"
+        } else {
+            "seed"
+        };
         let request = ResponsesRequest {
             model: normalized_model.to_string(),
             input,
             instructions,
-            store: false,
+            store: self.response_store_enabled(),
             stream: true,
             text: ResponsesTextOptions {
                 verbosity: "medium".to_string(),
@@ -1448,11 +1773,19 @@ impl OpenAiCodexProvider {
                 ),
                 summary: "auto".to_string(),
             },
-            include: vec!["reasoning.encrypted_content".to_string()],
+            include: self.response_include_fields(),
+            previous_response_id,
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
             parallel_tool_calls: true,
         };
+        tracing::info!(
+            continuation_mode,
+            input_items = request.input.len(),
+            tool_count = requested_tool_count,
+            store = request.store,
+            "OpenAI Codex request assembled"
+        );
 
         let response = self.send_request(&request).await?;
         let body = response
@@ -1470,7 +1803,23 @@ impl OpenAiCodexProvider {
             })?;
             parse_responses_chat_response(parsed)
         };
-        Ok(parsed)
+        self.store_response_id(parsed.response_id.clone());
+        tracing::info!(
+            response_id = parsed.response_id.as_deref().unwrap_or_default(),
+            tool_calls = parsed.response.tool_calls.len(),
+            has_text = parsed.response.text.is_some(),
+            "OpenAI Codex response parsed"
+        );
+        if requested_tool_count > 0 && parsed.response.tool_calls.is_empty() {
+            tracing::warn!(
+                tool_count = requested_tool_count,
+                event_types = collect_sse_event_types(&body).join(", "),
+                text_preview =
+                    super::sanitize_api_error(parsed.response.text.as_deref().unwrap_or_default()),
+                "OpenAI Codex returned no structured tool calls for a tools-enabled request"
+            );
+        }
+        Ok(parsed.response)
     }
 }
 
@@ -1493,9 +1842,9 @@ impl Provider for OpenAiCodexProvider {
         let config = synapse_domain::config::schema::MultimodalConfig::default();
         let prepared =
             crate::multimodal::prepare_messages_for_provider(request.messages, &config).await?;
-        let (instructions, input) = build_responses_input(&prepared.messages);
+        let (instructions, _) = build_responses_input(&prepared.messages);
         let tools = convert_tools(request.tools);
-        self.send_responses_chat_request(input, instructions, tools, model)
+        self.send_responses_chat_request(&prepared.messages, instructions, tools, model)
             .await
     }
 
@@ -1673,6 +2022,54 @@ mod tests {
     }
 
     #[test]
+    fn detects_official_openai_responses_api_endpoint() {
+        let _endpoint_guard = EnvGuard::set(CODEX_RESPONSES_URL_ENV, None);
+        let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, None);
+        let options = ProviderRuntimeOptions {
+            provider_api_url: Some("https://api.openai.com/v1".to_string()),
+            ..ProviderRuntimeOptions::default()
+        };
+
+        let provider = OpenAiCodexProvider::new(&options, Some("test-key")).unwrap();
+        assert!(provider.custom_endpoint);
+        assert!(provider.uses_official_openai_responses_api());
+        assert!(!provider.uses_codex_transport_headers());
+        assert!(!provider.uses_gateway_passthrough_headers());
+        assert!(provider.response_include_fields().is_empty());
+    }
+
+    #[test]
+    fn official_or_custom_endpoint_enables_store_when_continuation_is_enabled() {
+        let _endpoint_guard = EnvGuard::set(CODEX_RESPONSES_URL_ENV, None);
+        let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, None);
+        let _guard = EnvGuard::set(CODEX_PREVIOUS_RESPONSE_ID_ENV, Some("true"));
+        let options = ProviderRuntimeOptions {
+            provider_api_url: Some("https://api.openai.com/v1".to_string()),
+            ..ProviderRuntimeOptions::default()
+        };
+
+        let provider = OpenAiCodexProvider::new(&options, Some("test-key")).unwrap();
+        assert!(provider.response_store_enabled());
+    }
+
+    #[test]
+    fn default_codex_endpoint_keeps_store_disabled_even_with_continuation_flag() {
+        let _endpoint_guard = EnvGuard::set(CODEX_RESPONSES_URL_ENV, None);
+        let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, None);
+        let _guard = EnvGuard::set(CODEX_PREVIOUS_RESPONSE_ID_ENV, Some("true"));
+        let options = ProviderRuntimeOptions::default();
+
+        let provider = OpenAiCodexProvider::new(&options, None).unwrap();
+        assert!(!provider.custom_endpoint);
+        assert!(!provider.response_store_enabled());
+        assert!(provider.uses_codex_transport_headers());
+        assert_eq!(
+            provider.response_include_fields(),
+            vec!["reasoning.encrypted_content".to_string()]
+        );
+    }
+
+    #[test]
     fn resolve_instructions_uses_default_when_missing() {
         assert_eq!(
             resolve_instructions(None),
@@ -1802,9 +2199,13 @@ data: [DONE]
         let parsed = parse_sse_chat_response(payload)
             .unwrap()
             .expect("chat response should parse");
-        assert_eq!(parsed.text.as_deref(), Some("HELLO"));
-        assert_eq!(parsed.tool_calls.len(), 0);
-        assert_eq!(parsed.usage.as_ref().and_then(|u| u.input_tokens), Some(1));
+        assert_eq!(parsed.response_id.as_deref(), Some("resp_123"));
+        assert_eq!(parsed.response.text.as_deref(), Some("HELLO"));
+        assert_eq!(parsed.response.tool_calls.len(), 0);
+        assert_eq!(
+            parsed.response.usage.as_ref().and_then(|u| u.input_tokens),
+            Some(1)
+        );
     }
 
     #[test]
@@ -1833,10 +2234,56 @@ data: [DONE]
         let parsed = parse_sse_chat_response(payload)
             .unwrap()
             .expect("chat response should parse");
-        assert_eq!(parsed.tool_calls.len(), 1);
-        assert_eq!(parsed.tool_calls[0].id, "call_123");
-        assert_eq!(parsed.tool_calls[0].name, "shell");
-        assert_eq!(parsed.tool_calls[0].arguments, "{\"command\":\"date\"}");
+        assert_eq!(parsed.response_id.as_deref(), Some("resp_123"));
+        assert_eq!(parsed.response.tool_calls.len(), 1);
+        assert_eq!(parsed.response.tool_calls[0].id, "call_123");
+        assert_eq!(parsed.response.tool_calls[0].name, "shell");
+        assert_eq!(
+            parsed.response.tool_calls[0].arguments,
+            "{\"command\":\"date\"}"
+        );
+    }
+
+    #[test]
+    fn normalize_text_tool_call_fallback_recovers_canonical_envelope() {
+        let response = ProviderChatResponse {
+            text: Some(
+                "Checking\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>"
+                    .into(),
+            ),
+            tool_calls: vec![],
+            usage: None,
+            reasoning_content: None,
+        };
+
+        let normalized = normalize_text_tool_call_fallback(response);
+        assert_eq!(normalized.text.as_deref(), Some("Checking"));
+        assert_eq!(normalized.tool_calls.len(), 1);
+        assert_eq!(normalized.tool_calls[0].name, "shell");
+        assert_eq!(normalized.tool_calls[0].arguments, "{\"command\":\"pwd\"}");
+        assert_eq!(normalized.tool_calls[0].id, "codex_text_call_1");
+    }
+
+    #[test]
+    fn normalize_text_tool_call_fallback_tolerates_trailing_garbage() {
+        let response = ProviderChatResponse {
+            text: Some(
+                "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"printf OK\"}}*</tool_call>"
+                    .into(),
+            ),
+            tool_calls: vec![],
+            usage: None,
+            reasoning_content: None,
+        };
+
+        let normalized = normalize_text_tool_call_fallback(response);
+        assert_eq!(normalized.text, None);
+        assert_eq!(normalized.tool_calls.len(), 1);
+        assert_eq!(normalized.tool_calls[0].name, "shell");
+        assert_eq!(
+            normalized.tool_calls[0].arguments,
+            "{\"command\":\"printf OK\"}"
+        );
     }
 
     #[test]
@@ -2006,8 +2453,55 @@ data: [DONE]
     }
 
     #[test]
+    fn build_responses_delta_input_uses_latest_user_tail() {
+        let messages = vec![
+            ChatMessage::system("system"),
+            ChatMessage::user("first"),
+            ChatMessage::assistant("ack"),
+            ChatMessage::user("second"),
+        ];
+
+        let input = build_responses_delta_input(&messages);
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(input[0]["content"][0]["text"], "second");
+    }
+
+    #[test]
+    fn build_responses_delta_input_uses_trailing_tool_outputs() {
+        let messages = vec![
+            ChatMessage::system("system"),
+            ChatMessage::assistant(
+                serde_json::json!({
+                    "content": "Checking now",
+                    "tool_calls": [{
+                        "id": "call_123",
+                        "name": "shell",
+                        "arguments": "{\"command\":\"uptime\"}",
+                    }],
+                })
+                .to_string(),
+            ),
+            ChatMessage::tool(
+                serde_json::json!({
+                    "tool_call_id": "call_123",
+                    "content": "load average: 0.00",
+                })
+                .to_string(),
+            ),
+        ];
+
+        let input = build_responses_delta_input(&messages);
+        assert_eq!(input.len(), 1);
+        assert_eq!(input[0]["type"], "function_call_output");
+        assert_eq!(input[0]["call_id"], "call_123");
+        assert_eq!(input[0]["output"], "load average: 0.00");
+    }
+
+    #[test]
     fn parse_responses_chat_response_extracts_native_tool_calls() {
         let response = ResponsesResponse {
+            id: Some("resp_abc".into()),
             output: vec![ResponsesOutput {
                 kind: Some("function_call".into()),
                 call_id: Some("call_abc".into()),
@@ -2026,13 +2520,24 @@ data: [DONE]
         };
 
         let parsed = parse_responses_chat_response(response);
-        assert_eq!(parsed.tool_calls.len(), 1);
-        assert_eq!(parsed.tool_calls[0].id, "call_abc");
-        assert_eq!(parsed.tool_calls[0].name, "shell");
-        assert_eq!(parsed.tool_calls[0].arguments, "{\"command\":\"date\"}");
-        assert_eq!(parsed.usage.as_ref().and_then(|u| u.input_tokens), Some(10));
+        assert_eq!(parsed.response_id.as_deref(), Some("resp_abc"));
+        assert_eq!(parsed.response.tool_calls.len(), 1);
+        assert_eq!(parsed.response.tool_calls[0].id, "call_abc");
+        assert_eq!(parsed.response.tool_calls[0].name, "shell");
         assert_eq!(
-            parsed.usage.as_ref().and_then(|u| u.cached_input_tokens),
+            parsed.response.tool_calls[0].arguments,
+            "{\"command\":\"date\"}"
+        );
+        assert_eq!(
+            parsed.response.usage.as_ref().and_then(|u| u.input_tokens),
+            Some(10)
+        );
+        assert_eq!(
+            parsed
+                .response
+                .usage
+                .as_ref()
+                .and_then(|u| u.cached_input_tokens),
             Some(3)
         );
     }
@@ -2127,6 +2632,7 @@ data: [DONE]
                 },
                 "required": ["command"]
             }),
+            runtime_role: None,
         }];
 
         let converted = convert_tools(Some(&tools)).expect("tool specs");

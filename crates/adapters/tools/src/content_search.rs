@@ -384,6 +384,10 @@ impl Tool for ContentSearchTool {
         })
     }
 
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::WorkspaceDiscovery)
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         Ok(self.execute_search(&args).await?.0)
     }
@@ -918,11 +922,16 @@ mod tests {
     #[test]
     fn preferred_workspace_locator_skips_bootstrap_and_session_artifacts() {
         let locator = preferred_workspace_locator(
-            ["SOUL.md", "sessions/web/main.jsonl", "src/agent/loop_.rs"].into_iter(),
+            [
+                "SOUL.md",
+                "sessions/web/main.jsonl",
+                "src/agent/runtime_loop/tool_execution.rs",
+            ]
+            .into_iter(),
         )
         .expect("preferred locator");
 
-        assert_eq!(locator, "src/agent/loop_.rs");
+        assert_eq!(locator, "src/agent/runtime_loop/tool_execution.rs");
     }
 
     #[tokio::test]

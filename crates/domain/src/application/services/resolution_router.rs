@@ -9,6 +9,7 @@ use crate::application::services::turn_interpretation::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolutionSource {
+    ConfiguredRuntime,
     CurrentConversation,
     DialogueState,
     UserProfile,
@@ -124,6 +125,7 @@ pub fn source_priority(plan: Option<&ResolutionPlan>, source: ResolutionSource) 
 
 fn source_name(source: ResolutionSource) -> &'static str {
     match source {
+        ResolutionSource::ConfiguredRuntime => "configured_runtime",
         ResolutionSource::CurrentConversation => "current_conversation",
         ResolutionSource::DialogueState => "dialogue_state",
         ResolutionSource::UserProfile => "user_profile",
@@ -144,6 +146,11 @@ fn clarification_reason_name(reason: ClarificationReason) -> &'static str {
 fn rank_sources(evidence: ResolutionEvidence<'_>) -> Vec<RankedSource> {
     let mut ranked = Vec::new();
 
+    push_ranked(
+        &mut ranked,
+        ResolutionSource::ConfiguredRuntime,
+        score_configured_runtime(evidence.interpretation),
+    );
     push_ranked(
         &mut ranked,
         ResolutionSource::DialogueState,
@@ -198,13 +205,31 @@ fn push_ranked(ranked: &mut Vec<RankedSource>, source: ResolutionSource, score: 
 
 fn source_tie_breaker(source: ResolutionSource) -> usize {
     match source {
-        ResolutionSource::DialogueState => 0,
-        ResolutionSource::UserProfile => 1,
-        ResolutionSource::CurrentConversation => 2,
-        ResolutionSource::RunRecipe => 3,
-        ResolutionSource::SessionHistory => 4,
-        ResolutionSource::LongTermMemory => 5,
+        ResolutionSource::ConfiguredRuntime => 0,
+        ResolutionSource::DialogueState => 1,
+        ResolutionSource::UserProfile => 2,
+        ResolutionSource::CurrentConversation => 3,
+        ResolutionSource::RunRecipe => 4,
+        ResolutionSource::SessionHistory => 5,
+        ResolutionSource::LongTermMemory => 6,
     }
+}
+
+fn score_configured_runtime(interpretation: Option<&TurnInterpretation>) -> Option<f64> {
+    let interpretation = interpretation?;
+    let target = interpretation.configured_delivery_target.as_ref()?;
+    let reference_count =
+        count_reference_candidates(interpretation, ReferenceSource::ConfiguredRuntime) as f64;
+    let explicit_bonus = if matches!(
+        target,
+        crate::domain::conversation_target::ConversationDeliveryTarget::Explicit { .. }
+    ) {
+        0.08
+    } else {
+        0.0
+    };
+
+    Some((0.74 + reference_count.min(2.0) * 0.06 + explicit_bonus).min(0.92))
 }
 
 fn score_dialogue_state(interpretation: Option<&TurnInterpretation>) -> Option<f64> {
@@ -501,6 +526,7 @@ mod tests {
             }),
             reference_candidates: vec![],
             clarification_candidates: vec![],
+            configured_delivery_target: None,
         };
 
         let plan = build_resolution_plan(ResolutionEvidence {
@@ -708,6 +734,61 @@ mod tests {
         assert_eq!(
             plan.source_order.first(),
             Some(&ResolutionSource::DialogueState)
+        );
+    }
+
+    #[test]
+    fn configured_runtime_target_outranks_profile_and_conversation_defaults() {
+        let interpretation = TurnInterpretation {
+            user_profile: Some(UserProfile {
+                default_delivery_target: Some(
+                    crate::domain::conversation_target::ConversationDeliveryTarget::Explicit {
+                        channel: "slack".into(),
+                        recipient: "C123".into(),
+                        thread_ref: None,
+                    },
+                ),
+                ..Default::default()
+            }),
+            current_conversation: Some(CurrentConversationSnapshot {
+                adapter: "matrix".into(),
+                has_thread: false,
+            }),
+            configured_delivery_target: Some(
+                crate::domain::conversation_target::ConversationDeliveryTarget::Explicit {
+                    channel: "matrix".into(),
+                    recipient: "!ops:example.org".into(),
+                    thread_ref: None,
+                },
+            ),
+            reference_candidates: vec![
+                ReferenceCandidate {
+                    kind: ReferenceCandidateKind::Profile(ProfileReferenceKind::DeliveryTarget),
+                    value: "explicit:slack:C123".into(),
+                    source: ReferenceSource::UserProfile,
+                },
+                ReferenceCandidate {
+                    kind: ReferenceCandidateKind::DeliveryTarget,
+                    value: "explicit:matrix:!ops:example.org".into(),
+                    source: ReferenceSource::ConfiguredRuntime,
+                },
+                ReferenceCandidate {
+                    kind: ReferenceCandidateKind::DeliveryTarget,
+                    value: "current_conversation".into(),
+                    source: ReferenceSource::CurrentConversation,
+                },
+            ],
+            ..Default::default()
+        };
+
+        let plan = build_resolution_plan(ResolutionEvidence {
+            interpretation: Some(&interpretation),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            plan.source_order.first(),
+            Some(&ResolutionSource::ConfiguredRuntime)
         );
     }
 }

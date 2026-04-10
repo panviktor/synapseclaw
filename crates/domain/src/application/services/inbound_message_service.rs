@@ -10,6 +10,7 @@
 //! - message classification (command vs regular message)
 //! - route selection management (provider/model overrides per sender)
 
+use crate::config::schema::ModelRouteConfig;
 use crate::domain::channel::{ChannelCapability, InboundEnvelope};
 
 // ── Runtime commands ─────────────────────────────────────────────
@@ -94,6 +95,26 @@ pub fn conversation_key(envelope: &InboundEnvelope) -> String {
         Some(tid) => format!("{}_{}_{}", envelope.source_adapter, tid, envelope.actor_id),
         None => format!("{}_{}", envelope.source_adapter, envelope.actor_id),
     }
+}
+
+/// Construct the canonical raw-autosave memory key for an inbound envelope.
+///
+/// Preference order:
+/// - stable upstream event/message id when available
+/// - otherwise a bounded fallback derived from receipt timestamp and content size
+pub fn autosave_memory_key(envelope: &InboundEnvelope) -> String {
+    let conversation_key = conversation_key(envelope);
+    if let Some(event_ref) = envelope.event_ref.as_deref().map(str::trim) {
+        if !event_ref.is_empty() {
+            return format!("channel:{conversation_key}:{event_ref}");
+        }
+    }
+
+    format!(
+        "channel:{conversation_key}:recv{}:len{}",
+        envelope.received_at,
+        envelope.content.chars().count()
+    )
 }
 
 // ── Message classification ───────────────────────────────────────
@@ -204,7 +225,8 @@ pub fn smart_truncate_parent_turns(
 // ── Auto-save policy ─────────────────────────────────────────────
 
 /// Minimum message length (in chars) to trigger auto-save.
-pub const AUTOSAVE_MIN_MESSAGE_CHARS: usize = 20;
+pub const AUTOSAVE_MIN_MESSAGE_CHARS: usize =
+    crate::application::services::memory_quality_governor::AUTOSAVE_MIN_CONTENT_CHARS;
 
 /// Decide whether to auto-save an inbound message to memory.
 ///
@@ -213,7 +235,14 @@ pub const AUTOSAVE_MIN_MESSAGE_CHARS: usize = 20;
 /// - Message must be at least AUTOSAVE_MIN_MESSAGE_CHARS characters
 /// - Content must not match skip patterns (e.g. single-word commands)
 pub fn should_autosave(auto_save_enabled: bool, content: &str) -> bool {
-    auto_save_enabled && content.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS
+    auto_save_enabled
+        && matches!(
+            crate::application::services::memory_quality_governor::assess_autosave_write(
+                content,
+                AUTOSAVE_MIN_MESSAGE_CHARS,
+            ),
+            crate::application::services::memory_quality_governor::AutosaveWriteVerdict::Write
+        )
 }
 
 // ── Tool context display policy ──────────────────────────────────
@@ -233,7 +262,7 @@ pub fn should_include_tool_summary(tool_summary: &str, caps: &[ChannelCapability
 ///
 /// Same gate as auto-save: enabled + minimum message length.
 pub fn should_consolidate_memory(auto_save_enabled: bool, content: &str) -> bool {
-    auto_save_enabled && content.chars().count() >= AUTOSAVE_MIN_MESSAGE_CHARS
+    should_autosave(auto_save_enabled, content)
 }
 
 // ── Interrupt-on-new-message policy ──────────────────────────────
@@ -274,7 +303,7 @@ pub enum CommandEffect {
 /// provider validation to the adapter (requires infrastructure).
 pub fn command_effect(
     command: &RuntimeCommand,
-    model_routes: &[(String, String, String)], // (provider, model, hint)
+    model_routes: &[ModelRouteConfig],
 ) -> CommandEffect {
     match command {
         RuntimeCommand::ShowProviders => CommandEffect::ShowProviders,
@@ -285,13 +314,13 @@ pub fn command_effect(
         RuntimeCommand::SetModel(raw) => {
             let model = raw.trim().trim_matches('`').to_string();
             // Look up in model_routes by model name or hint
-            let matched = model_routes
-                .iter()
-                .find(|(_, m, h)| m.eq_ignore_ascii_case(&model) || h.eq_ignore_ascii_case(&model));
+            let matched = model_routes.iter().find(|route| {
+                route.model.eq_ignore_ascii_case(&model) || route.hint.eq_ignore_ascii_case(&model)
+            });
             match matched {
-                Some((provider, resolved_model, _)) => CommandEffect::SwitchModel {
-                    model: resolved_model.clone(),
-                    inferred_provider: Some(provider.clone()),
+                Some(route) => CommandEffect::SwitchModel {
+                    model: route.model.clone(),
+                    inferred_provider: Some(route.provider.clone()),
                 },
                 None => CommandEffect::SwitchModel {
                     model,
@@ -306,6 +335,7 @@ pub fn command_effect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::schema::ModelCandidateProfileConfig;
     use crate::domain::channel::SourceKind;
 
     fn caps_with_runtime() -> Vec<ChannelCapability> {
@@ -341,8 +371,11 @@ mod tests {
 
     #[test]
     fn parse_model_set() {
-        let cmd = parse_runtime_command("/model claude-3-opus", &caps_with_runtime());
-        assert_eq!(cmd, Some(RuntimeCommand::SetModel("claude-3-opus".into())));
+        let cmd = parse_runtime_command("/model claude-sonnet-4-5", &caps_with_runtime());
+        assert_eq!(
+            cmd,
+            Some(RuntimeCommand::SetModel("claude-sonnet-4-5".into()))
+        );
     }
 
     #[test]
@@ -396,6 +429,7 @@ mod tests {
             source_adapter: "telegram".into(),
             actor_id: "user123".into(),
             conversation_ref: String::new(),
+            event_ref: None,
             reply_ref: String::new(),
             thread_ref: None,
             content: String::new(),
@@ -411,6 +445,7 @@ mod tests {
             source_adapter: "slack".into(),
             actor_id: "user456".into(),
             conversation_ref: String::new(),
+            event_ref: None,
             reply_ref: String::new(),
             thread_ref: Some("thread789".into()),
             content: String::new(),
@@ -442,6 +477,16 @@ mod tests {
         assert_eq!(cls, MessageClassification::RegularMessage);
     }
 
+    #[test]
+    fn consolidation_uses_same_gate_as_autosave() {
+        assert!(!should_consolidate_memory(true, "/model cheap"));
+        assert!(!should_consolidate_memory(true, "[GENERATE:IMAGE] poster"));
+        assert!(should_consolidate_memory(
+            true,
+            "Это достаточно длинное и осмысленное сообщение для consolidation."
+        ));
+    }
+
     // ── history enrichment tests ─────────────────────────────────
 
     fn envelope(thread: Option<&str>) -> InboundEnvelope {
@@ -450,11 +495,33 @@ mod tests {
             source_adapter: "telegram".into(),
             actor_id: "user1".into(),
             conversation_ref: String::new(),
+            event_ref: None,
             reply_ref: String::new(),
             thread_ref: thread.map(String::from),
             content: String::new(),
             received_at: 0,
         }
+    }
+
+    #[test]
+    fn autosave_key_prefers_event_ref() {
+        let mut env = envelope(None);
+        env.event_ref = Some("telegram_123_456".into());
+        assert_eq!(
+            autosave_memory_key(&env),
+            "channel:telegram_user1:telegram_123_456"
+        );
+    }
+
+    #[test]
+    fn autosave_key_falls_back_to_received_at_and_length() {
+        let mut env = envelope(None);
+        env.content = "hello there".into();
+        env.received_at = 42;
+        assert_eq!(
+            autosave_memory_key(&env),
+            "channel:telegram_user1:recv42:len11"
+        );
     }
 
     #[test]
@@ -513,6 +580,20 @@ mod tests {
         assert!(!should_autosave(true, "short"));
     }
 
+    #[test]
+    fn autosave_skips_structured_control_turns() {
+        assert!(!should_autosave(true, "/model cheap"));
+        assert!(!should_autosave(true, "[GENERATE:IMAGE] album cover"));
+    }
+
+    #[test]
+    fn autosave_skips_low_information_repetition() {
+        assert!(!should_autosave(
+            true,
+            "echo echo echo echo echo echo echo echo echo echo echo echo echo"
+        ));
+    }
+
     // ── tool context policy tests ────────────────────────────────
 
     #[test]
@@ -555,10 +636,24 @@ mod tests {
 
     // ── command effect tests ─────────────────────────────────────
 
-    fn test_routes() -> Vec<(String, String, String)> {
+    fn test_routes() -> Vec<ModelRouteConfig> {
         vec![
-            ("anthropic".into(), "claude-3-opus".into(), "opus".into()),
-            ("openai".into(), "gpt-4".into(), "gpt4".into()),
+            ModelRouteConfig {
+                hint: "opus".into(),
+                capability: None,
+                provider: "anthropic".into(),
+                model: "claude-sonnet-4-5".into(),
+                api_key: None,
+                profile: ModelCandidateProfileConfig::default(),
+            },
+            ModelRouteConfig {
+                hint: "gpt4".into(),
+                capability: None,
+                provider: "openai".into(),
+                model: "gpt-5.4".into(),
+                api_key: None,
+                profile: ModelCandidateProfileConfig::default(),
+            },
         ]
     }
 
@@ -597,7 +692,7 @@ mod tests {
         assert_eq!(
             command_effect(&cmd, &test_routes()),
             CommandEffect::SwitchModel {
-                model: "claude-3-opus".into(),
+                model: "claude-sonnet-4-5".into(),
                 inferred_provider: Some("anthropic".into()),
             }
         );
@@ -605,11 +700,11 @@ mod tests {
 
     #[test]
     fn effect_switch_model_by_name() {
-        let cmd = RuntimeCommand::SetModel("gpt-4".into());
+        let cmd = RuntimeCommand::SetModel("gpt-5.4".into());
         assert_eq!(
             command_effect(&cmd, &test_routes()),
             CommandEffect::SwitchModel {
-                model: "gpt-4".into(),
+                model: "gpt-5.4".into(),
                 inferred_provider: Some("openai".into()),
             }
         );

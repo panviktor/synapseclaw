@@ -418,6 +418,10 @@ impl Tool for AgentsListTool {
         })
     }
 
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::DelegatedDelivery)
+    }
+
     async fn execute(&self, _args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let result = self
             .client
@@ -498,6 +502,10 @@ impl Tool for AgentsSendTool {
             },
             "required": ["to", "payload"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::DelegatedDelivery)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -621,6 +629,10 @@ impl Tool for AgentsInboxTool {
         })
     }
 
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::DelegatedDelivery)
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let quarantine = args["quarantine"].as_bool().unwrap_or(false);
         let limit = args["limit"].as_u64().unwrap_or(50);
@@ -740,6 +752,10 @@ impl Tool for AgentsReplyTool {
         })
     }
 
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::RuntimeStateInspection)
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let to = args["to"]
             .as_str()
@@ -822,6 +838,10 @@ impl Tool for StateGetTool {
             },
             "required": ["key"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::RuntimeStateInspection)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -1642,6 +1662,21 @@ mod tests {
             user_profile_store: std::sync::Arc::new(
                 synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
             ),
+            conversation_context: std::sync::Arc::new(
+                synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+            ),
+            user_profile_context: std::sync::Arc::new(
+                synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+            ),
+            turn_defaults_context: std::sync::Arc::new(
+                synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+            ),
+            scoped_instruction_context: std::sync::Arc::new(
+                crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                    std::env::temp_dir(),
+                ),
+            ),
+            heartbeat_metrics: None,
             shutdown_tx: tokio::sync::watch::channel(false).0,
             audit_logger: None,
             ipc_prompt_guard: None,

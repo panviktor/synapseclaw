@@ -4658,7 +4658,7 @@ mod tests {
 
     /// Verify that the Groq provider (OpenAI-compatible) does not support
     /// vision, so the existing `count_image_markers > 0 && !supports_vision()`
-    /// guard in `agent/loop_.rs` will reject photo messages.
+    /// guard in the agent runtime loop will reject photo messages.
     #[test]
     fn groq_provider_rejects_photo_with_vision_error() {
         use synapse_providers::compatible::{AuthStyle, OpenAiCompatibleProvider};

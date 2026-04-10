@@ -10,6 +10,14 @@ Config path resolution at startup:
 2. persisted `~/.synapseclaw/active_workspace.toml` marker (if present)
 3. default `~/.synapseclaw/config.toml`
 
+Model catalog resolution at startup:
+
+1. built-in catalog shipped with SynapseClaw
+2. optional local override `model_catalog.json` next to the resolved `config.toml`
+
+The local override is created with `synapseclaw models catalog init` and is
+merged over the built-in catalog on process startup.
+
 SynapseClaw logs the resolved config on startup at `INFO` level:
 
 - `Config loaded` with fields: `path`, `workspace`, `source`, `initialized`
@@ -25,6 +33,33 @@ Schema export command:
 | `default_provider` | `openrouter` | provider ID or alias |
 | `default_model` | `anthropic/claude-sonnet-4-6` | model routed through selected provider |
 | `default_temperature` | `0.7` | model temperature |
+
+## Model Presets And Local Catalog
+
+`synapseclaw onboard` is preset-first. Presets such as `chatgpt`, `claude`,
+`openrouter`, `gemini`, and `local` expand into capability-aware lanes under
+the hood.
+
+Relevant keys:
+
+| Key | Purpose |
+|---|---|
+| `model_preset` | selects a built-in preset seed |
+| `model_lanes` | explicit lane-aware overrides (`reasoning`, `cheap_reasoning`, `embedding`, later multimodal lanes) |
+| `model_routes` | legacy hint-based route mapping |
+
+Operational notes:
+
+- Built-in preset seeds, provider defaults, curated provider model lists, and
+  default pricing come from the bundled model catalog.
+- Users can materialize a local editable override with:
+  - `synapseclaw models catalog init`
+- The override file lives next to the resolved `config.toml`:
+  - default: `~/.synapseclaw/model_catalog.json`
+  - agent instance: `~/.synapseclaw/agents/<name>/model_catalog.json`
+  - custom config dir: `<config-dir>/model_catalog.json`
+- This mechanism is the same on Linux, macOS, BSD, and WSL2 because SynapseClaw
+  already resolves a single active config directory before config load.
 
 ## `[observability]`
 

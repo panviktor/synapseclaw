@@ -109,6 +109,10 @@ impl Tool for MemoryStoreTool {
         })
     }
 
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::MemoryMutation)
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         Ok(self.execute_action(&args).await?.result)
     }

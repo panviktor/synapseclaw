@@ -88,19 +88,12 @@ struct UserProfileArgs {
     communication_style: Option<String>,
     known_environments: Option<Vec<String>>,
     default_delivery_target: Option<DeliveryTargetInput>,
-    #[serde(default, deserialize_with = "deserialize_vec_string_or_default")]
+    #[serde(default)]
     clear_fields: Vec<String>,
 }
 
 fn default_action() -> ProfileAction {
     ProfileAction::Get
-}
-
-fn deserialize_vec_string_or_default<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    Ok(Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[async_trait]
@@ -166,6 +159,10 @@ impl Tool for UserProfileTool {
                 }
             }
         })
+    }
+
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::ProfileMutation)
     }
 
     fn extract_facts(
@@ -600,16 +597,5 @@ mod tests {
             }
             other => panic!("unexpected target: {other:?}"),
         }
-    }
-
-    #[test]
-    fn user_profile_args_accept_null_clear_fields() {
-        let args: UserProfileArgs = serde_json::from_value(json!({
-            "action": "get",
-            "clear_fields": null
-        }))
-        .unwrap();
-
-        assert!(args.clear_fields.is_empty());
     }
 }

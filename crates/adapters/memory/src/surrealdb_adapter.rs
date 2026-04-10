@@ -2364,14 +2364,6 @@ impl UnifiedMemoryPort for SurrealMemoryAdapter {
             .collect())
     }
 
-    fn should_skip_autosave(&self, content: &str) -> bool {
-        let trimmed = content.trim();
-        trimmed.is_empty()
-            || trimmed.len() < 5
-            || trimmed.starts_with("user_msg_")
-            || trimmed.starts_with("assistant_autosave_")
-    }
-
     async fn count(&self) -> Result<usize, MemoryError> {
         let mut resp = self
             .db

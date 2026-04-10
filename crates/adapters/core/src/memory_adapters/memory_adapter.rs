@@ -301,9 +301,6 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     ) -> Result<Vec<(TemporalFact, f32)>, MemoryError> {
         self.inner.find_similar_facts(embedding, limit).await
     }
-    fn should_skip_autosave(&self, content: &str) -> bool {
-        self.inner.should_skip_autosave(content)
-    }
     async fn count(&self) -> Result<usize, MemoryError> {
         self.inner.count().await
     }
@@ -365,8 +362,8 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
     async fn reflect_on_turn(
         &self,
         user_message: &str,
-        assistant_response: &str,
         tools_used: &[String],
+        outcome: &synapse_domain::domain::memory::ReflectionOutcome,
     ) -> Result<(), MemoryError> {
         tracing::info!(
             tools = tools_used.len(),
@@ -374,23 +371,10 @@ impl UnifiedMemoryPort for ConsolidatingMemory {
             "memory.reflect_on_turn.start"
         );
 
-        // Detect outcome from response content (heuristic)
-        let resp_lower = assistant_response.to_lowercase();
-        let outcome = if resp_lower.contains("error")
-            || resp_lower.contains("failed")
-            || resp_lower.contains("unable to")
-        {
-            synapse_domain::domain::memory::ReflectionOutcome::Failure
-        } else if resp_lower.contains("sorry, i") || resp_lower.contains("couldn't") {
-            synapse_domain::domain::memory::ReflectionOutcome::Partial
-        } else {
-            synapse_domain::domain::memory::ReflectionOutcome::Success
-        };
-
         let summary = super::skill_learner::PipelineRunSummary {
             run_id: uuid::Uuid::new_v4().to_string(),
             task: user_message.chars().take(200).collect(),
-            outcome,
+            outcome: outcome.clone(),
             steps: tools_used.to_vec(),
             errors: vec![],
         };

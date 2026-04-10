@@ -203,6 +203,10 @@ impl Tool for HttpRequestTool {
         })
     }
 
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::ExternalLookup)
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let url = args
             .get("url")

@@ -4,6 +4,13 @@ use std::time::Duration;
 pub struct ProviderContextStats {
     pub system_messages: usize,
     pub system_chars: usize,
+    pub bootstrap_chars: usize,
+    pub core_memory_chars: usize,
+    pub runtime_interpretation_chars: usize,
+    pub scoped_context_chars: usize,
+    pub resolution_chars: usize,
+    pub dynamic_system_chars: usize,
+    pub stable_system_chars: usize,
     pub prior_chat_messages: usize,
     pub prior_chat_chars: usize,
     pub current_turn_messages: usize,

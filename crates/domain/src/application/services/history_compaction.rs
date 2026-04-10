@@ -20,6 +20,9 @@ const COMPACTION_MAX_SOURCE_CHARS: usize = 12_000;
 /// Max characters retained in stored compaction summary.
 const COMPACTION_MAX_SUMMARY_CHARS: usize = 2_000;
 
+/// Prefix used for compacted conversation summaries stored back into provider history.
+pub const COMPACTION_SUMMARY_PREFIX: &str = "[Compaction summary]\n";
+
 /// Estimate token count for a message history using ~4 chars/token heuristic.
 /// Includes a small overhead per message for role/framing tokens.
 pub fn estimate_history_tokens(history: &[ChatMessage]) -> usize {
@@ -84,8 +87,14 @@ fn apply_compaction_summary(
     compact_end: usize,
     summary: &str,
 ) {
-    let summary_msg = ChatMessage::assistant(format!("[Compaction summary]\n{}", summary.trim()));
+    let summary_msg =
+        ChatMessage::assistant(format!("{COMPACTION_SUMMARY_PREFIX}{}", summary.trim()));
     history.splice(start..compact_end, std::iter::once(summary_msg));
+}
+
+/// Returns true when the message content is a stored compaction summary.
+pub fn is_compaction_summary(content: &str) -> bool {
+    content.starts_with(COMPACTION_SUMMARY_PREFIX)
 }
 
 /// Determine the compaction range and build the transcript to summarize.

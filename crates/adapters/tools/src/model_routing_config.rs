@@ -4,8 +4,12 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::Arc;
+use synapse_domain::application::services::model_preset_resolution::{
+    known_model_presets, normalize_model_preset_id, preset_description, preset_reasoning_seed,
+    preset_title, resolve_effective_model_lanes,
+};
 use synapse_domain::config::schema::{
-    ClassificationRule, Config, DelegateAgentConfig, ModelRouteConfig,
+    CapabilityLane, ClassificationRule, Config, DelegateAgentConfig, ModelRouteConfig,
 };
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
@@ -230,6 +234,43 @@ impl ModelRoutingConfigTool {
         })
     }
 
+    fn lane_name(lane: CapabilityLane) -> &'static str {
+        match lane {
+            CapabilityLane::Reasoning => "reasoning",
+            CapabilityLane::CheapReasoning => "cheap_reasoning",
+            CapabilityLane::Embedding => "embedding",
+            CapabilityLane::ImageGeneration => "image_generation",
+            CapabilityLane::AudioGeneration => "audio_generation",
+            CapabilityLane::VideoGeneration => "video_generation",
+            CapabilityLane::MusicGeneration => "music_generation",
+            CapabilityLane::MultimodalUnderstanding => "multimodal_understanding",
+        }
+    }
+
+    fn effective_lane_rows(cfg: &Config) -> Vec<Value> {
+        resolve_effective_model_lanes(cfg)
+            .into_iter()
+            .map(|lane| {
+                json!({
+                    "lane": Self::lane_name(lane.lane),
+                    "candidates": lane.candidates.into_iter().map(|candidate| {
+                        json!({
+                            "provider": candidate.provider,
+                            "model": candidate.model,
+                            "api_key_env": candidate.api_key_env,
+                            "dimensions": candidate.dimensions,
+                            "profile": {
+                                "context_window_tokens": candidate.profile.context_window_tokens,
+                                "max_output_tokens": candidate.profile.max_output_tokens,
+                                "features": candidate.profile.features,
+                            }
+                        })
+                    }).collect::<Vec<_>>(),
+                })
+            })
+            .collect()
+    }
+
     fn snapshot(cfg: &Config) -> Value {
         let mut routes = cfg.model_routes.clone();
         routes.sort_by(|a, b| a.hint.cmp(&b.hint));
@@ -288,6 +329,12 @@ impl ModelRoutingConfigTool {
                 "provider": cfg.default_provider,
                 "model": cfg.default_model,
                 "temperature": cfg.default_temperature,
+            },
+            "routing": {
+                "preset": cfg.model_preset,
+                "preset_title": cfg.model_preset.as_deref().and_then(preset_title),
+                "preset_description": cfg.model_preset.as_deref().and_then(preset_description),
+                "effective_lanes": Self::effective_lane_rows(cfg),
             },
             "query_classification": {
                 "enabled": cfg.query_classification.enabled,
@@ -375,6 +422,69 @@ impl ModelRoutingConfigTool {
                         "priority": 50
                     }
                 }
+            }))?,
+            error: None,
+        })
+    }
+
+    fn handle_list_presets(&self) -> anyhow::Result<ToolResult> {
+        let cfg = self.load_config_without_env()?;
+        Ok(ToolResult {
+            success: true,
+            output: serde_json::to_string_pretty(&json!({
+                "current_preset": cfg.model_preset,
+                "presets": known_model_presets().iter().map(|preset| {
+                    json!({
+                        "id": preset.id,
+                        "title": preset.title,
+                        "description": preset.description,
+                        "default_reasoning_seed": preset_reasoning_seed(&preset.id).map(|(provider, model)| {
+                            json!({
+                                "provider": provider,
+                                "model": model,
+                            })
+                        }),
+                    })
+                }).collect::<Vec<_>>(),
+            }))?,
+            error: None,
+        })
+    }
+
+    async fn handle_set_preset(&self, args: &Value) -> anyhow::Result<ToolResult> {
+        let preset_update = Self::parse_optional_string_update(args, "preset")?;
+        let sync_defaults = args
+            .get("sync_defaults")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+
+        let mut cfg = self.load_config_without_env()?;
+
+        match preset_update {
+            MaybeSet::Unset => anyhow::bail!("set_preset requires 'preset' (string or null)"),
+            MaybeSet::Null => {
+                cfg.model_preset = None;
+            }
+            MaybeSet::Set(preset) => {
+                let normalized = normalize_model_preset_id(&preset)
+                    .ok_or_else(|| anyhow::anyhow!("Unknown preset '{preset}'"))?;
+                cfg.model_preset = Some(normalized.to_string());
+                if sync_defaults {
+                    if let Some((provider, model)) = preset_reasoning_seed(normalized) {
+                        cfg.default_provider = Some(provider.to_string());
+                        cfg.default_model = Some(model.to_string());
+                    }
+                }
+            }
+        }
+
+        cfg.save().await?;
+
+        Ok(ToolResult {
+            success: true,
+            output: serde_json::to_string_pretty(&json!({
+                "message": "Model preset updated",
+                "config": Self::snapshot(&cfg),
             }))?,
             error: None,
         })
@@ -535,9 +645,11 @@ impl ModelRoutingConfigTool {
 
         let mut next_route = existing_route.unwrap_or(ModelRouteConfig {
             hint: hint.clone(),
+            capability: None,
             provider: provider.clone(),
             model: model.clone(),
             api_key: None,
+            profile: synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
         });
 
         next_route.hint = hint.clone();
@@ -826,6 +938,8 @@ impl Tool for ModelRoutingConfigTool {
                     "enum": [
                         "get",
                         "list_hints",
+                        "list_presets",
+                        "set_preset",
                         "set_default",
                         "upsert_scenario",
                         "remove_scenario",
@@ -837,6 +951,14 @@ impl Tool for ModelRoutingConfigTool {
                 "hint": {
                     "type": "string",
                     "description": "Scenario hint name (for example: conversation, coding, reasoning)"
+                },
+                "preset": {
+                    "type": ["string", "null"],
+                    "description": "Preset id for set_preset (for example: chatgpt, claude, openrouter, gemini, local)"
+                },
+                "sync_defaults": {
+                    "type": "boolean",
+                    "description": "When set_preset, also sync default provider/model to the preset's reasoning seed (default true)"
                 },
                 "provider": {
                     "type": "string",
@@ -939,6 +1061,8 @@ impl Tool for ModelRoutingConfigTool {
         {
             "get" => RoutingAction::Get,
             "list_hints" => RoutingAction::ListHints,
+            "list_presets" => RoutingAction::ListPresets,
+            "set_preset" => RoutingAction::SetPreset,
             "set_default" => RoutingAction::SetDefault,
             "upsert_scenario" => RoutingAction::UpsertScenario,
             "remove_scenario" => RoutingAction::RemoveScenario,
@@ -951,6 +1075,12 @@ impl Tool for ModelRoutingConfigTool {
             tool_id: self.name().to_string(),
             payload: ToolFactPayload::Routing(RoutingFact {
                 action,
+                preset: args
+                    .get("preset")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToOwned::to_owned),
                 hint: args
                     .get("hint")
                     .and_then(Value::as_str)
@@ -995,7 +1125,9 @@ impl Tool for ModelRoutingConfigTool {
         let result = match action.as_str() {
             "get" => self.handle_get(),
             "list_hints" => self.handle_list_hints(),
+            "list_presets" => self.handle_list_presets(),
             "set_default"
+            | "set_preset"
             | "upsert_scenario"
             | "remove_scenario"
             | "upsert_agent"
@@ -1005,6 +1137,7 @@ impl Tool for ModelRoutingConfigTool {
                 }
 
                 match action.as_str() {
+                    "set_preset" => Box::pin(self.handle_set_preset(&args)).await,
                     "set_default" => Box::pin(self.handle_set_default(&args)).await,
                     "upsert_scenario" => Box::pin(self.handle_upsert_scenario(&args)).await,
                     "remove_scenario" => Box::pin(self.handle_remove_scenario(&args)).await,
@@ -1014,7 +1147,7 @@ impl Tool for ModelRoutingConfigTool {
                 }
             }
             _ => anyhow::bail!(
-                "Unknown action '{action}'. Valid: get, list_hints, set_default, upsert_scenario, remove_scenario, upsert_agent, remove_agent"
+                "Unknown action '{action}'. Valid: get, list_hints, list_presets, set_preset, set_default, upsert_scenario, remove_scenario, upsert_agent, remove_agent"
             ),
         };
 

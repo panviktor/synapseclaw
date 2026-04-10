@@ -75,6 +75,7 @@ pub enum DeliveryTargetKind {
     CurrentConversation,
     Explicit(ConversationDeliveryTarget),
     ProfileDefault(ConversationDeliveryTarget),
+    ConfiguredDefault(ConversationDeliveryTarget),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -292,6 +293,7 @@ pub enum SecurityAction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoutingFact {
     pub action: RoutingAction,
+    pub preset: Option<String>,
     pub hint: Option<String>,
     pub agent_name: Option<String>,
     pub provider: Option<String>,
@@ -304,6 +306,8 @@ pub struct RoutingFact {
 pub enum RoutingAction {
     Get,
     ListHints,
+    ListPresets,
+    SetPreset,
     SetDefault,
     UpsertScenario,
     RemoveScenario,
@@ -442,6 +446,9 @@ impl TypedToolFact {
                 | DeliveryTargetKind::Explicit(ConversationDeliveryTarget::CurrentConversation)
                 | DeliveryTargetKind::ProfileDefault(
                     ConversationDeliveryTarget::CurrentConversation,
+                )
+                | DeliveryTargetKind::ConfiguredDefault(
+                    ConversationDeliveryTarget::CurrentConversation,
                 ) => push_unique(&mut subjects, "current_conversation".to_string()),
                 DeliveryTargetKind::Explicit(ConversationDeliveryTarget::Explicit {
                     channel,
@@ -449,6 +456,11 @@ impl TypedToolFact {
                     ..
                 })
                 | DeliveryTargetKind::ProfileDefault(ConversationDeliveryTarget::Explicit {
+                    channel,
+                    recipient,
+                    ..
+                })
+                | DeliveryTargetKind::ConfiguredDefault(ConversationDeliveryTarget::Explicit {
                     channel,
                     recipient,
                     ..
@@ -561,7 +573,8 @@ fn project_delivery_focus(delivery: &DeliveryFact) -> FocusEntity {
     match &delivery.target {
         DeliveryTargetKind::CurrentConversation
         | DeliveryTargetKind::Explicit(ConversationDeliveryTarget::CurrentConversation)
-        | DeliveryTargetKind::ProfileDefault(ConversationDeliveryTarget::CurrentConversation) => {
+        | DeliveryTargetKind::ProfileDefault(ConversationDeliveryTarget::CurrentConversation)
+        | DeliveryTargetKind::ConfiguredDefault(ConversationDeliveryTarget::CurrentConversation) => {
             FocusEntity {
                 kind: "delivery_target".into(),
                 name: "current_conversation".into(),
@@ -585,6 +598,15 @@ fn project_delivery_focus(delivery: &DeliveryFact) -> FocusEntity {
             kind: "delivery_target".into(),
             name: recipient.clone(),
             metadata: Some(format!("profile_default:{channel}")),
+        },
+        DeliveryTargetKind::ConfiguredDefault(ConversationDeliveryTarget::Explicit {
+            channel,
+            recipient,
+            ..
+        }) => FocusEntity {
+            kind: "delivery_target".into(),
+            name: recipient.clone(),
+            metadata: Some(format!("configured_default:{channel}")),
         },
     }
 }
@@ -871,6 +893,8 @@ fn routing_action_name(action: &RoutingAction) -> &'static str {
     match action {
         RoutingAction::Get => "get",
         RoutingAction::ListHints => "list_hints",
+        RoutingAction::ListPresets => "list_presets",
+        RoutingAction::SetPreset => "set_preset",
         RoutingAction::SetDefault => "set_default",
         RoutingAction::UpsertScenario => "upsert_scenario",
         RoutingAction::RemoveScenario => "remove_scenario",
@@ -1011,6 +1035,7 @@ mod tests {
             tool_id: "model_routing_config".into(),
             payload: ToolFactPayload::Routing(RoutingFact {
                 action: RoutingAction::UpsertAgent,
+                preset: None,
                 hint: Some("deploy".into()),
                 agent_name: Some("publisher".into()),
                 provider: Some("openrouter".into()),

@@ -81,6 +81,17 @@ fn nextcloud_talk_memory_key(msg: &crate::channels::traits::ChannelMessage) -> S
     format!("nextcloud_talk_{}_{}", msg.sender, msg.id)
 }
 
+fn should_autosave_gateway_message(state: &AppState, content: &str) -> bool {
+    state.auto_save
+        && matches!(
+            synapse_domain::application::services::memory_quality_governor::assess_autosave_write(
+                content,
+                synapse_domain::application::services::inbound_message_service::AUTOSAVE_MIN_MESSAGE_CHARS,
+            ),
+            synapse_domain::application::services::memory_quality_governor::AutosaveWriteVerdict::Write
+        )
+}
+
 fn sender_session_id(channel: &str, msg: &crate::channels::traits::ChannelMessage) -> String {
     match &msg.thread_ts {
         Some(thread_id) => format!("{channel}_{thread_id}_{}", msg.sender),
@@ -361,6 +372,18 @@ pub struct AppState {
     /// Structured user profile store for stable defaults.
     pub user_profile_store:
         Arc<dyn synapse_domain::ports::user_profile_store::UserProfileStorePort>,
+    /// Current conversation context for web-origin tool turns.
+    pub conversation_context:
+        Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>,
+    /// Shared structured user-profile context for web tool turns.
+    pub user_profile_context:
+        Arc<dyn synapse_domain::ports::user_profile_context::UserProfileContextPort>,
+    /// Shared typed per-turn defaults for web tool turns.
+    pub turn_defaults_context:
+        Arc<dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort>,
+    /// Shared on-demand scoped instruction loader for web turns.
+    pub scoped_instruction_context:
+        Arc<dyn synapse_domain::ports::scoped_instruction_context::ScopedInstructionContextPort>,
     /// Shared live heartbeat metrics when daemon heartbeat is enabled.
     pub heartbeat_metrics:
         Option<Arc<parking_lot::Mutex<crate::heartbeat::engine::HeartbeatMetrics>>>,
@@ -490,13 +513,16 @@ pub async fn run_gateway(
                 prompt_caching: config.agent.prompt_caching,
             },
         )?);
-    let model = config
-        .default_model
-        .clone()
-        .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
+    let model = config.default_model.clone().unwrap_or_else(|| {
+        synapse_domain::config::model_catalog::provider_default_model(
+            config.default_provider.as_deref().unwrap_or("openrouter"),
+        )
+        .unwrap_or("default")
+        .to_string()
+    });
     let summary_model = config.summary_model.clone();
     let temperature = config.default_temperature;
-    let resolved_agent_id = crate::agent::loop_::resolve_agent_id(&config);
+    let resolved_agent_id = crate::agent::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {
         Some(m) => m,
         None => {
@@ -890,6 +916,23 @@ pub async fn run_gateway(
         );
     }
 
+    let shared_conversation_context: Arc<
+        dyn synapse_domain::ports::conversation_context::ConversationContextPort,
+    > = Arc::new(synapse_domain::ports::conversation_context::InMemoryConversationContext::new());
+    let shared_user_profile_context: Arc<
+        dyn synapse_domain::ports::user_profile_context::UserProfileContextPort,
+    > = Arc::new(synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new());
+    let shared_turn_defaults_context: Arc<
+        dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort,
+    > = Arc::new(synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new());
+    let shared_scoped_instruction_context: Arc<
+        dyn synapse_domain::ports::scoped_instruction_context::ScopedInstructionContextPort,
+    > = Arc::new(
+        crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+            config.workspace_dir.clone(),
+        ),
+    );
+
     let mut state = AppState {
         config: config_state,
         provider: Arc::clone(&provider),
@@ -949,6 +992,10 @@ pub async fn run_gateway(
                 }
             }
         },
+        conversation_context: shared_conversation_context,
+        user_profile_context: shared_user_profile_context,
+        turn_defaults_context: shared_turn_defaults_context,
+        scoped_instruction_context: shared_scoped_instruction_context,
         heartbeat_metrics: shared_heartbeat_metrics,
         shutdown_tx,
         audit_logger,
@@ -2600,7 +2647,7 @@ async fn handle_webhook(
     let message = &webhook_body.message;
     let session_id = webhook_session_id(&headers);
 
-    if state.auto_save && !synapse_domain::domain::util::should_skip_autosave_content(message) {
+    if should_autosave_gateway_message(&state, message) {
         let key = webhook_memory_key();
         let _ = state
             .mem
@@ -2834,9 +2881,7 @@ async fn handle_whatsapp_message(
         let session_id = sender_session_id("whatsapp", msg);
 
         // Auto-save to memory
-        if state.auto_save
-            && !synapse_domain::domain::util::should_skip_autosave_content(&msg.content)
-        {
+        if should_autosave_gateway_message(&state, &msg.content) {
             let key = whatsapp_memory_key(msg);
             let _ = state
                 .mem
@@ -2961,9 +3006,7 @@ async fn handle_linq_webhook(
         let session_id = sender_session_id("linq", msg);
 
         // Auto-save to memory
-        if state.auto_save
-            && !synapse_domain::domain::util::should_skip_autosave_content(&msg.content)
-        {
+        if should_autosave_gateway_message(&state, &msg.content) {
             let key = linq_memory_key(msg);
             let _ = state
                 .mem
@@ -3073,9 +3116,7 @@ async fn handle_wati_webhook(State(state): State<AppState>, body: Bytes) -> impl
         let session_id = sender_session_id("wati", msg);
 
         // Auto-save to memory
-        if state.auto_save
-            && !synapse_domain::domain::util::should_skip_autosave_content(&msg.content)
-        {
+        if should_autosave_gateway_message(&state, &msg.content) {
             let key = wati_memory_key(msg);
             let _ = state
                 .mem
@@ -3198,9 +3239,7 @@ async fn handle_nextcloud_talk_webhook(
         );
         let session_id = sender_session_id("nextcloud_talk", msg);
 
-        if state.auto_save
-            && !synapse_domain::domain::util::should_skip_autosave_content(&msg.content)
-        {
+        if should_autosave_gateway_message(&state, &msg.content) {
             let key = nextcloud_talk_memory_key(msg);
             let _ = state
                 .mem

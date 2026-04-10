@@ -25,11 +25,27 @@ pub struct ToolExecution {
 }
 
 /// Description of a tool for the LLM (function-calling spec).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRuntimeRole {
+    DirectDelivery,
+    DelegatedDelivery,
+    HistoricalLookup,
+    WorkspaceDiscovery,
+    RuntimeStateInspection,
+    ProfileMutation,
+    MemoryMutation,
+    ExternalLookup,
+}
+
+/// Description of a tool for the LLM (function-calling spec).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolSpec {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_role: Option<ToolRuntimeRole>,
 }
 
 /// Core tool trait — implement for any capability the agent can invoke.
@@ -43,6 +59,11 @@ pub trait Tool: Send + Sync {
 
     /// JSON schema for parameters.
     fn parameters_schema(&self) -> serde_json::Value;
+
+    /// Typed runtime role for intent narrowing and context-engine policy.
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        None
+    }
 
     /// Execute the tool with given arguments.
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult>;
@@ -78,6 +99,7 @@ pub trait Tool: Send + Sync {
             name: self.name().to_string(),
             description: self.description().to_string(),
             parameters: self.parameters_schema(),
+            runtime_role: self.runtime_role(),
         }
     }
 }
@@ -97,6 +119,10 @@ impl Tool for ArcToolRef {
 
     fn parameters_schema(&self) -> serde_json::Value {
         self.0.parameters_schema()
+    }
+
+    fn runtime_role(&self) -> Option<ToolRuntimeRole> {
+        self.0.runtime_role()
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

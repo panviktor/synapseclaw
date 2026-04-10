@@ -1,13 +1,24 @@
 //! Resolve per-turn typed defaults from structured interpretation.
 
 use crate::application::services::turn_interpretation::TurnInterpretation;
+use crate::domain::conversation_target::ConversationDeliveryTarget;
 use crate::domain::turn_defaults::{
     ResolvedDeliveryTarget, ResolvedTurnDefaults, TurnDefaultSource,
 };
 
-pub fn resolve_turn_defaults(interpretation: Option<&TurnInterpretation>) -> ResolvedTurnDefaults {
+pub fn resolve_turn_defaults(
+    interpretation: Option<&TurnInterpretation>,
+    configured_delivery_target: Option<ConversationDeliveryTarget>,
+) -> ResolvedTurnDefaults {
     let Some(interpretation) = interpretation else {
-        return ResolvedTurnDefaults::default();
+        return configured_delivery_target
+            .map(|target| ResolvedTurnDefaults {
+                delivery_target: Some(ResolvedDeliveryTarget {
+                    target,
+                    source: TurnDefaultSource::ConfiguredChannel,
+                }),
+            })
+            .unwrap_or_default();
     };
 
     if let Some(target) = interpretation
@@ -36,7 +47,17 @@ pub fn resolve_turn_defaults(interpretation: Option<&TurnInterpretation>) -> Res
         };
     }
 
-    ResolvedTurnDefaults::default()
+    interpretation
+        .configured_delivery_target
+        .clone()
+        .or(configured_delivery_target)
+        .map(|target| ResolvedTurnDefaults {
+            delivery_target: Some(ResolvedDeliveryTarget {
+                target,
+                source: TurnDefaultSource::ConfiguredChannel,
+            }),
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -77,7 +98,7 @@ mod tests {
             ..TurnInterpretation::default()
         };
 
-        let defaults = resolve_turn_defaults(Some(&interpretation));
+        let defaults = resolve_turn_defaults(Some(&interpretation), None);
         let delivery = defaults.delivery_target.expect("delivery default");
         assert_eq!(delivery.source, TurnDefaultSource::DialogueState);
         match delivery.target {
@@ -102,8 +123,22 @@ mod tests {
             ..TurnInterpretation::default()
         };
 
-        let defaults = resolve_turn_defaults(Some(&interpretation));
+        let defaults = resolve_turn_defaults(Some(&interpretation), None);
         let delivery = defaults.delivery_target.expect("delivery default");
         assert_eq!(delivery.source, TurnDefaultSource::UserProfile);
+    }
+
+    #[test]
+    fn falls_back_to_configured_target_when_profile_and_dialogue_state_missing() {
+        let target = ConversationDeliveryTarget::Explicit {
+            channel: "matrix".into(),
+            recipient: "!ops:example.org".into(),
+            thread_ref: None,
+        };
+
+        let defaults = resolve_turn_defaults(None, Some(target.clone()));
+        let delivery = defaults.delivery_target.expect("delivery default");
+        assert_eq!(delivery.source, TurnDefaultSource::ConfiguredChannel);
+        assert_eq!(delivery.target, target);
     }
 }

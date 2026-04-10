@@ -1166,6 +1166,8 @@ mod tests {
             provider: "groq".into(),
             model: String::new(),
             api_key: None,
+            capability: None,
+            profile: Default::default(),
         }];
         let mut items = Vec::new();
         check_config_semantics(&config, &mut items);
@@ -1183,6 +1185,8 @@ mod tests {
             model: String::new(),
             dimensions: Some(1536),
             api_key: None,
+            capability: None,
+            profile: Default::default(),
         }];
 
         let mut items = Vec::new();
@@ -1204,6 +1208,8 @@ mod tests {
             model: "text-embedding-3-small".into(),
             dimensions: None,
             api_key: None,
+            capability: None,
+            profile: Default::default(),
         }];
 
         let mut items = Vec::new();

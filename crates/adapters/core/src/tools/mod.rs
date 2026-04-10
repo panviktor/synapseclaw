@@ -108,6 +108,10 @@ impl Tool for ArcDelegatingTool {
         self.inner.parameters_schema()
     }
 
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        self.inner.runtime_role()
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         self.inner.execute(args).await
     }
@@ -359,17 +363,17 @@ pub fn all_tools_with_runtime(
         Arc::new(MemoryStoreTool::new(memory.clone(), security.clone())) as Arc<dyn Tool>,
         Arc::new(MemoryRecallTool::new(
             memory.clone(),
-            crate::agent::loop_::resolve_agent_id(root_config),
+            crate::agent::resolve_agent_id(root_config),
         )),
         Arc::new(MemoryForgetTool::new(
             memory.clone(),
             security.clone(),
-            crate::agent::loop_::resolve_agent_id(root_config),
+            crate::agent::resolve_agent_id(root_config),
         )),
         Arc::new(CoreMemoryUpdateTool::new(
             memory.clone(),
             security.clone(),
-            crate::agent::loop_::resolve_agent_id(root_config),
+            crate::agent::resolve_agent_id(root_config),
         )),
     ]);
 
@@ -837,14 +841,14 @@ pub fn all_tools_with_runtime(
         synapse_tools::precedent_search::PrecedentSearchTool::new(
             Arc::clone(&memory),
             Arc::clone(&run_recipe_store),
-            crate::agent::loop_::resolve_agent_id(config.as_ref()),
+            crate::agent::resolve_agent_id(config.as_ref()),
         ),
     ));
     tool_arcs.push(Arc::new(
         synapse_tools::standing_order::StandingOrderTool::new(
             conversation_context,
             standing_order_store,
-            crate::agent::loop_::resolve_agent_id(config.as_ref()),
+            crate::agent::resolve_agent_id(config.as_ref()),
         ),
     ));
 
@@ -1042,6 +1046,7 @@ mod tests {
             name: "test".into(),
             description: "A test tool".into(),
             parameters: serde_json::json!({"type": "object"}),
+            runtime_role: None,
         };
         let json = serde_json::to_string(&spec).unwrap();
         let parsed: ToolSpec = serde_json::from_str(&json).unwrap();

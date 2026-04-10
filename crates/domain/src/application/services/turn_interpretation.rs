@@ -3,6 +3,7 @@
 //! This layer is intentionally narrow. It combines structured runtime facts
 //! without turning into a phrase-engine.
 
+use crate::application::services::turn_model_routing::infer_turn_capability_requirement;
 use crate::domain::conversation_target::{ConversationDeliveryTarget, CurrentConversationContext};
 use crate::domain::dialogue_state::{
     DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal, ResourceReference,
@@ -17,6 +18,7 @@ pub struct TurnInterpretation {
     pub user_profile: Option<UserProfile>,
     pub current_conversation: Option<CurrentConversationSnapshot>,
     pub dialogue_state: Option<DialogueStateSnapshot>,
+    pub configured_delivery_target: Option<ConversationDeliveryTarget>,
     pub reference_candidates: Vec<ReferenceCandidate>,
     pub clarification_candidates: Vec<String>,
 }
@@ -42,6 +44,7 @@ pub struct DialogueStateSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReferenceSource {
+    ConfiguredRuntime,
     DialogueState,
     UserProfile,
     CurrentConversation,
@@ -95,6 +98,7 @@ pub async fn build_turn_interpretation(
     profile: Option<UserProfile>,
     current_conversation: Option<&CurrentConversationContext>,
     dialogue_state: Option<&DialogueState>,
+    configured_delivery_target: Option<ConversationDeliveryTarget>,
 ) -> Option<TurnInterpretation> {
     let user_profile = profile.filter(|profile| !profile.is_empty());
     let current_conversation = current_conversation.map(|ctx| CurrentConversationSnapshot {
@@ -107,6 +111,7 @@ pub async fn build_turn_interpretation(
         user_profile.as_ref(),
         current_conversation.as_ref(),
         dialogue_state.as_ref(),
+        configured_delivery_target.as_ref(),
     );
     let clarification_candidates =
         collect_clarification_candidates(dialogue_state.as_ref(), user_profile.as_ref());
@@ -115,6 +120,7 @@ pub async fn build_turn_interpretation(
         user_profile,
         current_conversation,
         dialogue_state,
+        configured_delivery_target,
         reference_candidates,
         clarification_candidates,
     };
@@ -170,6 +176,17 @@ pub fn format_turn_interpretation(interpretation: &TurnInterpretation) -> Option
         lines.push(format!("- adapter: {}", conversation.adapter));
         lines.push("- reply_here_available: true".to_string());
         lines.push(format!("- threaded_reply: {}", conversation.has_thread));
+    }
+
+    if let Some(target) = &interpretation.configured_delivery_target {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push("[configured-runtime]".to_string());
+        lines.push(format!(
+            "- configured_delivery_target: {}",
+            format_delivery_target(target)
+        ));
     }
 
     if let Some(state) = &interpretation.dialogue_state {
@@ -271,6 +288,42 @@ pub fn format_turn_interpretation(interpretation: &TurnInterpretation) -> Option
     }
 }
 
+pub fn format_turn_interpretation_for_turn(
+    user_message: &str,
+    interpretation: &TurnInterpretation,
+) -> Option<String> {
+    if infer_turn_capability_requirement(user_message).is_some() {
+        return format_media_turn_interpretation(interpretation);
+    }
+
+    format_turn_interpretation(interpretation)
+}
+
+fn format_media_turn_interpretation(interpretation: &TurnInterpretation) -> Option<String> {
+    let mut lines = Vec::new();
+
+    if let Some(profile) = &interpretation.user_profile {
+        let mut profile_lines = Vec::new();
+        if let Some(language) = &profile.preferred_language {
+            profile_lines.push(format!("- preferred_language: {language}"));
+        }
+        if let Some(style) = &profile.communication_style {
+            profile_lines.push(format!("- communication_style: {style}"));
+        }
+
+        if !profile_lines.is_empty() {
+            lines.push("[user-profile]".to_string());
+            lines.extend(profile_lines);
+        }
+    }
+
+    if lines.is_empty() {
+        None
+    } else {
+        Some(format!("[runtime-interpretation]\n{}\n", lines.join("\n")))
+    }
+}
+
 fn snapshot_dialogue_state(state: &DialogueState) -> Option<DialogueStateSnapshot> {
     let focus_entities = state
         .focus_entities
@@ -320,8 +373,18 @@ fn collect_reference_candidates(
     profile: Option<&UserProfile>,
     current_conversation: Option<&CurrentConversationSnapshot>,
     dialogue_state: Option<&DialogueStateSnapshot>,
+    configured_delivery_target: Option<&ConversationDeliveryTarget>,
 ) -> Vec<ReferenceCandidate> {
     let mut candidates = Vec::new();
+
+    if let Some(target) = configured_delivery_target {
+        push_reference_candidate(
+            &mut candidates,
+            ReferenceCandidateKind::DeliveryTarget,
+            &format_delivery_target(target),
+            ReferenceSource::ConfiguredRuntime,
+        );
+    }
 
     if let Some(state) = dialogue_state {
         for (entity_kind, value) in state
@@ -652,6 +715,7 @@ fn format_workspace_reference(workspace: &WorkspaceReference) -> String {
 
 fn reference_source_name(source: ReferenceSource) -> &'static str {
     match source {
+        ReferenceSource::ConfiguredRuntime => "configured_runtime",
         ReferenceSource::DialogueState => "dialogue_state",
         ReferenceSource::UserProfile => "user_profile",
         ReferenceSource::CurrentConversation => "current_conversation",
@@ -967,9 +1031,6 @@ mod tests {
         ) -> Result<Vec<MemoryEntry>, MemoryError> {
             Ok(vec![])
         }
-        fn should_skip_autosave(&self, _: &str) -> bool {
-            false
-        }
         async fn count(&self) -> Result<usize, MemoryError> {
             Ok(0)
         }
@@ -1006,7 +1067,7 @@ mod tests {
 
     #[tokio::test]
     async fn returns_none_for_empty_inputs() {
-        assert!(build_turn_interpretation(None, "", None, None, None)
+        assert!(build_turn_interpretation(None, "", None, None, None, None)
             .await
             .is_none());
     }
@@ -1041,6 +1102,7 @@ mod tests {
             Some(profile),
             None,
             Some(&state),
+            None,
         )
         .await
         .unwrap();
@@ -1083,6 +1145,7 @@ mod tests {
             Some(profile),
             Some(&current),
             Some(&state),
+            None,
         )
         .await
         .unwrap();
@@ -1134,6 +1197,7 @@ mod tests {
                 last_tool_subjects: vec!["Berlin".into(), "Tbilisi".into()],
                 ..Default::default()
             }),
+            None,
         )
         .await
         .unwrap();
@@ -1172,6 +1236,7 @@ mod tests {
                 }),
                 ..Default::default()
             }),
+            None,
         )
         .await
         .unwrap();
@@ -1214,6 +1279,7 @@ mod tests {
                 }),
                 ..Default::default()
             }),
+            None,
         )
         .await
         .unwrap();
@@ -1256,6 +1322,7 @@ mod tests {
                 }),
                 ..Default::default()
             }),
+            None,
         )
         .await
         .unwrap();
@@ -1284,6 +1351,7 @@ mod tests {
             }),
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1294,5 +1362,81 @@ mod tests {
                 ReferenceCandidateKind::Profile(ProfileReferenceKind::DeliveryTarget)
             ) && candidate.value == "explicit:telegram:@synapseclaw"
         }));
+    }
+
+    #[tokio::test]
+    async fn configured_delivery_target_is_formatted_without_profile_or_dialogue_state() {
+        let interpretation = build_turn_interpretation(
+            None,
+            "send the restart report to matrix",
+            None,
+            None,
+            None,
+            Some(ConversationDeliveryTarget::Explicit {
+                channel: "matrix".into(),
+                recipient: "!ops:example.org".into(),
+                thread_ref: None,
+            }),
+        )
+        .await
+        .unwrap();
+
+        let block = format_turn_interpretation(&interpretation).unwrap();
+        assert!(block.contains("[configured-runtime]"));
+        assert!(block.contains("configured_delivery_target: explicit:matrix:!ops:example.org"));
+    }
+
+    #[test]
+    fn media_turn_interpretation_uses_compact_profile_only_block() {
+        let interpretation = TurnInterpretation {
+            user_profile: Some(UserProfile {
+                preferred_language: Some("ru".into()),
+                timezone: Some("Europe/Berlin".into()),
+                default_city: Some("Berlin".into()),
+                communication_style: Some("direct".into()),
+                known_environments: vec!["linux".into()],
+                default_delivery_target: Some(ConversationDeliveryTarget::CurrentConversation),
+            }),
+            current_conversation: Some(CurrentConversationSnapshot {
+                adapter: "matrix".into(),
+                has_thread: true,
+            }),
+            dialogue_state: Some(DialogueStateSnapshot {
+                focus_entities: vec![("project".into(), "Borealis".into())],
+                comparison_set: Vec::new(),
+                reference_anchors: Vec::new(),
+                last_tool_subjects: vec!["workspace_search".into()],
+                recent_delivery_target: None,
+                recent_schedule_job: None,
+                recent_resource: Some(ResourceReference {
+                    kind: ResourceKind::File,
+                    operation: ResourceOperation::Read,
+                    locator: "docs/fork/ipc-phase4_10-plan.md".into(),
+                    host: None,
+                }),
+                recent_search: None,
+                recent_workspace: None,
+            }),
+            configured_delivery_target: Some(ConversationDeliveryTarget::CurrentConversation),
+            reference_candidates: Vec::new(),
+            clarification_candidates: vec!["Borealis".into()],
+        };
+
+        let block = format_turn_interpretation_for_turn(
+            "Describe this [IMAGE:/tmp/smoke.png]",
+            &interpretation,
+        )
+        .expect("compact media interpretation block");
+
+        assert!(block.contains("[runtime-interpretation]"));
+        assert!(block.contains("[user-profile]"));
+        assert!(block.contains("preferred_language: ru"));
+        assert!(block.contains("communication_style: direct"));
+        assert!(!block.contains("[current-conversation]"));
+        assert!(!block.contains("[configured-runtime]"));
+        assert!(!block.contains("[working-state]"));
+        assert!(!block.contains("[bounded-interpretation]"));
+        assert!(!block.contains("default_city"));
+        assert!(!block.contains("timezone"));
     }
 }

@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::channel::{ChannelCapability, DegradationPolicy, OutboundIntent};
+use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
 use synapse_domain::ports::channel_registry::ChannelRegistryPort;
 
 /// Builder function type for creating channels from config.
@@ -24,6 +25,15 @@ pub struct CachedChannelRegistry {
 }
 
 impl CachedChannelRegistry {
+    fn push_target(
+        targets: &mut Vec<ConversationDeliveryTarget>,
+        target: ConversationDeliveryTarget,
+    ) {
+        if !targets.iter().any(|existing| existing == &target) {
+            targets.push(target);
+        }
+    }
+
     pub fn new(config: Config, builder: Arc<ChannelBuilderFn>) -> Self {
         Self {
             config,
@@ -91,6 +101,116 @@ impl CachedChannelRegistry {
             "mattermost" => {
                 Some("Format replies using Markdown (bold=**, italic=*, code=```).".to_string())
             }
+            _ => None,
+        }
+    }
+
+    fn configured_delivery_target_impl(&self) -> Option<ConversationDeliveryTarget> {
+        let mut targets = Vec::new();
+
+        let heartbeat_channel = self
+            .config
+            .heartbeat
+            .target
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let heartbeat_recipient = self
+            .config
+            .heartbeat
+            .to
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let (Some(channel), Some(recipient)) = (heartbeat_channel, heartbeat_recipient) {
+            Self::push_target(
+                &mut targets,
+                ConversationDeliveryTarget::Explicit {
+                    channel: channel.to_ascii_lowercase(),
+                    recipient: recipient.to_string(),
+                    thread_ref: None,
+                },
+            );
+        }
+
+        #[cfg(feature = "channel-matrix")]
+        if let Some(matrix) = &self.config.channels_config.matrix {
+            let room_id = matrix.room_id.trim();
+            if !room_id.is_empty() {
+                Self::push_target(
+                    &mut targets,
+                    ConversationDeliveryTarget::Explicit {
+                        channel: "matrix".into(),
+                        recipient: room_id.to_string(),
+                        thread_ref: None,
+                    },
+                );
+            }
+        }
+
+        if let Some(slack) = &self.config.channels_config.slack {
+            if let Some(channel_id) = slack.channel_id.as_deref().map(str::trim) {
+                if !channel_id.is_empty() && channel_id != "*" {
+                    Self::push_target(
+                        &mut targets,
+                        ConversationDeliveryTarget::Explicit {
+                            channel: "slack".into(),
+                            recipient: channel_id.to_string(),
+                            thread_ref: None,
+                        },
+                    );
+                }
+            }
+        }
+
+        if let Some(mattermost) = &self.config.channels_config.mattermost {
+            if let Some(channel_id) = mattermost.channel_id.as_deref().map(str::trim) {
+                if !channel_id.is_empty() {
+                    Self::push_target(
+                        &mut targets,
+                        ConversationDeliveryTarget::Explicit {
+                            channel: "mattermost".into(),
+                            recipient: channel_id.to_string(),
+                            thread_ref: None,
+                        },
+                    );
+                }
+            }
+        }
+
+        if let Some(signal) = &self.config.channels_config.signal {
+            if let Some(group_id) = signal.group_id.as_deref().map(str::trim) {
+                if !group_id.is_empty() && !group_id.eq_ignore_ascii_case("dm") {
+                    Self::push_target(
+                        &mut targets,
+                        ConversationDeliveryTarget::Explicit {
+                            channel: "signal".into(),
+                            recipient: group_id.to_string(),
+                            thread_ref: None,
+                        },
+                    );
+                }
+            }
+        }
+
+        if let Some(irc) = &self.config.channels_config.irc {
+            if irc.channels.len() == 1 {
+                let channel = irc.channels[0].trim();
+                if !channel.is_empty() {
+                    Self::push_target(
+                        &mut targets,
+                        ConversationDeliveryTarget::Explicit {
+                            channel: "irc".into(),
+                            recipient: channel.to_string(),
+                            thread_ref: None,
+                        },
+                    );
+                }
+            }
+        }
+
+        match targets.len() {
+            1 => targets.into_iter().next(),
             _ => None,
         }
     }
@@ -169,6 +289,10 @@ impl ChannelRegistryPort for CachedChannelRegistry {
 
     fn delivery_hints(&self, channel_name: &str) -> Option<String> {
         self.delivery_hints_impl(channel_name)
+    }
+
+    fn configured_delivery_target(&self) -> Option<ConversationDeliveryTarget> {
+        self.configured_delivery_target_impl()
     }
 
     async fn deliver(&self, intent: &OutboundIntent) -> anyhow::Result<()> {
@@ -378,5 +502,68 @@ mod tests {
 
         registry.deliver(&intent).await.unwrap();
         assert_eq!(mock.sent_messages(), vec!["msg"]);
+    }
+
+    #[test]
+    fn configured_delivery_target_prefers_single_unambiguous_channel_target() {
+        let config = Config {
+            channels_config: synapse_domain::config::schema::ChannelsConfig {
+                slack: Some(synapse_domain::config::schema::SlackConfig {
+                    bot_token: "xoxb-test".into(),
+                    app_token: None,
+                    channel_id: Some("C123".into()),
+                    allowed_users: Vec::new(),
+                    interrupt_on_new_message: false,
+                    mention_only: false,
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|_, id| anyhow::bail!("no channels configured for {id}")),
+        );
+
+        assert_eq!(
+            registry.configured_delivery_target(),
+            Some(ConversationDeliveryTarget::Explicit {
+                channel: "slack".into(),
+                recipient: "C123".into(),
+                thread_ref: None,
+            })
+        );
+    }
+
+    #[test]
+    fn configured_delivery_target_returns_none_when_multiple_targets_exist() {
+        let config = Config {
+            channels_config: synapse_domain::config::schema::ChannelsConfig {
+                slack: Some(synapse_domain::config::schema::SlackConfig {
+                    bot_token: "xoxb-test".into(),
+                    app_token: None,
+                    channel_id: Some("C123".into()),
+                    allowed_users: Vec::new(),
+                    interrupt_on_new_message: false,
+                    mention_only: false,
+                }),
+                mattermost: Some(synapse_domain::config::schema::MattermostConfig {
+                    url: "https://mattermost.example.com".into(),
+                    bot_token: "mm-token".into(),
+                    channel_id: Some("channel-1".into()),
+                    allowed_users: Vec::new(),
+                    thread_replies: None,
+                    mention_only: None,
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let registry = CachedChannelRegistry::new(
+            config,
+            Arc::new(|_, id| anyhow::bail!("no channels configured for {id}")),
+        );
+
+        assert_eq!(registry.configured_delivery_target(), None);
     }
 }

@@ -9,6 +9,12 @@ use synapse_infra::identity;
 
 const BOOTSTRAP_MAX_CHARS: usize = 20_000;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptSectionStats {
+    pub name: String,
+    pub chars: usize,
+}
+
 pub struct PromptContext<'a> {
     pub workspace_dir: &'a Path,
     pub model_name: &'a str,
@@ -17,6 +23,7 @@ pub struct PromptContext<'a> {
     pub skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode,
     pub identity_config: Option<&'a IdentityConfig>,
     pub dispatcher_instructions: &'a str,
+    pub tool_specs_are_out_of_band: bool,
 }
 
 pub trait PromptSection: Send + Sync {
@@ -52,16 +59,28 @@ impl SystemPromptBuilder {
     }
 
     pub fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
+        Ok(self.build_with_stats(ctx)?.0)
+    }
+
+    pub fn build_with_stats(
+        &self,
+        ctx: &PromptContext<'_>,
+    ) -> Result<(String, Vec<PromptSectionStats>)> {
         let mut output = String::new();
+        let mut stats = Vec::new();
         for section in &self.sections {
             let part = section.build(ctx)?;
             if part.trim().is_empty() {
                 continue;
             }
+            stats.push(PromptSectionStats {
+                name: section.name().to_string(),
+                chars: part.chars().count(),
+            });
             output.push_str(part.trim_end());
             output.push_str("\n\n");
         }
-        Ok(output)
+        Ok((output, stats))
     }
 }
 
@@ -164,14 +183,24 @@ impl PromptSection for ToolsSection {
 
     fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
         let mut out = String::from("## Tools\n\n");
-        for tool in ctx.tools {
-            let _ = writeln!(
-                out,
-                "- **{}**: {}\n  Parameters: `{}`",
-                tool.name(),
-                tool.description(),
-                tool.parameters_schema()
+        if ctx.tool_specs_are_out_of_band {
+            out.push_str(
+                "Tool definitions are registered out-of-band via native tool calling.\n\
+                 Use the tool interface directly when action is required.\n\
+                 Do not invent JSON schemas or restate tool contracts in prose.\n\
+                 If the user asks you to check, fetch, change, send, or verify something and a tool is available, call the tool instead of only describing what you would do.\n\
+                 Do not claim external side effects or verification unless a tool result actually completed.\n",
             );
+            let contract = canonical_tool_language_contract(ctx.tools);
+            if !contract.is_empty() {
+                out.push('\n');
+                out.push_str(&contract);
+            }
+        } else {
+            out.push_str("You have access to the following tools:\n\n");
+            for tool in ctx.tools {
+                let _ = writeln!(out, "- **{}**: {}", tool.name(), tool.description());
+            }
         }
         if !ctx.dispatcher_instructions.is_empty() {
             out.push('\n');
@@ -262,6 +291,46 @@ impl PromptSection for ChannelMediaSection {
             - `[Document: <name>] <path>` — A file attachment saved to the workspace."
             .into())
     }
+}
+
+fn canonical_tool_language_contract(tools: &[Box<dyn Tool>]) -> String {
+    if tools.is_empty() {
+        return String::new();
+    }
+    let has_tool = |name: &str| tools.iter().any(|tool| tool.name() == name);
+    let mut lines = Vec::new();
+    lines.push("### Canonical Tool Language".to_string());
+    lines.push(
+        "- Always call the exact registered tool name. Do not invent aliases like `matrix_send_message` or print pseudo tool JSON as normal assistant text."
+            .to_string(),
+    );
+    lines.push(
+        "- When acting, emit a real tool call with one JSON object of arguments. Do not describe the tool call in markdown or code fences."
+            .to_string(),
+    );
+    lines.push(
+        "- The only non-native fallback syntax is exactly `<tool_call>{\"name\":\"...\",\"arguments\":{...}}</tool_call>`. Any other tool syntax is invalid and ignored."
+            .to_string(),
+    );
+    if has_tool("core_memory_update") {
+        lines.push(
+            "- `core_memory_update` arguments must be exactly: `{ \"label\": \"persona|user_knowledge|task_state|domain\", \"action\": \"replace|append\", \"content\": \"...\" }`."
+                .to_string(),
+        );
+    }
+    if has_tool("user_profile") {
+        lines.push(
+            "- `user_profile` uses canonical top-level fields: `{ \"action\": \"get|upsert|clear|delete\", \"default_city\": \"...\", \"preferred_language\": \"...\", \"timezone\": \"...\", \"communication_style\": \"...\" }`."
+                .to_string(),
+        );
+    }
+    if has_tool("message_send") {
+        lines.push(
+            "- `message_send` uses `{ \"content\": \"...\" }` with omitted `target` for a resolved default, `\"current_conversation\"` to reply here, or `{ \"channel\": \"...\", \"recipient\": \"...\", \"thread_ref\": \"...\" }` for an explicit target."
+                .to_string(),
+        );
+    }
+    format!("{}\n", lines.join("\n"))
 }
 
 fn inject_workspace_file(prompt: &mut String, workspace_dir: &Path, filename: &str) {
@@ -358,6 +427,7 @@ mod tests {
             skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode::Full,
             identity_config: Some(&identity_config),
             dispatcher_instructions: "",
+            tool_specs_are_out_of_band: false,
         };
 
         let section = IdentitySection;
@@ -386,6 +456,7 @@ mod tests {
             skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "instr",
+            tool_specs_are_out_of_band: false,
         };
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
         assert!(prompt.contains("## Tools"));
@@ -393,6 +464,28 @@ mod tests {
         assert!(prompt.contains("instr"));
         assert!(prompt.contains("Only static identity metadata is injected below."));
         assert!(prompt.contains("Do NOT use `file_read` or `file_edit`"));
+    }
+
+    #[test]
+    fn native_tools_prompt_omits_inline_tool_listing() {
+        let tools: Vec<Box<dyn Tool>> = vec![Box::new(TestTool)];
+        let ctx = PromptContext {
+            workspace_dir: Path::new("/tmp"),
+            model_name: "test-model",
+            tools: &tools,
+            skills: &[],
+            skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode::Full,
+            identity_config: None,
+            dispatcher_instructions: "",
+            tool_specs_are_out_of_band: true,
+        };
+
+        let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();
+        assert!(prompt.contains("registered out-of-band via native tool calling"));
+        assert!(prompt.contains("### Canonical Tool Language"));
+        assert!(prompt.contains("Do not invent aliases"));
+        assert!(!prompt.contains("Parameters:"));
+        assert!(!prompt.contains("tool desc"));
     }
 
     #[test]
@@ -423,6 +516,7 @@ mod tests {
             skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "",
+            tool_specs_are_out_of_band: false,
         };
 
         let output = SkillsSection.build(&ctx).unwrap();
@@ -461,6 +555,7 @@ mod tests {
             skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode::Compact,
             identity_config: None,
             dispatcher_instructions: "",
+            tool_specs_are_out_of_band: false,
         };
 
         let output = SkillsSection.build(&ctx).unwrap();
@@ -482,6 +577,7 @@ mod tests {
             skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "instr",
+            tool_specs_are_out_of_band: false,
         };
 
         let rendered = DateTimeSection.build(&ctx).unwrap();
@@ -520,6 +616,7 @@ mod tests {
             skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode::Full,
             identity_config: None,
             dispatcher_instructions: "",
+            tool_specs_are_out_of_band: false,
         };
 
         let prompt = SystemPromptBuilder::with_defaults().build(&ctx).unwrap();

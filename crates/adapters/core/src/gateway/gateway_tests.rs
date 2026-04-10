@@ -115,6 +115,21 @@ async fn metrics_endpoint_returns_hint_when_prometheus_is_disabled() {
         user_profile_store: Arc::new(
             synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
         ),
+        conversation_context: Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        ),
+        user_profile_context: Arc::new(
+            synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+        ),
+        turn_defaults_context: Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+        ),
+        scoped_instruction_context: Arc::new(
+            crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                std::env::temp_dir(),
+            ),
+        ),
+        heartbeat_metrics: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -690,9 +705,6 @@ impl UnifiedMemoryPort for TrackingMemory {
     ) -> Result<Vec<synapse_domain::domain::memory::MemoryEntry>, MemoryError> {
         Ok(vec![])
     }
-    fn should_skip_autosave(&self, _: &str) -> bool {
-        false
-    }
     async fn count(&self) -> Result<usize, MemoryError> {
         let size = self.keys.lock().len();
         Ok(size)
@@ -749,6 +761,21 @@ async fn webhook_idempotency_skips_duplicate_provider_calls() {
         user_profile_store: Arc::new(
             synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
         ),
+        conversation_context: Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        ),
+        user_profile_context: Arc::new(
+            synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+        ),
+        turn_defaults_context: Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+        ),
+        scoped_instruction_context: Arc::new(
+            crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                std::env::temp_dir(),
+            ),
+        ),
+        heartbeat_metrics: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -852,6 +879,21 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
         user_profile_store: Arc::new(
             synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
         ),
+        conversation_context: Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        ),
+        user_profile_context: Arc::new(
+            synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+        ),
+        turn_defaults_context: Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+        ),
+        scoped_instruction_context: Arc::new(
+            crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                std::env::temp_dir(),
+            ),
+        ),
+        heartbeat_metrics: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -885,7 +927,7 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
     let headers = HeaderMap::new();
 
     let body1 = Ok(Json(WebhookBody {
-        message: "hello one".into(),
+        message: "This webhook message is long enough to be autosaved one.".into(),
     }));
     let first = handle_webhook(
         State(state.clone()),
@@ -898,7 +940,7 @@ async fn webhook_autosave_stores_distinct_keys_per_request() {
     assert_eq!(first.status(), StatusCode::OK);
 
     let body2 = Ok(Json(WebhookBody {
-        message: "hello two".into(),
+        message: "This webhook message is also long enough to be autosaved two.".into(),
     }));
     let second = handle_webhook(State(state), test_connect_info(), headers, body2)
         .await
@@ -967,6 +1009,21 @@ async fn webhook_secret_hash_rejects_missing_header() {
         user_profile_store: Arc::new(
             synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
         ),
+        conversation_context: Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        ),
+        user_profile_context: Arc::new(
+            synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+        ),
+        turn_defaults_context: Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+        ),
+        scoped_instruction_context: Arc::new(
+            crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                std::env::temp_dir(),
+            ),
+        ),
+        heartbeat_metrics: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -1054,6 +1111,21 @@ async fn webhook_secret_hash_rejects_invalid_header() {
         user_profile_store: Arc::new(
             synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
         ),
+        conversation_context: Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        ),
+        user_profile_context: Arc::new(
+            synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+        ),
+        turn_defaults_context: Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+        ),
+        scoped_instruction_context: Arc::new(
+            crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                std::env::temp_dir(),
+            ),
+        ),
+        heartbeat_metrics: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -1146,6 +1218,21 @@ async fn webhook_secret_hash_accepts_valid_header() {
         user_profile_store: Arc::new(
             synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
         ),
+        conversation_context: Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        ),
+        user_profile_context: Arc::new(
+            synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+        ),
+        turn_defaults_context: Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+        ),
+        scoped_instruction_context: Arc::new(
+            crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                std::env::temp_dir(),
+            ),
+        ),
+        heartbeat_metrics: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -1243,6 +1330,21 @@ async fn nextcloud_talk_webhook_returns_not_found_when_not_configured() {
         user_profile_store: Arc::new(
             synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
         ),
+        conversation_context: Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        ),
+        user_profile_context: Arc::new(
+            synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+        ),
+        turn_defaults_context: Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+        ),
+        scoped_instruction_context: Arc::new(
+            crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                std::env::temp_dir(),
+            ),
+        ),
+        heartbeat_metrics: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,
@@ -1336,6 +1438,21 @@ async fn nextcloud_talk_webhook_rejects_invalid_signature() {
         user_profile_store: Arc::new(
             synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
         ),
+        conversation_context: Arc::new(
+            synapse_domain::ports::conversation_context::InMemoryConversationContext::new(),
+        ),
+        user_profile_context: Arc::new(
+            synapse_domain::ports::user_profile_context::InMemoryUserProfileContext::new(),
+        ),
+        turn_defaults_context: Arc::new(
+            synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new(),
+        ),
+        scoped_instruction_context: Arc::new(
+            crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+                std::env::temp_dir(),
+            ),
+        ),
+        heartbeat_metrics: None,
         shutdown_tx: tokio::sync::watch::channel(false).0,
         audit_logger: None,
         ipc_prompt_guard: None,

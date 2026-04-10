@@ -587,6 +587,18 @@ impl ConfigIO for Config {
             .await
             .context("Failed to create workspace directory")?;
 
+        if let Some(path) =
+            crate::model_catalog_io::install_runtime_model_catalog_override_from_dir(
+                &synapseclaw_dir,
+            )
+            .await?
+        {
+            tracing::info!(
+                path = %path.display(),
+                "Loaded user model catalog override"
+            );
+        }
+
         if config_path.exists() {
             // Warn if config file is world-readable (may contain API keys)
             #[cfg(unix)]

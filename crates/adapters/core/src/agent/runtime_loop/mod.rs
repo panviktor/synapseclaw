@@ -21,8 +21,8 @@ use synapse_providers::{
 };
 use synapse_security::security_policy_from_config;
 use tokio_util::sync::CancellationToken;
-use uuid::Uuid;
 
+pub(crate) use crate::agent::autosave_memory_key;
 /// Minimum characters per chunk when relaying LLM text to a streaming draft.
 const STREAM_CHUNK_MIN_CHARS: usize = 80;
 
@@ -30,15 +30,11 @@ const STREAM_CHUNK_MIN_CHARS: usize = 80;
 /// Used as a safe fallback when `max_tool_iterations` is unset or configured as zero.
 const DEFAULT_MAX_TOOL_ITERATIONS: usize = 10;
 
-/// Minimum user-message length (in chars) for auto-save to memory.
-/// Matches the channel-side constant in `channels/mod.rs`.
-const AUTOSAVE_MIN_MESSAGE_CHARS: usize = 20;
-
 // ── Tool filtering — delegated to domain services ───────────────────
 //
 // The actual filtering logic lives in `synapse_domain::application::services::tool_filtering`.
-// These re-exports preserve the `crate::agent::loop_::*` import paths for callers
-// that haven't migrated yet.
+// These re-exports keep helpers available inside the internal runtime-loop module
+// while external callers use `crate::agent::*` re-exports instead.
 
 pub(crate) use synapse_domain::application::services::tool_filtering::compute_excluded_mcp_tools;
 #[cfg(test)]
@@ -98,10 +94,6 @@ fn tools_to_openai_format(tools_registry: &[Box<dyn Tool>]) -> Vec<serde_json::V
             })
         })
         .collect()
-}
-
-fn autosave_memory_key(prefix: &str) -> String {
-    format!("{prefix}_{}", Uuid::new_v4())
 }
 
 fn memory_session_id_from_state_file(path: &Path) -> Option<String> {
@@ -340,21 +332,19 @@ pub use cli_run::{process_message, run, run_with_shared_memory};
 pub(crate) use synapse_domain::application::services::tool_filtering::build_tool_instructions;
 #[allow(unused_imports)]
 pub(crate) use tool_call_parsing::ParsedToolCall;
-pub(crate) use tool_execution::run_tool_call_loop;
 #[allow(unused_imports)]
 pub(crate) use tool_execution::{agent_turn, is_tool_loop_cancelled, ToolLoopCancelled};
+pub(crate) use tool_execution::{execute_one_tool, run_tool_call_loop, ToolExecutionOutcome};
 
 #[cfg(test)]
 pub(crate) use tool_call_parsing::{
     build_native_assistant_history, build_native_assistant_history_from_parsed_calls,
-    default_param_for_tool, detect_tool_call_parse_issue, extract_json_values, map_tool_name_alias,
-    parse_arguments_value, parse_glm_shortened_body, parse_glm_style_tool_calls,
-    parse_perl_style_tool_calls, parse_tool_call_value, parse_tool_calls,
-    parse_tool_calls_from_json_value, resolve_display_text, strip_think_tags,
-    strip_tool_result_blocks,
+    detect_tool_call_parse_issue, extract_json_values, parse_arguments_value,
+    parse_tool_call_value, parse_tool_calls, parse_tool_calls_from_json_value,
+    resolve_display_text, strip_think_tags, strip_tool_result_blocks,
 };
 #[cfg(test)]
-pub(crate) use tool_execution::{execute_one_tool, should_execute_tools_in_parallel};
+pub(crate) use tool_execution::should_execute_tools_in_parallel;
 
 #[cfg(test)]
 mod tests;

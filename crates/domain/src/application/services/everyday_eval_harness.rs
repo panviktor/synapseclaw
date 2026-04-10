@@ -59,6 +59,7 @@ pub async fn evaluate_scenario(
         scenario.profile.clone(),
         scenario.current_conversation.as_ref(),
         scenario.dialogue_state.as_ref(),
+        None,
     )
     .await;
 
@@ -708,10 +709,6 @@ mod tests {
             _: usize,
         ) -> Result<Vec<MemoryEntry>, MemoryError> {
             Ok(vec![])
-        }
-
-        fn should_skip_autosave(&self, _: &str) -> bool {
-            false
         }
 
         async fn count(&self) -> Result<usize, MemoryError> {

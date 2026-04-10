@@ -4,6 +4,7 @@
 //! adapter, checks capabilities, applies degradation policy, and delivers.
 
 use crate::domain::channel::{ChannelCapability, OutboundIntent};
+use crate::domain::conversation_target::ConversationDeliveryTarget;
 use async_trait::async_trait;
 
 /// Port for resolving and delivering through channel adapters.
@@ -29,6 +30,13 @@ pub trait ChannelRegistryPort: Send + Sync {
     /// format?" and the adapter returns the instructions.
     fn delivery_hints(&self, channel_name: &str) -> Option<String> {
         let _ = channel_name;
+        None
+    }
+
+    /// Return a single explicit proactive delivery target when runtime config
+    /// exposes one unambiguous destination. This is used for turn-level
+    /// defaults and should avoid heuristics based on workspace files.
+    fn configured_delivery_target(&self) -> Option<ConversationDeliveryTarget> {
         None
     }
 }

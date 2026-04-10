@@ -439,9 +439,6 @@ pub trait UnifiedMemoryPort:
         Ok(vec![]) // default no-op
     }
 
-    /// Check if content should be skipped for auto-save (noise filter).
-    fn should_skip_autosave(&self, content: &str) -> bool;
-
     /// Total entry count across all subsystems.
     async fn count(&self) -> Result<usize, MemoryError>;
 
@@ -480,8 +477,8 @@ pub trait UnifiedMemoryPort:
     async fn reflect_on_turn(
         &self,
         _user_message: &str,
-        _assistant_response: &str,
         _tools_used: &[String],
+        _outcome: &crate::domain::memory::ReflectionOutcome,
     ) -> Result<(), MemoryError> {
         Ok(()) // default no-op
     }

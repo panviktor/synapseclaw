@@ -14,7 +14,8 @@ For first-time setup and quick orientation.
 | Scenario | Command |
 |----------|---------|
 | I have an API key, want fastest setup | `synapseclaw onboard --api-key sk-... --provider openrouter` |
-| I want guided prompts | `synapseclaw onboard` |
+| I want guided preset-first setup | `synapseclaw onboard` |
+| I want to tweak built-in presets/default models locally | `synapseclaw models catalog init` |
 | Config exists, just fix channels | `synapseclaw onboard --channels-only` |
 | Config exists, I intentionally want full overwrite | `synapseclaw onboard --force` |
 | Using subscription auth | See [Subscription Auth](../../README.md#subscription-auth-openai-codex--claude-code) |
@@ -23,6 +24,12 @@ For first-time setup and quick orientation.
 
 - Quick onboarding: `synapseclaw onboard --api-key "sk-..." --provider openrouter`
 - Guided onboarding: `synapseclaw onboard`
+  - starts with simple presets (`ChatGPT / Codex`, `Claude`, `OpenRouter`, `Local`, `Advanced`)
+  - expands them into lane-aware routing under the hood
+- Editable local catalog: `synapseclaw models catalog init`
+  - writes `model_catalog.json` next to the active `config.toml`
+  - lets you override built-in presets, provider defaults, curated lists, and pricing locally
+  - is loaded automatically on startup
 - Existing config protection: reruns require explicit confirmation (or `--force` in non-interactive flows)
 - Ollama cloud models (`:cloud`) require a remote `api_url` and API key (for example `api_url = "https://ollama.com"`).
 - Validate environment: `synapseclaw status` + `synapseclaw doctor`

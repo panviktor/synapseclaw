@@ -164,6 +164,8 @@ pub struct InboundEnvelope {
     pub actor_id: String,
     /// Conversation key for history lookup (e.g. "telegram_123456", "web:session:abc").
     pub conversation_ref: String,
+    /// Stable upstream event/message identifier when the source provides one.
+    pub event_ref: Option<String>,
     /// Platform-specific reply target (e.g. Telegram chat ID, Matrix room ID).
     pub reply_ref: String,
     /// Optional thread reference for threaded replies.

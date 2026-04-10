@@ -5,6 +5,10 @@
 //! via SemanticMemoryPort.
 
 use chrono::Utc;
+use synapse_domain::application::services::memory_quality_governor::{
+    assess_extracted_entity, assess_extracted_relationship, EntityStorageVerdict,
+    RelationshipStorageVerdict,
+};
 use synapse_domain::domain::memory::{Entity, MemoryError, TemporalFact};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
 use synapse_providers::traits::Provider;
@@ -27,6 +31,8 @@ Rules:
 - predicate: lowercase verb phrase like "works_at", "prefers", "knows_about", "created"
 - confidence: 0.0–1.0 based on how explicit the statement is
 - Only extract what is clearly stated, do NOT infer
+- Prefer durable operator, agent, project, tool, provider, channel, company, place, or concrete named facts
+- Skip generic world knowledge, abstract philosophy, and broad concept-to-concept claims unless they are explicitly about the operator, agent, project, tool, or another concrete named runtime subject in this turn
 - If nothing worth extracting, return: {"entities": [], "relationships": []}
 
 Conversation turn:
@@ -92,8 +98,23 @@ pub async fn store_extraction(
     extraction: &ExtractionResult,
     agent_id: &str,
 ) -> Result<(), MemoryError> {
+    let accepted_entities = extraction
+        .entities
+        .iter()
+        .filter(|entity| should_store_entity(entity))
+        .collect::<Vec<_>>();
+    let entity_types = accepted_entities
+        .iter()
+        .map(|entity| {
+            (
+                entity.name.trim().to_lowercase(),
+                entity.entity_type.trim().to_lowercase(),
+            )
+        })
+        .collect::<std::collections::HashMap<_, _>>();
+
     // 1. Upsert entities
-    for extracted in &extraction.entities {
+    for extracted in &accepted_entities {
         let entity = Entity {
             id: String::new(), // let adapter generate
             name: extracted.name.clone(),
@@ -120,6 +141,9 @@ pub async fn store_extraction(
 
     // 2. Add facts with AUDN deduplication (Add/Update/Delete/Noop)
     for rel in &extraction.relationships {
+        if !should_store_relationship(rel, &entity_types) {
+            continue;
+        }
         let subject_entity = memory.find_entity(&rel.subject).await.ok().flatten();
         let object_entity = memory.find_entity(&rel.object).await.ok().flatten();
 
@@ -238,6 +262,29 @@ pub async fn store_extraction(
     Ok(())
 }
 
+fn should_store_entity(entity: &ExtractedEntity) -> bool {
+    matches!(
+        assess_extracted_entity(&entity.name, &entity.entity_type),
+        EntityStorageVerdict::Accept
+    )
+}
+
+fn should_store_relationship(
+    rel: &ExtractedRelationship,
+    entity_types: &std::collections::HashMap<String, String>,
+) -> bool {
+    matches!(
+        assess_extracted_relationship(
+            &rel.subject,
+            &rel.predicate,
+            &rel.object,
+            rel.confidence,
+            entity_types
+        ),
+        RelationshipStorageVerdict::Accept
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +337,37 @@ mod tests {
         }"#;
         let result = parse_extraction_response(json).unwrap();
         assert!((result.relationships[0].confidence - 0.8).abs() < 0.01);
+    }
+
+    #[test]
+    fn concept_to_concept_relationships_require_very_high_confidence() {
+        let entity_types = std::collections::HashMap::from([
+            ("children".to_string(), "concept".to_string()),
+            ("parents".to_string(), "concept".to_string()),
+        ]);
+        let rel = ExtractedRelationship {
+            subject: "Children".into(),
+            predicate: "learn_from".into(),
+            object: "Parents".into(),
+            confidence: 0.9,
+        };
+
+        assert!(!should_store_relationship(&rel, &entity_types));
+    }
+
+    #[test]
+    fn concrete_relationships_still_pass_filter() {
+        let entity_types = std::collections::HashMap::from([
+            ("victor".to_string(), "person".to_string()),
+            ("rust".to_string(), "concept".to_string()),
+        ]);
+        let rel = ExtractedRelationship {
+            subject: "Victor".into(),
+            predicate: "prefers".into(),
+            object: "Rust".into(),
+            confidence: 0.8,
+        };
+
+        assert!(should_store_relationship(&rel, &entity_types));
     }
 }

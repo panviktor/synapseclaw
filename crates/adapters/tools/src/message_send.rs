@@ -34,6 +34,27 @@ impl MessageSendTool {
         }
     }
 
+    fn parse_explicit_target_object(
+        obj: &serde_json::Value,
+    ) -> Result<(ConversationDeliveryTarget, DeliveryTargetKind), String> {
+        let channel = obj.get("channel").and_then(|v| v.as_str()).unwrap_or("");
+        let recipient = obj.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
+        let thread_ref = obj
+            .get("thread_ref")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        if channel.is_empty() || recipient.is_empty() {
+            Err("Explicit target requires both 'channel' and 'recipient'".to_string())
+        } else {
+            let target = ConversationDeliveryTarget::Explicit {
+                channel: channel.to_string(),
+                recipient: recipient.to_string(),
+                thread_ref,
+            };
+            Ok((target.clone(), DeliveryTargetKind::Explicit(target)))
+        }
+    }
+
     fn resolve_target(
         &self,
         args: &serde_json::Value,
@@ -51,24 +72,12 @@ impl MessageSendTool {
                      Use an explicit target with channel and recipient."
                         .to_string()
                 }),
-            Some(obj) if obj.is_object() => {
-                let channel = obj.get("channel").and_then(|v| v.as_str()).unwrap_or("");
-                let recipient = obj.get("recipient").and_then(|v| v.as_str()).unwrap_or("");
-                let thread_ref = obj
-                    .get("thread_ref")
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
-                if channel.is_empty() || recipient.is_empty() {
-                    Err("Explicit target requires both 'channel' and 'recipient'".to_string())
-                } else {
-                    let target = ConversationDeliveryTarget::Explicit {
-                        channel: channel.to_string(),
-                        recipient: recipient.to_string(),
-                        thread_ref,
-                    };
-                    Ok((target.clone(), DeliveryTargetKind::Explicit(target)))
-                }
-            }
+            Some(serde_json::Value::String(_)) => Err(
+                "Invalid target. Use 'current_conversation', omit target for a resolved default, \
+                 or provide {channel, recipient}."
+                    .into(),
+            ),
+            Some(obj) if obj.is_object() => Self::parse_explicit_target_object(obj),
             None => self
                 .turn_defaults_context
                 .get_current()
@@ -80,6 +89,9 @@ impl MessageSendTool {
                         }
                         TurnDefaultSource::UserProfile => {
                             DeliveryTargetKind::ProfileDefault(resolved.target.clone())
+                        }
+                        TurnDefaultSource::ConfiguredChannel => {
+                            DeliveryTargetKind::ConfiguredDefault(resolved.target.clone())
                         }
                     };
                     (resolved.target, kind)
@@ -104,9 +116,12 @@ impl Tool for MessageSendTool {
     }
 
     fn description(&self) -> &str {
-        "Send a message to a conversation. Use target='current_conversation' to reply here, \
-         or specify an explicit channel and recipient. This is the preferred way to send \
-         proactive messages instead of constructing shell commands."
+        "Send a message to a conversation or external channel target. Use \
+         target='current_conversation' to reply here, omit target when a resolved \
+         runtime default already exists, or specify an explicit channel and recipient. \
+         Prefer this tool whenever the user asks to send, deliver, post, or report \
+         something externally. Do not inspect workspace files or construct shell/Python \
+         scripts to discover or perform messaging if this tool can satisfy the request."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -118,7 +133,7 @@ impl Tool for MessageSendTool {
                     "description": "Message text to send"
                 },
                 "target": {
-                    "description": "Where to send. Use 'current_conversation' for here, omit target for a resolved per-turn default, or provide explicit target.",
+                    "description": "Where to send. Use 'current_conversation' for here, omit target when a resolved runtime default already exists, or provide explicit target. Omitting target is preferred over file or shell discovery when the destination is already configured.",
                     "oneOf": [
                         {
                             "type": "string",
@@ -139,6 +154,10 @@ impl Tool for MessageSendTool {
             },
             "required": ["content"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::DirectDelivery)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
@@ -379,5 +398,43 @@ mod tests {
             }) => assert_eq!(recipient, "!recent:example.com"),
             other => panic!("unexpected fact: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn rejects_null_target() {
+        let context = Arc::new(TestContext::default());
+        let turn_defaults = Arc::new(InMemoryTurnDefaultsContext::new());
+        let registry = Arc::new(TestRegistry::default());
+        let tool = MessageSendTool::new(context, turn_defaults, registry);
+
+        let execution = tool
+            .execute_with_facts(serde_json::json!({
+                "content": "hello",
+                "target": null,
+            }))
+            .await
+            .unwrap();
+
+        assert!(!execution.result.success);
+        assert!(execution.result.output.contains("Invalid target"));
+    }
+
+    #[tokio::test]
+    async fn rejects_stringified_explicit_target_object() {
+        let context = Arc::new(TestContext::default());
+        let turn_defaults = Arc::new(InMemoryTurnDefaultsContext::new());
+        let registry = Arc::new(TestRegistry::default());
+        let tool = MessageSendTool::new(context, turn_defaults, registry);
+
+        let execution = tool
+            .execute_with_facts(serde_json::json!({
+                "content": "hello",
+                "target": "{\"channel\":\"matrix\",\"recipient\":\"!room:example.com\"}"
+            }))
+            .await
+            .unwrap();
+
+        assert!(!execution.result.success);
+        assert!(execution.result.output.contains("Invalid target"));
     }
 }

@@ -235,7 +235,7 @@ pub async fn run(
     // SurrealKV locks the DB file; creating multiple adapters from different
     // components causes contention. Create the raw adapter here and pass it
     // to gateway, channels, and the consolidation worker.
-    let daemon_agent_id = crate::agent::loop_::resolve_agent_id(&config);
+    let daemon_agent_id = crate::agent::resolve_agent_id(&config);
     let mem_backend = match synapse_memory::create_memory(
         &config.memory,
         &config.workspace_dir,
@@ -454,10 +454,13 @@ pub async fn run(
     // ── Phase 4.3: Memory consolidation worker ────────────────────
     {
         // Wrap with ConsolidatingMemory if provider available.
-        let consolidation_model = config
-            .default_model
-            .clone()
-            .unwrap_or_else(|| "anthropic/claude-sonnet-4".into());
+        let consolidation_model = config.default_model.clone().unwrap_or_else(|| {
+            synapse_domain::config::model_catalog::provider_default_model(
+                config.default_provider.as_deref().unwrap_or("openrouter"),
+            )
+            .unwrap_or("default")
+            .to_string()
+        });
         let provider_for_worker: Option<(
             std::sync::Arc<dyn synapse_providers::traits::Provider>,
             String,
@@ -1031,7 +1034,7 @@ fn render_standing_order_report(
         &synapse_domain::application::services::system_event_projection_service::SystemEventProjectionInput {
             event: event.clone(),
             timestamp_rfc3339: chrono::Utc::now().to_rfc3339(),
-            agent_id: Some(crate::agent::loop_::resolve_agent_id(config)),
+            agent_id: Some(crate::agent::resolve_agent_id(config)),
             uptime_seconds: Some(snapshot.uptime_seconds),
             components,
             heartbeat,
