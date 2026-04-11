@@ -663,6 +663,14 @@ Expected outcome:
       - drop `[scoped-context]` when it is removable ballast
       - compact oversized `[runtime-interpretation]` before the provider call
       - recompute provider-facing stats after pruning
+    - provider-facing context budget now consumes trusted target profile limits:
+      - `context_window_tokens`
+      - `max_output_tokens`
+      - field-level profile confidence gates whether those limits are trusted
+      - low-confidence / stale metadata stays on the compact legacy budget
+    - live agent and channel admission now feed the effective route profile into
+      the same budget path, so large-window candidates no longer lose scoped or
+      runtime context only because of the old fixed heavy-turn ceiling
   - Slice 14 follow-through partial:
     - the same structured marker routing now covers image/audio/video/music
       generation instead of relying on free-text phrase detection
@@ -717,6 +725,14 @@ Expected outcome:
       default preset remains `chatgpt`
     - provider model cache still wins when fresh, then bundled/local catalog
       profile metadata is used as fallback
+  - OpenRouter reasoning-control follow-through:
+    - runtime `reasoning_enabled` / `reasoning_effort` now reach the OpenRouter
+      adapter as the provider-native `reasoning` request object
+    - unset still omits the field and keeps provider/model defaults
+    - `reasoning = true` is not treated as globally better; policy should enable
+      it only for routes/turns that need the extra reasoning budget
+    - OpenRouter's normalized `reasoning` response field is mapped back into
+      the shared `reasoning_content` response field
 - next:
   - Slice 12 follow-through:
     - widen provenance beyond cached provider catalogs as more profile data moves into catalogs
@@ -724,8 +740,18 @@ Expected outcome:
       beyond route-switch and lane admission
   - Slice 13 follow-through:
     - add condensed artifact cache selection instead of only “history compaction or not”
-    - continue moving admission and route-switch policy toward direct consumption
-      of the richer pressure snapshot
+    - continue moving route-switch policy toward direct consumption of the
+      richer pressure snapshot
+    - make prompt-economy caps configurable/catalog-aware if operator policy
+      needs to exploit very large windows more aggressively than the default
+      compact hot-path budget
+  - reasoning-control follow-through:
+    - promote provider reasoning controls from global runtime override to a
+      capability/lane policy once the model-profile registry exposes support
+      and provider cost tradeoffs consistently
+    - add full `reasoning_details` preservation when the shared provider
+      response/history model can carry provider-native reasoning blocks without
+      leaking adapter-specific shapes into the core runtime
   - Slice 11 follow-through:
     - unify channel/web route mutation and admission state persistence semantics
   - quality tail after Slice 6/7:

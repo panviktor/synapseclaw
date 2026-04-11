@@ -125,6 +125,8 @@ fn provider_context_budget_input_from_stats(
         total_chars: stats.total_chars,
         prior_chat_messages: stats.prior_chat_messages,
         current_turn_messages: stats.current_turn_messages,
+        target_context_window_tokens: None,
+        target_max_output_tokens: None,
         bootstrap_chars: stats.bootstrap_chars,
         core_memory_chars: stats.core_memory_chars,
         runtime_interpretation_chars: stats.runtime_interpretation_chars,
@@ -133,6 +135,13 @@ fn provider_context_budget_input_from_stats(
         prior_chat_chars: stats.prior_chat_chars,
         current_turn_chars: stats.current_turn_chars,
     }
+}
+
+fn provider_context_budget_input_from_stats_for_profile(
+    stats: &synapse_observability::ProviderContextStats,
+    profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+) -> ProviderContextBudgetInput {
+    provider_context_budget_input_from_stats(stats).with_target_model_profile(profile)
 }
 
 pub struct Agent {
@@ -592,10 +601,18 @@ impl Agent {
     }
 
     fn build_provider_prompt_snapshot(&self) -> ProviderPromptSnapshot {
+        self.build_provider_prompt_snapshot_for_profile(&self.current_model_profile)
+    }
+
+    fn build_provider_prompt_snapshot_for_profile(
+        &self,
+        target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+    ) -> ProviderPromptSnapshot {
         build_provider_prompt_snapshot(
             self.tool_dispatcher.as_ref(),
             &self.history,
             PROVIDER_CONTEXT_CHAT_MESSAGES,
+            Some(target_profile),
         )
     }
 
@@ -1703,8 +1720,12 @@ impl Agent {
             HashMap::new();
 
         for _ in 0..self.config.max_tool_iterations {
-            let snapshot = self.build_provider_prompt_snapshot();
-            let provider_context_input = provider_context_budget_input_from_stats(&snapshot.stats);
+            let snapshot =
+                self.build_provider_prompt_snapshot_for_profile(&effective_model_profile);
+            let provider_context_input = provider_context_budget_input_from_stats_for_profile(
+                &snapshot.stats,
+                &effective_model_profile,
+            );
             let budget_assessment = assess_provider_context_budget(provider_context_input);
             let provider_capabilities = self.provider.capabilities();
             let admission_decision = assess_turn_admission(TurnAdmissionInput {

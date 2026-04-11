@@ -858,7 +858,8 @@ async fn execute_agent_turn(
             current_lane: route.lane,
             current_profile: &route_profile,
             provider_capabilities: &route_capabilities,
-            provider_context: provider_context_input_for_history(&history),
+            provider_context: provider_context_input_for_history(&history)
+                .with_target_model_profile(&route_profile),
             catalog: ports.model_profile_catalog.as_deref(),
         },
     );

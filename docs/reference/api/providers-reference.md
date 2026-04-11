@@ -63,6 +63,14 @@ credential is not reused for fallback providers.
 | `osaurus` | — | Yes | `OSAURUS_API_KEY` (optional; defaults to `"osaurus"`) |
 | `nvidia` | `nvidia-nim`, `build.nvidia.com` | No | `NVIDIA_API_KEY` |
 
+### OpenRouter Notes
+
+- Provider ID: `openrouter`
+- Authentication: `OPENROUTER_API_KEY`
+- OpenRouter models can expose different effective capabilities and context windows from the same model family through a native provider. Keep model/window/capability metadata in the model catalog or user override instead of hardcoding it in Rust.
+- Optional reasoning control uses OpenRouter's `reasoning` request object when `[runtime].reasoning_enabled` or `[runtime].reasoning_effort` is set. Leave both unset for provider defaults on simple turns.
+- Reference: <https://openrouter.ai/docs/use-cases/reasoning-tokens>
+
 ### Vercel AI Gateway Notes
 
 - Provider ID: `vercel` (alias: `vercel-ai`)

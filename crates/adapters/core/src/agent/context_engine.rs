@@ -1,5 +1,6 @@
 use crate::agent::dispatcher::ToolDispatcher;
 use synapse_domain::application::services::history_compaction;
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::provider_context_budget::{
     provider_context_prune_policy, ProviderContextBudgetInput,
 };
@@ -49,6 +50,7 @@ pub(crate) fn build_provider_prompt_snapshot(
     dispatcher: &dyn ToolDispatcher,
     history: &[ConversationMessage],
     recent_chat_limit: usize,
+    target_profile: Option<&ResolvedModelProfile>,
 ) -> ProviderPromptSnapshot {
     let latest_user_index = history.iter().rposition(|msg| {
         matches!(
@@ -118,6 +120,7 @@ pub(crate) fn build_provider_prompt_snapshot(
         system_messages,
         &prior_chat_messages,
         &current_turn_messages,
+        target_profile,
     );
 
     let mut messages = Vec::with_capacity(
@@ -140,13 +143,18 @@ fn prune_system_messages_for_pressure(
     system_messages: Vec<ChatMessage>,
     prior_chat_messages: &[ChatMessage],
     current_turn_messages: &[ChatMessage],
+    target_profile: Option<&ResolvedModelProfile>,
 ) -> Vec<ChatMessage> {
     let stats = provider_context_stats_for_parts(
         &system_messages,
         prior_chat_messages,
         current_turn_messages,
     );
-    let policy = provider_context_prune_policy(provider_context_budget_input_from_stats(&stats));
+    let mut budget_input = provider_context_budget_input_from_stats(&stats);
+    if let Some(profile) = target_profile {
+        budget_input = budget_input.with_target_model_profile(profile);
+    }
+    let policy = provider_context_prune_policy(budget_input);
     if !policy.drop_scoped_context && policy.max_runtime_interpretation_chars.is_none() {
         return system_messages;
     }
@@ -216,6 +224,8 @@ fn provider_context_budget_input_from_stats(
         total_chars: stats.total_chars,
         prior_chat_messages: stats.prior_chat_messages,
         current_turn_messages: stats.current_turn_messages,
+        target_context_window_tokens: None,
+        target_max_output_tokens: None,
         bootstrap_chars: stats.bootstrap_chars,
         core_memory_chars: stats.core_memory_chars,
         runtime_interpretation_chars: stats.runtime_interpretation_chars,
@@ -586,7 +596,7 @@ mod tests {
             tool_result("call-3", "third tool output"),
         ];
 
-        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6);
+        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6, None);
         let rendered = snapshot
             .messages
             .iter()
@@ -601,7 +611,7 @@ mod tests {
         assert!(rendered.contains("second tool output"));
         assert!(rendered.contains("call-3"));
         assert!(rendered.contains("third tool output"));
-        assert!(snapshot.stats.current_turn_messages < 5);
+        assert!(snapshot.stats.current_turn_messages < history.len() - 1);
     }
 
     #[test]
@@ -613,7 +623,7 @@ mod tests {
             tool_result("call-1", "done"),
         ];
 
-        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6);
+        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6, None);
         let rendered = snapshot
             .messages
             .iter()
@@ -636,7 +646,7 @@ mod tests {
             tool_result("call-1", &long_output),
         ];
 
-        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6);
+        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6, None);
         let rendered = snapshot
             .messages
             .iter()
@@ -690,7 +700,7 @@ mod tests {
             ))));
         }
 
-        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6);
+        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6, None);
         let rendered = snapshot
             .messages
             .iter()
@@ -725,7 +735,7 @@ mod tests {
             ConversationMessage::Chat(ChatMessage::user("reply briefly")),
         ];
 
-        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6);
+        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6, None);
         let rendered = snapshot
             .messages
             .iter()
@@ -738,5 +748,51 @@ mod tests {
         assert!(rendered.contains("[user-profile]"));
         assert!(snapshot.stats.scoped_context_chars == 0);
         assert!(snapshot.stats.runtime_interpretation_chars <= 430);
+    }
+
+    #[test]
+    fn pressure_pruning_respects_large_window_profile() {
+        let scoped = format!("[scoped-context]\n{}\n", "scoped rules\n".repeat(260));
+        let runtime = format!(
+            concat!(
+                "[runtime-interpretation]\n",
+                "[user-profile]\n",
+                "- preferred_language: ru\n\n",
+                "[working-state]\n",
+                "{}\n\n",
+                "[bounded-interpretation]\n",
+                "{}\n"
+            ),
+            "workspace=old\n".repeat(160),
+            "candidate=stale\n".repeat(160)
+        );
+        let profile = ResolvedModelProfile {
+            context_window_tokens: Some(262_144),
+            max_output_tokens: Some(131_072),
+            context_window_source:
+                synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::BundledCatalog,
+            max_output_source:
+                synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::BundledCatalog,
+            ..Default::default()
+        };
+        let history = vec![
+            ConversationMessage::Chat(ChatMessage::system("bootstrap")),
+            ConversationMessage::Chat(ChatMessage::system(runtime)),
+            ConversationMessage::Chat(ChatMessage::system(scoped)),
+            ConversationMessage::Chat(ChatMessage::user("reply briefly")),
+        ];
+
+        let snapshot =
+            build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6, Some(&profile));
+        let rendered = snapshot
+            .messages
+            .iter()
+            .map(|msg| msg.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("[scoped-context]"));
+        assert!(snapshot.stats.scoped_context_chars > 0);
+        assert!(snapshot.stats.runtime_interpretation_chars > 430);
     }
 }

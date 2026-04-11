@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 
 pub struct OpenRouterProvider {
     credential: Option<String>,
+    reasoning_enabled: Option<bool>,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -18,6 +20,8 @@ struct ChatRequest {
     model: String,
     messages: Vec<Message>,
     temperature: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OpenRouterReasoningOptions>,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,9 +70,19 @@ struct NativeChatRequest {
     messages: Vec<NativeMessage>,
     temperature: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OpenRouterReasoningOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<NativeToolSpec>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_choice: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct OpenRouterReasoningOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effort: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -142,14 +156,50 @@ struct NativeResponseMessage {
     /// Reasoning/thinking models may return output in `reasoning_content`.
     #[serde(default)]
     reasoning_content: Option<String>,
+    /// OpenRouter exposes normalized reasoning text as `reasoning`; keep
+    /// mapping it into the shared provider response field.
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     tool_calls: Option<Vec<NativeToolCall>>,
 }
 
 impl OpenRouterProvider {
     pub fn new(credential: Option<&str>) -> Self {
+        Self::new_with_reasoning(credential, None, None)
+    }
+
+    pub fn new_with_reasoning(
+        credential: Option<&str>,
+        reasoning_enabled: Option<bool>,
+        reasoning_effort: Option<String>,
+    ) -> Self {
         Self {
             credential: credential.map(ToString::to_string),
+            reasoning_enabled,
+            reasoning_effort,
+        }
+    }
+
+    fn reasoning_options(&self) -> Option<OpenRouterReasoningOptions> {
+        match (self.reasoning_enabled, self.reasoning_effort.as_ref()) {
+            (Some(false), _) => Some(OpenRouterReasoningOptions {
+                enabled: Some(false),
+                effort: None,
+            }),
+            (Some(true), Some(effort)) => Some(OpenRouterReasoningOptions {
+                enabled: Some(true),
+                effort: Some(effort.clone()),
+            }),
+            (Some(true), None) => Some(OpenRouterReasoningOptions {
+                enabled: Some(true),
+                effort: None,
+            }),
+            (None, Some(effort)) => Some(OpenRouterReasoningOptions {
+                enabled: None,
+                effort: Some(effort.clone()),
+            }),
+            (None, None) => None,
         }
     }
 
@@ -321,7 +371,7 @@ impl OpenRouterProvider {
     }
 
     fn parse_native_response(message: NativeResponseMessage) -> ProviderChatResponse {
-        let reasoning_content = message.reasoning_content.clone();
+        let reasoning_content = message.reasoning_content.or(message.reasoning);
         let tool_calls = message
             .tool_calls
             .unwrap_or_default()
@@ -435,6 +485,7 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages,
             temperature,
+            reasoning: self.reasoning_options(),
         };
 
         let response = self
@@ -483,6 +534,7 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: api_messages,
             temperature,
+            reasoning: self.reasoning_options(),
         };
 
         let response = self
@@ -527,6 +579,7 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: Self::convert_messages(request.messages),
             temperature,
+            reasoning: self.reasoning_options(),
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
         };
@@ -620,6 +673,7 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: native_messages,
             temperature,
+            reasoning: self.reasoning_options(),
             tool_choice: native_tools.as_ref().map(|_| "auto".to_string()),
             tools: native_tools,
         };
@@ -685,6 +739,34 @@ mod tests {
         assert!(provider.credential.is_none());
     }
 
+    #[test]
+    fn reasoning_options_follow_runtime_override() {
+        let provider =
+            OpenRouterProvider::new_with_reasoning(None, Some(true), Some("high".to_string()));
+
+        assert_eq!(
+            provider.reasoning_options(),
+            Some(OpenRouterReasoningOptions {
+                enabled: Some(true),
+                effort: Some("high".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn reasoning_disabled_override_wins_over_effort() {
+        let provider =
+            OpenRouterProvider::new_with_reasoning(None, Some(false), Some("high".to_string()));
+
+        assert_eq!(
+            provider.reasoning_options(),
+            Some(OpenRouterReasoningOptions {
+                enabled: Some(false),
+                effort: None,
+            })
+        );
+    }
+
     #[tokio::test]
     async fn warmup_without_key_is_noop() {
         let provider = OpenRouterProvider::new(None);
@@ -740,6 +822,7 @@ mod tests {
                 },
             ],
             temperature: 0.5,
+            reasoning: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
@@ -773,12 +856,39 @@ mod tests {
                 })
                 .collect(),
             temperature: 0.0,
+            reasoning: None,
         };
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"role\":\"assistant\""));
         assert!(json.contains("\"role\":\"user\""));
         assert!(json.contains("google/gemini-2.5-pro"));
+    }
+
+    #[test]
+    fn native_request_serializes_reasoning_options_when_configured() {
+        let request = NativeChatRequest {
+            model: "x-ai/grok-4.20".into(),
+            messages: vec![NativeMessage {
+                role: "user".into(),
+                content: Some(MessageContent::Text("think carefully".into())),
+                tool_call_id: None,
+                tool_calls: None,
+                reasoning_content: None,
+            }],
+            temperature: 0.1,
+            reasoning: Some(OpenRouterReasoningOptions {
+                enabled: Some(true),
+                effort: Some("high".into()),
+            }),
+            tools: None,
+            tool_choice: None,
+        };
+
+        let json = serde_json::to_value(&request).unwrap();
+
+        assert_eq!(json["reasoning"]["enabled"], true);
+        assert_eq!(json["reasoning"]["effort"], "high");
     }
 
     #[test]
@@ -877,6 +987,7 @@ mod tests {
         let message = NativeResponseMessage {
             content: Some("Here you go.".into()),
             reasoning_content: None,
+            reasoning: None,
             tool_calls: Some(vec![NativeToolCall {
                 id: Some("call_789".into()),
                 kind: Some("function".into()),
@@ -1031,6 +1142,7 @@ mod tests {
         let message = NativeResponseMessage {
             content: Some("answer".into()),
             reasoning_content: Some("thinking step".into()),
+            reasoning: None,
             tool_calls: Some(vec![NativeToolCall {
                 id: Some("call_1".into()),
                 kind: Some("function".into()),
@@ -1046,10 +1158,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_native_response_captures_openrouter_reasoning_field() {
+        let message = NativeResponseMessage {
+            content: Some("answer".into()),
+            reasoning_content: None,
+            reasoning: Some("normalized thinking".into()),
+            tool_calls: None,
+        };
+
+        let parsed = OpenRouterProvider::parse_native_response(message);
+
+        assert_eq!(
+            parsed.reasoning_content.as_deref(),
+            Some("normalized thinking")
+        );
+    }
+
+    #[test]
     fn parse_native_response_none_reasoning_content_for_normal_model() {
         let message = NativeResponseMessage {
             content: Some("hello".into()),
             reasoning_content: None,
+            reasoning: None,
             tool_calls: None,
         };
         let parsed = OpenRouterProvider::parse_native_response(message);
