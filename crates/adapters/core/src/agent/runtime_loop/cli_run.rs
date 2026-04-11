@@ -678,6 +678,7 @@ pub async fn run_with_shared_memory(
                 model_name,
                 config.agent.max_history_messages,
                 config.agent.max_context_tokens,
+                &config.compression,
             )
             .await
             {

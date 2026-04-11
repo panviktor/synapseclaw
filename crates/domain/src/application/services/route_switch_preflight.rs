@@ -3,8 +3,8 @@ use crate::application::services::model_lane_resolution::{
 };
 use crate::application::services::provider_context_budget::{
     estimate_tokens_from_chars, provider_context_compression_threshold_tokens,
-    provider_context_condensation_plan, ProviderContextBudgetAssessment,
-    ProviderContextCondensationPlan,
+    provider_context_condensation_plan, provider_context_reserved_output_headroom_tokens,
+    ProviderContextBudgetAssessment, ProviderContextCondensationPlan,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,9 +98,11 @@ fn compute_reserved_output_headroom_tokens(
     context_window_tokens: usize,
     target_profile: &ResolvedModelProfile,
 ) -> usize {
-    let heuristic = (context_window_tokens / 8).max(1_024);
-    let requested = target_profile.max_output_tokens.unwrap_or(heuristic);
-    requested.clamp(512, (context_window_tokens / 4).max(512))
+    provider_context_reserved_output_headroom_tokens(
+        Some(context_window_tokens),
+        target_profile.max_output_tokens,
+        512,
+    )
 }
 
 #[cfg(test)]

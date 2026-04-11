@@ -20,8 +20,79 @@ const COMPACTION_MAX_SOURCE_CHARS: usize = 12_000;
 /// Max characters retained in stored compaction summary.
 const COMPACTION_MAX_SUMMARY_CHARS: usize = 2_000;
 
+const COMPACTION_DEFAULT_THRESHOLD_RATIO: f64 = 0.50;
+const COMPACTION_DEFAULT_TARGET_RATIO: f64 = 0.20;
+const COMPACTION_DEFAULT_PROTECT_FIRST_N: usize = 3;
+const COMPACTION_DEFAULT_SUMMARY_RATIO: f64 = 0.20;
+const COMPACTION_MIN_TARGET_RATIO: f64 = 0.10;
+const COMPACTION_MAX_TARGET_RATIO: f64 = 0.80;
+const COMPACTION_MIN_THRESHOLD_RATIO: f64 = 0.05;
+const COMPACTION_MAX_THRESHOLD_RATIO: f64 = 0.95;
+
 /// Prefix used for compacted conversation summaries stored back into provider history.
 pub const COMPACTION_SUMMARY_PREFIX: &str = "[Compaction summary]\n";
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HistoryCompressionPolicy {
+    pub enabled: bool,
+    pub threshold_ratio: f64,
+    pub target_ratio: f64,
+    pub protect_last_n: usize,
+    pub protect_first_n: usize,
+    pub summary_ratio: f64,
+    pub min_summary_tokens: usize,
+    pub max_summary_tokens: usize,
+    pub max_source_chars: usize,
+    pub max_summary_chars: usize,
+}
+
+impl Default for HistoryCompressionPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            threshold_ratio: COMPACTION_DEFAULT_THRESHOLD_RATIO,
+            target_ratio: COMPACTION_DEFAULT_TARGET_RATIO,
+            protect_last_n: COMPACTION_KEEP_RECENT_MESSAGES,
+            protect_first_n: COMPACTION_DEFAULT_PROTECT_FIRST_N,
+            summary_ratio: COMPACTION_DEFAULT_SUMMARY_RATIO,
+            min_summary_tokens: 2_000,
+            max_summary_tokens: 12_000,
+            max_source_chars: COMPACTION_MAX_SOURCE_CHARS,
+            max_summary_chars: COMPACTION_MAX_SUMMARY_CHARS,
+        }
+    }
+}
+
+impl From<&crate::config::schema::ContextCompressionConfig> for HistoryCompressionPolicy {
+    fn from(config: &crate::config::schema::ContextCompressionConfig) -> Self {
+        let mut policy = Self {
+            enabled: config.enabled,
+            threshold_ratio: clamp_ratio(
+                config.threshold,
+                COMPACTION_MIN_THRESHOLD_RATIO,
+                COMPACTION_MAX_THRESHOLD_RATIO,
+                COMPACTION_DEFAULT_THRESHOLD_RATIO,
+            ),
+            target_ratio: clamp_ratio(
+                config.target_ratio,
+                COMPACTION_MIN_TARGET_RATIO,
+                COMPACTION_MAX_TARGET_RATIO,
+                COMPACTION_DEFAULT_TARGET_RATIO,
+            ),
+            protect_last_n: config.protect_last_n.max(1),
+            protect_first_n: config.protect_first_n,
+            summary_ratio: clamp_ratio(config.summary_ratio, 0.05, 0.80, 0.20),
+            min_summary_tokens: config.min_summary_tokens.max(1),
+            max_summary_tokens: config.max_summary_tokens.max(1),
+            max_source_chars: config.max_source_chars.max(1),
+            max_summary_chars: config.max_summary_chars.max(1),
+        };
+        if policy.max_summary_tokens < policy.min_summary_tokens {
+            policy.max_summary_tokens = policy.min_summary_tokens;
+        }
+        policy
+    }
+}
 
 /// Estimate token count for a message history using ~4 chars/token heuristic.
 /// Includes a small overhead per message for role/framing tokens.
@@ -67,15 +138,58 @@ pub fn trim_history(history: &mut Vec<ChatMessage>, max_history: usize) {
     }
 }
 
-fn build_compaction_transcript(messages: &[ChatMessage]) -> String {
+fn clamp_ratio(value: f64, min: f64, max: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        fallback
+    }
+}
+
+pub fn history_compression_threshold_tokens(
+    context_budget_tokens: usize,
+    policy: &HistoryCompressionPolicy,
+) -> usize {
+    scaled_tokens(context_budget_tokens, policy.threshold_ratio).max(1)
+}
+
+pub fn history_compression_tail_budget_tokens(
+    threshold_tokens: usize,
+    policy: &HistoryCompressionPolicy,
+) -> usize {
+    scaled_tokens(threshold_tokens, policy.target_ratio).max(1)
+}
+
+pub fn history_compression_summary_budget_tokens(
+    content_tokens: usize,
+    context_window_tokens: Option<usize>,
+    policy: &HistoryCompressionPolicy,
+) -> usize {
+    let context_limit = context_window_tokens
+        .map(|tokens| scaled_tokens(tokens, 0.05).max(1))
+        .unwrap_or(policy.max_summary_tokens);
+    let maximum = policy.max_summary_tokens.min(context_limit).max(1);
+    scaled_tokens(content_tokens, policy.summary_ratio)
+        .max(policy.min_summary_tokens)
+        .min(maximum)
+}
+
+fn scaled_tokens(tokens: usize, ratio: f64) -> usize {
+    if !ratio.is_finite() || ratio <= 0.0 || tokens == 0 {
+        return 0;
+    }
+    ((tokens as f64) * ratio).round() as usize
+}
+
+fn build_compaction_transcript(messages: &[ChatMessage], max_source_chars: usize) -> String {
     let mut transcript = String::new();
     for msg in messages {
         let role = msg.role.to_uppercase();
         let _ = writeln!(transcript, "{role}: {}", msg.content.trim());
     }
 
-    if transcript.chars().count() > COMPACTION_MAX_SOURCE_CHARS {
-        truncate_with_ellipsis(&transcript, COMPACTION_MAX_SOURCE_CHARS)
+    if transcript.chars().count() > max_source_chars {
+        truncate_with_ellipsis(&transcript, max_source_chars)
     } else {
         transcript
     }
@@ -107,6 +221,24 @@ pub fn prepare_compaction(
     max_history: usize,
     max_context_tokens: usize,
 ) -> Option<(usize, usize, String)> {
+    prepare_compaction_with_policy(
+        history,
+        max_history,
+        max_context_tokens,
+        &HistoryCompressionPolicy::default(),
+    )
+}
+
+pub fn prepare_compaction_with_policy(
+    history: &[ChatMessage],
+    max_history: usize,
+    max_context_tokens: usize,
+    policy: &HistoryCompressionPolicy,
+) -> Option<(usize, usize, String)> {
+    if !policy.enabled {
+        return None;
+    }
+
     let has_system = history.first().is_some_and(|m| m.role == "system");
     let non_system_count = if has_system {
         history.len().saturating_sub(1)
@@ -121,27 +253,131 @@ pub fn prepare_compaction(
         return None;
     }
 
-    let start = if has_system { 1 } else { 0 };
-    let keep_recent = COMPACTION_KEEP_RECENT_MESSAGES.min(non_system_count);
-    let compact_count = non_system_count.saturating_sub(keep_recent);
-    if compact_count == 0 {
+    let start = advance_boundary_past_tool_group(
+        history,
+        protected_head_end(history, has_system, policy.protect_first_n),
+    );
+    let token_tail_start = protected_tail_start(history, start, max_context_tokens, policy);
+    let message_tail_start = if non_system_count > max_history {
+        protected_tail_start_for_message_budget(history, start, has_system, max_history)
+    } else {
+        start
+    };
+    let tail_start = token_tail_start.max(message_tail_start);
+    if tail_start <= start {
         return None;
     }
 
-    let mut compact_end = start + compact_count;
+    let mut compact_end = tail_start;
 
     // Snap compact_end to a user-turn boundary so we don't split mid-conversation.
     while compact_end > start && history.get(compact_end).is_some_and(|m| m.role != "user") {
         compact_end -= 1;
     }
+    compact_end = rewind_boundary_before_tool_group(history, compact_end, start);
     if compact_end <= start {
         return None;
     }
 
     let to_compact: Vec<ChatMessage> = history[start..compact_end].to_vec();
-    let transcript = build_compaction_transcript(&to_compact);
+    let transcript = build_compaction_transcript(&to_compact, policy.max_source_chars);
 
     Some((start, compact_end, transcript))
+}
+
+fn protected_head_end(
+    history: &[ChatMessage],
+    has_system: bool,
+    configured_protect_first_n: usize,
+) -> usize {
+    let system_floor = if has_system { 1 } else { 0 };
+    configured_protect_first_n
+        .max(system_floor)
+        .min(history.len())
+}
+
+fn protected_tail_start(
+    history: &[ChatMessage],
+    start: usize,
+    threshold_tokens: usize,
+    policy: &HistoryCompressionPolicy,
+) -> usize {
+    if history.len() <= start {
+        return start;
+    }
+
+    let min_tail_count = policy
+        .protect_last_n
+        .min(history.len().saturating_sub(start));
+    let tail_budget_tokens = history_compression_tail_budget_tokens(threshold_tokens, policy);
+    let mut tail_start = history.len();
+    let mut tail_tokens = 0usize;
+
+    while tail_start > start {
+        let next_index = tail_start - 1;
+        let next_count = history.len() - next_index;
+        let message_tokens = estimate_history_tokens(&history[next_index..tail_start]);
+        if next_count > min_tail_count
+            && tail_tokens.saturating_add(message_tokens) > tail_budget_tokens
+        {
+            break;
+        }
+        tail_tokens = tail_tokens.saturating_add(message_tokens);
+        tail_start = next_index;
+    }
+
+    tail_start
+}
+
+fn protected_tail_start_for_message_budget(
+    history: &[ChatMessage],
+    start: usize,
+    has_system: bool,
+    max_history: usize,
+) -> usize {
+    let protected_head_non_system = start.saturating_sub(usize::from(has_system));
+    let summary_message_budget = 1usize;
+    let tail_message_budget = max_history
+        .saturating_sub(protected_head_non_system)
+        .saturating_sub(summary_message_budget);
+    history.len().saturating_sub(tail_message_budget).max(start)
+}
+
+fn advance_boundary_past_tool_group(history: &[ChatMessage], mut boundary: usize) -> usize {
+    while boundary < history.len() && boundary_splits_tool_group(history, boundary) {
+        boundary += 1;
+    }
+    boundary
+}
+
+fn rewind_boundary_before_tool_group(
+    history: &[ChatMessage],
+    mut boundary: usize,
+    floor: usize,
+) -> usize {
+    while boundary > floor && boundary_splits_tool_group(history, boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
+fn boundary_splits_tool_group(history: &[ChatMessage], boundary: usize) -> bool {
+    if boundary == 0 || boundary >= history.len() {
+        return false;
+    }
+
+    let left = &history[boundary - 1];
+    let right = &history[boundary];
+    is_tool_result_message(right) || is_tool_call_message(left)
+}
+
+fn is_tool_call_message(message: &ChatMessage) -> bool {
+    message.role == "assistant"
+        && (message.content.contains("<tool_call") || message.content.starts_with("[tool-call "))
+}
+
+fn is_tool_result_message(message: &ChatMessage) -> bool {
+    message.role == "tool" || message.content.contains("<tool_result")
 }
 
 /// The system prompt for the summarizer LLM call.
@@ -149,9 +385,43 @@ pub const COMPACTION_SUMMARIZER_SYSTEM: &str = "You are a conversation compactio
 
 /// Build the user-facing prompt for the summarizer.
 pub fn compaction_summarizer_prompt(transcript: &str) -> String {
+    compaction_summarizer_prompt_with_policy(
+        transcript,
+        None,
+        &HistoryCompressionPolicy::default(),
+        None,
+    )
+}
+
+pub fn compaction_summarizer_prompt_with_policy(
+    transcript: &str,
+    previous_summary: Option<&str>,
+    policy: &HistoryCompressionPolicy,
+    context_window_tokens: Option<usize>,
+) -> String {
+    let content_tokens = transcript.chars().count().div_ceil(4);
+    let summary_budget =
+        history_compression_summary_budget_tokens(content_tokens, context_window_tokens, policy);
+    let previous_summary = previous_summary
+        .map(str::trim)
+        .filter(|summary| !summary.is_empty())
+        .unwrap_or("(none)");
     format!(
-        "Summarize the following conversation history for context preservation. Keep it short (max 12 bullet points).\n\n{}",
-        transcript
+        "Update the compacted conversation context for future turns.\n\
+         Target summary budget: about {summary_budget} tokens.\n\n\
+         Preserve these sections when relevant:\n\
+         ## Goal\n\
+         ## Constraints & Preferences\n\
+         ## Progress\n\
+         ### Done\n\
+         ### In Progress\n\
+         ### Blocked\n\
+         ## Key Decisions\n\
+         ## Relevant Files\n\
+         ## Next Steps\n\
+         ## Critical Context\n\n\
+         Previous compacted context:\n{previous_summary}\n\n\
+         New history to merge:\n{transcript}"
     )
 }
 
@@ -165,10 +435,28 @@ pub fn apply_compaction(
     summary_raw: &str,
     fallback_transcript: &str,
 ) {
+    apply_compaction_with_policy(
+        history,
+        start,
+        compact_end,
+        summary_raw,
+        fallback_transcript,
+        &HistoryCompressionPolicy::default(),
+    )
+}
+
+pub fn apply_compaction_with_policy(
+    history: &mut Vec<ChatMessage>,
+    start: usize,
+    compact_end: usize,
+    summary_raw: &str,
+    fallback_transcript: &str,
+    policy: &HistoryCompressionPolicy,
+) {
     let summary = if summary_raw.is_empty() {
-        truncate_with_ellipsis(fallback_transcript, COMPACTION_MAX_SUMMARY_CHARS)
+        truncate_with_ellipsis(fallback_transcript, policy.max_summary_chars)
     } else {
-        truncate_with_ellipsis(summary_raw, COMPACTION_MAX_SUMMARY_CHARS)
+        truncate_with_ellipsis(summary_raw, policy.max_summary_chars)
     };
     apply_compaction_summary(history, start, compact_end, &summary);
 }
@@ -237,9 +525,117 @@ mod tests {
         let result = prepare_compaction(&history, 25, 100_000);
         assert!(result.is_some());
         let (start, compact_end, transcript) = result.unwrap();
-        assert_eq!(start, 1);
+        assert_eq!(start, 3);
         assert!(compact_end > start);
         assert!(transcript.contains("USER:"));
+    }
+
+    #[test]
+    fn prepare_compaction_respects_disabled_policy() {
+        let mut history = vec![ChatMessage::system("sys")];
+        for i in 0..30 {
+            history.push(ChatMessage::user(format!("msg {i}")));
+        }
+
+        let policy = HistoryCompressionPolicy {
+            enabled: false,
+            ..HistoryCompressionPolicy::default()
+        };
+
+        assert!(prepare_compaction_with_policy(&history, 4, 1, &policy).is_none());
+    }
+
+    #[test]
+    fn prepare_compaction_uses_tail_budget_and_protected_head() {
+        let mut history = vec![ChatMessage::system("sys")];
+        history.push(ChatMessage::user("first request"));
+        history.push(ChatMessage::assistant("first reply"));
+        for i in 0..20 {
+            history.push(ChatMessage::user(format!(
+                "older msg {i} {}",
+                "x".repeat(80)
+            )));
+            history.push(ChatMessage::assistant(format!(
+                "older reply {i} {}",
+                "y".repeat(80)
+            )));
+        }
+
+        let policy = HistoryCompressionPolicy {
+            protect_first_n: 3,
+            protect_last_n: 4,
+            target_ratio: 0.10,
+            ..HistoryCompressionPolicy::default()
+        };
+        let (start, compact_end, transcript) =
+            prepare_compaction_with_policy(&history, 6, 120, &policy).expect("compaction");
+
+        assert_eq!(start, 3);
+        assert!(compact_end <= history.len().saturating_sub(4));
+        assert!(transcript.contains("older msg"));
+    }
+
+    #[test]
+    fn prepare_compaction_does_not_split_tool_group_at_protected_head() {
+        let mut history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("inspect file"),
+            ChatMessage::assistant("[tool-call call-1]\nfile_read {\"path\":\"a.rs\"}"),
+            ChatMessage::tool("tool output"),
+        ];
+        for i in 0..12 {
+            history.push(ChatMessage::user(format!("older msg {i}")));
+            history.push(ChatMessage::assistant(format!("older reply {i}")));
+        }
+
+        let policy = HistoryCompressionPolicy {
+            protect_first_n: 3,
+            protect_last_n: 2,
+            target_ratio: 0.10,
+            ..HistoryCompressionPolicy::default()
+        };
+        let (start, compact_end, transcript) =
+            prepare_compaction_with_policy(&history, 4, 40, &policy).expect("compaction");
+
+        assert_eq!(start, 4);
+        assert!(compact_end > start);
+        assert!(!transcript.contains("tool output"));
+        assert!(transcript.contains("older msg"));
+    }
+
+    #[test]
+    fn summarizer_prompt_merges_previous_summary_and_uses_budget() {
+        let policy = HistoryCompressionPolicy::default();
+        let prompt = compaction_summarizer_prompt_with_policy(
+            "USER: continue\nASSISTANT: done",
+            Some("## Goal\nKeep the project stable"),
+            &policy,
+            Some(200_000),
+        );
+
+        assert!(prompt.contains("Previous compacted context"));
+        assert!(prompt.contains("Keep the project stable"));
+        assert!(prompt.contains("Target summary budget"));
+        assert!(prompt.contains("## Critical Context"));
+    }
+
+    #[test]
+    fn summary_budget_scales_from_content_and_window() {
+        let policy = HistoryCompressionPolicy {
+            summary_ratio: 0.50,
+            min_summary_tokens: 10,
+            max_summary_tokens: 10_000,
+            ..HistoryCompressionPolicy::default()
+        };
+
+        assert_eq!(
+            history_compression_summary_budget_tokens(1_000, Some(20_000), &policy),
+            500
+        );
+        assert_eq!(
+            history_compression_summary_budget_tokens(100_000, Some(20_000), &policy),
+            1_000
+        );
     }
 
     #[test]

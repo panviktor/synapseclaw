@@ -20,10 +20,15 @@ use std::time::{Duration, Instant};
 use synapse_domain::application::services::dialogue_state_service::DialogueStateStore;
 use synapse_domain::application::services::dialogue_state_service::{self};
 use synapse_domain::application::services::history_compaction;
+use synapse_domain::application::services::history_compaction::HistoryCompressionPolicy;
+#[cfg(test)]
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileConfidence;
 use synapse_domain::application::services::provider_context_budget::{
     assess_provider_context_budget, provider_context_artifact_name,
     provider_context_budget_tier_name, provider_context_condensation_mode_name,
-    provider_context_turn_shape_name, ProviderContextBudgetInput,
+    provider_context_reserved_output_headroom_tokens, provider_context_turn_shape_name,
+    ProviderContextBudgetInput,
 };
 use synapse_domain::application::services::route_switch_preflight::{
     assess_route_switch_preflight_for_budget, RouteSwitchPreflight, RouteSwitchStatus,
@@ -40,7 +45,7 @@ use synapse_domain::application::services::turn_context::{
 };
 use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
-use synapse_domain::config::schema::Config;
+use synapse_domain::config::schema::{Config, ContextCompressionConfig};
 use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::domain::tool_repair::ToolRepairTrace;
 use synapse_domain::domain::turn_admission::{
@@ -68,7 +73,7 @@ use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Pro
 use synapse_security::security_policy_from_config;
 
 const PROVIDER_CONTEXT_CHAT_MESSAGES: usize = 6;
-const HISTORY_COMPACTION_CACHE_MAX_ENTRIES: usize = 32;
+const HISTORY_COMPACTION_CACHE_VERSION: u32 = 1;
 
 #[derive(Clone, Default)]
 pub struct AgentRuntimePorts {
@@ -145,13 +150,66 @@ fn provider_context_budget_input_from_stats_for_profile(
     provider_context_budget_input_from_stats(stats).with_target_model_profile(profile)
 }
 
-fn history_compaction_cache_key(transcript: &str) -> String {
+fn history_compaction_cache_key(
+    transcript: &str,
+    policy: &HistoryCompressionPolicy,
+    context_window_tokens: Option<usize>,
+) -> String {
     use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
-    hasher.update(b"synapseclaw:history-compaction:v1\0");
+    hasher.update(b"synapseclaw:history-compaction:v2\0");
+    hasher.update(history_compaction_policy_fingerprint(policy, context_window_tokens).as_bytes());
+    hasher.update(b"\0");
     hasher.update(transcript.as_bytes());
     hex::encode(hasher.finalize())
+}
+
+fn history_compaction_policy_fingerprint(
+    policy: &HistoryCompressionPolicy,
+    context_window_tokens: Option<usize>,
+) -> String {
+    format!(
+        "enabled={} threshold={:.6} target={:.6} first={} last={} summary={:.6} min={} max={} source_chars={} summary_chars={} context={}",
+        policy.enabled,
+        policy.threshold_ratio,
+        policy.target_ratio,
+        policy.protect_first_n,
+        policy.protect_last_n,
+        policy.summary_ratio,
+        policy.min_summary_tokens,
+        policy.max_summary_tokens,
+        policy.max_source_chars,
+        policy.max_summary_chars,
+        context_window_tokens.unwrap_or(0),
+    )
+}
+
+fn history_compaction_agent_cache_id(agent_id: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    hex::encode(Sha256::digest(agent_id.as_bytes()))
+}
+
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+struct HistoryCompactionCacheState {
+    version: u32,
+    entries: Vec<HistoryCompactionCacheEntry>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+struct HistoryCompactionCacheEntry {
+    key: String,
+    summary: String,
+    created_at_unix: u64,
+    last_used_at_unix: u64,
+    hits: u64,
 }
 
 pub struct Agent {
@@ -167,6 +225,7 @@ pub struct Agent {
     /// Turn counter within current session (for continuation policy).
     turn_count: usize,
     config: synapse_domain::config::schema::AgentConfig,
+    compression: ContextCompressionConfig,
     provider_name: String,
     model_name: String,
     temperature: f64,
@@ -198,7 +257,8 @@ pub struct Agent {
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
-    history_compaction_cache: HashMap<String, String>,
+    history_compaction_cache: HashMap<String, HistoryCompactionCacheEntry>,
+    history_compaction_cache_loaded: bool,
     /// Canonical agent ID for memory scoping.
     agent_id: String,
     dialogue_state_store: Option<Arc<DialogueStateStore>>,
@@ -222,6 +282,7 @@ pub struct AgentBuilder {
     prompt_budget: Option<PromptBudget>,
     continuation_policy: Option<ContinuationPolicy>,
     config: Option<synapse_domain::config::schema::AgentConfig>,
+    compression: Option<ContextCompressionConfig>,
     provider_name: Option<String>,
     model_name: Option<String>,
     temperature: Option<f64>,
@@ -266,6 +327,7 @@ impl AgentBuilder {
             prompt_budget: None,
             continuation_policy: None,
             config: None,
+            compression: None,
             provider_name: None,
             model_name: None,
             temperature: None,
@@ -340,6 +402,11 @@ impl AgentBuilder {
 
     pub fn config(mut self, config: synapse_domain::config::schema::AgentConfig) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    pub fn compression(mut self, compression: ContextCompressionConfig) -> Self {
+        self.compression = Some(compression);
         self
     }
 
@@ -565,6 +632,7 @@ impl AgentBuilder {
             continuation_policy: self.continuation_policy.unwrap_or_default(),
             turn_count: 0,
             config,
+            compression: self.compression.unwrap_or_default(),
             provider_name,
             model_name,
             temperature: self.temperature.unwrap_or(0.7),
@@ -593,6 +661,7 @@ impl AgentBuilder {
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
             history_compaction_cache: HashMap::new(),
+            history_compaction_cache_loaded: false,
             agent_id: self.agent_id.unwrap_or_else(|| "default".to_string()),
             dialogue_state_store: self.dialogue_state_store,
             conversation_store: self.conversation_store,
@@ -1110,6 +1179,7 @@ impl Agent {
             .continuation_policy(config.memory.prompt_budget.to_continuation_policy())
             .prompt_builder(SystemPromptBuilder::with_defaults())
             .config(config.agent.clone())
+            .compression(config.compression.clone())
             .provider_name(provider_name.to_string())
             .agent_id(resolved_agent_id)
             .model_name(model_name)
@@ -1221,17 +1291,192 @@ impl Agent {
         (projected, original_indices)
     }
 
-    async fn maybe_compact_history(&mut self) -> bool {
-        let Some(summary_generator) = self.history_summary_generator.as_ref() else {
-            return false;
+    fn history_compression_policy(&self) -> HistoryCompressionPolicy {
+        HistoryCompressionPolicy::from(&self.compression)
+    }
+
+    fn history_compaction_context_window_tokens(&self) -> Option<usize> {
+        (self.current_model_profile.context_window_confidence()
+            >= ResolvedModelProfileConfidence::Medium)
+            .then_some(self.current_model_profile.context_window_tokens)
+            .flatten()
+    }
+
+    fn history_compaction_max_output_tokens(&self) -> Option<usize> {
+        (self.current_model_profile.max_output_confidence()
+            >= ResolvedModelProfileConfidence::Medium)
+            .then_some(self.current_model_profile.max_output_tokens)
+            .flatten()
+    }
+
+    fn history_compaction_threshold_tokens(&self, policy: &HistoryCompressionPolicy) -> usize {
+        let Some(context_window_tokens) = self.history_compaction_context_window_tokens() else {
+            return history_compaction::history_compression_threshold_tokens(
+                self.config.max_context_tokens.max(1),
+                policy,
+            );
         };
 
+        let reserved_output_tokens = provider_context_reserved_output_headroom_tokens(
+            Some(context_window_tokens),
+            self.history_compaction_max_output_tokens(),
+            128,
+        );
+        let safe_input_tokens = context_window_tokens.saturating_sub(reserved_output_tokens);
+        if safe_input_tokens == 0 {
+            return history_compaction::history_compression_threshold_tokens(
+                self.config.max_context_tokens.max(1),
+                policy,
+            );
+        }
+
+        history_compaction::history_compression_threshold_tokens(safe_input_tokens, policy)
+    }
+
+    fn latest_compaction_summary_text(&self) -> Option<String> {
+        self.history.iter().rev().find_map(|message| match message {
+            ConversationMessage::Chat(chat)
+                if history_compaction::is_compaction_summary(&chat.content) =>
+            {
+                Some(
+                    chat.content
+                        .trim_start_matches(history_compaction::COMPACTION_SUMMARY_PREFIX)
+                        .trim()
+                        .to_string(),
+                )
+            }
+            _ => None,
+        })
+    }
+
+    fn history_compaction_cache_path(&self) -> std::path::PathBuf {
+        let cache_id = history_compaction_agent_cache_id(&self.agent_id);
+        self.workspace_dir
+            .join("state")
+            .join("history_compaction_cache")
+            .join(format!("{cache_id}.json"))
+    }
+
+    async fn ensure_history_compaction_cache_loaded(&mut self) {
+        if self.history_compaction_cache_loaded {
+            return;
+        }
+        self.history_compaction_cache_loaded = true;
+
+        let path = self.history_compaction_cache_path();
+        let raw = match tokio::fs::read_to_string(&path).await {
+            Ok(raw) => raw,
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    tracing::debug!(
+                        %error,
+                        path = %path.display(),
+                        "Failed to read history compaction cache"
+                    );
+                }
+                return;
+            }
+        };
+
+        let state = match serde_json::from_str::<HistoryCompactionCacheState>(&raw) {
+            Ok(state) if state.version == HISTORY_COMPACTION_CACHE_VERSION => state,
+            Ok(_) => return,
+            Err(error) => {
+                tracing::debug!(
+                    %error,
+                    path = %path.display(),
+                    "Failed to parse history compaction cache"
+                );
+                return;
+            }
+        };
+
+        let now = now_unix_secs();
+        let ttl_secs = self.compression.cache_ttl_secs;
+        let max_entries = self.compression.cache_max_entries.max(1);
+        let mut entries = state
+            .entries
+            .into_iter()
+            .filter(|entry| !entry.key.trim().is_empty() && !entry.summary.trim().is_empty())
+            .filter(|entry| {
+                ttl_secs == 0 || now.saturating_sub(entry.last_used_at_unix) <= ttl_secs
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_used_at_unix));
+        entries.truncate(max_entries);
+
+        self.history_compaction_cache = entries
+            .into_iter()
+            .map(|entry| (entry.key.clone(), entry))
+            .collect();
+    }
+
+    async fn persist_history_compaction_cache(&self) {
+        if self.history_compaction_cache.is_empty() {
+            return;
+        }
+
+        let path = self.history_compaction_cache_path();
+        if let Some(parent) = path.parent() {
+            if let Err(error) = tokio::fs::create_dir_all(parent).await {
+                tracing::debug!(
+                    %error,
+                    path = %parent.display(),
+                    "Failed to create history compaction cache directory"
+                );
+                return;
+            }
+        }
+
+        let mut entries = self
+            .history_compaction_cache
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_used_at_unix));
+        entries.truncate(self.compression.cache_max_entries.max(1));
+        let state = HistoryCompactionCacheState {
+            version: HISTORY_COMPACTION_CACHE_VERSION,
+            entries,
+        };
+        let json = match serde_json::to_vec_pretty(&state) {
+            Ok(json) => json,
+            Err(error) => {
+                tracing::debug!(%error, "Failed to serialize history compaction cache");
+                return;
+            }
+        };
+
+        if let Err(error) = tokio::fs::write(&path, json).await {
+            tracing::debug!(
+                %error,
+                path = %path.display(),
+                "Failed to write history compaction cache"
+            );
+        }
+    }
+
+    async fn maybe_compact_history(&mut self) -> bool {
+        let policy = self.history_compression_policy();
+        if !policy.enabled {
+            return false;
+        }
+
+        let Some(summary_generator) = self.history_summary_generator.clone() else {
+            return false;
+        };
+        self.ensure_history_compaction_cache_loaded().await;
+
         let (projected, original_indices) = self.project_non_system_history_for_compaction();
-        let Some((start, compact_end, transcript)) = history_compaction::prepare_compaction(
-            &projected,
-            self.config.max_history_messages,
-            self.config.max_context_tokens,
-        ) else {
+        let threshold_tokens = self.history_compaction_threshold_tokens(&policy);
+        let Some((start, compact_end, transcript)) =
+            history_compaction::prepare_compaction_with_policy(
+                &projected,
+                self.config.max_history_messages,
+                threshold_tokens,
+                &policy,
+            )
+        else {
             return false;
         };
 
@@ -1243,20 +1488,32 @@ impl Agent {
             .map(|index| index + 1)
             .expect("compaction end should map to original history");
 
-        let cache_key = history_compaction_cache_key(&transcript);
-        let summary_raw = if let Some(summary) = self.history_compaction_cache.get(&cache_key) {
+        let context_window_tokens = self.history_compaction_context_window_tokens();
+        let cache_key = history_compaction_cache_key(&transcript, &policy, context_window_tokens);
+        let mut persist_cache = false;
+        let summary_raw = if let Some(entry) = self.history_compaction_cache.get_mut(&cache_key) {
+            entry.last_used_at_unix = now_unix_secs();
+            entry.hits = entry.hits.saturating_add(1);
+            persist_cache = true;
             tracing::debug!(
                 cache_key = %cache_key,
                 "Live agent history compaction summary cache hit"
             );
-            summary.clone()
+            entry.summary.clone()
         } else {
-            let prompt = history_compaction::compaction_summarizer_prompt(&transcript);
+            let previous_summary = self.latest_compaction_summary_text();
+            let prompt = history_compaction::compaction_summarizer_prompt_with_policy(
+                &transcript,
+                previous_summary.as_deref(),
+                &policy,
+                context_window_tokens,
+            );
             match summary_generator.generate_summary(&prompt).await {
                 Ok(summary) => {
                     let summary = summary.trim().to_string();
                     if !summary.is_empty() {
                         self.remember_history_compaction_summary(cache_key, summary.clone());
+                        persist_cache = true;
                     }
                     summary
                 }
@@ -1269,10 +1526,19 @@ impl Agent {
                 }
             }
         };
+        if persist_cache {
+            self.persist_history_compaction_cache().await;
+        }
         let summary = if summary_raw.is_empty() {
-            synapse_domain::domain::util::truncate_with_ellipsis(&transcript, 2_000)
+            synapse_domain::domain::util::truncate_with_ellipsis(
+                &transcript,
+                policy.max_summary_chars,
+            )
         } else {
-            synapse_domain::domain::util::truncate_with_ellipsis(&summary_raw, 2_000)
+            synapse_domain::domain::util::truncate_with_ellipsis(
+                &summary_raw,
+                policy.max_summary_chars,
+            )
         };
         self.history.splice(
             original_start..original_end,
@@ -1286,15 +1552,37 @@ impl Agent {
     }
 
     fn remember_history_compaction_summary(&mut self, cache_key: String, summary: String) {
+        let now = now_unix_secs();
+        if let Some(entry) = self.history_compaction_cache.get_mut(&cache_key) {
+            entry.summary = summary;
+            entry.last_used_at_unix = now;
+            entry.hits = entry.hits.saturating_add(1);
+            return;
+        }
+
         if !self.history_compaction_cache.contains_key(&cache_key)
-            && self.history_compaction_cache.len() >= HISTORY_COMPACTION_CACHE_MAX_ENTRIES
+            && self.history_compaction_cache.len() >= self.compression.cache_max_entries.max(1)
         {
-            if let Some(evicted_key) = self.history_compaction_cache.keys().next().cloned() {
+            let evicted_key = self
+                .history_compaction_cache
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used_at_unix)
+                .map(|(key, _)| key.clone());
+            if let Some(evicted_key) = evicted_key {
                 self.history_compaction_cache.remove(&evicted_key);
             }
         }
 
-        self.history_compaction_cache.insert(cache_key, summary);
+        self.history_compaction_cache.insert(
+            cache_key.clone(),
+            HistoryCompactionCacheEntry {
+                key: cache_key,
+                summary,
+                created_at_unix: now,
+                last_used_at_unix: now,
+                hits: 0,
+            },
+        );
     }
 
     fn build_system_prompt(&self) -> Result<String> {
@@ -2441,30 +2729,37 @@ mod tests {
             history
         }
 
-        let provider = Box::new(MockProvider {
-            responses: Mutex::new(Vec::new()),
-        });
-        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
-        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
+        let tmp = tempfile::TempDir::new().expect("temp dir");
         let calls = Arc::new(Mutex::new(0));
         let summary_generator: Arc<dyn SummaryGeneratorPort> = Arc::new(CountingSummaryGenerator {
             calls: calls.clone(),
         });
-        let mut agent = Agent::builder()
-            .provider(provider)
-            .tools(vec![Box::new(MockTool)])
-            .memory(mem)
-            .observer(observer)
-            .tool_dispatcher(Box::new(NativeToolDispatcher))
-            .workspace_dir(std::path::PathBuf::from("/tmp"))
-            .config(AgentConfig {
-                max_history_messages: 4,
-                max_context_tokens: usize::MAX,
-                ..Default::default()
-            })
-            .history_summary_generator(Some(summary_generator))
-            .build()
-            .expect("agent builder should succeed with valid config");
+
+        let build_agent = |summary_generator: Arc<dyn SummaryGeneratorPort>| {
+            let provider = Box::new(MockProvider {
+                responses: Mutex::new(Vec::new()),
+            });
+            let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+            let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
+            Agent::builder()
+                .provider(provider)
+                .tools(vec![Box::new(MockTool)])
+                .memory(mem)
+                .observer(observer)
+                .tool_dispatcher(Box::new(NativeToolDispatcher))
+                .workspace_dir(tmp.path().to_path_buf())
+                .agent_id("cache-test-agent".to_string())
+                .config(AgentConfig {
+                    max_history_messages: 4,
+                    max_context_tokens: usize::MAX,
+                    ..Default::default()
+                })
+                .history_summary_generator(Some(summary_generator))
+                .build()
+                .expect("agent builder should succeed with valid config")
+        };
+
+        let mut agent = build_agent(summary_generator.clone());
 
         agent.history = long_history();
         assert!(agent.maybe_compact_history().await);
@@ -2474,6 +2769,45 @@ mod tests {
         assert!(agent.maybe_compact_history().await);
         assert_eq!(*calls.lock(), 1);
         assert_eq!(agent.history_compaction_cache.len(), 1);
+
+        let mut restarted_agent = build_agent(summary_generator);
+        restarted_agent.history = long_history();
+        assert!(restarted_agent.maybe_compact_history().await);
+        assert_eq!(
+            *calls.lock(),
+            1,
+            "restarted agent should reuse persistent cache"
+        );
+    }
+
+    #[test]
+    fn model_profile_threshold_scales_history_compaction_trigger() {
+        let agent = Agent::builder()
+            .provider(Box::new(MockProvider {
+                responses: Mutex::new(Vec::new()),
+            }))
+            .tools(vec![Box::new(MockTool)])
+            .memory(Arc::new(synapse_memory::NoopUnifiedMemory))
+            .observer(Arc::from(synapse_observability::NoopObserver {}))
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .config(AgentConfig {
+                max_history_messages: 4,
+                max_context_tokens: 32,
+                ..Default::default()
+            })
+            .current_model_profile(ResolvedModelProfile {
+                context_window_tokens: Some(200_000),
+                context_window_source:
+                    synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
+                max_output_tokens: None,
+                ..Default::default()
+            })
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        let policy = agent.history_compression_policy();
+        assert_eq!(agent.history_compaction_threshold_tokens(&policy), 87_500);
     }
 
     #[tokio::test]

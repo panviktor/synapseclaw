@@ -361,6 +361,21 @@ pub fn provider_context_safety_ceiling_tokens(safe_input_tokens: usize) -> usize
         / CONTEXT_SAFETY_CEILING_DENOMINATOR
 }
 
+pub fn provider_context_reserved_output_headroom_tokens(
+    context_window_tokens: Option<usize>,
+    target_max_output_tokens: Option<usize>,
+    minimum_headroom_tokens: usize,
+) -> usize {
+    let Some(context_window_tokens) = context_window_tokens else {
+        return minimum_headroom_tokens;
+    };
+
+    let heuristic = (context_window_tokens / 8).max(minimum_headroom_tokens);
+    let requested = target_max_output_tokens.unwrap_or(heuristic);
+    let max_safe_reserve = (context_window_tokens / 4).max(minimum_headroom_tokens);
+    requested.clamp(minimum_headroom_tokens, max_safe_reserve)
+}
+
 fn chars_from_tokens(tokens: usize) -> usize {
     tokens.saturating_mul(4)
 }
@@ -375,14 +390,11 @@ fn reserved_output_headroom_tokens(
         ProviderContextTurnShape::SimpleTool => 96,
         ProviderContextTurnShape::HeavyTool => 128,
     };
-    let Some(context_window_tokens) = context_window_tokens else {
-        return base;
-    };
-
-    let heuristic = (context_window_tokens / 8).max(base);
-    let requested = target_max_output_tokens.unwrap_or(heuristic);
-    let max_safe_reserve = (context_window_tokens / 4).max(base);
-    requested.clamp(base, max_safe_reserve)
+    provider_context_reserved_output_headroom_tokens(
+        context_window_tokens,
+        target_max_output_tokens,
+        base,
+    )
 }
 
 pub fn provider_context_budget_tier_name(tier: ProviderContextBudgetTier) -> &'static str {
