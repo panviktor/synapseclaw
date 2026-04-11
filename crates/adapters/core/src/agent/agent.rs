@@ -14,7 +14,7 @@ use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::io::Write as IoWrite;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use synapse_domain::application::services::dialogue_state_service::DialogueStateStore;
@@ -58,6 +58,7 @@ use synapse_domain::domain::turn_admission::{
 use synapse_domain::ports::channel_registry::ChannelRegistryPort;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
+use synapse_domain::ports::history_compaction_cache::HistoryCompactionCachePort;
 use synapse_domain::ports::route_selection::{ContextCacheStats, RouteAdmissionState};
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
 use synapse_domain::ports::scoped_instruction_context::{
@@ -77,7 +78,6 @@ use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Pro
 use synapse_security::security_policy_from_config;
 
 const PROVIDER_CONTEXT_CHAT_MESSAGES: usize = 6;
-const HISTORY_COMPACTION_CACHE_VERSION: u32 = 1;
 
 #[derive(Clone, Default)]
 pub struct AgentRuntimePorts {
@@ -89,6 +89,7 @@ pub struct AgentRuntimePorts {
     pub scoped_instruction_context: Option<Arc<dyn ScopedInstructionContextPort>>,
     pub channel_registry: Option<Arc<dyn ChannelRegistryPort>>,
     pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
+    pub history_compaction_cache: Option<Arc<dyn HistoryCompactionCachePort>>,
 }
 
 fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
@@ -189,33 +190,6 @@ fn history_compaction_policy_fingerprint(
     )
 }
 
-fn history_compaction_agent_cache_id(agent_id: &str) -> String {
-    use sha2::{Digest, Sha256};
-
-    hex::encode(Sha256::digest(agent_id.as_bytes()))
-}
-
-fn now_unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
-}
-
-#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
-struct HistoryCompactionCacheState {
-    version: u32,
-    entries: Vec<HistoryCompactionCacheEntry>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-struct HistoryCompactionCacheEntry {
-    key: String,
-    summary: String,
-    created_at_unix: u64,
-    last_used_at_unix: u64,
-    hits: u64,
-}
-
 pub struct Agent {
     provider: Box<dyn Provider>,
     tools: Vec<Box<dyn Tool>>,
@@ -263,8 +237,7 @@ pub struct Agent {
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
-    history_compaction_cache: HashMap<String, HistoryCompactionCacheEntry>,
-    history_compaction_cache_loaded: bool,
+    history_compaction_cache: Arc<dyn HistoryCompactionCachePort>,
     /// Canonical agent ID for memory scoping.
     agent_id: String,
     dialogue_state_store: Option<Arc<DialogueStateStore>>,
@@ -311,6 +284,7 @@ pub struct AgentBuilder {
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
+    history_compaction_cache: Option<Arc<dyn HistoryCompactionCachePort>>,
     agent_id: Option<String>,
     dialogue_state_store: Option<Arc<DialogueStateStore>>,
     conversation_store: Option<Arc<dyn ConversationStorePort>>,
@@ -356,6 +330,7 @@ impl AgentBuilder {
             allowed_tools: None,
             response_cache: None,
             history_summary_generator: None,
+            history_compaction_cache: None,
             agent_id: None,
             dialogue_state_store: None,
             conversation_store: None,
@@ -549,6 +524,14 @@ impl AgentBuilder {
         self
     }
 
+    pub fn history_compaction_cache(
+        mut self,
+        cache: Option<Arc<dyn HistoryCompactionCachePort>>,
+    ) -> Self {
+        self.history_compaction_cache = cache;
+        self
+    }
+
     pub fn agent_id(mut self, id: String) -> Self {
         self.agent_id = Some(id);
         self
@@ -628,6 +611,16 @@ impl AgentBuilder {
         let config = self.config.unwrap_or_default();
         let provider_name = self.provider_name.unwrap_or_else(|| "unknown".into());
         let model_name = self.model_name.unwrap_or_else(|| "default".into());
+        let workspace_dir = self
+            .workspace_dir
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let agent_id = self.agent_id.unwrap_or_else(|| "default".to_string());
+        let history_compaction_cache = self.history_compaction_cache.unwrap_or_else(|| {
+            crate::runtime::history_compaction_cache::shared_history_compaction_cache(
+                &workspace_dir,
+                &agent_id,
+            )
+        });
 
         Ok(Agent {
             provider: self
@@ -656,9 +649,7 @@ impl AgentBuilder {
             provider_name,
             model_name,
             temperature: self.temperature.unwrap_or(0.7),
-            workspace_dir: self
-                .workspace_dir
-                .unwrap_or_else(|| std::path::PathBuf::from(".")),
+            workspace_dir,
             identity_config: self.identity_config.unwrap_or_default(),
             skills: self.skills.unwrap_or_default(),
             skills_prompt_mode: self.skills_prompt_mode.unwrap_or_default(),
@@ -680,9 +671,8 @@ impl AgentBuilder {
             allowed_tools: allowed,
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
-            history_compaction_cache: HashMap::new(),
-            history_compaction_cache_loaded: false,
-            agent_id: self.agent_id.unwrap_or_else(|| "default".to_string()),
+            history_compaction_cache,
+            agent_id,
             dialogue_state_store: self.dialogue_state_store,
             conversation_store: self.conversation_store,
             run_recipe_store: self.run_recipe_store,
@@ -899,6 +889,11 @@ impl Agent {
         let user_profile_context = Arc::clone(&self.user_profile_context);
         let turn_defaults_context = Arc::clone(&self.turn_defaults_context);
         let scoped_instruction_context = self.scoped_instruction_context.clone();
+        let history_compaction_cache = Arc::clone(&self.history_compaction_cache);
+        let mut runtime_ports = runtime_ports;
+        runtime_ports
+            .history_compaction_cache
+            .get_or_insert(history_compaction_cache);
 
         let mut rebuilt = Self::from_config_with_runtime_context(
             &effective_config,
@@ -1191,6 +1186,15 @@ impl Agent {
                 }
             }
         };
+        let history_compaction_cache = runtime_ports
+            .history_compaction_cache
+            .clone()
+            .unwrap_or_else(|| {
+                crate::runtime::history_compaction_cache::shared_history_compaction_cache(
+                    &config.workspace_dir,
+                    &resolved_agent_id,
+                )
+            });
 
         Agent::builder()
             .provider(provider)
@@ -1199,6 +1203,7 @@ impl Agent {
             .observer(observer)
             .response_cache(response_cache)
             .history_summary_generator(history_summary_generator)
+            .history_compaction_cache(Some(history_compaction_cache))
             .tool_dispatcher(tool_dispatcher)
             .prompt_budget({
                 let mut b = config.memory.prompt_budget.to_prompt_budget();
@@ -1421,14 +1426,6 @@ impl Agent {
         })
     }
 
-    fn history_compaction_cache_path(&self) -> std::path::PathBuf {
-        let cache_id = history_compaction_agent_cache_id(&self.agent_id);
-        self.workspace_dir
-            .join("state")
-            .join("history_compaction_cache")
-            .join(format!("{cache_id}.json"))
-    }
-
     pub fn history_compaction_cache_stats(&self) -> ContextCacheStats {
         self.history_compaction_cache_stats_for_compression(&self.compression)
     }
@@ -1448,119 +1445,7 @@ impl Agent {
         &self,
         compression: &ContextCompressionConfig,
     ) -> ContextCacheStats {
-        let hits = self
-            .history_compaction_cache
-            .values()
-            .map(|entry| entry.hits)
-            .sum();
-        ContextCacheStats::from_compression_config(
-            compression,
-            self.history_compaction_cache.len(),
-            hits,
-            self.history_compaction_cache_loaded,
-        )
-    }
-
-    async fn ensure_history_compaction_cache_loaded(
-        &mut self,
-        compression: &ContextCompressionConfig,
-    ) {
-        if self.history_compaction_cache_loaded {
-            return;
-        }
-        self.history_compaction_cache_loaded = true;
-
-        let path = self.history_compaction_cache_path();
-        let raw = match tokio::fs::read_to_string(&path).await {
-            Ok(raw) => raw,
-            Err(error) => {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    tracing::debug!(
-                        %error,
-                        path = %path.display(),
-                        "Failed to read history compaction cache"
-                    );
-                }
-                return;
-            }
-        };
-
-        let state = match serde_json::from_str::<HistoryCompactionCacheState>(&raw) {
-            Ok(state) if state.version == HISTORY_COMPACTION_CACHE_VERSION => state,
-            Ok(_) => return,
-            Err(error) => {
-                tracing::debug!(
-                    %error,
-                    path = %path.display(),
-                    "Failed to parse history compaction cache"
-                );
-                return;
-            }
-        };
-
-        let now = now_unix_secs();
-        let ttl_secs = compression.cache_ttl_secs;
-        let max_entries = compression.cache_max_entries.max(1);
-        let mut entries = state
-            .entries
-            .into_iter()
-            .filter(|entry| !entry.key.trim().is_empty() && !entry.summary.trim().is_empty())
-            .filter(|entry| {
-                ttl_secs == 0 || now.saturating_sub(entry.last_used_at_unix) <= ttl_secs
-            })
-            .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_used_at_unix));
-        entries.truncate(max_entries);
-
-        self.history_compaction_cache = entries
-            .into_iter()
-            .map(|entry| (entry.key.clone(), entry))
-            .collect();
-    }
-
-    async fn persist_history_compaction_cache(&self, compression: &ContextCompressionConfig) {
-        if self.history_compaction_cache.is_empty() {
-            return;
-        }
-
-        let path = self.history_compaction_cache_path();
-        if let Some(parent) = path.parent() {
-            if let Err(error) = tokio::fs::create_dir_all(parent).await {
-                tracing::debug!(
-                    %error,
-                    path = %parent.display(),
-                    "Failed to create history compaction cache directory"
-                );
-                return;
-            }
-        }
-
-        let mut entries = self
-            .history_compaction_cache
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| std::cmp::Reverse(entry.last_used_at_unix));
-        entries.truncate(compression.cache_max_entries.max(1));
-        let state = HistoryCompactionCacheState {
-            version: HISTORY_COMPACTION_CACHE_VERSION,
-            entries,
-        };
-        let json = match serde_json::to_vec_pretty(&state) {
-            Ok(json) => json,
-            Err(error) => {
-                tracing::debug!(%error, "Failed to serialize history compaction cache");
-                return;
-            }
-        };
-
-        if let Err(error) = tokio::fs::write(&path, json).await {
-            tracing::debug!(
-                %error,
-                path = %path.display(),
-                "Failed to write history compaction cache"
-            );
-        }
+        self.history_compaction_cache.stats(compression)
     }
 
     async fn maybe_compact_history(&mut self) -> bool {
@@ -1584,8 +1469,9 @@ impl Agent {
         let Some(summary_generator) = self.history_summary_generator.clone() else {
             return false;
         };
-        self.ensure_history_compaction_cache_loaded(compression)
-            .await;
+        if let Err(error) = self.history_compaction_cache.load(compression).await {
+            tracing::debug!(%error, "Failed to load history compaction cache");
+        }
 
         let (projected, original_indices) = self.project_non_system_history_for_compaction();
         let threshold_tokens =
@@ -1612,16 +1498,22 @@ impl Agent {
         let context_window_tokens =
             Self::history_compaction_context_window_tokens_for_profile(profile);
         let cache_key = history_compaction_cache_key(&transcript, &policy, context_window_tokens);
-        let mut persist_cache = false;
-        let summary_raw = if let Some(entry) = self.history_compaction_cache.get_mut(&cache_key) {
-            entry.last_used_at_unix = now_unix_secs();
-            entry.hits = entry.hits.saturating_add(1);
-            persist_cache = true;
+        let summary_raw = if let Some(summary) = match self
+            .history_compaction_cache
+            .get_summary(compression, &cache_key)
+            .await
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                tracing::debug!(%error, "Failed to read history compaction cache entry");
+                None
+            }
+        } {
             tracing::debug!(
                 cache_key = %cache_key,
                 "Live agent history compaction summary cache hit"
             );
-            entry.summary.clone()
+            summary
         } else {
             let previous_summary = self.latest_compaction_summary_text();
             let prompt = history_compaction::compaction_summarizer_prompt_with_policy(
@@ -1634,12 +1526,13 @@ impl Agent {
                 Ok(summary) => {
                     let summary = summary.trim().to_string();
                     if !summary.is_empty() {
-                        self.remember_history_compaction_summary(
-                            cache_key,
-                            summary.clone(),
-                            compression,
-                        );
-                        persist_cache = true;
+                        if let Err(error) = self
+                            .history_compaction_cache
+                            .remember_summary(compression, cache_key, summary.clone())
+                            .await
+                        {
+                            tracing::debug!(%error, "Failed to persist history compaction cache entry");
+                        }
                     }
                     summary
                 }
@@ -1652,9 +1545,6 @@ impl Agent {
                 }
             }
         };
-        if persist_cache {
-            self.persist_history_compaction_cache(compression).await;
-        }
         let summary = if summary_raw.is_empty() {
             synapse_domain::domain::util::truncate_with_ellipsis(
                 &transcript,
@@ -1675,45 +1565,6 @@ impl Agent {
             )))),
         );
         true
-    }
-
-    fn remember_history_compaction_summary(
-        &mut self,
-        cache_key: String,
-        summary: String,
-        compression: &ContextCompressionConfig,
-    ) {
-        let now = now_unix_secs();
-        if let Some(entry) = self.history_compaction_cache.get_mut(&cache_key) {
-            entry.summary = summary;
-            entry.last_used_at_unix = now;
-            entry.hits = entry.hits.saturating_add(1);
-            return;
-        }
-
-        if !self.history_compaction_cache.contains_key(&cache_key)
-            && self.history_compaction_cache.len() >= compression.cache_max_entries.max(1)
-        {
-            let evicted_key = self
-                .history_compaction_cache
-                .iter()
-                .min_by_key(|(_, entry)| entry.last_used_at_unix)
-                .map(|(key, _)| key.clone());
-            if let Some(evicted_key) = evicted_key {
-                self.history_compaction_cache.remove(&evicted_key);
-            }
-        }
-
-        self.history_compaction_cache.insert(
-            cache_key.clone(),
-            HistoryCompactionCacheEntry {
-                key: cache_key,
-                summary,
-                created_at_unix: now,
-                last_used_at_unix: now,
-                hits: 0,
-            },
-        );
     }
 
     fn build_system_prompt(&self) -> Result<String> {
@@ -2978,12 +2829,18 @@ mod tests {
         }
 
         let tmp = tempfile::TempDir::new().expect("temp dir");
+        let cache_path = tmp
+            .path()
+            .join("state")
+            .join("history_compaction_cache")
+            .join("persistent-cache.json");
         let calls = Arc::new(Mutex::new(0));
         let summary_generator: Arc<dyn SummaryGeneratorPort> = Arc::new(CountingSummaryGenerator {
             calls: calls.clone(),
         });
 
-        let build_agent = |summary_generator: Arc<dyn SummaryGeneratorPort>| {
+        let build_agent = |summary_generator: Arc<dyn SummaryGeneratorPort>,
+                           cache: Arc<dyn HistoryCompactionCachePort>| {
             let provider = Box::new(MockProvider {
                 responses: Mutex::new(Vec::new()),
             });
@@ -3003,11 +2860,17 @@ mod tests {
                     ..Default::default()
                 })
                 .history_summary_generator(Some(summary_generator))
+                .history_compaction_cache(Some(cache))
                 .build()
                 .expect("agent builder should succeed with valid config")
         };
 
-        let mut agent = build_agent(summary_generator.clone());
+        let first_cache: Arc<dyn HistoryCompactionCachePort> = Arc::new(
+            crate::runtime::history_compaction_cache::FileHistoryCompactionCache::new(
+                cache_path.clone(),
+            ),
+        );
+        let mut agent = build_agent(summary_generator.clone(), first_cache);
 
         agent.history = long_history();
         assert!(agent.maybe_compact_history().await);
@@ -3016,9 +2879,12 @@ mod tests {
         agent.history = long_history();
         assert!(agent.maybe_compact_history().await);
         assert_eq!(*calls.lock(), 1);
-        assert_eq!(agent.history_compaction_cache.len(), 1);
+        assert_eq!(agent.history_compaction_cache_stats().entries, 1);
 
-        let mut restarted_agent = build_agent(summary_generator);
+        let restarted_cache: Arc<dyn HistoryCompactionCachePort> = Arc::new(
+            crate::runtime::history_compaction_cache::FileHistoryCompactionCache::new(cache_path),
+        );
+        let mut restarted_agent = build_agent(summary_generator, restarted_cache);
         restarted_agent.history = long_history();
         assert!(restarted_agent.maybe_compact_history().await);
         assert_eq!(

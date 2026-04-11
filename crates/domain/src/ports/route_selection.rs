@@ -80,7 +80,7 @@ pub struct RouteSelection {
     pub last_tool_repair: Option<ToolRepairTrace>,
     /// Bounded recent structured tool self-repair traces for explainability.
     pub recent_tool_repairs: Vec<ToolRepairTrace>,
-    /// Current context/compaction cache stats, when this route is backed by a live agent.
+    /// Current context/compaction cache stats, when a runtime cache service is attached.
     pub context_cache: Option<ContextCacheStats>,
 }
 

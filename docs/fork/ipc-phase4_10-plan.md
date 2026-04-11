@@ -694,10 +694,10 @@ Expected outcome:
       carries the typed condensation recommendation alongside the window status
     - live agent context logs now include condensation mode, target artifact,
       minimum reclaim chars, and whether cached condensed artifact reuse is preferred
-    - live agent history compaction now keeps a bounded per-agent condensed
-      artifact cache keyed by source transcript, compression policy, and trusted
-      context window digest, so repeated compaction of the same source does not
-      re-burn the summary lane
+    - history compaction now uses a shared runtime cache service/port, still
+      scoped per workspace agent and keyed by source transcript, compression
+      policy, and trusted context window digest; repeated compaction of the same
+      source no longer re-burns the summary lane
     - condensed artifact cache is now persistent under the workspace state dir,
       TTL-bounded by default to 2 days, and LRU-capped by config; this makes
       restart/fleet behavior closer to Hermes-style prompt caching while staying
@@ -705,7 +705,7 @@ Expected outcome:
     - compression policy now supports per-route overrides selected by
       `hint` / `provider` / `model` / `lane`, composed in deterministic selector
       order rather than model-specific Rust match arms
-    - live agent compaction now resolves those route-specific compression
+    - compaction now resolves those route-specific compression
       settings before thresholding, cache lookup, and cache eviction
     - route/runtime inspection now carries condensed artifact cache stats
       (`entries`, `hits`, `max`, `ttl`, `loaded`) and active effective
@@ -713,10 +713,9 @@ Expected outcome:
       ratio, source/summary caps) through `RouteSelection` and `/models`, so
       cache behavior is visible without reading workspace state
     - web runtime now resolves those cache/policy stats against the active
-      provider/model route and includes live cache entries/hits; channel
-      `/model` uses the same `RouteSelection` surface with config-derived
-      effective policy (`loaded=false`, zero live hits/entries) rather than
-      reaching into a web `Agent` cache
+      provider/model route; channel `/model` uses the same `RouteSelection`
+      surface and shared cache service, so it can show real `entries`/`hits`
+      without reaching into a web `Agent` cache
   - Slice 14 follow-through partial:
     - the same structured marker routing now covers image/audio/video/music
       generation instead of relying on free-text phrase detection

@@ -235,6 +235,8 @@ struct ChannelRuntimeContext {
     compression: synapse_domain::config::schema::ContextCompressionConfig,
     compression_overrides:
         Arc<Vec<synapse_domain::config::schema::ContextCompressionRouteOverrideConfig>>,
+    history_compaction_cache:
+        Arc<dyn synapse_domain::ports::history_compaction_cache::HistoryCompactionCachePort>,
     /// SSE event sender — shared from gateway when running in daemon mode.
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     /// Current conversation context for tools.
@@ -555,7 +557,7 @@ fn get_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str) -> Channel
         .unwrap_or_else(|| default_route_selection(ctx))
 }
 
-fn route_effective_context_cache_stats(
+async fn route_effective_context_cache_stats(
     ctx: &ChannelRuntimeContext,
     route: &ChannelRouteSelection,
 ) -> synapse_domain::ports::route_selection::ContextCacheStats {
@@ -568,12 +570,10 @@ fn route_effective_context_cache_stats(
             route.lane,
             None,
         );
-    synapse_domain::ports::route_selection::ContextCacheStats::from_compression_config(
-        &compression,
-        0,
-        0,
-        false,
-    )
+    if let Err(error) = ctx.history_compaction_cache.load(&compression).await {
+        tracing::debug!(%error, "Failed to load channel-visible history compaction cache");
+    }
+    ctx.history_compaction_cache.stats(&compression)
 }
 
 fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: ChannelRouteSelection) {
@@ -1635,7 +1635,7 @@ async fn format_command_effect(
         CommandEffect::ShowModel => {
             let mut current = get_route_selection(ctx, conversation_key);
             if current.context_cache.is_none() {
-                current.context_cache = Some(route_effective_context_cache_stats(ctx, &current));
+                current.context_cache = Some(route_effective_context_cache_stats(ctx, &current).await);
             }
             let mut config = synapse_domain::config::schema::Config::default();
             config.workspace_dir = ctx.workspace_dir.as_ref().clone();
@@ -3482,6 +3482,11 @@ pub async fn start_channels(
             ),
         )),
     );
+    let history_compaction_cache =
+        crate::runtime::history_compaction_cache::shared_history_compaction_cache(
+            &config.workspace_dir,
+            &resolved_agent_id,
+        );
 
     let runtime_ctx = Arc::new(ChannelRuntimeContext {
         channels_by_name,
@@ -3534,6 +3539,7 @@ pub async fn start_channels(
         prompt_budget_config: config.memory.prompt_budget.clone(),
         compression: config.compression.clone(),
         compression_overrides: Arc::new(config.compression_overrides.clone()),
+        history_compaction_cache,
         event_tx,
         conversation_context: Some(shared_conversation_context.clone()),
         turn_defaults_context: Some(shared_turn_defaults_context.clone()),
@@ -3607,6 +3613,21 @@ mod tests {
     use synapse_observability::NoopObserver;
     use synapse_providers::{ChatMessage, Provider};
     use tempfile::TempDir;
+
+    fn test_history_compaction_cache(
+    ) -> Arc<dyn synapse_domain::ports::history_compaction_cache::HistoryCompactionCachePort> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        Arc::new(
+            crate::runtime::history_compaction_cache::FileHistoryCompactionCache::new(
+                std::env::temp_dir().join(format!(
+                    "synapseclaw-history-compaction-cache-test-{}-{timestamp}.json",
+                    std::process::id()
+                )),
+            ),
+        )
+    }
 
     fn make_workspace() -> TempDir {
         let tmp = TempDir::new().unwrap();
@@ -3838,6 +3859,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             compression,
             compression_overrides: Arc::new(compression_overrides),
+            history_compaction_cache: test_history_compaction_cache(),
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
@@ -3860,8 +3882,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn channel_route_cache_stats_use_effective_policy_without_live_agent_cache() {
+    #[tokio::test]
+    async fn channel_route_cache_stats_use_effective_policy_and_real_shared_cache() {
         let compression = synapse_domain::config::schema::ContextCompressionConfig::default();
         let ctx = minimal_runtime_context_with_compression(
             compression,
@@ -3893,12 +3915,34 @@ mod tests {
             recent_tool_repairs: Vec::new(),
             context_cache: None,
         };
+        let effective_compression =
+            synapse_domain::application::services::history_compaction::resolve_context_compression_config_for_route(
+                &ctx.compression,
+                ctx.compression_overrides.as_slice(),
+                route.provider.as_str(),
+                route.model.as_str(),
+                route.lane,
+                None,
+            );
+        ctx.history_compaction_cache
+            .remember_summary(
+                &effective_compression,
+                "cache-key".to_string(),
+                "cached summary".to_string(),
+            )
+            .await
+            .expect("remember summary");
+        ctx.history_compaction_cache
+            .get_summary(&effective_compression, "cache-key")
+            .await
+            .expect("cache lookup")
+            .expect("cached summary");
 
-        let stats = route_effective_context_cache_stats(&ctx, &route);
+        let stats = route_effective_context_cache_stats(&ctx, &route).await;
 
-        assert_eq!(stats.entries, 0);
-        assert_eq!(stats.hits, 0);
-        assert!(!stats.loaded);
+        assert_eq!(stats.entries, 1);
+        assert_eq!(stats.hits, 1);
+        assert!(stats.loaded);
         assert_eq!(stats.max_entries, 32);
         assert_eq!(stats.ttl_secs, 86_400);
         assert_eq!(stats.threshold_basis_points, 6_500);
@@ -4153,6 +4197,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
             compression_overrides: Arc::new(Vec::new()),
+            history_compaction_cache: test_history_compaction_cache(),
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
@@ -4268,6 +4313,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
             compression_overrides: Arc::new(Vec::new()),
+            history_compaction_cache: test_history_compaction_cache(),
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
@@ -4389,6 +4435,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
             compression_overrides: Arc::new(Vec::new()),
+            history_compaction_cache: test_history_compaction_cache(),
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
@@ -4525,6 +4572,7 @@ mod tests {
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
             compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
             compression_overrides: Arc::new(Vec::new()),
+            history_compaction_cache: test_history_compaction_cache(),
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,

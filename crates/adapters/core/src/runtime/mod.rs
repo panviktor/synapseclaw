@@ -2,6 +2,7 @@
 
 pub mod agent_runtime_adapter;
 pub mod docker;
+pub mod history_compaction_cache;
 pub mod hooks_adapter;
 pub mod native;
 

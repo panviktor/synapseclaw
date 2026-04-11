@@ -59,6 +59,7 @@ fn web_runtime_ports(state: &AppState) -> crate::agent::AgentRuntimePorts {
         scoped_instruction_context: Some(Arc::clone(&state.scoped_instruction_context)),
         channel_registry: state.channel_registry.clone(),
         run_recipe_store: Some(Arc::clone(&state.run_recipe_store)),
+        history_compaction_cache: None,
     }
 }
 
