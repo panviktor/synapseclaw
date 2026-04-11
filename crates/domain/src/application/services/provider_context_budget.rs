@@ -7,6 +7,11 @@ use crate::application::services::model_lane_resolution::{
     ResolvedModelProfile, ResolvedModelProfileConfidence,
 };
 
+pub const CONTEXT_COMPRESSION_THRESHOLD_NUMERATOR: usize = 1;
+pub const CONTEXT_COMPRESSION_THRESHOLD_DENOMINATOR: usize = 2;
+pub const CONTEXT_SAFETY_CEILING_NUMERATOR: usize = 17;
+pub const CONTEXT_SAFETY_CEILING_DENOMINATOR: usize = 20;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderContextBudgetTier {
     Healthy,
@@ -30,6 +35,21 @@ pub enum ProviderContextArtifact {
     Resolution,
     PriorChat,
     CurrentTurn,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderContextCondensationMode {
+    Trim,
+    Summarize,
+    Handoff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderContextCondensationPlan {
+    pub mode: ProviderContextCondensationMode,
+    pub target_artifact: Option<ProviderContextArtifact>,
+    pub minimum_reclaim_chars: usize,
+    pub prefer_cached_artifact: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -205,6 +225,59 @@ pub fn provider_context_prune_policy(
     }
 }
 
+pub fn provider_context_condensation_plan(
+    assessment: &ProviderContextBudgetAssessment,
+) -> Option<ProviderContextCondensationPlan> {
+    if assessment.tier == ProviderContextBudgetTier::Healthy {
+        return None;
+    }
+
+    let minimum_reclaim_chars = assessment
+        .snapshot
+        .chars_over_target
+        .max(assessment.snapshot.chars_over_ceiling);
+    let minimum_reclaim_chars = minimum_reclaim_chars.max(1);
+
+    let Some(artifact) = assessment.snapshot.primary_ballast_artifact else {
+        return (assessment.tier == ProviderContextBudgetTier::OverBudget).then_some(
+            ProviderContextCondensationPlan {
+                mode: ProviderContextCondensationMode::Handoff,
+                target_artifact: None,
+                minimum_reclaim_chars,
+                prefer_cached_artifact: false,
+            },
+        );
+    };
+
+    let (mode, prefer_cached_artifact) = match artifact {
+        ProviderContextArtifact::PriorChat => (ProviderContextCondensationMode::Summarize, true),
+        ProviderContextArtifact::ScopedContext
+        | ProviderContextArtifact::Resolution
+        | ProviderContextArtifact::RuntimeInterpretation => {
+            (ProviderContextCondensationMode::Trim, false)
+        }
+        ProviderContextArtifact::Bootstrap
+        | ProviderContextArtifact::CoreMemory
+        | ProviderContextArtifact::CurrentTurn => {
+            return (assessment.tier == ProviderContextBudgetTier::OverBudget).then_some(
+                ProviderContextCondensationPlan {
+                    mode: ProviderContextCondensationMode::Handoff,
+                    target_artifact: Some(artifact),
+                    minimum_reclaim_chars,
+                    prefer_cached_artifact: false,
+                },
+            );
+        }
+    };
+
+    Some(ProviderContextCondensationPlan {
+        mode,
+        target_artifact: Some(artifact),
+        minimum_reclaim_chars,
+        prefer_cached_artifact,
+    })
+}
+
 pub fn estimate_tokens_from_chars(chars: usize) -> usize {
     chars.div_ceil(4)
 }
@@ -255,12 +328,11 @@ fn budget_limits_for_shape(
 
     let base_target_tokens = estimate_tokens_from_chars(base_target_chars);
     let base_ceiling_tokens = estimate_tokens_from_chars(base_ceiling_chars);
-    let (max_target_tokens, max_ceiling_tokens) = max_scaled_budget_tokens_for_shape(shape);
-    let target_tokens = (safe_input_tokens / 3)
-        .clamp(base_target_tokens, max_target_tokens)
+    let target_tokens = provider_context_compression_threshold_tokens(safe_input_tokens)
+        .max(base_target_tokens)
         .min(safe_input_tokens);
-    let ceiling_tokens = (safe_input_tokens.saturating_mul(2) / 3)
-        .clamp(base_ceiling_tokens, max_ceiling_tokens)
+    let ceiling_tokens = provider_context_safety_ceiling_tokens(safe_input_tokens)
+        .max(base_ceiling_tokens)
         .min(safe_input_tokens)
         .max(target_tokens);
 
@@ -279,12 +351,14 @@ fn base_budget_chars_for_shape(shape: ProviderContextTurnShape) -> (usize, usize
     }
 }
 
-fn max_scaled_budget_tokens_for_shape(shape: ProviderContextTurnShape) -> (usize, usize) {
-    match shape {
-        ProviderContextTurnShape::Baseline => (8_192, 16_384),
-        ProviderContextTurnShape::SimpleTool => (10_240, 20_480),
-        ProviderContextTurnShape::HeavyTool => (12_288, 24_576),
-    }
+pub fn provider_context_compression_threshold_tokens(safe_input_tokens: usize) -> usize {
+    safe_input_tokens.saturating_mul(CONTEXT_COMPRESSION_THRESHOLD_NUMERATOR)
+        / CONTEXT_COMPRESSION_THRESHOLD_DENOMINATOR
+}
+
+pub fn provider_context_safety_ceiling_tokens(safe_input_tokens: usize) -> usize {
+    safe_input_tokens.saturating_mul(CONTEXT_SAFETY_CEILING_NUMERATOR)
+        / CONTEXT_SAFETY_CEILING_DENOMINATOR
 }
 
 fn chars_from_tokens(tokens: usize) -> usize {
@@ -305,7 +379,7 @@ fn reserved_output_headroom_tokens(
         return base;
     };
 
-    let heuristic = (context_window_tokens / 8).clamp(base, 8_192);
+    let heuristic = (context_window_tokens / 8).max(base);
     let requested = target_max_output_tokens.unwrap_or(heuristic);
     let max_safe_reserve = (context_window_tokens / 4).max(base);
     requested.clamp(base, max_safe_reserve)
@@ -336,6 +410,16 @@ pub fn provider_context_artifact_name(artifact: ProviderContextArtifact) -> &'st
         ProviderContextArtifact::Resolution => "resolution",
         ProviderContextArtifact::PriorChat => "prior_chat",
         ProviderContextArtifact::CurrentTurn => "current_turn",
+    }
+}
+
+pub fn provider_context_condensation_mode_name(
+    mode: ProviderContextCondensationMode,
+) -> &'static str {
+    match mode {
+        ProviderContextCondensationMode::Trim => "trim",
+        ProviderContextCondensationMode::Summarize => "summarize",
+        ProviderContextCondensationMode::Handoff => "handoff",
     }
 }
 
@@ -446,10 +530,43 @@ mod tests {
 
         assert_eq!(assessment.turn_shape, ProviderContextTurnShape::HeavyTool);
         assert_eq!(assessment.tier, ProviderContextBudgetTier::Healthy);
-        assert_eq!(assessment.target_total_chars, 49_152);
-        assert_eq!(assessment.ceiling_total_chars, 98_304);
+        assert_eq!(assessment.target_total_chars, 393_216);
+        assert_eq!(assessment.ceiling_total_chars, 668_464);
         assert_eq!(assessment.snapshot.reserved_output_headroom_tokens, 65_536);
         assert_eq!(assessment.snapshot.chars_over_target, 0);
+    }
+
+    #[test]
+    fn very_large_window_policy_uses_safe_input_ratios_instead_of_fixed_caps() {
+        let profile = ResolvedModelProfile {
+            context_window_tokens: Some(2_000_000),
+            context_window_source:
+                crate::application::services::model_lane_resolution::ResolvedModelProfileSource::CachedProviderCatalog,
+            observed_at_unix: Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock should be after unix epoch")
+                    .as_secs(),
+            ),
+            ..Default::default()
+        };
+        let assessment = assess_provider_context_budget(
+            ProviderContextBudgetInput {
+                total_chars: 200_000,
+                prior_chat_messages: 6,
+                current_turn_messages: 1,
+                prior_chat_chars: 160_000,
+                current_turn_chars: 4_000,
+                ..Default::default()
+            }
+            .with_target_model_profile(&profile),
+        );
+
+        assert_eq!(assessment.turn_shape, ProviderContextTurnShape::HeavyTool);
+        assert_eq!(assessment.tier, ProviderContextBudgetTier::Healthy);
+        assert_eq!(assessment.snapshot.reserved_output_headroom_tokens, 250_000);
+        assert_eq!(assessment.snapshot.target_total_tokens, 875_000);
+        assert_eq!(assessment.snapshot.ceiling_total_tokens, 1_487_500);
     }
 
     #[test]
@@ -509,5 +626,66 @@ mod tests {
 
         assert!(policy.drop_scoped_context);
         assert_eq!(policy.max_runtime_interpretation_chars, Some(420));
+    }
+
+    #[test]
+    fn condensation_plan_prefers_cached_summary_for_prior_chat_ballast() {
+        let assessment = assess_provider_context_budget(ProviderContextBudgetInput {
+            total_chars: 6_600,
+            current_turn_messages: 1,
+            prior_chat_chars: 2_400,
+            scoped_context_chars: 400,
+            current_turn_chars: 500,
+            ..Default::default()
+        });
+
+        let plan = provider_context_condensation_plan(&assessment).expect("plan");
+
+        assert_eq!(plan.mode, ProviderContextCondensationMode::Summarize);
+        assert_eq!(
+            plan.target_artifact,
+            Some(ProviderContextArtifact::PriorChat)
+        );
+        assert!(plan.prefer_cached_artifact);
+        assert_eq!(plan.minimum_reclaim_chars, 3_100);
+    }
+
+    #[test]
+    fn condensation_plan_trims_scoped_context_when_it_is_ballast() {
+        let assessment = assess_provider_context_budget(ProviderContextBudgetInput {
+            total_chars: 4_400,
+            current_turn_messages: 1,
+            scoped_context_chars: 1_600,
+            runtime_interpretation_chars: 300,
+            prior_chat_chars: 400,
+            current_turn_chars: 500,
+            ..Default::default()
+        });
+
+        let plan = provider_context_condensation_plan(&assessment).expect("plan");
+
+        assert_eq!(plan.mode, ProviderContextCondensationMode::Trim);
+        assert_eq!(
+            plan.target_artifact,
+            Some(ProviderContextArtifact::ScopedContext)
+        );
+        assert!(!plan.prefer_cached_artifact);
+    }
+
+    #[test]
+    fn condensation_plan_handoff_when_over_budget_has_no_removable_ballast() {
+        let assessment = assess_provider_context_budget(ProviderContextBudgetInput {
+            total_chars: 8_000,
+            current_turn_messages: 1,
+            bootstrap_chars: 7_500,
+            current_turn_chars: 500,
+            ..Default::default()
+        });
+
+        let plan = provider_context_condensation_plan(&assessment).expect("plan");
+
+        assert_eq!(plan.mode, ProviderContextCondensationMode::Handoff);
+        assert_eq!(plan.target_artifact, None);
+        assert!(!plan.prefer_cached_artifact);
     }
 }

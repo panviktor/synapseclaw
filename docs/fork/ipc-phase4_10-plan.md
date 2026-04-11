@@ -671,6 +671,19 @@ Expected outcome:
     - live agent and channel admission now feed the effective route profile into
       the same budget path, so large-window candidates no longer lose scoped or
       runtime context only because of the old fixed heavy-turn ceiling
+    - Hermes-style window-ratio follow-through:
+      - model context is treated as `input + output`
+      - provider-facing safe input budget subtracts reserved output headroom
+      - compression threshold is `50%` of safe input
+      - hard safety ceiling is `85%` of safe input
+      - large trusted windows such as `2M` scale by ratio instead of hitting
+        old fixed scaled caps
+      - low-confidence / unknown window metadata still falls back to the
+        compact legacy char budget
+    - route-switch preflight now consumes `ContextBudgetSnapshot` directly and
+      carries the typed condensation recommendation alongside the window status
+    - live agent context logs now include condensation mode, target artifact,
+      minimum reclaim chars, and whether cached condensed artifact reuse is preferred
   - Slice 14 follow-through partial:
     - the same structured marker routing now covers image/audio/video/music
       generation instead of relying on free-text phrase detection
@@ -739,12 +752,10 @@ Expected outcome:
     - continue feeding profile confidence into remaining tool-capability decisions
       beyond route-switch and lane admission
   - Slice 13 follow-through:
-    - add condensed artifact cache selection instead of only “history compaction or not”
-    - continue moving route-switch policy toward direct consumption of the
-      richer pressure snapshot
-    - make prompt-economy caps configurable/catalog-aware if operator policy
-      needs to exploit very large windows more aggressively than the default
-      compact hot-path budget
+    - connect `prefer_cached_artifact` to a real reusable condensed artifact
+      cache keyed by source digest
+    - make the `50% / 85%` ratio policy configurable if operator/catalog policy
+      needs per-route differences later
   - reasoning-control follow-through:
     - promote provider reasoning controls from global runtime override to a
       capability/lane policy once the model-profile registry exposes support

@@ -22,11 +22,11 @@ use synapse_domain::application::services::dialogue_state_service::{self};
 use synapse_domain::application::services::history_compaction;
 use synapse_domain::application::services::provider_context_budget::{
     assess_provider_context_budget, provider_context_artifact_name,
-    provider_context_budget_tier_name, provider_context_turn_shape_name,
-    ProviderContextBudgetInput,
+    provider_context_budget_tier_name, provider_context_condensation_mode_name,
+    provider_context_turn_shape_name, ProviderContextBudgetInput,
 };
 use synapse_domain::application::services::route_switch_preflight::{
-    assess_route_switch_preflight, RouteSwitchPreflight, RouteSwitchStatus,
+    assess_route_switch_preflight_for_budget, RouteSwitchPreflight, RouteSwitchStatus,
 };
 use synapse_domain::application::services::scoped_instruction_resolution::{
     build_scoped_instruction_plan, format_scoped_instruction_block,
@@ -600,10 +600,6 @@ impl Agent {
         AgentBuilder::new()
     }
 
-    fn build_provider_prompt_snapshot(&self) -> ProviderPromptSnapshot {
-        self.build_provider_prompt_snapshot_for_profile(&self.current_model_profile)
-    }
-
     fn build_provider_prompt_snapshot_for_profile(
         &self,
         target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
@@ -668,33 +664,33 @@ impl Agent {
         &mut self,
         target_context_window_tokens: usize,
     ) -> RouteSwitchPreflight {
-        let mut assessment = assess_route_switch_preflight(
-            self.build_provider_prompt_snapshot().stats.total_chars,
-            &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
+        let target_profile =
+            synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
                 context_window_tokens: Some(target_context_window_tokens),
                 context_window_source:
                     synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
                 max_output_tokens: None,
                 features: Vec::new(),
                 ..Default::default()
-            },
+            };
+        let snapshot = self.build_provider_prompt_snapshot_for_profile(&target_profile);
+        let budget = assess_provider_context_budget(
+            provider_context_budget_input_from_stats_for_profile(&snapshot.stats, &target_profile),
         );
+        let mut assessment = assess_route_switch_preflight_for_budget(&budget, &target_profile);
 
         while assessment.status == RouteSwitchStatus::CompactRecommended {
             if !self.maybe_compact_history().await {
                 break;
             }
-            assessment = assess_route_switch_preflight(
-                self.build_provider_prompt_snapshot().stats.total_chars,
-                &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
-                    context_window_tokens: Some(target_context_window_tokens),
-                    context_window_source:
-                        synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
-                    max_output_tokens: None,
-                    features: Vec::new(),
-                    ..Default::default()
-                },
+            let snapshot = self.build_provider_prompt_snapshot_for_profile(&target_profile);
+            let budget = assess_provider_context_budget(
+                provider_context_budget_input_from_stats_for_profile(
+                    &snapshot.stats,
+                    &target_profile,
+                ),
             );
+            assessment = assess_route_switch_preflight_for_budget(&budget, &target_profile);
         }
 
         assessment
@@ -1759,6 +1755,7 @@ impl Agent {
                 .map(|(name, chars)| format!("{name}={chars}"))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let condensation_plan = admission_decision.condensation_plan;
             tracing::info!(
                 target: "agent.provider_context",
                 system_messages = snapshot.stats.system_messages,
@@ -1799,6 +1796,17 @@ impl Agent {
                     .primary_ballast_artifact
                     .map(provider_context_artifact_name)
                     .unwrap_or("none"),
+                context_condensation_mode = condensation_plan
+                    .map(|plan| provider_context_condensation_mode_name(plan.mode))
+                    .unwrap_or("none"),
+                context_condensation_target = condensation_plan
+                    .and_then(|plan| plan.target_artifact)
+                    .map(provider_context_artifact_name)
+                    .unwrap_or("none"),
+                context_condensation_min_reclaim_chars =
+                    condensation_plan.map(|plan| plan.minimum_reclaim_chars).unwrap_or(0),
+                context_condensation_prefers_cached_artifact =
+                    condensation_plan.is_some_and(|plan| plan.prefer_cached_artifact),
                 admission_intent = turn_intent_name(admission_decision.snapshot.intent),
                 admission_pressure = context_pressure_state_name(
                     admission_decision.snapshot.pressure_state

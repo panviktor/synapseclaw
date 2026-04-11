@@ -1775,6 +1775,7 @@ mod tests {
                         crate::config::schema::CapabilityLane::ImageGeneration,
                     ),
                 ),
+                condensation_plan: None,
                 requires_compaction: false,
             },
         );
@@ -1801,6 +1802,7 @@ mod tests {
                 recommended_action: Some(
                     crate::domain::turn_admission::AdmissionRepairHint::StartFreshHandoff,
                 ),
+                condensation_plan: None,
                 requires_compaction: false,
             },
         );
