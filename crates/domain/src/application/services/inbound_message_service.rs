@@ -314,13 +314,18 @@ pub fn command_effect(
         RuntimeCommand::SetModel(raw) => {
             let model = raw.trim().trim_matches('`').to_string();
             // Look up in model_routes by model name or hint
-            let matched = model_routes.iter().find(|route| {
-                route.model.eq_ignore_ascii_case(&model) || route.hint.eq_ignore_ascii_case(&model)
-            });
+            let matched = model_routes
+                .iter()
+                .find(|route| {
+                    route.model.eq_ignore_ascii_case(&model)
+                        || route.hint.eq_ignore_ascii_case(&model)
+                })
+                .cloned()
+                .or_else(|| crate::config::model_catalog::model_route_alias(&model));
             match matched {
                 Some(route) => CommandEffect::SwitchModel {
-                    model: route.model.clone(),
-                    inferred_provider: Some(route.provider.clone()),
+                    model: route.model,
+                    inferred_provider: Some(route.provider),
                 },
                 None => CommandEffect::SwitchModel {
                     model,
@@ -718,6 +723,38 @@ mod tests {
             CommandEffect::SwitchModel {
                 model: "custom-model".into(),
                 inferred_provider: None,
+            }
+        );
+    }
+
+    #[test]
+    fn effect_switch_model_by_catalog_alias_when_config_route_missing() {
+        let cmd = RuntimeCommand::SetModel("gemma31b".into());
+        assert_eq!(
+            command_effect(&cmd, &[]),
+            CommandEffect::SwitchModel {
+                model: "google/gemma-4-31b-it".into(),
+                inferred_provider: Some("openrouter".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn effect_prefers_config_route_over_catalog_alias() {
+        let cmd = RuntimeCommand::SetModel("gemma31b".into());
+        let routes = vec![ModelRouteConfig {
+            hint: "gemma31b".into(),
+            capability: None,
+            provider: "custom-provider".into(),
+            model: "custom-gemma".into(),
+            api_key: None,
+            profile: ModelCandidateProfileConfig::default(),
+        }];
+        assert_eq!(
+            command_effect(&cmd, &routes),
+            CommandEffect::SwitchModel {
+                model: "custom-gemma".into(),
+                inferred_provider: Some("custom-provider".into()),
             }
         );
     }

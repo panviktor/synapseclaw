@@ -134,10 +134,11 @@ Notes:
 `models catalog init` writes a local editable `model_catalog.json` next to the
 active `config.toml`. On startup SynapseClaw merges that file over the built-in
 catalog. Use this to override built-in presets, provider defaults, curated
-model lists, provider:model profiles, or default pricing without changing
-repository files. Profile entries can provide context windows, max output, and
-feature coverage for admission/routing when the live provider cache has not
-been refreshed yet.
+model lists, route aliases, provider:model profiles, or default pricing without
+changing repository files. Profile entries can provide context windows, max
+output, and feature coverage for admission/routing when the live provider cache
+has not been refreshed yet. Route aliases are fallback shortcuts for `/model`;
+user `[[model_routes]]` entries still win when both define the same hint.
 
 ### `doctor`
 

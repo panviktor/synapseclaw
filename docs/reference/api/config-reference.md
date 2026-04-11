@@ -51,11 +51,15 @@ Relevant keys:
 Operational notes:
 
 - Built-in preset seeds, provider defaults, curated provider model lists,
-  default pricing, and curated provider:model profile metadata come from the
-  bundled model catalog.
+  default pricing, route aliases, and curated provider:model profile metadata
+  come from the bundled model catalog.
 - Provider model cache metadata wins first; bundled/local catalog profiles are
   fallback metadata for context windows, max output, and feature coverage when
   the live cache is missing.
+- User `[[model_routes]]` entries win over bundled route aliases. Bundled
+  aliases are only a fallback so shortcuts such as `cheap`, `qwen36`,
+  `gemma31b`, and `gemma26b` work in fresh configs without changing the default
+  provider/model.
 - Users can materialize a local editable override with:
   - `synapseclaw models catalog init`
 - The override file lives next to the resolved `config.toml`:
@@ -444,6 +448,8 @@ Notes:
 ## `[[model_routes]]` and `[[embedding_routes]]`
 
 Use route hints so integrations can keep stable names while model IDs evolve.
+If a hint is not present in `config.toml`, SynapseClaw falls back to the bundled
+model catalog aliases. User-defined `[[model_routes]]` always take precedence.
 
 ### `[[model_routes]]`
 

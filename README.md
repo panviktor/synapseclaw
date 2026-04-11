@@ -231,9 +231,9 @@ lane-based routing under the hood. Advanced users can still override the
 generated capability lanes later in `config.toml`.
 
 Built-in preset data, provider defaults, curated model lists, curated
-provider:model profiles, and default pricing now come from an external catalog.
-If you want to customize that catalog locally without editing repository files,
-run:
+provider:model profiles, default route aliases, and default pricing now come
+from an external catalog. If you want to customize that catalog locally without
+editing repository files, run:
 
 ```bash
 synapseclaw models catalog init
@@ -251,6 +251,9 @@ runtime already resolves a single active config directory first.
 Live provider model-cache metadata wins over bundled profile metadata when it
 exists; catalog profiles are the fallback for context windows, max output, and
 feature coverage.
+User `[[model_routes]]` entries win over bundled aliases, so local configs can
+keep stable shortcuts such as `cheap`, `qwen36`, `gemma31b`, or `gemma26b`
+while still overriding them when needed.
 
 > **Dev fallback (no global install):** prefix commands with `cargo run --release --` (example: `cargo run --release -- status`).
 

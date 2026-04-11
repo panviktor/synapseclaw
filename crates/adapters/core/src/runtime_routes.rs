@@ -273,6 +273,25 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
         }
     }
 
+    let catalog_aliases = synapse_domain::config::model_catalog::model_route_aliases()
+        .into_iter()
+        .filter(|alias| {
+            !model_routes
+                .iter()
+                .any(|route| route.hint.eq_ignore_ascii_case(alias.hint.as_str()))
+        })
+        .collect::<Vec<_>>();
+    if !catalog_aliases.is_empty() {
+        response.push_str("\nCatalog model aliases:\n");
+        for route in catalog_aliases.iter().take(12) {
+            let _ = writeln!(
+                response,
+                "  `{}` → {} ({})",
+                route.hint, route.model, route.provider
+            );
+        }
+    }
+
     let cached_models = load_cached_model_preview(workspace_dir, &current.provider);
     if cached_models.is_empty() {
         let _ = writeln!(
@@ -660,6 +679,8 @@ mod tests {
         assert!(response.contains("`cheap` → qwen/qwen3.6-plus (openrouter)"));
         assert!(response.contains("Profile sources:"));
         assert!(response.contains("Current route limits:"));
+        assert!(response.contains("Catalog model aliases:"));
+        assert!(response.contains("`gemma31b` → google/gemma-4-31b-it (openrouter)"));
         assert!(response.contains("No cached model list found"));
     }
 

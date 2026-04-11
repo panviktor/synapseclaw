@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::config::schema::{
-    ModelFeature, ModelLaneCandidateConfig, ModelLaneConfig, ModelPricing,
+    ModelFeature, ModelLaneCandidateConfig, ModelLaneConfig, ModelPricing, ModelRouteConfig,
 };
 use crate::ports::model_profile_catalog::{CatalogModelProfile, CatalogModelProfileSource};
 
@@ -32,6 +32,8 @@ struct ModelCatalogData {
     pricing: Vec<ModelPricingCatalogEntry>,
     #[serde(default, alias = "model_profiles")]
     profiles: Vec<ModelProfileCatalogEntry>,
+    #[serde(default, alias = "model_routes")]
+    route_aliases: Vec<ModelRouteConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -170,6 +172,18 @@ fn merge_catalog_data(
             *existing = profile;
         } else {
             merged.profiles.push(profile);
+        }
+    }
+
+    for route in override_data.route_aliases {
+        if let Some(existing) = merged
+            .route_aliases
+            .iter_mut()
+            .find(|item| item.hint.eq_ignore_ascii_case(&route.hint))
+        {
+            *existing = route;
+        } else {
+            merged.route_aliases.push(route);
         }
     }
 
@@ -314,6 +328,26 @@ pub fn model_profile(provider: &str, model: &str) -> Option<CatalogModelProfile>
         })
 }
 
+pub fn model_route_aliases() -> Vec<ModelRouteConfig> {
+    active_model_catalog().data.route_aliases.clone()
+}
+
+pub fn model_route_alias(value: &str) -> Option<ModelRouteConfig> {
+    let value = value.trim().trim_matches('`');
+    if value.is_empty() {
+        return None;
+    }
+
+    active_model_catalog()
+        .data
+        .route_aliases
+        .iter()
+        .find(|route| {
+            route.hint.eq_ignore_ascii_case(value) || route.model.eq_ignore_ascii_case(value)
+        })
+        .cloned()
+}
+
 pub fn apply_default_api_key(lanes: &mut [ModelLaneConfig], api_key: Option<&String>) {
     for lane in lanes {
         for candidate in &mut lane.candidates {
@@ -352,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn openrouter_catalog_exposes_gemma_trial_profile_and_pricing() {
+    fn openrouter_catalog_exposes_gemma_standard_profiles_pricing_and_aliases() {
         let curated = provider_curated_models("openrouter").expect("provider should exist");
         assert!(curated
             .iter()
@@ -400,6 +434,16 @@ mod tests {
             profile.source,
             Some(CatalogModelProfileSource::BundledCatalog)
         );
+
+        let aliases = model_route_aliases();
+        assert!(aliases.iter().any(|route| route.hint == "gemma31b"));
+        assert!(aliases.iter().any(|route| route.hint == "gemma26b"));
+        let alias = model_route_alias("gemma31b").expect("alias should exist");
+        assert_eq!(alias.provider, "openrouter");
+        assert_eq!(alias.model, "google/gemma-4-31b-it");
+        let alias = model_route_alias("qwen36").expect("alias should exist");
+        assert_eq!(alias.provider, "openrouter");
+        assert_eq!(alias.model, "qwen/qwen3.6-plus");
     }
 
     #[test]
@@ -426,6 +470,13 @@ mod tests {
                   "context_window_tokens": 128000,
                   "features": ["tool_calling"]
                 }
+              ],
+              "route_aliases": [
+                {
+                  "hint": "gemma31b",
+                  "provider": "openrouter",
+                  "model": "google/gemma-4-31b-preview"
+                }
               ]
             }"#,
         )
@@ -448,5 +499,11 @@ mod tests {
             .expect("profile should merge by provider/model key");
         assert_eq!(gemma.context_window_tokens, Some(128_000));
         assert_eq!(gemma.features, vec![ModelFeature::ToolCalling]);
+        let alias = merged
+            .route_aliases
+            .iter()
+            .find(|route| route.hint == "gemma31b")
+            .expect("route alias should merge by hint");
+        assert_eq!(alias.model, "google/gemma-4-31b-preview");
     }
 }
