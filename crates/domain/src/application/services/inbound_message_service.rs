@@ -10,7 +10,8 @@
 //! - message classification (command vs regular message)
 //! - route selection management (provider/model overrides per sender)
 
-use crate::config::schema::ModelRouteConfig;
+use crate::application::services::route_switch_preflight::RouteSwitchPreflight;
+use crate::config::schema::{CapabilityLane, ModelRouteConfig};
 use crate::domain::channel::{ChannelCapability, InboundEnvelope};
 
 // ── Runtime commands ─────────────────────────────────────────────
@@ -292,6 +293,18 @@ pub enum CommandEffect {
         model: String,
         /// If a model_route matched, the coupled provider.
         inferred_provider: Option<String>,
+        /// If a model_route matched a capability lane, preserve it in route state.
+        lane: Option<CapabilityLane>,
+        /// Whether provider-facing context was compacted before the switch.
+        compacted: bool,
+    },
+    /// Model switch was not applied because the target route cannot safely fit current context.
+    SwitchModelBlocked {
+        model: String,
+        provider: String,
+        lane: Option<CapabilityLane>,
+        preflight: RouteSwitchPreflight,
+        compacted: bool,
     },
     /// Clear conversation history and route overrides for this sender.
     ClearSession,
@@ -326,10 +339,14 @@ pub fn command_effect(
                 Some(route) => CommandEffect::SwitchModel {
                     model: route.model,
                     inferred_provider: Some(route.provider),
+                    lane: route.capability,
+                    compacted: false,
                 },
                 None => CommandEffect::SwitchModel {
                     model,
                     inferred_provider: None,
+                    lane: None,
+                    compacted: false,
                 },
             }
         }
@@ -699,6 +716,8 @@ mod tests {
             CommandEffect::SwitchModel {
                 model: "claude-sonnet-4-5".into(),
                 inferred_provider: Some("anthropic".into()),
+                lane: None,
+                compacted: false,
             }
         );
     }
@@ -711,6 +730,8 @@ mod tests {
             CommandEffect::SwitchModel {
                 model: "gpt-5.4".into(),
                 inferred_provider: Some("openai".into()),
+                lane: None,
+                compacted: false,
             }
         );
     }
@@ -723,6 +744,8 @@ mod tests {
             CommandEffect::SwitchModel {
                 model: "custom-model".into(),
                 inferred_provider: None,
+                lane: None,
+                compacted: false,
             }
         );
     }
@@ -735,6 +758,8 @@ mod tests {
             CommandEffect::SwitchModel {
                 model: "google/gemma-4-31b-it".into(),
                 inferred_provider: Some("openrouter".into()),
+                lane: None,
+                compacted: false,
             }
         );
     }
@@ -755,6 +780,31 @@ mod tests {
             CommandEffect::SwitchModel {
                 model: "custom-gemma".into(),
                 inferred_provider: Some("custom-provider".into()),
+                lane: None,
+                compacted: false,
+            }
+        );
+    }
+
+    #[test]
+    fn effect_switch_model_preserves_route_lane() {
+        let cmd = RuntimeCommand::SetModel("vision".into());
+        let routes = vec![ModelRouteConfig {
+            hint: "vision".into(),
+            capability: Some(CapabilityLane::MultimodalUnderstanding),
+            provider: "openrouter".into(),
+            model: "vision-model".into(),
+            api_key: None,
+            profile: ModelCandidateProfileConfig::default(),
+        }];
+
+        assert_eq!(
+            command_effect(&cmd, &routes),
+            CommandEffect::SwitchModel {
+                model: "vision-model".into(),
+                inferred_provider: Some("openrouter".into()),
+                lane: Some(CapabilityLane::MultimodalUnderstanding),
+                compacted: false,
             }
         );
     }

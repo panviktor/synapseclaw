@@ -6,9 +6,14 @@ use crate::agent::tool_repair_classification::classify_tool_execution_error;
 use synapse_domain::application::services::loop_detection::{
     hash_args, hash_strings, LoopAction, LoopDetector, ToolInvocation,
 };
+use synapse_domain::application::services::model_capability_support::{
+    assess_provider_call_capabilities, ProviderCallCapabilityInput, ProviderCallCapabilityIssue,
+};
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::tool_repair::build_tool_repair_trace;
 use synapse_domain::domain::tool_fact::{OutcomeStatus, TypedToolFact};
 use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairTrace};
+use synapse_domain::ports::provider::ProviderCapabilities;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -24,6 +29,37 @@ impl std::error::Error for ToolLoopCancelled {}
 
 pub(crate) fn is_tool_loop_cancelled(err: &anyhow::Error) -> bool {
     err.chain().any(|source| source.is::<ToolLoopCancelled>())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolLoopRouteCapabilities {
+    provider_capabilities: ProviderCapabilities,
+    route_profile: ResolvedModelProfile,
+}
+
+impl ToolLoopRouteCapabilities {
+    pub(crate) fn new(
+        provider_capabilities: ProviderCapabilities,
+        route_profile: ResolvedModelProfile,
+    ) -> Self {
+        Self {
+            provider_capabilities,
+            route_profile,
+        }
+    }
+
+    pub(crate) fn from_provider(provider: &dyn Provider) -> Self {
+        Self::new(provider.capabilities(), ResolvedModelProfile::default())
+    }
+
+    fn assess_provider_call(&self, image_marker_count: usize) -> Vec<ProviderCallCapabilityIssue> {
+        assess_provider_call_capabilities(ProviderCallCapabilityInput {
+            image_marker_count,
+            provider_capabilities: &self.provider_capabilities,
+            route_profile: &self.route_profile,
+        })
+        .issues
+    }
 }
 
 /// Execute a single turn of the agent loop: send messages, parse tool calls,
@@ -58,6 +94,7 @@ pub(crate) async fn agent_turn(
         None,
         channel_name,
         multimodal_config,
+        ToolLoopRouteCapabilities::from_provider(provider),
         max_tool_iterations,
         None,
         None,
@@ -438,6 +475,7 @@ pub(crate) async fn run_tool_call_loop(
     approval: Option<&dyn ApprovalPort>,
     channel_name: &str,
     multimodal_config: &synapse_domain::config::schema::MultimodalConfig,
+    route_capabilities: ToolLoopRouteCapabilities,
     max_tool_iterations: usize,
     cancellation_token: Option<CancellationToken>,
     on_delta: Option<tokio::sync::mpsc::Sender<String>>,
@@ -494,15 +532,19 @@ pub(crate) async fn run_tool_call_loop(
         let use_native_tools = provider.supports_native_tools() && !tool_specs.is_empty();
 
         let image_marker_count = multimodal::count_image_markers(history);
-        if image_marker_count > 0 && !provider.supports_vision() {
-            return Err(ProviderCapabilityError {
-                provider: provider_name.to_string(),
-                capability: "vision".to_string(),
-                message: format!(
-                    "received {image_marker_count} image marker(s), but this provider does not support vision input"
-                ),
+        for issue in route_capabilities.assess_provider_call(image_marker_count) {
+            match issue {
+                ProviderCallCapabilityIssue::MissingVisionInput { image_marker_count } => {
+                    return Err(ProviderCapabilityError {
+                        provider: provider_name.to_string(),
+                        capability: "vision".to_string(),
+                        message: format!(
+                            "received {image_marker_count} image marker(s), but this route does not support vision input"
+                        ),
+                    }
+                    .into());
+                }
             }
-            .into());
         }
 
         let prepared_messages =

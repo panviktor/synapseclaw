@@ -4187,6 +4187,21 @@ pub enum CapabilityLane {
     MultimodalUnderstanding,
 }
 
+impl CapabilityLane {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CapabilityLane::Reasoning => "reasoning",
+            CapabilityLane::CheapReasoning => "cheap_reasoning",
+            CapabilityLane::Embedding => "embedding",
+            CapabilityLane::ImageGeneration => "image_generation",
+            CapabilityLane::AudioGeneration => "audio_generation",
+            CapabilityLane::VideoGeneration => "video_generation",
+            CapabilityLane::MusicGeneration => "music_generation",
+            CapabilityLane::MultimodalUnderstanding => "multimodal_understanding",
+        }
+    }
+}
+
 /// Explicit model features used for lane routing and candidate selection.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

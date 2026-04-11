@@ -2,10 +2,14 @@ use crate::application::services::model_lane_resolution::{
     ResolvedModelProfile, ResolvedModelProfileConfidence,
 };
 use crate::application::services::provider_context_budget::{
-    estimate_tokens_from_chars, provider_context_compression_threshold_tokens,
-    provider_context_condensation_plan, provider_context_reserved_output_headroom_tokens,
+    assess_provider_context_budget, estimate_tokens_from_chars,
+    provider_context_compression_threshold_tokens, provider_context_condensation_plan,
+    provider_context_input_for_history, provider_context_reserved_output_headroom_tokens,
     ProviderContextBudgetAssessment, ProviderContextCondensationPlan,
 };
+use crate::domain::message::ChatMessage;
+
+pub const DEFAULT_ROUTE_SWITCH_COMPACTION_PASSES: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RouteSwitchStatus {
@@ -24,6 +28,40 @@ pub struct RouteSwitchPreflight {
     pub recommended_compaction_threshold_tokens: Option<usize>,
     pub recommended_condensation: Option<ProviderContextCondensationPlan>,
     pub status: RouteSwitchStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteSwitchPreflightResolution {
+    pub preflight: RouteSwitchPreflight,
+    pub compacted: bool,
+    pub compaction_passes: usize,
+    pub max_compaction_passes: usize,
+}
+
+impl RouteSwitchPreflightResolution {
+    pub fn new(preflight: RouteSwitchPreflight) -> Self {
+        Self {
+            preflight,
+            compacted: false,
+            compaction_passes: 0,
+            max_compaction_passes: DEFAULT_ROUTE_SWITCH_COMPACTION_PASSES,
+        }
+    }
+
+    pub fn should_attempt_compaction(&self) -> bool {
+        self.preflight.status == RouteSwitchStatus::CompactRecommended
+            && self.compaction_passes < self.max_compaction_passes
+    }
+
+    pub fn record_compaction_pass(&mut self, preflight: RouteSwitchPreflight) {
+        self.compacted = true;
+        self.compaction_passes += 1;
+        self.preflight = preflight;
+    }
+
+    pub fn into_preflight(self) -> RouteSwitchPreflight {
+        self.preflight
+    }
 }
 
 pub fn assess_route_switch_preflight(
@@ -46,6 +84,16 @@ pub fn assess_route_switch_preflight_for_budget(
         target_profile,
         provider_context_condensation_plan(budget_assessment),
     )
+}
+
+pub fn assess_route_switch_preflight_for_history(
+    history: &[ChatMessage],
+    target_profile: &ResolvedModelProfile,
+) -> RouteSwitchPreflight {
+    let budget = assess_provider_context_budget(
+        provider_context_input_for_history(history).with_target_model_profile(target_profile),
+    );
+    assess_route_switch_preflight_for_budget(&budget, target_profile)
 }
 
 fn assess_route_switch_preflight_for_estimated_tokens(
@@ -217,6 +265,32 @@ mod tests {
         assert_eq!(
             plan.target_artifact,
             Some(ProviderContextArtifact::PriorChat)
+        );
+    }
+
+    #[test]
+    fn preflight_resolution_limits_compaction_passes() {
+        let compact_recommended = assess_route_switch_preflight(
+            90_000,
+            &ResolvedModelProfile {
+                context_window_tokens: Some(30_000),
+                context_window_source:
+                    crate::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+        );
+        let mut resolution = RouteSwitchPreflightResolution::new(compact_recommended.clone());
+
+        for _ in 0..DEFAULT_ROUTE_SWITCH_COMPACTION_PASSES {
+            assert!(resolution.should_attempt_compaction());
+            resolution.record_compaction_pass(compact_recommended.clone());
+        }
+
+        assert!(!resolution.should_attempt_compaction());
+        assert!(resolution.compacted);
+        assert_eq!(
+            resolution.compaction_passes,
+            DEFAULT_ROUTE_SWITCH_COMPACTION_PASSES
         );
     }
 }

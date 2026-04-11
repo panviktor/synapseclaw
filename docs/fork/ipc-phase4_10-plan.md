@@ -1,6 +1,6 @@
 # Phase 4.10: Context Engine, Prompt Economy & Progressive Loading
 
-Phase 4.9: self-learning, skill evolution & memory quality | **Phase 4.10: context engine, prompt economy & progressive loading** | next: turn guardrails, capability lanes, and long-dialogue quality hardening
+Phase 4.9: self-learning, skill evolution & memory quality | **Phase 4.10: context engine, prompt economy & progressive loading** | next: Phase 4.11 runtime self-diagnostics & capability governance
 
 ---
 
@@ -550,6 +550,13 @@ Expected outcome:
   - Slice 6: cheap-model condensation lane for history and summaries
   - Slice 7: progressive scoped instruction loading for nearest-scope project context
   - Slice 9: strict canonical tool protocol in shared runtime paths
+    - follow-through: shared text fallback now rejects bare OpenAI-shaped /
+      canonical `tool_calls` JSON unless it is inside the canonical
+      `<tool_call>...</tool_call>` envelope; provider-native JSON must arrive
+      through structured provider response fields or be normalized in the
+      provider adapter
+    - native structured tool-call ids are still preserved through the shared
+      runtime loop
   - Slice 10 groundwork:
     - lane candidate schema and manual profile metadata
     - preset expansion (`chatgpt`, `claude`, `openrouter`, `gemini`, `local`)
@@ -623,6 +630,16 @@ Expected outcome:
       resolved profile confidence is at least `medium`
     - manual synthetic route-switch targets are marked as `manual_config`, so
       explicit operator-supplied windows are still trusted
+    - provider-call capability checks now use a shared domain service fed by
+      `image_marker_count + provider capabilities + resolved route profile`;
+      web live Agent and channel/shared-loop provider calls both use this guard
+      instead of owning separate vision-input logic
+    - channel/shared-loop execution now receives the resolved provider:model
+      route profile, so a provider-wide conservative capability flag no longer
+      blocks a confidently multimodal route
+    - runtime feature coverage now filters capabilities through the same
+      confidence/freshness policy, so stale low-confidence catalog entries are
+      not shown as usable modalities in `/model` diagnostics
   - Slice 13 initial pressure snapshot:
     - `ProviderContextBudgetInput` now tracks artifact-level breakdown for:
       - bootstrap
@@ -788,14 +805,123 @@ Expected outcome:
       it only for routes/turns that need the extra reasoning budget
     - OpenRouter's normalized `reasoning` response field is mapped back into
       the shared `reasoning_content` response field
+  - Hermes context-safety follow-through:
+    - provider-reported input/prompt token usage now feeds the next history
+      compaction decision when the provider exposes it, while char/token
+      estimates remain the fallback
+    - resumed web sessions now run a high-water session-hygiene compaction
+      before agent execution instead of relying only on in-turn compaction
+    - channel sessions now compact provider-facing history when admission
+      marks the turn as requiring compaction, preserving system blocks and the
+      recent non-system tail
+    - channel history compaction now rewrites the persistent session provider
+      history through `SessionBackend::replace` instead of compacting only the
+      in-memory map
+    - `SessionBackend::replace` is now explicitly message-history-only and
+      preserves rolling summaries; JSONL, SQLite, and SurrealDB backends
+      implement the summary-safe replace contract
+    - session-hygiene compaction now drops leading non-system orphan turns after
+      trimming, so the retained provider history does not start with an orphan
+      assistant/tool-result segment
+    - old oversized tool results are replaced with compact typed placeholders
+      before summary-lane calls so compaction does not burn context on stale
+      raw tool output
+    - post-compaction tool protocol sanitization removes orphan results and
+      inserts bounded explicit stub results only when a surviving tool call
+      would otherwise be invalid
+    - web and channel model switches now share a domain `RouteSwitchPreflightResolution`
+      compaction state-machine instead of duplicating local preflight loops
+    - channel `/model` now preflights the target route profile before mutating
+      route state, compacts when the target window only needs hygiene, and
+      blocks the switch when the current provider-facing context still cannot fit
+  - endpoint-aware model cache follow-through:
+    - live model cache entries are now scoped by normalized `provider + endpoint`
+      in onboarding and runtime profile lookup
+    - the live web `Agent`, web model help, and channel model routing pass the
+      configured provider endpoint into the same model-profile catalog path
+    - same provider/model through native API vs aggregator can now resolve
+      different cached context windows, output ceilings, and capability
+      metadata without colliding
+    - provider identity inference from custom `api_url` is now catalog-driven
+      via editable `api_base_urls`, so runtime profile lookup can use native
+      provider metadata for OpenAI-compatible endpoints without Rust model/URL
+      match arms
+  - Slice 11 route-state follow-through:
+    - `/model <hint>` now preserves the matched route's capability lane in
+      channel route state instead of collapsing the route to provider/model only
+    - web runtime route switching now stores the same active lane/candidate
+      identity on the `Agent`, so `/model` help can render the active lane and
+      route-specific compression cache stats consistently with channel help
+    - `CapabilityLane` now has a shared domain display label, and web/channel
+      `/model` switch responses render the active lane when a switch is lane-aware
+  - web/channel runtime-command parity follow-through:
+    - common provider/model command presentation now lives in the domain
+      runtime-command presentation service, with adapter-specific help still
+      limited to live transport state such as route inspection and model cache stats
+    - adapter parity is now pinned by an adapter-core `RuntimeAdapterContract`
+      trait describing shared decision ownership and explicit web/channel
+      transport/lifecycle differences
+    - duplicated web/channel `CommandEffect` execution was collapsed into the
+      adapter-core `execute_runtime_command_effect` executor; adapters now
+      implement a narrow `RuntimeCommandHost` for lifecycle hooks such as
+      route mutation, provider initialization, session clear, and live help
+      surfaces
+    - `/providers` and `/model` help rendering now flows through typed
+      `RouteSelection` / config snapshots instead of adapter-owned pre-rendered
+      strings
+    - provider/model route mutations now flow through typed request/outcome
+      structures, including model-switch blocked outcomes, so web and channel
+      can keep lifecycle differences without forking semantics
+    - channel provider route changes now wait for adapter-level
+      validation/canonicalization before mutating route state, so aliases and
+      unknown providers cannot leave raw provider ids in the runtime route
+    - channel `/new` and `/model` side effects now run through the
+      `RuntimeCommandHost` lifecycle hook instead of the pre-validation domain
+      command classifier
+    - route diagnostic reset is a shared `RouteSelection` helper, and
+      channel model-switch preflight uses shared domain history-budget helpers
+      before applying route mutation
+    - web and channel runtime-command hot paths instantiate their concrete
+      contract implementations and use the trait for presentation options and
+      provider alias canonicalization, so the trait is not just a test-only
+      descriptor
+    - conformance tests now reject local web/channel runtime-command presentation
+      strings, so future success/error text must go through the shared domain
+      presentation primitives
+    - provider alias canonicalization is shared by web and channel through the
+      adapter-core runtime route helper because the concrete provider catalog
+      belongs to the provider adapter layer, not the domain
+    - web model-switch preflight now returns a structured blocked outcome and
+      uses the same domain formatter as channel `/model` instead of emitting an
+      ad hoc context-budget error string
+    - web model-switch preflight now resolves the target route profile through
+      the same config/catalog route-selection profile path as channel, so
+      route-local profile metadata is not lost on `/model` switches
+    - generic and channel system-prompt builders now have explicit surfaces;
+      channel-only transport guidance is no longer injected into generic
+      runtime prompts
+    - web and channel remain separate adapters for transport/lifecycle, but
+      route preflight, context-budget reporting, route diagnostics rendering,
+      command effects, lane labels, and formatting primitives now share the
+      same runtime/domain path where the dependency direction allows it
+  - Test/contract hardening follow-through:
+    - `synapse_channels` unit test target now compiles its session-backend tests
+      against the async `SessionBackend` contract
+    - the channel `reqwest` dependency explicitly enables the `query` feature
+      required by channel API clients
+    - regression tests cover no-runtime/current-thread runtime persistence
+      bridge behavior and summary-preserving session replace
 - next:
   - Slice 12 follow-through:
     - widen provenance beyond cached provider catalogs as more profile data moves into catalogs
-    - continue feeding profile confidence into remaining tool-capability decisions
-      beyond route-switch and lane admission
+    - keep auditing new tool-capability decisions so they enter through the
+      shared domain capability service rather than web/channel-specific guards
   - Slice 13 follow-through:
     - move selected compression presets into the model catalog if route-specific
       pressure behavior becomes common enough to share out of the box
+    - keep the pluggable `ContextEngine` interface deferred until the current
+      domain pressure service/port boundary is stable enough to avoid creating
+      a parallel context subsystem
   - reasoning-control follow-through:
     - promote provider reasoning controls from global runtime override to a
       capability/lane policy once the model-profile registry exposes support
@@ -804,7 +930,9 @@ Expected outcome:
       response/history model can carry provider-native reasoning blocks without
       leaking adapter-specific shapes into the core runtime
   - Slice 11 follow-through:
-    - unify channel/web route mutation and admission state persistence semantics
+    - continue unifying any remaining channel/web admission-state persistence
+      edge cases after live validation, but route mutation now preserves lane
+      identity on both paths
   - quality tail after Slice 6/7:
     - long-dialogue semantic anchor ranking
     - pure-dialogue graph hygiene
@@ -1005,13 +1133,14 @@ Expected outcome:
   - provider+model vision checks now have a catalog-backed fallback when a
     non-default provider instance has not been warmed yet
   - `model_routing_config` preset operations now participate in typed routing facts
-- remaining work:
+  - remaining work:
   - auto-selection for image / audio generation turns still needs a first-class lane chooser
   - provider capability metadata is still narrower than the eventual lane matrix
   - a few provider-local model-family heuristics still remain adapter-side
     (for example reasoning-effort clamps and embedding-family inference)
-  - route state stores lane/candidate identity, but route-switch UX and downstream
-    runtime surfaces still mostly render/provider-switch by `provider + model`
+  - route state stores lane/candidate identity, and route-switch UX now renders lane
+    for lane-aware switches; downstream runtime surfaces should keep moving toward
+    lane/candidate-first explanations
   - modality routing still has only one live consumer (`multimodal_understanding`);
     image/audio generation lanes are not first-class yet
 
@@ -1066,7 +1195,8 @@ Expected outcome:
   - remaining:
     - widen intent consumers past the current multimodal + specialized-lane protection
     - add direct image/audio/video generation admission paths
-    - make route-switch/runtime UX surfaces display admission state explicitly
+  - continue making runtime UX surfaces display admission state explicitly beyond
+    `/model` help and lane-aware switch responses
     - settle whether admission snapshots should remain ephemeral or be persisted
       across route overrides/new sessions
 - expected outcome:
@@ -1156,6 +1286,89 @@ Expected outcome:
   - target-candidate token/char budget policy
   - reusable condensed artifact cache keyed by source digest
   - route-switch preflight integrated with pressure manager
+- current status:
+  - landed:
+    - `ContextBudgetSnapshot` tracks provider-facing artifact pressure for
+      bootstrap, core memory, runtime interpretation, scoped context,
+      resolution, prior chat, and current turn
+    - provider context budgeting consumes trusted target profile
+      `context_window_tokens` and `max_output_tokens` with confidence gates
+    - model context is treated as `input + output`; safe input subtracts
+      reserved output headroom before pressure and compaction thresholds
+    - default compression trigger is `50%` of safe input and hard safety
+      ceiling is `85%` of safe input
+    - large trusted windows such as `2M` scale by ratio instead of hitting the
+      old fixed heavy-turn caps
+    - low-confidence or unknown window metadata falls back to the compact legacy
+      char budget instead of inventing model-specific limits
+    - admission can request pre-provider compaction, and route-switch preflight
+      can recommend compaction or block a big-window -> small-window switch
+    - pressure pruning can drop removable `[scoped-context]` and compact
+      oversized `[runtime-interpretation]` before the provider call
+    - `[compression]` exposes Hermes-style knobs for enable/disable, threshold,
+      retained tail ratio, protected head/tail, summary ratio, source/summary
+      caps, cache TTL, and cache entry cap
+    - per-route compression overrides select by `hint`, `provider`, `model`,
+      and `lane` without Rust model match arms
+    - history compaction cache is now a shared runtime port with persistent
+      TTL/LRU storage under workspace state and cache keys scoped by transcript,
+      policy, and trusted context-window digest
+    - web and channel route inspection both expose effective compression policy
+      and real shared cache `entries` / `hits`
+    - compaction preserves protected head/tail and avoids splitting assistant
+      tool-call / role=`tool` result groups
+    - CLI auto-compaction consumes the same compression policy path
+    - provider-reported usage tokens can now override estimated prompt tokens
+      for the next compaction decision
+    - resumed web sessions run a high-water session-hygiene compaction before
+      provider execution, and channel sessions compact provider-facing history
+      when admission marks the turn as requiring compaction
+    - old oversized tool results are pruned into compact placeholders before
+      the summary lane sees the compaction transcript
+    - post-compaction sanitization removes orphan tool results and inserts
+      bounded stub results for surviving tool calls that would otherwise lose
+      their paired result
+    - web/channel model-switch preflight uses the same domain resolution
+      state-machine for compact/reassess/block decisions
+  - still open after Hermes source audit:
+    - no pluggable context-engine interface yet; keep this deferred until the
+      domain service/port boundary is stable
+- completed Hermes-derived follow-through:
+  - provider usage feedback:
+    - records actual provider-reported input tokens after a turn when available
+    - prefers those tokens over char estimates for the next compaction decision
+    - falls back to char/token estimates when usage is absent
+  - session hygiene safety net:
+    - inspects long web sessions before resumed agent execution
+    - uses a high-water threshold around the safety ceiling rather than the
+      normal 50% compressor trigger
+    - keeps a hard message-count valve to break runaway history growth when API
+      failures prevent fresh token telemetry
+    - keeps channel provider-facing history bounded when admission already
+      requires compaction
+  - cheap tool-result pruning:
+    - before summary-lane calls, replaces old oversized tool outputs with a
+      short typed placeholder when they are outside the protected recent context
+    - preserves enough head/tail detail for commands, errors, paths, and
+      concrete values to remain visible to the summary prompt
+  - post-compaction tool protocol sanitizer:
+    - validates assistant tool-call and role=`tool` result pairing after compaction
+    - removes results whose call id no longer has a surviving assistant call
+    - inserts a bounded explicit stub result only when a surviving assistant call
+      would otherwise be missing its result
+  - route-switch preflight unification:
+    - shared domain `RouteSwitchPreflightResolution` owns compact/reassess/pass-limit policy
+    - web `Agent` and channel `/model` both use that policy while keeping transport-specific
+      session lifecycle in their adapters
+    - channel route state is not mutated when the target safe context budget is still exceeded
+  - remaining non-copied Hermes item:
+    - pluggable `ContextEngine` is intentionally deferred until the existing
+      domain pressure services and ports stabilize
+  - avoid copying Hermes' stringy path detector directly:
+    - scoped context should continue moving through typed tool facts / scoped
+      instruction ports
+    - free-text shell/path extraction can be adapter-local fallback only, not
+      core routing policy
 - expected outcome:
   - context overflow becomes rare and explainable
   - model switches across very different windows become safe by construction
@@ -1390,10 +1603,15 @@ Expected outcome:
     - the governor now has a first repetition-aware gate:
       long low-information repetition is skipped for raw autosave and
       background consolidation unless stronger typed evidence already exists
+    - generic plural role-pair relationships such as model-invented social-role
+      world knowledge are rejected by the relationship governor at normal
+      confidence, so examples like `Children learn_from Parents` do not enter
+      the graph as durable facts
   - remaining:
     - extend the governor beyond current raw write paths into more bounded
       autosave/consolidation policy where it makes sense
     - strengthen repetition-aware policy beyond the current lexical first pass
+      for broader low-information paraphrase loops
 - expected outcome:
   - better retrieval quality
   - less memory pollution
@@ -1442,6 +1660,48 @@ Expected outcome:
   - expose freshness/provenance in route inspection
 - let this enrich Slice 12 model-profile resolution rather than replacing
   explicit config or bundled defaults
+- current status:
+  - landed:
+    - bundled `model_catalog.json` seeds presets, provider defaults, route
+      aliases, curated models, pricing, and provider:model profile metadata
+    - local user `model_catalog.json` can be materialized with
+      `synapseclaw models catalog init` and is merged over the bundled catalog
+    - cached provider catalog metadata can supply context window, max output,
+      and feature profile data when fresh
+    - `/model` and `/models` surface profile provenance, freshness/confidence,
+      current route limits, feature coverage, native context policy, and cache
+      stats
+    - `models refresh` supports the current provider set, including OpenRouter,
+      DeepSeek, xAI, GLM/Z.AI, Qwen, Gemini, Anthropic, OpenAI, and local
+      OpenAI-compatible runtimes
+    - OpenRouter Gemma paid routes and Grok 4.20 are catalog-driven optional
+      routes, not Rust hardcoded defaults
+    - live model cache entries are now scoped by normalized endpoint in
+      addition to provider name
+    - runtime model-profile lookup, web route inspection, channel routing, and
+      onboarding cache operations all consume the same endpoint-aware cache key
+    - cached profile metadata from one endpoint no longer leaks into the same
+      provider/model when another endpoint is configured
+  - still open after Hermes source audit:
+    - no models.dev-style provider-aware registry source yet
+    - no adapter-local context-limit-error parser that feeds typed profile/cache
+      updates yet
+    - no explicit probe-down tier strategy for unknown/local endpoints yet
+- Hermes-derived model-window resolver follow-through:
+  - keep explicit user override first
+  - completed: persistent live model cache lookup is now endpoint-aware, so the
+    runtime no longer assumes the same model id has the same window everywhere
+  - use live endpoint metadata where providers expose useful `/models` fields
+    such as `context_length`, `max_context_length`, `max_model_len`,
+    `max_input_tokens`, or `max_output_tokens`
+  - completed: infer provider identity from catalog-owned base URLs when a
+    custom endpoint is configured, so provider-aware metadata can still be used
+  - parse context-limit errors only in adapter-local code and convert them into
+    typed profile/cache updates or route repair hints
+  - keep broad hardcoded family fallbacks out of core Rust; if unavoidable,
+    they belong in local/bundled catalog data with provenance and freshness
+  - consider a probe-down tier strategy only as an explicit adapter fallback
+    for unknown/local endpoints, never on the hot path for known providers
 - expected outcome:
   - better automatic candidate knowledge
   - fewer wrong assumptions for aggregator/native provider differences
@@ -1569,6 +1829,104 @@ Expected outcome:
   - bounded metacognitive state
   - less self-generated noise
   - cleaner long-running behavior
+
+### Slice 24
+
+- runtime adapter contract and command parity hardening:
+  - builds on Slice 11 route-state follow-through, Slice 13 context
+    budget/preflight, and Slice 15 route diagnostics
+  - prevents web/channel drift by routing runtime commands through one
+    adapter-core executor while preserving separate transport/lifecycle adapters
+- implementation:
+  - `RuntimeAdapterContract` describes the web/channel surface, transport,
+    lifecycle, capabilities, and shared decision ownership
+  - `RuntimeCommandHost` exposes typed host hooks for provider/model help
+    snapshots, provider/model route mutations, and session clear
+  - `execute_runtime_command_effect` owns common alias canonicalization,
+    command-effect execution, switch success/failure/block rendering, and
+    provider/model help rendering from typed snapshots
+  - adapters own only lifecycle-specific effects: provider initialization,
+    live-agent route mutation, inbound-session route state, and transport clear
+    semantics
+  - channel provider route mutation happens after adapter validation and
+    canonicalization, not in the pre-validation domain command classifier
+  - channel clear-session and model-switch mutation happen in the adapter
+    command host, keeping domain command parsing/effect construction
+    side-effect-light
+  - shared domain helpers own route diagnostic reset and provider-history
+    budget extraction, so web/channel follow-through does not copy those rules
+  - conformance tests reject adapter-local runtime-command presentation strings
+    and cover typed help rendering through the common executor
+- invariant:
+  - web/channel adapters must not render runtime command success/error text
+    directly
+  - web/channel adapters must not fork `/providers` or `/model` help rendering
+  - new command behavior must enter through domain services or adapter-core
+    contract hooks before being wired into concrete adapters
+- expected outcome:
+  - less web/channel feature drift
+  - clearer hexagonal boundary between runtime decisions and adapter lifecycle
+  - safer future extraction of route preflight, context budget diagnostics, and
+    command effects into shared ports/services
+
+### Slice 25
+
+- tool notification mapper parity:
+  1. extract observer-event to tool-notification interpretation into adapter-core
+  2. keep web JSON payload shape transport-specific and backward-compatible
+  3. keep channel text payload shape transport-specific and backward-compatible
+  4. preserve web duplicate suppression through shared notification signatures
+  5. preserve channel `tools_used` lifecycle state outside the shared mapper
+  6. centralize safe argument/output preview truncation for tool notifications
+  7. cover mapper behavior with shape and UTF-8 safety tests
+  8. leave SSE/global observability as a later extension unless it starts
+     sharing web/channel lifecycle semantics
+- invariant:
+  - web/channel observers must not reinterpret raw tool events independently
+  - shared mapper must not own transport delivery, session lifecycle, or agent
+    state mutation
+- expected outcome:
+  - fewer hidden web/channel notification divergences
+  - cleaner adapter split between event semantics and transport mechanics
+
+### Slice 26
+
+- web/channel extraction debt hardening:
+  1. move shared system prompt/bootstrap construction out of `channels`
+  2. keep existing `crate::channels::build_system_prompt*` call sites
+     backward-compatible through re-export only
+  3. move tool narration and isolated tool JSON artifact cleanup out of
+     `channels`
+  4. move provider-history normalization/trimming helpers out of `channels`
+  5. move runtime tool-notification observer forwarding out of web/channel
+     while keeping transport payload rendering in adapter sinks
+  6. keep transport lifecycle code separate for web socket RPC and channel
+     listeners
+  7. keep channel-only supervision/typing code separate unless a second
+     transport needs it
+  8. leave summary/run-lifecycle unification as a typed service follow-up
+     unless it can be done without crossing store/lifecycle boundaries
+  9. add tests/guards that prove extraction preserves prompt, sanitizer, and
+     history hygiene behavior
+- invariant:
+  - `channels/mod.rs` must not be the home for shared runtime prompt or tool
+    artifact semantics
+  - moved helpers must not gain web/channel side effects
+- implementation status:
+  - runtime system prompt/bootstrap lives in adapter-core runtime prompt module,
+    with channel re-exports kept only for backward-compatible call sites
+  - tool artifact cleanup and provider-history hygiene live outside
+    `channels/mod.rs`
+  - tool notification event interpretation and observer forwarding are shared;
+    web/channel retain only transport-specific JSON/text sinks
+  - channel health supervision helpers live outside `channels/mod.rs`
+  - summary/run-lifecycle unification is intentionally left as a typed service
+    follow-up because the current web and channel stores/lifecycles are not the
+    same boundary
+- expected outcome:
+  - less channel-monolith drift
+  - clearer adapter-core seams for prompt assembly and response cleanup
+  - safer next step toward a shared run lifecycle service
 
 ---
 

@@ -21,6 +21,9 @@ use synapse_domain::application::services::dialogue_state_service::DialogueState
 use synapse_domain::application::services::dialogue_state_service::{self};
 use synapse_domain::application::services::history_compaction;
 use synapse_domain::application::services::history_compaction::HistoryCompressionPolicy;
+use synapse_domain::application::services::model_capability_support::{
+    assess_provider_call_capabilities, ProviderCallCapabilityInput, ProviderCallCapabilityIssue,
+};
 #[cfg(test)]
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileConfidence;
@@ -28,13 +31,14 @@ use synapse_domain::application::services::provider_context_budget::{
     assess_provider_context_budget, provider_context_artifact_name,
     provider_context_budget_tier_name, provider_context_condensation_mode_name,
     provider_context_reserved_output_headroom_tokens, provider_context_turn_shape_name,
-    ProviderContextBudgetInput,
+    ProviderContextBudgetInput, CONTEXT_SAFETY_CEILING_DENOMINATOR,
+    CONTEXT_SAFETY_CEILING_NUMERATOR,
 };
 use synapse_domain::application::services::provider_native_context_policy::{
     resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
 };
 use synapse_domain::application::services::route_switch_preflight::{
-    assess_route_switch_preflight_for_budget, RouteSwitchPreflight, RouteSwitchStatus,
+    assess_route_switch_preflight_for_budget, RouteSwitchPreflightResolution,
 };
 use synapse_domain::application::services::scoped_instruction_resolution::{
     adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
@@ -49,7 +53,7 @@ use synapse_domain::application::services::turn_context::{
 };
 use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
-use synapse_domain::config::schema::{Config, ContextCompressionConfig};
+use synapse_domain::config::schema::{CapabilityLane, Config, ContextCompressionConfig};
 use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::domain::tool_repair::ToolRepairTrace;
 use synapse_domain::domain::turn_admission::{
@@ -74,10 +78,13 @@ use synapse_domain::ports::user_profile_context::{
 use synapse_domain::ports::user_profile_store::UserProfileStorePort;
 use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
 use synapse_observability::{self, Observer, ObserverEvent};
-use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
+use synapse_providers::{
+    self, ChatMessage, ChatRequest, ConversationMessage, Provider, ProviderCapabilityError,
+};
 use synapse_security::security_policy_from_config;
 
 const PROVIDER_CONTEXT_CHAT_MESSAGES: usize = 6;
+const SESSION_HYGIENE_HARD_MESSAGE_LIMIT: usize = 400;
 
 #[derive(Clone, Default)]
 pub struct AgentRuntimePorts {
@@ -207,7 +214,10 @@ pub struct Agent {
     compression_overrides:
         Vec<synapse_domain::config::schema::ContextCompressionRouteOverrideConfig>,
     provider_name: String,
+    provider_api_url: Option<String>,
     model_name: String,
+    active_lane: Option<CapabilityLane>,
+    active_candidate_index: Option<usize>,
     temperature: f64,
     workspace_dir: std::path::PathBuf,
     identity_config: synapse_domain::config::schema::IdentityConfig,
@@ -265,6 +275,7 @@ pub struct AgentBuilder {
     compression_overrides:
         Option<Vec<synapse_domain::config::schema::ContextCompressionRouteOverrideConfig>>,
     provider_name: Option<String>,
+    provider_api_url: Option<String>,
     model_name: Option<String>,
     temperature: Option<f64>,
     workspace_dir: Option<std::path::PathBuf>,
@@ -312,6 +323,7 @@ impl AgentBuilder {
             compression: None,
             compression_overrides: None,
             provider_name: None,
+            provider_api_url: None,
             model_name: None,
             temperature: None,
             workspace_dir: None,
@@ -503,6 +515,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn provider_api_url(mut self, provider_api_url: Option<String>) -> Self {
+        self.provider_api_url = provider_api_url;
+        self
+    }
+
     pub fn allowed_tools(mut self, allowed_tools: Option<Vec<String>>) -> Self {
         self.allowed_tools = allowed_tools;
         self
@@ -647,7 +664,10 @@ impl AgentBuilder {
             compression: self.compression.unwrap_or_default(),
             compression_overrides: self.compression_overrides.unwrap_or_default(),
             provider_name,
+            provider_api_url: self.provider_api_url,
             model_name,
+            active_lane: None,
+            active_candidate_index: None,
             temperature: self.temperature.unwrap_or(0.7),
             workspace_dir,
             identity_config: self.identity_config.unwrap_or_default(),
@@ -751,10 +771,18 @@ impl Agent {
         &self.model_name
     }
 
+    pub fn active_lane(&self) -> Option<CapabilityLane> {
+        self.active_lane
+    }
+
+    pub fn active_candidate_index(&self) -> Option<usize> {
+        self.active_candidate_index
+    }
+
     pub async fn prepare_for_target_context_window(
         &mut self,
         target_context_window_tokens: usize,
-    ) -> RouteSwitchPreflight {
+    ) -> RouteSwitchPreflightResolution {
         let target_profile =
             synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
                 context_window_tokens: Some(target_context_window_tokens),
@@ -768,9 +796,11 @@ impl Agent {
         let budget = assess_provider_context_budget(
             provider_context_budget_input_from_stats_for_profile(&snapshot.stats, &target_profile),
         );
-        let mut assessment = assess_route_switch_preflight_for_budget(&budget, &target_profile);
+        let mut resolution = RouteSwitchPreflightResolution::new(
+            assess_route_switch_preflight_for_budget(&budget, &target_profile),
+        );
 
-        while assessment.status == RouteSwitchStatus::CompactRecommended {
+        while resolution.should_attempt_compaction() {
             let compression = self.history_compression_for_route(
                 &self.provider_name,
                 &self.model_name,
@@ -790,10 +820,13 @@ impl Agent {
                     &target_profile,
                 ),
             );
-            assessment = assess_route_switch_preflight_for_budget(&budget, &target_profile);
+            resolution.record_compaction_pass(assess_route_switch_preflight_for_budget(
+                &budget,
+                &target_profile,
+            ));
         }
 
-        assessment
+        resolution
     }
 
     /// Replace the observer (e.g. to wrap with per-request event forwarding).
@@ -861,6 +894,8 @@ impl Agent {
         config: &Config,
         provider_override: Option<&str>,
         model_override: Option<&str>,
+        route_lane: Option<CapabilityLane>,
+        route_candidate_index: Option<usize>,
         shared_memory: Arc<dyn UnifiedMemoryPort>,
         runtime_ports: AgentRuntimePorts,
     ) -> Result<()> {
@@ -910,6 +945,8 @@ impl Agent {
         rebuilt.last_turn_tool_repair = None;
         rebuilt.recent_turn_tool_repairs.clear();
         rebuilt.recent_turn_admissions.clear();
+        rebuilt.active_lane = route_lane;
+        rebuilt.active_candidate_index = route_candidate_index;
         rebuilt.dialogue_state_store = dialogue_state_store;
         rebuilt.conversation_store = self.conversation_store.clone();
         rebuilt.run_recipe_store = run_recipe_store;
@@ -1115,7 +1152,7 @@ impl Agent {
             .collect();
         let available_hints: Vec<String> = route_model_by_hint.keys().cloned().collect();
         let profile_catalog =
-            crate::runtime_routes::WorkspaceModelProfileCatalog::new(config.workspace_dir.clone());
+            crate::runtime_routes::WorkspaceModelProfileCatalog::from_config(config);
         let current_model_profile =
             synapse_domain::application::services::model_lane_resolution::resolve_candidate_profile(
                 provider_name,
@@ -1216,6 +1253,7 @@ impl Agent {
             .compression(config.compression.clone())
             .compression_overrides(config.compression_overrides.clone())
             .provider_name(provider_name.to_string())
+            .provider_api_url(config.api_url.clone())
             .agent_id(resolved_agent_id)
             .model_name(model_name)
             .temperature(config.default_temperature)
@@ -1269,6 +1307,14 @@ impl Agent {
 
         self.history = system_messages;
         self.history.extend(other_messages);
+        let stats = history_compaction::sanitize_tool_protocol_after_compaction(&mut self.history);
+        if stats.removed_orphan_results > 0 || stats.inserted_stub_results > 0 {
+            tracing::debug!(
+                removed_orphan_tool_results = stats.removed_orphan_results,
+                inserted_tool_result_stubs = stats.inserted_stub_results,
+                "Sanitized provider tool protocol after history trim"
+            );
+        }
     }
 
     fn project_non_system_history_for_compaction(&self) -> (Vec<ChatMessage>, Vec<usize>) {
@@ -1410,6 +1456,14 @@ impl Agent {
         self.history_compaction_threshold_tokens_for_profile(policy, &self.current_model_profile)
     }
 
+    fn last_provider_input_tokens(&self) -> Option<usize> {
+        self.last_turn_usage
+            .as_ref()
+            .and_then(|usage| usage.input_tokens)
+            .and_then(|tokens| usize::try_from(tokens).ok())
+            .filter(|tokens| *tokens > 0)
+    }
+
     fn latest_compaction_summary_text(&self) -> Option<String> {
         self.history.iter().rev().find_map(|message| match message {
             ConversationMessage::Chat(chat)
@@ -1461,6 +1515,22 @@ impl Agent {
         compression: &ContextCompressionConfig,
         profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
     ) -> bool {
+        self.maybe_compact_history_with_route_and_limits(
+            compression,
+            profile,
+            self.config.max_history_messages,
+            self.last_provider_input_tokens(),
+        )
+        .await
+    }
+
+    async fn maybe_compact_history_with_route_and_limits(
+        &mut self,
+        compression: &ContextCompressionConfig,
+        profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+        max_history_messages: usize,
+        observed_provider_input_tokens: Option<usize>,
+    ) -> bool {
         let policy = HistoryCompressionPolicy::from(compression);
         if !policy.enabled {
             return false;
@@ -1477,11 +1547,12 @@ impl Agent {
         let threshold_tokens =
             self.history_compaction_threshold_tokens_for_profile(&policy, profile);
         let Some((start, compact_end, transcript)) =
-            history_compaction::prepare_compaction_with_policy(
+            history_compaction::prepare_compaction_with_policy_and_observed_tokens(
                 &projected,
-                self.config.max_history_messages,
+                max_history_messages,
                 threshold_tokens,
                 &policy,
+                observed_provider_input_tokens,
             )
         else {
             return false;
@@ -1564,7 +1635,31 @@ impl Agent {
                 summary.trim()
             )))),
         );
+        let stats = history_compaction::sanitize_tool_protocol_after_compaction(&mut self.history);
+        if stats.removed_orphan_results > 0 || stats.inserted_stub_results > 0 {
+            tracing::debug!(
+                removed_orphan_tool_results = stats.removed_orphan_results,
+                inserted_tool_result_stubs = stats.inserted_stub_results,
+                "Sanitized provider tool protocol after history compaction"
+            );
+        }
         true
+    }
+
+    pub async fn compact_for_session_hygiene(&mut self) -> bool {
+        let mut compression =
+            self.history_compression_for_route(&self.provider_name, &self.model_name, None, None);
+        let high_water_threshold =
+            CONTEXT_SAFETY_CEILING_NUMERATOR as f64 / CONTEXT_SAFETY_CEILING_DENOMINATOR as f64;
+        compression.threshold = compression.threshold.max(high_water_threshold);
+        let profile = self.current_model_profile.clone();
+        self.maybe_compact_history_with_route_and_limits(
+            &compression,
+            &profile,
+            SESSION_HYGIENE_HARD_MESSAGE_LIMIT,
+            None,
+        )
+        .await
     }
 
     fn build_system_prompt(&self) -> Result<String> {
@@ -1999,9 +2094,12 @@ impl Agent {
         let mut effective_candidate_index = None;
         if !effective_model.starts_with("hint:") {
             let routing_config = self.build_turn_routing_config();
-            let profile_catalog = crate::runtime_routes::WorkspaceModelProfileCatalog::new(
-                self.workspace_dir.clone(),
-            );
+            let profile_catalog =
+                crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
+                    self.workspace_dir.clone(),
+                    Some(&self.provider_name),
+                    self.provider_api_url.as_deref(),
+                );
             if let Some(route_override) = resolve_turn_route_override(
                 &routing_config,
                 user_message,
@@ -2291,6 +2389,28 @@ impl Agent {
                 self.observer.record_event(&ObserverEvent::CacheMiss {
                     cache_type: "response".into(),
                 });
+            }
+
+            let image_marker_count = synapse_providers::multimodal::count_image_markers(&messages);
+            for issue in assess_provider_call_capabilities(ProviderCallCapabilityInput {
+                image_marker_count,
+                provider_capabilities: &provider_capabilities,
+                route_profile: &effective_model_profile,
+            })
+            .issues
+            {
+                match issue {
+                    ProviderCallCapabilityIssue::MissingVisionInput { image_marker_count } => {
+                        return Err(ProviderCapabilityError {
+                            provider: self.provider_name.clone(),
+                            capability: "vision".to_string(),
+                            message: format!(
+                                "received {image_marker_count} image marker(s), but this route does not support vision input"
+                            ),
+                        }
+                        .into());
+                    }
+                }
             }
 
             let response = match self
@@ -2767,6 +2887,43 @@ mod tests {
 
         let response = agent.turn("hi").await.unwrap();
         assert_eq!(response, "hello");
+    }
+
+    #[tokio::test]
+    async fn turn_allows_image_input_when_route_profile_supports_vision() {
+        let provider = Box::new(MockProvider {
+            responses: Mutex::new(vec![synapse_providers::ChatResponse {
+                text: Some("vision-route".into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+        });
+
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .provider(provider)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .current_model_profile(ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source:
+                    synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            })
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        let response = agent
+            .turn("inspect [IMAGE:data:image/png;base64,iVBORw0KGgo=]")
+            .await
+            .expect("route profile vision support should allow image input");
+
+        assert_eq!(response, "vision-route");
     }
 
     #[tokio::test]

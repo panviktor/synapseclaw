@@ -49,6 +49,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use synapse_domain::application::services::model_lane_resolution::{
+    ResolvedModelProfile, ResolvedModelProfileSource,
+};
+use synapse_domain::config::schema::ModelFeature;
 
 #[test]
 fn scrub_credentials_redacts_bearer_token() {
@@ -151,6 +155,25 @@ impl Provider for NonVisionProvider {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok("ok".to_string())
     }
+
+    async fn chat(
+        &self,
+        request: ChatRequest<'_>,
+        _model: &str,
+        _temperature: f64,
+    ) -> anyhow::Result<ChatResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let marker_count = synapse_providers::multimodal::count_image_markers(request.messages);
+        if marker_count == 0 {
+            anyhow::bail!("expected image markers in request messages");
+        }
+        Ok(ChatResponse {
+            text: Some("route-vision-ok".to_string()),
+            tool_calls: Vec::new(),
+            usage: None,
+            reasoning_content: None,
+        })
+    }
 }
 
 struct VisionProvider {
@@ -209,6 +232,13 @@ struct ScriptedProvider {
 }
 
 impl ScriptedProvider {
+    fn from_chat_responses(responses: Vec<ChatResponse>) -> Self {
+        Self {
+            responses: Arc::new(Mutex::new(responses.into_iter().collect())),
+            capabilities: ProviderCapabilities::default(),
+        }
+    }
+
     fn from_text_responses(responses: Vec<&str>) -> Self {
         let scripted = responses
             .into_iter()
@@ -443,6 +473,7 @@ async fn run_tool_call_loop_returns_structured_error_for_non_vision_provider() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         3,
         None,
         None,
@@ -458,6 +489,55 @@ async fn run_tool_call_loop_returns_structured_error_for_non_vision_provider() {
     assert!(err.to_string().contains("provider_capability_error"));
     assert!(err.to_string().contains("capability=vision"));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn run_tool_call_loop_honors_route_vision_capability_override() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = NonVisionProvider {
+        calls: Arc::clone(&calls),
+    };
+
+    let mut history = vec![ChatMessage::user(
+        "please inspect [IMAGE:data:image/png;base64,iVBORw0KGgo=]".to_string(),
+    )];
+    let tools_registry: Vec<Box<dyn Tool>> = Vec::new();
+    let observer = NoopObserver;
+
+    let result = run_tool_call_loop(
+        &provider,
+        &mut history,
+        &tools_registry,
+        &observer,
+        "mock-provider",
+        "mock-model",
+        0.0,
+        true,
+        None,
+        "cli",
+        &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::new(
+            ProviderCapabilities::default(),
+            ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+        ),
+        3,
+        None,
+        None,
+        None,
+        &[],
+        &[],
+        None,
+        None,
+    )
+    .await
+    .expect("route-aware vision capability should allow image input");
+
+    assert_eq!(result.response, "route-vision-ok");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -492,6 +572,7 @@ async fn run_tool_call_loop_rejects_oversized_image_payload() {
         None,
         "cli",
         &multimodal,
+        ToolLoopRouteCapabilities::from_provider(&provider),
         3,
         None,
         None,
@@ -535,6 +616,7 @@ async fn run_tool_call_loop_accepts_valid_multimodal_request_flow() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         3,
         None,
         None,
@@ -664,6 +746,7 @@ async fn run_tool_call_loop_executes_multiple_tools_with_ordered_results() {
         Some(&approval_mgr),
         "telegram",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -736,6 +819,7 @@ async fn run_tool_call_loop_deduplicates_repeated_tool_calls() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -805,6 +889,7 @@ async fn run_tool_call_loop_allows_low_risk_shell_in_non_interactive_mode() {
         Some(&approval_mgr),
         "telegram",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -864,6 +949,7 @@ async fn run_tool_call_loop_dedup_exempt_allows_repeated_calls() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -943,6 +1029,7 @@ async fn run_tool_call_loop_dedup_exempt_only_affects_listed_tools() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -968,10 +1055,24 @@ async fn run_tool_call_loop_dedup_exempt_only_affects_listed_tools() {
 }
 
 #[tokio::test]
-async fn run_tool_call_loop_native_mode_preserves_fallback_tool_call_ids() {
-    let provider = ScriptedProvider::from_text_responses(vec![
-        r#"{"content":"Need to call tool","tool_calls":[{"id":"call_abc","name":"count_tool","arguments":"{\"value\":\"X\"}"}]}"#,
-        "done",
+async fn run_tool_call_loop_native_mode_preserves_structured_tool_call_ids() {
+    let provider = ScriptedProvider::from_chat_responses(vec![
+        ChatResponse {
+            text: Some("Need to call tool".into()),
+            tool_calls: vec![ToolCall {
+                id: "call_abc".into(),
+                name: "count_tool".into(),
+                arguments: r#"{"value":"X"}"#.into(),
+            }],
+            usage: None,
+            reasoning_content: None,
+        },
+        ChatResponse {
+            text: Some("done".into()),
+            tool_calls: Vec::new(),
+            usage: None,
+            reasoning_content: None,
+        },
     ])
     .with_native_tool_support();
 
@@ -999,6 +1100,7 @@ async fn run_tool_call_loop_native_mode_preserves_fallback_tool_call_ids() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -1009,7 +1111,7 @@ async fn run_tool_call_loop_native_mode_preserves_fallback_tool_call_ids() {
         None,
     )
     .await
-    .expect("native fallback id flow should complete");
+    .expect("native tool-call id flow should complete");
 
     assert_eq!(result.response, "done");
     assert_eq!(invocations.load(Ordering::SeqCst), 1);
@@ -1177,44 +1279,37 @@ After text."#;
 }
 
 #[test]
-fn parse_tool_calls_handles_openai_format() {
-    // OpenAI-style response with tool_calls array
+fn parse_tool_calls_rejects_raw_openai_format_without_tags() {
+    // Provider adapters must expose native tool calls through LlmResponse.tool_calls.
+    // The shared text fallback intentionally rejects bare OpenAI-shaped JSON.
     let response = r#"{"content": "Let me check that for you.", "tool_calls": [{"type": "function", "function": {"name": "shell", "arguments": "{\"command\": \"ls -la\"}"}}]}"#;
 
     let (text, calls) = parse_tool_calls(response);
-    assert_eq!(text, "Let me check that for you.");
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].name, "shell");
-    assert_eq!(
-        calls[0].arguments.get("command").unwrap().as_str().unwrap(),
-        "ls -la"
-    );
+    assert_eq!(text, response);
+    assert!(calls.is_empty());
 }
 
 #[test]
-fn parse_tool_calls_handles_openai_format_multiple_calls() {
+fn parse_tool_calls_rejects_raw_openai_format_multiple_calls_without_tags() {
     let response = r#"{"tool_calls": [{"type": "function", "function": {"name": "file_read", "arguments": "{\"path\": \"a.txt\"}"}}, {"type": "function", "function": {"name": "file_read", "arguments": "{\"path\": \"b.txt\"}"}}]}"#;
 
-    let (_, calls) = parse_tool_calls(response);
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].name, "file_read");
-    assert_eq!(calls[1].name, "file_read");
+    let (text, calls) = parse_tool_calls(response);
+    assert_eq!(text, response);
+    assert!(calls.is_empty());
 }
 
 #[test]
-fn parse_tool_calls_canonical_format_without_content() {
+fn parse_tool_calls_rejects_raw_canonical_format_without_tags() {
     let response = r#"{"tool_calls": [{"name": "memory_recall", "arguments": "{}"}]}"#;
 
     let (text, calls) = parse_tool_calls(response);
-    assert!(text.is_empty()); // No content field
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].name, "memory_recall");
+    assert_eq!(text, response);
+    assert!(calls.is_empty());
 }
 
 #[test]
-fn parse_tool_calls_preserves_canonical_tool_call_ids() {
-    let response =
-        r#"{"tool_calls":[{"id":"call_42","name":"shell","arguments":"{\"command\":\"pwd\"}"}]}"#;
+fn parse_tool_calls_preserves_canonical_tool_call_ids_inside_tags() {
+    let response = r#"<tool_call>{"tool_calls":[{"id":"call_42","name":"shell","arguments":"{\"command\":\"pwd\"}"}]}</tool_call>"#;
     let (_, calls) = parse_tool_calls(response);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].tool_call_id.as_deref(), Some("call_42"));
@@ -2224,6 +2319,7 @@ async fn run_tool_call_loop_surfaces_tool_failure_reason_in_on_delta() {
         None,
         "telegram",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         Some(tx),

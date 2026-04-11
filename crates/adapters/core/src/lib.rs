@@ -15,6 +15,7 @@
 
 // ── Core modules (remain in synapse_adapters) ──
 pub mod agent;
+pub(crate) mod channel_runtime_support;
 pub mod channels;
 pub mod commands;
 pub mod cost;
@@ -31,7 +32,13 @@ pub mod middleware;
 pub mod pipeline;
 pub mod routing;
 pub mod runtime;
+pub(crate) mod runtime_adapter_contract;
+pub(crate) mod runtime_history_hygiene;
 pub mod runtime_routes;
+pub mod runtime_system_prompt;
+pub(crate) mod runtime_tool_artifacts;
+pub(crate) mod runtime_tool_notifications;
+pub(crate) mod runtime_tool_observer;
 pub mod scoped_instruction_context;
 pub mod service;
 pub mod skills;

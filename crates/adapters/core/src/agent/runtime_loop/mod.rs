@@ -353,7 +353,9 @@ pub(crate) use synapse_domain::application::services::tool_filtering::build_tool
 pub(crate) use tool_call_parsing::ParsedToolCall;
 #[allow(unused_imports)]
 pub(crate) use tool_execution::{agent_turn, is_tool_loop_cancelled, ToolLoopCancelled};
-pub(crate) use tool_execution::{execute_one_tool, run_tool_call_loop, ToolExecutionOutcome};
+pub(crate) use tool_execution::{
+    execute_one_tool, run_tool_call_loop, ToolExecutionOutcome, ToolLoopRouteCapabilities,
+};
 
 #[cfg(test)]
 pub(crate) use tool_call_parsing::{

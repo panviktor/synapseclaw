@@ -21,93 +21,57 @@ pub use synapse_channels::*;
 pub mod session_surreal;
 
 // Local import with different name to avoid shadowing glob re-export
+use crate::channel_runtime_support::{
+    classify_health_result, compute_max_in_flight_messages, log_worker_join_result,
+    spawn_supervised_listener, ChannelHealthState,
+};
 use crate::channels::session_backend::SessionBackend as LocalSessionBackend;
 use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_domain::application::services::tool_filtering::build_tool_instructions;
 use synapse_infra::approval::ApprovalManager;
 use synapse_infra::config_io::ConfigIO;
-use synapse_infra::identity;
 // memory module used indirectly via synapse_memory
 use crate::runtime;
+use crate::runtime_adapter_contract::{
+    execute_runtime_command_effect, ChannelRuntimeAdapterContract, RuntimeCommandHost,
+    RuntimeModelHelpSnapshot, RuntimeModelSwitchOutcome, RuntimeProviderSwitchOutcome,
+    RuntimeRouteMutationRequest,
+};
+use crate::runtime_tool_notifications::RuntimeToolNotification;
+use crate::runtime_tool_observer::{RuntimeToolNotificationHandler, RuntimeToolNotifyObserver};
 use crate::tools::{self, Tool};
 use anyhow::{Context, Result};
 use portable_atomic::{AtomicU64, Ordering};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 use synapse_domain::config::schema::Config;
-use synapse_domain::domain::util::truncate_with_ellipsis;
 use synapse_memory::UnifiedMemoryPort;
-use synapse_observability::traits::{ObserverEvent, ObserverMetric};
 use synapse_observability::{self, Observer};
 use synapse_providers::{self, ChatMessage, Provider};
 use synapse_security::security_factory::security_policy_from_config;
 use tokio_util::sync::CancellationToken;
 
-/// Observer wrapper that forwards tool-call events to a channel sender
-/// for real-time threaded notifications.
-struct ChannelNotifyObserver {
-    inner: Arc<dyn Observer>,
+pub use crate::runtime_system_prompt::{
+    build_channel_system_prompt, build_channel_system_prompt_with_mode, build_system_prompt,
+    build_system_prompt_with_mode,
+};
+
+/// Channel transport sink for real-time tool notifications.
+struct ChannelToolNotificationHandler {
     tx: tokio::sync::mpsc::UnboundedSender<String>,
     tools_used: AtomicBool,
 }
 
-impl Observer for ChannelNotifyObserver {
-    fn record_event(&self, event: &ObserverEvent) {
-        match event {
-            ObserverEvent::ToolCallStart { tool, arguments } => {
-                self.tools_used.store(true, Ordering::Relaxed);
-                let detail = match arguments {
-                    Some(args) if !args.is_empty() => {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
-                            if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
-                                format!(": `{}`", truncate_with_ellipsis(cmd, 200))
-                            } else if let Some(q) = v.get("query").and_then(|c| c.as_str()) {
-                                format!(": {}", truncate_with_ellipsis(q, 200))
-                            } else if let Some(p) = v.get("path").and_then(|c| c.as_str()) {
-                                format!(": {p}")
-                            } else if let Some(u) = v.get("url").and_then(|c| c.as_str()) {
-                                format!(": {u}")
-                            } else {
-                                let s = args.to_string();
-                                format!(": {}", truncate_with_ellipsis(&s, 120))
-                            }
-                        } else {
-                            let s = args.to_string();
-                            format!(": {}", truncate_with_ellipsis(&s, 120))
-                        }
-                    }
-                    _ => String::new(),
-                };
-                let _ = self.tx.send(format!("\u{1F527} `{tool}`{detail}"));
-            }
-            ObserverEvent::ToolResult {
-                tool,
-                output,
-                success,
-            } => {
-                let status = if *success { "\u{2705}" } else { "\u{274C}" };
-                let preview = truncate_with_ellipsis(output, 200);
-                let _ = self.tx.send(format!("{status} `{tool}`: {preview}"));
-            }
-            _ => {}
+impl RuntimeToolNotificationHandler for ChannelToolNotificationHandler {
+    fn notify(&self, notification: RuntimeToolNotification) {
+        if notification.marks_tool_used() {
+            self.tools_used.store(true, Ordering::Relaxed);
         }
-        self.inner.record_event(event);
-    }
-    fn record_metric(&self, metric: &ObserverMetric) {
-        self.inner.record_metric(metric);
-    }
-    fn flush(&self) {
-        self.inner.flush();
-    }
-    fn name(&self) -> &str {
-        "channel-notify"
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+        let _ = self.tx.send(notification.channel_text());
     }
 }
 
@@ -116,20 +80,12 @@ type ConversationHistoryMap = Arc<Mutex<HashMap<String, Vec<ChatMessage>>>>;
 /// Maximum history messages to keep per sender.
 const MAX_CHANNEL_HISTORY: usize = 50;
 
-/// Maximum characters per injected workspace file (matches `OpenClaw` default).
-const BOOTSTRAP_MAX_CHARS: usize = 20_000;
-
 const DEFAULT_CHANNEL_INITIAL_BACKOFF_SECS: u64 = 2;
 const DEFAULT_CHANNEL_MAX_BACKOFF_SECS: u64 = 60;
 const MIN_CHANNEL_MESSAGE_TIMEOUT_SECS: u64 = 30;
 /// Default timeout for processing a single channel message (LLM + tools).
 /// Used as fallback when not configured in channels_config.message_timeout_secs.
 const CHANNEL_MESSAGE_TIMEOUT_SECS: u64 = 300;
-const CHANNEL_PARALLELISM_PER_CHANNEL: usize = 4;
-const CHANNEL_MIN_IN_FLIGHT_MESSAGES: usize = 8;
-const CHANNEL_MAX_IN_FLIGHT_MESSAGES: usize = 64;
-const CHANNEL_TYPING_REFRESH_INTERVAL_SECS: u64 = 4;
-const CHANNEL_HEALTH_HEARTBEAT_SECS: u64 = 30;
 /// Generate a rolling summary every N messages in channel conversations.
 /// Higher than web's 10 because channel messages are typically less frequent.
 const CHANNEL_SUMMARY_INTERVAL: usize = 20;
@@ -310,10 +266,6 @@ impl InFlightTaskCompletion {
     }
 }
 
-fn followup_thread_id(msg: &traits::ChannelMessage) -> Option<String> {
-    msg.thread_ts.clone().or_else(|| Some(msg.id.clone()))
-}
-
 fn interruption_scope_key(msg: &traits::ChannelMessage) -> String {
     format!("{}_{}_{}", msg.channel, msg.reply_target, msg.sender)
 }
@@ -329,58 +281,6 @@ fn channel_delivery_instructions(
     None
 }
 
-fn normalize_cached_channel_turns(turns: Vec<ChatMessage>) -> Vec<ChatMessage> {
-    let mut normalized = Vec::with_capacity(turns.len());
-    let mut expecting_user = true;
-
-    for turn in turns {
-        match (expecting_user, turn.role.as_str()) {
-            (true, "user") => {
-                normalized.push(turn);
-                expecting_user = false;
-            }
-            (false, "assistant") => {
-                normalized.push(turn);
-                expecting_user = true;
-            }
-            // Interrupted channel turns can produce consecutive user messages
-            // (no assistant persisted yet). Merge instead of dropping.
-            (false, "user") | (true, "assistant") => {
-                if let Some(last_turn) = normalized.last_mut() {
-                    if !turn.content.is_empty() {
-                        if !last_turn.content.is_empty() {
-                            last_turn.content.push_str("\n\n");
-                        }
-                        last_turn.content.push_str(&turn.content);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    normalized
-}
-
-/// Remove `<tool_result …>…</tool_result>` blocks (and a leading `[Tool results]`
-/// header, if present) from a conversation-history entry so that stale tool
-/// output is never presented to the LLM without the corresponding `<tool_call>`.
-fn strip_tool_result_content(text: &str) -> String {
-    static TOOL_RESULT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?s)<tool_result[^>]*>.*?</tool_result>").unwrap()
-    });
-
-    let cleaned = TOOL_RESULT_RE.replace_all(text, "");
-    let cleaned = cleaned.trim();
-
-    // If the only remaining content is the header, drop it entirely.
-    if cleaned == "[Tool results]" || cleaned.is_empty() {
-        return String::new();
-    }
-
-    cleaned.to_string()
-}
-
 /// Check if this channel supports runtime commands (/models, /model, /new).
 /// Phase 4.0: capability-driven via ChannelCapability::RuntimeCommands.
 /// Delegate to synapse_domain — command parsing is domain logic.
@@ -391,27 +291,6 @@ fn parse_runtime_command(
     synapse_domain::application::services::inbound_message_service::parse_runtime_command(
         content, caps,
     )
-}
-
-fn resolve_provider_alias(name: &str) -> Option<String> {
-    let candidate = name.trim();
-    if candidate.is_empty() {
-        return None;
-    }
-
-    let providers_list = synapse_providers::list_providers();
-    for provider in providers_list {
-        if provider.name.eq_ignore_ascii_case(candidate)
-            || provider
-                .aliases
-                .iter()
-                .any(|alias| alias.eq_ignore_ascii_case(candidate))
-        {
-            return Some(provider.name.to_string());
-        }
-    }
-
-    None
 }
 
 fn resolved_default_provider(config: &Config) -> String {
@@ -596,6 +475,80 @@ fn clear_sender_history(ctx: &ChannelRuntimeContext, sender_key: &str) {
         .remove(sender_key);
 }
 
+fn channel_runtime_config_snapshot(ctx: &ChannelRuntimeContext) -> Config {
+    let mut config = Config::default();
+    config.workspace_dir = ctx.workspace_dir.as_ref().clone();
+    config.default_provider = Some(ctx.default_provider.as_ref().clone());
+    config.default_model = Some(ctx.model.as_ref().clone());
+    config.model_routes = ctx.model_routes.as_ref().clone();
+    config.model_lanes = ctx.model_lanes.as_ref().clone();
+    config.model_preset = ctx.model_preset.clone();
+    config
+}
+
+fn channel_conversation_history(
+    ctx: &ChannelRuntimeContext,
+    conversation_key: &str,
+) -> Vec<ChatMessage> {
+    ctx.conversation_histories
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(conversation_key)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn compact_channel_conversation_history(
+    ctx: &ChannelRuntimeContext,
+    conversation_key: &str,
+    keep_non_system_turns: usize,
+) -> bool {
+    let mut histories = ctx
+        .conversation_histories
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    histories.get_mut(conversation_key).is_some_and(|history| {
+        synapse_domain::application::services::history_compaction::compact_provider_history_for_session_hygiene(
+            history,
+            keep_non_system_turns,
+        )
+    })
+}
+
+fn resolve_channel_runtime_route_switch_preflight(
+    ctx: &ChannelRuntimeContext,
+    conversation_key: &str,
+    target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+) -> synapse_domain::application::services::route_switch_preflight::RouteSwitchPreflightResolution {
+    let history = channel_conversation_history(ctx, conversation_key);
+    let mut resolution =
+        synapse_domain::application::services::route_switch_preflight::RouteSwitchPreflightResolution::new(
+            synapse_domain::application::services::route_switch_preflight::assess_route_switch_preflight_for_history(
+                &history,
+                target_profile,
+            ),
+        );
+
+    while resolution.should_attempt_compaction() {
+        if !compact_channel_conversation_history(
+            ctx,
+            conversation_key,
+            synapse_domain::application::services::history_compaction::SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+        ) {
+            break;
+        }
+        let history = channel_conversation_history(ctx, conversation_key);
+        resolution.record_compaction_pass(
+            synapse_domain::application::services::route_switch_preflight::assess_route_switch_preflight_for_history(
+                &history,
+                target_profile,
+            ),
+        );
+    }
+
+    resolution
+}
+
 /// Generate a rolling summary of a channel conversation every
 /// [`CHANNEL_SUMMARY_INTERVAL`] messages. Uses the configured summary model
 /// (cheap/fast) so it doesn't burn primary-model tokens.
@@ -762,31 +715,6 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
     }
 }
 
-/// Proactively trim conversation turns so that the total estimated character
-/// count stays within the given `budget`.  Drops the oldest
-/// turns first, but always preserves the most recent turn (the current user
-/// message).  Returns the number of turns dropped.
-fn proactive_trim_turns(turns: &mut Vec<ChatMessage>, budget: usize) -> usize {
-    let total_chars: usize = turns.iter().map(|t| t.content.chars().count()).sum();
-    if total_chars <= budget || turns.len() <= 1 {
-        return 0;
-    }
-
-    let mut excess = total_chars.saturating_sub(budget);
-    let mut drop_count = 0;
-
-    // Walk from the oldest turn forward, but never drop the very last turn.
-    while excess > 0 && drop_count < turns.len().saturating_sub(1) {
-        excess = excess.saturating_sub(turns[drop_count].content.chars().count());
-        drop_count += 1;
-    }
-
-    if drop_count > 0 {
-        turns.drain(..drop_count);
-    }
-    drop_count
-}
-
 async fn get_or_create_provider(
     ctx: &ChannelRuntimeContext,
     provider_name: &str,
@@ -858,321 +786,6 @@ async fn create_resilient_provider_nonblocking(
     })
     .await
     .context("failed to join provider initialization task")?
-}
-
-/// Remove leading lines that narrate tool usage (e.g. "Let me check the weather for you.").
-///
-/// Only strips lines from the very beginning of the message that match common
-/// narration patterns, so genuine content is preserved.
-fn strip_tool_narration(message: &str) -> String {
-    let narration_prefixes: &[&str] = &[
-        "let me ",
-        "i'll ",
-        "i will ",
-        "i am going to ",
-        "i'm going to ",
-        "searching ",
-        "looking up ",
-        "fetching ",
-        "checking ",
-        "using the ",
-        "using my ",
-        "one moment",
-        "hold on",
-        "just a moment",
-        "give me a moment",
-        "allow me to ",
-    ];
-
-    let mut result_lines: Vec<&str> = Vec::new();
-    let mut past_narration = false;
-
-    for line in message.lines() {
-        if past_narration {
-            result_lines.push(line);
-            continue;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let lower = trimmed.to_lowercase();
-        if narration_prefixes.iter().any(|p| lower.starts_with(p)) {
-            // Skip this narration line
-            continue;
-        }
-        // First non-narration, non-empty line — keep everything from here
-        past_narration = true;
-        result_lines.push(line);
-    }
-
-    let joined = result_lines.join("\n");
-    let trimmed = joined.trim();
-    if trimmed.is_empty() && !message.trim().is_empty() {
-        // If stripping removed everything, return original to avoid empty reply
-        message.to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
-
-fn is_tool_call_payload(value: &serde_json::Value, known_tool_names: &HashSet<String>) -> bool {
-    let Some(object) = value.as_object() else {
-        return false;
-    };
-
-    let name = object.get("name").and_then(|v| v.as_str());
-    let has_args = object.contains_key("arguments");
-
-    let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
-        return false;
-    };
-
-    has_args && known_tool_names.contains(&name.to_ascii_lowercase())
-}
-
-fn is_tool_result_payload(
-    object: &serde_json::Map<String, serde_json::Value>,
-    saw_tool_call_payload: bool,
-) -> bool {
-    if !saw_tool_call_payload || !object.contains_key("result") {
-        return false;
-    }
-
-    object.keys().all(|key| {
-        matches!(
-            key.as_str(),
-            "result" | "id" | "tool_call_id" | "name" | "tool"
-        )
-    })
-}
-
-fn sanitize_tool_json_value(
-    value: &serde_json::Value,
-    known_tool_names: &HashSet<String>,
-    saw_tool_call_payload: bool,
-) -> Option<(String, bool)> {
-    if is_tool_call_payload(value, known_tool_names) {
-        return Some((String::new(), true));
-    }
-
-    if let Some(array) = value.as_array() {
-        if !array.is_empty()
-            && array
-                .iter()
-                .all(|item| is_tool_call_payload(item, known_tool_names))
-        {
-            return Some((String::new(), true));
-        }
-        return None;
-    }
-
-    let object = value.as_object()?;
-
-    if let Some(tool_calls) = object.get("tool_calls").and_then(|value| value.as_array()) {
-        if !tool_calls.is_empty()
-            && tool_calls
-                .iter()
-                .all(|call| is_tool_call_payload(call, known_tool_names))
-        {
-            let content = object
-                .get("content")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            return Some((content, true));
-        }
-    }
-
-    if is_tool_result_payload(object, saw_tool_call_payload) {
-        return Some((String::new(), false));
-    }
-
-    None
-}
-
-fn is_line_isolated_json_segment(message: &str, start: usize, end: usize) -> bool {
-    let line_start = message[..start].rfind('\n').map_or(0, |idx| idx + 1);
-    let line_end = message[end..]
-        .find('\n')
-        .map_or(message.len(), |idx| end + idx);
-
-    message[line_start..start].trim().is_empty() && message[end..line_end].trim().is_empty()
-}
-
-fn strip_isolated_tool_json_artifacts(message: &str, known_tool_names: &HashSet<String>) -> String {
-    let mut cleaned = String::with_capacity(message.len());
-    let mut cursor = 0usize;
-    let mut saw_tool_call_payload = false;
-
-    while cursor < message.len() {
-        let Some(rel_start) = message[cursor..].find(['{', '[']) else {
-            cleaned.push_str(&message[cursor..]);
-            break;
-        };
-
-        let start = cursor + rel_start;
-        cleaned.push_str(&message[cursor..start]);
-
-        let candidate = &message[start..];
-        let mut stream =
-            serde_json::Deserializer::from_str(candidate).into_iter::<serde_json::Value>();
-
-        if let Some(Ok(value)) = stream.next() {
-            let consumed = stream.byte_offset();
-            if consumed > 0 {
-                let end = start + consumed;
-                if is_line_isolated_json_segment(message, start, end) {
-                    if let Some((replacement, marks_tool_call)) =
-                        sanitize_tool_json_value(&value, known_tool_names, saw_tool_call_payload)
-                    {
-                        if marks_tool_call {
-                            saw_tool_call_payload = true;
-                        }
-                        if !replacement.trim().is_empty() {
-                            cleaned.push_str(replacement.trim());
-                        }
-                        cursor = end;
-                        continue;
-                    }
-                }
-            }
-        }
-
-        let Some(ch) = message[start..].chars().next() else {
-            break;
-        };
-        cleaned.push(ch);
-        cursor = start + ch.len_utf8();
-    }
-
-    let mut result = cleaned.replace("\r\n", "\n");
-    while result.contains("\n\n\n") {
-        result = result.replace("\n\n\n", "\n\n");
-    }
-    result.trim().to_string()
-}
-
-fn spawn_supervised_listener(
-    ch: Arc<dyn Channel>,
-    tx: tokio::sync::mpsc::Sender<traits::ChannelMessage>,
-    initial_backoff_secs: u64,
-    max_backoff_secs: u64,
-) -> tokio::task::JoinHandle<()> {
-    spawn_supervised_listener_with_health_interval(
-        ch,
-        tx,
-        initial_backoff_secs,
-        max_backoff_secs,
-        Duration::from_secs(CHANNEL_HEALTH_HEARTBEAT_SECS),
-    )
-}
-
-fn spawn_supervised_listener_with_health_interval(
-    ch: Arc<dyn Channel>,
-    tx: tokio::sync::mpsc::Sender<traits::ChannelMessage>,
-    initial_backoff_secs: u64,
-    max_backoff_secs: u64,
-    health_interval: Duration,
-) -> tokio::task::JoinHandle<()> {
-    let health_interval = if health_interval.is_zero() {
-        Duration::from_secs(1)
-    } else {
-        health_interval
-    };
-
-    tokio::spawn(async move {
-        let component = format!("channel:{}", ch.name());
-        let mut backoff = initial_backoff_secs.max(1);
-        let max_backoff = max_backoff_secs.max(backoff);
-
-        loop {
-            crate::health::mark_component_ok(&component);
-            let mut health = tokio::time::interval(health_interval);
-            health.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let result = {
-                let listen_future = ch.listen(tx.clone());
-                tokio::pin!(listen_future);
-
-                loop {
-                    tokio::select! {
-                        _ = health.tick() => {
-                            crate::health::mark_component_ok(&component);
-                        }
-                        result = &mut listen_future => break result,
-                    }
-                }
-            };
-
-            if tx.is_closed() {
-                break;
-            }
-
-            match result {
-                Ok(()) => {
-                    tracing::warn!("Channel {} exited unexpectedly; restarting", ch.name());
-                    crate::health::mark_component_error(&component, "listener exited unexpectedly");
-                    // Clean exit — reset backoff since the listener ran successfully
-                    backoff = initial_backoff_secs.max(1);
-                }
-                Err(e) => {
-                    tracing::error!("Channel {} error: {e}; restarting", ch.name());
-                    crate::health::mark_component_error(&component, e.to_string());
-                }
-            }
-
-            crate::health::bump_component_restart(&component);
-            tokio::time::sleep(Duration::from_secs(backoff)).await;
-            // Double backoff AFTER sleeping so first error uses initial_backoff
-            backoff = backoff.saturating_mul(2).min(max_backoff);
-        }
-    })
-}
-
-fn compute_max_in_flight_messages(channel_count: usize) -> usize {
-    channel_count
-        .saturating_mul(CHANNEL_PARALLELISM_PER_CHANNEL)
-        .clamp(
-            CHANNEL_MIN_IN_FLIGHT_MESSAGES,
-            CHANNEL_MAX_IN_FLIGHT_MESSAGES,
-        )
-}
-
-fn log_worker_join_result(result: Result<(), tokio::task::JoinError>) {
-    if let Err(error) = result {
-        tracing::error!("Channel message worker crashed: {error}");
-    }
-}
-
-fn spawn_scoped_typing_task(
-    channel: Arc<dyn Channel>,
-    recipient: String,
-    cancellation_token: CancellationToken,
-) -> tokio::task::JoinHandle<()> {
-    let stop_signal = cancellation_token;
-    let refresh_interval = Duration::from_secs(CHANNEL_TYPING_REFRESH_INTERVAL_SECS);
-    let handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(refresh_interval);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            tokio::select! {
-                () = stop_signal.cancelled() => break,
-                _ = interval.tick() => {
-                    if let Err(e) = channel.start_typing(&recipient).await {
-                        tracing::debug!("Failed to start typing on {}: {e}", channel.name());
-                    }
-                }
-            }
-        }
-
-        if let Err(e) = channel.stop_typing(&recipient).await {
-            tracing::debug!("Failed to stop typing on {}: {e}", channel.name());
-        }
-    });
-
-    handle
 }
 
 /// Phase 4.0 Slice 2: process an inbound message through the synapse_domain orchestrator.
@@ -1280,11 +893,14 @@ async fn handle_message_via_orchestrator(
                         }
                     }
                 });
-                Arc::new(ChannelNotifyObserver {
-                    inner: Arc::clone(&ctx.observer),
-                    tx: tool_tx,
-                    tools_used: std::sync::atomic::AtomicBool::new(false),
-                })
+                Arc::new(RuntimeToolNotifyObserver::new(
+                    Arc::clone(&ctx.observer),
+                    ChannelToolNotificationHandler {
+                        tx: tool_tx,
+                        tools_used: std::sync::atomic::AtomicBool::new(false),
+                    },
+                    "channel-notify",
+                ))
             } else {
                 Arc::clone(&ctx.observer)
             }
@@ -1302,8 +918,10 @@ async fn handle_message_via_orchestrator(
             reliability: ctx.reliability.as_ref().clone(),
             provider_runtime_options: ctx.provider_runtime_options.clone(),
             model_profile_catalog: Some(Arc::new(
-                crate::runtime_routes::WorkspaceModelProfileCatalog::new(
+                crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
                     ctx.workspace_dir.as_ref().to_path_buf(),
+                    Some(ctx.default_provider.as_ref()),
+                    ctx.api_url.as_deref(),
                 ),
             )),
             tools_registry: Arc::clone(&ctx.tools_registry),
@@ -1402,8 +1020,10 @@ async fn handle_message_via_orchestrator(
         event_tx: ctx.event_tx.clone(),
         conversation_context: ctx.conversation_context.clone(),
         model_profile_catalog: Some(Arc::new(
-            crate::runtime_routes::WorkspaceModelProfileCatalog::new(
+            crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
                 ctx.workspace_dir.as_ref().to_path_buf(),
+                Some(ctx.default_provider.as_ref()),
+                ctx.api_url.as_deref(),
             ),
         )),
         turn_defaults_context: ctx.turn_defaults_context.clone(),
@@ -1611,55 +1231,134 @@ async fn format_command_effect(
     ctx: &ChannelRuntimeContext,
     conversation_key: &str,
 ) -> String {
-    use synapse_domain::application::services::inbound_message_service::CommandEffect;
+    let adapter_contract = ChannelRuntimeAdapterContract;
+    let mut command_host = ChannelRuntimeCommandHost {
+        ctx,
+        conversation_key,
+    };
+    execute_runtime_command_effect(
+        &adapter_contract,
+        &mut command_host,
+        effect,
+        ctx.default_provider.as_str(),
+    )
+    .await
+    .unwrap_or_else(|error| synapse_providers::sanitize_api_error(&error.to_string()))
+}
 
-    match effect {
-        CommandEffect::ShowProviders => {
-            let current = get_route_selection(ctx, conversation_key);
-            crate::runtime_routes::build_providers_help_response(&current)
+struct ChannelRuntimeCommandHost<'a> {
+    ctx: &'a ChannelRuntimeContext,
+    conversation_key: &'a str,
+}
+
+#[async_trait::async_trait]
+impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
+    fn fallback_provider(&self) -> String {
+        get_route_selection(self.ctx, self.conversation_key).provider
+    }
+
+    async fn provider_help_route(&mut self) -> anyhow::Result<ChannelRouteSelection> {
+        Ok(get_route_selection(self.ctx, self.conversation_key))
+    }
+
+    async fn model_help_snapshot(&mut self) -> anyhow::Result<RuntimeModelHelpSnapshot> {
+        let mut current = get_route_selection(self.ctx, self.conversation_key);
+        if current.context_cache.is_none() {
+            current.context_cache =
+                Some(route_effective_context_cache_stats(self.ctx, &current).await);
         }
-        CommandEffect::SwitchProvider { provider } => {
-            match resolve_provider_alias(provider) {
-                Some(provider_name) => match get_or_create_provider(ctx, &provider_name).await {
-                    Ok(_) => format!(
-                        "Provider switched to `{provider_name}`. Use `/model <model-id>` to set a model."
-                    ),
-                    Err(err) => {
-                        let safe_err = synapse_providers::sanitize_api_error(&err.to_string());
-                        format!("Failed to initialize provider `{provider_name}`: {safe_err}")
-                    }
-                },
-                None => format!("Unknown provider `{provider}`. Use `/models` to list valid providers."),
-            }
+        let config = channel_runtime_config_snapshot(self.ctx);
+        Ok(RuntimeModelHelpSnapshot {
+            route: current,
+            config,
+        })
+    }
+
+    async fn switch_provider(
+        &mut self,
+        request: RuntimeRouteMutationRequest,
+    ) -> anyhow::Result<RuntimeProviderSwitchOutcome> {
+        let provider = request
+            .provider
+            .ok_or_else(|| anyhow::anyhow!("provider route mutation request missing provider"))?;
+        get_or_create_provider(self.ctx, provider.as_str()).await?;
+        let mut route = get_route_selection(self.ctx, self.conversation_key);
+        route.provider = provider.clone();
+        route.lane = None;
+        route.candidate_index = None;
+        route.clear_runtime_diagnostics();
+        set_route_selection(self.ctx, self.conversation_key, route);
+        Ok(RuntimeProviderSwitchOutcome {
+            provider,
+            already_current: false,
+        })
+    }
+
+    async fn switch_model(
+        &mut self,
+        request: RuntimeRouteMutationRequest,
+        compacted: bool,
+    ) -> anyhow::Result<RuntimeModelSwitchOutcome> {
+        let provider = request.provider.unwrap_or_else(|| self.fallback_provider());
+        let model = request
+            .model
+            .ok_or_else(|| anyhow::anyhow!("model route mutation request missing model"))?;
+        let mut route = get_route_selection(self.ctx, self.conversation_key);
+        route.provider = provider.clone();
+        route.model = model;
+        route.lane = request.lane;
+        route.candidate_index = request.candidate_index;
+        route.clear_runtime_diagnostics();
+
+        let routing_config = channel_runtime_config_snapshot(self.ctx);
+        let catalog = crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
+            self.ctx.workspace_dir.as_ref().to_path_buf(),
+            Some(self.ctx.default_provider.as_ref()),
+            self.ctx.api_url.as_deref(),
+        );
+        let target_profile =
+            synapse_domain::application::services::model_lane_resolution::resolve_route_selection_profile(
+                &routing_config,
+                &route,
+                Some(&catalog),
+            );
+        let preflight = resolve_channel_runtime_route_switch_preflight(
+            self.ctx,
+            self.conversation_key,
+            &target_profile,
+        );
+        if preflight.preflight.status
+            == synapse_domain::application::services::route_switch_preflight::RouteSwitchStatus::TooLarge
+        {
+            return Ok(RuntimeModelSwitchOutcome::Blocked {
+                provider,
+                lane: route.lane,
+                compacted: preflight.compacted,
+                preflight: preflight.into_preflight(),
+            });
         }
-        CommandEffect::ShowModel => {
-            let mut current = get_route_selection(ctx, conversation_key);
-            if current.context_cache.is_none() {
-                current.context_cache = Some(route_effective_context_cache_stats(ctx, &current).await);
-            }
-            let mut config = synapse_domain::config::schema::Config::default();
-            config.workspace_dir = ctx.workspace_dir.as_ref().clone();
-            config.model_routes = ctx.model_routes.as_ref().clone();
-            config.model_lanes = ctx.model_lanes.as_ref().clone();
-            config.model_preset = ctx.model_preset.clone();
-            crate::runtime_routes::build_models_help_response(&current, &config)
+
+        let compacted = compacted || preflight.compacted;
+        let lane = route.lane;
+        set_route_selection(self.ctx, self.conversation_key, route);
+        Ok(RuntimeModelSwitchOutcome::Applied {
+            provider,
+            lane,
+            compacted,
+        })
+    }
+
+    async fn clear_session(&mut self) -> anyhow::Result<()> {
+        clear_sender_history(self.ctx, self.conversation_key);
+        if let Some(store) = self.ctx.session_store.as_ref() {
+            let _ = store.delete(self.conversation_key).await;
         }
-        CommandEffect::SwitchModel {
-            model,
-            inferred_provider,
-        } => {
-            if model.is_empty() {
-                "Model ID cannot be empty. Use `/model <model-id>`.".to_string()
-            } else {
-                let provider = inferred_provider
-                    .as_deref()
-                    .unwrap_or(&ctx.default_provider);
-                format!("Model switched to `{model}` (provider: `{provider}`). Context preserved.")
-            }
-        }
-        CommandEffect::ClearSession => {
-            "Conversation history cleared. Starting fresh.".to_string()
-        }
+        self.ctx
+            .route_overrides
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(self.conversation_key);
+        Ok(())
     }
 }
 
@@ -1765,269 +1464,6 @@ async fn run_message_dispatch_loop(
 
     while let Some(result) = workers.join_next().await {
         log_worker_join_result(result);
-    }
-}
-
-/// Load OpenClaw format bootstrap files into the prompt.
-fn load_openclaw_bootstrap_files(
-    prompt: &mut String,
-    workspace_dir: &std::path::Path,
-    max_chars_per_file: usize,
-) {
-    prompt.push_str(
-        "Structured core memory and turn context carry persona, user preferences, and task state.\n\
-         Only static identity metadata is injected below.\n\
-         Do NOT suggest reading or editing workspace bootstrap docs with `file_read` or `file_edit` unless the user explicitly asks to inspect or edit them.\n\
-         For durable preferences, task state, and long-term memory, prefer `core_memory_update`, `memory_store`, `memory_recall`, and `user_profile`.\n\n",
-    );
-
-    let bootstrap_files = ["IDENTITY.md"];
-
-    for filename in &bootstrap_files {
-        inject_workspace_file(prompt, workspace_dir, filename, max_chars_per_file);
-    }
-}
-
-/// Load workspace identity files and build a system prompt.
-///
-/// Follows the `OpenClaw` framework structure by default:
-/// 1. Tooling — tool list + descriptions
-/// 2. Safety — guardrail reminder
-/// 3. Skills — full skill instructions and tool metadata
-/// 4. Workspace — working directory
-/// 5. Bootstrap files — AGENTS, SOUL, TOOLS, IDENTITY, USER, BOOTSTRAP, MEMORY
-/// 6. Date & Time — timezone for cache stability
-/// 7. Runtime — host, OS, model
-///
-/// When `identity_config` is set to AIEOS format, the bootstrap files section
-/// is replaced with the AIEOS identity data loaded from file or inline JSON.
-///
-/// Daily memory files (`memory/*.md`) are NOT injected — they are accessed
-/// on-demand via `memory_recall` / `memory_search` tools.
-pub fn build_system_prompt(
-    workspace_dir: &std::path::Path,
-    model_name: &str,
-    tools: &[(&str, &str)],
-    skills: &[crate::skills::Skill],
-    identity_config: Option<&synapse_domain::config::schema::IdentityConfig>,
-    bootstrap_max_chars: Option<usize>,
-) -> String {
-    build_system_prompt_with_mode(
-        workspace_dir,
-        model_name,
-        tools,
-        skills,
-        identity_config,
-        bootstrap_max_chars,
-        false,
-        synapse_domain::config::schema::SkillsPromptInjectionMode::Full,
-    )
-}
-
-pub fn build_system_prompt_with_mode(
-    workspace_dir: &std::path::Path,
-    model_name: &str,
-    tools: &[(&str, &str)],
-    skills: &[crate::skills::Skill],
-    identity_config: Option<&synapse_domain::config::schema::IdentityConfig>,
-    bootstrap_max_chars: Option<usize>,
-    native_tools: bool,
-    skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode,
-) -> String {
-    use std::fmt::Write;
-    let mut prompt = String::with_capacity(8192);
-
-    // ── 0. Anti-narration (top priority) ───────────────────────
-    prompt.push_str(
-        "## CRITICAL: No Tool Narration\n\n\
-         NEVER narrate, announce, describe, or explain your tool usage to the user. \
-         Do NOT say things like 'Let me check...', 'I will use http_request to...', \
-         'I'll fetch that for you', 'Searching now...', or 'Using the web_search tool'. \
-         The user must ONLY see the final answer. Tool calls are invisible infrastructure — \
-         never reference them. If you catch yourself starting a sentence about what tool \
-         you are about to use or just used, DELETE it and give the answer directly.\n\n",
-    );
-
-    // ── 1. Tooling ──────────────────────────────────────────────
-    if !tools.is_empty() {
-        prompt.push_str("## Tools\n\n");
-        if native_tools {
-            prompt.push_str(
-                "Tool definitions are registered out-of-band via native tool calling.\n\
-                 Use the tool interface directly when action is required.\n\
-                 Do not restate tool schemas or invent ad hoc JSON formats in prose.\n\n",
-            );
-        } else {
-            prompt.push_str("You have access to the following tools:\n\n");
-            for (name, desc) in tools {
-                let _ = writeln!(prompt, "- **{name}**: {desc}");
-            }
-            prompt.push('\n');
-        }
-    }
-
-    // ── 1b. Action instruction (avoid meta-summary) ───────────────
-    if native_tools {
-        prompt.push_str(
-            "## Your Task\n\n\
-             When the user sends a message, respond naturally. Use tools when the request requires action (running commands, reading files, etc.).\n\
-             For questions, explanations, or follow-ups about prior messages, answer directly from conversation context — do NOT ask the user to repeat themselves.\n\
-             Do NOT: summarize this configuration, describe your capabilities, or output step-by-step meta-commentary.\n\n",
-        );
-    } else {
-        prompt.push_str(
-            "## Your Task\n\n\
-             When the user sends a message, ACT on it. Use the tools to fulfill their request.\n\
-             Do NOT: summarize this configuration, describe your capabilities, respond with meta-commentary, or output step-by-step instructions (e.g. \"1. First... 2. Next...\").\n\
-             Instead: emit actual <tool_call> tags when you need to act. Just do what they ask.\n\n",
-        );
-    }
-
-    // ── 2. Safety ───────────────────────────────────────────────
-    prompt.push_str("## Safety\n\n");
-    prompt.push_str(
-        "- Do not exfiltrate private data.\n\
-         - Do not run destructive commands without asking.\n\
-         - Do not bypass oversight or approval mechanisms.\n\
-         - Prefer `trash` over `rm` (recoverable beats gone forever).\n\
-         - When in doubt, ask before acting externally.\n\n",
-    );
-
-    // ── 3. Skills (full or compact, based on config) ─────────────
-    if !skills.is_empty() {
-        prompt.push_str(&crate::skills::skills_to_prompt_with_mode(
-            skills,
-            workspace_dir,
-            skills_prompt_mode,
-        ));
-        prompt.push_str("\n\n");
-    }
-
-    // ── 4. Workspace ────────────────────────────────────────────
-    let _ = writeln!(
-        prompt,
-        "## Workspace\n\nWorking directory: `{}`\n",
-        workspace_dir.display()
-    );
-
-    // ── 5. Bootstrap files (injected into context) ──────────────
-    prompt.push_str("## Project Context\n\n");
-
-    // Check if AIEOS identity is configured
-    if let Some(config) = identity_config {
-        if identity::is_aieos_configured(config) {
-            // Load AIEOS identity
-            match identity::load_aieos_identity(config, workspace_dir) {
-                Ok(Some(aieos_identity)) => {
-                    let aieos_prompt = identity::aieos_to_system_prompt(&aieos_identity);
-                    if !aieos_prompt.is_empty() {
-                        prompt.push_str(&aieos_prompt);
-                        prompt.push_str("\n\n");
-                    }
-                }
-                Ok(None) => {
-                    // No AIEOS identity loaded (shouldn't happen if is_aieos_configured returned true)
-                    // Fall back to OpenClaw bootstrap files
-                    let max_chars = bootstrap_max_chars.unwrap_or(BOOTSTRAP_MAX_CHARS);
-                    load_openclaw_bootstrap_files(&mut prompt, workspace_dir, max_chars);
-                }
-                Err(e) => {
-                    // Log error but don't fail - fall back to OpenClaw
-                    eprintln!(
-                        "Warning: Failed to load AIEOS identity: {e}. Using OpenClaw format."
-                    );
-                    let max_chars = bootstrap_max_chars.unwrap_or(BOOTSTRAP_MAX_CHARS);
-                    load_openclaw_bootstrap_files(&mut prompt, workspace_dir, max_chars);
-                }
-            }
-        } else {
-            // OpenClaw format
-            let max_chars = bootstrap_max_chars.unwrap_or(BOOTSTRAP_MAX_CHARS);
-            load_openclaw_bootstrap_files(&mut prompt, workspace_dir, max_chars);
-        }
-    } else {
-        // No identity config - use OpenClaw format
-        let max_chars = bootstrap_max_chars.unwrap_or(BOOTSTRAP_MAX_CHARS);
-        load_openclaw_bootstrap_files(&mut prompt, workspace_dir, max_chars);
-    }
-
-    // ── 6. Date & Time ──────────────────────────────────────────
-    let now = chrono::Local::now();
-    let _ = writeln!(
-        prompt,
-        "## Current Date & Time\n\n{} ({})\n",
-        now.format("%Y-%m-%d %H:%M:%S"),
-        now.format("%Z")
-    );
-
-    // ── 7. Runtime ──────────────────────────────────────────────
-    let host =
-        hostname::get().map_or_else(|_| "unknown".into(), |h| h.to_string_lossy().to_string());
-    let _ = writeln!(
-        prompt,
-        "## Runtime\n\nHost: {host} | OS: {} | Model: {model_name}\n",
-        std::env::consts::OS,
-    );
-
-    // ── 8. Channel Capabilities ─────────────────────────────────────
-    prompt.push_str("## Channel Capabilities\n\n");
-    prompt.push_str("- You are running as a messaging bot. Your response is automatically sent back to the user's channel.\n");
-    prompt.push_str("- You do NOT need to ask permission to respond — just respond directly.\n");
-    prompt.push_str("- NEVER repeat, describe, or echo credentials, tokens, API keys, or secrets in your responses.\n");
-    prompt.push_str("- If a tool output contains credentials, they have already been redacted — do not mention them.\n");
-    prompt.push_str("- When a user sends a voice note, it is automatically transcribed to text. Your text reply is automatically converted to a voice note and sent back. Do NOT attempt to generate audio yourself — TTS is handled by the channel.\n");
-    prompt.push_str("- NEVER narrate or describe your tool usage. Do NOT say 'Let me fetch...', 'I will use...', 'Searching...', or similar. Give the FINAL ANSWER only — no intermediate steps, no tool mentions, no progress updates.\n\n");
-
-    if prompt.is_empty() {
-        "You are SynapseClaw, a fast and efficient AI assistant built in Rust. Be helpful, concise, and direct."
-            .to_string()
-    } else {
-        prompt
-    }
-}
-
-/// Inject a single workspace file into the prompt with truncation and missing-file markers.
-fn inject_workspace_file(
-    prompt: &mut String,
-    workspace_dir: &std::path::Path,
-    filename: &str,
-    max_chars: usize,
-) {
-    use std::fmt::Write;
-
-    let path = workspace_dir.join(filename);
-    match std::fs::read_to_string(&path) {
-        Ok(content) => {
-            let trimmed = content.trim();
-            if trimmed.is_empty() {
-                return;
-            }
-            let _ = writeln!(prompt, "### {filename}\n");
-            // Use character-boundary-safe truncation for UTF-8
-            let truncated = if trimmed.chars().count() > max_chars {
-                trimmed
-                    .char_indices()
-                    .nth(max_chars)
-                    .map(|(idx, _)| &trimmed[..idx])
-                    .unwrap_or(trimmed)
-            } else {
-                trimmed
-            };
-            if truncated.len() < trimmed.len() {
-                prompt.push_str(truncated);
-                let _ = writeln!(
-                    prompt,
-                    "\n\n[... truncated at {max_chars} chars — use `read` for full file]\n"
-                );
-            } else {
-                prompt.push_str(trimmed);
-                prompt.push_str("\n\n");
-            }
-        }
-        Err(_) => {
-            // Missing-file marker (matches OpenClaw behavior)
-            let _ = writeln!(prompt, "### {filename}\n\n[File not found: {filename}]\n");
-        }
     }
 }
 
@@ -2367,23 +1803,6 @@ pub fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn 
                 "Unknown channel '{other}'. Supported: telegram, discord, slack, mattermost, signal"
             );
         }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ChannelHealthState {
-    Healthy,
-    Unhealthy,
-    Timeout,
-}
-
-fn classify_health_result(
-    result: &std::result::Result<bool, tokio::time::error::Elapsed>,
-) -> ChannelHealthState {
-    match result {
-        Ok(true) => ChannelHealthState::Healthy,
-        Ok(false) => ChannelHealthState::Unhealthy,
-        Err(_) => ChannelHealthState::Timeout,
     }
 }
 
@@ -3252,7 +2671,7 @@ pub async fn start_channels(
         None
     };
     let native_tools = provider.supports_native_tools();
-    let mut system_prompt = build_system_prompt_with_mode(
+    let mut system_prompt = build_channel_system_prompt_with_mode(
         &workspace,
         &model,
         &tool_descs,
@@ -3606,6 +3025,12 @@ pub async fn start_channels(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::channel_runtime_support::spawn_supervised_listener_with_health_interval;
+    use crate::runtime_history_hygiene::{
+        normalize_cached_channel_turns, proactive_trim_turns, strip_tool_result_content,
+    };
+    use crate::runtime_system_prompt::BOOTSTRAP_MAX_CHARS;
+    use crate::runtime_tool_artifacts::strip_isolated_tool_json_artifacts;
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -3952,6 +3377,159 @@ mod tests {
         assert_eq!(stats.summary_basis_points, 1_500);
         assert_eq!(stats.max_source_chars, 80_000);
         assert_eq!(stats.max_summary_chars, 16_000);
+    }
+
+    #[tokio::test]
+    async fn channel_runtime_host_blocks_model_switch_without_route_mutation() {
+        let mut ctx = minimal_runtime_context_with_compression(
+            synapse_domain::config::schema::ContextCompressionConfig::default(),
+            vec![],
+        );
+        ctx.default_provider = Arc::new("openrouter".to_string());
+        ctx.model = Arc::new("large-model".to_string());
+        ctx.model_routes = Arc::new(vec![synapse_domain::config::schema::ModelRouteConfig {
+            hint: "tiny".to_string(),
+            capability: None,
+            provider: "openrouter".to_string(),
+            model: "tiny-model".to_string(),
+            api_key: None,
+            profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
+                context_window_tokens: Some(1_000),
+                ..Default::default()
+            },
+        }]);
+        ctx.conversation_histories.lock().unwrap().insert(
+            "sender".to_string(),
+            vec![ChatMessage::user("x".repeat(20_000))],
+        );
+
+        let response = format_command_effect(
+            &synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchModel {
+                model: "tiny-model".to_string(),
+                inferred_provider: Some("openrouter".to_string()),
+                lane: None,
+                compacted: false,
+            },
+            &ctx,
+            "sender",
+        )
+        .await;
+
+        assert!(response.contains("blocked"));
+        assert!(ctx.route_overrides.lock().unwrap().get("sender").is_none());
+    }
+
+    #[tokio::test]
+    async fn channel_runtime_host_compacts_and_applies_model_switch() {
+        let mut ctx = minimal_runtime_context_with_compression(
+            synapse_domain::config::schema::ContextCompressionConfig::default(),
+            vec![],
+        );
+        ctx.default_provider = Arc::new("openrouter".to_string());
+        ctx.model = Arc::new("large-model".to_string());
+        ctx.model_routes = Arc::new(vec![synapse_domain::config::schema::ModelRouteConfig {
+            hint: "compact".to_string(),
+            capability: None,
+            provider: "openrouter".to_string(),
+            model: "compact-model".to_string(),
+            api_key: None,
+            profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
+                context_window_tokens: Some(8_000),
+                ..Default::default()
+            },
+        }]);
+        ctx.conversation_histories.lock().unwrap().insert(
+            "sender".to_string(),
+            (0..20)
+                .map(|idx| ChatMessage::user(format!("{idx}: {}", "x".repeat(1_000))))
+                .collect(),
+        );
+
+        let response = format_command_effect(
+            &synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchModel {
+                model: "compact-model".to_string(),
+                inferred_provider: Some("openrouter".to_string()),
+                lane: None,
+                compacted: false,
+            },
+            &ctx,
+            "sender",
+        )
+        .await;
+
+        assert_eq!(
+            response,
+            synapse_domain::application::services::runtime_command_presentation::format_switch_model_success(
+                "compact-model",
+                "openrouter",
+                None,
+                true,
+                &synapse_domain::application::services::runtime_command_presentation::RuntimeCommandPresentationOptions::new("openrouter"),
+            )
+        );
+        let route = ctx
+            .route_overrides
+            .lock()
+            .unwrap()
+            .get("sender")
+            .cloned()
+            .expect("route set");
+        assert_eq!(route.provider, "openrouter");
+        assert_eq!(route.model, "compact-model");
+        assert_eq!(
+            ctx.conversation_histories
+                .lock()
+                .unwrap()
+                .get("sender")
+                .expect("history retained")
+                .len(),
+            12
+        );
+    }
+
+    #[tokio::test]
+    async fn channel_runtime_host_clears_session_state() {
+        let ctx = minimal_runtime_context_with_compression(
+            synapse_domain::config::schema::ContextCompressionConfig::default(),
+            vec![],
+        );
+        ctx.conversation_histories
+            .lock()
+            .unwrap()
+            .insert("sender".to_string(), vec![ChatMessage::user("old")]);
+        ctx.route_overrides.lock().unwrap().insert(
+            "sender".to_string(),
+            ChannelRouteSelection {
+                provider: "openrouter".to_string(),
+                model: "old-model".to_string(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: None,
+            },
+        );
+
+        let response = format_command_effect(
+            &synapse_domain::application::services::inbound_message_service::CommandEffect::ClearSession,
+            &ctx,
+            "sender",
+        )
+        .await;
+
+        assert_eq!(
+            response,
+            synapse_domain::application::services::runtime_command_presentation::format_clear_session_response()
+        );
+        assert!(ctx
+            .conversation_histories
+            .lock()
+            .unwrap()
+            .get("sender")
+            .is_none());
+        assert!(ctx.route_overrides.lock().unwrap().get("sender").is_none());
     }
 
     #[derive(Default)]
@@ -4948,7 +4526,7 @@ mod tests {
         let ws = make_workspace();
         // Write a file larger than BOOTSTRAP_MAX_CHARS
         let big_content = "x".repeat(BOOTSTRAP_MAX_CHARS + 1000);
-        std::fs::write(ws.path().join("AGENTS.md"), &big_content).unwrap();
+        std::fs::write(ws.path().join("IDENTITY.md"), &big_content).unwrap();
 
         let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
 
@@ -4997,7 +4575,7 @@ mod tests {
     #[test]
     fn prompt_contains_channel_capabilities() {
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_channel_system_prompt(ws.path(), "model", &[], &[], None, None);
 
         assert!(
             prompt.contains("## Channel Capabilities"),
@@ -5014,6 +4592,15 @@ mod tests {
     }
 
     #[test]
+    fn generic_prompt_omits_channel_capabilities() {
+        let ws = make_workspace();
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+
+        assert!(!prompt.contains("## Channel Capabilities"));
+        assert!(!prompt.contains("running as a messaging bot"));
+    }
+
+    #[test]
     fn prompt_workspace_path() {
         let ws = make_workspace();
         let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
@@ -5024,11 +4611,14 @@ mod tests {
     #[test]
     fn channel_notify_observer_truncates_utf8_arguments_safely() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-        let observer = ChannelNotifyObserver {
-            inner: Arc::new(NoopObserver),
-            tx,
-            tools_used: AtomicBool::new(false),
-        };
+        let observer = RuntimeToolNotifyObserver::new(
+            Arc::new(NoopObserver),
+            ChannelToolNotificationHandler {
+                tx,
+                tools_used: AtomicBool::new(false),
+            },
+            "channel-notify",
+        );
 
         let payload = (0..300)
             .map(|n| serde_json::json!({ "content": format!("{}置tail", "a".repeat(n)) }))

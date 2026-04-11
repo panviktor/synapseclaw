@@ -6,6 +6,7 @@
 use crate::application::services::model_lane_resolution::{
     ResolvedModelProfile, ResolvedModelProfileConfidence,
 };
+use crate::domain::message::ChatMessage;
 
 pub const CONTEXT_COMPRESSION_THRESHOLD_NUMERATOR: usize = 1;
 pub const CONTEXT_COMPRESSION_THRESHOLD_DENOMINATOR: usize = 2;
@@ -79,6 +80,103 @@ impl ProviderContextBudgetInput {
         }
         self
     }
+}
+
+pub fn provider_context_input_for_history(history: &[ChatMessage]) -> ProviderContextBudgetInput {
+    let non_system_messages = history.iter().filter(|msg| msg.role != "system").count();
+    let prior_chat_messages = non_system_messages.saturating_sub(1);
+    let total_chars: usize = history.iter().map(|msg| msg.content.chars().count()).sum();
+    let system_breakdown = provider_history_system_breakdown(history);
+    let system_chars: usize = history
+        .iter()
+        .filter(|msg| msg.role == "system")
+        .map(|msg| msg.content.chars().count())
+        .sum();
+    let current_turn_chars = history
+        .iter()
+        .rev()
+        .find(|msg| msg.role != "system")
+        .map(|msg| msg.content.chars().count())
+        .unwrap_or(0);
+    let prior_chat_chars = total_chars
+        .saturating_sub(system_chars)
+        .saturating_sub(current_turn_chars);
+
+    ProviderContextBudgetInput {
+        total_chars,
+        prior_chat_messages,
+        current_turn_messages: usize::from(non_system_messages > 0),
+        bootstrap_chars: lookup_system_section_chars(&system_breakdown, "bootstrap"),
+        core_memory_chars: lookup_system_section_chars(&system_breakdown, "core_memory"),
+        runtime_interpretation_chars: lookup_system_section_chars(
+            &system_breakdown,
+            "runtime_interpretation",
+        ),
+        scoped_context_chars: lookup_system_section_chars(&system_breakdown, "scoped_context"),
+        resolution_chars: lookup_system_section_chars(&system_breakdown, "resolution"),
+        prior_chat_chars,
+        current_turn_chars,
+        ..Default::default()
+    }
+}
+
+fn provider_history_system_breakdown(history: &[ChatMessage]) -> Vec<(String, usize)> {
+    let mut breakdown = std::collections::BTreeMap::<String, usize>::new();
+    for message in history.iter().filter(|msg| msg.role == "system") {
+        for (name, chars) in classify_system_message_sections(&message.content) {
+            *breakdown.entry(name.to_string()).or_default() += chars;
+        }
+    }
+    breakdown.into_iter().collect()
+}
+
+fn classify_system_message_sections(content: &str) -> Vec<(&'static str, usize)> {
+    let markers = [
+        ("[core-memory]\n", "core_memory"),
+        ("[runtime-interpretation]\n", "runtime_interpretation"),
+        ("[scoped-context]\n", "scoped_context"),
+        ("[resolution-plan]\n", "resolution"),
+        ("[clarification-policy]\n", "resolution"),
+        ("[execution-guidance]\n", "resolution"),
+    ];
+
+    let mut ranges = markers
+        .iter()
+        .filter_map(|(marker, name)| content.find(marker).map(|start| (start, *marker, *name)))
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|(start, _, _)| *start);
+
+    if ranges.is_empty() {
+        return vec![("bootstrap", content.chars().count())];
+    }
+
+    let mut sections = Vec::new();
+    if let Some((first_start, _, _)) = ranges.first().copied() {
+        if first_start > 0 {
+            sections.push(("bootstrap", content[..first_start].chars().count()));
+        }
+    }
+
+    for (index, (start, marker, name)) in ranges.iter().enumerate() {
+        let end = ranges
+            .get(index + 1)
+            .map(|(next_start, _, _)| *next_start)
+            .unwrap_or(content.len());
+        let slice = &content[*start..end];
+        if !slice.is_empty() {
+            let marker_chars = marker.chars().count();
+            sections.push((*name, slice.chars().count().max(marker_chars)));
+        }
+    }
+
+    sections
+}
+
+fn lookup_system_section_chars(breakdown: &[(String, usize)], section: &str) -> usize {
+    breakdown
+        .iter()
+        .find_map(|(name, chars)| (name == section).then_some(*chars))
+        .unwrap_or(0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -54,6 +54,8 @@ struct ProviderModelCatalogEntry {
     provider: String,
     default_model: String,
     #[serde(default)]
+    api_base_urls: Vec<String>,
+    #[serde(default)]
     curated_models: Vec<CuratedModelDefinition>,
 }
 
@@ -288,6 +290,28 @@ pub fn provider_curated_models(provider: &str) -> Option<Vec<(String, String)>> 
         })
 }
 
+pub fn provider_for_api_base_url(endpoint: &str) -> Option<&'static str> {
+    let endpoint = normalize_api_base_url(endpoint)?;
+    active_model_catalog()
+        .data
+        .providers
+        .iter()
+        .find(|entry| {
+            entry.api_base_urls.iter().any(|base_url| {
+                let Some(base_url) = normalize_api_base_url(base_url) else {
+                    return false;
+                };
+                endpoint == base_url || endpoint.starts_with(&format!("{base_url}/"))
+            })
+        })
+        .map(|entry| entry.provider.as_str())
+}
+
+fn normalize_api_base_url(value: &str) -> Option<String> {
+    let normalized = value.trim().trim_end_matches('/').to_ascii_lowercase();
+    (!normalized.is_empty()).then_some(normalized)
+}
+
 pub fn default_pricing_table() -> HashMap<String, ModelPricing> {
     active_model_catalog()
         .data
@@ -467,6 +491,22 @@ mod tests {
     fn provider_defaults_come_from_catalog_data() {
         assert_eq!(provider_default_model("openai-codex"), Some("gpt-5.4"));
         assert_eq!(provider_default_model("ollama"), Some("llama4-scout"));
+    }
+
+    #[test]
+    fn provider_can_be_inferred_from_catalog_base_url() {
+        assert_eq!(
+            provider_for_api_base_url("https://api.deepseek.com/v1"),
+            Some("deepseek")
+        );
+        assert_eq!(
+            provider_for_api_base_url("https://openrouter.ai/api/v1/"),
+            Some("openrouter")
+        );
+        assert_eq!(
+            provider_for_api_base_url("https://unknown.example.com/v1"),
+            None
+        );
     }
 
     #[test]

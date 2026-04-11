@@ -6,6 +6,7 @@
 
 use crate::domain::message::ChatMessage;
 use crate::domain::util::truncate_with_ellipsis;
+use crate::ports::provider::{ConversationMessage, ToolResultMessage};
 use std::fmt::Write;
 
 /// Default trigger for auto-compaction when non-system message count exceeds this threshold.
@@ -13,6 +14,8 @@ pub const DEFAULT_MAX_HISTORY_MESSAGES: usize = 50;
 
 /// Keep this many most-recent non-system messages after compaction.
 const COMPACTION_KEEP_RECENT_MESSAGES: usize = 20;
+
+pub const SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS: usize = 12;
 
 /// Safety cap for compaction source transcript passed to the summarizer.
 const COMPACTION_MAX_SOURCE_CHARS: usize = 12_000;
@@ -28,6 +31,11 @@ const COMPACTION_MIN_TARGET_RATIO: f64 = 0.10;
 const COMPACTION_MAX_TARGET_RATIO: f64 = 0.80;
 const COMPACTION_MIN_THRESHOLD_RATIO: f64 = 0.05;
 const COMPACTION_MAX_THRESHOLD_RATIO: f64 = 0.95;
+const COMPACTION_TOOL_RESULT_PLACEHOLDER_HEAD_CHARS: usize = 180;
+const COMPACTION_TOOL_RESULT_PLACEHOLDER_TAIL_CHARS: usize = 180;
+const COMPACTION_TOOL_RESULT_PLACEHOLDER_TRIGGER_CHARS: usize = 900;
+const MISSING_TOOL_RESULT_STUB: &str =
+    "[tool-result-compacted]\nResult omitted by history compaction; use the compaction summary and subsequent conversation state.";
 
 /// Prefix used for compacted conversation summaries stored back into provider history.
 pub const COMPACTION_SUMMARY_PREFIX: &str = "[Compaction summary]\n";
@@ -109,6 +117,44 @@ pub fn resolve_context_compression_config_for_route(
             policy
         }
     })
+}
+
+pub fn compact_provider_history_for_session_hygiene(
+    history: &mut Vec<ChatMessage>,
+    keep_non_system_turns: usize,
+) -> bool {
+    let non_system_count = history.iter().filter(|msg| msg.role != "system").count();
+    if non_system_count <= keep_non_system_turns {
+        return false;
+    }
+
+    let mut remaining_non_system = keep_non_system_turns;
+    let mut compacted = Vec::with_capacity(history.len());
+    for message in history.drain(..).rev() {
+        if message.role == "system" {
+            compacted.push(message);
+        } else if remaining_non_system > 0 {
+            remaining_non_system -= 1;
+            compacted.push(message);
+        }
+    }
+    compacted.reverse();
+    drop_leading_non_user_provider_messages(&mut compacted);
+    *history = compacted;
+    true
+}
+
+fn drop_leading_non_user_provider_messages(history: &mut Vec<ChatMessage>) {
+    loop {
+        let Some(first_non_system) = history.iter().position(|message| message.role != "system")
+        else {
+            return;
+        };
+        if history[first_non_system].role == "user" {
+            return;
+        }
+        history.remove(first_non_system);
+    }
 }
 
 fn compression_override_matches(
@@ -232,7 +278,8 @@ fn build_compaction_transcript(messages: &[ChatMessage], max_source_chars: usize
     let mut transcript = String::new();
     for msg in messages {
         let role = msg.role.to_uppercase();
-        let _ = writeln!(transcript, "{role}: {}", msg.content.trim());
+        let content = compact_tool_result_for_summary(msg);
+        let _ = writeln!(transcript, "{role}: {}", content.trim());
     }
 
     if transcript.chars().count() > max_source_chars {
@@ -240,6 +287,48 @@ fn build_compaction_transcript(messages: &[ChatMessage], max_source_chars: usize
     } else {
         transcript
     }
+}
+
+fn compact_tool_result_for_summary(message: &ChatMessage) -> String {
+    if message.role != "tool" {
+        return message.content.clone();
+    }
+    let char_count = message.content.chars().count();
+    if char_count <= COMPACTION_TOOL_RESULT_PLACEHOLDER_TRIGGER_CHARS {
+        return message.content.clone();
+    }
+
+    let head = first_chars(
+        &message.content,
+        COMPACTION_TOOL_RESULT_PLACEHOLDER_HEAD_CHARS,
+    );
+    let tail = last_chars(
+        &message.content,
+        COMPACTION_TOOL_RESULT_PLACEHOLDER_TAIL_CHARS,
+    );
+    format!("[tool-result-pruned chars={char_count}]\nhead:\n{head}\n\ntail:\n{tail}")
+}
+
+fn first_chars(value: &str, count: usize) -> &str {
+    value
+        .char_indices()
+        .nth(count)
+        .map(|(idx, _)| &value[..idx])
+        .unwrap_or(value)
+}
+
+fn last_chars(value: &str, count: usize) -> &str {
+    let total = value.chars().count();
+    if count >= total {
+        return value;
+    }
+
+    let skip = total - count;
+    value
+        .char_indices()
+        .nth(skip)
+        .map(|(idx, _)| &value[idx..])
+        .unwrap_or(value)
 }
 
 fn apply_compaction_summary(
@@ -282,6 +371,22 @@ pub fn prepare_compaction_with_policy(
     max_context_tokens: usize,
     policy: &HistoryCompressionPolicy,
 ) -> Option<(usize, usize, String)> {
+    prepare_compaction_with_policy_and_observed_tokens(
+        history,
+        max_history,
+        max_context_tokens,
+        policy,
+        None,
+    )
+}
+
+pub fn prepare_compaction_with_policy_and_observed_tokens(
+    history: &[ChatMessage],
+    max_history: usize,
+    max_context_tokens: usize,
+    policy: &HistoryCompressionPolicy,
+    observed_provider_input_tokens: Option<usize>,
+) -> Option<(usize, usize, String)> {
     if !policy.enabled {
         return None;
     }
@@ -294,9 +399,12 @@ pub fn prepare_compaction_with_policy(
     };
 
     let estimated_tokens = estimate_history_tokens(history);
+    let pressure_tokens = observed_provider_input_tokens
+        .filter(|tokens| *tokens > 0)
+        .map_or(estimated_tokens, |tokens| estimated_tokens.max(tokens));
 
     // Trigger compaction when either token budget OR message count is exceeded.
-    if estimated_tokens <= max_context_tokens && non_system_count <= max_history {
+    if pressure_tokens <= max_context_tokens && non_system_count <= max_history {
         return None;
     }
 
@@ -508,12 +616,103 @@ pub fn apply_compaction_with_policy(
     apply_compaction_summary(history, start, compact_end, &summary);
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolProtocolSanitization {
+    pub removed_orphan_results: usize,
+    pub inserted_stub_results: usize,
+}
+
+/// Repair provider-facing tool-call history after compaction.
+///
+/// Compaction boundaries should avoid splitting tool-call/result groups. This
+/// pass is a final structural safety net for native-tool providers that reject
+/// orphaned tool results or assistant tool calls without matching results.
+pub fn sanitize_tool_protocol_after_compaction(
+    history: &mut Vec<ConversationMessage>,
+) -> ToolProtocolSanitization {
+    let mut sanitized = Vec::with_capacity(history.len());
+    let mut pending_tool_call_ids: Vec<String> = Vec::new();
+    let mut stats = ToolProtocolSanitization::default();
+
+    for message in history.drain(..) {
+        match message {
+            ConversationMessage::AssistantToolCalls {
+                text,
+                tool_calls,
+                reasoning_content,
+            } => {
+                insert_missing_tool_result_stubs(
+                    &mut sanitized,
+                    &mut pending_tool_call_ids,
+                    &mut stats,
+                );
+                pending_tool_call_ids = tool_calls.iter().map(|call| call.id.clone()).collect();
+                sanitized.push(ConversationMessage::AssistantToolCalls {
+                    text,
+                    tool_calls,
+                    reasoning_content,
+                });
+            }
+            ConversationMessage::ToolResults(results) => {
+                let mut kept = Vec::new();
+                for result in results {
+                    if let Some(pos) = pending_tool_call_ids
+                        .iter()
+                        .position(|id| id == &result.tool_call_id)
+                    {
+                        pending_tool_call_ids.remove(pos);
+                        kept.push(result);
+                    } else {
+                        stats.removed_orphan_results += 1;
+                    }
+                }
+                if !kept.is_empty() {
+                    sanitized.push(ConversationMessage::ToolResults(kept));
+                }
+            }
+            other => {
+                insert_missing_tool_result_stubs(
+                    &mut sanitized,
+                    &mut pending_tool_call_ids,
+                    &mut stats,
+                );
+                sanitized.push(other);
+            }
+        }
+    }
+
+    insert_missing_tool_result_stubs(&mut sanitized, &mut pending_tool_call_ids, &mut stats);
+    *history = sanitized;
+    stats
+}
+
+fn insert_missing_tool_result_stubs(
+    history: &mut Vec<ConversationMessage>,
+    pending_tool_call_ids: &mut Vec<String>,
+    stats: &mut ToolProtocolSanitization,
+) {
+    if pending_tool_call_ids.is_empty() {
+        return;
+    }
+
+    let results = pending_tool_call_ids
+        .drain(..)
+        .map(|tool_call_id| ToolResultMessage {
+            tool_call_id,
+            content: MISSING_TOOL_RESULT_STUB.to_string(),
+        })
+        .collect::<Vec<_>>();
+    stats.inserted_stub_results += results.len();
+    history.push(ConversationMessage::ToolResults(results));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::schema::{
         CapabilityLane, ContextCompressionConfig, ContextCompressionRouteOverrideConfig,
     };
+    use crate::ports::provider::{ToolCall, ToolResultMessage};
 
     #[test]
     fn trim_history_preserves_system() {
@@ -651,6 +850,92 @@ mod tests {
         assert!(compact_end > start);
         assert!(!transcript.contains("tool output"));
         assert!(transcript.contains("older msg"));
+    }
+
+    #[test]
+    fn provider_observed_tokens_can_trigger_compaction() {
+        let mut history = vec![ChatMessage::system("sys")];
+        history.push(ChatMessage::user("first request"));
+        history.push(ChatMessage::assistant("first reply"));
+        for i in 0..8 {
+            history.push(ChatMessage::user(format!("older msg {i}")));
+            history.push(ChatMessage::assistant(format!("older reply {i}")));
+        }
+
+        let policy = HistoryCompressionPolicy {
+            protect_first_n: 1,
+            protect_last_n: 2,
+            ..HistoryCompressionPolicy::default()
+        };
+        assert!(prepare_compaction_with_policy(&history, 100, 100_000, &policy).is_none());
+        assert!(prepare_compaction_with_policy_and_observed_tokens(
+            &history,
+            100,
+            100,
+            &policy,
+            Some(1_000)
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn compaction_transcript_prunes_large_tool_results() {
+        let history = vec![
+            ChatMessage::user("inspect output"),
+            ChatMessage::assistant("[tool-call call-1]\nshell {}"),
+            ChatMessage::tool(format!("head{}tail", "x".repeat(2_000))),
+            ChatMessage::user("next"),
+        ];
+        let policy = HistoryCompressionPolicy {
+            protect_first_n: 0,
+            protect_last_n: 1,
+            max_source_chars: 4_000,
+            ..HistoryCompressionPolicy::default()
+        };
+        let (_, _, transcript) =
+            prepare_compaction_with_policy(&history, 2, 10, &policy).expect("compaction");
+
+        assert!(transcript.contains("[tool-result-pruned chars="));
+        assert!(transcript.contains("head:"));
+        assert!(transcript.contains("tail:"));
+        assert!(transcript.len() < 1_000);
+    }
+
+    #[test]
+    fn tool_protocol_sanitizer_removes_orphans_and_inserts_missing_results() {
+        let mut history = vec![
+            ConversationMessage::ToolResults(vec![ToolResultMessage {
+                tool_call_id: "orphan".into(),
+                content: "orphaned".into(),
+            }]),
+            ConversationMessage::AssistantToolCalls {
+                text: None,
+                tool_calls: vec![ToolCall {
+                    id: "call-1".into(),
+                    name: "file_read".into(),
+                    arguments: "{}".into(),
+                }],
+                reasoning_content: None,
+            },
+            ConversationMessage::Chat(ChatMessage::assistant("after compaction")),
+        ];
+
+        let stats = sanitize_tool_protocol_after_compaction(&mut history);
+
+        assert_eq!(stats.removed_orphan_results, 1);
+        assert_eq!(stats.inserted_stub_results, 1);
+        assert_eq!(history.len(), 3);
+        assert!(matches!(
+            &history[0],
+            ConversationMessage::AssistantToolCalls { .. }
+        ));
+        match &history[1] {
+            ConversationMessage::ToolResults(results) => {
+                assert_eq!(results[0].tool_call_id, "call-1");
+                assert!(results[0].content.contains("tool-result-compacted"));
+            }
+            _ => panic!("expected inserted tool result stub"),
+        }
     }
 
     #[test]

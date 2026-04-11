@@ -1,6 +1,7 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+use synapse_domain::application::services::model_capability_support::profile_supports_lane_confidently;
 use synapse_domain::application::services::model_lane_resolution::{
     model_lane_resolution_source_name, resolve_lane_candidates, resolve_route_selection_profile,
     resolved_model_profile_confidence_name, resolved_model_profile_freshness_name,
@@ -26,6 +27,24 @@ use synapse_domain::ports::route_selection::{RouteAdmissionState, RouteSelection
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const MODEL_CACHE_PREVIEW_LIMIT: usize = 10;
 
+pub(crate) fn resolve_provider_alias(name: &str) -> Option<String> {
+    let candidate = name.trim();
+    if candidate.is_empty() {
+        return None;
+    }
+
+    synapse_providers::list_providers()
+        .into_iter()
+        .find(|provider| {
+            provider.name.eq_ignore_ascii_case(candidate)
+                || provider
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(candidate))
+        })
+        .map(|provider| provider.name.to_string())
+}
+
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct ModelCacheState {
     entries: Vec<ModelCacheEntry>,
@@ -34,6 +53,8 @@ struct ModelCacheState {
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 struct ModelCacheEntry {
     provider: String,
+    #[serde(default)]
+    endpoint: Option<String>,
     #[serde(default)]
     fetched_at_unix: u64,
     models: Vec<String>,
@@ -54,19 +75,102 @@ struct ModelProfileCacheEntry {
 
 pub(crate) struct WorkspaceModelProfileCatalog {
     workspace_dir: PathBuf,
+    provider_endpoint: Option<ProviderEndpointProfileLookup>,
+}
+
+struct ProviderEndpointProfileLookup {
+    configured_provider: String,
+    inferred_provider: Option<String>,
+    endpoint: String,
 }
 
 impl WorkspaceModelProfileCatalog {
     pub(crate) fn new(workspace_dir: impl Into<PathBuf>) -> Self {
         Self {
             workspace_dir: workspace_dir.into(),
+            provider_endpoint: None,
         }
+    }
+
+    pub(crate) fn from_config(config: &Config) -> Self {
+        Self::with_provider_endpoint(
+            config.workspace_dir.clone(),
+            config.default_provider.as_deref(),
+            config.api_url.as_deref(),
+        )
+    }
+
+    pub(crate) fn with_provider_endpoint(
+        workspace_dir: impl Into<PathBuf>,
+        provider: Option<&str>,
+        endpoint: Option<&str>,
+    ) -> Self {
+        let provider_endpoint = provider.zip(endpoint).and_then(|(provider, endpoint)| {
+            let endpoint = normalize_cache_endpoint(endpoint);
+            if endpoint.is_empty() {
+                return None;
+            }
+            let inferred_provider =
+                synapse_domain::config::model_catalog::provider_for_api_base_url(&endpoint)
+                    .filter(|inferred| !inferred.eq_ignore_ascii_case(provider))
+                    .map(str::to_string);
+            Some(ProviderEndpointProfileLookup {
+                configured_provider: provider.to_string(),
+                inferred_provider,
+                endpoint,
+            })
+        });
+        Self {
+            workspace_dir: workspace_dir.into(),
+            provider_endpoint,
+        }
+    }
+
+    fn endpoint_for_provider(&self, provider: &str) -> Option<&str> {
+        self.provider_endpoint.as_ref().and_then(|lookup| {
+            (lookup.configured_provider.eq_ignore_ascii_case(provider)
+                || lookup
+                    .inferred_provider
+                    .as_deref()
+                    .is_some_and(|inferred| inferred.eq_ignore_ascii_case(provider)))
+            .then_some(lookup.endpoint.as_str())
+        })
+    }
+
+    fn provider_lookup_candidates<'a>(&'a self, provider: &'a str) -> Vec<&'a str> {
+        let mut candidates = vec![provider];
+        if let Some(lookup) = self.provider_endpoint.as_ref() {
+            if lookup.configured_provider.eq_ignore_ascii_case(provider) {
+                if let Some(inferred_provider) = lookup.inferred_provider.as_deref() {
+                    if !inferred_provider.eq_ignore_ascii_case(provider) {
+                        candidates.push(inferred_provider);
+                    }
+                }
+            }
+        }
+        candidates
     }
 }
 
 impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
     fn lookup_model_profile(&self, provider: &str, model: &str) -> Option<CatalogModelProfile> {
-        load_cached_model_profile(self.workspace_dir.as_path(), provider, model)
+        let endpoint = self.endpoint_for_provider(provider);
+        let candidates = self.provider_lookup_candidates(provider);
+        candidates
+            .iter()
+            .find_map(|candidate_provider| {
+                load_cached_model_profile(
+                    self.workspace_dir.as_path(),
+                    candidate_provider,
+                    model,
+                    endpoint,
+                )
+            })
+            .or_else(|| {
+                candidates.iter().find_map(|candidate_provider| {
+                    synapse_domain::config::model_catalog::model_profile(candidate_provider, model)
+                })
+            })
             .or_else(|| synapse_domain::config::model_catalog::model_profile(provider, model))
     }
 }
@@ -148,7 +252,7 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
     }
     response.push_str("\nSwitch model with `/model <model-id>` or `/model <hint>`.\n");
 
-    let current_catalog = WorkspaceModelProfileCatalog::new(workspace_dir.to_path_buf());
+    let current_catalog = WorkspaceModelProfileCatalog::from_config(config);
     let current_profile = resolve_route_selection_profile(config, current, Some(&current_catalog));
     let _ = writeln!(
         response,
@@ -322,7 +426,16 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
         }
     }
 
-    let cached_models = load_cached_model_preview(workspace_dir, &current.provider);
+    let current_endpoint = current_catalog.endpoint_for_provider(&current.provider);
+    let cached_models = current_catalog
+        .provider_lookup_candidates(&current.provider)
+        .into_iter()
+        .find_map(|candidate_provider| {
+            let preview =
+                load_cached_model_preview(workspace_dir, candidate_provider, current_endpoint);
+            (!preview.is_empty()).then_some(preview)
+        })
+        .unwrap_or_default();
     if cached_models.is_empty() {
         let _ = writeln!(
             response,
@@ -423,7 +536,11 @@ pub(crate) fn build_providers_help_response(current: &RouteSelection) -> String 
     response
 }
 
-fn load_cached_model_preview(workspace_dir: &Path, provider_name: &str) -> Vec<String> {
+fn load_cached_model_preview(
+    workspace_dir: &Path,
+    provider_name: &str,
+    endpoint: Option<&str>,
+) -> Vec<String> {
     let cache_path = workspace_dir.join("state").join(MODEL_CACHE_FILE);
     let Ok(raw) = std::fs::read_to_string(cache_path) else {
         return Vec::new();
@@ -435,7 +552,7 @@ fn load_cached_model_preview(workspace_dir: &Path, provider_name: &str) -> Vec<S
     state
         .entries
         .into_iter()
-        .find(|entry| entry.provider == provider_name)
+        .find(|entry| model_cache_entry_matches(entry, provider_name, endpoint))
         .map(|entry| {
             entry
                 .models
@@ -444,6 +561,10 @@ fn load_cached_model_preview(workspace_dir: &Path, provider_name: &str) -> Vec<S
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+fn normalize_cache_endpoint(endpoint: &str) -> String {
+    endpoint.trim().trim_end_matches('/').to_string()
 }
 
 fn format_candidate_admission_reason(reason: &CandidateAdmissionReason) -> String {
@@ -562,16 +683,7 @@ fn write_recent_admissions(response: &mut String, recent_admissions: &[RouteAdmi
 }
 
 fn capability_lane_name(lane: CapabilityLane) -> &'static str {
-    match lane {
-        CapabilityLane::Reasoning => "reasoning",
-        CapabilityLane::CheapReasoning => "cheap_reasoning",
-        CapabilityLane::Embedding => "embedding",
-        CapabilityLane::ImageGeneration => "image_generation",
-        CapabilityLane::AudioGeneration => "audio_generation",
-        CapabilityLane::VideoGeneration => "video_generation",
-        CapabilityLane::MusicGeneration => "music_generation",
-        CapabilityLane::MultimodalUnderstanding => "multimodal_understanding",
-    }
+    lane.as_str()
 }
 
 fn model_feature_name(feature: &ModelFeature) -> &'static str {
@@ -597,26 +709,22 @@ fn format_profile_feature_coverage(
     }
 
     let mut covered = vec!["reasoning".to_string()];
-    if profile.features.contains(&ModelFeature::Vision)
-        || profile
-            .features
-            .contains(&ModelFeature::MultimodalUnderstanding)
-    {
+    if profile_supports_lane_confidently(profile, CapabilityLane::MultimodalUnderstanding) {
         covered.push("multimodal_understanding".to_string());
     }
-    if profile.features.contains(&ModelFeature::ImageGeneration) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::ImageGeneration) {
         covered.push("image_generation".to_string());
     }
-    if profile.features.contains(&ModelFeature::AudioGeneration) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::AudioGeneration) {
         covered.push("audio_generation".to_string());
     }
-    if profile.features.contains(&ModelFeature::VideoGeneration) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::VideoGeneration) {
         covered.push("video_generation".to_string());
     }
-    if profile.features.contains(&ModelFeature::MusicGeneration) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::MusicGeneration) {
         covered.push("music_generation".to_string());
     }
-    if profile.features.contains(&ModelFeature::Embedding) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::Embedding) {
         covered.push("embedding".to_string());
     }
 
@@ -636,6 +744,7 @@ fn load_cached_model_profile(
     workspace_dir: &Path,
     provider_name: &str,
     model_name: &str,
+    endpoint: Option<&str>,
 ) -> Option<CatalogModelProfile> {
     let cache_path = workspace_dir.join("state").join(MODEL_CACHE_FILE);
     let raw = std::fs::read_to_string(cache_path).ok()?;
@@ -643,7 +752,7 @@ fn load_cached_model_profile(
     let entry = state
         .entries
         .into_iter()
-        .find(|entry| entry.provider == provider_name)?;
+        .find(|entry| model_cache_entry_matches(entry, provider_name, endpoint))?;
     let profile = entry
         .profiles
         .into_iter()
@@ -657,9 +766,29 @@ fn load_cached_model_profile(
     })
 }
 
+fn model_cache_entry_matches(
+    entry: &ModelCacheEntry,
+    provider_name: &str,
+    endpoint: Option<&str>,
+) -> bool {
+    if !entry.provider.eq_ignore_ascii_case(provider_name) {
+        return false;
+    }
+    match endpoint
+        .map(normalize_cache_endpoint)
+        .filter(|value| !value.is_empty())
+    {
+        Some(endpoint) => entry.endpoint.as_deref() == Some(endpoint.as_str()),
+        None => entry.endpoint.as_deref().is_none_or(str::is_empty),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::application::services::model_lane_resolution::{
+        ResolvedModelProfile, ResolvedModelProfileSource,
+    };
     use synapse_domain::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
         ModelRouteConfig,
@@ -686,6 +815,52 @@ mod tests {
         });
         assert!(response.contains("Current provider: `openai-codex`"));
         assert!(response.contains("Switch provider with `/models <provider>`"));
+    }
+
+    #[test]
+    fn provider_alias_resolver_canonicalizes_known_aliases() {
+        assert_eq!(resolve_provider_alias("grok").as_deref(), Some("xai"));
+        assert_eq!(
+            resolve_provider_alias("  GOOGLE  ").as_deref(),
+            Some("gemini")
+        );
+        assert_eq!(resolve_provider_alias("unknown-provider"), None);
+    }
+
+    #[test]
+    fn model_feature_coverage_filters_low_confidence_features() {
+        let stale_observed_at_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_secs()
+            .saturating_sub(31 * 24 * 60 * 60);
+        let profile = ResolvedModelProfile {
+            features: vec![ModelFeature::Vision, ModelFeature::ImageGeneration],
+            features_source: ResolvedModelProfileSource::CachedProviderCatalog,
+            observed_at_unix: Some(stale_observed_at_unix),
+            ..Default::default()
+        };
+
+        let coverage = format_profile_feature_coverage(&profile);
+
+        assert!(coverage.contains("reasoning"));
+        assert!(coverage.contains("cached_provider_catalog/low"));
+        assert!(!coverage.contains("multimodal_understanding"));
+        assert!(!coverage.contains("image_generation"));
+    }
+
+    #[test]
+    fn model_feature_coverage_accepts_curated_multimodal_features() {
+        let profile = ResolvedModelProfile {
+            features: vec![ModelFeature::Vision],
+            features_source: ResolvedModelProfileSource::BundledCatalog,
+            ..Default::default()
+        };
+
+        let coverage = format_profile_feature_coverage(&profile);
+
+        assert!(coverage.contains("multimodal_understanding"));
+        assert!(coverage.contains("bundled_catalog/medium"));
     }
 
     #[test]
@@ -981,5 +1156,123 @@ mod tests {
         assert!(profile
             .features
             .contains(&ModelFeature::MultimodalUnderstanding));
+    }
+
+    #[test]
+    fn workspace_profile_catalog_scopes_cached_profiles_by_endpoint() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache_dir = workspace.path().join("state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(
+            cache_dir.join(MODEL_CACHE_FILE),
+            r#"{
+              "entries": [
+                {
+                  "provider": "openai",
+                  "endpoint": "https://api.openai.com/v1",
+                  "fetched_at_unix": 100,
+                  "models": ["shared-model"],
+                  "profiles": [
+                    {
+                      "model": "shared-model",
+                      "context_window_tokens": 111,
+                      "max_output_tokens": 22,
+                      "features": []
+                    }
+                  ]
+                },
+                {
+                  "provider": "openai",
+                  "endpoint": "https://openrouter.ai/api/v1",
+                  "fetched_at_unix": 200,
+                  "models": ["shared-model"],
+                  "profiles": [
+                    {
+                      "model": "shared-model",
+                      "context_window_tokens": 222,
+                      "max_output_tokens": 44,
+                      "features": []
+                    }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+
+        let native_catalog = WorkspaceModelProfileCatalog::with_provider_endpoint(
+            workspace.path(),
+            Some("openai"),
+            Some("https://api.openai.com/v1/"),
+        );
+        let router_catalog = WorkspaceModelProfileCatalog::with_provider_endpoint(
+            workspace.path(),
+            Some("openai"),
+            Some("https://openrouter.ai/api/v1"),
+        );
+        let legacy_catalog = WorkspaceModelProfileCatalog::new(workspace.path());
+
+        let native = native_catalog
+            .lookup_model_profile("openai", "shared-model")
+            .expect("native endpoint profile should resolve");
+        let router = router_catalog
+            .lookup_model_profile("openai", "shared-model")
+            .expect("router endpoint profile should resolve");
+
+        assert_eq!(native.context_window_tokens, Some(111));
+        assert_eq!(native.max_output_tokens, Some(22));
+        assert_eq!(native.observed_at_unix, Some(100));
+        assert_eq!(router.context_window_tokens, Some(222));
+        assert_eq!(router.max_output_tokens, Some(44));
+        assert_eq!(router.observed_at_unix, Some(200));
+        assert!(legacy_catalog
+            .lookup_model_profile("openai", "shared-model")
+            .is_none());
+    }
+
+    #[test]
+    fn workspace_profile_catalog_uses_endpoint_inferred_provider_metadata() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache_dir = workspace.path().join("state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(
+            cache_dir.join(MODEL_CACHE_FILE),
+            r#"{
+              "entries": [
+                {
+                  "provider": "deepseek",
+                  "endpoint": "https://api.deepseek.com/v1",
+                  "fetched_at_unix": 300,
+                  "models": ["deepseek-chat"],
+                  "profiles": [
+                    {
+                      "model": "deepseek-chat",
+                      "context_window_tokens": 333,
+                      "max_output_tokens": 55,
+                      "features": []
+                    }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let mut config = Config::default();
+        config.workspace_dir = workspace.path().to_path_buf();
+        config.default_provider = Some("openai".to_string());
+        config.api_url = Some("https://api.deepseek.com/v1/".to_string());
+
+        let catalog = WorkspaceModelProfileCatalog::from_config(&config);
+        let profile = catalog
+            .lookup_model_profile("openai", "deepseek-chat")
+            .expect("endpoint-inferred provider cache should resolve");
+
+        assert_eq!(profile.context_window_tokens, Some(333));
+        assert_eq!(profile.max_output_tokens, Some(55));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::CachedProviderCatalog)
+        );
+        assert_eq!(profile.observed_at_unix, Some(300));
     }
 }

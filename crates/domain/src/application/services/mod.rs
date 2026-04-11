@@ -50,6 +50,7 @@ pub mod route_admission_history;
 pub mod route_switch_preflight;
 pub mod run_recipe_cluster_service;
 pub mod run_recipe_review_service;
+pub mod runtime_command_presentation;
 pub mod scoped_instruction_resolution;
 pub mod self_learning_eval_harness;
 pub mod skill_feedback_service;

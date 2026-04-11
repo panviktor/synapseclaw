@@ -84,6 +84,16 @@ pub struct RouteSelection {
     pub context_cache: Option<ContextCacheStats>,
 }
 
+impl RouteSelection {
+    pub fn clear_runtime_diagnostics(&mut self) {
+        self.last_admission = None;
+        self.recent_admissions.clear();
+        self.last_tool_repair = None;
+        self.recent_tool_repairs.clear();
+        self.context_cache = None;
+    }
+}
+
 /// Port for managing per-sender route overrides.
 pub trait RouteSelectionPort: Send + Sync {
     /// Get the active route for a sender key, or the default.

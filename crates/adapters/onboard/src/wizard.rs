@@ -1341,6 +1341,8 @@ async fn fetch_live_models_for_provider_async(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModelCacheEntry {
     provider: String,
+    #[serde(default)]
+    endpoint: Option<String>,
     fetched_at_unix: u64,
     models: Vec<String>,
     #[serde(default)]
@@ -1423,6 +1425,7 @@ async fn save_model_cache_state(workspace_dir: &Path, state: &ModelCacheState) -
 async fn cache_live_models_for_provider(
     workspace_dir: &Path,
     provider_name: &str,
+    provider_api_url: Option<&str>,
     catalog: &LiveModelCatalog,
 ) -> Result<()> {
     let normalized_models = normalize_model_ids(catalog.models.clone());
@@ -1431,20 +1434,25 @@ async fn cache_live_models_for_provider(
     }
 
     let profiles = normalize_model_profiles(catalog.profiles.clone());
+    let endpoint = provider_api_url
+        .map(normalize_model_cache_endpoint)
+        .filter(|value| !value.is_empty());
     let mut state = load_model_cache_state(workspace_dir).await?;
     let now = now_unix_secs();
 
     if let Some(entry) = state
         .entries
         .iter_mut()
-        .find(|entry| entry.provider == provider_name)
+        .find(|entry| model_cache_entry_matches(entry, provider_name, endpoint.as_deref()))
     {
         entry.fetched_at_unix = now;
         entry.models = normalized_models;
         entry.profiles = profiles;
+        entry.endpoint = endpoint;
     } else {
         state.entries.push(ModelCacheEntry {
             provider: provider_name.to_string(),
+            endpoint,
             fetched_at_unix: now,
             models: normalized_models,
             profiles,
@@ -1457,15 +1465,19 @@ async fn cache_live_models_for_provider(
 async fn load_cached_models_for_provider_internal(
     workspace_dir: &Path,
     provider_name: &str,
+    provider_api_url: Option<&str>,
     ttl_secs: Option<u64>,
 ) -> Result<Option<CachedModels>> {
     let state = load_model_cache_state(workspace_dir).await?;
     let now = now_unix_secs();
+    let endpoint = provider_api_url
+        .map(normalize_model_cache_endpoint)
+        .filter(|value| !value.is_empty());
 
     let Some(entry) = state
         .entries
         .into_iter()
-        .find(|entry| entry.provider == provider_name)
+        .find(|entry| model_cache_entry_matches(entry, provider_name, endpoint.as_deref()))
     else {
         return Ok(None);
     };
@@ -1488,16 +1500,46 @@ async fn load_cached_models_for_provider_internal(
 async fn load_cached_models_for_provider(
     workspace_dir: &Path,
     provider_name: &str,
+    provider_api_url: Option<&str>,
     ttl_secs: u64,
 ) -> Result<Option<CachedModels>> {
-    load_cached_models_for_provider_internal(workspace_dir, provider_name, Some(ttl_secs)).await
+    load_cached_models_for_provider_internal(
+        workspace_dir,
+        provider_name,
+        provider_api_url,
+        Some(ttl_secs),
+    )
+    .await
 }
 
 async fn load_any_cached_models_for_provider(
     workspace_dir: &Path,
     provider_name: &str,
+    provider_api_url: Option<&str>,
 ) -> Result<Option<CachedModels>> {
-    load_cached_models_for_provider_internal(workspace_dir, provider_name, None).await
+    load_cached_models_for_provider_internal(workspace_dir, provider_name, provider_api_url, None)
+        .await
+}
+
+fn normalize_model_cache_endpoint(endpoint: &str) -> String {
+    endpoint.trim().trim_end_matches('/').to_string()
+}
+
+fn model_cache_entry_matches(
+    entry: &ModelCacheEntry,
+    provider_name: &str,
+    endpoint: Option<&str>,
+) -> bool {
+    if !entry.provider.eq_ignore_ascii_case(provider_name) {
+        return false;
+    }
+    match endpoint
+        .map(normalize_model_cache_endpoint)
+        .filter(|value| !value.is_empty())
+    {
+        Some(endpoint) => entry.endpoint.as_deref() == Some(endpoint.as_str()),
+        None => entry.endpoint.as_deref().is_none_or(str::is_empty),
+    }
 }
 
 fn humanize_age(age_secs: u64) -> String {
@@ -1557,6 +1599,7 @@ pub async fn run_models_refresh(
         if let Some(cached) = load_cached_models_for_provider(
             &config.workspace_dir,
             &provider_name,
+            config.api_url.as_deref(),
             MODEL_CACHE_TTL_SECS,
         )
         .await?
@@ -1583,7 +1626,13 @@ pub async fn run_models_refresh(
         .await
     {
         Ok(catalog) if !catalog.models.is_empty() => {
-            cache_live_models_for_provider(&config.workspace_dir, &provider_name, &catalog).await?;
+            cache_live_models_for_provider(
+                &config.workspace_dir,
+                &provider_name,
+                config.api_url.as_deref(),
+                &catalog,
+            )
+            .await?;
             println!(
                 "Refreshed '{}' model cache with {} models.",
                 provider_name,
@@ -1593,8 +1642,12 @@ pub async fn run_models_refresh(
             Ok(())
         }
         Ok(_) => {
-            if let Some(stale_cache) =
-                load_any_cached_models_for_provider(&config.workspace_dir, &provider_name).await?
+            if let Some(stale_cache) = load_any_cached_models_for_provider(
+                &config.workspace_dir,
+                &provider_name,
+                config.api_url.as_deref(),
+            )
+            .await?
             {
                 println!(
                     "Provider returned no models; using stale cache (updated {} ago):",
@@ -1607,8 +1660,12 @@ pub async fn run_models_refresh(
             anyhow::bail!("Provider '{}' returned an empty model list", provider_name)
         }
         Err(error) => {
-            if let Some(stale_cache) =
-                load_any_cached_models_for_provider(&config.workspace_dir, &provider_name).await?
+            if let Some(stale_cache) = load_any_cached_models_for_provider(
+                &config.workspace_dir,
+                &provider_name,
+                config.api_url.as_deref(),
+            )
+            .await?
             {
                 println!(
                     "Live refresh failed ({}). Falling back to stale cache (updated {} ago):",
@@ -1630,7 +1687,12 @@ pub async fn run_models_list(config: &Config, provider_override: Option<&str>) -
         .or(config.default_provider.as_deref())
         .unwrap_or("openrouter");
 
-    let cached = load_any_cached_models_for_provider(&config.workspace_dir, provider_name).await?;
+    let cached = load_any_cached_models_for_provider(
+        &config.workspace_dir,
+        provider_name,
+        config.api_url.as_deref(),
+    )
+    .await?;
 
     let Some(cached) = cached else {
         println!();
@@ -1689,7 +1751,13 @@ pub async fn run_models_status(config: &Config) -> Result<()> {
         style(format!("{:.1}", config.default_temperature)).cyan()
     );
 
-    match load_any_cached_models_for_provider(&config.workspace_dir, provider).await? {
+    match load_any_cached_models_for_provider(
+        &config.workspace_dir,
+        provider,
+        config.api_url.as_deref(),
+    )
+    .await?
+    {
         Some(cached) => {
             println!(
                 "  Cache:     {} models (updated {} ago)",
@@ -1772,8 +1840,12 @@ pub async fn cached_model_catalog_stats(
     config: &Config,
     provider_name: &str,
 ) -> Result<Option<(usize, u64)>> {
-    let Some(cached) =
-        load_any_cached_models_for_provider(&config.workspace_dir, provider_name).await?
+    let Some(cached) = load_any_cached_models_for_provider(
+        &config.workspace_dir,
+        provider_name,
+        config.api_url.as_deref(),
+    )
+    .await?
     else {
         return Ok(None);
     };
@@ -2490,6 +2562,7 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
             if let Some(cached) = load_cached_models_for_provider(
                 workspace_dir,
                 provider_name_ref,
+                provider_api_url.as_deref(),
                 MODEL_CACHE_TTL_SECS,
             )
             .await?
@@ -2531,6 +2604,7 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
                         cache_live_models_for_provider(
                             workspace_dir,
                             provider_name_ref,
+                            provider_api_url.as_deref(),
                             &live_catalog,
                         )
                         .await?;
@@ -2566,6 +2640,7 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
                             if let Some(stale) = load_any_cached_models_for_provider(
                                 workspace_dir,
                                 provider_name_ref,
+                                provider_api_url.as_deref(),
                             )
                             .await?
                             {
@@ -6664,13 +6739,14 @@ mod tests {
             profiles: Vec::new(),
         };
 
-        cache_live_models_for_provider(tmp.path(), "openai", &catalog)
+        cache_live_models_for_provider(tmp.path(), "openai", None, &catalog)
             .await
             .unwrap();
 
-        let cached = load_cached_models_for_provider(tmp.path(), "openai", MODEL_CACHE_TTL_SECS)
-            .await
-            .unwrap();
+        let cached =
+            load_cached_models_for_provider(tmp.path(), "openai", None, MODEL_CACHE_TTL_SECS)
+                .await
+                .unwrap();
         let cached = cached.expect("expected fresh cached models");
 
         assert_eq!(cached.models.len(), 2);
@@ -6679,11 +6755,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn model_cache_scopes_entries_by_endpoint() {
+        let tmp = TempDir::new().unwrap();
+        let native_catalog = LiveModelCatalog {
+            models: vec!["native-model".to_string()],
+            profiles: Vec::new(),
+        };
+        let router_catalog = LiveModelCatalog {
+            models: vec!["router-model".to_string()],
+            profiles: Vec::new(),
+        };
+
+        cache_live_models_for_provider(
+            tmp.path(),
+            "openai",
+            Some("https://api.openai.com/v1/"),
+            &native_catalog,
+        )
+        .await
+        .unwrap();
+        cache_live_models_for_provider(
+            tmp.path(),
+            "openai",
+            Some("https://openrouter.ai/api/v1"),
+            &router_catalog,
+        )
+        .await
+        .unwrap();
+
+        let native = load_any_cached_models_for_provider(
+            tmp.path(),
+            "openai",
+            Some("https://api.openai.com/v1"),
+        )
+        .await
+        .unwrap()
+        .expect("expected native endpoint cache");
+        let router = load_any_cached_models_for_provider(
+            tmp.path(),
+            "openai",
+            Some("https://openrouter.ai/api/v1/"),
+        )
+        .await
+        .unwrap()
+        .expect("expected router endpoint cache");
+
+        assert_eq!(native.models, vec!["native-model".to_string()]);
+        assert_eq!(router.models, vec!["router-model".to_string()]);
+        assert!(
+            load_any_cached_models_for_provider(tmp.path(), "openai", None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn model_cache_ttl_filters_stale_entries() {
         let tmp = TempDir::new().unwrap();
         let stale = ModelCacheState {
             entries: vec![ModelCacheEntry {
                 provider: "openai".to_string(),
+                endpoint: None,
                 fetched_at_unix: now_unix_secs().saturating_sub(MODEL_CACHE_TTL_SECS + 120),
                 models: vec!["gpt-5.1".to_string()],
                 profiles: Vec::new(),
@@ -6692,12 +6825,13 @@ mod tests {
 
         save_model_cache_state(tmp.path(), &stale).await.unwrap();
 
-        let fresh = load_cached_models_for_provider(tmp.path(), "openai", MODEL_CACHE_TTL_SECS)
-            .await
-            .unwrap();
+        let fresh =
+            load_cached_models_for_provider(tmp.path(), "openai", None, MODEL_CACHE_TTL_SECS)
+                .await
+                .unwrap();
         assert!(fresh.is_none());
 
-        let stale_any = load_any_cached_models_for_provider(tmp.path(), "openai")
+        let stale_any = load_any_cached_models_for_provider(tmp.path(), "openai", None)
             .await
             .unwrap();
         assert!(stale_any.is_some());
@@ -6710,6 +6844,7 @@ mod tests {
         cache_live_models_for_provider(
             tmp.path(),
             "openai",
+            None,
             &LiveModelCatalog {
                 models: vec!["gpt-5.1".to_string()],
                 profiles: Vec::new(),
