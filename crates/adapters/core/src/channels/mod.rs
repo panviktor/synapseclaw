@@ -232,6 +232,9 @@ struct ChannelRuntimeContext {
     ack_reactions: bool,
     agent_id: Arc<String>,
     prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig,
+    compression: synapse_domain::config::schema::ContextCompressionConfig,
+    compression_overrides:
+        Arc<Vec<synapse_domain::config::schema::ContextCompressionRouteOverrideConfig>>,
     /// SSE event sender — shared from gateway when running in daemon mode.
     event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
     /// Current conversation context for tools.
@@ -550,6 +553,27 @@ fn get_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str) -> Channel
         .get(sender_key)
         .cloned()
         .unwrap_or_else(|| default_route_selection(ctx))
+}
+
+fn route_effective_context_cache_stats(
+    ctx: &ChannelRuntimeContext,
+    route: &ChannelRouteSelection,
+) -> synapse_domain::ports::route_selection::ContextCacheStats {
+    let compression =
+        synapse_domain::application::services::history_compaction::resolve_context_compression_config_for_route(
+            &ctx.compression,
+            ctx.compression_overrides.as_slice(),
+            route.provider.as_str(),
+            route.model.as_str(),
+            route.lane,
+            None,
+        );
+    synapse_domain::ports::route_selection::ContextCacheStats::from_compression_config(
+        &compression,
+        0,
+        0,
+        false,
+    )
 }
 
 fn set_route_selection(ctx: &ChannelRuntimeContext, sender_key: &str, next: ChannelRouteSelection) {
@@ -1609,7 +1633,10 @@ async fn format_command_effect(
             }
         }
         CommandEffect::ShowModel => {
-            let current = get_route_selection(ctx, conversation_key);
+            let mut current = get_route_selection(ctx, conversation_key);
+            if current.context_cache.is_none() {
+                current.context_cache = Some(route_effective_context_cache_stats(ctx, &current));
+            }
             let mut config = synapse_domain::config::schema::Config::default();
             config.workspace_dir = ctx.workspace_dir.as_ref().clone();
             config.model_routes = ctx.model_routes.as_ref().clone();
@@ -3505,6 +3532,8 @@ pub async fn start_channels(
         ack_reactions: config.channels_config.ack_reactions,
         agent_id: Arc::new(crate::agent::resolve_agent_id(&config)),
         prompt_budget_config: config.memory.prompt_budget.clone(),
+        compression: config.compression.clone(),
+        compression_overrides: Arc::new(config.compression_overrides.clone()),
         event_tx,
         conversation_context: Some(shared_conversation_context.clone()),
         turn_defaults_context: Some(shared_turn_defaults_context.clone()),
@@ -3766,6 +3795,121 @@ mod tests {
         }
     }
 
+    fn minimal_runtime_context_with_compression(
+        compression: synapse_domain::config::schema::ContextCompressionConfig,
+        compression_overrides: Vec<
+            synapse_domain::config::schema::ContextCompressionRouteOverrideConfig,
+        >,
+    ) -> ChannelRuntimeContext {
+        ChannelRuntimeContext {
+            channels_by_name: Arc::new(HashMap::new()),
+            provider: Arc::new(DummyProvider),
+            default_provider: Arc::new("test-provider".to_string()),
+            memory: Arc::new(synapse_memory::NoopUnifiedMemory),
+            tools_registry: Arc::new(vec![]),
+            observer: Arc::new(NoopObserver),
+            system_prompt: Arc::new("test-system-prompt".to_string()),
+            model: Arc::new("test-model".to_string()),
+            temperature: 0.0,
+            auto_save_memory: false,
+            max_tool_iterations: 10,
+            min_relevance_score: 0.0,
+            conversation_histories: Arc::new(Mutex::new(HashMap::new())),
+            provider_cache: Arc::new(Mutex::new(HashMap::new())),
+            route_overrides: Arc::new(Mutex::new(HashMap::new())),
+            api_key: None,
+            api_url: None,
+            reliability: Arc::new(synapse_domain::config::schema::ReliabilityConfig::default()),
+            provider_runtime_options: synapse_providers::ProviderRuntimeOptions::default(),
+            workspace_dir: Arc::new(std::env::temp_dir()),
+            message_timeout_secs: CHANNEL_MESSAGE_TIMEOUT_SECS,
+            interrupt_on_new_message: InterruptOnNewMessageConfig { enabled: false },
+            multimodal: synapse_domain::config::schema::MultimodalConfig::default(),
+            hooks: None,
+            non_cli_excluded_tools: Arc::new(Vec::new()),
+            tool_call_dedup_exempt: Arc::new(Vec::new()),
+            model_routes: Arc::new(Vec::new()),
+            model_lanes: Arc::new(Vec::new()),
+            model_preset: None,
+            query_classification:
+                synapse_domain::config::schema::QueryClassificationConfig::default(),
+            ack_reactions: true,
+            agent_id: Arc::new("test-agent".to_string()),
+            prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
+            compression,
+            compression_overrides: Arc::new(compression_overrides),
+            event_tx: None,
+            conversation_context: None,
+            turn_defaults_context: None,
+            scoped_instruction_context: None,
+            dialogue_state_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
+            show_tool_calls: true,
+            session_store: None,
+            summary_config: Arc::new(synapse_domain::config::schema::SummaryConfig::default()),
+            summary_model: None,
+            approval_manager: Arc::new(ApprovalManager::for_non_interactive(
+                &synapse_domain::config::schema::AutonomyConfig::default(),
+            )),
+            activated_tools: None,
+            channel_registry: None,
+            pipeline_store: None,
+            pipeline_executor: None,
+            message_router: None,
+        }
+    }
+
+    #[test]
+    fn channel_route_cache_stats_use_effective_policy_without_live_agent_cache() {
+        let compression = synapse_domain::config::schema::ContextCompressionConfig::default();
+        let ctx = minimal_runtime_context_with_compression(
+            compression,
+            vec![
+                synapse_domain::config::schema::ContextCompressionRouteOverrideConfig {
+                    provider: Some("openrouter".to_string()),
+                    model: Some("x-ai/grok-4.20".to_string()),
+                    threshold: Some(0.65),
+                    target_ratio: Some(0.33),
+                    protect_first_n: Some(4),
+                    protect_last_n: Some(12),
+                    summary_ratio: Some(0.15),
+                    max_source_chars: Some(80_000),
+                    max_summary_chars: Some(16_000),
+                    cache_ttl_secs: Some(86_400),
+                    cache_max_entries: Some(32),
+                    ..Default::default()
+                },
+            ],
+        );
+        let route = ChannelRouteSelection {
+            provider: "openrouter".to_string(),
+            model: "x-ai/grok-4.20".to_string(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: None,
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+        };
+
+        let stats = route_effective_context_cache_stats(&ctx, &route);
+
+        assert_eq!(stats.entries, 0);
+        assert_eq!(stats.hits, 0);
+        assert!(!stats.loaded);
+        assert_eq!(stats.max_entries, 32);
+        assert_eq!(stats.ttl_secs, 86_400);
+        assert_eq!(stats.threshold_basis_points, 6_500);
+        assert_eq!(stats.target_basis_points, 3_300);
+        assert_eq!(stats.protect_first_n, 4);
+        assert_eq!(stats.protect_last_n, 12);
+        assert_eq!(stats.summary_basis_points, 1_500);
+        assert_eq!(stats.max_source_chars, 80_000);
+        assert_eq!(stats.max_summary_chars, 16_000);
+    }
+
     #[derive(Default)]
     struct RecordingChannel {
         sent_messages: tokio::sync::Mutex<Vec<String>>,
@@ -4007,6 +4151,8 @@ mod tests {
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
+            compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
+            compression_overrides: Arc::new(Vec::new()),
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
@@ -4120,6 +4266,8 @@ mod tests {
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
+            compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
+            compression_overrides: Arc::new(Vec::new()),
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
@@ -4239,6 +4387,8 @@ mod tests {
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
+            compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
+            compression_overrides: Arc::new(Vec::new()),
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
@@ -4373,6 +4523,8 @@ mod tests {
             ack_reactions: true,
             agent_id: Arc::new("test-agent".to_string()),
             prompt_budget_config: synapse_domain::config::schema::PromptBudgetConfig::default(),
+            compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
+            compression_overrides: Arc::new(Vec::new()),
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,

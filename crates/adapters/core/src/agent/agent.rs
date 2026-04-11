@@ -1430,17 +1430,35 @@ impl Agent {
     }
 
     pub fn history_compaction_cache_stats(&self) -> ContextCacheStats {
-        ContextCacheStats {
-            entries: self.history_compaction_cache.len(),
-            hits: self
-                .history_compaction_cache
-                .values()
-                .map(|entry| entry.hits)
-                .sum(),
-            max_entries: self.compression.cache_max_entries.max(1),
-            ttl_secs: self.compression.cache_ttl_secs,
-            loaded: self.history_compaction_cache_loaded,
-        }
+        self.history_compaction_cache_stats_for_compression(&self.compression)
+    }
+
+    pub fn history_compaction_cache_stats_for_route(
+        &self,
+        provider: &str,
+        model: &str,
+        lane: Option<synapse_domain::config::schema::CapabilityLane>,
+        hint: Option<&str>,
+    ) -> ContextCacheStats {
+        let compression = self.history_compression_for_route(provider, model, lane, hint);
+        self.history_compaction_cache_stats_for_compression(&compression)
+    }
+
+    fn history_compaction_cache_stats_for_compression(
+        &self,
+        compression: &ContextCompressionConfig,
+    ) -> ContextCacheStats {
+        let hits = self
+            .history_compaction_cache
+            .values()
+            .map(|entry| entry.hits)
+            .sum();
+        ContextCacheStats::from_compression_config(
+            compression,
+            self.history_compaction_cache.len(),
+            hits,
+            self.history_compaction_cache_loaded,
+        )
     }
 
     async fn ensure_history_compaction_cache_loaded(

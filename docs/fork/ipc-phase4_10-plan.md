@@ -708,8 +708,15 @@ Expected outcome:
     - live agent compaction now resolves those route-specific compression
       settings before thresholding, cache lookup, and cache eviction
     - route/runtime inspection now carries condensed artifact cache stats
-      (`entries`, `hits`, `max`, `ttl`, `loaded`) through `RouteSelection`
-      and `/models`, so cache behavior is visible without reading workspace state
+      (`entries`, `hits`, `max`, `ttl`, `loaded`) and active effective
+      compression policy (`threshold`, `target`, protected head/tail, summary
+      ratio, source/summary caps) through `RouteSelection` and `/models`, so
+      cache behavior is visible without reading workspace state
+    - web runtime now resolves those cache/policy stats against the active
+      provider/model route and includes live cache entries/hits; channel
+      `/model` uses the same `RouteSelection` surface with config-derived
+      effective policy (`loaded=false`, zero live hits/entries) rather than
+      reaching into a web `Agent` cache
   - Slice 14 follow-through partial:
     - the same structured marker routing now covers image/audio/video/music
       generation instead of relying on free-text phrase detection
@@ -790,8 +797,6 @@ Expected outcome:
   - Slice 13 follow-through:
     - move selected compression presets into the model catalog if route-specific
       pressure behavior becomes common enough to share out of the box
-    - add per-route cache stats once runtime inspection has an active route context;
-      the current `/models` surface reports the shared per-agent cache state
   - reasoning-control follow-through:
     - promote provider reasoning controls from global runtime override to a
       capability/lane policy once the model-profile registry exposes support

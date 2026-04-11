@@ -2,7 +2,7 @@
 //!
 //! Manages per-sender runtime route overrides for channel sessions.
 
-use crate::config::schema::CapabilityLane;
+use crate::config::schema::{CapabilityLane, ContextCompressionConfig};
 use crate::domain::tool_repair::ToolRepairTrace;
 use crate::domain::turn_admission::{
     AdmissionRepairHint, CandidateAdmissionReason, TurnAdmissionSnapshot,
@@ -23,6 +23,44 @@ pub struct ContextCacheStats {
     pub max_entries: usize,
     pub ttl_secs: u64,
     pub loaded: bool,
+    /// Effective compression trigger ratio for this route, in basis points.
+    pub threshold_basis_points: u32,
+    /// Effective retained-tail ratio for this route, in basis points.
+    pub target_basis_points: u32,
+    pub protect_first_n: usize,
+    pub protect_last_n: usize,
+    /// Effective summary target ratio for this route, in basis points.
+    pub summary_basis_points: u32,
+    pub max_source_chars: usize,
+    pub max_summary_chars: usize,
+}
+
+impl ContextCacheStats {
+    pub fn from_compression_config(
+        compression: &ContextCompressionConfig,
+        entries: usize,
+        hits: u64,
+        loaded: bool,
+    ) -> Self {
+        Self {
+            entries,
+            hits,
+            max_entries: compression.cache_max_entries.max(1),
+            ttl_secs: compression.cache_ttl_secs,
+            loaded,
+            threshold_basis_points: ratio_basis_points(compression.threshold),
+            target_basis_points: ratio_basis_points(compression.target_ratio),
+            protect_first_n: compression.protect_first_n,
+            protect_last_n: compression.protect_last_n,
+            summary_basis_points: ratio_basis_points(compression.summary_ratio),
+            max_source_chars: compression.max_source_chars,
+            max_summary_chars: compression.max_summary_chars,
+        }
+    }
+}
+
+fn ratio_basis_points(value: f64) -> u32 {
+    (value.clamp(0.0, 1.0) * 10_000.0).round() as u32
 }
 
 /// A sender's active routed model selection.
@@ -56,4 +94,40 @@ pub trait RouteSelectionPort: Send + Sync {
 
     /// Clear route override (revert to default).
     fn clear_route(&self, sender_key: &str);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_cache_stats_are_built_from_effective_compression_config() {
+        let compression = ContextCompressionConfig {
+            threshold: 0.375,
+            target_ratio: 0.2,
+            protect_first_n: 3,
+            protect_last_n: 9,
+            summary_ratio: 0.125,
+            max_source_chars: 42_000,
+            max_summary_chars: 7_000,
+            cache_ttl_secs: 3_600,
+            cache_max_entries: 64,
+            ..Default::default()
+        };
+
+        let stats = ContextCacheStats::from_compression_config(&compression, 5, 8, true);
+
+        assert_eq!(stats.entries, 5);
+        assert_eq!(stats.hits, 8);
+        assert_eq!(stats.max_entries, 64);
+        assert_eq!(stats.ttl_secs, 3_600);
+        assert!(stats.loaded);
+        assert_eq!(stats.threshold_basis_points, 3_750);
+        assert_eq!(stats.target_basis_points, 2_000);
+        assert_eq!(stats.protect_first_n, 3);
+        assert_eq!(stats.protect_last_n, 9);
+        assert_eq!(stats.summary_basis_points, 1_250);
+        assert_eq!(stats.max_source_chars, 42_000);
+        assert_eq!(stats.max_summary_chars, 7_000);
+    }
 }

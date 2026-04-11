@@ -203,8 +203,15 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
     if let Some(cache) = current.context_cache {
         let _ = writeln!(
             response,
-            "History compaction cache: entries=`{}` hits=`{}` max=`{}` ttl_secs=`{}` loaded=`{}`",
+            "History compaction cache: entries=`{}` hits=`{}` max=`{}` ttl_secs=`{}` loaded=`{}` threshold=`{}` target=`{}` protect=`{}/{}` summary=`{}` source_chars=`{}` summary_chars=`{}`",
             cache.entries, cache.hits, cache.max_entries, cache.ttl_secs, cache.loaded,
+            format_basis_points(cache.threshold_basis_points),
+            format_basis_points(cache.target_basis_points),
+            cache.protect_first_n,
+            cache.protect_last_n,
+            format_basis_points(cache.summary_basis_points),
+            cache.max_source_chars,
+            cache.max_summary_chars,
         );
     }
 
@@ -621,6 +628,10 @@ fn format_profile_feature_coverage(
     )
 }
 
+fn format_basis_points(value: u32) -> String {
+    format!("{}.{:02}%", value / 100, value % 100)
+}
+
 fn load_cached_model_profile(
     workspace_dir: &Path,
     provider_name: &str,
@@ -929,6 +940,13 @@ mod tests {
                     max_entries: 256,
                     ttl_secs: 172_800,
                     loaded: true,
+                    threshold_basis_points: 5_000,
+                    target_basis_points: 2_500,
+                    protect_first_n: 2,
+                    protect_last_n: 6,
+                    summary_basis_points: 2_000,
+                    max_source_chars: 60_000,
+                    max_summary_chars: 12_000,
                 }),
             },
             &config,
@@ -939,6 +957,9 @@ mod tests {
         ));
         assert!(response.contains(
             "History compaction cache: entries=`7` hits=`11` max=`256` ttl_secs=`172800` loaded=`true`"
+        ));
+        assert!(response.contains(
+            "threshold=`50.00%` target=`25.00%` protect=`2/6` summary=`20.00%` source_chars=`60000` summary_chars=`12000`"
         ));
     }
 
