@@ -231,6 +231,10 @@ Observed pattern:
   transcripts; SynapseClaw now has a high-water web-session hygiene path and a
   channel provider-history compaction valve when admission already requires
   compaction.
+- The channel compaction valve now rewrites persistent provider history through
+  a message-history-only session replace contract, while preserving rolling
+  session summaries. This keeps model-visible history compact without treating
+  summaries as disposable transcript rows.
 - Hermes prunes old large tool results before summarization and sanitizes
   tool-call/tool-result pair integrity after compaction; SynapseClaw now does
   the same through typed placeholders and a protocol-aware sanitizer.

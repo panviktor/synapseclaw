@@ -550,6 +550,13 @@ Expected outcome:
   - Slice 6: cheap-model condensation lane for history and summaries
   - Slice 7: progressive scoped instruction loading for nearest-scope project context
   - Slice 9: strict canonical tool protocol in shared runtime paths
+    - follow-through: shared text fallback now rejects bare OpenAI-shaped /
+      canonical `tool_calls` JSON unless it is inside the canonical
+      `<tool_call>...</tool_call>` envelope; provider-native JSON must arrive
+      through structured provider response fields or be normalized in the
+      provider adapter
+    - native structured tool-call ids are still preserved through the shared
+      runtime loop
   - Slice 10 groundwork:
     - lane candidate schema and manual profile metadata
     - preset expansion (`chatgpt`, `claude`, `openrouter`, `gemini`, `local`)
@@ -797,6 +804,15 @@ Expected outcome:
     - channel sessions now compact provider-facing history when admission
       marks the turn as requiring compaction, preserving system blocks and the
       recent non-system tail
+    - channel history compaction now rewrites the persistent session provider
+      history through `SessionBackend::replace` instead of compacting only the
+      in-memory map
+    - `SessionBackend::replace` is now explicitly message-history-only and
+      preserves rolling summaries; JSONL, SQLite, and SurrealDB backends
+      implement the summary-safe replace contract
+    - session-hygiene compaction now drops leading non-system orphan turns after
+      trimming, so the retained provider history does not start with an orphan
+      assistant/tool-result segment
     - old oversized tool results are replaced with compact typed placeholders
       before summary-lane calls so compaction does not burn context on stale
       raw tool output
@@ -868,10 +884,23 @@ Expected outcome:
     - web model-switch preflight now returns a structured blocked outcome and
       uses the same domain formatter as channel `/model` instead of emitting an
       ad hoc context-budget error string
+    - web model-switch preflight now resolves the target route profile through
+      the same config/catalog route-selection profile path as channel, so
+      route-local profile metadata is not lost on `/model` switches
+    - generic and channel system-prompt builders now have explicit surfaces;
+      channel-only transport guidance is no longer injected into generic
+      runtime prompts
     - web and channel remain separate adapters for transport/lifecycle, but
       route preflight, context-budget reporting, route diagnostics rendering,
       command effects, lane labels, and formatting primitives now share the
       same runtime/domain path where the dependency direction allows it
+  - Test/contract hardening follow-through:
+    - `synapse_channels` unit test target now compiles its session-backend tests
+      against the async `SessionBackend` contract
+    - the channel `reqwest` dependency explicitly enables the `query` feature
+      required by channel API clients
+    - regression tests cover no-runtime/current-thread runtime persistence
+      bridge behavior and summary-preserving session replace
 - next:
   - Slice 12 follow-through:
     - widen provenance beyond cached provider catalogs as more profile data moves into catalogs
