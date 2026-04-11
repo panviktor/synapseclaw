@@ -41,19 +41,20 @@ impl CoreMemoryUpdateTool {
         let label = args
             .get("label")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'label' parameter"))?;
-
+            .ok_or_else(|| anyhow::anyhow!("Missing required field 'label'"))?
+            .to_string();
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'action' parameter"))?;
-
+            .ok_or_else(|| anyhow::anyhow!("Missing required field 'action'"))?
+            .to_string();
         let content = args
             .get("content")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing 'content' parameter"))?;
+            .ok_or_else(|| anyhow::anyhow!("Missing required field 'content'"))?
+            .to_string();
 
-        if !["persona", "user_knowledge", "task_state", "domain"].contains(&label) {
+        if !["persona", "user_knowledge", "task_state", "domain"].contains(&label.as_str()) {
             return Ok(ToolExecution {
                 result: ToolResult {
                     success: false,
@@ -80,15 +81,15 @@ impl CoreMemoryUpdateTool {
             });
         }
 
-        let result = match action {
+        let result = match action.as_str() {
             "replace" => {
                 self.memory
-                    .update_core_block(&self.agent_id, label, content.to_string())
+                    .update_core_block(&self.agent_id, &label, content)
                     .await
             }
             "append" => {
                 self.memory
-                    .append_core_block(&self.agent_id, label, content)
+                    .append_core_block(&self.agent_id, &label, &content)
                     .await
             }
             _ => {
@@ -114,8 +115,8 @@ impl CoreMemoryUpdateTool {
                 },
                 facts: vec![memory_facts::build_core_block_fact(
                     self.name(),
-                    action,
-                    label,
+                    &action,
+                    &label,
                 )],
             }),
             Err(e) => Ok(ToolExecution {
@@ -164,6 +165,10 @@ impl Tool for CoreMemoryUpdateTool {
             },
             "required": ["label", "action", "content"]
         })
+    }
+
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::MemoryMutation)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

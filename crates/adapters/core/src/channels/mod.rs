@@ -22,6 +22,7 @@ pub mod session_surreal;
 
 // Local import with different name to avoid shadowing glob re-export
 use crate::channels::session_backend::SessionBackend as LocalSessionBackend;
+use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_domain::application::services::tool_filtering::build_tool_instructions;
 use synapse_infra::approval::ApprovalManager;
 use synapse_infra::config_io::ConfigIO;
@@ -31,9 +32,7 @@ use crate::runtime;
 use crate::tools::{self, Tool};
 use anyhow::{Context, Result};
 use portable_atomic::{AtomicU64, Ordering};
-use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
@@ -131,8 +130,6 @@ const CHANNEL_MIN_IN_FLIGHT_MESSAGES: usize = 8;
 const CHANNEL_MAX_IN_FLIGHT_MESSAGES: usize = 64;
 const CHANNEL_TYPING_REFRESH_INTERVAL_SECS: u64 = 4;
 const CHANNEL_HEALTH_HEARTBEAT_SECS: u64 = 30;
-const MODEL_CACHE_FILE: &str = "models_cache.json";
-const MODEL_CACHE_PREVIEW_LIMIT: usize = 10;
 /// Generate a rolling summary every N messages in channel conversations.
 /// Higher than web's 10 because channel messages are typically less frequent.
 const CHANNEL_SUMMARY_INTERVAL: usize = 20;
@@ -148,17 +145,6 @@ fn effective_channel_message_timeout_secs(configured: u64) -> u64 {
 
 /// Re-export from synapse_domain — runtime commands are domain logic.
 use synapse_domain::application::services::inbound_message_service::RuntimeCommand as ChannelRuntimeCommand;
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct ModelCacheState {
-    entries: Vec<ModelCacheEntry>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct ModelCacheEntry {
-    provider: String,
-    models: Vec<String>,
-}
 
 #[derive(Debug, Clone)]
 struct ChannelRuntimeDefaults {
@@ -240,6 +226,8 @@ struct ChannelRuntimeContext {
     non_cli_excluded_tools: Arc<Vec<String>>,
     tool_call_dedup_exempt: Arc<Vec<String>>,
     model_routes: Arc<Vec<synapse_domain::config::schema::ModelRouteConfig>>,
+    model_lanes: Arc<Vec<synapse_domain::config::schema::ModelLaneConfig>>,
+    model_preset: Option<String>,
     query_classification: synapse_domain::config::schema::QueryClassificationConfig,
     ack_reactions: bool,
     agent_id: Arc<String>,
@@ -252,6 +240,10 @@ struct ChannelRuntimeContext {
     /// Resolved typed defaults for the current turn.
     turn_defaults_context:
         Option<Arc<dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort>>,
+    /// Progressive scoped project instructions loaded on demand.
+    scoped_instruction_context: Option<
+        Arc<dyn synapse_domain::ports::scoped_instruction_context::ScopedInstructionContextPort>,
+    >,
     /// Dialogue state store for session-scoped working memory.
     dialogue_state_store: Option<
         Arc<synapse_domain::application::services::dialogue_state_service::DialogueStateStore>,
@@ -425,10 +417,12 @@ fn resolved_default_provider(config: &Config) -> String {
 }
 
 fn resolved_default_model(config: &Config) -> String {
-    config
-        .default_model
-        .clone()
-        .unwrap_or_else(|| "anthropic/claude-sonnet-4.6".to_string())
+    let provider = resolved_default_provider(config);
+    config.default_model.clone().unwrap_or_else(|| {
+        synapse_domain::config::model_catalog::provider_default_model(provider.as_str())
+            .unwrap_or("default")
+            .to_string()
+    })
 }
 
 fn runtime_defaults_from_config(config: &Config) -> ChannelRuntimeDefaults {
@@ -539,6 +533,12 @@ fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection
     ChannelRouteSelection {
         provider: defaults.default_provider,
         model: defaults.model,
+        lane: None,
+        candidate_index: None,
+        last_admission: None,
+        recent_admissions: Vec::new(),
+        last_tool_repair: None,
+        recent_tool_repairs: Vec::new(),
     }
 }
 
@@ -658,21 +658,27 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
         recent_text,
     );
 
-    let model = ctx
-        .summary_config
-        .model
-        .as_deref()
-        .or(ctx.summary_model.as_deref())
-        .unwrap_or(&ctx.model)
-        .to_string();
-    let temperature = ctx.summary_config.temperature;
+    let mut summary_config = synapse_domain::config::schema::Config::default();
+    summary_config.summary = ctx.summary_config.as_ref().clone();
+    summary_config.summary_model = ctx.summary_model.clone();
+    summary_config.model_routes = ctx.model_routes.as_ref().clone();
+    summary_config.model_lanes = ctx.model_lanes.as_ref().clone();
+    let summary_route = resolve_summary_route(&summary_config, &ctx.model);
 
-    let summary_result = if let Some(ref provider_name) = ctx.summary_config.provider {
-        let api_key = ctx
-            .summary_config
+    tracing::debug!(
+        history_key,
+        summary_route_source = summary_route.source.as_str(),
+        summary_provider = summary_route.provider.as_deref().unwrap_or("current"),
+        summary_model = summary_route.model.as_str(),
+        "Channel summary lane selected"
+    );
+
+    let summary_result = if let Some(ref provider_name) = summary_route.provider {
+        let api_key = summary_route
             .api_key_env
             .as_deref()
-            .and_then(|env| std::env::var(env).ok());
+            .and_then(|env| std::env::var(env).ok())
+            .or_else(|| summary_route.api_key.clone());
         match synapse_providers::create_provider_with_options(
             provider_name,
             api_key.as_deref(),
@@ -680,21 +686,31 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
         ) {
             Ok(provider) => {
                 provider
-                    .chat_with_system(None, &prompt, &model, temperature)
+                    .chat_with_system(
+                        None,
+                        &prompt,
+                        &summary_route.model,
+                        summary_route.temperature,
+                    )
                     .await
             }
             Err(e) => {
                 tracing::warn!(
-                    "Channel summary provider '{provider_name}' init failed: {e}, using default"
+                    "Channel summary provider '{provider_name}' init failed: {e}, using current route"
                 );
                 ctx.provider
-                    .chat_with_system(None, &prompt, &model, temperature)
+                    .chat_with_system(None, &prompt, &ctx.model, summary_route.temperature)
                     .await
             }
         }
     } else {
         ctx.provider
-            .chat_with_system(None, &prompt, &model, temperature)
+            .chat_with_system(
+                None,
+                &prompt,
+                &summary_route.model,
+                summary_route.temperature,
+            )
             .await
     };
 
@@ -746,29 +762,6 @@ fn proactive_trim_turns(turns: &mut Vec<ChatMessage>, budget: usize) -> usize {
     drop_count
 }
 
-fn load_cached_model_preview(workspace_dir: &Path, provider_name: &str) -> Vec<String> {
-    let cache_path = workspace_dir.join("state").join(MODEL_CACHE_FILE);
-    let Ok(raw) = std::fs::read_to_string(cache_path) else {
-        return Vec::new();
-    };
-    let Ok(state) = serde_json::from_str::<ModelCacheState>(&raw) else {
-        return Vec::new();
-    };
-
-    state
-        .entries
-        .into_iter()
-        .find(|entry| entry.provider == provider_name)
-        .map(|entry| {
-            entry
-                .models
-                .into_iter()
-                .take(MODEL_CACHE_PREVIEW_LIMIT)
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default()
-}
-
 async fn get_or_create_provider(
     ctx: &ChannelRuntimeContext,
     provider_name: &str,
@@ -794,9 +787,15 @@ async fn get_or_create_provider(
         None
     };
 
+    let api_key = if provider_name == defaults.default_provider.as_str() {
+        ctx.api_key.clone()
+    } else {
+        None
+    };
+
     let provider = create_resilient_provider_nonblocking(
         provider_name,
-        ctx.api_key.clone(),
+        api_key,
         api_url.map(ToString::to_string),
         ctx.reliability.as_ref().clone(),
         ctx.provider_runtime_options.clone(),
@@ -834,76 +833,6 @@ async fn create_resilient_provider_nonblocking(
     })
     .await
     .context("failed to join provider initialization task")?
-}
-
-fn build_models_help_response(
-    current: &ChannelRouteSelection,
-    workspace_dir: &Path,
-    model_routes: &[synapse_domain::config::schema::ModelRouteConfig],
-) -> String {
-    let mut response = String::new();
-    let _ = writeln!(
-        response,
-        "Current provider: `{}`\nCurrent model: `{}`",
-        current.provider, current.model
-    );
-    response.push_str("\nSwitch model with `/model <model-id>` or `/model <hint>`.\n");
-
-    if !model_routes.is_empty() {
-        response.push_str("\nConfigured model routes:\n");
-        for route in model_routes {
-            let _ = writeln!(
-                response,
-                "  `{}` → {} ({})",
-                route.hint, route.model, route.provider
-            );
-        }
-    }
-
-    let cached_models = load_cached_model_preview(workspace_dir, &current.provider);
-    if cached_models.is_empty() {
-        let _ = writeln!(
-            response,
-            "\nNo cached model list found for `{}`. Ask the operator to run `synapseclaw models refresh --provider {}`.",
-            current.provider, current.provider
-        );
-    } else {
-        let _ = writeln!(
-            response,
-            "\nCached model IDs (top {}):",
-            cached_models.len()
-        );
-        for model in cached_models {
-            let _ = writeln!(response, "- `{model}`");
-        }
-    }
-
-    response
-}
-
-fn build_providers_help_response(current: &ChannelRouteSelection) -> String {
-    let mut response = String::new();
-    let _ = writeln!(
-        response,
-        "Current provider: `{}`\nCurrent model: `{}`",
-        current.provider, current.model
-    );
-    response.push_str("\nSwitch provider with `/models <provider>`.\n");
-    response.push_str("Switch model with `/model <model-id>`.\n\n");
-    response.push_str("Available providers:\n");
-    for provider in synapse_providers::list_providers() {
-        if provider.aliases.is_empty() {
-            let _ = writeln!(response, "- {}", provider.name);
-        } else {
-            let _ = writeln!(
-                response,
-                "- {} (aliases: {})",
-                provider.name,
-                provider.aliases.join(", ")
-            );
-        }
-    }
-    response
 }
 
 /// Remove leading lines that narrate tool usage (e.g. "Let me check the weather for you.").
@@ -967,24 +896,8 @@ fn is_tool_call_payload(value: &serde_json::Value, known_tool_names: &HashSet<St
         return false;
     };
 
-    let (name, has_args) =
-        if let Some(function) = object.get("function").and_then(|f| f.as_object()) {
-            (
-                function
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| object.get("name").and_then(|v| v.as_str())),
-                function.contains_key("arguments")
-                    || function.contains_key("parameters")
-                    || object.contains_key("arguments")
-                    || object.contains_key("parameters"),
-            )
-        } else {
-            (
-                object.get("name").and_then(|v| v.as_str()),
-                object.contains_key("arguments") || object.contains_key("parameters"),
-            )
-        };
+    let name = object.get("name").and_then(|v| v.as_str());
+    let has_args = object.contains_key("arguments");
 
     let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
         return false;
@@ -1357,6 +1270,17 @@ async fn handle_message_via_orchestrator(
     let agent_runtime: Arc<dyn synapse_domain::ports::agent_runtime::AgentRuntimePort> =
         Arc::new(agent_runtime_adapter::ChannelAgentRuntime {
             provider: Arc::clone(&ctx.provider),
+            default_provider_name: ctx.default_provider.as_ref().clone(),
+            default_api_key: ctx.api_key.clone(),
+            default_api_url: ctx.api_url.clone(),
+            provider_cache: Arc::clone(&ctx.provider_cache),
+            reliability: ctx.reliability.as_ref().clone(),
+            provider_runtime_options: ctx.provider_runtime_options.clone(),
+            model_profile_catalog: Some(Arc::new(
+                crate::runtime_routes::WorkspaceModelProfileCatalog::new(
+                    ctx.workspace_dir.as_ref().to_path_buf(),
+                ),
+            )),
             tools_registry: Arc::clone(&ctx.tools_registry),
             observer: observer_for_runtime,
             approval_manager: Arc::clone(&ctx.approval_manager),
@@ -1393,12 +1317,6 @@ async fn handle_message_via_orchestrator(
         ) as Arc<dyn synapse_domain::ports::conversation_store::ConversationStorePort>
     });
 
-    let model_routes: Vec<(String, String, String)> = ctx
-        .model_routes
-        .iter()
-        .map(|r| (r.provider.clone(), r.model.clone(), r.hint.clone()))
-        .collect();
-
     // Bootstrap identity files are compiled into the static prompt at startup.
     // Per-turn continuity comes from structured memory and turn context.
     let system_prompt = ctx.system_prompt.to_string();
@@ -1410,7 +1328,9 @@ async fn handle_message_via_orchestrator(
         temperature: ctx.temperature,
         max_tool_iterations: ctx.max_tool_iterations,
         auto_save_memory: ctx.auto_save_memory,
-        model_routes,
+        model_routes: ctx.model_routes.as_ref().clone(),
+        model_lanes: ctx.model_lanes.as_ref().clone(),
+        model_preset: ctx.model_preset.clone(),
         thread_root_max_chars: 500,
         thread_parent_recent_turns: 3,
         thread_parent_max_chars: 2000,
@@ -1456,7 +1376,13 @@ async fn handle_message_via_orchestrator(
         memory: memory_port,
         event_tx: ctx.event_tx.clone(),
         conversation_context: ctx.conversation_context.clone(),
+        model_profile_catalog: Some(Arc::new(
+            crate::runtime_routes::WorkspaceModelProfileCatalog::new(
+                ctx.workspace_dir.as_ref().to_path_buf(),
+            ),
+        )),
         turn_defaults_context: ctx.turn_defaults_context.clone(),
+        scoped_instruction_context: ctx.scoped_instruction_context.clone(),
         conversation_store,
         dialogue_state_store: ctx.dialogue_state_store.clone(),
         run_recipe_store: ctx.run_recipe_store.clone(),
@@ -1665,7 +1591,7 @@ async fn format_command_effect(
     match effect {
         CommandEffect::ShowProviders => {
             let current = get_route_selection(ctx, conversation_key);
-            build_providers_help_response(&current)
+            crate::runtime_routes::build_providers_help_response(&current)
         }
         CommandEffect::SwitchProvider { provider } => {
             match resolve_provider_alias(provider) {
@@ -1683,7 +1609,12 @@ async fn format_command_effect(
         }
         CommandEffect::ShowModel => {
             let current = get_route_selection(ctx, conversation_key);
-            build_models_help_response(&current, ctx.workspace_dir.as_path(), &ctx.model_routes)
+            let mut config = synapse_domain::config::schema::Config::default();
+            config.workspace_dir = ctx.workspace_dir.as_ref().clone();
+            config.model_routes = ctx.model_routes.as_ref().clone();
+            config.model_lanes = ctx.model_lanes.as_ref().clone();
+            config.model_preset = ctx.model_preset.clone();
+            crate::runtime_routes::build_models_help_response(&current, &config)
         }
         CommandEffect::SwitchModel {
             model,
@@ -1892,11 +1823,19 @@ pub fn build_system_prompt_with_mode(
     // ── 1. Tooling ──────────────────────────────────────────────
     if !tools.is_empty() {
         prompt.push_str("## Tools\n\n");
-        prompt.push_str("You have access to the following tools:\n\n");
-        for (name, desc) in tools {
-            let _ = writeln!(prompt, "- **{name}**: {desc}");
+        if native_tools {
+            prompt.push_str(
+                "Tool definitions are registered out-of-band via native tool calling.\n\
+                 Use the tool interface directly when action is required.\n\
+                 Do not restate tool schemas or invent ad hoc JSON formats in prose.\n\n",
+            );
+        } else {
+            prompt.push_str("You have access to the following tools:\n\n");
+            for (name, desc) in tools {
+                let _ = writeln!(prompt, "- **{name}**: {desc}");
+            }
+            prompt.push('\n');
         }
-        prompt.push('\n');
     }
 
     // ── 1b. Action instruction (avoid meta-summary) ───────────────
@@ -2997,7 +2936,7 @@ pub async fn start_channels(
     ));
     let model = resolved_default_model(&config);
     let temperature = config.default_temperature;
-    let resolved_agent_id = crate::agent::loop_::resolve_agent_id(&config);
+    let resolved_agent_id = crate::agent::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {
         Some(m) => m,
         None => {
@@ -3069,6 +3008,13 @@ pub async fn start_channels(
     let shared_turn_defaults_context: Arc<
         dyn synapse_domain::ports::turn_defaults_context::TurnDefaultsContextPort,
     > = Arc::new(synapse_domain::ports::turn_defaults_context::InMemoryTurnDefaultsContext::new());
+    let shared_scoped_instruction_context: Arc<
+        dyn synapse_domain::ports::scoped_instruction_context::ScopedInstructionContextPort,
+    > = Arc::new(
+        crate::scoped_instruction_context::FilesystemScopedInstructionContext::new(
+            config.workspace_dir.clone(),
+        ),
+    );
     let (mut built_tools, delegate_handle_ch, ipc_client_for_key_reg): (Vec<Box<dyn Tool>>, _, _) =
         tools::all_tools_with_runtime(
             Arc::new(config.clone()),
@@ -3174,7 +3120,7 @@ pub async fn start_channels(
     }
 
     // ── SYNAPSECLAW_ALLOWED_TOOLS enforcement for channel/daemon mode ──
-    // Same security boundary as agent/loop_.rs — filter tools when the env
+    // Same security boundary as the agent runtime loop — filter tools when the env
     // var is set so coordinators (e.g. marketing-lead) can be restricted to
     // IPC-only tools. Without this, the allowlist only applied to
     // ephemeral/interactive agent runs, not to daemon channel processing.
@@ -3552,13 +3498,16 @@ pub async fn start_channels(
         non_cli_excluded_tools: Arc::new(config.autonomy.non_cli_excluded_tools.clone()),
         tool_call_dedup_exempt: Arc::new(config.agent.tool_call_dedup_exempt.clone()),
         model_routes: Arc::new(config.model_routes.clone()),
+        model_lanes: Arc::new(config.model_lanes.clone()),
+        model_preset: config.model_preset.clone(),
         query_classification: config.query_classification.clone(),
         ack_reactions: config.channels_config.ack_reactions,
-        agent_id: Arc::new(crate::agent::loop_::resolve_agent_id(&config)),
+        agent_id: Arc::new(crate::agent::resolve_agent_id(&config)),
         prompt_budget_config: config.memory.prompt_budget.clone(),
         event_tx,
         conversation_context: Some(shared_conversation_context.clone()),
         turn_defaults_context: Some(shared_turn_defaults_context.clone()),
+        scoped_instruction_context: Some(shared_scoped_instruction_context.clone()),
         dialogue_state_store: Some(Arc::new(
             synapse_domain::application::services::dialogue_state_service::DialogueStateStore::new(
             ),
@@ -4050,6 +3999,8 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_lanes: Arc::new(Vec::new()),
+            model_preset: None,
             query_classification:
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
@@ -4058,6 +4009,7 @@ mod tests {
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
+            scoped_instruction_context: None,
             dialogue_state_store: None,
             run_recipe_store: None,
             user_profile_store: None,
@@ -4160,6 +4112,8 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_lanes: Arc::new(Vec::new()),
+            model_preset: None,
             query_classification:
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
@@ -4168,6 +4122,7 @@ mod tests {
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
+            scoped_instruction_context: None,
             dialogue_state_store: None,
             run_recipe_store: None,
             user_profile_store: None,
@@ -4286,6 +4241,7 @@ mod tests {
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
+            scoped_instruction_context: None,
             dialogue_state_store: None,
             run_recipe_store: None,
             user_profile_store: None,
@@ -4298,6 +4254,8 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_lanes: Arc::new(Vec::new()),
+            model_preset: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
                 &synapse_domain::config::schema::AutonomyConfig::default(),
             )),
@@ -4407,6 +4365,8 @@ mod tests {
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
             model_routes: Arc::new(Vec::new()),
+            model_lanes: Arc::new(Vec::new()),
+            model_preset: None,
             query_classification:
                 synapse_domain::config::schema::QueryClassificationConfig::default(),
             ack_reactions: true,
@@ -4415,6 +4375,7 @@ mod tests {
             event_tx: None,
             conversation_context: None,
             turn_defaults_context: None,
+            scoped_instruction_context: None,
             dialogue_state_store: None,
             run_recipe_store: None,
             user_profile_store: None,
@@ -4506,6 +4467,29 @@ mod tests {
         assert!(prompt.contains("**shell**"));
         assert!(prompt.contains("Run commands"));
         assert!(prompt.contains("**memory_recall**"));
+    }
+
+    #[test]
+    fn native_tools_prompt_uses_compact_tool_contract() {
+        let ws = make_workspace();
+        let tools = vec![
+            ("shell", "Run commands"),
+            ("memory_recall", "Search memory"),
+        ];
+        let prompt = build_system_prompt_with_mode(
+            ws.path(),
+            "gpt-5.4",
+            &tools,
+            &[],
+            None,
+            None,
+            true,
+            synapse_domain::config::schema::SkillsPromptInjectionMode::Full,
+        );
+
+        assert!(prompt.contains("registered out-of-band via native tool calling"));
+        assert!(!prompt.contains("**shell**"));
+        assert!(!prompt.contains("**memory_recall**"));
     }
 
     #[test]
@@ -4868,10 +4852,10 @@ mod tests {
         let mut known_tools = HashSet::new();
         known_tools.insert("schedule".to_string());
 
-        let input = r#"{"name":"schedule","parameters":{"action":"create","message":"test"}}
-{"name":"schedule","parameters":{"action":"cancel","task_id":"test"}}
+        let input = r#"{"name":"schedule","arguments":{"action":"create","message":"test"}}
+{"name":"schedule","arguments":{"action":"cancel","task_id":"test"}}
 Let me create the reminder properly:
-{"name":"schedule","parameters":{"action":"create","message":"Go to sleep"}}
+{"name":"schedule","arguments":{"action":"create","message":"Go to sleep"}}
 {"result":{"task_id":"abc","status":"scheduled"}}
 Done reminder set for 1:38 AM."#;
 
@@ -4892,7 +4876,7 @@ Done reminder set for 1:38 AM."#;
         let mut known_tools = HashSet::new();
         known_tools.insert("shell".to_string());
 
-        let input = r#"{"name":"profile","parameters":{"timezone":"UTC"}}
+        let input = r#"{"name":"profile","arguments":{"timezone":"UTC"}}
 This is an example JSON object for profile settings."#;
 
         let result = strip_isolated_tool_json_artifacts(input, &known_tools);

@@ -196,8 +196,11 @@ export PATH="$HOME/.cargo/bin:$PATH"
 # Quick setup
 synapseclaw onboard --api-key sk-... --provider openrouter
 
-# Or guided wizard
+# Or preset-first guided wizard
 synapseclaw onboard
+
+# Materialize the editable local model catalog next to config.toml
+synapseclaw models catalog init
 
 # Chat
 synapseclaw agent -m "Hello, SynapseClaw!"
@@ -221,6 +224,36 @@ synapseclaw doctor
 synapseclaw service install
 synapseclaw service status
 ```
+
+`synapseclaw onboard` now starts with simple provider presets (`ChatGPT / Codex`,
+`Claude`, `OpenRouter`, `Local`, `Advanced`) and expands those into richer
+lane-based routing under the hood. Advanced users can still override the
+generated capability lanes later in `config.toml`.
+
+Built-in preset data, provider defaults, curated model lists, curated
+provider:model profiles, default route aliases, and default pricing now come
+from an external catalog. If you want to customize that catalog locally without
+editing repository files, run:
+
+```bash
+synapseclaw models catalog init
+```
+
+This writes `model_catalog.json` next to the active `config.toml`:
+
+- default: `~/.synapseclaw/model_catalog.json`
+- agent instance: `~/.synapseclaw/agents/<name>/model_catalog.json`
+- custom `--config-dir`: `<that-dir>/model_catalog.json`
+
+At runtime SynapseClaw merges the local file over the built-in catalog on
+startup. This works the same way on Linux, macOS, BSD, and WSL2 because the
+runtime already resolves a single active config directory first.
+Live provider model-cache metadata wins over bundled profile metadata when it
+exists; catalog profiles are the fallback for context windows, max output, and
+feature coverage.
+User `[[model_routes]]` entries win over bundled aliases, so local configs can
+keep stable shortcuts such as `cheap`, `qwen36`, `gemma31b`, or `gemma26b`
+while still overriding them when needed.
 
 > **Dev fallback (no global install):** prefix commands with `cargo run --release --` (example: `cargo run --release -- status`).
 

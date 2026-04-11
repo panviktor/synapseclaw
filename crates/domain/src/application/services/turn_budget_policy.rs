@@ -51,6 +51,7 @@ pub struct TurnExecutionSignals {
     pub has_profile_defaults: bool,
     pub has_reference_candidates: bool,
     pub direct_reference_count: usize,
+    pub structured_default_count: usize,
     pub ambiguity_candidate_count: usize,
     pub recent_tool_fact_count: usize,
     pub explicit_user_correction: bool,
@@ -130,7 +131,9 @@ pub fn build_turn_execution_budget(signals: TurnExecutionSignals) -> TurnExecuti
         budget.retrieval_budget.max_memory_candidates = 6;
     }
 
-    if signals.direct_reference_count > 0 && signals.ambiguity_candidate_count == 0 {
+    if (signals.direct_reference_count > 0 || signals.structured_default_count > 0)
+        && signals.ambiguity_candidate_count == 0
+    {
         budget.retrieval_budget.max_session_candidates = 0;
         budget.retrieval_budget.max_precedent_candidates = 0;
         budget.retrieval_budget.max_memory_candidates =
@@ -183,6 +186,19 @@ mod tests {
         assert!(budget
             .gate_reasons
             .contains(&InterpreterGateReason::DirectTypedReference));
+        assert_eq!(budget.retrieval_budget.max_session_candidates, 0);
+        assert_eq!(budget.retrieval_budget.max_precedent_candidates, 0);
+        assert_eq!(budget.retrieval_budget.max_memory_candidates, 3);
+    }
+
+    #[test]
+    fn structured_defaults_trim_historical_retrieval_budget() {
+        let budget = build_turn_execution_budget(TurnExecutionSignals {
+            has_profile_defaults: true,
+            structured_default_count: 1,
+            ..TurnExecutionSignals::default()
+        });
+        assert_eq!(budget.interpreter_mode, InterpreterMode::Lightweight);
         assert_eq!(budget.retrieval_budget.max_session_candidates, 0);
         assert_eq!(budget.retrieval_budget.max_precedent_candidates, 0);
         assert_eq!(budget.retrieval_budget.max_memory_candidates, 3);

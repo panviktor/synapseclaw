@@ -31,6 +31,8 @@ pub struct LearningEvidenceEnvelope {
     pub projected_subject_count: usize,
     pub focus_entity_count: usize,
     pub profile_update_count: usize,
+    pub external_procedural_fact_count: usize,
+    pub internal_procedural_fact_count: usize,
     pub facets: Vec<LearningEvidenceFacet>,
 }
 
@@ -45,6 +47,14 @@ impl LearningEvidenceEnvelope {
     pub fn has_failure_outcomes(&self) -> bool {
         self.failure_outcome_count > 0
     }
+
+    pub fn has_external_procedural_evidence(&self) -> bool {
+        self.external_procedural_fact_count > 0
+    }
+
+    pub fn has_internal_only_procedural_evidence(&self) -> bool {
+        self.internal_procedural_fact_count > 0 && self.external_procedural_fact_count == 0
+    }
 }
 
 pub fn build_learning_evidence(tool_facts: &[TypedToolFact]) -> LearningEvidenceEnvelope {
@@ -55,6 +65,11 @@ pub fn build_learning_evidence(tool_facts: &[TypedToolFact]) -> LearningEvidence
 
     for fact in tool_facts {
         push_facet(&mut envelope.facets, facet_for_payload(&fact.payload));
+        match classify_procedural_payload(&fact.payload) {
+            ProceduralPayloadClass::External => envelope.external_procedural_fact_count += 1,
+            ProceduralPayloadClass::Internal => envelope.internal_procedural_fact_count += 1,
+            ProceduralPayloadClass::None => {}
+        }
         if let ToolFactPayload::Outcome(outcome) = &fact.payload {
             envelope.outcome_count += 1;
             if outcome.status.is_failure() {
@@ -69,6 +84,13 @@ pub fn build_learning_evidence(tool_facts: &[TypedToolFact]) -> LearningEvidence
     }
 
     envelope
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProceduralPayloadClass {
+    External,
+    Internal,
+    None,
 }
 
 fn facet_for_payload(payload: &ToolFactPayload) -> LearningEvidenceFacet {
@@ -89,6 +111,31 @@ fn facet_for_payload(payload: &ToolFactPayload) -> LearningEvidenceFacet {
     }
 }
 
+fn classify_procedural_payload(payload: &ToolFactPayload) -> ProceduralPayloadClass {
+    match payload {
+        ToolFactPayload::Focus(_)
+        | ToolFactPayload::Outcome(_)
+        | ToolFactPayload::UserProfile(_) => ProceduralPayloadClass::None,
+        ToolFactPayload::Search(search) => match search.domain {
+            crate::domain::tool_fact::SearchDomain::Memory
+            | crate::domain::tool_fact::SearchDomain::Session
+            | crate::domain::tool_fact::SearchDomain::Precedent => ProceduralPayloadClass::Internal,
+            crate::domain::tool_fact::SearchDomain::Web
+            | crate::domain::tool_fact::SearchDomain::Workspace
+            | crate::domain::tool_fact::SearchDomain::Knowledge => ProceduralPayloadClass::External,
+        },
+        ToolFactPayload::Routing(_) => ProceduralPayloadClass::Internal,
+        ToolFactPayload::Delivery(_)
+        | ToolFactPayload::Resource(_)
+        | ToolFactPayload::Schedule(_)
+        | ToolFactPayload::Workspace(_)
+        | ToolFactPayload::Knowledge(_)
+        | ToolFactPayload::Project(_)
+        | ToolFactPayload::Security(_)
+        | ToolFactPayload::Notification(_) => ProceduralPayloadClass::External,
+    }
+}
+
 fn push_facet(facets: &mut Vec<LearningEvidenceFacet>, facet: LearningEvidenceFacet) {
     if !facets.contains(&facet) {
         facets.push(facet);
@@ -101,8 +148,8 @@ mod tests {
     use crate::domain::conversation_target::ConversationDeliveryTarget;
     use crate::domain::dialogue_state::FocusEntity;
     use crate::domain::tool_fact::{
-        DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation,
-        ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
+        DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation, SearchDomain,
+        SearchFact, ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
     };
 
     #[test]
@@ -145,6 +192,8 @@ mod tests {
         assert_eq!(evidence.outcome_count, 1);
         assert_eq!(evidence.failure_outcome_count, 1);
         assert_eq!(evidence.profile_update_count, 1);
+        assert_eq!(evidence.external_procedural_fact_count, 1);
+        assert_eq!(evidence.internal_procedural_fact_count, 0);
         assert!(evidence.focus_entity_count >= 1);
         assert!(evidence.projected_subject_count >= 2);
         assert!(evidence.facets.contains(&LearningEvidenceFacet::Delivery));
@@ -154,5 +203,34 @@ mod tests {
             .contains(&LearningEvidenceFacet::UserProfile));
         assert!(evidence.facets.contains(&LearningEvidenceFacet::Focus));
         assert!(evidence.has_actionable_evidence());
+    }
+
+    #[test]
+    fn distinguishes_internal_and_external_procedural_evidence() {
+        let evidence = build_learning_evidence(&[
+            TypedToolFact {
+                tool_id: "memory_recall".into(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Memory,
+                    query: Some("reflective_memory_topic".into()),
+                    result_count: Some(3),
+                    primary_locator: Some("daily_123".into()),
+                }),
+            },
+            TypedToolFact {
+                tool_id: "web_search".into(),
+                payload: ToolFactPayload::Search(SearchFact {
+                    domain: SearchDomain::Web,
+                    query: Some("status page".into()),
+                    result_count: Some(2),
+                    primary_locator: Some("https://status.example.com".into()),
+                }),
+            },
+        ]);
+
+        assert_eq!(evidence.internal_procedural_fact_count, 1);
+        assert_eq!(evidence.external_procedural_fact_count, 1);
+        assert!(evidence.has_external_procedural_evidence());
+        assert!(!evidence.has_internal_only_procedural_evidence());
     }
 }

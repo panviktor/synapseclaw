@@ -182,7 +182,8 @@ fn collect_recent_delivery_target(
                 crate::domain::conversation_target::ConversationDeliveryTarget::CurrentConversation
             }
             crate::domain::tool_fact::DeliveryTargetKind::Explicit(target)
-            | crate::domain::tool_fact::DeliveryTargetKind::ProfileDefault(target) => {
+            | crate::domain::tool_fact::DeliveryTargetKind::ProfileDefault(target)
+            | crate::domain::tool_fact::DeliveryTargetKind::ConfiguredDefault(target) => {
                 target.clone()
             }
         }),

@@ -6,6 +6,7 @@ use crate::traits::{
 };
 use async_trait::async_trait;
 use reqwest::Client;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub struct OpenRouterProvider {
@@ -173,78 +174,123 @@ impl OpenRouterProvider {
     }
 
     fn convert_messages(messages: &[ChatMessage]) -> Vec<NativeMessage> {
-        messages
-            .iter()
-            .map(|m| {
-                if m.role == "assistant" {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
-                        if let Some(tool_calls_value) = value.get("tool_calls") {
-                            if let Ok(parsed_calls) =
-                                serde_json::from_value::<Vec<ProviderToolCall>>(
-                                    tool_calls_value.clone(),
-                                )
-                            {
-                                let tool_calls = parsed_calls
-                                    .into_iter()
-                                    .map(|tc| NativeToolCall {
-                                        id: Some(tc.id),
-                                        kind: Some("function".to_string()),
-                                        function: NativeFunctionCall {
-                                            name: tc.name,
-                                            arguments: tc.arguments,
-                                        },
-                                    })
-                                    .collect::<Vec<_>>();
-                                let content = value
-                                    .get("content")
-                                    .and_then(serde_json::Value::as_str)
-                                    .map(|value| MessageContent::Text(value.to_string()));
-                                let reasoning_content = value
-                                    .get("reasoning_content")
-                                    .and_then(serde_json::Value::as_str)
-                                    .map(ToString::to_string);
-                                return NativeMessage {
-                                    role: "assistant".to_string(),
-                                    content,
-                                    tool_call_id: None,
-                                    tool_calls: Some(tool_calls),
-                                    reasoning_content,
-                                };
+        let converted =
+            messages
+                .iter()
+                .map(|m| {
+                    if m.role == "assistant" {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
+                            if let Some(tool_calls_value) = value.get("tool_calls") {
+                                if let Ok(parsed_calls) =
+                                    serde_json::from_value::<Vec<ProviderToolCall>>(
+                                        tool_calls_value.clone(),
+                                    )
+                                {
+                                    let tool_calls = parsed_calls
+                                        .into_iter()
+                                        .map(|tc| NativeToolCall {
+                                            id: Some(tc.id),
+                                            kind: Some("function".to_string()),
+                                            function: NativeFunctionCall {
+                                                name: tc.name,
+                                                arguments: tc.arguments,
+                                            },
+                                        })
+                                        .collect::<Vec<_>>();
+                                    let content = value
+                                        .get("content")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(|value| MessageContent::Text(value.to_string()));
+                                    let reasoning_content = value
+                                        .get("reasoning_content")
+                                        .and_then(serde_json::Value::as_str)
+                                        .map(ToString::to_string);
+                                    return NativeMessage {
+                                        role: "assistant".to_string(),
+                                        content,
+                                        tool_call_id: None,
+                                        tool_calls: Some(tool_calls),
+                                        reasoning_content,
+                                    };
+                                }
                             }
                         }
                     }
-                }
 
-                if m.role == "tool" {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
-                        let tool_call_id = value
-                            .get("tool_call_id")
-                            .and_then(serde_json::Value::as_str)
-                            .map(ToString::to_string);
-                        let content = value
-                            .get("content")
-                            .and_then(serde_json::Value::as_str)
-                            .map(|value| MessageContent::Text(value.to_string()))
-                            .or_else(|| Some(MessageContent::Text(m.content.clone())));
-                        return NativeMessage {
-                            role: "tool".to_string(),
-                            content,
-                            tool_call_id,
-                            tool_calls: None,
-                            reasoning_content: None,
-                        };
+                    if m.role == "tool" {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&m.content) {
+                            let tool_call_id = value
+                                .get("tool_call_id")
+                                .and_then(serde_json::Value::as_str)
+                                .map(ToString::to_string);
+                            let content = value
+                                .get("content")
+                                .and_then(serde_json::Value::as_str)
+                                .map(|value| MessageContent::Text(value.to_string()))
+                                .or_else(|| Some(MessageContent::Text(m.content.clone())));
+                            return NativeMessage {
+                                role: "tool".to_string(),
+                                content,
+                                tool_call_id,
+                                tool_calls: None,
+                                reasoning_content: None,
+                            };
+                        }
                     }
-                }
 
-                NativeMessage {
-                    role: m.role.clone(),
-                    content: Some(Self::to_message_content(&m.role, &m.content)),
-                    tool_call_id: None,
-                    tool_calls: None,
-                    reasoning_content: None,
+                    NativeMessage {
+                        role: m.role.clone(),
+                        content: Some(Self::to_message_content(&m.role, &m.content)),
+                        tool_call_id: None,
+                        tool_calls: None,
+                        reasoning_content: None,
+                    }
+                })
+                .collect::<Vec<_>>();
+
+        Self::normalize_system_messages_first(converted)
+    }
+
+    fn normalize_system_messages_first(messages: Vec<NativeMessage>) -> Vec<NativeMessage> {
+        let mut system_parts = Vec::new();
+        let mut rest_messages = Vec::new();
+        for message in messages {
+            if message.role == "system" {
+                if let Some(content) = message.content {
+                    system_parts.push(Self::message_content_to_text(content));
                 }
-            })
-            .collect()
+            } else {
+                rest_messages.push(message);
+            }
+        }
+
+        if system_parts.is_empty() {
+            return rest_messages;
+        }
+
+        let mut normalized = vec![NativeMessage {
+            role: "system".to_string(),
+            content: Some(MessageContent::Text(system_parts.join("\n\n"))),
+            tool_call_id: None,
+            tool_calls: None,
+            reasoning_content: None,
+        }];
+        normalized.extend(rest_messages);
+        normalized
+    }
+
+    fn message_content_to_text(content: MessageContent) -> String {
+        match content {
+            MessageContent::Text(value) => value,
+            MessageContent::Parts(parts) => parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    MessagePart::Text { text } => Some(text),
+                    MessagePart::ImageUrl { .. } => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
     }
 
     fn to_message_content(role: &str, content: &str) -> MessageContent {
@@ -297,6 +343,43 @@ impl OpenRouterProvider {
 
     fn http_client(&self) -> Client {
         crate::proxy::build_runtime_proxy_client_with_timeouts("provider.openrouter", 120, 10)
+    }
+
+    async fn decode_chat_response<T: DeserializeOwned>(
+        response: reqwest::Response,
+        label: &str,
+    ) -> anyhow::Result<T> {
+        let payload: serde_json::Value = response.json().await.map_err(|error| {
+            anyhow::anyhow!("failed to decode OpenRouter {label} response body as JSON: {error}")
+        })?;
+
+        if let Some(error) = payload.get("error") {
+            return Err(anyhow::anyhow!(
+                "OpenRouter API error: {}",
+                Self::format_error_payload(error)
+            ));
+        }
+
+        serde_json::from_value(payload).map_err(|error| {
+            anyhow::anyhow!("failed to decode OpenRouter {label} response schema: {error}")
+        })
+    }
+
+    fn format_error_payload(error: &serde_json::Value) -> String {
+        let message = error.get("message").and_then(serde_json::Value::as_str);
+        let code = error.get("code").and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| value.as_i64().map(|number| number.to_string()))
+                .or_else(|| value.as_u64().map(|number| number.to_string()))
+        });
+
+        match (message, code) {
+            (Some(message), Some(code)) => format!("{message} (code: {code})"),
+            (Some(message), None) => message.to_string(),
+            _ => error.to_string(),
+        }
     }
 }
 
@@ -368,7 +451,8 @@ impl Provider for OpenRouterProvider {
             return Err(super::api_error("OpenRouter", response).await);
         }
 
-        let chat_response: ApiChatResponse = response.json().await?;
+        let chat_response: ApiChatResponse =
+            Self::decode_chat_response(response, "chat_with_system").await?;
 
         chat_response
             .choices
@@ -415,7 +499,8 @@ impl Provider for OpenRouterProvider {
             return Err(super::api_error("OpenRouter", response).await);
         }
 
-        let chat_response: ApiChatResponse = response.json().await?;
+        let chat_response: ApiChatResponse =
+            Self::decode_chat_response(response, "chat_with_history").await?;
 
         chat_response
             .choices
@@ -460,7 +545,8 @@ impl Provider for OpenRouterProvider {
             return Err(super::api_error("OpenRouter", response).await);
         }
 
-        let native_response: NativeChatResponse = response.json().await?;
+        let native_response: NativeChatResponse =
+            Self::decode_chat_response(response, "native chat").await?;
         let usage = native_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
@@ -552,7 +638,8 @@ impl Provider for OpenRouterProvider {
             return Err(super::api_error("OpenRouter", response).await);
         }
 
-        let native_response: NativeChatResponse = response.json().await?;
+        let native_response: NativeChatResponse =
+            Self::decode_chat_response(response, "chat_with_tools").await?;
         let usage = native_response.usage.map(|u| TokenUsage {
             input_tokens: u.prompt_tokens,
             output_tokens: u.completion_tokens,
@@ -859,6 +946,46 @@ mod tests {
             Some("done")
         );
         assert!(converted[0].tool_calls.is_none());
+    }
+
+    #[test]
+    fn convert_messages_merges_system_blocks_to_one_front_message_for_openrouter() {
+        let messages = vec![
+            ChatMessage {
+                role: "system".into(),
+                content: "base policy".into(),
+            },
+            ChatMessage {
+                role: "user".into(),
+                content: "hi".into(),
+            },
+            ChatMessage {
+                role: "system".into(),
+                content: "late context".into(),
+            },
+            ChatMessage {
+                role: "assistant".into(),
+                content: "hello".into(),
+            },
+        ];
+
+        let converted = OpenRouterProvider::convert_messages(&messages);
+        let roles = converted
+            .iter()
+            .map(|message| message.role.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(roles, vec!["system", "user", "assistant"]);
+        assert_eq!(
+            converted[0]
+                .content
+                .as_ref()
+                .and_then(|content| match content {
+                    MessageContent::Text(value) => Some(value.as_str()),
+                    MessageContent::Parts(_) => None,
+                }),
+            Some("base policy\n\nlate context")
+        );
     }
 
     #[test]

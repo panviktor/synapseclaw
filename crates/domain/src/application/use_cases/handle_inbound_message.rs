@@ -12,17 +12,25 @@ use crate::application::services::dialogue_state_service::{self, DialogueStateSt
 use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
+use crate::application::services::turn_markup::{
+    contains_image_attachment_marker, strip_image_attachment_markers,
+};
+use crate::config::schema::ModelRouteConfig;
 use crate::domain::channel::{ChannelCapability, InboundEnvelope};
 use crate::domain::message::ChatMessage;
-use crate::ports::agent_runtime::AgentRuntimePort;
+use crate::ports::agent_runtime::{AgentRuntimeErrorKind, AgentRuntimePort};
 use crate::ports::channel_output::ChannelOutputPort;
 use crate::ports::channel_registry::ChannelRegistryPort;
 use crate::ports::conversation_history::ConversationHistoryPort;
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::hooks::{HookOutcome, HooksPort};
 use crate::ports::memory::UnifiedMemoryPort;
-use crate::ports::route_selection::RouteSelectionPort;
+use crate::ports::model_profile_catalog::ModelProfileCatalogPort;
+use crate::ports::route_selection::{RouteAdmissionState, RouteSelectionPort};
 use crate::ports::run_recipe_store::RunRecipeStorePort;
+use crate::ports::scoped_instruction_context::{
+    ScopedInstructionContextPort, ScopedInstructionRequest,
+};
 use crate::ports::session_summary::SessionSummaryPort;
 use crate::ports::turn_defaults_context::TurnDefaultsContextPort;
 use crate::ports::user_profile_store::UserProfileStorePort;
@@ -41,7 +49,9 @@ pub struct InboundMessageConfig {
     pub temperature: f64,
     pub max_tool_iterations: usize,
     pub auto_save_memory: bool,
-    pub model_routes: Vec<(String, String, String)>,
+    pub model_routes: Vec<ModelRouteConfig>,
+    pub model_lanes: Vec<crate::config::schema::ModelLaneConfig>,
+    pub model_preset: Option<String>,
     pub thread_root_max_chars: usize,
     /// Max recent parent turns to inject when seeding a thread (default: 3).
     pub thread_parent_recent_turns: usize,
@@ -96,8 +106,11 @@ pub struct InboundMessagePorts {
     /// Current conversation context for tools that need "here".
     pub conversation_context:
         Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
+    pub model_profile_catalog: Option<Arc<dyn ModelProfileCatalogPort>>,
     /// Resolved typed defaults for the current turn.
     pub turn_defaults_context: Option<Arc<dyn TurnDefaultsContextPort>>,
+    /// Progressive scoped project instructions loaded on demand.
+    pub scoped_instruction_context: Option<Arc<dyn ScopedInstructionContextPort>>,
     pub conversation_store: Option<Arc<dyn ConversationStorePort>>,
     /// Dialogue state store for session-scoped working memory.
     pub dialogue_state_store: Option<Arc<DialogueStateStore>>,
@@ -165,6 +178,12 @@ pub async fn handle(
                 CommandEffect::SwitchProvider { provider } => {
                     let mut route = ports.routes.get_route(&conversation_key);
                     route.provider = provider.clone();
+                    route.lane = None;
+                    route.candidate_index = None;
+                    route.last_admission = None;
+                    route.last_tool_repair = None;
+                    route.recent_admissions.clear();
+                    route.recent_tool_repairs.clear();
                     ports.routes.set_route(&conversation_key, route);
                 }
                 CommandEffect::SwitchModel {
@@ -176,6 +195,12 @@ pub async fn handle(
                     if let Some(p) = inferred_provider {
                         route.provider = p.clone();
                     }
+                    route.lane = None;
+                    route.candidate_index = None;
+                    route.last_admission = None;
+                    route.last_tool_repair = None;
+                    route.recent_admissions.clear();
+                    route.recent_tool_repairs.clear();
                     ports.routes.set_route(&conversation_key, route);
                 }
                 CommandEffect::ShowProviders | CommandEffect::ShowModel => {}
@@ -224,31 +249,74 @@ async fn handle_regular_message(
     // #4: Query classification override
     if config.query_classifier.is_some() {
         if let Some(hint) = config.query_classifier.as_ref().and_then(|f| f(content)) {
-            if let Some((provider, model, _)) = config
+            if let Some(route_match) = config
                 .model_routes
                 .iter()
-                .find(|(_, _, h)| h.eq_ignore_ascii_case(&hint))
+                .find(|route| route.hint.eq_ignore_ascii_case(&hint))
             {
                 tracing::info!(
                     target: "query_classification",
-                    %hint, %provider, %model,
+                    %hint,
+                    provider = %route_match.provider,
+                    model = %route_match.model,
                     "Channel message classified — overriding route"
                 );
-                route.provider = provider.clone();
-                route.model = model.clone();
+                route.provider = route_match.provider.clone();
+                route.model = route_match.model.clone();
+                route.lane = route_match.capability;
+                route.candidate_index = None;
+                route.last_admission = None;
+                route.last_tool_repair = None;
+                route.recent_admissions.clear();
+                route.recent_tool_repairs.clear();
             }
         }
     }
 
+    let routing_config = build_model_routing_config(config);
+    let current_route_profile =
+        crate::application::services::model_lane_resolution::resolve_route_selection_profile(
+            &routing_config,
+            &route,
+            ports.model_profile_catalog.as_deref(),
+        );
+    let current_supports_vision = ports
+        .agent_runtime
+        .supports_vision_for_route(&route.provider, &route.model);
+    let capability_route_override =
+        crate::application::services::turn_model_routing::resolve_turn_route_override(
+            &routing_config,
+            content,
+            &route.provider,
+            &route.model,
+            &current_route_profile,
+            current_supports_vision,
+            ports.model_profile_catalog.as_deref(),
+        );
+    if let Some(route_override) = capability_route_override.as_ref() {
+        tracing::info!(
+            target: "capability_routing",
+            lane = ?route_override.lane,
+            provider = %route_override.provider,
+            model = %route_override.model,
+            "Channel turn capability route override"
+        );
+        route.provider = route_override.provider.clone();
+        route.model = route_override.model.clone();
+        route.lane = Some(route_override.lane);
+        route.candidate_index = route_override.candidate_index;
+        route.last_admission = None;
+        route.last_tool_repair = None;
+        route.recent_admissions.clear();
+        route.recent_tool_repairs.clear();
+    }
+
     // ── #5: Auto-save memory on inbound ──────────────────────────
     if let Some(ref mem) = ports.memory {
-        if inbound_message_service::should_autosave(config.auto_save_memory, content)
-            && !mem.should_skip_autosave(content)
-        {
-            let autosave_key = format!("channel:{conversation_key}:user");
+        if inbound_message_service::should_autosave(config.auto_save_memory, content) {
             let _ = mem
                 .store(
-                    &autosave_key,
+                    &inbound_message_service::autosave_memory_key(envelope),
                     content,
                     &crate::domain::memory::MemoryCategory::Conversation,
                     Some(conversation_key),
@@ -276,11 +344,13 @@ async fn handle_regular_message(
             user_profile,
             Some(&current_conversation),
             dialogue_state.as_ref(),
+            ports.channel_registry.configured_delivery_target(),
         )
         .await;
     if let Some(interpretation) = interpretation.as_ref() {
         if let Some(block) =
-            crate::application::services::turn_interpretation::format_turn_interpretation(
+            crate::application::services::turn_interpretation::format_turn_interpretation_for_turn(
+                content,
                 interpretation,
             )
         {
@@ -290,16 +360,45 @@ async fn handle_regular_message(
     let resolved_turn_defaults =
         crate::application::services::turn_defaults_resolution::resolve_turn_defaults(
             interpretation.as_ref(),
+            ports.channel_registry.configured_delivery_target(),
         );
+    if let (Some(loader), Some(plan)) = (
+        ports.scoped_instruction_context.as_ref(),
+        crate::application::services::scoped_instruction_resolution::build_scoped_instruction_plan(
+            content,
+            interpretation.as_ref(),
+        ),
+    ) {
+        let snippets = loader
+            .load_scoped_instructions(ScopedInstructionRequest {
+                session_id: Some(conversation_key.to_string()),
+                path_hints: plan.hints.into_iter().map(|hint| hint.path).collect(),
+                max_files: plan.max_files,
+                max_total_chars: plan.max_total_chars,
+            })
+            .await
+            .unwrap_or_default();
+        if let Some(block) =
+            crate::application::services::scoped_instruction_resolution::format_scoped_instruction_block(&snippets)
+        {
+            history.push(ChatMessage::system(block));
+        }
+    }
 
     // #6: Add prior turns (with #23 vision normalization)
     let prior_turns = ports.history.get_history(conversation_key);
-    let supports_vision = ports.agent_runtime.supports_vision();
+    let supports_vision = capability_route_override
+        .as_ref()
+        .is_some_and(|override_route| {
+            override_route.lane == crate::config::schema::CapabilityLane::MultimodalUnderstanding
+        })
+        || ports
+            .agent_runtime
+            .supports_vision_for_route(&route.provider, &route.model);
     for turn in prior_turns {
-        if !supports_vision && turn.content.contains("[IMAGE:") {
+        if !supports_vision && contains_image_attachment_marker(&turn.content) {
             // Strip image markers from history for non-vision providers
-            // Simple approach: remove [IMAGE:...] blocks
-            let cleaned = strip_image_markers(&turn.content);
+            let cleaned = strip_image_attachment_markers(&turn.content);
             history.push(ChatMessage {
                 content: cleaned,
                 ..turn
@@ -381,6 +480,16 @@ async fn handle_regular_message(
                     &config.agent_id,
                     Some(&conv_key),
                     interpretation.as_ref(),
+                    &route.recent_tool_repairs,
+                    route
+                        .last_admission
+                        .as_ref()
+                        .map(|admission| admission.reasons.as_slice())
+                        .unwrap_or(&[]),
+                    route
+                        .last_admission
+                        .as_ref()
+                        .and_then(|admission| admission.recommended_action),
                     &config.prompt_budget,
                     None, // first turn → full context
                 )
@@ -416,7 +525,7 @@ async fn handle_regular_message(
                         config,
                         ports,
                         resolved_turn_defaults.clone(),
-                        &route,
+                        route.clone(),
                         history,
                     )
                     .await;
@@ -439,6 +548,16 @@ async fn handle_regular_message(
                     &config.agent_id,
                     Some(conversation_key),
                     interpretation.as_ref(),
+                    &route.recent_tool_repairs,
+                    route
+                        .last_admission
+                        .as_ref()
+                        .map(|admission| admission.reasons.as_slice())
+                        .unwrap_or(&[]),
+                    route
+                        .last_admission
+                        .as_ref()
+                        .and_then(|admission| admission.recommended_action),
                     &config.prompt_budget,
                     Some(&continuation),
                 )
@@ -467,7 +586,7 @@ async fn handle_regular_message(
                         config,
                         ports,
                         resolved_turn_defaults.clone(),
-                        &route,
+                        route.clone(),
                         history,
                     )
                     .await;
@@ -491,10 +610,189 @@ async fn handle_regular_message(
         config,
         ports,
         resolved_turn_defaults,
-        &route,
+        route,
         history,
     )
     .await
+}
+
+fn build_model_routing_config(config: &InboundMessageConfig) -> crate::config::schema::Config {
+    let mut routing = crate::config::schema::Config::default();
+    routing.default_provider = Some(config.default_provider.clone());
+    routing.default_model = Some(config.default_model.clone());
+    routing.model_preset = config.model_preset.clone();
+    routing.model_lanes = config.model_lanes.clone();
+    routing.model_routes = config.model_routes.iter().cloned().collect();
+    routing
+}
+
+fn provider_context_input_for_history(
+    history: &[ChatMessage],
+) -> crate::application::services::provider_context_budget::ProviderContextBudgetInput {
+    let non_system_messages = history.iter().filter(|msg| msg.role != "system").count();
+    let prior_chat_messages = non_system_messages.saturating_sub(1);
+    let total_chars: usize = history.iter().map(|msg| msg.content.chars().count()).sum();
+    let system_breakdown = provider_history_system_breakdown(history);
+    let system_chars: usize = history
+        .iter()
+        .filter(|msg| msg.role == "system")
+        .map(|msg| msg.content.chars().count())
+        .sum();
+    let current_turn_chars = history
+        .iter()
+        .rev()
+        .find(|msg| msg.role != "system")
+        .map(|msg| msg.content.chars().count())
+        .unwrap_or(0);
+    let prior_chat_chars = total_chars
+        .saturating_sub(system_chars)
+        .saturating_sub(current_turn_chars);
+
+    crate::application::services::provider_context_budget::ProviderContextBudgetInput {
+        total_chars,
+        prior_chat_messages,
+        current_turn_messages: usize::from(non_system_messages > 0),
+        bootstrap_chars: lookup_system_section_chars(&system_breakdown, "bootstrap"),
+        core_memory_chars: lookup_system_section_chars(&system_breakdown, "core_memory"),
+        runtime_interpretation_chars: lookup_system_section_chars(
+            &system_breakdown,
+            "runtime_interpretation",
+        ),
+        scoped_context_chars: lookup_system_section_chars(&system_breakdown, "scoped_context"),
+        resolution_chars: lookup_system_section_chars(&system_breakdown, "resolution"),
+        prior_chat_chars,
+        current_turn_chars,
+        ..Default::default()
+    }
+}
+
+fn provider_history_system_breakdown(history: &[ChatMessage]) -> Vec<(String, usize)> {
+    let mut breakdown = std::collections::BTreeMap::<String, usize>::new();
+    for message in history.iter().filter(|msg| msg.role == "system") {
+        for (name, chars) in classify_system_message_sections(&message.content) {
+            *breakdown.entry(name.to_string()).or_default() += chars;
+        }
+    }
+    breakdown.into_iter().collect()
+}
+
+fn classify_system_message_sections(content: &str) -> Vec<(&'static str, usize)> {
+    let markers = [
+        ("[core-memory]\n", "core_memory"),
+        ("[runtime-interpretation]\n", "runtime_interpretation"),
+        ("[scoped-context]\n", "scoped_context"),
+        ("[resolution-plan]\n", "resolution"),
+        ("[clarification-policy]\n", "resolution"),
+        ("[execution-guidance]\n", "resolution"),
+    ];
+
+    let mut ranges = markers
+        .iter()
+        .filter_map(|(marker, name)| content.find(marker).map(|start| (start, *marker, *name)))
+        .collect::<Vec<_>>();
+    ranges.sort_by_key(|(start, _, _)| *start);
+
+    if ranges.is_empty() {
+        return vec![("bootstrap", content.chars().count())];
+    }
+
+    let mut sections = Vec::new();
+    if let Some((first_start, _, _)) = ranges.first().copied() {
+        if first_start > 0 {
+            sections.push(("bootstrap", content[..first_start].chars().count()));
+        }
+    }
+
+    for (index, (start, marker, name)) in ranges.iter().enumerate() {
+        let end = ranges
+            .get(index + 1)
+            .map(|(next_start, _, _)| *next_start)
+            .unwrap_or(content.len());
+        let slice = &content[*start..end];
+        if !slice.is_empty() {
+            let marker_chars = marker.chars().count();
+            sections.push((*name, slice.chars().count().max(marker_chars)));
+        }
+    }
+
+    sections
+}
+
+fn lookup_system_section_chars(breakdown: &[(String, usize)], section: &str) -> usize {
+    breakdown
+        .iter()
+        .find_map(|(name, chars)| (name == section).then_some(*chars))
+        .unwrap_or(0)
+}
+
+fn format_blocked_turn_admission_response(
+    decision: &crate::application::services::turn_admission::CandidateAdmissionDecision,
+) -> String {
+    use crate::domain::turn_admission::{
+        AdmissionRepairHint, CandidateAdmissionReason, ContextPressureState, TurnIntentCategory,
+    };
+
+    if let Some(AdmissionRepairHint::RefreshCapabilityMetadata(lane)) = decision.recommended_action
+    {
+        return format!(
+            "Capability metadata for `{}` is stale or low-confidence on the current route. Refresh model profiles or switch to a compatible lane and try again.",
+            blocked_lane_name(lane)
+        );
+    }
+
+    match (decision.snapshot.intent, decision.snapshot.pressure_state) {
+        (_, ContextPressureState::OverflowRisk) => {
+            match decision.recommended_action {
+                Some(AdmissionRepairHint::StartFreshHandoff) => {
+                    "This turn is too large for the current route's safe context budget. Start a fresh handoff or switch to a larger-context model.".into()
+                }
+                _ => {
+                    "This turn is too large for the current route's safe context budget. Compact the session first or switch to a larger-context model.".into()
+                }
+            }
+        }
+        (TurnIntentCategory::MultimodalUnderstanding, _) => {
+            "The current route cannot handle image-aware input. Switch to a multimodal route and try again.".into()
+        }
+        (TurnIntentCategory::ImageGeneration, _) => {
+            "The current route cannot generate images. Switch to an image-generation lane and try again.".into()
+        }
+        (TurnIntentCategory::AudioGeneration, _) => {
+            "The current route cannot generate audio. Switch to an audio-capable lane and try again.".into()
+        }
+        (TurnIntentCategory::VideoGeneration, _) => {
+            "The current route cannot generate video. Switch to a video-capable lane and try again.".into()
+        }
+        (TurnIntentCategory::MusicGeneration, _) => {
+            "The current route cannot generate music. Switch to a music-capable lane and try again.".into()
+        }
+        (_, _) if decision.reasons.iter().any(|reason| {
+            matches!(
+                reason,
+                CandidateAdmissionReason::CapabilityMetadataUnknown(_)
+                    | CandidateAdmissionReason::CapabilityMetadataLowConfidence(_)
+                    | CandidateAdmissionReason::CapabilityMetadataStale(_)
+            )
+        }) => {
+            "The current route has incomplete capability metadata for this turn. Refresh model profiles or switch to a compatible lane and try again.".into()
+        }
+        _ => "The current route cannot safely execute this turn. Switch to a compatible lane or start a fresh handoff.".into(),
+    }
+}
+
+fn blocked_lane_name(lane: crate::config::schema::CapabilityLane) -> &'static str {
+    match lane {
+        crate::config::schema::CapabilityLane::Reasoning => "reasoning",
+        crate::config::schema::CapabilityLane::CheapReasoning => "cheap_reasoning",
+        crate::config::schema::CapabilityLane::Embedding => "embedding",
+        crate::config::schema::CapabilityLane::MultimodalUnderstanding => {
+            "multimodal_understanding"
+        }
+        crate::config::schema::CapabilityLane::ImageGeneration => "image_generation",
+        crate::config::schema::CapabilityLane::AudioGeneration => "audio_generation",
+        crate::config::schema::CapabilityLane::VideoGeneration => "video_generation",
+        crate::config::schema::CapabilityLane::MusicGeneration => "music_generation",
+    }
 }
 
 /// Execute the agent turn and handle the response.
@@ -506,7 +804,7 @@ async fn execute_agent_turn(
     config: &InboundMessageConfig,
     ports: &InboundMessagePorts,
     resolved_turn_defaults: crate::domain::turn_defaults::ResolvedTurnDefaults,
-    route: &crate::ports::route_selection::RouteSelection,
+    mut route: crate::ports::route_selection::RouteSelection,
     history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
     struct ConversationContextGuard {
@@ -541,6 +839,81 @@ async fn execute_agent_turn(
         actor_id: envelope.actor_id.clone(),
     };
 
+    let routing_config = build_model_routing_config(config);
+    let route_profile =
+        crate::application::services::model_lane_resolution::resolve_route_selection_profile(
+            &routing_config,
+            &route,
+            ports.model_profile_catalog.as_deref(),
+        );
+    let route_capabilities = ports.agent_runtime.capabilities_for(&route.provider);
+    let admission_decision = crate::application::services::turn_admission::assess_turn_admission(
+        crate::application::services::turn_admission::TurnAdmissionInput {
+            config: Some(&routing_config),
+            user_message: content,
+            execution_guidance: None,
+            tool_specs: &[],
+            current_provider: &route.provider,
+            current_model: &route.model,
+            current_lane: route.lane,
+            current_profile: &route_profile,
+            provider_capabilities: &route_capabilities,
+            provider_context: provider_context_input_for_history(&history),
+            catalog: ports.model_profile_catalog.as_deref(),
+        },
+    );
+
+    tracing::info!(
+        target: "turn_admission",
+        provider = %route.provider,
+        model = %route.model,
+        lane = ?route.lane,
+        intent = %crate::domain::turn_admission::turn_intent_name(admission_decision.snapshot.intent),
+        pressure = %crate::domain::turn_admission::context_pressure_state_name(
+            admission_decision.snapshot.pressure_state
+        ),
+        action = %crate::domain::turn_admission::turn_admission_action_name(
+            admission_decision.snapshot.action
+        ),
+        reasons = ?admission_decision.reasons,
+        "Channel turn admission decision"
+    );
+
+    if let Some(route_override) = admission_decision.route_override.as_ref() {
+        route.provider = route_override.provider.clone();
+        route.model = route_override.model.clone();
+        route.lane = Some(route_override.lane);
+        route.candidate_index = route_override.candidate_index;
+    }
+    route.last_tool_repair = None;
+    route.recent_tool_repairs.clear();
+    let observed_at_unix = chrono::Utc::now().timestamp();
+    let admission_state = RouteAdmissionState {
+        observed_at_unix,
+        snapshot: admission_decision.snapshot.clone(),
+        reasons: admission_decision.reasons.clone(),
+        recommended_action: admission_decision.recommended_action,
+    };
+    route.recent_admissions =
+        crate::application::services::route_admission_history::append_route_admission_state(
+            &route.recent_admissions,
+            Some(admission_state.clone()),
+            observed_at_unix,
+        );
+    route.last_admission = Some(admission_state);
+    ports.routes.set_route(conversation_key, route.clone());
+
+    if admission_decision.snapshot.action
+        == crate::domain::turn_admission::TurnAdmissionAction::Block
+    {
+        return Ok(HandleResult::Response {
+            conversation_key: conversation_key.to_string(),
+            response_text: format_blocked_turn_admission_response(&admission_decision),
+            tool_summary: String::new(),
+            tools_used: false,
+        });
+    }
+
     // ── Set current conversation context for tools that need "here" ──
     let _conversation_context_guard = if let Some(ctx_port) = ports.conversation_context.clone() {
         ctx_port.set_current(Some(current_conversation.clone()));
@@ -561,10 +934,12 @@ async fn execute_agent_turn(
 
     // ── #11: Ack reaction + typing ───────────────────────────────
     if config.ack_reactions {
-        let _ = ports
-            .channel_output
-            .add_reaction(&envelope.reply_ref, &envelope.conversation_ref, "👀")
-            .await;
+        if let Some(message_id) = envelope.event_ref.as_deref() {
+            let _ = ports
+                .channel_output
+                .add_reaction(&envelope.reply_ref, message_id, "👀")
+                .await;
+        }
     }
     let _ = ports.channel_output.start_typing(&envelope.reply_ref).await;
 
@@ -722,6 +1097,15 @@ async fn execute_agent_turn(
                 .history
                 .append_turn(conversation_key, ChatMessage::assistant(&history_response));
 
+            route.last_tool_repair = turn_result.last_tool_repair.clone();
+            route.recent_tool_repairs =
+                crate::application::services::tool_repair::append_tool_repair_traces(
+                    &route.recent_tool_repairs,
+                    &turn_result.tool_repairs,
+                    chrono::Utc::now().timestamp(),
+                );
+            ports.routes.set_route(conversation_key, route);
+
             if let Some(ref store) = ports.dialogue_state_store {
                 let existing = store.get(conversation_key);
                 if dialogue_state_service::should_materialize_state(
@@ -764,14 +1148,16 @@ async fn execute_agent_turn(
 
             // ── #11: Swap ack reaction to done ───────────────────
             if config.ack_reactions {
-                let _ = ports
-                    .channel_output
-                    .remove_reaction(&envelope.reply_ref, &envelope.conversation_ref, "👀")
-                    .await;
-                let _ = ports
-                    .channel_output
-                    .add_reaction(&envelope.reply_ref, &envelope.conversation_ref, "✅")
-                    .await;
+                if let Some(message_id) = envelope.event_ref.as_deref() {
+                    let _ = ports
+                        .channel_output
+                        .remove_reaction(&envelope.reply_ref, message_id, "👀")
+                        .await;
+                    let _ = ports
+                        .channel_output
+                        .add_reaction(&envelope.reply_ref, message_id, "✅")
+                        .await;
+                }
             }
 
             Ok(HandleResult::Response {
@@ -790,13 +1176,8 @@ async fn execute_agent_turn(
                     .await;
             }
 
-            let err_str = e.to_string();
-
             // ── #20: Context overflow recovery ───────────────────
-            if err_str.contains("context_length_exceeded")
-                || err_str.contains("context window")
-                || err_str.contains("maximum context length")
-            {
+            if matches!(e.kind, AgentRuntimeErrorKind::ContextLimitExceeded) {
                 let compacted = ports.history.compact_history(conversation_key, 6);
                 if compacted {
                     // Reinject summary if available
@@ -830,7 +1211,7 @@ async fn execute_agent_turn(
             }
 
             // ── #22: Timeout detection ───────────────────────────
-            if err_str.contains("deadline has elapsed") || err_str.contains("timed out") {
+            if matches!(e.kind, AgentRuntimeErrorKind::Timeout) {
                 ports.history.rollback_last_turn(conversation_key, content);
                 let msg = "⏱️ Request timed out. Try a simpler question or `/new`.";
                 let _ = ports
@@ -847,8 +1228,7 @@ async fn execute_agent_turn(
 
             // ── #21: Generic error ───────────────────────────────
             ports.history.rollback_last_turn(conversation_key, content);
-            let safe_err = err_str.replace("Bearer ", "Bearer [REDACTED]");
-            let msg = format!("⚠️ {safe_err}");
+            let msg = format!("⚠️ {e}");
             let _ = ports
                 .channel_output
                 .send_message(&envelope.reply_ref, &msg, envelope.thread_ref.as_deref())
@@ -878,42 +1258,6 @@ fn truncate_chars(s: &str, max: usize) -> String {
 
 fn channel_user_profile_key(envelope: &InboundEnvelope) -> String {
     format!("channel:{}:{}", envelope.source_adapter, envelope.actor_id)
-}
-
-/// Strip [IMAGE:...] markers from text for non-vision providers.
-fn strip_image_markers(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '[' {
-            // Check if this is [IMAGE: prefix
-            let mut lookahead = String::from(ch);
-            let mut is_image = false;
-            for _ in 0..6 {
-                if let Some(&next) = chars.peek() {
-                    lookahead.push(next);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            if lookahead.starts_with("[IMAGE:") {
-                // Skip until closing ]
-                is_image = true;
-                for c in chars.by_ref() {
-                    if c == ']' {
-                        break;
-                    }
-                }
-            }
-            if !is_image {
-                result.push_str(&lookahead);
-            }
-        } else {
-            result.push(ch);
-        }
-    }
-    result
 }
 
 #[cfg(test)]
@@ -993,6 +1337,12 @@ mod tests {
             RouteSelection {
                 provider: self.default_provider.clone(),
                 model: self.default_model.clone(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
             }
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}
@@ -1013,7 +1363,10 @@ mod tests {
             _mi: usize,
             _to: u64,
             _delta: Option<tokio::sync::mpsc::Sender<String>>,
-        ) -> Result<crate::ports::agent_runtime::AgentTurnResult> {
+        ) -> std::result::Result<
+            crate::ports::agent_runtime::AgentTurnResult,
+            crate::ports::agent_runtime::AgentRuntimeError,
+        > {
             Ok(crate::ports::agent_runtime::AgentTurnResult {
                 response: self.response.clone(),
                 history: vec![],
@@ -1021,7 +1374,32 @@ mod tests {
                 tool_names: vec![],
                 tool_facts: vec![],
                 tool_summary: String::new(),
+                last_tool_repair: None,
+                tool_repairs: vec![],
             })
+        }
+    }
+
+    struct MockFailingRuntime {
+        error: crate::ports::agent_runtime::AgentRuntimeError,
+    }
+
+    #[async_trait]
+    impl AgentRuntimePort for MockFailingRuntime {
+        async fn execute_turn(
+            &self,
+            _h: Vec<ChatMessage>,
+            _p: &str,
+            _m: &str,
+            _t: f64,
+            _mi: usize,
+            _to: u64,
+            _delta: Option<tokio::sync::mpsc::Sender<String>>,
+        ) -> std::result::Result<
+            crate::ports::agent_runtime::AgentTurnResult,
+            crate::ports::agent_runtime::AgentRuntimeError,
+        > {
+            Err(self.error.clone())
         }
     }
 
@@ -1051,6 +1429,76 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordingChannelOutput {
+        reactions: Mutex<Vec<(String, String, String, &'static str)>>,
+    }
+
+    #[async_trait]
+    impl ChannelOutputPort for RecordingChannelOutput {
+        async fn send_message(&self, _r: &str, _t: &str, _th: Option<&str>) -> Result<()> {
+            Ok(())
+        }
+        async fn start_typing(&self, _r: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn stop_typing(&self, _r: &str) -> Result<()> {
+            Ok(())
+        }
+        async fn add_reaction(&self, r: &str, m: &str, e: &str) -> Result<()> {
+            self.reactions.lock().unwrap().push((
+                r.to_string(),
+                m.to_string(),
+                e.to_string(),
+                "add",
+            ));
+            Ok(())
+        }
+        async fn remove_reaction(&self, r: &str, m: &str, e: &str) -> Result<()> {
+            self.reactions.lock().unwrap().push((
+                r.to_string(),
+                m.to_string(),
+                e.to_string(),
+                "remove",
+            ));
+            Ok(())
+        }
+        async fn fetch_message_text(&self, _m: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn supports_streaming(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn provider_context_input_breaks_system_history_into_artifacts() {
+        let history = vec![
+            ChatMessage::system(
+                concat!(
+                    "bootstrap prelude\n",
+                    "[core-memory]\nremember this\n",
+                    "[runtime-interpretation]\nstate\n",
+                    "[scoped-context]\nsubtree\n",
+                    "[execution-guidance]\nreply from state\n",
+                )
+                .to_string(),
+            ),
+            ChatMessage::assistant("prior reply"),
+            ChatMessage::user("current question"),
+        ];
+
+        let input = provider_context_input_for_history(&history);
+
+        assert_eq!(input.bootstrap_chars, "bootstrap prelude\n".chars().count());
+        assert!(input.core_memory_chars > 0);
+        assert!(input.runtime_interpretation_chars > 0);
+        assert!(input.scoped_context_chars > 0);
+        assert!(input.resolution_chars > 0);
+        assert_eq!(input.prior_chat_messages, 1);
+        assert_eq!(input.current_turn_messages, 1);
+    }
+
     struct MockRegistry;
     #[async_trait]
     impl ChannelRegistryPort for MockRegistry {
@@ -1077,6 +1525,8 @@ mod tests {
             max_tool_iterations: 5,
             auto_save_memory: false,
             model_routes: vec![],
+            model_lanes: vec![],
+            model_preset: None,
             thread_root_max_chars: 500,
             thread_parent_recent_turns: 3,
             thread_parent_max_chars: 2000,
@@ -1098,6 +1548,7 @@ mod tests {
             source_adapter: "telegram".into(),
             actor_id: "user1".into(),
             conversation_ref: "telegram_user1".into(),
+            event_ref: None,
             reply_ref: "chat123".into(),
             thread_ref: None,
             content: content.into(),
@@ -1122,7 +1573,9 @@ mod tests {
             memory: None,
             event_tx: None,
             conversation_context: None,
+            model_profile_catalog: None,
             turn_defaults_context: None,
+            scoped_instruction_context: None,
             conversation_store: None,
             dialogue_state_store: None,
             run_recipe_store: None,
@@ -1153,6 +1606,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ack_reactions_use_event_ref_not_conversation_ref() {
+        let output = Arc::new(RecordingChannelOutput::default());
+        let ports = InboundMessagePorts {
+            history: Arc::new(MockHistory::new()),
+            routes: Arc::new(MockRoutes {
+                default_provider: "openrouter".into(),
+                default_model: "default-model".into(),
+            }),
+            hooks: Arc::new(NoOpHooks),
+            channel_output: output.clone(),
+            agent_runtime: Arc::new(MockRuntime {
+                response: "Hi!".into(),
+            }),
+            channel_registry: Arc::new(MockRegistry),
+            session_summary: None,
+            memory: None,
+            event_tx: None,
+            conversation_context: None,
+            model_profile_catalog: None,
+            turn_defaults_context: None,
+            scoped_instruction_context: None,
+            conversation_store: None,
+            dialogue_state_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
+        };
+        let mut config = test_config();
+        config.ack_reactions = true;
+        let caps = vec![ChannelCapability::SendText];
+        let mut env = test_envelope("Hello");
+        env.event_ref = Some("telegram_42_99".into());
+        env.conversation_ref = "telegram_user1".into();
+
+        handle(&env, &caps, &config, &ports).await.unwrap();
+
+        let reactions = output.reactions.lock().unwrap().clone();
+        assert_eq!(
+            reactions,
+            vec![
+                (
+                    "chat123".into(),
+                    "telegram_42_99".into(),
+                    "👀".into(),
+                    "add"
+                ),
+                (
+                    "chat123".into(),
+                    "telegram_42_99".into(),
+                    "👀".into(),
+                    "remove"
+                ),
+                (
+                    "chat123".into(),
+                    "telegram_42_99".into(),
+                    "✅".into(),
+                    "add"
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn handle_command_clears_session() {
         let env = test_envelope("/new");
         let caps = vec![
@@ -1174,16 +1689,57 @@ mod tests {
         assert!(!ports.history.has_history("telegram_user1"));
     }
 
+    #[tokio::test]
+    async fn context_limit_recovery_uses_typed_runtime_error() {
+        let env = test_envelope("Hello");
+        let caps = vec![ChannelCapability::SendText];
+        let ports = InboundMessagePorts {
+            history: Arc::new(MockHistory::new()),
+            routes: Arc::new(MockRoutes {
+                default_provider: "openrouter".into(),
+                default_model: "default-model".into(),
+            }),
+            hooks: Arc::new(NoOpHooks),
+            channel_output: Arc::new(MockChannelOutput),
+            agent_runtime: Arc::new(MockFailingRuntime {
+                error: crate::ports::agent_runtime::AgentRuntimeError::new(
+                    crate::ports::agent_runtime::AgentRuntimeErrorKind::ContextLimitExceeded,
+                    "too many tokens",
+                ),
+            }),
+            channel_registry: Arc::new(MockRegistry),
+            session_summary: None,
+            memory: None,
+            event_tx: None,
+            conversation_context: None,
+            model_profile_catalog: None,
+            turn_defaults_context: None,
+            scoped_instruction_context: None,
+            conversation_store: None,
+            dialogue_state_store: None,
+            run_recipe_store: None,
+            user_profile_store: None,
+        };
+
+        let result = handle(&env, &caps, &test_config(), &ports).await.unwrap();
+        match result {
+            HandleResult::Response { response_text, .. } => {
+                assert!(response_text.contains("Context window exceeded"));
+            }
+            other => panic!("expected Response, got {other:?}"),
+        }
+    }
+
     #[test]
     fn strip_image_markers_removes_blocks() {
         let text = "Hello [IMAGE:abc123] world";
-        assert_eq!(strip_image_markers(text), "Hello  world");
+        assert_eq!(strip_image_attachment_markers(text), "Hello  world");
     }
 
     #[test]
     fn strip_image_markers_preserves_normal_brackets() {
         let text = "Hello [world] test";
-        assert_eq!(strip_image_markers(text), "Hello [world] test");
+        assert_eq!(strip_image_attachment_markers(text), "Hello [world] test");
     }
 
     #[test]
@@ -1195,5 +1751,60 @@ mod tests {
     fn truncate_chars_over_limit() {
         let result = truncate_chars("hello world", 5);
         assert_eq!(result, "hello…");
+    }
+
+    #[test]
+    fn blocked_turn_response_mentions_stale_or_low_confidence_metadata() {
+        let response = format_blocked_turn_admission_response(
+            &crate::application::services::turn_admission::CandidateAdmissionDecision {
+                snapshot: crate::domain::turn_admission::TurnAdmissionSnapshot {
+                    intent: crate::domain::turn_admission::TurnIntentCategory::ImageGeneration,
+                    pressure_state: crate::domain::turn_admission::ContextPressureState::Warning,
+                    action: crate::domain::turn_admission::TurnAdmissionAction::Block,
+                },
+                required_lane: Some(crate::config::schema::CapabilityLane::ImageGeneration),
+                route_override: None,
+                reasons: vec![
+                    crate::domain::turn_admission::CandidateAdmissionReason::CapabilityMetadataLowConfidence(
+                        crate::config::schema::CapabilityLane::ImageGeneration,
+                    ),
+                ],
+                recommended_action: Some(
+                    crate::domain::turn_admission::AdmissionRepairHint::RefreshCapabilityMetadata(
+                        crate::config::schema::CapabilityLane::ImageGeneration,
+                    ),
+                ),
+                requires_compaction: false,
+            },
+        );
+
+        assert!(response.contains("image_generation"));
+        assert!(response.contains("stale or low-confidence"));
+        assert!(response.contains("Refresh model profiles"));
+    }
+
+    #[test]
+    fn blocked_turn_response_mentions_safe_context_budget_on_overflow_risk() {
+        let response = format_blocked_turn_admission_response(
+            &crate::application::services::turn_admission::CandidateAdmissionDecision {
+                snapshot: crate::domain::turn_admission::TurnAdmissionSnapshot {
+                    intent: crate::domain::turn_admission::TurnIntentCategory::Reply,
+                    pressure_state: crate::domain::turn_admission::ContextPressureState::OverflowRisk,
+                    action: crate::domain::turn_admission::TurnAdmissionAction::Block,
+                },
+                required_lane: None,
+                route_override: None,
+                reasons: vec![
+                    crate::domain::turn_admission::CandidateAdmissionReason::CandidateWindowExceeded,
+                ],
+                recommended_action: Some(
+                    crate::domain::turn_admission::AdmissionRepairHint::StartFreshHandoff,
+                ),
+                requires_compaction: false,
+            },
+        );
+
+        assert!(response.contains("safe context budget"));
+        assert!(response.contains("fresh handoff"));
     }
 }

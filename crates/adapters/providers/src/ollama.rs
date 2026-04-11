@@ -554,7 +554,7 @@ impl OllamaProvider {
         }
     }
 
-    /// Convert Ollama tool calls to the JSON format expected by parse_tool_calls in loop_.rs
+    /// Convert Ollama tool calls to the JSON format expected by the runtime-loop parser.
     ///
     /// Handles quirky model behavior where tool calls are wrapped:
     /// - `{"name": "tool_call", "arguments": {"name": "shell", "arguments": {...}}}`
@@ -670,7 +670,7 @@ impl Provider for OllamaProvider {
             .send_request(messages, &normalized_model, temperature, should_auth, None)
             .await?;
 
-        // If model returned tool calls, format them for loop_.rs's parse_tool_calls
+        // If model returned tool calls, format them for the runtime-loop parser.
         if !response.message.tool_calls.is_empty() {
             tracing::debug!(
                 "Ollama returned {} tool call(s), formatting for loop parser",
@@ -713,7 +713,7 @@ impl Provider for OllamaProvider {
             )
             .await?;
 
-        // If model returned tool calls, format them for loop_.rs's parse_tool_calls
+        // If model returned tool calls, format them for the runtime-loop parser.
         if !response.message.tool_calls.is_empty() {
             tracing::debug!(
                 "Ollama returned {} tool call(s), formatting for loop parser",
@@ -748,7 +748,7 @@ impl Provider for OllamaProvider {
         let api_messages = self.convert_messages(messages);
 
         // Tools arrive pre-formatted in OpenAI/Ollama-compatible JSON from
-        // tools_to_openai_format() in loop_.rs — pass them through directly.
+        // the runtime-loop tool formatter — pass them through directly.
         let tools_opt = if tools.is_empty() { None } else { Some(tools) };
 
         let response = self
@@ -801,8 +801,8 @@ impl Provider for OllamaProvider {
 
         // No native tool calls — use the effective content (content with
         // `<think>` tags stripped, falling back to thinking field).
-        // The loop_.rs `parse_tool_calls` will extract any XML-style tool
-        // calls from the text, so preserve `<tool_call>` tags here.
+        // The runtime-loop parser will extract any XML-style tool calls from
+        // the text, so preserve `<tool_call>` tags here.
         let effective = Self::effective_content(
             &response.message.content,
             response.message.thinking.as_deref(),

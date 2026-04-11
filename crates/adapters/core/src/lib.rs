@@ -31,6 +31,8 @@ pub mod middleware;
 pub mod pipeline;
 pub mod routing;
 pub mod runtime;
+pub mod runtime_routes;
+pub mod scoped_instruction_context;
 pub mod service;
 pub mod skills;
 pub mod storage;
@@ -59,6 +61,7 @@ pub(crate) fn envelope_from_channel_message(
         } else {
             format!("{}_{}", msg.channel, msg.sender)
         },
+        event_ref: Some(msg.id.clone()),
         reply_ref: msg.reply_target.clone(),
         thread_ref: msg.thread_ts.clone(),
         content: msg.content.clone(),

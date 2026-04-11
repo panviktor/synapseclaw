@@ -1695,7 +1695,15 @@ pub fn create_routed_provider_with_options(
                     (!trimmed_key.is_empty()).then_some(trimmed_key)
                 })
             });
-        let key = routed_credential.or(api_key);
+        // Non-primary routed providers must resolve their own credentials
+        // unless the route explicitly overrides them. Reusing the primary
+        // credential here causes cross-provider failures (for example
+        // openai-codex primary + openrouter cheap lane).
+        let key = if name == primary_name {
+            routed_credential.or(api_key)
+        } else {
+            routed_credential
+        };
         // Only use api_url for the primary provider
         let url = if name == primary_name { api_url } else { None };
         match create_resilient_provider_with_options(name, key, url, reliability, options) {
@@ -3031,6 +3039,32 @@ mod tests {
         // Primary uses a ZAI key; fallbacks (lmstudio, ollama) should NOT
         // receive this key; they resolve their own credentials independently.
         let provider = create_resilient_provider("zai", Some("zai-test-key"), None, &reliability);
+        assert!(provider.is_ok());
+    }
+
+    #[test]
+    fn routed_provider_resolves_non_primary_credential_independently() {
+        let _env_lock = env_lock();
+        let _openrouter_guard = EnvGuard::set("OPENROUTER_API_KEY", Some("sk-or-v1-route-key"));
+
+        let reliability = synapse_domain::config::schema::ReliabilityConfig::default();
+        let routes = vec![synapse_domain::config::schema::ModelRouteConfig {
+            hint: "cheap".into(),
+            capability: None,
+            provider: "openrouter".into(),
+            model: "qwen/qwen3.6-plus".into(),
+            api_key: None,
+            profile: synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
+        }];
+
+        let provider = create_routed_provider(
+            "openai",
+            Some("sk-proj-primary-key"),
+            None,
+            &reliability,
+            &routes,
+            "gpt-5.4",
+        );
         assert!(provider.is_ok());
     }
 

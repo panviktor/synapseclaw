@@ -176,6 +176,27 @@ pub struct Config {
     #[serde(default)]
     pub model_routes: Vec<ModelRouteConfig>,
 
+    /// Capability-aware model lanes — ordered candidates per runtime lane.
+    ///
+    /// Candidate `0` is the default for the lane; later entries act as
+    /// fallbacks or manual runtime alternatives. This complements the legacy
+    /// `model_routes` table and is the preferred long-term routing surface.
+    #[serde(default)]
+    pub model_lanes: Vec<ModelLaneConfig>,
+
+    /// Optional out-of-the-box routing preset that expands into capability
+    /// lanes for typical user setups.
+    ///
+    /// Examples:
+    /// - `chatgpt`
+    /// - `claude`
+    /// - `openrouter`
+    /// - `local`
+    ///
+    /// Explicit `model_lanes` entries override the preset lane-by-lane.
+    #[serde(default, alias = "preset")]
+    pub model_preset: Option<String>,
+
     /// Embedding routing rules — route `hint:<name>` to specific provider+model combos.
     #[serde(default)]
     pub embedding_routes: Vec<EmbeddingRouteConfig>,
@@ -1246,78 +1267,7 @@ impl Default for CostConfig {
 
 /// Default pricing for popular models (USD per 1M tokens)
 fn get_default_pricing() -> std::collections::HashMap<String, ModelPricing> {
-    let mut prices = std::collections::HashMap::new();
-
-    // Anthropic models
-    prices.insert(
-        "anthropic/claude-sonnet-4-20250514".into(),
-        ModelPricing {
-            input: 3.0,
-            output: 15.0,
-        },
-    );
-    prices.insert(
-        "anthropic/claude-opus-4-20250514".into(),
-        ModelPricing {
-            input: 15.0,
-            output: 75.0,
-        },
-    );
-    prices.insert(
-        "anthropic/claude-3.5-sonnet".into(),
-        ModelPricing {
-            input: 3.0,
-            output: 15.0,
-        },
-    );
-    prices.insert(
-        "anthropic/claude-3-haiku".into(),
-        ModelPricing {
-            input: 0.25,
-            output: 1.25,
-        },
-    );
-
-    // OpenAI models
-    prices.insert(
-        "openai/gpt-4o".into(),
-        ModelPricing {
-            input: 5.0,
-            output: 15.0,
-        },
-    );
-    prices.insert(
-        "openai/gpt-4o-mini".into(),
-        ModelPricing {
-            input: 0.15,
-            output: 0.60,
-        },
-    );
-    prices.insert(
-        "openai/o1-preview".into(),
-        ModelPricing {
-            input: 15.0,
-            output: 60.0,
-        },
-    );
-
-    // Google models
-    prices.insert(
-        "google/gemini-2.0-flash".into(),
-        ModelPricing {
-            input: 0.10,
-            output: 0.40,
-        },
-    );
-    prices.insert(
-        "google/gemini-1.5-pro".into(),
-        ModelPricing {
-            input: 1.25,
-            output: 5.0,
-        },
-    );
-
-    prices
+    super::model_catalog::default_pricing_table()
 }
 
 // ── Gateway security ─────────────────────────────────────────────
@@ -3370,6 +3320,9 @@ impl Default for MemoryConfig {
 /// injected into each turn's prompt.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PromptBudgetConfig {
+    /// Hard cap on total chars for all core memory blocks combined.
+    #[serde(default = "default_core_blocks_total_max_chars")]
+    pub core_blocks_total_max_chars: usize,
     /// Max recalled episodic memory entries per turn.
     #[serde(default = "default_recall_max_entries")]
     pub recall_max_entries: usize,
@@ -3402,6 +3355,9 @@ pub struct PromptBudgetConfig {
     pub continuation_policy: String,
 }
 
+fn default_core_blocks_total_max_chars() -> usize {
+    1_800
+}
 fn default_recall_max_entries() -> usize {
     5
 }
@@ -3436,6 +3392,7 @@ fn default_continuation_policy() -> String {
 impl Default for PromptBudgetConfig {
     fn default() -> Self {
         Self {
+            core_blocks_total_max_chars: default_core_blocks_total_max_chars(),
             recall_max_entries: default_recall_max_entries(),
             nearby_max_entries: default_nearby_max_entries(),
             recall_entry_max_chars: default_recall_entry_max_chars(),
@@ -3454,6 +3411,7 @@ impl PromptBudgetConfig {
     /// Convert to domain `PromptBudget` value object.
     pub fn to_prompt_budget(&self) -> crate::application::services::turn_context::PromptBudget {
         crate::application::services::turn_context::PromptBudget {
+            core_blocks_total_max_chars: self.core_blocks_total_max_chars,
             recall_max_entries: self.recall_max_entries,
             nearby_max_entries: self.nearby_max_entries,
             recall_entry_max_chars: self.recall_entry_max_chars,
@@ -4010,6 +3968,85 @@ impl Default for SummaryConfig {
     }
 }
 
+/// Explicit capability lanes for route selection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityLane {
+    Reasoning,
+    CheapReasoning,
+    Embedding,
+    ImageGeneration,
+    AudioGeneration,
+    VideoGeneration,
+    MusicGeneration,
+    MultimodalUnderstanding,
+}
+
+/// Explicit model features used for lane routing and candidate selection.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelFeature {
+    ToolCalling,
+    Vision,
+    ImageGeneration,
+    AudioGeneration,
+    VideoGeneration,
+    MusicGeneration,
+    Embedding,
+    MultimodalUnderstanding,
+    ServerContinuation,
+    PromptCaching,
+}
+
+/// Optional candidate profile metadata.
+///
+/// All fields are best-effort. When omitted, runtime may try to resolve
+/// provider/model metadata automatically from cached provider catalogs.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+pub struct ModelCandidateProfileConfig {
+    /// Manual override for maximum context window tokens.
+    #[serde(default)]
+    pub context_window_tokens: Option<usize>,
+    /// Manual override for maximum output tokens.
+    #[serde(default)]
+    pub max_output_tokens: Option<usize>,
+    /// Explicit feature set. When non-empty, it overrides auto-detected
+    /// feature metadata for this candidate.
+    #[serde(default)]
+    pub features: Vec<ModelFeature>,
+}
+
+/// One provider:model candidate within a capability lane.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq, Eq)]
+pub struct ModelLaneCandidateConfig {
+    /// Provider to route to (must match a known provider name).
+    pub provider: String,
+    /// Model id to use with that provider.
+    pub model: String,
+    /// Optional API key override for this candidate.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Optional env var for the API key override.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Optional embedding dimension override for embedding candidates.
+    #[serde(default)]
+    pub dimensions: Option<usize>,
+    /// Optional manual profile overrides for this candidate.
+    #[serde(default)]
+    pub profile: ModelCandidateProfileConfig,
+}
+
+/// Ordered candidates for a single capability lane.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ModelLaneConfig {
+    /// Capability lane this list serves.
+    pub lane: CapabilityLane,
+    /// Ordered provider:model candidates for the lane.
+    #[serde(default)]
+    pub candidates: Vec<ModelLaneCandidateConfig>,
+}
+
 /// Route a task hint to a specific provider + model.
 ///
 /// ```toml
@@ -4029,6 +4066,9 @@ impl Default for SummaryConfig {
 pub struct ModelRouteConfig {
     /// Task hint name (e.g. "reasoning", "fast", "code", "summarize")
     pub hint: String,
+    /// Optional capability lane resolved by runtime/domain services.
+    #[serde(default)]
+    pub capability: Option<CapabilityLane>,
     /// Provider to route to (must match a known provider name)
     pub provider: String,
     /// Model to use with that provider
@@ -4036,6 +4076,9 @@ pub struct ModelRouteConfig {
     /// Optional API key override for this route's provider
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Optional manual profile overrides for this route.
+    #[serde(default)]
+    pub profile: ModelCandidateProfileConfig,
 }
 
 // ── Embedding routing ───────────────────────────────────────────
@@ -4056,6 +4099,9 @@ pub struct ModelRouteConfig {
 pub struct EmbeddingRouteConfig {
     /// Route hint name (e.g. "semantic", "archive", "faq")
     pub hint: String,
+    /// Optional capability lane resolved by runtime/domain services.
+    #[serde(default)]
+    pub capability: Option<CapabilityLane>,
     /// Embedding provider (`none`, `openai`, or `custom:<url>`)
     pub provider: String,
     /// Embedding model to use with that provider
@@ -4066,6 +4112,9 @@ pub struct EmbeddingRouteConfig {
     /// Optional API key override for this route's provider
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Optional manual profile overrides for this route.
+    #[serde(default)]
+    pub profile: ModelCandidateProfileConfig,
 }
 
 // ── Query Classification ─────────────────────────────────────────
@@ -6030,7 +6079,8 @@ impl Default for Config {
             api_url: None,
             api_path: None,
             default_provider: Some("openrouter".to_string()),
-            default_model: Some("anthropic/claude-sonnet-4.6".to_string()),
+            default_model: super::model_catalog::provider_default_model("openrouter")
+                .map(str::to_string),
             summary_model: None,
             model_providers: HashMap::new(),
             default_temperature: default_temperature(),
@@ -6050,6 +6100,8 @@ impl Default for Config {
             agent: AgentConfig::default(),
             skills: SkillsConfig::default(),
             model_routes: Vec::new(),
+            model_lanes: Vec::new(),
+            model_preset: None,
             embedding_routes: Vec::new(),
             heartbeat: HeartbeatConfig::default(),
             cron: CronConfig::default(),

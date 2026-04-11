@@ -205,15 +205,7 @@ pub fn is_assistant_autosave_key(key: &str) -> bool {
 /// Filter known synthetic autosave noise patterns that should not be
 /// persisted as user conversation memories.
 pub fn should_skip_autosave_content(content: &str) -> bool {
-    let normalized = content.trim();
-    if normalized.is_empty() {
-        return true;
-    }
-
-    let lowered = normalized.to_ascii_lowercase();
-    lowered.starts_with("[cron:")
-        || lowered.starts_with("[distilled_")
-        || lowered.contains("distilled_index_sig:")
+    synapse_domain::domain::util::should_skip_autosave_content(content)
 }
 
 // ── Response Cache Factory ───────────────────────────────────────
@@ -416,9 +408,6 @@ impl synapse_domain::ports::memory::UnifiedMemoryPort for NoopUnifiedMemory {
     ) -> Result<Vec<MemoryEntry>, MemoryError> {
         Ok(vec![])
     }
-    fn should_skip_autosave(&self, _: &str) -> bool {
-        false
-    }
     async fn count(&self) -> Result<usize, MemoryError> {
         Ok(0)
     }
@@ -431,8 +420,8 @@ impl synapse_domain::ports::memory::UnifiedMemoryPort for NoopUnifiedMemory {
     async fn reflect_on_turn(
         &self,
         _user_message: &str,
-        _assistant_response: &str,
         _tools_used: &[String],
+        _outcome: &synapse_domain::domain::memory::ReflectionOutcome,
     ) -> Result<(), MemoryError> {
         Ok(())
     }

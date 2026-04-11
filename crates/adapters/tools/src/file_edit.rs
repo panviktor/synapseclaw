@@ -54,6 +54,10 @@ impl Tool for FileEditTool {
         })
     }
 
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::WorkspaceDiscovery)
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         // ── 1. Extract parameters ──────────────────────────────────
         let path = args

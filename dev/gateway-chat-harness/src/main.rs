@@ -36,6 +36,11 @@ struct Args {
     #[arg(long)]
     session: Option<String>,
 
+    /// Prime the live session onto a runtime route before sending test messages.
+    /// Use `gpt-5.4` for OpenAI-specific continuation/history experiments.
+    #[arg(long, default_value = "cheap")]
+    route: String,
+
     /// User message to send. Repeat for multi-turn scenarios in the same session.
     #[arg(long = "message", short = 'm', required = true)]
     messages: Vec<String>,
@@ -62,6 +67,7 @@ struct HarnessReport {
     gateway_url: String,
     agent: Option<String>,
     session: String,
+    primed_route: Option<String>,
     history: Option<Value>,
     turns: Vec<TurnReport>,
 }
@@ -102,9 +108,28 @@ async fn main() -> Result<()> {
         gateway_url,
         agent: args.agent.clone(),
         session: session.clone(),
+        primed_route: None,
         history: None,
         turns: Vec::new(),
     };
+
+    let route = args.route.trim();
+    if !route.is_empty() {
+        if !args.json {
+            println!("Priming route> {route}");
+        }
+        let route_turn = run_turn(
+            &mut socket,
+            &session,
+            0,
+            &format!("/model {route}"),
+            Duration::from_secs(args.timeout_secs),
+            args.json,
+        )
+        .await?;
+        report.primed_route = Some(route.to_string());
+        report.turns.push(route_turn);
+    }
 
     for (index, user_message) in args.messages.iter().enumerate() {
         if !args.json {

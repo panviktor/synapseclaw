@@ -1413,6 +1413,7 @@ mod tests {
             name: "shell".to_string(),
             description: "Run commands".to_string(),
             parameters: serde_json::json!({"type": "object", "properties": {"command": {"type": "string"}}}),
+            runtime_role: None,
         }];
         let config = BedrockProvider::convert_tools_to_converse(Some(&tools));
         assert!(config.is_some());

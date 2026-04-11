@@ -33,6 +33,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::{Arc, Mutex};
 use synapse_domain::config::schema::AgentConfig;
+use synapse_domain::ports::summary::SummaryGeneratorPort;
 use synapse_memory::{self, UnifiedMemoryPort};
 use synapse_observability::{NoopObserver, Observer};
 use synapse_providers::{
@@ -227,6 +228,15 @@ impl CountingTool {
     }
 }
 
+struct FixedSummaryGenerator;
+
+#[async_trait]
+impl SummaryGeneratorPort for FixedSummaryGenerator {
+    async fn generate_summary(&self, _prompt: &str) -> Result<String> {
+        Ok("- compacted older conversation".to_string())
+    }
+}
+
 #[async_trait]
 impl Tool for CountingTool {
     fn name(&self) -> &str {
@@ -314,6 +324,25 @@ fn build_agent_with_config(
         .tool_dispatcher(Box::new(NativeToolDispatcher))
         .workspace_dir(std::env::temp_dir())
         .config(config)
+        .build()
+        .unwrap()
+}
+
+fn build_agent_with_config_and_summary(
+    provider: Box<dyn Provider>,
+    tools: Vec<Box<dyn Tool>>,
+    config: AgentConfig,
+    summary_generator: Arc<dyn SummaryGeneratorPort>,
+) -> Agent {
+    Agent::builder()
+        .provider(provider)
+        .tools(tools)
+        .memory(make_memory())
+        .observer(make_observer())
+        .tool_dispatcher(Box::new(NativeToolDispatcher))
+        .workspace_dir(std::env::temp_dir())
+        .config(config)
+        .history_summary_generator(Some(summary_generator))
         .build()
         .unwrap()
 }
@@ -618,6 +647,45 @@ async fn history_trims_after_max_messages() {
     // System prompt should always be preserved
     let first = &agent.history()[0];
     assert!(matches!(first, ConversationMessage::Chat(c) if c.role == "system"));
+}
+
+#[tokio::test]
+async fn history_auto_compacts_before_trim_when_summary_generator_available() {
+    let max_history = 6;
+    let mut responses = vec![];
+    for _ in 0..max_history + 5 {
+        responses.push(text_response("ok"));
+    }
+
+    let provider = Box::new(ScriptedProvider::new(responses));
+    let config = AgentConfig {
+        max_history_messages: max_history,
+        max_context_tokens: 32,
+        ..AgentConfig::default()
+    };
+
+    let mut agent = build_agent_with_config_and_summary(
+        provider,
+        vec![],
+        config,
+        Arc::new(FixedSummaryGenerator),
+    );
+
+    for i in 0..max_history + 5 {
+        let _ = agent.turn(&format!("msg {i}")).await.unwrap();
+    }
+
+    let has_compaction_summary = agent.history().iter().any(|message| {
+        matches!(
+            message,
+            ConversationMessage::Chat(chat)
+                if chat.content.starts_with("[Compaction summary]\n")
+        )
+    });
+    assert!(
+        has_compaction_summary,
+        "expected a compaction summary in history"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1140,6 +1208,7 @@ fn xml_format_results_includes_status_and_output() {
             success: true,
             tool_call_id: None,
             tool_facts: vec![],
+            repair_trace: None,
         },
         ToolExecutionResult {
             name: "file_read".into(),
@@ -1147,6 +1216,7 @@ fn xml_format_results_includes_status_and_output() {
             success: false,
             tool_call_id: None,
             tool_facts: vec![],
+            repair_trace: None,
         },
     ];
 
@@ -1173,6 +1243,7 @@ fn native_format_results_maps_tool_call_ids() {
             success: true,
             tool_call_id: Some("tc-001".into()),
             tool_facts: vec![],
+            repair_trace: None,
         },
         ToolExecutionResult {
             name: "b".into(),
@@ -1180,6 +1251,7 @@ fn native_format_results_maps_tool_call_ids() {
             success: true,
             tool_call_id: Some("tc-002".into()),
             tool_facts: vec![],
+            repair_trace: None,
         },
     ];
 
@@ -1251,7 +1323,7 @@ fn native_dispatcher_converts_tool_results_to_tool_messages() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 23. XML tool instructions generation
+// 23. Tool-call envelope instructions generation
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]

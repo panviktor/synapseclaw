@@ -467,9 +467,6 @@ impl UnifiedMemoryPort for InstrumentedMemory {
         );
         r
     }
-    fn should_skip_autosave(&self, content: &str) -> bool {
-        self.inner.should_skip_autosave(content)
-    }
     async fn count(&self) -> Result<usize, MemoryError> {
         self.inner.count().await
     }
@@ -482,13 +479,13 @@ impl UnifiedMemoryPort for InstrumentedMemory {
     async fn reflect_on_turn(
         &self,
         user_message: &str,
-        assistant_response: &str,
         tools_used: &[String],
+        outcome: &synapse_domain::domain::memory::ReflectionOutcome,
     ) -> Result<(), MemoryError> {
         let t = Instant::now();
         let r = self
             .inner
-            .reflect_on_turn(user_message, assistant_response, tools_used)
+            .reflect_on_turn(user_message, tools_used, outcome)
             .await;
         log_op("reflect_on_turn", t, 0);
         r

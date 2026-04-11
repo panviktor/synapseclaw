@@ -6,6 +6,7 @@
 
 pub mod adapter_configs;
 pub mod channel_traits;
+pub mod model_catalog;
 pub mod provider_aliases;
 pub mod schema;
 pub mod workload;

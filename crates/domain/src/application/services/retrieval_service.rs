@@ -4,6 +4,7 @@
 //! should reuse one application-level search implementation instead of
 //! duplicating ad-hoc scoring logic.
 
+use crate::application::services::memory_quality_governor;
 use crate::domain::conversation::{ConversationEvent, ConversationKind, EventType};
 use crate::domain::memory::{
     Entity, MemoryCategory, MemoryEntry, MemoryError, MemoryQuery, Skill, SkillOrigin, SkillStatus,
@@ -12,7 +13,7 @@ use crate::domain::run_recipe::RunRecipe;
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionSearchMatch {
@@ -381,10 +382,15 @@ pub async fn search_memory(
     session_id: Option<&str>,
 ) -> Result<Vec<MemorySearchMatch>, MemoryError> {
     let entries = memory.recall(query, limit, session_id).await?;
-    Ok(entries
-        .into_iter()
-        .map(|entry| MemorySearchMatch { entry })
-        .collect())
+    Ok(rerank_memory_matches(
+        query,
+        session_id,
+        entries
+            .into_iter()
+            .map(|entry| MemorySearchMatch { entry })
+            .collect(),
+        limit,
+    ))
 }
 
 pub async fn search_nearby_memory(
@@ -704,6 +710,127 @@ fn skill_origin_priority(origin: &SkillOrigin) -> u8 {
 fn is_autosave_key(key: &str) -> bool {
     let normalized = key.trim().to_ascii_lowercase();
     normalized == "assistant_resp" || normalized.starts_with("assistant_resp_")
+}
+
+pub fn rerank_memory_matches(
+    query: &str,
+    session_id: Option<&str>,
+    matches: Vec<MemorySearchMatch>,
+    limit: usize,
+) -> Vec<MemorySearchMatch> {
+    if matches.is_empty() || limit == 0 {
+        return Vec::new();
+    }
+
+    let keywords = normalized_query_keywords(query);
+    let mut best_by_key: HashMap<String, (f64, MemorySearchMatch)> = HashMap::new();
+
+    for hit in matches {
+        let adjusted = adjusted_memory_match_score(&hit.entry, &keywords, session_id);
+        let key = hit.entry.key.clone();
+        match best_by_key.get(&key) {
+            Some((existing, _)) if *existing >= adjusted => {}
+            _ => {
+                best_by_key.insert(key, (adjusted, hit));
+            }
+        }
+    }
+
+    let mut ranked = best_by_key.into_values().collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                memory_category_rank(&left.1.entry.category)
+                    .cmp(&memory_category_rank(&right.1.entry.category))
+            })
+            .then_with(|| left.1.entry.key.cmp(&right.1.entry.key))
+    });
+
+    ranked.into_iter().take(limit).map(|(_, hit)| hit).collect()
+}
+
+fn adjusted_memory_match_score(
+    entry: &MemoryEntry,
+    keywords: &[String],
+    session_id: Option<&str>,
+) -> f64 {
+    let mut score = entry.score.unwrap_or(0.0);
+    score += memory_category_bonus(&entry.category);
+    score += session_match_bonus(entry, session_id);
+    let lexical_bonus = lexical_anchor_bonus(entry, keywords);
+    score += lexical_bonus;
+    score += memory_quality_governor::retrieval_noise_score_delta(&entry.category, lexical_bonus);
+    score
+}
+
+fn normalized_query_keywords(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|segment| {
+            segment
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+        .filter(|segment| segment.chars().count() >= 2)
+        .collect()
+}
+
+fn memory_category_bonus(category: &MemoryCategory) -> f64 {
+    match category {
+        MemoryCategory::Core => 0.24,
+        MemoryCategory::Conversation => 0.16,
+        MemoryCategory::Reflection => 0.12,
+        MemoryCategory::Skill => 0.08,
+        MemoryCategory::Entity => 0.05,
+        MemoryCategory::Daily => -0.02,
+        MemoryCategory::Custom(name) if name == "precedent" => -0.18,
+        MemoryCategory::Custom(name) if name == "failure_pattern" => -0.04,
+        MemoryCategory::Custom(_) => 0.0,
+    }
+}
+
+fn memory_category_rank(category: &MemoryCategory) -> usize {
+    match category {
+        MemoryCategory::Core => 0,
+        MemoryCategory::Conversation => 1,
+        MemoryCategory::Reflection => 2,
+        MemoryCategory::Skill => 3,
+        MemoryCategory::Entity => 4,
+        MemoryCategory::Daily => 5,
+        MemoryCategory::Custom(name) if name == "precedent" => 7,
+        MemoryCategory::Custom(name) if name == "failure_pattern" => 6,
+        MemoryCategory::Custom(_) => 6,
+    }
+}
+
+fn session_match_bonus(entry: &MemoryEntry, session_id: Option<&str>) -> f64 {
+    match (session_id, entry.session_id.as_deref()) {
+        (Some(expected), Some(actual)) if expected == actual => 0.18,
+        (Some(_), Some(_)) => -0.08,
+        (Some(_), None) => -0.03,
+        _ => 0.0,
+    }
+}
+
+fn lexical_anchor_bonus(entry: &MemoryEntry, keywords: &[String]) -> f64 {
+    if keywords.is_empty() {
+        return 0.0;
+    }
+
+    let key = entry.key.to_lowercase();
+    let content = entry.content.to_lowercase();
+    let mut bonus = 0.0f64;
+    for keyword in keywords {
+        if key.contains(keyword) {
+            bonus += 0.04;
+        } else if content.contains(keyword) {
+            bonus += 0.015;
+        }
+    }
+    bonus.min(0.12)
 }
 
 #[derive(Debug, Clone)]
@@ -1310,9 +1437,6 @@ mod tests {
         ) -> Result<Vec<MemoryEntry>, MemoryError> {
             Ok(vec![])
         }
-        fn should_skip_autosave(&self, _: &str) -> bool {
-            false
-        }
         async fn count(&self) -> Result<usize, MemoryError> {
             Ok(0)
         }
@@ -1648,6 +1772,151 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].entry.key, "deploy-recap");
         assert_eq!(hits[1].entry.key, "deploy-branch");
+    }
+
+    #[test]
+    fn rerank_memory_matches_prioritizes_core_and_session_context_over_precedent_noise() {
+        let hits = vec![
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "precedent-1".into(),
+                    key: "deploy-pattern".into(),
+                    content: "generic deployment precedent".into(),
+                    category: MemoryCategory::Custom("precedent".into()),
+                    timestamp: String::new(),
+                    session_id: None,
+                    score: Some(0.92),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "daily-1".into(),
+                    key: "daily-note".into(),
+                    content: "random daily note about deployment".into(),
+                    category: MemoryCategory::Daily,
+                    timestamp: String::new(),
+                    session_id: None,
+                    score: Some(0.91),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "core-1".into(),
+                    key: "atlas_work_chain".into(),
+                    content: "project Atlas branch release/hotfix-17".into(),
+                    category: MemoryCategory::Core,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.83),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "conv-1".into(),
+                    key: "session-anchor".into(),
+                    content: "current session deploy anchor".into(),
+                    category: MemoryCategory::Conversation,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.84),
+                },
+            },
+        ];
+
+        let reranked = rerank_memory_matches("Atlas deploy hotfix", Some("session-1"), hits, 4);
+        let keys = reranked
+            .into_iter()
+            .map(|hit| hit.entry.key)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            keys,
+            vec![
+                "atlas_work_chain",
+                "session-anchor",
+                "daily-note",
+                "deploy-pattern",
+            ]
+        );
+    }
+
+    #[test]
+    fn rerank_memory_matches_penalizes_low_anchor_daily_and_precedent_noise() {
+        let hits = vec![
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "precedent-1".into(),
+                    key: "old-procedure".into(),
+                    content: "generic procedure from another task".into(),
+                    category: MemoryCategory::Custom("precedent".into()),
+                    timestamp: String::new(),
+                    session_id: None,
+                    score: Some(0.96),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "daily-1".into(),
+                    key: "daily-note".into(),
+                    content: "miscellaneous recap from yesterday".into(),
+                    category: MemoryCategory::Daily,
+                    timestamp: String::new(),
+                    session_id: None,
+                    score: Some(0.93),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "core-1".into(),
+                    key: "atlas-anchor".into(),
+                    content: "branch release/hotfix-17".into(),
+                    category: MemoryCategory::Core,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.78),
+                },
+            },
+        ];
+
+        let reranked = rerank_memory_matches("Atlas release hotfix", Some("session-1"), hits, 3);
+        let keys = reranked
+            .into_iter()
+            .map(|hit| hit.entry.key)
+            .collect::<Vec<_>>();
+
+        assert_eq!(keys, vec!["atlas-anchor", "daily-note", "old-procedure"]);
+    }
+
+    #[test]
+    fn rerank_memory_matches_deduplicates_by_key_using_best_adjusted_score() {
+        let hits = vec![
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "dup-1".into(),
+                    key: "same-key".into(),
+                    content: "older precedent".into(),
+                    category: MemoryCategory::Custom("precedent".into()),
+                    timestamp: String::new(),
+                    session_id: None,
+                    score: Some(0.95),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "dup-2".into(),
+                    key: "same-key".into(),
+                    content: "current core anchor".into(),
+                    category: MemoryCategory::Core,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.79),
+                },
+            },
+        ];
+
+        let reranked = rerank_memory_matches("current anchor", Some("session-1"), hits, 5);
+        assert_eq!(reranked.len(), 1);
+        assert_eq!(reranked[0].entry.content, "current core anchor");
     }
 
     #[tokio::test]

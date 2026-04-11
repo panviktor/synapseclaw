@@ -15,6 +15,7 @@ English is currently the only maintained docs hub. Selected Vietnamese compatibi
 | Update or uninstall on macOS | [macos-update-uninstall.md](setup-guides/macos-update-uninstall.md) |
 | Find commands by task | [commands-reference.md](reference/cli/commands-reference.md) |
 | Check config defaults and keys quickly | [config-reference.md](reference/api/config-reference.md) |
+| Customize presets / curated models locally | [commands-reference.md](reference/cli/commands-reference.md#models) |
 | Configure custom providers/endpoints | [custom-providers.md](contributing/custom-providers.md) |
 | Configure Z.AI / GLM provider | [zai-glm-setup.md](setup-guides/zai-glm-setup.md) |
 | Use LangGraph integration patterns | [langgraph-integration.md](contributing/langgraph-integration.md) |
@@ -55,6 +56,7 @@ English is currently the only maintained docs hub. Selected Vietnamese compatibi
 - [channels-reference.md](reference/api/channels-reference.md) — channel capabilities and setup paths
 - [matrix-e2ee-guide.md](security/matrix-e2ee-guide.md) — Matrix encrypted-room (E2EE) setup and no-response diagnostics
 - [config-reference.md](reference/api/config-reference.md) — high-signal config keys and secure defaults
+- [commands-reference.md](reference/cli/commands-reference.md#models) — model catalog commands and local override workflow
 - [custom-providers.md](contributing/custom-providers.md) — custom provider/base URL integration templates
 - [zai-glm-setup.md](setup-guides/zai-glm-setup.md) — Z.AI/GLM setup and endpoint matrix
 - [langgraph-integration.md](contributing/langgraph-integration.md) — fallback integration for model/tool-calling edge cases

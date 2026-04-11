@@ -1,10 +1,14 @@
+use crate::agent::autosave_memory_key;
 use crate::agent::context_engine::{
-    build_provider_prompt_snapshot, total_message_chars, ProviderPromptSnapshot,
+    build_provider_prompt_snapshot, system_message_breakdown, total_message_chars,
+    ProviderPromptSnapshot,
 };
 use crate::agent::dispatcher::{
     NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
 };
+use crate::agent::execute_one_tool;
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
+use crate::agent::tool_repair_classification::classify_tool_execution_error;
 use crate::agent::turn_context_fmt;
 use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
@@ -12,17 +16,45 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::io::Write as IoWrite;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use synapse_domain::application::services::dialogue_state_service::DialogueStateStore;
 use synapse_domain::application::services::dialogue_state_service::{self};
+use synapse_domain::application::services::history_compaction;
+use synapse_domain::application::services::provider_context_budget::{
+    assess_provider_context_budget, provider_context_artifact_name,
+    provider_context_budget_tier_name, provider_context_turn_shape_name,
+    ProviderContextBudgetInput,
+};
+use synapse_domain::application::services::route_switch_preflight::{
+    assess_route_switch_preflight, RouteSwitchPreflight, RouteSwitchStatus,
+};
+use synapse_domain::application::services::scoped_instruction_resolution::{
+    build_scoped_instruction_plan, format_scoped_instruction_block,
+};
+use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
+use synapse_domain::application::services::turn_admission::{
+    assess_turn_admission, TurnAdmissionInput,
+};
 use synapse_domain::application::services::turn_context::{
     self as tc, ContinuationPolicy, PromptBudget,
 };
 use synapse_domain::application::services::turn_interpretation;
+use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
 use synapse_domain::config::schema::Config;
 use synapse_domain::domain::tool_fact::TypedToolFact;
+use synapse_domain::domain::tool_repair::ToolRepairTrace;
+use synapse_domain::domain::turn_admission::{
+    context_pressure_state_name, turn_admission_action_name, turn_intent_name, TurnAdmissionAction,
+};
+use synapse_domain::ports::channel_registry::ChannelRegistryPort;
+use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
+use synapse_domain::ports::route_selection::RouteAdmissionState;
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
+use synapse_domain::ports::scoped_instruction_context::{
+    ScopedInstructionContextPort, ScopedInstructionRequest,
+};
+use synapse_domain::ports::summary::SummaryGeneratorPort;
 use synapse_domain::ports::turn_defaults_context::{
     InMemoryTurnDefaultsContext, TurnDefaultsContextPort,
 };
@@ -36,6 +68,18 @@ use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Pro
 use synapse_security::security_policy_from_config;
 
 const PROVIDER_CONTEXT_CHAT_MESSAGES: usize = 6;
+
+#[derive(Clone, Default)]
+pub struct AgentRuntimePorts {
+    pub conversation_store: Option<Arc<dyn ConversationStorePort>>,
+    pub conversation_context: Option<Arc<dyn ConversationContextPort>>,
+    pub user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
+    pub user_profile_context: Option<Arc<dyn UserProfileContextPort>>,
+    pub turn_defaults_context: Option<Arc<dyn TurnDefaultsContextPort>>,
+    pub scoped_instruction_context: Option<Arc<dyn ScopedInstructionContextPort>>,
+    pub channel_registry: Option<Arc<dyn ChannelRegistryPort>>,
+    pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
+}
 
 fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
     match value {
@@ -52,6 +96,42 @@ fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
             serde_json::Value::Array(items.iter().map(canonicalize_tool_args).collect())
         }
         other => other.clone(),
+    }
+}
+
+fn normalize_tool_call(call: &ParsedToolCall) -> ParsedToolCall {
+    call.clone()
+}
+
+fn strip_redundant_delivery_target(call: &ParsedToolCall) -> ParsedToolCall {
+    let mut normalized = call.clone();
+    if let serde_json::Value::Object(arguments) = &mut normalized.arguments {
+        arguments.remove("target");
+    }
+    normalized
+}
+
+fn has_noncanonical_string_delivery_target(call: &ParsedToolCall) -> bool {
+    call.arguments
+        .get("target")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|target| target != "current_conversation")
+}
+
+fn provider_context_budget_input_from_stats(
+    stats: &synapse_observability::ProviderContextStats,
+) -> ProviderContextBudgetInput {
+    ProviderContextBudgetInput {
+        total_chars: stats.total_chars,
+        prior_chat_messages: stats.prior_chat_messages,
+        current_turn_messages: stats.current_turn_messages,
+        bootstrap_chars: stats.bootstrap_chars,
+        core_memory_chars: stats.core_memory_chars,
+        runtime_interpretation_chars: stats.runtime_interpretation_chars,
+        scoped_context_chars: stats.scoped_context_chars,
+        resolution_chars: stats.resolution_chars,
+        prior_chat_chars: stats.prior_chat_chars,
+        current_turn_chars: stats.current_turn_chars,
     }
 }
 
@@ -81,12 +161,24 @@ pub struct Agent {
     classification_config: synapse_domain::config::schema::QueryClassificationConfig,
     available_hints: Vec<String>,
     route_model_by_hint: HashMap<String, String>,
+    route_model_preset: Option<String>,
+    route_model_lanes: Vec<synapse_domain::config::schema::ModelLaneConfig>,
+    route_model_routes: Vec<synapse_domain::config::schema::ModelRouteConfig>,
+    current_model_profile:
+        synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
     /// Cumulative token usage from the last turn (provider-reported).
     last_turn_usage: Option<synapse_providers::traits::TokenUsage>,
     /// Structured facts emitted by tools during the last completed turn.
     last_turn_tool_facts: Vec<TypedToolFact>,
+    /// Most recent structured tool self-repair trace from the last turn.
+    last_turn_tool_repair: Option<ToolRepairTrace>,
+    /// Bounded recent structured tool self-repair traces for this session.
+    recent_turn_tool_repairs: Vec<ToolRepairTrace>,
+    /// Bounded recent structured route-admission states for this session.
+    recent_turn_admissions: Vec<RouteAdmissionState>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
+    history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
     /// Canonical agent ID for memory scoping.
     agent_id: String,
     dialogue_state_store: Option<Arc<DialogueStateStore>>,
@@ -96,6 +188,8 @@ pub struct Agent {
     user_profile_key: Option<String>,
     user_profile_context: Arc<dyn UserProfileContextPort>,
     turn_defaults_context: Arc<dyn TurnDefaultsContextPort>,
+    scoped_instruction_context: Option<Arc<dyn ScopedInstructionContextPort>>,
+    channel_registry: Option<Arc<dyn ChannelRegistryPort>>,
 }
 
 pub struct AgentBuilder {
@@ -120,8 +214,14 @@ pub struct AgentBuilder {
     classification_config: Option<synapse_domain::config::schema::QueryClassificationConfig>,
     available_hints: Option<Vec<String>>,
     route_model_by_hint: Option<HashMap<String, String>>,
+    route_model_preset: Option<Option<String>>,
+    route_model_lanes: Option<Vec<synapse_domain::config::schema::ModelLaneConfig>>,
+    route_model_routes: Option<Vec<synapse_domain::config::schema::ModelRouteConfig>>,
+    current_model_profile:
+        Option<synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
+    history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
     agent_id: Option<String>,
     dialogue_state_store: Option<Arc<DialogueStateStore>>,
     conversation_store: Option<Arc<dyn ConversationStorePort>>,
@@ -130,6 +230,8 @@ pub struct AgentBuilder {
     user_profile_key: Option<String>,
     user_profile_context: Option<Arc<dyn UserProfileContextPort>>,
     turn_defaults_context: Option<Arc<dyn TurnDefaultsContextPort>>,
+    scoped_instruction_context: Option<Arc<dyn ScopedInstructionContextPort>>,
+    channel_registry: Option<Arc<dyn ChannelRegistryPort>>,
 }
 
 impl AgentBuilder {
@@ -156,8 +258,13 @@ impl AgentBuilder {
             classification_config: None,
             available_hints: None,
             route_model_by_hint: None,
+            route_model_preset: None,
+            route_model_lanes: None,
+            route_model_routes: None,
+            current_model_profile: None,
             allowed_tools: None,
             response_cache: None,
+            history_summary_generator: None,
             agent_id: None,
             dialogue_state_store: None,
             conversation_store: None,
@@ -166,6 +273,8 @@ impl AgentBuilder {
             user_profile_key: None,
             user_profile_context: None,
             turn_defaults_context: None,
+            scoped_instruction_context: None,
+            channel_registry: None,
         }
     }
 
@@ -283,6 +392,36 @@ impl AgentBuilder {
         self
     }
 
+    pub fn route_model_preset(mut self, route_model_preset: Option<String>) -> Self {
+        self.route_model_preset = Some(route_model_preset);
+        self
+    }
+
+    pub fn route_model_lanes(
+        mut self,
+        route_model_lanes: Vec<synapse_domain::config::schema::ModelLaneConfig>,
+    ) -> Self {
+        self.route_model_lanes = Some(route_model_lanes);
+        self
+    }
+
+    pub fn route_model_routes(
+        mut self,
+        route_model_routes: Vec<synapse_domain::config::schema::ModelRouteConfig>,
+    ) -> Self {
+        self.route_model_routes = Some(route_model_routes);
+        self
+    }
+
+    pub fn current_model_profile(
+        mut self,
+        current_model_profile:
+            synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+    ) -> Self {
+        self.current_model_profile = Some(current_model_profile);
+        self
+    }
+
     pub fn allowed_tools(mut self, allowed_tools: Option<Vec<String>>) -> Self {
         self.allowed_tools = allowed_tools;
         self
@@ -293,6 +432,14 @@ impl AgentBuilder {
         cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     ) -> Self {
         self.response_cache = cache;
+        self
+    }
+
+    pub fn history_summary_generator(
+        mut self,
+        generator: Option<Arc<dyn SummaryGeneratorPort>>,
+    ) -> Self {
+        self.history_summary_generator = generator;
         self
     }
 
@@ -342,6 +489,19 @@ impl AgentBuilder {
         self
     }
 
+    pub fn scoped_instruction_context(
+        mut self,
+        context: Option<Arc<dyn ScopedInstructionContextPort>>,
+    ) -> Self {
+        self.scoped_instruction_context = context;
+        self
+    }
+
+    pub fn channel_registry(mut self, registry: Option<Arc<dyn ChannelRegistryPort>>) -> Self {
+        self.channel_registry = registry;
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let mut tools = self
             .tools
@@ -358,6 +518,10 @@ impl AgentBuilder {
         let turn_defaults_context = self
             .turn_defaults_context
             .unwrap_or_else(|| Arc::new(InMemoryTurnDefaultsContext::new()));
+
+        let config = self.config.unwrap_or_default();
+        let provider_name = self.provider_name.unwrap_or_else(|| "unknown".into());
+        let model_name = self.model_name.unwrap_or_else(|| "default".into());
 
         Ok(Agent {
             provider: self
@@ -380,11 +544,9 @@ impl AgentBuilder {
             prompt_budget: self.prompt_budget.unwrap_or_default(),
             continuation_policy: self.continuation_policy.unwrap_or_default(),
             turn_count: 0,
-            config: self.config.unwrap_or_default(),
-            provider_name: self.provider_name.unwrap_or_else(|| "unknown".into()),
-            model_name: self
-                .model_name
-                .unwrap_or_else(|| "anthropic/claude-sonnet-4-20250514".into()),
+            config,
+            provider_name,
+            model_name,
             temperature: self.temperature.unwrap_or(0.7),
             workspace_dir: self
                 .workspace_dir
@@ -398,10 +560,18 @@ impl AgentBuilder {
             classification_config: self.classification_config.unwrap_or_default(),
             available_hints: self.available_hints.unwrap_or_default(),
             route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
+            route_model_preset: self.route_model_preset.unwrap_or_default(),
+            route_model_lanes: self.route_model_lanes.unwrap_or_default(),
+            route_model_routes: self.route_model_routes.unwrap_or_default(),
+            current_model_profile: self.current_model_profile.unwrap_or_default(),
             last_turn_usage: None,
             last_turn_tool_facts: Vec::new(),
+            last_turn_tool_repair: None,
+            recent_turn_tool_repairs: Vec::new(),
+            recent_turn_admissions: Vec::new(),
             allowed_tools: allowed,
             response_cache: self.response_cache,
+            history_summary_generator: self.history_summary_generator,
             agent_id: self.agent_id.unwrap_or_else(|| "default".to_string()),
             dialogue_state_store: self.dialogue_state_store,
             conversation_store: self.conversation_store,
@@ -410,6 +580,8 @@ impl AgentBuilder {
             user_profile_key: self.user_profile_key,
             user_profile_context,
             turn_defaults_context,
+            scoped_instruction_context: self.scoped_instruction_context,
+            channel_registry: self.channel_registry,
         })
     }
 }
@@ -425,6 +597,21 @@ impl Agent {
             &self.history,
             PROVIDER_CONTEXT_CHAT_MESSAGES,
         )
+    }
+
+    fn upsert_scoped_context_block(&mut self, block: Option<String>) {
+        const SCOPED_MARKER: &str = "[scoped-context]\n";
+        self.history.retain(|msg| {
+            if let ConversationMessage::Chat(chat) = msg {
+                !(chat.role == "system" && chat.content.starts_with(SCOPED_MARKER))
+            } else {
+                true
+            }
+        });
+        if let Some(block) = block {
+            self.history
+                .push(ConversationMessage::Chat(ChatMessage::system(block)));
+        }
     }
 
     pub fn history(&self) -> &[ConversationMessage] {
@@ -452,6 +639,50 @@ impl Agent {
         Arc::clone(&self.observer)
     }
 
+    pub fn provider_name_str(&self) -> &str {
+        &self.provider_name
+    }
+
+    pub fn model_name_str(&self) -> &str {
+        &self.model_name
+    }
+
+    pub async fn prepare_for_target_context_window(
+        &mut self,
+        target_context_window_tokens: usize,
+    ) -> RouteSwitchPreflight {
+        let mut assessment = assess_route_switch_preflight(
+            self.build_provider_prompt_snapshot().stats.total_chars,
+            &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
+                context_window_tokens: Some(target_context_window_tokens),
+                context_window_source:
+                    synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
+                max_output_tokens: None,
+                features: Vec::new(),
+                ..Default::default()
+            },
+        );
+
+        while assessment.status == RouteSwitchStatus::CompactRecommended {
+            if !self.maybe_compact_history().await {
+                break;
+            }
+            assessment = assess_route_switch_preflight(
+                self.build_provider_prompt_snapshot().stats.total_chars,
+                &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
+                    context_window_tokens: Some(target_context_window_tokens),
+                    context_window_source:
+                        synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
+                    max_output_tokens: None,
+                    features: Vec::new(),
+                    ..Default::default()
+                },
+            );
+        }
+
+        assessment
+    }
+
     /// Replace the observer (e.g. to wrap with per-request event forwarding).
     pub fn set_observer(&mut self, observer: Arc<dyn synapse_observability::Observer>) {
         self.observer = observer;
@@ -464,6 +695,18 @@ impl Agent {
 
     pub fn last_turn_tool_facts(&self) -> &[TypedToolFact] {
         &self.last_turn_tool_facts
+    }
+
+    pub fn last_turn_tool_repair(&self) -> Option<&ToolRepairTrace> {
+        self.last_turn_tool_repair.as_ref()
+    }
+
+    pub fn recent_turn_tool_repairs(&self) -> &[ToolRepairTrace] {
+        &self.recent_turn_tool_repairs
+    }
+
+    pub fn recent_turn_admissions(&self) -> &[RouteAdmissionState] {
+        &self.recent_turn_admissions
     }
 
     pub fn user_profile_key(&self) -> Option<&str> {
@@ -496,8 +739,75 @@ impl Agent {
             .set_current_key(self.user_profile_key.clone());
     }
 
+    pub fn set_channel_registry(&mut self, registry: Option<Arc<dyn ChannelRegistryPort>>) {
+        self.channel_registry = registry;
+    }
+
+    pub async fn switch_runtime_route(
+        &mut self,
+        config: &Config,
+        provider_override: Option<&str>,
+        model_override: Option<&str>,
+        shared_memory: Arc<dyn UnifiedMemoryPort>,
+        runtime_ports: AgentRuntimePorts,
+    ) -> Result<()> {
+        let mut effective_config = config.clone();
+        if let Some(provider) = provider_override {
+            effective_config.default_provider = Some(provider.to_string());
+            if config.default_provider.as_deref() != Some(provider) {
+                effective_config.api_key = None;
+                effective_config.api_url = None;
+            }
+        }
+        if let Some(model) = model_override {
+            effective_config.default_model = Some(model.to_string());
+        }
+
+        let history = self.history.clone();
+        let turn_count = self.turn_count;
+        let memory_session_id = self.memory_session_id.clone();
+        let last_turn_usage = self.last_turn_usage.clone();
+        let last_turn_tool_facts = self.last_turn_tool_facts.clone();
+        let observer = Arc::clone(&self.observer);
+        let dialogue_state_store = self.dialogue_state_store.clone();
+        let run_recipe_store = self.run_recipe_store.clone();
+        let channel_registry = self.channel_registry.clone();
+        let user_profile_key = self.user_profile_key.clone();
+        let user_profile_context = Arc::clone(&self.user_profile_context);
+        let turn_defaults_context = Arc::clone(&self.turn_defaults_context);
+        let scoped_instruction_context = self.scoped_instruction_context.clone();
+
+        let mut rebuilt = Self::from_config_with_runtime_context(
+            &effective_config,
+            Some(shared_memory),
+            runtime_ports,
+        )
+        .await?;
+        rebuilt.observer = observer;
+        rebuilt.history = history;
+        rebuilt.turn_count = turn_count;
+        rebuilt.memory_session_id = memory_session_id;
+        rebuilt.last_turn_usage = last_turn_usage;
+        rebuilt.last_turn_tool_facts = last_turn_tool_facts;
+        rebuilt.last_turn_tool_repair = None;
+        rebuilt.recent_turn_tool_repairs.clear();
+        rebuilt.recent_turn_admissions.clear();
+        rebuilt.dialogue_state_store = dialogue_state_store;
+        rebuilt.conversation_store = self.conversation_store.clone();
+        rebuilt.run_recipe_store = run_recipe_store;
+        rebuilt.user_profile_store = self.user_profile_store.clone();
+        rebuilt.user_profile_key = user_profile_key;
+        rebuilt.user_profile_context = user_profile_context;
+        rebuilt.turn_defaults_context = turn_defaults_context;
+        rebuilt.scoped_instruction_context = scoped_instruction_context;
+        rebuilt.channel_registry = channel_registry;
+
+        *self = rebuilt;
+        Ok(())
+    }
+
     pub async fn from_config(config: &Config) -> Result<Self> {
-        Self::from_config_with_runtime_context(config, None, None, None).await
+        Self::from_config_with_runtime_context(config, None, AgentRuntimePorts::default()).await
     }
 
     /// Create an agent from config, optionally reusing a shared memory backend.
@@ -506,7 +816,8 @@ impl Agent {
         config: &Config,
         shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
     ) -> Result<Self> {
-        Self::from_config_with_runtime_context(config, shared_memory, None, None).await
+        Self::from_config_with_runtime_context(config, shared_memory, AgentRuntimePorts::default())
+            .await
     }
 
     /// Create an agent from config with optional shared runtime ports used by
@@ -514,8 +825,7 @@ impl Agent {
     pub async fn from_config_with_runtime_context(
         config: &Config,
         shared_memory: Option<Arc<dyn UnifiedMemoryPort>>,
-        conversation_store: Option<Arc<dyn ConversationStorePort>>,
-        user_profile_store: Option<Arc<dyn UserProfileStorePort>>,
+        runtime_ports: AgentRuntimePorts,
     ) -> Result<Self> {
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::create_observer(
             &config.observability,
@@ -527,7 +837,7 @@ impl Agent {
             &config.workspace_dir,
         ));
 
-        let resolved_agent_id = crate::agent::loop_::resolve_agent_id(config);
+        let resolved_agent_id = crate::agent::resolve_agent_id(config);
         let (memory, surreal_handle): (Arc<dyn UnifiedMemoryPort>, _) =
             if let Some(mem) = shared_memory {
                 (mem, None)
@@ -553,7 +863,7 @@ impl Agent {
             None
         };
         let resolved_user_profile_store: Arc<dyn UserProfileStorePort> = if let Some(store) =
-            user_profile_store
+            runtime_ports.user_profile_store.clone()
         {
             store
         } else {
@@ -576,10 +886,14 @@ impl Agent {
                 }
             }
         };
-        let user_profile_context: Arc<dyn UserProfileContextPort> =
-            Arc::new(InMemoryUserProfileContext::new());
-        let turn_defaults_context: Arc<dyn TurnDefaultsContextPort> =
-            Arc::new(InMemoryTurnDefaultsContext::new());
+        let user_profile_context: Arc<dyn UserProfileContextPort> = runtime_ports
+            .user_profile_context
+            .clone()
+            .unwrap_or_else(|| Arc::new(InMemoryUserProfileContext::new()));
+        let turn_defaults_context: Arc<dyn TurnDefaultsContextPort> = runtime_ports
+            .turn_defaults_context
+            .clone()
+            .unwrap_or_else(|| Arc::new(InMemoryTurnDefaultsContext::new()));
 
         let (tools, _delegate_handle, _) = tools::all_tools_with_runtime(
             Arc::new(config.clone()),
@@ -598,14 +912,14 @@ impl Agent {
             None,
             None,
             surreal_handle.clone(),
-            None, // conversation_context — gateway sets via ws.rs
-            conversation_store.clone(),
-            None, // channel_registry
+            runtime_ports.conversation_context.clone(),
+            runtime_ports.conversation_store.clone(),
+            runtime_ports.channel_registry.clone(),
             None, // standing_order_store
             Some(Arc::clone(&resolved_user_profile_store)),
             Some(Arc::clone(&user_profile_context)),
             Some(Arc::clone(&turn_defaults_context)),
-            None, // run_recipe_store
+            runtime_ports.run_recipe_store.clone(),
         );
 
         // Bootstrap core memory blocks from workspace files (USER.md → user_knowledge).
@@ -625,7 +939,10 @@ impl Agent {
         let model_name = config
             .default_model
             .as_deref()
-            .unwrap_or("anthropic/claude-sonnet-4-20250514")
+            .unwrap_or_else(|| {
+                synapse_domain::config::model_catalog::provider_default_model(provider_name)
+                    .unwrap_or("default")
+            })
             .to_string();
 
         let provider_runtime_options =
@@ -657,7 +974,7 @@ impl Agent {
             crate::memory_adapters::instrumented::InstrumentedMemory::new(Arc::new(
                 crate::memory_adapters::memory_adapter::ConsolidatingMemory::new(
                     memory,
-                    provider_for_consolidation,
+                    Arc::clone(&provider_for_consolidation),
                     model_name.clone(),
                     resolved_agent_id.clone(),
                     None,
@@ -679,6 +996,15 @@ impl Agent {
             .map(|route| (route.hint.clone(), route.model.clone()))
             .collect();
         let available_hints: Vec<String> = route_model_by_hint.keys().cloned().collect();
+        let profile_catalog =
+            crate::runtime_routes::WorkspaceModelProfileCatalog::new(config.workspace_dir.clone());
+        let current_model_profile =
+            synapse_domain::application::services::model_lane_resolution::resolve_candidate_profile(
+                provider_name,
+                &model_name,
+                &synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
+                Some(&profile_catalog),
+            );
 
         let response_cache = if config.memory.response_cache_enabled {
             surreal_handle.map(|db| {
@@ -695,12 +1021,61 @@ impl Agent {
             None
         };
 
+        let summary_route = resolve_summary_route(config, &model_name);
+        let history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>> = {
+            let provider_result: Result<Arc<dyn Provider>> =
+                if let Some(ref summary_provider_name) = summary_route.provider {
+                    let api_key = summary_route
+                        .api_key_env
+                        .as_deref()
+                        .and_then(|env| std::env::var(env).ok())
+                        .or_else(|| summary_route.api_key.clone());
+                    synapse_providers::create_provider_with_options(
+                        summary_provider_name,
+                        api_key.as_deref(),
+                        &provider_runtime_options,
+                    )
+                    .map(Arc::from)
+                } else {
+                    Ok(Arc::clone(&provider_for_consolidation))
+                };
+
+            match provider_result {
+                Ok(provider) => {
+                    tracing::debug!(
+                        summary_route_source = summary_route.source.as_str(),
+                        summary_provider =
+                            summary_route.provider.as_deref().unwrap_or(provider_name),
+                        summary_model = summary_route.model.as_str(),
+                        "Agent history compaction summary lane ready"
+                    );
+                    Some(Arc::new(
+                        crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
+                            provider,
+                            summary_route.model.clone(),
+                            summary_route.temperature,
+                        ),
+                    ))
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        summary_route_source = summary_route.source.as_str(),
+                        summary_model = summary_route.model.as_str(),
+                        "Failed to initialize agent history summary generator; live compaction disabled"
+                    );
+                    None
+                }
+            }
+        };
+
         Agent::builder()
             .provider(provider)
             .tools(tools)
             .memory(memory)
             .observer(observer)
             .response_cache(response_cache)
+            .history_summary_generator(history_summary_generator)
             .tool_dispatcher(tool_dispatcher)
             .prompt_budget({
                 let mut b = config.memory.prompt_budget.to_prompt_budget();
@@ -718,11 +1093,18 @@ impl Agent {
             .classification_config(config.query_classification.clone())
             .available_hints(available_hints)
             .route_model_by_hint(route_model_by_hint)
+            .route_model_preset(config.model_preset.clone())
+            .route_model_lanes(config.model_lanes.clone())
+            .route_model_routes(config.model_routes.clone())
+            .current_model_profile(current_model_profile)
             .identity_config(config.identity.clone())
-            .conversation_store(conversation_store)
+            .conversation_store(runtime_ports.conversation_store)
+            .run_recipe_store(runtime_ports.run_recipe_store)
             .user_profile_store(Some(resolved_user_profile_store))
             .user_profile_context(Some(user_profile_context))
             .turn_defaults_context(Some(turn_defaults_context))
+            .scoped_instruction_context(runtime_ports.scoped_instruction_context)
+            .channel_registry(runtime_ports.channel_registry)
             .skills(crate::skills::load_skills_with_config(
                 &config.workspace_dir,
                 config,
@@ -759,6 +1141,110 @@ impl Agent {
         self.history.extend(other_messages);
     }
 
+    fn project_non_system_history_for_compaction(&self) -> (Vec<ChatMessage>, Vec<usize>) {
+        let mut projected = Vec::new();
+        let mut original_indices = Vec::new();
+
+        for (index, message) in self.history.iter().enumerate() {
+            match message {
+                ConversationMessage::Chat(chat) if chat.role != "system" => {
+                    projected.push(chat.clone());
+                    original_indices.push(index);
+                }
+                ConversationMessage::AssistantToolCalls {
+                    text,
+                    tool_calls,
+                    reasoning_content,
+                } => {
+                    if let Some(text) = text.as_deref() {
+                        let trimmed = text.trim();
+                        if !trimmed.is_empty() {
+                            projected.push(ChatMessage::assistant(trimmed.to_string()));
+                            original_indices.push(index);
+                        }
+                    }
+                    if let Some(reasoning) = reasoning_content.as_deref() {
+                        let trimmed = reasoning.trim();
+                        if !trimmed.is_empty() {
+                            projected.push(ChatMessage::assistant(format!(
+                                "[assistant-reasoning]\n{trimmed}"
+                            )));
+                            original_indices.push(index);
+                        }
+                    }
+                    for call in tool_calls {
+                        projected.push(ChatMessage::assistant(format!(
+                            "[tool-call {}]\n{} {}",
+                            call.id, call.name, call.arguments
+                        )));
+                        original_indices.push(index);
+                    }
+                }
+                ConversationMessage::ToolResults(results) => {
+                    for result in results {
+                        projected.push(ChatMessage {
+                            role: "tool".to_string(),
+                            content: result.content.clone(),
+                        });
+                        original_indices.push(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        (projected, original_indices)
+    }
+
+    async fn maybe_compact_history(&mut self) -> bool {
+        let Some(summary_generator) = self.history_summary_generator.as_ref() else {
+            return false;
+        };
+
+        let (projected, original_indices) = self.project_non_system_history_for_compaction();
+        let Some((start, compact_end, transcript)) = history_compaction::prepare_compaction(
+            &projected,
+            self.config.max_history_messages,
+            self.config.max_context_tokens,
+        ) else {
+            return false;
+        };
+
+        let original_start = *original_indices
+            .get(start)
+            .expect("compaction start should map to original history");
+        let original_end = original_indices
+            .get(compact_end.saturating_sub(1))
+            .map(|index| index + 1)
+            .expect("compaction end should map to original history");
+
+        let prompt = history_compaction::compaction_summarizer_prompt(&transcript);
+        let summary_raw = match summary_generator.generate_summary(&prompt).await {
+            Ok(summary) => summary,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "Live agent history compaction summary failed; using transcript fallback"
+                );
+                String::new()
+            }
+        };
+        let summary = if summary_raw.is_empty() {
+            synapse_domain::domain::util::truncate_with_ellipsis(&transcript, 2_000)
+        } else {
+            synapse_domain::domain::util::truncate_with_ellipsis(&summary_raw, 2_000)
+        };
+        self.history.splice(
+            original_start..original_end,
+            std::iter::once(ConversationMessage::Chat(ChatMessage::assistant(format!(
+                "{}{}",
+                history_compaction::COMPACTION_SUMMARY_PREFIX,
+                summary.trim()
+            )))),
+        );
+        true
+    }
+
     fn build_system_prompt(&self) -> Result<String> {
         let instructions = self.tool_dispatcher.prompt_instructions(&self.tools);
         let ctx = PromptContext {
@@ -769,86 +1255,55 @@ impl Agent {
             skills_prompt_mode: self.skills_prompt_mode,
             identity_config: Some(&self.identity_config),
             dispatcher_instructions: &instructions,
+            tool_specs_are_out_of_band: self.tool_dispatcher.should_send_tool_specs(),
         };
-        self.prompt_builder.build(&ctx)
+        let (prompt, section_stats) = self.prompt_builder.build_with_stats(&ctx)?;
+        let rendered_stats = section_stats
+            .iter()
+            .map(|stat| format!("{}={}", stat.name, stat.chars))
+            .collect::<Vec<_>>()
+            .join(", ");
+        tracing::info!(
+            target: "agent.system_prompt",
+            total_chars = prompt.chars().count(),
+            sections = rendered_stats,
+            "Built system prompt"
+        );
+        Ok(prompt)
     }
 
     async fn execute_tool_call(&self, call: &ParsedToolCall) -> ToolExecutionResult {
-        let start = Instant::now();
-        let args_preview =
-            synapse_domain::domain::util::truncate_with_ellipsis(&call.arguments.to_string(), 300);
-
-        self.observer.record_event(&ObserverEvent::ToolCallStart {
-            tool: call.name.clone(),
-            arguments: Some(args_preview),
+        let normalized_call = normalize_tool_call(call);
+        let outcome = execute_one_tool(
+            &normalized_call.name,
+            normalized_call.arguments.clone(),
+            &self.tools,
+            None,
+            self.observer.as_ref(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_or_else(|error| crate::agent::ToolExecutionOutcome {
+            output: format!("Error executing {}: {error}", normalized_call.name),
+            success: false,
+            error_reason: Some(synapse_security::scrub_credentials(&format!(
+                "Error executing {}: {error}",
+                normalized_call.name
+            ))),
+            duration: Duration::ZERO,
+            tool_facts: Vec::new(),
+            repair_trace: Some(classify_tool_execution_error(&normalized_call.name, &error)),
         });
-
-        let (result, success, tool_facts) = if let Some(tool) =
-            self.tools.iter().find(|t| t.name() == call.name)
-        {
-            match tool.execute_with_facts(call.arguments.clone()).await {
-                Ok(execution) => {
-                    let duration = start.elapsed();
-                    let tool_facts = execution.facts;
-                    let r = execution.result;
-                    self.observer.record_event(&ObserverEvent::ToolCall {
-                        tool: call.name.clone(),
-                        duration,
-                        success: r.success,
-                    });
-                    if r.success {
-                        self.observer.record_event(&ObserverEvent::ToolResult {
-                            tool: call.name.clone(),
-                            output: synapse_domain::domain::util::truncate_with_ellipsis(
-                                &r.output, 500,
-                            ),
-                            success: true,
-                        });
-                        (r.output, true, tool_facts)
-                    } else {
-                        let reason = r.error.unwrap_or(r.output);
-                        self.observer.record_event(&ObserverEvent::ToolResult {
-                            tool: call.name.clone(),
-                            output: synapse_domain::domain::util::truncate_with_ellipsis(
-                                &reason, 500,
-                            ),
-                            success: false,
-                        });
-                        (format!("Error: {reason}"), false, tool_facts)
-                    }
-                }
-                Err(e) => {
-                    let duration = start.elapsed();
-                    self.observer.record_event(&ObserverEvent::ToolCall {
-                        tool: call.name.clone(),
-                        duration,
-                        success: false,
-                    });
-                    let reason = format!("Error executing {}: {e}", call.name);
-                    self.observer.record_event(&ObserverEvent::ToolResult {
-                        tool: call.name.clone(),
-                        output: synapse_domain::domain::util::truncate_with_ellipsis(&reason, 500),
-                        success: false,
-                    });
-                    (reason, false, Vec::new())
-                }
-            }
-        } else {
-            let reason = format!("Unknown tool: {}", call.name);
-            self.observer.record_event(&ObserverEvent::ToolResult {
-                tool: call.name.clone(),
-                output: reason.clone(),
-                success: false,
-            });
-            (reason, false, Vec::new())
-        };
 
         ToolExecutionResult {
             name: call.name.clone(),
-            output: result,
-            success,
+            output: outcome.output,
+            success: outcome.success,
             tool_call_id: call.tool_call_id.clone(),
-            tool_facts,
+            tool_facts: outcome.tool_facts,
+            repair_trace: outcome.repair_trace,
         }
     }
 
@@ -869,17 +1324,18 @@ impl Agent {
     }
 
     fn tool_call_signature(&self, call: &ParsedToolCall) -> Option<(String, String)> {
+        let normalized_call = normalize_tool_call(call);
         if self
             .config
             .tool_call_dedup_exempt
             .iter()
-            .any(|tool| tool == &call.name)
+            .any(|tool| tool == &normalized_call.name)
         {
             return None;
         }
         Some((
-            call.name.clone(),
-            canonicalize_tool_args(&call.arguments).to_string(),
+            normalized_call.name,
+            canonicalize_tool_args(&normalized_call.arguments).to_string(),
         ))
     }
 
@@ -994,6 +1450,16 @@ impl Agent {
         self.model_name.clone()
     }
 
+    fn build_turn_routing_config(&self) -> Config {
+        let mut config = Config::default();
+        config.default_provider = Some(self.provider_name.clone());
+        config.default_model = Some(self.model_name.clone());
+        config.model_preset = self.route_model_preset.clone();
+        config.model_lanes = self.route_model_lanes.clone();
+        config.model_routes = self.route_model_routes.clone();
+        config
+    }
+
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
         struct TurnDefaultsGuard {
             port: Arc<dyn TurnDefaultsContextPort>,
@@ -1007,6 +1473,7 @@ impl Agent {
 
         self.last_turn_usage = None;
         self.last_turn_tool_facts.clear();
+        self.last_turn_tool_repair = None;
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -1027,23 +1494,46 @@ impl Agent {
             (Some(store), Some(key)) => store.load(key),
             _ => None,
         };
+        let configured_delivery_target = self
+            .channel_registry
+            .as_ref()
+            .and_then(|registry| registry.configured_delivery_target());
         let turn_interpretation = turn_interpretation::build_turn_interpretation(
             Some(self.memory.as_ref()),
             user_message,
             user_profile,
             None,
             dialogue_state.as_ref(),
+            configured_delivery_target.clone(),
         )
         .await;
         let interpretation_block = turn_interpretation.as_ref().and_then(|interpretation| {
-            turn_interpretation::format_turn_interpretation(&interpretation)
+            turn_interpretation::format_turn_interpretation_for_turn(user_message, interpretation)
         });
         let resolved_turn_defaults =
             synapse_domain::application::services::turn_defaults_resolution::resolve_turn_defaults(
                 turn_interpretation.as_ref(),
+                configured_delivery_target,
             );
+        let scoped_context_block = if let (Some(loader), Some(plan)) = (
+            self.scoped_instruction_context.as_ref(),
+            build_scoped_instruction_plan(user_message, turn_interpretation.as_ref()),
+        ) {
+            let snippets = loader
+                .load_scoped_instructions(ScopedInstructionRequest {
+                    session_id: self.memory_session_id.clone(),
+                    path_hints: plan.hints.into_iter().map(|hint| hint.path).collect(),
+                    max_files: plan.max_files,
+                    max_total_chars: plan.max_total_chars,
+                })
+                .await
+                .unwrap_or_default();
+            format_scoped_instruction_block(&snippets)
+        } else {
+            None
+        };
         self.turn_defaults_context
-            .set_current(Some(resolved_turn_defaults));
+            .set_current(Some(resolved_turn_defaults.clone()));
         let _turn_defaults_guard = TurnDefaultsGuard {
             port: Arc::clone(&self.turn_defaults_context),
         };
@@ -1053,6 +1543,15 @@ impl Agent {
         } else {
             None
         };
+        let recent_admission_reasons = self
+            .recent_turn_admissions
+            .last()
+            .map(|admission| admission.reasons.as_slice())
+            .unwrap_or(&[]);
+        let recent_admission_repair = self
+            .recent_turn_admissions
+            .last()
+            .and_then(|admission| admission.recommended_action);
         let turn_ctx = tc::assemble_turn_context(
             self.memory.as_ref(),
             self.run_recipe_store.as_ref().map(|store| store.as_ref()),
@@ -1061,6 +1560,9 @@ impl Agent {
             &self.agent_id,
             self.memory_session_id.as_deref(),
             turn_interpretation.as_ref(),
+            &self.recent_turn_tool_repairs,
+            recent_admission_reasons,
+            recent_admission_repair,
             &self.prompt_budget,
             continuation,
         )
@@ -1096,6 +1598,7 @@ impl Agent {
             self.history
                 .push(ConversationMessage::Chat(ChatMessage::system(block)));
         }
+        self.upsert_scoped_context_block(scoped_context_block);
         if !formatted.resolution_system.is_empty() {
             const RESOLUTION_MARKER: &str = "[resolution-plan]\n";
             self.history.retain(|msg| {
@@ -1111,11 +1614,20 @@ impl Agent {
                 )));
         }
 
-        if self.auto_save {
+        if self.auto_save
+            && matches!(
+                synapse_domain::application::services::memory_quality_governor::assess_autosave_write(
+                    user_message,
+                    synapse_domain::application::services::inbound_message_service::AUTOSAVE_MIN_MESSAGE_CHARS,
+                ),
+                synapse_domain::application::services::memory_quality_governor::AutosaveWriteVerdict::Write
+            )
+        {
+            let user_key = autosave_memory_key("user_msg");
             let _ = self
                 .memory
                 .store(
-                    "user_msg",
+                    &user_key,
                     user_message,
                     &MemoryCategory::Conversation,
                     self.memory_session_id.as_deref(),
@@ -1134,26 +1646,173 @@ impl Agent {
         let ephemeral_prefix = formatted.enrichment_prefix;
         self.turn_count += 1;
 
-        let effective_model = self.classify_model(user_message);
+        let mut effective_model = self.classify_model(user_message);
+        let mut effective_model_profile = self.current_model_profile.clone();
+        let mut effective_lane = None;
+        if !effective_model.starts_with("hint:") {
+            let routing_config = self.build_turn_routing_config();
+            let profile_catalog = crate::runtime_routes::WorkspaceModelProfileCatalog::new(
+                self.workspace_dir.clone(),
+            );
+            if let Some(route_override) = resolve_turn_route_override(
+                &routing_config,
+                user_message,
+                &self.provider_name,
+                &effective_model,
+                &effective_model_profile,
+                self.provider.supports_vision(),
+                Some(&profile_catalog),
+            ) {
+                if route_override.provider == self.provider_name {
+                    effective_lane = Some(route_override.lane);
+                    effective_model = route_override.model;
+                    effective_model_profile = synapse_domain::application::services::model_lane_resolution::resolve_lane_candidates(
+                        &routing_config,
+                        route_override.lane,
+                        Some(&profile_catalog),
+                    )
+                    .into_iter()
+                    .find(|candidate| {
+                        candidate.provider == self.provider_name
+                            && candidate.model == effective_model
+                    })
+                    .map(|candidate| candidate.profile)
+                    .unwrap_or_else(|| {
+                        synapse_domain::application::services::model_lane_resolution::resolve_candidate_profile(
+                            &self.provider_name,
+                            &effective_model,
+                            &synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
+                            Some(&profile_catalog),
+                        )
+                    });
+                }
+            }
+        }
+        let turn_tool_specs =
+            synapse_domain::application::services::turn_tool_narrowing::prepare_tool_specs_for_turn(
+                self.tool_specs.clone(),
+                turn_ctx.execution_guidance.as_ref(),
+                &resolved_turn_defaults,
+                user_message,
+            );
         let mut tool_facts_this_turn = Vec::new();
+        let mut last_tool_repair_this_turn = None::<ToolRepairTrace>;
+        let mut tool_repairs_this_turn = Vec::<ToolRepairTrace>::new();
 
         let mut executed_call_cache: HashMap<(String, String), ToolExecutionResult> =
             HashMap::new();
 
         for _ in 0..self.config.max_tool_iterations {
             let snapshot = self.build_provider_prompt_snapshot();
+            let provider_context_input = provider_context_budget_input_from_stats(&snapshot.stats);
+            let budget_assessment = assess_provider_context_budget(provider_context_input);
+            let provider_capabilities = self.provider.capabilities();
+            let admission_decision = assess_turn_admission(TurnAdmissionInput {
+                config: None,
+                user_message,
+                execution_guidance: turn_ctx.execution_guidance.as_ref(),
+                tool_specs: &turn_tool_specs,
+                current_provider: &self.provider_name,
+                current_model: &effective_model,
+                current_lane: effective_lane,
+                current_profile: &effective_model_profile,
+                provider_capabilities: &provider_capabilities,
+                provider_context: provider_context_input,
+                catalog: None,
+            });
+            let observed_at_unix = chrono::Utc::now().timestamp();
+            let admission_state = RouteAdmissionState {
+                observed_at_unix,
+                snapshot: admission_decision.snapshot.clone(),
+                reasons: admission_decision.reasons.clone(),
+                recommended_action: admission_decision.recommended_action,
+            };
+            self.recent_turn_admissions =
+                synapse_domain::application::services::route_admission_history::append_route_admission_state(
+                    &self.recent_turn_admissions,
+                    Some(admission_state),
+                    observed_at_unix,
+                );
+            let system_breakdown = system_message_breakdown(&self.history)
+                .into_iter()
+                .map(|(name, chars)| format!("{name}={chars}"))
+                .collect::<Vec<_>>()
+                .join(", ");
             tracing::info!(
                 target: "agent.provider_context",
                 system_messages = snapshot.stats.system_messages,
                 system_chars = snapshot.stats.system_chars,
+                stable_system_chars = snapshot.stats.stable_system_chars,
+                dynamic_system_chars = snapshot.stats.dynamic_system_chars,
+                bootstrap_chars = snapshot.stats.bootstrap_chars,
+                core_memory_chars = snapshot.stats.core_memory_chars,
+                runtime_interpretation_chars = snapshot.stats.runtime_interpretation_chars,
+                scoped_context_chars = snapshot.stats.scoped_context_chars,
+                resolution_chars = snapshot.stats.resolution_chars,
+                system_breakdown = system_breakdown,
                 prior_chat_messages = snapshot.stats.prior_chat_messages,
                 prior_chat_chars = snapshot.stats.prior_chat_chars,
                 current_turn_messages = snapshot.stats.current_turn_messages,
                 current_turn_chars = snapshot.stats.current_turn_chars,
                 total_messages = snapshot.stats.total_messages,
                 total_chars = snapshot.stats.total_chars,
+                context_estimated_total_tokens = budget_assessment.snapshot.estimated_total_tokens,
+                context_chars_over_target = budget_assessment.snapshot.chars_over_target,
+                context_chars_over_ceiling = budget_assessment.snapshot.chars_over_ceiling,
+                context_turn_shape = provider_context_turn_shape_name(budget_assessment.turn_shape),
+                context_budget_tier = provider_context_budget_tier_name(budget_assessment.tier),
+                context_target_total_chars = budget_assessment.target_total_chars,
+                context_ceiling_total_chars = budget_assessment.ceiling_total_chars,
+                context_target_total_tokens = budget_assessment.snapshot.target_total_tokens,
+                context_ceiling_total_tokens = budget_assessment.snapshot.ceiling_total_tokens,
+                context_protected_chars = budget_assessment.snapshot.protected_chars,
+                context_removable_chars = budget_assessment.snapshot.removable_chars,
+                context_protected_tokens = budget_assessment.snapshot.protected_tokens,
+                context_removable_tokens = budget_assessment.snapshot.removable_tokens,
+                context_tokens_headroom_to_target =
+                    budget_assessment.snapshot.tokens_headroom_to_target,
+                context_tokens_headroom_to_ceiling =
+                    budget_assessment.snapshot.tokens_headroom_to_ceiling,
+                context_primary_ballast = budget_assessment
+                    .snapshot
+                    .primary_ballast_artifact
+                    .map(provider_context_artifact_name)
+                    .unwrap_or("none"),
+                admission_intent = turn_intent_name(admission_decision.snapshot.intent),
+                admission_pressure = context_pressure_state_name(
+                    admission_decision.snapshot.pressure_state
+                ),
+                admission_action = turn_admission_action_name(admission_decision.snapshot.action),
+                admission_requires_compaction = admission_decision.requires_compaction,
+                admission_reasons = ?admission_decision.reasons,
+                tool_specs = turn_tool_specs.len(),
+                tool_spec_names = turn_tool_specs
+                    .iter()
+                    .take(12)
+                    .map(|tool| tool.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 "Built provider-facing context snapshot"
             );
+
+            if admission_decision.requires_compaction && self.maybe_compact_history().await {
+                tracing::info!(
+                    target: "agent.turn_admission",
+                    action = "compact_and_retry",
+                    "Admission policy requested pre-provider compaction"
+                );
+                continue;
+            }
+
+            if admission_decision.snapshot.action == TurnAdmissionAction::Block {
+                anyhow::bail!(
+                    "turn admission blocked provider call intent={} pressure={} provider={} model={}",
+                    turn_intent_name(admission_decision.snapshot.intent),
+                    context_pressure_state_name(admission_decision.snapshot.pressure_state),
+                    self.provider_name,
+                    effective_model
+                );
+            }
             let mut messages = snapshot.messages;
 
             // Inject enrichment prefix on the last user message for the provider
@@ -1215,6 +1874,12 @@ impl Agent {
                         .push(ConversationMessage::Chat(ChatMessage::assistant(
                             cached.clone(),
                         )));
+                    let compacted = self.maybe_compact_history().await;
+                    if compacted {
+                        tracing::debug!(
+                            "Live agent history auto-compaction complete after cache hit"
+                        );
+                    }
                     self.trim_history();
                     return Ok(cached);
                 }
@@ -1229,7 +1894,7 @@ impl Agent {
                     ChatRequest {
                         messages: &messages,
                         tools: if self.tool_dispatcher.should_send_tool_specs() {
-                            Some(&self.tool_specs)
+                            Some(turn_tool_specs.as_slice())
                         } else {
                             None
                         },
@@ -1259,7 +1924,31 @@ impl Agent {
             }
 
             let (text, parsed_calls) = self.tool_dispatcher.parse_response(&response);
-            let calls = self.deduplicate_turn_calls(parsed_calls);
+            let calls = self
+                .deduplicate_turn_calls(parsed_calls)
+                .into_iter()
+                .map(|call| {
+                    let force_implicit_target = synapse_domain::application::services::turn_tool_narrowing::should_force_implicit_target_for_tool(
+                        &call.name,
+                        &turn_tool_specs,
+                        turn_ctx.execution_guidance.as_ref(),
+                        &resolved_turn_defaults,
+                    );
+                    let drop_noncanonical_string_target = resolved_turn_defaults.delivery_target.is_some()
+                        && has_noncanonical_string_delivery_target(&call)
+                        && turn_tool_specs.iter().any(|spec| {
+                            spec.name == call.name
+                                && spec.runtime_role
+                                    == Some(synapse_domain::ports::tool::ToolRuntimeRole::DirectDelivery)
+                        });
+
+                    if force_implicit_target || drop_noncanonical_string_target {
+                        strip_redundant_delivery_target(&call)
+                    } else {
+                        call
+                    }
+                })
+                .collect::<Vec<_>>();
             if calls.is_empty() {
                 let final_text = if text.is_empty() {
                     response.text.unwrap_or_default()
@@ -1284,6 +1973,10 @@ impl Agent {
                     .push(ConversationMessage::Chat(ChatMessage::assistant(
                         final_text.clone(),
                     )));
+                let compacted = self.maybe_compact_history().await;
+                if compacted {
+                    tracing::debug!("Live agent history auto-compaction complete");
+                }
                 self.trim_history();
 
                 if let (Some(session_id), Some(store)) = (
@@ -1307,6 +2000,13 @@ impl Agent {
                 }
 
                 self.last_turn_tool_facts = tool_facts_this_turn;
+                self.last_turn_tool_repair = last_tool_repair_this_turn;
+                self.recent_turn_tool_repairs =
+                    synapse_domain::application::services::tool_repair::append_tool_repair_traces(
+                        &self.recent_turn_tool_repairs,
+                        &tool_repairs_this_turn,
+                        chrono::Utc::now().timestamp(),
+                    );
 
                 return Ok(final_text);
             }
@@ -1333,6 +2033,18 @@ impl Agent {
                 results
                     .iter()
                     .flat_map(|result| result.tool_facts.iter().cloned()),
+            );
+            if let Some(trace) = results
+                .iter()
+                .filter_map(|result| result.repair_trace.clone())
+                .last()
+            {
+                last_tool_repair_this_turn = Some(trace);
+            }
+            tool_repairs_this_turn.extend(
+                results
+                    .iter()
+                    .filter_map(|result| result.repair_trace.clone()),
             );
             let formatted = self.tool_dispatcher.format_results(&results);
             self.history.push(formatted);
@@ -1424,7 +2136,10 @@ pub async fn run_with_memory(
     let model_name = effective_config
         .default_model
         .as_deref()
-        .unwrap_or("anthropic/claude-sonnet-4-20250514")
+        .unwrap_or_else(|| {
+            synapse_domain::config::model_catalog::provider_default_model(provider_name.as_str())
+                .unwrap_or("default")
+        })
         .to_string();
 
     agent.observer.record_event(&ObserverEvent::AgentStart {
@@ -1456,6 +2171,10 @@ mod tests {
     use async_trait::async_trait;
     use parking_lot::Mutex;
     use std::collections::HashMap;
+    use synapse_domain::config::schema::{
+        CapabilityLane, ModelCandidateProfileConfig, ModelFeature, ModelLaneCandidateConfig,
+        ModelLaneConfig,
+    };
 
     struct MockProvider {
         responses: Mutex<Vec<synapse_providers::ChatResponse>>,
@@ -1671,6 +2390,55 @@ mod tests {
         assert_eq!(response, "classified");
         let seen = seen_models.lock();
         assert_eq!(seen.as_slice(), &["hint:fast".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn turn_reroutes_same_provider_specialized_lane() {
+        let seen_models = Arc::new(Mutex::new(Vec::new()));
+        let provider = Box::new(ModelCaptureProvider {
+            responses: Mutex::new(vec![synapse_providers::ChatResponse {
+                text: Some("image-ready".into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+            seen_models: seen_models.clone(),
+        });
+
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .provider(provider)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .provider_name("openrouter".to_string())
+            .model_name("plain-model".to_string())
+            .route_model_lanes(vec![ModelLaneConfig {
+                lane: CapabilityLane::ImageGeneration,
+                candidates: vec![ModelLaneCandidateConfig {
+                    provider: "openrouter".into(),
+                    model: "universal-image-model".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: ModelCandidateProfileConfig {
+                        context_window_tokens: None,
+                        max_output_tokens: None,
+                        features: vec![ModelFeature::ImageGeneration],
+                    },
+                }],
+            }])
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        let response = agent.turn("[GENERATE:IMAGE] poster concept").await.unwrap();
+
+        assert_eq!(response, "image-ready");
+        let seen = seen_models.lock();
+        assert_eq!(seen.as_slice(), &["universal-image-model".to_string()]);
     }
 
     #[tokio::test]

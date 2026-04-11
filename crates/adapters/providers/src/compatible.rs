@@ -2468,6 +2468,7 @@ mod tests {
                 },
                 "required": ["command"]
             }),
+            runtime_role: None,
         }];
 
         let output =
@@ -2636,6 +2637,7 @@ mod tests {
                 "properties": {"command": {"type": "string"}},
                 "required": ["command"]
             }),
+            runtime_role: None,
         }];
 
         let tools = OpenAiCompatibleProvider::tool_specs_to_openai_format(&specs);

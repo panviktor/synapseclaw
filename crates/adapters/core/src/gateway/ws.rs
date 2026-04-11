@@ -12,9 +12,15 @@
 
 use super::chat_db::ChatMessageRow;
 use super::{AppState, ChatSession};
+use crate::runtime_routes::WorkspaceModelProfileCatalog;
+use synapse_domain::application::services::model_lane_resolution::resolve_candidate_profile;
+use synapse_domain::application::services::route_switch_preflight::RouteSwitchStatus;
+use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
+use synapse_domain::domain::channel::ChannelCapability;
 use synapse_domain::domain::conversation::{
     ConversationEvent, ConversationKind, ConversationSession, EventType,
 };
+use synapse_domain::domain::conversation_target::CurrentConversationContext;
 // Run types no longer needed directly — lifecycle managed by conversation_service
 use axum::{
     extract::{
@@ -29,6 +35,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use synapse_domain::ports::route_selection::RouteSelection;
 
 /// The sub-protocol we support for the chat WebSocket.
 const WS_PROTOCOL: &str = "synapseclaw.v1";
@@ -41,6 +48,19 @@ const MAX_MEMORY_SESSIONS: usize = 50;
 
 /// Auto-label truncation length.
 const AUTO_LABEL_MAX_LEN: usize = 40;
+
+fn web_runtime_ports(state: &AppState) -> crate::agent::AgentRuntimePorts {
+    crate::agent::AgentRuntimePorts {
+        conversation_store: state.conversation_store.clone(),
+        conversation_context: Some(Arc::clone(&state.conversation_context)),
+        user_profile_store: Some(Arc::clone(&state.user_profile_store)),
+        user_profile_context: Some(Arc::clone(&state.user_profile_context)),
+        turn_defaults_context: Some(Arc::clone(&state.turn_defaults_context)),
+        scoped_instruction_context: Some(Arc::clone(&state.scoped_instruction_context)),
+        channel_registry: state.channel_registry.clone(),
+        run_recipe_store: Some(Arc::clone(&state.run_recipe_store)),
+    }
+}
 
 #[derive(Deserialize)]
 pub struct WsQuery {
@@ -482,14 +502,14 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
     let mut agent = crate::agent::Agent::from_config_with_runtime_context(
         &config,
         Some(state.mem.clone()),
-        state.conversation_store.clone(),
-        Some(state.user_profile_store.clone()),
+        web_runtime_ports(state),
     )
     .await?;
     agent.set_dialogue_state_store(Some(Arc::clone(&state.dialogue_state_store)));
     agent.set_conversation_store(state.conversation_store.clone());
     agent.set_run_recipe_store(Some(Arc::clone(&state.run_recipe_store)));
     agent.set_user_profile_store(Some(Arc::clone(&state.user_profile_store)));
+    agent.set_channel_registry(state.channel_registry.clone());
 
     let now = Instant::now();
     let _now_secs_val = now_secs();
@@ -895,10 +915,18 @@ async fn handle_chat_send_rpc(
         .unwrap_or(default_session)
         .to_string();
     check_session_ownership(&session_key, token_prefix)?;
+    ensure_session(state, &session_key).await?;
     let message = params["message"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing 'message' param"))?
         .to_string();
+
+    if let Some(result) =
+        handle_runtime_command_if_needed(state, &session_key, &message, token_prefix, out_tx)
+            .await?
+    {
+        return Ok(result);
+    }
 
     // Phase 4.0 Slice 3: run lifecycle via conversation_service
     let run_id = if let Some(store) = state.run_store.as_ref() {
@@ -978,7 +1006,15 @@ async fn handle_chat_send_rpc(
     };
 
     // Run agent turn with abort support + real-time tool event push
-    let result = run_agent_turn_with_abort(state, &session_key, &message, abort_rx, out_tx).await;
+    let result = run_agent_turn_with_abort(
+        state,
+        &session_key,
+        token_prefix,
+        &message,
+        abort_rx,
+        out_tx,
+    )
+    .await;
 
     // Clear run_id + abort_tx, extract usage + collect tool history for async persist
     let (usage, tool_history, tool_facts, user_profile_key) = {
@@ -992,7 +1028,29 @@ async fn handle_chat_send_rpc(
             s.last_active = Instant::now();
             // Tool events already pushed in real-time via WsToolNotifyObserver.
             // Snapshot history for async persist (after lock release)
-            s.agent.history()[history_len_before..].to_vec()
+            let history = s.agent.history();
+            if history_len_before <= history.len() {
+                history[history_len_before..].to_vec()
+            } else {
+                let fallback_start = history
+                    .iter()
+                    .rposition(|entry| {
+                        matches!(
+                            entry,
+                            synapse_providers::ConversationMessage::Chat(chat)
+                                if chat.role == "user" && chat.content == message
+                        )
+                    })
+                    .unwrap_or(history.len());
+                tracing::warn!(
+                    session_key = %session_key,
+                    history_len_before,
+                    history_len_after = history.len(),
+                    fallback_start,
+                    "Agent history shrank during turn; reconstructing delta from latest user message"
+                );
+                history[fallback_start..].to_vec()
+            }
         } else {
             Vec::new()
         };
@@ -1143,28 +1201,321 @@ async fn handle_chat_send_rpc(
     }
 }
 
+async fn handle_runtime_command_if_needed(
+    state: &AppState,
+    session_key: &str,
+    message: &str,
+    token_prefix: &str,
+    out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
+) -> anyhow::Result<Option<serde_json::Value>> {
+    let caps = vec![ChannelCapability::RuntimeCommands];
+    let Some(command) =
+        synapse_domain::application::services::inbound_message_service::parse_runtime_command(
+            message, &caps,
+        )
+    else {
+        return Ok(None);
+    };
+
+    let config_snapshot = state.config.lock().clone();
+    let effect = synapse_domain::application::services::inbound_message_service::command_effect(
+        &command,
+        &config_snapshot.model_routes,
+    );
+
+    let response = match &effect {
+        synapse_domain::application::services::inbound_message_service::CommandEffect::ShowProviders => {
+            format_web_providers_help(state, session_key)?
+        }
+        synapse_domain::application::services::inbound_message_service::CommandEffect::ShowModel => {
+            format_web_model_help(state, session_key, &config_snapshot)?
+        }
+        synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchModel {
+            model,
+            inferred_provider,
+        } => {
+            let provider = inferred_provider
+                .clone()
+                .or_else(|| {
+                    current_web_route_selection(state, session_key)
+                        .ok()
+                        .map(|route| route.provider)
+                })
+                .unwrap_or_else(|| {
+                    config_snapshot
+                        .default_provider
+                        .clone()
+                        .unwrap_or_else(|| "openrouter".to_string())
+                });
+            let catalog = WorkspaceModelProfileCatalog::new(config_snapshot.workspace_dir.as_path());
+            let target_profile = resolve_candidate_profile(
+                provider.as_str(),
+                model.as_str(),
+                &synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
+                Some(&catalog),
+            );
+            match apply_web_runtime_route(
+                state,
+                session_key,
+                &config_snapshot,
+                Some(provider.as_str()),
+                Some(model.as_str()),
+                target_profile.context_window_tokens,
+                token_prefix,
+            )
+            .await
+            {
+                Ok(()) => {
+                    format!("Model switched to `{model}` (provider: `{provider}`). Context preserved.")
+                }
+                Err(error) => {
+                    format!("Model switch to `{model}` blocked: {error}")
+                }
+            }
+        }
+        synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchProvider {
+            provider,
+        } => {
+            apply_web_runtime_route(
+                state,
+                session_key,
+                &config_snapshot,
+                Some(provider.as_str()),
+                None,
+                None,
+                token_prefix,
+            )
+            .await?;
+            format!(
+                "Provider switched to `{provider}`. Use `/model <model-id>` or `/model <hint>` to choose a model."
+            )
+        }
+        synapse_domain::application::services::inbound_message_service::CommandEffect::ClearSession => {
+            clear_web_session_runtime_state(state, session_key)?;
+            "Conversation history cleared. Starting fresh.".to_string()
+        }
+    };
+
+    let _ = out_tx.send(
+        serde_json::json!({
+            "type": "assistant",
+            "session_key": session_key,
+            "content": response,
+            "timestamp": now_secs(),
+        })
+        .to_string(),
+    );
+
+    if let Some(store) = state.conversation_store.as_ref() {
+        let session = synapse_domain::application::services::conversation_service::new_web_session(
+            session_key,
+            None,
+        );
+        let _ = store.upsert_session(&session).await;
+    }
+
+    Ok(Some(serde_json::json!({
+        "command": true,
+    })))
+}
+
+fn current_web_route_selection(
+    state: &AppState,
+    session_key: &str,
+) -> anyhow::Result<RouteSelection> {
+    let sessions = state
+        .chat_sessions
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let session = sessions
+        .get(session_key)
+        .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+    Ok(RouteSelection {
+        provider: session.agent.provider_name_str().to_string(),
+        model: session.agent.model_name_str().to_string(),
+        lane: None,
+        candidate_index: None,
+        last_admission: session.agent.recent_turn_admissions().last().cloned(),
+        recent_admissions: session.agent.recent_turn_admissions().to_vec(),
+        last_tool_repair: session.agent.last_turn_tool_repair().cloned(),
+        recent_tool_repairs: session.agent.recent_turn_tool_repairs().to_vec(),
+    })
+}
+
+fn format_web_model_help(
+    state: &AppState,
+    session_key: &str,
+    config: &synapse_domain::config::schema::Config,
+) -> anyhow::Result<String> {
+    let route = current_web_route_selection(state, session_key)?;
+    Ok(crate::runtime_routes::build_models_help_response(
+        &route, config,
+    ))
+}
+
+fn format_web_providers_help(state: &AppState, session_key: &str) -> anyhow::Result<String> {
+    let route = current_web_route_selection(state, session_key)?;
+    Ok(crate::runtime_routes::build_providers_help_response(&route))
+}
+
+async fn apply_web_runtime_route(
+    state: &AppState,
+    session_key: &str,
+    config: &synapse_domain::config::schema::Config,
+    provider_override: Option<&str>,
+    model_override: Option<&str>,
+    target_context_window_tokens: Option<usize>,
+    token_prefix: &str,
+) -> anyhow::Result<()> {
+    let placeholder = crate::agent::Agent::from_config_with_runtime_context(
+        config,
+        Some(state.mem.clone()),
+        web_runtime_ports(state),
+    )
+    .await?;
+
+    let mut agent = {
+        let mut sessions = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let session = sessions
+            .get_mut(session_key)
+            .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+        std::mem::replace(&mut session.agent, placeholder)
+    };
+
+    if let Some(target_context_window_tokens) = target_context_window_tokens {
+        let preflight = agent
+            .prepare_for_target_context_window(target_context_window_tokens)
+            .await;
+        if preflight.status == RouteSwitchStatus::TooLarge {
+            let mut sessions = state
+                .chat_sessions
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let session = sessions
+                .get_mut(session_key)
+                .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+            session.agent = agent;
+            anyhow::bail!(
+                "target context window {} tokens leaves a safe context budget of ~{} tokens after reserving ~{} output tokens, but the current provider-facing context is ~{} tokens. Compact or start a new session first",
+                target_context_window_tokens,
+                preflight
+                    .safe_context_budget_tokens
+                    .unwrap_or(target_context_window_tokens),
+                preflight.reserved_output_headroom_tokens.unwrap_or(0),
+                preflight.estimated_context_tokens
+            );
+        }
+    }
+
+    if let Err(error) = agent
+        .switch_runtime_route(
+            config,
+            provider_override,
+            model_override,
+            state.mem.clone(),
+            web_runtime_ports(state),
+        )
+        .await
+    {
+        let mut sessions = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let session = sessions
+            .get_mut(session_key)
+            .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+        session.agent = agent;
+        return Err(error);
+    }
+    agent.set_dialogue_state_store(Some(Arc::clone(&state.dialogue_state_store)));
+    agent.set_conversation_store(state.conversation_store.clone());
+    agent.set_run_recipe_store(Some(Arc::clone(&state.run_recipe_store)));
+    agent.set_user_profile_store(Some(Arc::clone(&state.user_profile_store)));
+    agent.set_channel_registry(state.channel_registry.clone());
+    agent.set_memory_session_id(Some(session_key.to_string()));
+    agent.set_user_profile_key(Some(format!("web:{token_prefix}")));
+
+    {
+        let mut sessions = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let session = sessions
+            .get_mut(session_key)
+            .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+        session.agent = agent;
+        session.last_active = Instant::now();
+    }
+
+    Ok(())
+}
+
+fn clear_web_session_runtime_state(state: &AppState, session_key: &str) -> anyhow::Result<()> {
+    let mut sessions = state
+        .chat_sessions
+        .lock()
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let session = sessions
+        .get_mut(session_key)
+        .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+    session.agent.clear_history();
+    session.message_count = 0;
+    session.input_tokens = 0;
+    session.output_tokens = 0;
+    session.current_goal = None;
+    session.session_summary = None;
+    Ok(())
+}
+
 /// Execute agent.turn() with abort support.
 /// Swaps the agent out of sessions lock, runs turn, puts it back.
 async fn run_agent_turn_with_abort(
     state: &AppState,
     session_key: &str,
+    token_prefix: &str,
     message: &str,
     mut abort_rx: tokio::sync::watch::Receiver<bool>,
     out_tx: &tokio::sync::mpsc::UnboundedSender<String>,
 ) -> anyhow::Result<String> {
+    struct ConversationContextGuard {
+        port: Arc<dyn synapse_domain::ports::conversation_context::ConversationContextPort>,
+    }
+
+    impl Drop for ConversationContextGuard {
+        fn drop(&mut self) {
+            self.port.set_current(None);
+        }
+    }
+
     // Clone config before await to avoid holding MutexGuard across await.
     let config_snapshot = state.config.lock().clone();
     let replacement_agent = crate::agent::Agent::from_config_with_runtime_context(
         &config_snapshot,
         Some(state.mem.clone()),
-        state.conversation_store.clone(),
-        Some(state.user_profile_store.clone()),
+        web_runtime_ports(state),
     )
     .await?;
     let mut replacement_agent = replacement_agent;
     replacement_agent.set_dialogue_state_store(Some(Arc::clone(&state.dialogue_state_store)));
     replacement_agent.set_conversation_store(state.conversation_store.clone());
     replacement_agent.set_run_recipe_store(Some(Arc::clone(&state.run_recipe_store)));
+    replacement_agent.set_user_profile_store(Some(Arc::clone(&state.user_profile_store)));
+    replacement_agent.set_channel_registry(state.channel_registry.clone());
+    state
+        .conversation_context
+        .set_current(Some(CurrentConversationContext {
+            source_adapter: "web".to_string(),
+            conversation_ref: session_key.to_string(),
+            reply_ref: session_key.to_string(),
+            thread_ref: None,
+            actor_id: format!("web:{token_prefix}"),
+        }));
+    let _conversation_context_guard = ConversationContextGuard {
+        port: Arc::clone(&state.conversation_context),
+    };
     let mut agent = {
         let mut sessions = state
             .chat_sessions
@@ -1855,22 +2206,17 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
     };
 
     // Build summary generator from config
-    let (summary_model, temperature, provider) = {
+    let (summary_route, provider) = {
         let config_guard = state.config.lock();
-        let sc = &config_guard.summary;
-        let model = sc
-            .model
-            .clone()
-            .or_else(|| config_guard.summary_model.clone())
-            .unwrap_or_else(|| state.model.clone());
-        let temp = sc.temperature;
-        let prov: std::sync::Arc<dyn synapse_providers::Provider> =
-            if let Some(ref provider_name) = sc.provider {
-                let opts = synapse_providers::provider_runtime_options_from_config(&config_guard);
-                let api_key = sc
+        let opts = synapse_providers::provider_runtime_options_from_config(&config_guard);
+        let summary_route = resolve_summary_route(&config_guard, &state.model);
+        let provider: std::sync::Arc<dyn synapse_providers::Provider> =
+            if let Some(ref provider_name) = summary_route.provider {
+                let api_key = summary_route
                     .api_key_env
                     .as_deref()
-                    .and_then(|env| std::env::var(env).ok());
+                    .and_then(|env| std::env::var(env).ok())
+                    .or_else(|| summary_route.api_key.clone());
                 match synapse_providers::create_provider_with_options(
                     provider_name,
                     api_key.as_deref(),
@@ -1878,21 +2224,34 @@ pub(crate) async fn summarize_session_if_needed(state: &AppState, session_key: &
                 ) {
                     Ok(p) => p.into(),
                     Err(e) => {
-                        tracing::warn!("Summary provider init failed: {e}, using default");
+                        tracing::warn!(
+                            %e,
+                            summary_route_source = summary_route.source.as_str(),
+                            summary_model = summary_route.model.as_str(),
+                            "Summary provider init failed; using current route"
+                        );
                         state.provider.clone()
                     }
                 }
             } else {
                 state.provider.clone()
             };
-        (model, temp, prov)
+        (summary_route, provider)
     };
+
+    tracing::debug!(
+        session_key,
+        summary_route_source = summary_route.source.as_str(),
+        summary_provider = summary_route.provider.as_deref().unwrap_or("current"),
+        summary_model = summary_route.model.as_str(),
+        "Web session summary lane selected"
+    );
 
     let generator =
         crate::memory_adapters::summary_generator_adapter::ProviderSummaryGenerator::new(
             provider,
-            summary_model,
-            temperature,
+            summary_route.model.clone(),
+            summary_route.temperature,
         );
 
     match synapse_domain::application::services::conversation_service::generate_session_summary(

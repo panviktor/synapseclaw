@@ -1201,7 +1201,7 @@ pub async fn handle_api_memory_delete(
         return e.into_response();
     }
 
-    let agent_id = crate::agent::loop_::resolve_agent_id(&state.config.lock().clone());
+    let agent_id = crate::agent::resolve_agent_id(&state.config.lock().clone());
     match state.mem.forget(&key, &agent_id).await {
         Ok(deleted) => {
             Json(serde_json::json!({"status": "ok", "deleted": deleted})).into_response()
@@ -2087,6 +2087,9 @@ fn resolution_source_name(
     source: synapse_domain::application::services::resolution_router::ResolutionSource,
 ) -> &'static str {
     match source {
+        synapse_domain::application::services::resolution_router::ResolutionSource::ConfiguredRuntime => {
+            "configured_runtime"
+        }
         synapse_domain::application::services::resolution_router::ResolutionSource::CurrentConversation => {
             "current_conversation"
         }
@@ -3953,6 +3956,8 @@ mod tests {
             provider: "openrouter".to_string(),
             model: "anthropic/claude-sonnet-4.6".to_string(),
             api_key: Some("route-model-key".to_string()),
+            capability: None,
+            profile: Default::default(),
         }];
         cfg.embedding_routes = vec![synapse_domain::config::schema::EmbeddingRouteConfig {
             hint: "semantic".to_string(),
@@ -3960,6 +3965,8 @@ mod tests {
             model: "text-embedding-3-small".to_string(),
             dimensions: Some(1536),
             api_key: Some("route-embed-key".to_string()),
+            capability: None,
+            profile: Default::default(),
         }];
 
         let masked = mask_sensitive_fields(&cfg);
@@ -4086,12 +4093,16 @@ mod tests {
                 provider: "openrouter".to_string(),
                 model: "anthropic/claude-sonnet-4.6".to_string(),
                 api_key: Some("route-model-key-1".to_string()),
+                capability: None,
+                profile: Default::default(),
             },
             synapse_domain::config::schema::ModelRouteConfig {
                 hint: "fast".to_string(),
                 provider: "openrouter".to_string(),
                 model: "openai/gpt-4.1-mini".to_string(),
                 api_key: Some("route-model-key-2".to_string()),
+                capability: None,
+                profile: Default::default(),
             },
         ];
         current.embedding_routes = vec![
@@ -4101,6 +4112,8 @@ mod tests {
                 model: "text-embedding-3-small".to_string(),
                 dimensions: Some(1536),
                 api_key: Some("route-embed-key-1".to_string()),
+                capability: None,
+                profile: Default::default(),
             },
             synapse_domain::config::schema::EmbeddingRouteConfig {
                 hint: "archive".to_string(),
@@ -4108,6 +4121,8 @@ mod tests {
                 model: "bge-m3".to_string(),
                 dimensions: Some(1024),
                 api_key: Some("route-embed-key-2".to_string()),
+                capability: None,
+                profile: Default::default(),
             },
         ];
 
@@ -4233,12 +4248,16 @@ mod tests {
                 provider: "openrouter".to_string(),
                 model: "anthropic/claude-sonnet-4.6".to_string(),
                 api_key: Some("route-model-key-1".to_string()),
+                capability: None,
+                profile: Default::default(),
             },
             synapse_domain::config::schema::ModelRouteConfig {
                 hint: "fast".to_string(),
                 provider: "openrouter".to_string(),
                 model: "openai/gpt-4.1-mini".to_string(),
                 api_key: Some("route-model-key-2".to_string()),
+                capability: None,
+                profile: Default::default(),
             },
         ];
         current.embedding_routes = vec![
@@ -4248,6 +4267,8 @@ mod tests {
                 model: "text-embedding-3-small".to_string(),
                 dimensions: Some(1536),
                 api_key: Some("route-embed-key-1".to_string()),
+                capability: None,
+                profile: Default::default(),
             },
             synapse_domain::config::schema::EmbeddingRouteConfig {
                 hint: "archive".to_string(),
@@ -4255,6 +4276,8 @@ mod tests {
                 model: "bge-m3".to_string(),
                 dimensions: Some(1024),
                 api_key: Some("route-embed-key-2".to_string()),
+                capability: None,
+                profile: Default::default(),
             },
         ];
 
@@ -4268,6 +4291,8 @@ mod tests {
                 provider: "openai".to_string(),
                 model: "gpt-4.1".to_string(),
                 api_key: Some(MASKED_SECRET.to_string()),
+                capability: None,
+                profile: Default::default(),
             });
         incoming
             .embedding_routes
@@ -4277,6 +4302,8 @@ mod tests {
                 model: "bge-small".to_string(),
                 dimensions: Some(768),
                 api_key: Some(MASKED_SECRET.to_string()),
+                capability: None,
+                profile: Default::default(),
             });
 
         let hydrated = hydrate_config_for_save(incoming, &current);

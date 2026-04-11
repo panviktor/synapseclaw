@@ -167,7 +167,7 @@ Use --message for single-shot queries without entering interactive mode.
 Examples:
   synapseclaw agent                              # interactive session
   synapseclaw agent -m \"Summarize today's logs\"  # single message
-  synapseclaw agent -p anthropic --model claude-sonnet-4-20250514")]
+  synapseclaw agent -p <provider> --model <model-id>")]
     Agent {
         /// Single message mode (don't enter interactive mode)
         #[arg(short, long)]
@@ -570,6 +570,25 @@ enum ModelCommands {
     },
     /// Show current model configuration and cache status
     Status,
+    /// Manage the local editable model catalog override
+    Catalog {
+        #[command(subcommand)]
+        catalog_command: ModelCatalogCommands,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ModelCatalogCommands {
+    /// Initialize a local editable model catalog next to config.toml
+    Init {
+        /// Overwrite an existing local catalog file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show the local catalog path and whether an override is active
+    Status,
+    /// Print only the local catalog path
+    Path,
 }
 
 #[derive(Subcommand, Debug)]
@@ -676,6 +695,15 @@ async fn main() -> Result<()> {
         .finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+
+    if let Some(path) =
+        synapse_infra::model_catalog_io::install_runtime_model_catalog_override_if_present().await?
+    {
+        tracing::info!(
+            path = %path.display(),
+            "Loaded user model catalog override"
+        );
+    }
 
     // Onboard auto-detects the environment: if stdin/stdout are a TTY and no
     // provider flags were given, it runs the full interactive wizard; otherwise
@@ -1140,7 +1168,7 @@ async fn main() -> Result<()> {
         } => handle_estop_command(&config, estop_command, level, domains, tools),
 
         Commands::Cron { cron_command } => {
-            let resolved_agent_id = synapse_adapters::agent::loop_::resolve_agent_id(&config);
+            let resolved_agent_id = synapse_adapters::agent::resolve_agent_id(&config);
             let mem_backend = synapse_memory::create_memory(
                 &config.memory,
                 &config.workspace_dir,
@@ -1176,6 +1204,13 @@ async fn main() -> Result<()> {
                 Box::pin(synapse_onboard::run_models_set(&config, &model)).await
             }
             ModelCommands::Status => synapse_onboard::run_models_status(&config).await,
+            ModelCommands::Catalog { catalog_command } => match catalog_command {
+                ModelCatalogCommands::Init { force } => {
+                    synapse_onboard::run_models_catalog_init(force).await
+                }
+                ModelCatalogCommands::Status => synapse_onboard::run_models_catalog_status().await,
+                ModelCatalogCommands::Path => synapse_onboard::run_models_catalog_path().await,
+            },
         },
 
         Commands::Providers => {

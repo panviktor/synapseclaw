@@ -34,6 +34,12 @@ impl RouteSelectionPort for MutexMapRouteSelection {
             .unwrap_or_else(|| RouteSelection {
                 provider: self.default_provider.clone(),
                 model: self.default_model.clone(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
             })
     }
 

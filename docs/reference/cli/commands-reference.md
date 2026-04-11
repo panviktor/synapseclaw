@@ -45,6 +45,14 @@ Last verified: **February 21, 2026**.
 - If `config.toml` already exists, onboarding offers two modes:
   - Full onboarding (overwrite `config.toml`)
   - Provider-only update (update provider/model/API key while preserving existing channels, tunnel, memory, hooks, and other settings)
+- Guided onboarding is preset-first:
+  - `ChatGPT / Codex`
+  - `Claude`
+  - `OpenRouter`
+  - `Local`
+  - `Advanced`
+- Presets expand into lane-aware routing (`reasoning`, `cheap_reasoning`, `embedding`, and later multimodal lanes) while still allowing manual overrides in config.
+- For deeper local customization of preset seeds, curated model lists, and provider defaults, use `synapseclaw models catalog init` and edit the generated `model_catalog.json` next to `config.toml`.
 - In non-interactive environments, existing `config.toml` causes a safe refusal unless `--force` is passed.
 - Use `synapseclaw onboard --channels-only` when you only need to rotate channel tokens/allowlists.
 - Use `synapseclaw onboard --reinit` to start fresh. This backs up your existing config directory with a timestamp suffix and creates a new configuration from scratch.
@@ -114,8 +122,23 @@ Notes:
 - `synapseclaw models refresh`
 - `synapseclaw models refresh --provider <ID>`
 - `synapseclaw models refresh --force`
+- `synapseclaw models list [--provider <ID>]`
+- `synapseclaw models set <MODEL_ID>`
+- `synapseclaw models status`
+- `synapseclaw models catalog init [--force]`
+- `synapseclaw models catalog status`
+- `synapseclaw models catalog path`
 
 `models refresh` currently supports live catalog refresh for provider IDs: `openrouter`, `openai`, `anthropic`, `groq`, `mistral`, `deepseek`, `xai`, `together-ai`, `gemini`, `ollama`, `llamacpp`, `sglang`, `vllm`, `astrai`, `venice`, `fireworks`, `cohere`, `moonshot`, `glm`, `zai`, `qwen`, and `nvidia`.
+
+`models catalog init` writes a local editable `model_catalog.json` next to the
+active `config.toml`. On startup SynapseClaw merges that file over the built-in
+catalog. Use this to override built-in presets, provider defaults, curated
+model lists, route aliases, provider:model profiles, or default pricing without
+changing repository files. Profile entries can provide context windows, max
+output, and feature coverage for admission/routing when the live provider cache
+has not been refreshed yet. Route aliases are fallback shortcuts for `/model`;
+user `[[model_routes]]` entries still win when both define the same hint.
 
 ### `doctor`
 

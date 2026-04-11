@@ -13,6 +13,7 @@ use crate::application::services::learning_quality_service::{self, LearningCandi
 use crate::application::services::learning_signals::{self, LearningSignal};
 use crate::application::services::learning_strength_service;
 use crate::application::services::memory_mutation as mutation;
+use crate::application::services::memory_quality_governor;
 use crate::application::services::precedent_similarity_service;
 use crate::application::services::procedural_cluster_service::{
     plan_recent_clusters, ProceduralClusterKind,
@@ -30,17 +31,6 @@ use crate::ports::run_recipe_store::RunRecipeStorePort;
 use crate::ports::user_profile_store::UserProfileStorePort;
 use std::collections::HashSet;
 use std::sync::Arc;
-
-// ── Gate constants ───────────────────────────────────────────────
-
-/// Minimum user message length (chars) for background consolidation.
-const CONSOLIDATE_MIN_CHARS: usize = 20;
-
-/// Minimum user message length (chars) for reflection.
-const REFLECT_MIN_USER_CHARS: usize = 30;
-
-/// Minimum response length (bytes) for reflection.
-const REFLECT_MIN_RESPONSE_LEN: usize = 200;
 
 // ── Input / Output ───────────────────────────────────────────────
 
@@ -138,6 +128,10 @@ pub async fn execute_post_turn_learning(
             &existing_recipes,
         ),
     );
+    let learning_assessments = memory_quality_governor::govern_learning_assessments(
+        &learning_assessments,
+        &learning_evidence,
+    );
     let precedent_assessments = learning_assessments
         .iter()
         .filter(|assessment| matches!(assessment.candidate, LearningCandidate::Precedent(_)))
@@ -178,6 +172,10 @@ pub async fn execute_post_turn_learning(
         skills_penalized: 0,
         user_profile_updated: false,
     };
+    let allow_background_learning = matches!(
+        memory_quality_governor::assess_background_learning_input(&input.user_message),
+        memory_quality_governor::BackgroundLearningInputVerdict::Allow
+    );
 
     // ── 1. Explicit hot-path: direct AUDN mutation ──
     if signal.is_explicit() {
@@ -215,7 +213,7 @@ pub async fn execute_post_turn_learning(
     }
 
     // ── 1b. Cheap precedent mutation path (category-aware semantic merge) ──
-    if !signal.is_explicit() && input.auto_save_enabled {
+    if !signal.is_explicit() && input.auto_save_enabled && allow_background_learning {
         let recent_failure_clusters = if precedent_assessments.is_empty() {
             Vec::new()
         } else {
@@ -260,7 +258,7 @@ pub async fn execute_post_turn_learning(
     }
 
     // ── 1c. Cheap failure-pattern mutation path ──
-    if !signal.is_explicit() && input.auto_save_enabled {
+    if !signal.is_explicit() && input.auto_save_enabled && allow_background_learning {
         for assessment in &failure_assessments {
             let Some(candidate) =
                 learning_candidate_service::build_mutation_candidate_from_assessment(assessment)
@@ -334,7 +332,11 @@ pub async fn execute_post_turn_learning(
     }
 
     // ── 1d. Cheap typed candidate mutation path ──
-    if !signal.is_explicit() && input.auto_save_enabled && !mutation_candidates.is_empty() {
+    if !signal.is_explicit()
+        && input.auto_save_enabled
+        && allow_background_learning
+        && !mutation_candidates.is_empty()
+    {
         let decisions = mutation::evaluate_candidates(
             mem,
             mutation_candidates,
@@ -357,7 +359,7 @@ pub async fn execute_post_turn_learning(
     }
 
     // ── 1e. Cheap procedural candidate path ──
-    if !signal.is_explicit() && input.auto_save_enabled {
+    if !signal.is_explicit() && input.auto_save_enabled && allow_background_learning {
         if let Some(store) = input.run_recipe_store.as_ref() {
             let existing_skills = mem
                 .list_skills(&input.agent_id, 128)
@@ -621,9 +623,17 @@ pub async fn execute_post_turn_learning(
     }
 
     // ── 2. Background consolidation (only for non-explicit turns) ──
+    let consolidation_verdict = memory_quality_governor::assess_consolidation_start(
+        &learning_evidence,
+        &input.user_message,
+        memory_quality_governor::CONSOLIDATION_MIN_USER_CHARS,
+    );
     let should_consolidate = !signal.is_explicit()
         && input.auto_save_enabled
-        && (user_chars >= CONSOLIDATE_MIN_CHARS || learning_evidence.has_actionable_evidence());
+        && matches!(
+            consolidation_verdict,
+            memory_quality_governor::ConsolidationStartVerdict::Start
+        );
 
     if should_consolidate {
         if let Err(e) = mem
@@ -636,20 +646,25 @@ pub async fn execute_post_turn_learning(
     }
 
     // ── 3. Skill reflection ──
-    let has_failures = learning_evidence.has_failure_outcomes();
-    let has_reflection_signal =
-        !input.tools_used.is_empty() || learning_evidence.has_actionable_evidence() || has_failures;
-    let should_reflect = user_chars >= REFLECT_MIN_USER_CHARS
-        && has_reflection_signal
-        && (input.assistant_response.len() > REFLECT_MIN_RESPONSE_LEN || has_failures);
+    let reflection_verdict = memory_quality_governor::assess_reflection_start(
+        &learning_evidence,
+        user_chars,
+        input.assistant_response.len(),
+        memory_quality_governor::REFLECTION_MIN_USER_CHARS,
+        memory_quality_governor::REFLECTION_MIN_RESPONSE_CHARS,
+    );
+    let should_reflect = matches!(
+        reflection_verdict,
+        memory_quality_governor::ReflectionStartVerdict::Start
+    );
 
     if should_reflect {
+        let reflection_outcome = memory_quality_governor::derive_reflection_outcome(
+            &learning_evidence,
+            &input.tools_used,
+        );
         if let Err(e) = mem
-            .reflect_on_turn(
-                &input.user_message,
-                &input.assistant_response,
-                &input.tools_used,
-            )
+            .reflect_on_turn(&input.user_message, &input.tools_used, &reflection_outcome)
             .await
         {
             tracing::warn!(target: "post_turn", error = %e, "Reflection failed");
@@ -737,6 +752,7 @@ async fn merge_failure_update_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::dialogue_state::FocusEntity;
     use crate::domain::memory::{
         AgentId, ConsolidationReport, CoreMemoryBlock, EmbeddingDistanceMetric, EmbeddingProfile,
         Entity, HybridSearchResult, MemoryCategory, MemoryEntry, MemoryError, MemoryId,
@@ -759,9 +775,9 @@ mod tests {
 
     #[test]
     fn consolidation_gate_constants() {
-        assert_eq!(CONSOLIDATE_MIN_CHARS, 20);
-        assert_eq!(REFLECT_MIN_USER_CHARS, 30);
-        assert_eq!(REFLECT_MIN_RESPONSE_LEN, 200);
+        assert_eq!(memory_quality_governor::CONSOLIDATION_MIN_USER_CHARS, 20);
+        assert_eq!(memory_quality_governor::REFLECTION_MIN_USER_CHARS, 30);
+        assert_eq!(memory_quality_governor::REFLECTION_MIN_RESPONSE_CHARS, 200);
     }
 
     #[derive(Default)]
@@ -1027,10 +1043,6 @@ mod tests {
             Ok(entries)
         }
 
-        fn should_skip_autosave(&self, _: &str) -> bool {
-            false
-        }
-
         async fn count(&self) -> Result<usize, MemoryError> {
             Ok(0)
         }
@@ -1204,6 +1216,135 @@ mod tests {
         .await;
 
         assert!(report.reflection_started);
+    }
+
+    #[tokio::test]
+    async fn internal_only_memory_turn_does_not_promote_procedural_learning_or_reflection() {
+        let memory = StubMemory::default();
+        let run_recipe_store =
+            Arc::new(crate::ports::run_recipe_store::InMemoryRunRecipeStore::new());
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message: "Let's continue the reflective memory-only discussion"
+                    .into(),
+                assistant_response:
+                    "I revisited a few earlier notes and compared them to the current thread, but this was still a reflective discussion rather than an external procedure worth learning."
+                        .into(),
+                tools_used: vec!["memory_recall".into()],
+                tool_facts: vec![
+                    TypedToolFact {
+                        tool_id: "memory_recall".into(),
+                        payload: ToolFactPayload::Search(SearchFact {
+                            domain: SearchDomain::Memory,
+                            query: Some("reflective_memory_topic".into()),
+                            result_count: Some(3),
+                            primary_locator: Some("daily_123".into()),
+                        }),
+                    },
+                    TypedToolFact::focus(
+                        "memory_recall",
+                        vec![FocusEntity {
+                            kind: "topic".into(),
+                            name: "reflective_memory_topic".into(),
+                            metadata: None,
+                        }],
+                        Vec::new(),
+                    ),
+                ],
+                run_recipe_store: Some(run_recipe_store),
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+            },
+        )
+        .await;
+
+        assert!(report
+            .learning_assessments
+            .iter()
+            .all(|assessment| !assessment.accepted));
+        assert_eq!(report.run_recipes_upserted, 0);
+        assert_eq!(report.skills_upserted, 0);
+        assert!(!report.consolidation_started);
+        assert!(!report.reflection_started);
+    }
+
+    #[tokio::test]
+    async fn long_semantic_turn_without_tool_facts_still_consolidates() {
+        let memory = StubMemory::default();
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message: "I want to keep exploring a reflective memory topic through responsibility, memory, and how a person changes over time.".into(),
+                assistant_response:
+                    "We can treat the topic as something partially discovered and partially constructed through repeated commitments."
+                        .into(),
+                tools_used: vec![],
+                tool_facts: vec![],
+                run_recipe_store: None,
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+            },
+        )
+        .await;
+
+        assert!(report.consolidation_started);
+    }
+
+    #[tokio::test]
+    async fn low_information_repetition_skips_background_candidate_learning() {
+        let memory = StubMemory::default();
+        let run_recipe_store =
+            Arc::new(crate::ports::run_recipe_store::InMemoryRunRecipeStore::new());
+
+        let report = execute_post_turn_learning(
+            &memory,
+            PostTurnInput {
+                agent_id: "agent".into(),
+                user_message:
+                    "again again again again again again again again again again again again"
+                        .into(),
+                assistant_response: "Fetched and sent the update.".into(),
+                tools_used: vec!["web_search".into(), "message_send".into()],
+                tool_facts: vec![
+                    TypedToolFact {
+                        tool_id: "web_search".into(),
+                        payload: ToolFactPayload::Search(SearchFact {
+                            domain: SearchDomain::Web,
+                            query: Some("status page".into()),
+                            result_count: Some(2),
+                            primary_locator: Some("https://status.example.com".into()),
+                        }),
+                    },
+                    TypedToolFact {
+                        tool_id: "message_send".into(),
+                        payload: ToolFactPayload::Delivery(
+                            crate::domain::tool_fact::DeliveryFact {
+                                target: crate::domain::tool_fact::DeliveryTargetKind::CurrentConversation,
+                                content_bytes: Some(24),
+                            },
+                        ),
+                    },
+                ],
+                run_recipe_store: Some(run_recipe_store),
+                user_profile_store: None,
+                user_profile_key: None,
+                auto_save_enabled: true,
+                event_tx: None,
+            },
+        )
+        .await;
+
+        assert!(report.candidate_mutations.is_empty());
+        assert_eq!(report.run_recipes_upserted, 0);
+        assert_eq!(report.skills_upserted, 0);
     }
 
     #[tokio::test]

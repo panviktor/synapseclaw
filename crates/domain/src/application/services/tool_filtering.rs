@@ -154,6 +154,7 @@ mod tests {
             name: name.to_string(),
             description: format!("{name} description"),
             parameters: serde_json::json!({"type": "object"}),
+            runtime_role: None,
         }
     }
 

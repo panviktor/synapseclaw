@@ -2,6 +2,10 @@ use crate::tools::{Tool, ToolSpec};
 use serde_json::Value;
 use std::fmt::Write;
 use synapse_domain::domain::tool_fact::TypedToolFact;
+use synapse_domain::domain::tool_repair::{
+    tool_failure_kind_name, tool_repair_action_name, ToolRepairTrace,
+};
+use synapse_domain::domain::util::truncate_with_ellipsis;
 use synapse_providers::{ChatMessage, ChatResponse, ConversationMessage, ToolResultMessage};
 
 #[derive(Debug, Clone)]
@@ -18,6 +22,7 @@ pub struct ToolExecutionResult {
     pub success: bool,
     pub tool_call_id: Option<String>,
     pub tool_facts: Vec<TypedToolFact>,
+    pub repair_trace: Option<ToolRepairTrace>,
 }
 
 pub trait ToolDispatcher: Send + Sync {
@@ -32,8 +37,34 @@ pub trait ToolDispatcher: Send + Sync {
 pub struct XmlToolDispatcher;
 
 impl XmlToolDispatcher {
-    fn parse_xml_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
-        // Strip `<think>...</think>` blocks before parsing tool calls.
+    fn parse_json_tool_call(value: &Value) -> Option<ParsedToolCall> {
+        let name = value
+            .get("name")
+            .and_then(Value::as_str)?
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            return None;
+        }
+        let arguments = match value.get("arguments") {
+            Some(Value::String(s)) => serde_json::from_str::<Value>(s)
+                .unwrap_or_else(|_| Value::Object(serde_json::Map::new())),
+            Some(value) => value.clone(),
+            None => Value::Object(serde_json::Map::new()),
+        };
+        let tool_call_id = value
+            .get("id")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+        Some(ParsedToolCall {
+            name,
+            arguments,
+            tool_call_id,
+        })
+    }
+
+    fn parse_tool_call_envelopes(response: &str) -> (String, Vec<ParsedToolCall>) {
+        // Strip `<think>...</think>` blocks before parsing canonical tool-call envelopes.
         // Qwen and other reasoning models may embed chain-of-thought inline.
         let cleaned = Self::strip_think_tags(response);
         let mut text_parts = Vec::new();
@@ -50,24 +81,9 @@ impl XmlToolDispatcher {
                 let inner = &remaining[start + 11..start + end];
                 match serde_json::from_str::<Value>(inner.trim()) {
                     Ok(parsed) => {
-                        let name = parsed
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                        if name.is_empty() {
-                            remaining = &remaining[start + end + 12..];
-                            continue;
+                        if let Some(call) = Self::parse_json_tool_call(&parsed) {
+                            calls.push(call);
                         }
-                        let arguments = parsed
-                            .get("arguments")
-                            .cloned()
-                            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                        calls.push(ParsedToolCall {
-                            name,
-                            arguments,
-                            tool_call_id: None,
-                        });
                     }
                     Err(e) => {
                         tracing::warn!("Malformed <tool_call> JSON: {e}");
@@ -114,7 +130,7 @@ impl XmlToolDispatcher {
 impl ToolDispatcher for XmlToolDispatcher {
     fn parse_response(&self, response: &ChatResponse) -> (String, Vec<ParsedToolCall>) {
         let text = response.text_or_empty();
-        Self::parse_xml_tool_calls(text)
+        Self::parse_tool_call_envelopes(text)
     }
 
     fn format_results(&self, results: &[ToolExecutionResult]) -> ConversationMessage {
@@ -124,7 +140,9 @@ impl ToolDispatcher for XmlToolDispatcher {
             let _ = writeln!(
                 content,
                 "<tool_result name=\"{}\" status=\"{}\">\n{}\n</tool_result>",
-                result.name, status, result.output
+                result.name,
+                status,
+                format_tool_result_content(result)
             );
         }
         ConversationMessage::Chat(ChatMessage::user(format!("[Tool results]\n{content}")))
@@ -172,10 +190,33 @@ impl ToolDispatcher for XmlToolDispatcher {
 
 pub struct NativeToolDispatcher;
 
+fn format_tool_result_content(result: &ToolExecutionResult) -> String {
+    if result.success {
+        return result.output.clone();
+    }
+
+    let Some(trace) = result.repair_trace.as_ref() else {
+        return result.output.clone();
+    };
+
+    let mut content = result.output.clone();
+    let _ = write!(
+        content,
+        "\n[tool_repair]\nkind={}\naction={}",
+        tool_failure_kind_name(trace.failure_kind),
+        tool_repair_action_name(trace.suggested_action),
+    );
+    if let Some(detail) = trace.detail.as_deref() {
+        let _ = write!(content, "\ndetail={}", truncate_with_ellipsis(detail, 160));
+    }
+    content.push_str("\n[/tool_repair]");
+    content
+}
+
 impl ToolDispatcher for NativeToolDispatcher {
     fn parse_response(&self, response: &ChatResponse) -> (String, Vec<ParsedToolCall>) {
         let text = response.text.clone().unwrap_or_default();
-        let calls = response
+        let calls: Vec<ParsedToolCall> = response
             .tool_calls
             .iter()
             .map(|tc| ParsedToolCall {
@@ -202,7 +243,7 @@ impl ToolDispatcher for NativeToolDispatcher {
                     .tool_call_id
                     .clone()
                     .unwrap_or_else(|| "unknown".to_string()),
-                content: result.output.clone(),
+                content: format_tool_result_content(result),
             })
             .collect();
         ConversationMessage::ToolResults(messages)
@@ -330,6 +371,7 @@ mod tests {
             success: true,
             tool_call_id: Some("tc1".into()),
             tool_facts: vec![],
+            repair_trace: None,
         }]);
         match msg {
             ConversationMessage::ToolResults(results) => {
@@ -341,6 +383,26 @@ mod tests {
     }
 
     #[test]
+    fn native_dispatcher_does_not_recover_text_tool_call_envelopes() {
+        let response = ChatResponse {
+            text: Some(
+                "Checking\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>"
+                    .into(),
+            ),
+            tool_calls: vec![],
+            usage: None,
+            reasoning_content: None,
+        };
+        let dispatcher = NativeToolDispatcher;
+        let (text, calls) = dispatcher.parse_response(&response);
+        assert_eq!(
+            text,
+            "Checking\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"pwd\"}}</tool_call>"
+        );
+        assert!(calls.is_empty());
+    }
+
+    #[test]
     fn xml_format_results_contains_tool_result_tags() {
         let dispatcher = XmlToolDispatcher;
         let msg = dispatcher.format_results(&[ToolExecutionResult {
@@ -349,6 +411,7 @@ mod tests {
             success: true,
             tool_call_id: None,
             tool_facts: vec![],
+            repair_trace: None,
         }]);
         let rendered = match msg {
             ConversationMessage::Chat(chat) => chat.content,
@@ -367,12 +430,45 @@ mod tests {
             success: true,
             tool_call_id: Some("tc-1".into()),
             tool_facts: vec![],
+            repair_trace: None,
         }]);
 
         match msg {
             ConversationMessage::ToolResults(results) => {
                 assert_eq!(results.len(), 1);
                 assert_eq!(results[0].tool_call_id, "tc-1");
+            }
+            _ => panic!("expected ToolResults variant"),
+        }
+    }
+
+    #[test]
+    fn native_format_results_includes_tool_repair_footer_for_failures() {
+        let dispatcher = NativeToolDispatcher;
+        let msg = dispatcher.format_results(&[ToolExecutionResult {
+            name: "file_read".into(),
+            output: "Error: missing file".into(),
+            success: false,
+            tool_call_id: Some("tc-2".into()),
+            tool_facts: vec![],
+            repair_trace: Some(ToolRepairTrace {
+                observed_at_unix: 1,
+                tool_name: "file_read".into(),
+                failure_kind: synapse_domain::domain::tool_repair::ToolFailureKind::MissingResource,
+                suggested_action:
+                    synapse_domain::domain::tool_repair::ToolRepairAction::AdjustArgumentsOrTarget,
+                detail: Some("No such file or directory".into()),
+            }),
+        }]);
+
+        match msg {
+            ConversationMessage::ToolResults(results) => {
+                assert_eq!(results.len(), 1);
+                assert!(results[0].content.contains("[tool_repair]"));
+                assert!(results[0].content.contains("kind=missing_resource"));
+                assert!(results[0]
+                    .content
+                    .contains("action=adjust_arguments_or_target"));
             }
             _ => panic!("expected ToolResults variant"),
         }

@@ -23,4 +23,5 @@ pub struct ResolvedDeliveryTarget {
 pub enum TurnDefaultSource {
     DialogueState,
     UserProfile,
+    ConfiguredChannel,
 }

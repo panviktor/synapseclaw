@@ -152,6 +152,10 @@ impl Tool for PrecedentSearchTool {
         })
     }
 
+    fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::HistoricalLookup)
+    }
+
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {
         let (result, _) = self.execute_query(&args).await?;
         Ok(result)
@@ -348,9 +352,6 @@ mod tests {
             _: usize,
         ) -> Result<Vec<MemoryEntry>, MemoryError> {
             Ok(vec![])
-        }
-        fn should_skip_autosave(&self, _: &str) -> bool {
-            false
         }
         async fn count(&self) -> Result<usize, MemoryError> {
             Ok(0)

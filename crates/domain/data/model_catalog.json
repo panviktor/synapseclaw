@@ -1,0 +1,493 @@
+{
+  "presets": [
+    {
+      "id": "chatgpt",
+      "title": "ChatGPT / Codex",
+      "description": "OpenAI-style reasoning lane with minimal defaults.",
+      "default_provider": "openai-codex",
+      "default_model": "gpt-5.4",
+      "seed_multimodal_from_reasoning": true,
+      "extra_lanes": []
+    },
+    {
+      "id": "claude",
+      "title": "Claude",
+      "description": "Anthropic-style reasoning lane with minimal defaults.",
+      "default_provider": "anthropic",
+      "default_model": "claude-sonnet-4-6",
+      "seed_multimodal_from_reasoning": true,
+      "extra_lanes": []
+    },
+    {
+      "id": "openrouter",
+      "title": "OpenRouter",
+      "description": "Reasoning lane plus cheap Qwen summary and embedding defaults.",
+      "default_provider": "openrouter",
+      "default_model": "anthropic/claude-sonnet-4-6",
+      "seed_multimodal_from_reasoning": false,
+      "extra_lanes": [
+        {
+          "lane": "cheap_reasoning",
+          "candidates": [
+            {
+              "provider": "openrouter",
+              "model": "deepseek/deepseek-v4"
+            },
+            {
+              "provider": "openrouter",
+              "model": "qwen/qwen3.5-plus"
+            }
+          ]
+        },
+        {
+          "lane": "embedding",
+          "candidates": [
+            {
+              "provider": "openrouter",
+              "model": "qwen/qwen3-embedding-8b",
+              "dimensions": 4096,
+              "profile": {
+                "features": ["embedding"]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gemini",
+      "title": "Gemini",
+      "description": "Gemini reasoning lane with room for multimodal expansion.",
+      "default_provider": "gemini",
+      "default_model": "gemini-3.1-pro",
+      "seed_multimodal_from_reasoning": true,
+      "extra_lanes": []
+    },
+    {
+      "id": "local",
+      "title": "Local / self-hosted",
+      "description": "Single local reasoning lane without cloud-only helper lanes.",
+      "default_provider": "ollama",
+      "default_model": "llama4-scout:latest",
+      "seed_multimodal_from_reasoning": false,
+      "extra_lanes": []
+    }
+  ],
+  "providers": [
+    {
+      "provider": "openrouter",
+      "default_model": "anthropic/claude-sonnet-4-6",
+      "curated_models": [
+        { "id": "anthropic/claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (balanced, recommended)" },
+        { "id": "anthropic/claude-opus-4-6", "label": "Claude Opus 4.6 (best quality)" },
+        { "id": "openai/gpt-5.4", "label": "GPT-5.4 (latest flagship)" },
+        { "id": "google/gemini-3.1-pro", "label": "Gemini 3.1 Pro (frontier reasoning)" },
+        { "id": "google/gemma-4-31b-it", "label": "Gemma 4 31B IT (paid OpenRouter, multimodal input)" },
+        { "id": "google/gemma-4-26b-a4b-it", "label": "Gemma 4 26B A4B IT (paid OpenRouter, efficient multimodal input)" },
+        { "id": "qwen/qwen3.6-plus", "label": "Qwen3.6 Plus (frontier, free preview)" },
+        { "id": "deepseek/deepseek-v4", "label": "DeepSeek V4 (latest, strong value)" },
+        { "id": "x-ai/grok-4.1-fast", "label": "Grok 4.1 Fast (reasoning + speed)" },
+        { "id": "meta-llama/llama-4-maverick", "label": "Llama 4 Maverick (open model)" },
+        { "id": "moonshot/kimi-k2.5", "label": "Kimi K2.5 (agentic specialist)" }
+      ]
+    },
+    {
+      "provider": "anthropic",
+      "default_model": "claude-sonnet-4-6",
+      "curated_models": [
+        { "id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (balanced, recommended)" },
+        { "id": "claude-opus-4-6", "label": "Claude Opus 4.6 (best quality)" },
+        { "id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5 (fastest, cheapest)" }
+      ]
+    },
+    {
+      "provider": "openai",
+      "default_model": "gpt-5.4",
+      "curated_models": [
+        { "id": "gpt-5.4", "label": "GPT-5.4 (latest coding/agentic flagship)" },
+        { "id": "gpt-5.4-pro", "label": "GPT-5.4 Pro (max quality)" },
+        { "id": "gpt-5.4-mini", "label": "GPT-5.4 mini (faster, cheaper)" },
+        { "id": "gpt-5.2", "label": "GPT-5.2 (previous-gen stable)" },
+        { "id": "o3", "label": "o3 (deep reasoning)" },
+        { "id": "o4-mini", "label": "o4-mini (efficient reasoning)" }
+      ]
+    },
+    {
+      "provider": "openai-codex",
+      "default_model": "gpt-5.4",
+      "curated_models": [
+        { "id": "gpt-5.4", "label": "GPT-5.4 (recommended)" },
+        { "id": "gpt-5.4-pro", "label": "GPT-5.4 Pro (max quality)" },
+        { "id": "gpt-5.4-mini", "label": "GPT-5.4 mini (faster)" },
+        { "id": "gpt-5.3-codex", "label": "GPT-5.3 Codex (stable coding)" },
+        { "id": "gpt-5.2-codex", "label": "GPT-5.2 Codex (legacy compatibility)" }
+      ]
+    },
+    {
+      "provider": "venice",
+      "default_model": "glm-5.1",
+      "curated_models": [
+        { "id": "glm-5.1", "label": "GLM-5.1 via Venice (latest coding flagship)" },
+        { "id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 via Venice (best quality)" },
+        { "id": "deepseek-v4", "label": "DeepSeek V4 via Venice (latest)" },
+        { "id": "grok-4.1-fast", "label": "Grok 4.1 Fast via Venice (low latency)" }
+      ]
+    },
+    {
+      "provider": "groq",
+      "default_model": "llama-3.3-70b-versatile",
+      "curated_models": [
+        { "id": "llama-3.3-70b-versatile", "label": "Llama 3.3 70B (fast, recommended)" },
+        { "id": "llama-4-maverick", "label": "Llama 4 Maverick (latest open)" },
+        { "id": "mistral-large-3", "label": "Mistral Large 3 (flagship)" }
+      ]
+    },
+    {
+      "provider": "mistral",
+      "default_model": "mistral-large-3",
+      "curated_models": [
+        { "id": "mistral-large-3", "label": "Mistral Large 3 (latest flagship)" },
+        { "id": "mistral-medium-3.1", "label": "Mistral Medium 3.1 (balanced)" },
+        { "id": "mistral-small-3.2", "label": "Mistral Small 3.2 (cost-efficient)" }
+      ]
+    },
+    {
+      "provider": "deepseek",
+      "default_model": "deepseek-chat",
+      "curated_models": [
+        { "id": "deepseek-chat", "label": "DeepSeek Chat (official API general model)" },
+        { "id": "deepseek-reasoner", "label": "DeepSeek Reasoner (official API thinking mode)" }
+      ]
+    },
+    {
+      "provider": "xai",
+      "default_model": "grok-4.1-fast-reasoning",
+      "curated_models": [
+        { "id": "grok-4.1-fast-reasoning", "label": "Grok 4.1 Fast Reasoning (recommended)" },
+        { "id": "grok-4.1-fast-non-reasoning", "label": "Grok 4.1 Fast Non-Reasoning (low latency)" },
+        { "id": "grok-4", "label": "Grok 4 (max quality)" }
+      ]
+    },
+    {
+      "provider": "perplexity",
+      "default_model": "sonar-pro",
+      "curated_models": [
+        { "id": "sonar-pro", "label": "Sonar Pro (flagship web-grounded model)" },
+        { "id": "sonar-reasoning-pro", "label": "Sonar Reasoning Pro (complex multi-step reasoning)" },
+        { "id": "sonar-deep-research", "label": "Sonar Deep Research (long-form research)" },
+        { "id": "sonar", "label": "Sonar (search, fast)" }
+      ]
+    },
+    {
+      "provider": "fireworks",
+      "default_model": "accounts/fireworks/models/llama-v4-scout",
+      "curated_models": [
+        { "id": "accounts/fireworks/models/llama-v4-scout", "label": "Llama 4 Scout" },
+        { "id": "accounts/fireworks/models/llama-v4-maverick", "label": "Llama 4 Maverick" },
+        { "id": "accounts/fireworks/models/mistral-large-3", "label": "Mistral Large 3" }
+      ]
+    },
+    {
+      "provider": "novita",
+      "default_model": "minimax/minimax-m2.5",
+      "curated_models": [
+        { "id": "minimax/minimax-m2.5", "label": "MiniMax M2.5" },
+        { "id": "minimax/minimax-m2.1", "label": "MiniMax M2.1" }
+      ]
+    },
+    {
+      "provider": "together-ai",
+      "default_model": "meta-llama/Llama-4-Maverick",
+      "curated_models": [
+        { "id": "meta-llama/Llama-4-Maverick", "label": "Llama 4 Maverick (recommended)" },
+        { "id": "meta-llama/Llama-4-Scout", "label": "Llama 4 Scout (cost-efficient)" },
+        { "id": "deepseek-ai/DeepSeek-V4", "label": "DeepSeek V4 (latest flagship)" },
+        { "id": "Qwen/Qwen3-Coder-Next", "label": "Qwen3 Coder Next (coding specialist)" }
+      ]
+    },
+    {
+      "provider": "cohere",
+      "default_model": "command-a-03-2025",
+      "curated_models": [
+        { "id": "command-a-03-2025", "label": "Command A (flagship enterprise model)" },
+        { "id": "command-a-reasoning-08-2025", "label": "Command A Reasoning (agentic reasoning)" },
+        { "id": "command-r7b-arabic", "label": "Command R7B Arabic (Arabic/English bilingual)" }
+      ]
+    },
+    {
+      "provider": "kimi-code",
+      "default_model": "kimi-k2.5",
+      "curated_models": [
+        { "id": "kimi-k2.5", "label": "Kimi K2.5 (latest flagship, recommended)" },
+        { "id": "kimi-k2.5-thinking", "label": "Kimi K2.5 Thinking (deep reasoning + tool use)" },
+        { "id": "kimi-k2.5-agent", "label": "Kimi K2.5 Agent (agentic automation)" }
+      ]
+    },
+    {
+      "provider": "moonshot",
+      "default_model": "kimi-k2.5",
+      "curated_models": [
+        { "id": "kimi-k2.5", "label": "Kimi K2.5 (latest flagship, recommended)" },
+        { "id": "kimi-k2.5-thinking", "label": "Kimi K2.5 Thinking (deep reasoning)" },
+        { "id": "kimi-k2.5-agent", "label": "Kimi K2.5 Agent (Agentic Swarm)" }
+      ]
+    },
+    {
+      "provider": "glm",
+      "default_model": "glm-5.1",
+      "curated_models": [
+        { "id": "glm-5.1", "label": "GLM-5.1 (latest, coding + agent, Mar 2026)" },
+        { "id": "glm-5", "label": "GLM-5 (high reasoning, Feb 2026)" },
+        { "id": "glm-5v-turbo", "label": "GLM-5V Turbo (multimodal)" },
+        { "id": "glm-4.7", "label": "GLM-4.7 (strong general-purpose)" }
+      ]
+    },
+    {
+      "provider": "zai",
+      "default_model": "glm-5.1",
+      "curated_models": [
+        { "id": "glm-5.1", "label": "GLM-5.1 (latest, coding + agent, Mar 2026)" },
+        { "id": "glm-5", "label": "GLM-5 (high reasoning, Feb 2026)" },
+        { "id": "glm-5v-turbo", "label": "GLM-5V Turbo (multimodal)" }
+      ]
+    },
+    {
+      "provider": "minimax",
+      "default_model": "MiniMax-M2.5",
+      "curated_models": [
+        { "id": "MiniMax-M2.5", "label": "MiniMax M2.5 (latest flagship)" },
+        { "id": "MiniMax-M2.1", "label": "MiniMax M2.1 (strong coding/reasoning)" },
+        { "id": "MiniMax-M2.5-highspeed", "label": "MiniMax M2.5 High-Speed (fast)" }
+      ]
+    },
+    {
+      "provider": "qwen",
+      "default_model": "qwen3.6-plus",
+      "curated_models": [
+        { "id": "qwen3.6-plus", "label": "Qwen3.6 Plus (latest, 1M context)" },
+        { "id": "qwen3.5-plus", "label": "Qwen3.5 Plus (stable, Feb 2026)" },
+        { "id": "qwen3-max-2026-01-23", "label": "Qwen3 Max Thinking (flagship reasoning)" },
+        { "id": "qwen3-coder-next", "label": "Qwen3 Coder Next (coding agent, 80B MoE)" }
+      ]
+    },
+    {
+      "provider": "qwen-code",
+      "default_model": "qwen3-coder-next",
+      "curated_models": [
+        { "id": "qwen3-coder-next", "label": "Qwen3 Coder Next (best local coding, 80B MoE / 3B active)" },
+        { "id": "qwen3.6-plus", "label": "Qwen3.6 Plus (cloud flagship, 1M context)" },
+        { "id": "qwen3-max-2026-01-23", "label": "Qwen3 Max Thinking (highest quality coding)" },
+        { "id": "qwen3.5-plus", "label": "Qwen3.5 Plus (balanced coding/reasoning)" }
+      ]
+    },
+    {
+      "provider": "nvidia",
+      "default_model": "nvidia/nemotron-3-ultra",
+      "curated_models": [
+        { "id": "nvidia/nemotron-3-ultra", "label": "Nemotron 3 Ultra (max quality, HyMba architecture)" },
+        { "id": "nvidia/nemotron-3-super", "label": "Nemotron 3 Super (balanced)" },
+        { "id": "nvidia/nemotron-3-nano", "label": "Nemotron 3 Nano (fast, efficient)" },
+        { "id": "meta-llama/Llama-4-Maverick", "label": "Llama 4 Maverick (open model)" }
+      ]
+    },
+    {
+      "provider": "astrai",
+      "default_model": "anthropic/claude-sonnet-4-6",
+      "curated_models": [
+        { "id": "anthropic/claude-sonnet-4-6", "label": "Claude Sonnet 4.6 (balanced default)" },
+        { "id": "openai/gpt-5.4", "label": "GPT-5.4 (latest flagship)" },
+        { "id": "deepseek/deepseek-v4", "label": "DeepSeek V4 (agentic + affordable)" },
+        { "id": "google/gemini-3.1-pro", "label": "Gemini 3.1 Pro (frontier reasoning)" }
+      ]
+    },
+    {
+      "provider": "ollama",
+      "default_model": "llama4-scout",
+      "curated_models": [
+        { "id": "llama4-scout", "label": "Llama 4 Scout (recommended local, 10M context)" },
+        { "id": "llama4-maverick", "label": "Llama 4 Maverick (stronger local)" },
+        { "id": "qwen3-coder-next", "label": "Qwen3 Coder Next (local coding specialist)" },
+        { "id": "mistral-large-3", "label": "Mistral Large 3" },
+        { "id": "phi4-reasoning", "label": "Phi-4 Reasoning (small, fast)" },
+        { "id": "nemotron-3-nano", "label": "Nemotron 3 Nano (efficient)" }
+      ]
+    },
+    {
+      "provider": "ollama-cloud",
+      "default_model": "glm-5.1:cloud",
+      "curated_models": [
+        { "id": "glm-5.1:cloud", "label": "GLM-5.1 Cloud" },
+        { "id": "glm-5:cloud", "label": "GLM-5 Cloud" },
+        { "id": "glm-4.7:cloud", "label": "GLM-4.7 Cloud" },
+        { "id": "llama-4-scout:cloud", "label": "Llama 4 Scout Cloud" },
+        { "id": "llama-4-maverick:cloud", "label": "Llama 4 Maverick Cloud" },
+        { "id": "gemini-3-flash:cloud", "label": "Gemini 3 Flash Cloud" },
+        { "id": "qwen3-coder-next:cloud", "label": "Qwen3 Coder Next Cloud" },
+        { "id": "kimi-k2.5:cloud", "label": "Kimi K2.5 Cloud" },
+        { "id": "minimax-m2.5:cloud", "label": "MiniMax M2.5 Cloud" },
+        { "id": "deepseek-v4:cloud", "label": "DeepSeek V4 Cloud" }
+      ]
+    },
+    {
+      "provider": "llamacpp",
+      "default_model": "bartowski/Llama-4-Maverick-GGUF",
+      "curated_models": [
+        { "id": "bartowski/Llama-4-Maverick-GGUF", "label": "Llama 4 Maverick GGUF (high quality)" },
+        { "id": "bartowski/Llama-4-Scout-GGUF", "label": "Llama 4 Scout GGUF (efficient local)" },
+        { "id": "Qwen/Qwen3-Coder-Next-GGUF", "label": "Qwen3 Coder Next GGUF (coding-focused)" },
+        { "id": "microsoft/Phi-4-reasoning-vision-GGUF", "label": "Phi-4 Reasoning + Vision GGUF" }
+      ]
+    },
+    {
+      "provider": "sglang",
+      "default_model": "meta-llama/Llama-4-Scout",
+      "curated_models": [
+        { "id": "meta-llama/Llama-4-Scout", "label": "Llama 4 Scout (popular, efficient)" },
+        { "id": "meta-llama/Llama-4-Maverick", "label": "Llama 4 Maverick (high quality)" },
+        { "id": "Qwen/Qwen3-Coder-Next", "label": "Qwen3 Coder Next (coding-focused)" },
+        { "id": "mistralai/Mistral-Large-3", "label": "Mistral Large 3 (flagship)" }
+      ]
+    },
+    {
+      "provider": "vllm",
+      "default_model": "meta-llama/Llama-4-Scout",
+      "curated_models": [
+        { "id": "meta-llama/Llama-4-Scout", "label": "Llama 4 Scout (popular, efficient)" },
+        { "id": "meta-llama/Llama-4-Maverick", "label": "Llama 4 Maverick (high quality)" },
+        { "id": "Qwen/Qwen3-Coder-Next", "label": "Qwen3 Coder Next (coding-focused)" },
+        { "id": "mistralai/Mistral-Large-3", "label": "Mistral Large 3 (flagship)" }
+      ]
+    },
+    {
+      "provider": "osaurus",
+      "default_model": "default",
+      "curated_models": [
+        { "id": "llama-4-scout-8bit", "label": "Llama 4 Scout (local, balanced)" },
+        { "id": "qwen3-coder-next-8bit", "label": "Qwen3 Coder Next (local, coding)" },
+        { "id": "phi-4-reasoning-vision-mlx-4bit", "label": "Phi-4 Reasoning + Vision (local, Apple MLX)" }
+      ]
+    },
+    {
+      "provider": "bedrock",
+      "default_model": "anthropic.claude-sonnet-4-6-v1:0",
+      "curated_models": [
+        { "id": "anthropic.claude-sonnet-4-6-v1:0", "label": "Claude Sonnet 4.6 (latest, recommended)" },
+        { "id": "anthropic.claude-opus-4-6-v1:0", "label": "Claude Opus 4.6 (strongest)" },
+        { "id": "anthropic.claude-haiku-4-5-20251001-v1:0", "label": "Claude Haiku 4.5 (fastest, cheapest)" },
+        { "id": "meta.llama-4-maverick-v1:0", "label": "Llama 4 Maverick (open model)" }
+      ]
+    },
+    {
+      "provider": "gemini",
+      "default_model": "gemini-3.1-pro",
+      "curated_models": [
+        { "id": "gemini-3.1-pro", "label": "Gemini 3.1 Pro (latest frontier reasoning)" },
+        { "id": "gemini-3-pro", "label": "Gemini 3 Pro (stable frontier)" },
+        { "id": "gemini-3-flash", "label": "Gemini 3 Flash (best price/performance)" },
+        { "id": "gemini-3.1-flash-lite", "label": "Gemini 3.1 Flash-Lite (lowest cost)" }
+      ]
+    },
+    {
+      "provider": "opencode-go",
+      "default_model": "default",
+      "curated_models": [
+        { "id": "default", "label": "Default model" }
+      ]
+    },
+    {
+      "provider": "microsoft",
+      "default_model": "phi-4-reasoning-vision",
+      "curated_models": [
+        { "id": "phi-4-reasoning-vision", "label": "Phi-4 Reasoning + Vision (recommended)" },
+        { "id": "phi-4-mini-reasoning", "label": "Phi-4 Mini Reasoning (fast, efficient)" }
+      ]
+    },
+    {
+      "provider": "ai21",
+      "default_model": "jamba-reasoning-3b",
+      "curated_models": [
+        { "id": "jamba-2-mini", "label": "Jamba 2 Mini (hybrid SSM-Transformer)" },
+        { "id": "jamba-reasoning-3b", "label": "Jamba Reasoning 3B (efficient local)" }
+      ]
+    }
+  ],
+  "pricing": [
+    { "model": "anthropic/claude-sonnet-4-6", "input": 3.0, "output": 15.0 },
+    { "model": "anthropic/claude-opus-4-6", "input": 15.0, "output": 75.0 },
+    { "model": "anthropic/claude-haiku-4-5", "input": 1.0, "output": 5.0 },
+    { "model": "openai/gpt-5.4", "input": 2.5, "output": 10.0 },
+    { "model": "openai/gpt-5.4-pro", "input": 10.0, "output": 30.0 },
+    { "model": "openai/gpt-5.4-mini", "input": 0.4, "output": 1.6 },
+    { "model": "openai/o3", "input": 2.0, "output": 8.0 },
+    { "model": "openai/o4-mini", "input": 1.1, "output": 4.4 },
+    { "model": "google/gemini-3.1-pro", "input": 1.25, "output": 10.0 },
+    { "model": "google/gemini-3-flash", "input": 0.1, "output": 0.4 },
+    { "model": "google/gemma-4-31b-it", "input": 0.14, "output": 0.40 },
+    { "model": "google/gemma-4-26b-a4b-it", "input": 0.12, "output": 0.40 },
+    { "model": "deepseek/deepseek-v4", "input": 0.25, "output": 1.1 },
+    { "model": "deepseek/deepseek-r1", "input": 0.55, "output": 2.19 },
+    { "model": "meta-llama/llama-4-maverick", "input": 0.2, "output": 0.6 },
+    { "model": "moonshot/kimi-k2.5", "input": 0.6, "output": 2.5 },
+    { "model": "mistral/mistral-large-3", "input": 0.5, "output": 1.5 },
+    { "model": "mistral/mistral-small-3.2", "input": 0.06, "output": 0.18 },
+    { "model": "cohere/command-a", "input": 2.5, "output": 10.0 }
+  ],
+  "profiles": [
+    {
+      "provider": "openrouter",
+      "model": "google/gemma-4-31b-it",
+      "context_window_tokens": 262144,
+      "max_output_tokens": 131072,
+      "features": ["tool_calling", "vision", "multimodal_understanding"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "google/gemma-4-26b-a4b-it",
+      "context_window_tokens": 262144,
+      "max_output_tokens": 262144,
+      "features": ["tool_calling", "vision", "multimodal_understanding"]
+    }
+  ],
+  "route_aliases": [
+    {
+      "hint": "cheap",
+      "provider": "openrouter",
+      "model": "qwen/qwen3.6-plus"
+    },
+    {
+      "hint": "qwen36",
+      "provider": "openrouter",
+      "model": "qwen/qwen3.6-plus"
+    },
+    {
+      "hint": "qwen3.6",
+      "provider": "openrouter",
+      "model": "qwen/qwen3.6-plus"
+    },
+    {
+      "hint": "deepseek",
+      "provider": "deepseek",
+      "model": "deepseek-chat"
+    },
+    {
+      "hint": "deepseek-chat",
+      "provider": "deepseek",
+      "model": "deepseek-chat"
+    },
+    {
+      "hint": "deepseek-reasoner",
+      "provider": "deepseek",
+      "model": "deepseek-reasoner"
+    },
+    {
+      "hint": "gemma31b",
+      "provider": "openrouter",
+      "model": "google/gemma-4-31b-it"
+    },
+    {
+      "hint": "gemma26b",
+      "provider": "openrouter",
+      "model": "google/gemma-4-26b-a4b-it"
+    }
+  ]
+}

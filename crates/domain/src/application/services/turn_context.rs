@@ -9,6 +9,7 @@
 //! The adapter `turn_context_fmt` re-exports these functions.
 
 use crate::application::services::clarification_policy;
+use crate::application::services::execution_guidance;
 use crate::application::services::failure_similarity_service;
 use crate::application::services::precedent_similarity_service;
 use crate::application::services::procedural_cluster_service;
@@ -22,6 +23,8 @@ use crate::application::services::turn_interpretation::{
 };
 use crate::domain::memory::{CoreMemoryBlock, Entity, MemoryCategory, MemoryEntry, Skill};
 use crate::domain::run_recipe::RunRecipe;
+use crate::domain::tool_repair::ToolRepairTrace;
+use crate::domain::turn_admission::{AdmissionRepairHint, CandidateAdmissionReason};
 use crate::ports::conversation_store::ConversationStorePort;
 use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
@@ -60,6 +63,8 @@ pub struct TurnMemoryContext {
     pub resolution_plan: Option<resolution_router::ResolutionPlan>,
     /// Structured clarification guidance from known defaults and candidates.
     pub clarification_guidance: Option<clarification_policy::ClarificationGuidance>,
+    /// Typed execution policy for direct-resolution turns.
+    pub execution_guidance: Option<execution_guidance::ExecutionGuidance>,
     /// Cheap-path gating and retrieval limits for this turn.
     pub execution_budget: Option<turn_budget_policy::TurnExecutionBudget>,
 }
@@ -67,6 +72,7 @@ pub struct TurnMemoryContext {
 /// Token/char budget for turn context assembly.
 #[derive(Debug, Clone)]
 pub struct PromptBudget {
+    pub core_blocks_total_max_chars: usize,
     pub recall_max_entries: usize,
     pub nearby_max_entries: usize,
     pub recall_entry_max_chars: usize,
@@ -82,6 +88,7 @@ pub struct PromptBudget {
 impl Default for PromptBudget {
     fn default() -> Self {
         Self {
+            core_blocks_total_max_chars: 1_800,
             recall_max_entries: 5,
             nearby_max_entries: 2,
             recall_entry_max_chars: 800,
@@ -133,6 +140,9 @@ pub async fn assemble_turn_context(
     agent_id: &str,
     session_id: Option<&str>,
     interpretation: Option<&TurnInterpretation>,
+    recent_tool_repairs: &[ToolRepairTrace],
+    recent_admission_reasons: &[CandidateAdmissionReason],
+    recent_admission_repair: Option<AdmissionRepairHint>,
     budget: &PromptBudget,
     continuation: Option<&ContinuationPolicy>,
 ) -> TurnMemoryContext {
@@ -155,7 +165,13 @@ pub async fn assemble_turn_context(
 
     match continuation {
         Some(ContinuationPolicy::CoreOnly) => {
-            apply_resolution_plan(&mut ctx, interpretation);
+            apply_resolution_plan(
+                &mut ctx,
+                interpretation,
+                recent_tool_repairs,
+                recent_admission_reasons,
+                recent_admission_repair,
+            );
             tracing::debug!(
                 target: "memory_assembly",
                 core_blocks = ctx.core_blocks.len(),
@@ -176,7 +192,13 @@ pub async fn assemble_turn_context(
             load_recall(mem, &query_text, session_id, budget, recall_limit, &mut ctx).await;
             load_nearby_recall(mem, agent_id, budget, &mut ctx).await;
             load_recent_echoes(mem, budget, &mut ctx).await;
-            apply_resolution_plan(&mut ctx, interpretation);
+            apply_resolution_plan(
+                &mut ctx,
+                interpretation,
+                recent_tool_repairs,
+                recent_admission_reasons,
+                recent_admission_repair,
+            );
             tracing::debug!(
                 target: "memory_assembly",
                 core_blocks = ctx.core_blocks.len(),
@@ -351,7 +373,13 @@ pub async fn assemble_turn_context(
         }
     }
 
-    apply_resolution_plan(&mut ctx, interpretation);
+    apply_resolution_plan(
+        &mut ctx,
+        interpretation,
+        recent_tool_repairs,
+        recent_admission_reasons,
+        recent_admission_repair,
+    );
 
     tracing::debug!(
         target: "memory_assembly",
@@ -828,8 +856,6 @@ pub struct MemoryContradictionCaution {
 /// Canonical formatter used by both web and channel paths.
 /// The adapter layer (`turn_context_fmt`) re-exports this function.
 pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> FormattedTurnContext {
-    use std::fmt::Write;
-
     let mut result = FormattedTurnContext::default();
     let max_chars = budget.enrichment_total_max_chars;
     let mut remaining_projection_lines = ctx
@@ -837,15 +863,8 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
         .as_ref()
         .map_or(usize::MAX, |b| b.retrieval_budget.max_projection_lines);
 
-    // Core blocks → system prompt
-    for block in &ctx.core_blocks {
-        if block.content.trim().is_empty() {
-            continue;
-        }
-        let _ = writeln!(result.core_blocks_system, "<{}>", block.label);
-        let _ = writeln!(result.core_blocks_system, "{}", block.content.trim());
-        let _ = writeln!(result.core_blocks_system, "</{}>", block.label);
-    }
+    result.core_blocks_system =
+        render_core_blocks(&ctx.core_blocks, budget.core_blocks_total_max_chars);
 
     if let Some(plan) = &ctx.resolution_plan {
         if let Some(block) = resolution_router::format_resolution_plan(plan) {
@@ -854,6 +873,11 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
     }
     if let Some(guidance) = &ctx.clarification_guidance {
         if let Some(block) = clarification_policy::format_clarification_guidance(guidance) {
+            result.resolution_system.push_str(&block);
+        }
+    }
+    if let Some(guidance) = &ctx.execution_guidance {
+        if let Some(block) = execution_guidance::format_execution_guidance(guidance) {
             result.resolution_system.push_str(&block);
         }
     }
@@ -879,6 +903,66 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
 fn is_autosave_key(key: &str) -> bool {
     let normalized = key.trim().to_ascii_lowercase();
     normalized == "assistant_resp" || normalized.starts_with("assistant_resp_")
+}
+
+fn render_core_blocks(blocks: &[CoreMemoryBlock], max_chars: usize) -> String {
+    use std::fmt::Write;
+
+    let mut ordered = blocks
+        .iter()
+        .filter(|block| !block.content.trim().is_empty())
+        .collect::<Vec<_>>();
+    ordered.sort_by_key(|block| core_block_priority(&block.label));
+
+    let mut rendered = String::new();
+    let mut remaining = max_chars;
+
+    for block in ordered {
+        let open = format!("<{}>\n", block.label);
+        let close = format!("</{}>\n", block.label);
+        let overhead = open.chars().count() + close.chars().count();
+        if remaining <= overhead {
+            break;
+        }
+
+        let content_budget = remaining - overhead;
+        let content = truncate_with_ellipsis_chars(block.content.trim(), content_budget);
+        if content.is_empty() {
+            continue;
+        }
+
+        let _ = write!(rendered, "{open}{content}\n{close}");
+        remaining = max_chars.saturating_sub(rendered.chars().count());
+        if remaining == 0 {
+            break;
+        }
+    }
+
+    rendered
+}
+
+fn core_block_priority(label: &str) -> usize {
+    match label {
+        "task_state" => 0,
+        "user_knowledge" => 1,
+        "persona" => 2,
+        "domain" => 3,
+        _ => 4,
+    }
+}
+
+fn truncate_with_ellipsis_chars(value: &str, max_chars: usize) -> String {
+    if max_chars == 0 {
+        return String::new();
+    }
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    if max_chars <= 3 {
+        return value.chars().take(max_chars).collect();
+    }
+    let truncated = value.chars().take(max_chars - 3).collect::<String>();
+    format!("{truncated}...")
 }
 
 fn build_query_text(user_message: &str, interpretation: Option<&TurnInterpretation>) -> String {
@@ -1081,6 +1165,7 @@ fn build_execution_budget(
         }),
         has_reference_candidates: !interpretation.reference_candidates.is_empty(),
         direct_reference_count: count_direct_reference_candidates(interpretation),
+        structured_default_count: count_structured_default_candidates(interpretation),
         ambiguity_candidate_count: interpretation.clarification_candidates.len(),
         recent_tool_fact_count: dialogue_state.map_or(0, |state| state.last_tool_subjects.len()),
         explicit_user_correction: false,
@@ -1107,7 +1192,38 @@ fn count_direct_reference_candidates(interpretation: &TurnInterpretation) -> usi
         .count()
 }
 
-fn apply_resolution_plan(ctx: &mut TurnMemoryContext, interpretation: Option<&TurnInterpretation>) {
+fn count_structured_default_candidates(interpretation: &TurnInterpretation) -> usize {
+    let mut count = 0usize;
+
+    if interpretation.configured_delivery_target.is_some() {
+        count += 1;
+    }
+
+    if let Some(profile) = interpretation.user_profile.as_ref() {
+        if profile.default_city.is_some() {
+            count += 1;
+        }
+        if profile.timezone.is_some() {
+            count += 1;
+        }
+        if profile.preferred_language.is_some() {
+            count += 1;
+        }
+        if profile.default_delivery_target.is_some() {
+            count += 1;
+        }
+    }
+
+    count
+}
+
+fn apply_resolution_plan(
+    ctx: &mut TurnMemoryContext,
+    interpretation: Option<&TurnInterpretation>,
+    recent_tool_repairs: &[ToolRepairTrace],
+    recent_admission_reasons: &[CandidateAdmissionReason],
+    recent_admission_repair: Option<AdmissionRepairHint>,
+) {
     let plan = resolution_router::build_resolution_plan(resolution_router::ResolutionEvidence {
         interpretation,
         top_session_score: ctx.session_matches.first().map(|session| session.score),
@@ -1123,10 +1239,24 @@ fn apply_resolution_plan(ctx: &mut TurnMemoryContext, interpretation: Option<&Tu
     if !plan.source_order.is_empty() {
         ctx.clarification_guidance =
             clarification_policy::build_clarification_guidance(Some(&plan), interpretation);
+        ctx.execution_guidance = execution_guidance::build_execution_guidance(
+            Some(&plan),
+            interpretation,
+            recent_tool_repairs,
+            recent_admission_reasons,
+            recent_admission_repair,
+        );
         ctx.resolution_plan = Some(plan);
     } else {
         ctx.clarification_guidance =
             clarification_policy::build_clarification_guidance(None, interpretation);
+        ctx.execution_guidance = execution_guidance::build_execution_guidance(
+            None,
+            interpretation,
+            recent_tool_repairs,
+            recent_admission_reasons,
+            recent_admission_repair,
+        );
     }
 }
 
@@ -1432,6 +1562,7 @@ mod tests {
     #[test]
     fn default_budget_values() {
         let b = PromptBudget::default();
+        assert_eq!(b.core_blocks_total_max_chars, 1_800);
         assert_eq!(b.recall_max_entries, 5);
         assert_eq!(b.nearby_max_entries, 2);
         assert_eq!(b.recall_entry_max_chars, 800);
@@ -1487,6 +1618,7 @@ mod tests {
                 }),
                 None,
                 Some(&state),
+                None,
             )
             .await
             .unwrap();
@@ -1638,6 +1770,32 @@ mod tests {
         assert!(execution_budget
             .gate_reasons
             .contains(&InterpreterGateReason::DirectTypedReference));
+        assert_eq!(execution_budget.retrieval_budget.max_session_candidates, 0);
+        assert_eq!(
+            execution_budget.retrieval_budget.max_precedent_candidates,
+            0
+        );
+        assert_eq!(execution_budget.retrieval_budget.max_memory_candidates, 3);
+    }
+
+    #[test]
+    fn execution_budget_trims_history_when_structured_defaults_exist() {
+        let interpretation =
+            crate::application::services::turn_interpretation::TurnInterpretation {
+                user_profile: Some(crate::domain::user_profile::UserProfile {
+                    default_city: Some("Tokyo".into()),
+                    timezone: Some("Asia/Tokyo".into()),
+                    ..Default::default()
+                }),
+                clarification_candidates: vec![],
+                ..Default::default()
+            };
+
+        let execution_budget = build_execution_budget(Some(&interpretation)).unwrap();
+        assert_eq!(
+            execution_budget.interpreter_mode,
+            InterpreterMode::Lightweight
+        );
         assert_eq!(execution_budget.retrieval_budget.max_session_candidates, 0);
         assert_eq!(
             execution_budget.retrieval_budget.max_precedent_candidates,
@@ -1911,6 +2069,29 @@ mod tests {
         assert!(fmt.core_blocks_system.contains("<user_knowledge>"));
         assert!(fmt.core_blocks_system.contains("Prefers Rust"));
         assert!(fmt.enrichment_prefix.is_empty());
+    }
+
+    #[test]
+    fn format_core_blocks_respects_budget_priority() {
+        let ctx = TurnMemoryContext {
+            core_blocks: vec![
+                make_core_block("persona", &"p".repeat(60)),
+                make_core_block("domain", &"d".repeat(60)),
+                make_core_block("task_state", &"t".repeat(60)),
+                make_core_block("user_knowledge", &"u".repeat(60)),
+            ],
+            ..Default::default()
+        };
+
+        let budget = PromptBudget {
+            core_blocks_total_max_chars: 180,
+            ..PromptBudget::default()
+        };
+        let fmt = format_turn_context(&ctx, &budget);
+        assert!(fmt.core_blocks_system.contains("<task_state>"));
+        assert!(fmt.core_blocks_system.contains("<user_knowledge>"));
+        assert!(!fmt.core_blocks_system.contains("<persona>"));
+        assert!(!fmt.core_blocks_system.contains("<domain>"));
     }
 
     #[test]
@@ -2210,6 +2391,34 @@ mod tests {
         let memory_pos = fmt.enrichment_prefix.find("[Memory context]").unwrap();
         assert!(recipe_pos < memory_pos);
         assert!(fmt.resolution_system.contains("[resolution-plan]"));
+    }
+
+    #[test]
+    fn format_turn_context_includes_execution_guidance_when_available() {
+        let ctx = TurnMemoryContext {
+            execution_guidance: Some(execution_guidance::ExecutionGuidance {
+                resolved_from: Some(resolution_router::ResolutionSource::ConfiguredRuntime),
+                direct_resolution_ready: true,
+                preferred_capabilities: vec![execution_guidance::ExecutionCapability::Delivery],
+                recent_failure_hints: Vec::new(),
+                recent_admission_hint: None,
+                prefer_answer_from_resolved_state: false,
+                avoid_session_history_lookup: true,
+                avoid_run_recipe_lookup: true,
+                avoid_workspace_discovery: true,
+                avoid_bootstrap_doc_reads: true,
+            }),
+            ..Default::default()
+        };
+
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.resolution_system.contains("[execution-guidance]"));
+        assert!(fmt
+            .resolution_system
+            .contains("resolved_from: configured_runtime"));
+        assert!(fmt
+            .resolution_system
+            .contains("preferred_capabilities: delivery"));
     }
 
     #[test]

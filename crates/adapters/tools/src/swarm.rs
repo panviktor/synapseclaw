@@ -65,6 +65,7 @@ impl SwarmTool {
             tool_id: self.name().to_string(),
             payload: ToolFactPayload::Routing(RoutingFact {
                 action: RoutingAction::Get,
+                preset: None,
                 hint: Some(swarm_name.to_string()),
                 agent_name: None,
                 provider: None,
