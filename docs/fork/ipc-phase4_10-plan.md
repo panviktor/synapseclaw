@@ -630,6 +630,16 @@ Expected outcome:
       resolved profile confidence is at least `medium`
     - manual synthetic route-switch targets are marked as `manual_config`, so
       explicit operator-supplied windows are still trusted
+    - provider-call capability checks now use a shared domain service fed by
+      `image_marker_count + provider capabilities + resolved route profile`;
+      web live Agent and channel/shared-loop provider calls both use this guard
+      instead of owning separate vision-input logic
+    - channel/shared-loop execution now receives the resolved provider:model
+      route profile, so a provider-wide conservative capability flag no longer
+      blocks a confidently multimodal route
+    - runtime feature coverage now filters capabilities through the same
+      confidence/freshness policy, so stale low-confidence catalog entries are
+      not shown as usable modalities in `/model` diagnostics
   - Slice 13 initial pressure snapshot:
     - `ProviderContextBudgetInput` now tracks artifact-level breakdown for:
       - bootstrap
@@ -904,8 +914,8 @@ Expected outcome:
 - next:
   - Slice 12 follow-through:
     - widen provenance beyond cached provider catalogs as more profile data moves into catalogs
-    - continue feeding profile confidence into remaining tool-capability decisions
-      beyond route-switch and lane admission
+    - keep auditing new tool-capability decisions so they enter through the
+      shared domain capability service rather than web/channel-specific guards
   - Slice 13 follow-through:
     - move selected compression presets into the model catalog if route-specific
       pressure behavior becomes common enough to share out of the box

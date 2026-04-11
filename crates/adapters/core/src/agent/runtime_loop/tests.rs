@@ -49,6 +49,10 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use synapse_domain::application::services::model_lane_resolution::{
+    ResolvedModelProfile, ResolvedModelProfileSource,
+};
+use synapse_domain::config::schema::ModelFeature;
 
 #[test]
 fn scrub_credentials_redacts_bearer_token() {
@@ -150,6 +154,25 @@ impl Provider for NonVisionProvider {
     ) -> anyhow::Result<String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok("ok".to_string())
+    }
+
+    async fn chat(
+        &self,
+        request: ChatRequest<'_>,
+        _model: &str,
+        _temperature: f64,
+    ) -> anyhow::Result<ChatResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let marker_count = synapse_providers::multimodal::count_image_markers(request.messages);
+        if marker_count == 0 {
+            anyhow::bail!("expected image markers in request messages");
+        }
+        Ok(ChatResponse {
+            text: Some("route-vision-ok".to_string()),
+            tool_calls: Vec::new(),
+            usage: None,
+            reasoning_content: None,
+        })
     }
 }
 
@@ -450,6 +473,7 @@ async fn run_tool_call_loop_returns_structured_error_for_non_vision_provider() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         3,
         None,
         None,
@@ -465,6 +489,55 @@ async fn run_tool_call_loop_returns_structured_error_for_non_vision_provider() {
     assert!(err.to_string().contains("provider_capability_error"));
     assert!(err.to_string().contains("capability=vision"));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn run_tool_call_loop_honors_route_vision_capability_override() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = NonVisionProvider {
+        calls: Arc::clone(&calls),
+    };
+
+    let mut history = vec![ChatMessage::user(
+        "please inspect [IMAGE:data:image/png;base64,iVBORw0KGgo=]".to_string(),
+    )];
+    let tools_registry: Vec<Box<dyn Tool>> = Vec::new();
+    let observer = NoopObserver;
+
+    let result = run_tool_call_loop(
+        &provider,
+        &mut history,
+        &tools_registry,
+        &observer,
+        "mock-provider",
+        "mock-model",
+        0.0,
+        true,
+        None,
+        "cli",
+        &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::new(
+            ProviderCapabilities::default(),
+            ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+        ),
+        3,
+        None,
+        None,
+        None,
+        &[],
+        &[],
+        None,
+        None,
+    )
+    .await
+    .expect("route-aware vision capability should allow image input");
+
+    assert_eq!(result.response, "route-vision-ok");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -499,6 +572,7 @@ async fn run_tool_call_loop_rejects_oversized_image_payload() {
         None,
         "cli",
         &multimodal,
+        ToolLoopRouteCapabilities::from_provider(&provider),
         3,
         None,
         None,
@@ -542,6 +616,7 @@ async fn run_tool_call_loop_accepts_valid_multimodal_request_flow() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         3,
         None,
         None,
@@ -671,6 +746,7 @@ async fn run_tool_call_loop_executes_multiple_tools_with_ordered_results() {
         Some(&approval_mgr),
         "telegram",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -743,6 +819,7 @@ async fn run_tool_call_loop_deduplicates_repeated_tool_calls() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -812,6 +889,7 @@ async fn run_tool_call_loop_allows_low_risk_shell_in_non_interactive_mode() {
         Some(&approval_mgr),
         "telegram",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -871,6 +949,7 @@ async fn run_tool_call_loop_dedup_exempt_allows_repeated_calls() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -950,6 +1029,7 @@ async fn run_tool_call_loop_dedup_exempt_only_affects_listed_tools() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -1020,6 +1100,7 @@ async fn run_tool_call_loop_native_mode_preserves_structured_tool_call_ids() {
         None,
         "cli",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         None,
@@ -2238,6 +2319,7 @@ async fn run_tool_call_loop_surfaces_tool_failure_reason_in_on_delta() {
         None,
         "telegram",
         &synapse_domain::config::schema::MultimodalConfig::default(),
+        ToolLoopRouteCapabilities::from_provider(&provider),
         4,
         None,
         Some(tx),

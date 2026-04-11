@@ -1,6 +1,7 @@
 use crate::application::services::execution_guidance::{ExecutionCapability, ExecutionGuidance};
 use crate::application::services::model_capability_support::{
-    assess_lane_capability_support, profile_supports_lane_confidently, LaneCapabilitySupport,
+    assess_lane_capability_support, profile_supports_lane_confidently, supports_multimodal_input,
+    LaneCapabilitySupport,
 };
 use crate::application::services::model_lane_resolution::{
     resolve_lane_candidates, ResolvedModelCandidate, ResolvedModelProfile,
@@ -366,7 +367,7 @@ fn current_candidate_supports_lane(
         | CapabilityLane::VideoGeneration
         | CapabilityLane::MusicGeneration => profile_supports_lane_confidently(profile, lane),
         CapabilityLane::MultimodalUnderstanding => {
-            provider_capabilities.vision || profile_supports_lane_confidently(profile, lane)
+            supports_multimodal_input(provider_capabilities, profile)
         }
     }
 }

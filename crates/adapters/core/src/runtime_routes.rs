@@ -1,6 +1,7 @@
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
 
+use synapse_domain::application::services::model_capability_support::profile_supports_lane_confidently;
 use synapse_domain::application::services::model_lane_resolution::{
     model_lane_resolution_source_name, resolve_lane_candidates, resolve_route_selection_profile,
     resolved_model_profile_confidence_name, resolved_model_profile_freshness_name,
@@ -708,26 +709,22 @@ fn format_profile_feature_coverage(
     }
 
     let mut covered = vec!["reasoning".to_string()];
-    if profile.features.contains(&ModelFeature::Vision)
-        || profile
-            .features
-            .contains(&ModelFeature::MultimodalUnderstanding)
-    {
+    if profile_supports_lane_confidently(profile, CapabilityLane::MultimodalUnderstanding) {
         covered.push("multimodal_understanding".to_string());
     }
-    if profile.features.contains(&ModelFeature::ImageGeneration) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::ImageGeneration) {
         covered.push("image_generation".to_string());
     }
-    if profile.features.contains(&ModelFeature::AudioGeneration) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::AudioGeneration) {
         covered.push("audio_generation".to_string());
     }
-    if profile.features.contains(&ModelFeature::VideoGeneration) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::VideoGeneration) {
         covered.push("video_generation".to_string());
     }
-    if profile.features.contains(&ModelFeature::MusicGeneration) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::MusicGeneration) {
         covered.push("music_generation".to_string());
     }
-    if profile.features.contains(&ModelFeature::Embedding) {
+    if profile_supports_lane_confidently(profile, CapabilityLane::Embedding) {
         covered.push("embedding".to_string());
     }
 
@@ -789,6 +786,9 @@ fn model_cache_entry_matches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::application::services::model_lane_resolution::{
+        ResolvedModelProfile, ResolvedModelProfileSource,
+    };
     use synapse_domain::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
         ModelRouteConfig,
@@ -825,6 +825,42 @@ mod tests {
             Some("gemini")
         );
         assert_eq!(resolve_provider_alias("unknown-provider"), None);
+    }
+
+    #[test]
+    fn model_feature_coverage_filters_low_confidence_features() {
+        let stale_observed_at_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_secs()
+            .saturating_sub(31 * 24 * 60 * 60);
+        let profile = ResolvedModelProfile {
+            features: vec![ModelFeature::Vision, ModelFeature::ImageGeneration],
+            features_source: ResolvedModelProfileSource::CachedProviderCatalog,
+            observed_at_unix: Some(stale_observed_at_unix),
+            ..Default::default()
+        };
+
+        let coverage = format_profile_feature_coverage(&profile);
+
+        assert!(coverage.contains("reasoning"));
+        assert!(coverage.contains("cached_provider_catalog/low"));
+        assert!(!coverage.contains("multimodal_understanding"));
+        assert!(!coverage.contains("image_generation"));
+    }
+
+    #[test]
+    fn model_feature_coverage_accepts_curated_multimodal_features() {
+        let profile = ResolvedModelProfile {
+            features: vec![ModelFeature::Vision],
+            features_source: ResolvedModelProfileSource::BundledCatalog,
+            ..Default::default()
+        };
+
+        let coverage = format_profile_feature_coverage(&profile);
+
+        assert!(coverage.contains("multimodal_understanding"));
+        assert!(coverage.contains("bundled_catalog/medium"));
     }
 
     #[test]

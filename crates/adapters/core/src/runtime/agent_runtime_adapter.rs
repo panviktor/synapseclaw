@@ -9,7 +9,13 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
-use synapse_domain::config::schema::ReliabilityConfig;
+use synapse_domain::application::services::model_capability_support::profile_supports_lane_confidently;
+use synapse_domain::application::services::model_lane_resolution::{
+    resolve_candidate_profile, ResolvedModelProfile,
+};
+use synapse_domain::config::schema::{
+    CapabilityLane, ModelCandidateProfileConfig, ReliabilityConfig,
+};
 use synapse_domain::ports::agent_runtime::{
     AgentRuntimeError, AgentRuntimeErrorKind, AgentRuntimePort, AgentTurnResult,
 };
@@ -126,6 +132,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             .get_or_create_provider(provider_name)
             .await
             .map_err(classify_agent_runtime_error)?;
+        let route_profile = self.route_profile_for(provider_name, model);
 
         let fut = Box::pin(crate::agent::run_tool_call_loop(
             provider.as_ref(),
@@ -139,6 +146,7 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             Some(&*self.approval_manager as &dyn synapse_domain::ports::approval::ApprovalPort),
             &self.channel_name,
             &self.multimodal,
+            crate::agent::ToolLoopRouteCapabilities::new(provider.capabilities(), route_profile),
             max_iterations,
             None,     // cancellation_token
             on_delta, // streaming deltas
@@ -203,22 +211,43 @@ impl AgentRuntimePort for ChannelAgentRuntime {
             return true;
         }
 
-        self.model_profile_catalog
-            .as_ref()
-            .and_then(|catalog| catalog.lookup_model_profile(provider_name, model))
-            .is_some_and(|profile| {
-                profile
-                    .features
-                    .contains(&synapse_domain::config::schema::ModelFeature::Vision)
-                    || profile.features.contains(
-                        &synapse_domain::config::schema::ModelFeature::MultimodalUnderstanding,
-                    )
-            })
+        profile_supports_lane_confidently(
+            &self.route_profile_for(provider_name, model),
+            CapabilityLane::MultimodalUnderstanding,
+        )
     }
 
     fn supports_vision(&self) -> bool {
         self.provider.supports_vision()
     }
+}
+
+impl ChannelAgentRuntime {
+    fn route_profile_for(&self, provider_name: &str, model: &str) -> ResolvedModelProfile {
+        resolve_catalog_route_profile(self.model_profile_catalog.as_deref(), provider_name, model)
+    }
+}
+
+fn catalog_supports_multimodal_input(
+    catalog: Option<&dyn ModelProfileCatalogPort>,
+    provider_name: &str,
+    model: &str,
+) -> bool {
+    let profile = resolve_catalog_route_profile(catalog, provider_name, model);
+    profile_supports_lane_confidently(&profile, CapabilityLane::MultimodalUnderstanding)
+}
+
+fn resolve_catalog_route_profile(
+    catalog: Option<&dyn ModelProfileCatalogPort>,
+    provider_name: &str,
+    model: &str,
+) -> ResolvedModelProfile {
+    resolve_candidate_profile(
+        provider_name,
+        model,
+        &ModelCandidateProfileConfig::default(),
+        catalog,
+    )
 }
 
 fn format_tool_summary(tool_names: &[String]) -> String {
@@ -273,4 +302,74 @@ fn classify_agent_runtime_error(err: anyhow::Error) -> AgentRuntimeError {
     }
 
     AgentRuntimeError::new(AgentRuntimeErrorKind::RuntimeFailure, detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use synapse_domain::config::schema::ModelFeature;
+    use synapse_domain::ports::model_profile_catalog::{
+        CatalogModelProfile, CatalogModelProfileSource,
+    };
+
+    struct StaticCatalog {
+        profile: Option<CatalogModelProfile>,
+    }
+
+    impl ModelProfileCatalogPort for StaticCatalog {
+        fn lookup_model_profile(
+            &self,
+            _provider: &str,
+            _model: &str,
+        ) -> Option<CatalogModelProfile> {
+            self.profile.clone()
+        }
+    }
+
+    #[test]
+    fn catalog_multimodal_support_accepts_explicit_local_vision() {
+        let catalog = StaticCatalog {
+            profile: Some(CatalogModelProfile {
+                features: vec![ModelFeature::Vision],
+                source: Some(CatalogModelProfileSource::LocalOverrideCatalog),
+                ..Default::default()
+            }),
+        };
+
+        assert!(catalog_supports_multimodal_input(
+            Some(&catalog),
+            "provider",
+            "model"
+        ));
+    }
+
+    #[test]
+    fn catalog_multimodal_support_rejects_stale_cached_vision() {
+        let stale_observed_at_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_secs()
+            .saturating_sub(31 * 24 * 60 * 60);
+        let catalog = StaticCatalog {
+            profile: Some(CatalogModelProfile {
+                features: vec![ModelFeature::Vision],
+                source: Some(CatalogModelProfileSource::CachedProviderCatalog),
+                observed_at_unix: Some(stale_observed_at_unix),
+                ..Default::default()
+            }),
+        };
+
+        assert!(!catalog_supports_multimodal_input(
+            Some(&catalog),
+            "provider",
+            "model"
+        ));
+    }
+
+    #[test]
+    fn catalog_multimodal_support_rejects_unknown_feature_metadata() {
+        assert!(!catalog_supports_multimodal_input(
+            None, "provider", "model"
+        ));
+    }
 }

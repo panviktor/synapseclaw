@@ -235,6 +235,10 @@ Observed pattern:
   a message-history-only session replace contract, while preserving rolling
   session summaries. This keeps model-visible history compact without treating
   summaries as disposable transcript rows.
+- Provider-call capability guards now live in a shared domain service rather
+  than diverging between web and channel paths. Both web live Agent and
+  channel/shared-loop provider calls evaluate image input against provider
+  capabilities plus the resolved provider:model route profile.
 - Hermes prunes old large tool results before summarization and sanitizes
   tool-call/tool-result pair integrity after compaction; SynapseClaw now does
   the same through typed placeholders and a protocol-aware sanitizer.
@@ -338,6 +342,8 @@ Reference:
    tokens, and endpoint-scoped cached model metadata when available.
 7. Compaction now has Hermes-style hygiene for old large tool results and
    post-compaction tool-call/result protocol repair.
+8. Web and channel provider-call capability checks now share one domain service
+   for multimodal/image-input admission at the final provider-call boundary.
 
 ### What is still behind the better agent products
 

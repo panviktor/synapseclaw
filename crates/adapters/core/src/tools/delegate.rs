@@ -418,6 +418,7 @@ impl DelegateTool {
                 None,
                 "delegate",
                 &self.multimodal_config,
+                crate::agent::ToolLoopRouteCapabilities::from_provider(provider),
                 agent_config.max_iterations,
                 None,
                 None,

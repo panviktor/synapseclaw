@@ -21,6 +21,9 @@ use synapse_domain::application::services::dialogue_state_service::DialogueState
 use synapse_domain::application::services::dialogue_state_service::{self};
 use synapse_domain::application::services::history_compaction;
 use synapse_domain::application::services::history_compaction::HistoryCompressionPolicy;
+use synapse_domain::application::services::model_capability_support::{
+    assess_provider_call_capabilities, ProviderCallCapabilityInput, ProviderCallCapabilityIssue,
+};
 #[cfg(test)]
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileConfidence;
@@ -75,7 +78,9 @@ use synapse_domain::ports::user_profile_context::{
 use synapse_domain::ports::user_profile_store::UserProfileStorePort;
 use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
 use synapse_observability::{self, Observer, ObserverEvent};
-use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Provider};
+use synapse_providers::{
+    self, ChatMessage, ChatRequest, ConversationMessage, Provider, ProviderCapabilityError,
+};
 use synapse_security::security_policy_from_config;
 
 const PROVIDER_CONTEXT_CHAT_MESSAGES: usize = 6;
@@ -2386,6 +2391,28 @@ impl Agent {
                 });
             }
 
+            let image_marker_count = synapse_providers::multimodal::count_image_markers(&messages);
+            for issue in assess_provider_call_capabilities(ProviderCallCapabilityInput {
+                image_marker_count,
+                provider_capabilities: &provider_capabilities,
+                route_profile: &effective_model_profile,
+            })
+            .issues
+            {
+                match issue {
+                    ProviderCallCapabilityIssue::MissingVisionInput { image_marker_count } => {
+                        return Err(ProviderCapabilityError {
+                            provider: self.provider_name.clone(),
+                            capability: "vision".to_string(),
+                            message: format!(
+                                "received {image_marker_count} image marker(s), but this route does not support vision input"
+                            ),
+                        }
+                        .into());
+                    }
+                }
+            }
+
             let response = match self
                 .provider
                 .chat(
@@ -2860,6 +2887,43 @@ mod tests {
 
         let response = agent.turn("hi").await.unwrap();
         assert_eq!(response, "hello");
+    }
+
+    #[tokio::test]
+    async fn turn_allows_image_input_when_route_profile_supports_vision() {
+        let provider = Box::new(MockProvider {
+            responses: Mutex::new(vec![synapse_providers::ChatResponse {
+                text: Some("vision-route".into()),
+                tool_calls: vec![],
+                usage: None,
+                reasoning_content: None,
+            }]),
+        });
+
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
+        let mut agent = Agent::builder()
+            .provider(provider)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .current_model_profile(ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source:
+                    synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            })
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        let response = agent
+            .turn("inspect [IMAGE:data:image/png;base64,iVBORw0KGgo=]")
+            .await
+            .expect("route profile vision support should allow image input");
+
+        assert_eq!(response, "vision-route");
     }
 
     #[tokio::test]
