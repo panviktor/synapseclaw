@@ -187,7 +187,7 @@ impl Tool for CronUpdateTool {
                         },
                         "model": {
                             "type": "string",
-                            "description": "Model override for agent jobs, e.g. 'x-ai/grok-4-1-fast'"
+                            "description": "Model override for agent jobs, e.g. a configured route alias or provider-specific model id"
                         },
                         "session_target": {
                             "type": "string",

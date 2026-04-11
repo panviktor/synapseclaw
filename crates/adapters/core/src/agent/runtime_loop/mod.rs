@@ -9,7 +9,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
-use synapse_domain::config::schema::Config;
+use synapse_domain::config::schema::{Config, ContextCompressionConfig};
 use synapse_domain::domain::util::truncate_with_ellipsis;
 use synapse_domain::ports::approval::ApprovalPort;
 use synapse_infra::approval::ApprovalManager;
@@ -117,14 +117,26 @@ async fn auto_compact_history(
     model: &str,
     max_history: usize,
     max_context_tokens: usize,
+    compression: &ContextCompressionConfig,
 ) -> Result<bool> {
-    let Some((start, compact_end, transcript)) =
-        compaction::prepare_compaction(history, max_history, max_context_tokens)
-    else {
+    let policy = compaction::HistoryCompressionPolicy::from(compression);
+    if !policy.enabled {
+        return Ok(false);
+    }
+
+    let compaction_threshold_tokens =
+        compaction::history_compression_threshold_tokens(max_context_tokens.max(1), &policy);
+    let Some((start, compact_end, transcript)) = compaction::prepare_compaction_with_policy(
+        history,
+        max_history,
+        compaction_threshold_tokens,
+        &policy,
+    ) else {
         return Ok(false);
     };
 
-    let summarizer_user = compaction::compaction_summarizer_prompt(&transcript);
+    let summarizer_user =
+        compaction::compaction_summarizer_prompt_with_policy(&transcript, None, &policy, None);
 
     let summary_raw = provider
         .chat_with_system(
@@ -136,7 +148,14 @@ async fn auto_compact_history(
         .await
         .unwrap_or_default();
 
-    compaction::apply_compaction(history, start, compact_end, &summary_raw, &transcript);
+    compaction::apply_compaction_with_policy(
+        history,
+        start,
+        compact_end,
+        &summary_raw,
+        &transcript,
+        &policy,
+    );
 
     Ok(true)
 }

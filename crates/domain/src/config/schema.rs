@@ -80,6 +80,12 @@ pub struct Config {
     /// Can be a plain model name (uses default provider) or configured via `[summary]` section.
     #[serde(default)]
     pub summary_model: Option<String>,
+    /// Context compression policy (`[compression]`), Hermes-style defaults.
+    #[serde(default)]
+    pub compression: ContextCompressionConfig,
+    /// Optional route/lane-specific compression policy overrides.
+    #[serde(default)]
+    pub compression_overrides: Vec<ContextCompressionRouteOverrideConfig>,
     /// Explicit summary model configuration with its own provider.
     /// When set, overrides `summary_model` string. Allows using a different provider
     /// (e.g. Anthropic Haiku) for summaries while keeping a different default provider.
@@ -1055,6 +1061,205 @@ pub struct AgentConfig {
     /// Requires a plan that supports prompt caching; disable for OAuth/free-tier tokens.
     #[serde(default)]
     pub prompt_caching: bool,
+}
+
+/// Provider-history compression policy (`[compression]` section).
+///
+/// Mirrors the operator-facing knobs used by Hermes-style context compressors
+/// while leaving model/provider-specific limits to catalog/profile metadata.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct ContextCompressionConfig {
+    /// Enable provider-history compression. Default: `true`.
+    #[serde(default = "default_compression_enabled")]
+    pub enabled: bool,
+    /// Compression triggers at `threshold * safe_input_context`. Default: `0.50`.
+    #[serde(default = "default_compression_threshold")]
+    pub threshold: f64,
+    /// Tail token budget as a fraction of threshold tokens. Default: `0.20`.
+    #[serde(default = "default_compression_target_ratio")]
+    pub target_ratio: f64,
+    /// Minimum recent messages always preserved. Default: `20`.
+    #[serde(default = "default_compression_protect_last_n")]
+    pub protect_last_n: usize,
+    /// Initial messages always preserved. Default: `3`.
+    #[serde(default = "default_compression_protect_first_n")]
+    pub protect_first_n: usize,
+    /// Summary token budget as a fraction of compressed content. Default: `0.20`.
+    #[serde(default = "default_compression_summary_ratio")]
+    pub summary_ratio: f64,
+    /// Minimum summary budget in estimated tokens. Default: `2000`.
+    #[serde(default = "default_compression_min_summary_tokens")]
+    pub min_summary_tokens: usize,
+    /// Maximum summary budget in estimated tokens. Default: `12000`.
+    #[serde(default = "default_compression_max_summary_tokens")]
+    pub max_summary_tokens: usize,
+    /// Safety cap for source transcript sent to the summarizer. Default: `12000` chars.
+    #[serde(default = "default_compression_max_source_chars")]
+    pub max_source_chars: usize,
+    /// Max chars stored in provider history for one compaction summary. Default: `2000`.
+    #[serde(default = "default_compression_max_summary_chars")]
+    pub max_summary_chars: usize,
+    /// Persistent condensed artifact cache TTL. Default: `172800` seconds (2 days).
+    #[serde(default = "default_compression_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+    /// Max persistent condensed artifact cache entries. Default: `256`.
+    #[serde(default = "default_compression_cache_max_entries")]
+    pub cache_max_entries: usize,
+}
+
+fn default_compression_enabled() -> bool {
+    true
+}
+
+fn default_compression_threshold() -> f64 {
+    0.50
+}
+
+fn default_compression_target_ratio() -> f64 {
+    0.20
+}
+
+fn default_compression_protect_last_n() -> usize {
+    20
+}
+
+fn default_compression_protect_first_n() -> usize {
+    3
+}
+
+fn default_compression_summary_ratio() -> f64 {
+    0.20
+}
+
+fn default_compression_min_summary_tokens() -> usize {
+    2_000
+}
+
+fn default_compression_max_summary_tokens() -> usize {
+    12_000
+}
+
+fn default_compression_max_source_chars() -> usize {
+    12_000
+}
+
+fn default_compression_max_summary_chars() -> usize {
+    2_000
+}
+
+fn default_compression_cache_ttl_secs() -> u64 {
+    2 * 24 * 60 * 60
+}
+
+fn default_compression_cache_max_entries() -> usize {
+    256
+}
+
+impl Default for ContextCompressionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_compression_enabled(),
+            threshold: default_compression_threshold(),
+            target_ratio: default_compression_target_ratio(),
+            protect_last_n: default_compression_protect_last_n(),
+            protect_first_n: default_compression_protect_first_n(),
+            summary_ratio: default_compression_summary_ratio(),
+            min_summary_tokens: default_compression_min_summary_tokens(),
+            max_summary_tokens: default_compression_max_summary_tokens(),
+            max_source_chars: default_compression_max_source_chars(),
+            max_summary_chars: default_compression_max_summary_chars(),
+            cache_ttl_secs: default_compression_cache_ttl_secs(),
+            cache_max_entries: default_compression_cache_max_entries(),
+        }
+    }
+}
+
+/// Partial compression policy override for a specific route/lane selector.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+pub struct ContextCompressionRouteOverrideConfig {
+    /// Optional route hint selector, e.g. `"cheap"`.
+    #[serde(default)]
+    pub hint: Option<String>,
+    /// Optional provider selector, e.g. `"deepseek"` or `"openrouter"`.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Optional model selector.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Optional capability-lane selector.
+    #[serde(default)]
+    pub lane: Option<CapabilityLane>,
+    /// Enable/disable compression for the matched route.
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Override compression trigger ratio.
+    #[serde(default)]
+    pub threshold: Option<f64>,
+    /// Override retained tail ratio.
+    #[serde(default)]
+    pub target_ratio: Option<f64>,
+    /// Override protected recent messages.
+    #[serde(default)]
+    pub protect_last_n: Option<usize>,
+    /// Override protected initial messages.
+    #[serde(default)]
+    pub protect_first_n: Option<usize>,
+    /// Override summarizer target ratio.
+    #[serde(default)]
+    pub summary_ratio: Option<f64>,
+    /// Override minimum summary token budget.
+    #[serde(default)]
+    pub min_summary_tokens: Option<usize>,
+    /// Override maximum summary token budget.
+    #[serde(default)]
+    pub max_summary_tokens: Option<usize>,
+    /// Override source transcript char cap.
+    #[serde(default)]
+    pub max_source_chars: Option<usize>,
+    /// Override stored summary char cap.
+    #[serde(default)]
+    pub max_summary_chars: Option<usize>,
+    /// Override persistent cache TTL.
+    #[serde(default)]
+    pub cache_ttl_secs: Option<u64>,
+    /// Override persistent cache entry cap.
+    #[serde(default)]
+    pub cache_max_entries: Option<usize>,
+}
+
+impl ContextCompressionConfig {
+    pub fn apply_override(&self, override_config: &ContextCompressionRouteOverrideConfig) -> Self {
+        Self {
+            enabled: override_config.enabled.unwrap_or(self.enabled),
+            threshold: override_config.threshold.unwrap_or(self.threshold),
+            target_ratio: override_config.target_ratio.unwrap_or(self.target_ratio),
+            protect_last_n: override_config
+                .protect_last_n
+                .unwrap_or(self.protect_last_n),
+            protect_first_n: override_config
+                .protect_first_n
+                .unwrap_or(self.protect_first_n),
+            summary_ratio: override_config.summary_ratio.unwrap_or(self.summary_ratio),
+            min_summary_tokens: override_config
+                .min_summary_tokens
+                .unwrap_or(self.min_summary_tokens),
+            max_summary_tokens: override_config
+                .max_summary_tokens
+                .unwrap_or(self.max_summary_tokens),
+            max_source_chars: override_config
+                .max_source_chars
+                .unwrap_or(self.max_source_chars),
+            max_summary_chars: override_config
+                .max_summary_chars
+                .unwrap_or(self.max_summary_chars),
+            cache_ttl_secs: override_config
+                .cache_ttl_secs
+                .unwrap_or(self.cache_ttl_secs),
+            cache_max_entries: override_config
+                .cache_max_entries
+                .unwrap_or(self.cache_max_entries),
+        }
+    }
 }
 
 fn default_agent_max_tool_iterations() -> usize {
@@ -6082,6 +6287,9 @@ impl Default for Config {
             default_model: super::model_catalog::provider_default_model("openrouter")
                 .map(str::to_string),
             summary_model: None,
+            compression: ContextCompressionConfig::default(),
+            compression_overrides: Vec::new(),
+            summary: SummaryConfig::default(),
             model_providers: HashMap::new(),
             default_temperature: default_temperature(),
             provider_timeout_secs: default_provider_timeout_secs(),
@@ -6141,7 +6349,6 @@ impl Default for Config {
             node_transport: NodeTransportConfig::default(),
             knowledge: KnowledgeConfig::default(),
             linkedin: LinkedInConfig::default(),
-            summary: SummaryConfig::default(),
         }
     }
 }

@@ -7,10 +7,11 @@ use crate::application::services::model_lane_resolution::{
     ResolvedModelProfileConfidence,
 };
 use crate::application::services::provider_context_budget::{
-    assess_provider_context_budget, ProviderContextBudgetInput, ProviderContextBudgetTier,
+    assess_provider_context_budget, provider_context_condensation_plan, ProviderContextBudgetInput,
+    ProviderContextBudgetTier, ProviderContextCondensationMode, ProviderContextCondensationPlan,
 };
 use crate::application::services::route_switch_preflight::{
-    assess_route_switch_preflight, RouteSwitchStatus,
+    assess_route_switch_preflight_for_budget, RouteSwitchStatus,
 };
 use crate::application::services::turn_model_routing::{
     infer_turn_capability_requirement, TurnCapabilityRequirement, TurnRouteOverride,
@@ -31,6 +32,7 @@ pub struct CandidateAdmissionDecision {
     pub route_override: Option<TurnRouteOverride>,
     pub reasons: Vec<CandidateAdmissionReason>,
     pub recommended_action: Option<AdmissionRepairHint>,
+    pub condensation_plan: Option<ProviderContextCondensationPlan>,
     pub requires_compaction: bool,
 }
 
@@ -61,8 +63,9 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
     let mut required_lane_unsatisfied = false;
 
     let budget_assessment = assess_provider_context_budget(input.provider_context);
+    let condensation_plan = provider_context_condensation_plan(&budget_assessment);
     let window_preflight =
-        assess_route_switch_preflight(input.provider_context.total_chars, input.current_profile);
+        assess_route_switch_preflight_for_budget(&budget_assessment, input.current_profile);
     let pressure_state = classify_pressure_state(&budget_assessment.tier, window_preflight.status);
     push_pressure_reason(&mut reasons, pressure_state);
     push_window_metadata_reason(
@@ -156,6 +159,7 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
         &route_override,
         required_lane,
         &reasons,
+        condensation_plan,
         requires_compaction,
         action,
     );
@@ -170,6 +174,7 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
         route_override,
         reasons,
         recommended_action,
+        condensation_plan,
         requires_compaction,
     }
 }
@@ -178,6 +183,7 @@ fn derive_recommended_action(
     route_override: &Option<TurnRouteOverride>,
     required_lane: Option<CapabilityLane>,
     reasons: &[CandidateAdmissionReason],
+    condensation_plan: Option<ProviderContextCondensationPlan>,
     requires_compaction: bool,
     action: TurnAdmissionAction,
 ) -> Option<AdmissionRepairHint> {
@@ -210,6 +216,9 @@ fn derive_recommended_action(
             .iter()
             .any(|reason| matches!(reason, CandidateAdmissionReason::CandidateWindowExceeded))
     {
+        return Some(AdmissionRepairHint::StartFreshHandoff);
+    }
+    if condensation_plan.is_some_and(|plan| plan.mode == ProviderContextCondensationMode::Handoff) {
         return Some(AdmissionRepairHint::StartFreshHandoff);
     }
     if requires_compaction
@@ -635,6 +644,47 @@ mod tests {
         assert!(decision
             .reasons
             .contains(&CandidateAdmissionReason::CandidateWindowMetadataUnknown));
+    }
+
+    #[test]
+    fn critical_context_includes_artifact_specific_condensation_plan() {
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "continue",
+            execution_guidance: None,
+            tool_specs: &[],
+            current_provider: "openrouter",
+            current_model: "long-context-model",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                context_window_tokens: Some(8_000),
+                context_window_source: ResolvedModelProfileSource::ManualConfig,
+                max_output_tokens: None,
+                features: vec![],
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 16_000,
+                prior_chat_messages: 4,
+                current_turn_messages: 1,
+                prior_chat_chars: 12_000,
+                scoped_context_chars: 700,
+                current_turn_chars: 500,
+                ..Default::default()
+            },
+            catalog: None,
+        });
+
+        let plan = decision.condensation_plan.expect("condensation plan");
+        assert_eq!(plan.mode, ProviderContextCondensationMode::Summarize);
+        assert_eq!(
+            plan.target_artifact,
+            Some(
+                crate::application::services::provider_context_budget::ProviderContextArtifact::PriorChat
+            )
+        );
+        assert!(plan.prefer_cached_artifact);
     }
 
     #[test]

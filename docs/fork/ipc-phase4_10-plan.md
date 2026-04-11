@@ -663,6 +663,59 @@ Expected outcome:
       - drop `[scoped-context]` when it is removable ballast
       - compact oversized `[runtime-interpretation]` before the provider call
       - recompute provider-facing stats after pruning
+    - provider-facing context budget now consumes trusted target profile limits:
+      - `context_window_tokens`
+      - `max_output_tokens`
+      - field-level profile confidence gates whether those limits are trusted
+      - low-confidence / stale metadata stays on the compact legacy budget
+    - live agent and channel admission now feed the effective route profile into
+      the same budget path, so large-window candidates no longer lose scoped or
+      runtime context only because of the old fixed heavy-turn ceiling
+    - Hermes-style window-ratio follow-through:
+      - model context is treated as `input + output`
+      - provider-facing safe input budget subtracts reserved output headroom
+      - compression threshold is `50%` of safe input
+      - hard safety ceiling is `85%` of safe input
+      - large trusted windows such as `2M` scale by ratio instead of hitting
+        old fixed scaled caps
+      - low-confidence / unknown window metadata still falls back to the
+        compact legacy char budget
+      - `[compression]` now exposes the Hermes-style operator knobs:
+        enable/disable, threshold ratio, protected head/tail, summary ratio,
+        source/summary caps, and persistent cache TTL/max entries
+      - live agent compaction uses trusted `context_window_tokens` and
+        `max_output_tokens` from the current resolved model profile; unknown
+        profile metadata falls back to the legacy `agent.max_context_tokens`
+        budget instead of inventing model-specific constants
+      - compaction boundaries now explicitly preserve protected head/tail and
+        avoid splitting assistant tool-call / role=`tool` result groups
+      - CLI auto-compaction now consumes the same compression policy path
+    - route-switch preflight now consumes `ContextBudgetSnapshot` directly and
+      carries the typed condensation recommendation alongside the window status
+    - live agent context logs now include condensation mode, target artifact,
+      minimum reclaim chars, and whether cached condensed artifact reuse is preferred
+    - history compaction now uses a shared runtime cache service/port, still
+      scoped per workspace agent and keyed by source transcript, compression
+      policy, and trusted context window digest; repeated compaction of the same
+      source no longer re-burns the summary lane
+    - condensed artifact cache is now persistent under the workspace state dir,
+      TTL-bounded by default to 2 days, and LRU-capped by config; this makes
+      restart/fleet behavior closer to Hermes-style prompt caching while staying
+      provider-agnostic
+    - compression policy now supports per-route overrides selected by
+      `hint` / `provider` / `model` / `lane`, composed in deterministic selector
+      order rather than model-specific Rust match arms
+    - compaction now resolves those route-specific compression
+      settings before thresholding, cache lookup, and cache eviction
+    - route/runtime inspection now carries condensed artifact cache stats
+      (`entries`, `hits`, `max`, `ttl`, `loaded`) and active effective
+      compression policy (`threshold`, `target`, protected head/tail, summary
+      ratio, source/summary caps) through `RouteSelection` and `/models`, so
+      cache behavior is visible without reading workspace state
+    - web runtime now resolves those cache/policy stats against the active
+      provider/model route; channel `/model` uses the same `RouteSelection`
+      surface and shared cache service, so it can show real `entries`/`hits`
+      without reaching into a web `Agent` cache
   - Slice 14 follow-through partial:
     - the same structured marker routing now covers image/audio/video/music
       generation instead of relying on free-text phrase detection
@@ -717,15 +770,39 @@ Expected outcome:
       default preset remains `chatgpt`
     - provider model cache still wins when fresh, then bundled/local catalog
       profile metadata is used as fallback
+  - OpenRouter Grok 4.20 is now catalog-driven as a standard optional/test route:
+    - curated id: `x-ai/grok-4.20`
+    - aliases: `grok420` and `grok-4.20`
+    - profile metadata records the OpenRouter route's `2_000_000` token context
+      window and `66_000` max output
+    - pricing metadata records OpenRouter's current `2.0 / 6.0` input/output
+      per-million-token prices
+    - stale `grok-4.1` examples were removed from tool schema descriptions and
+      the ambiguous Venice curated list rather than being guessed into another
+      provider's support matrix
+  - OpenRouter reasoning-control follow-through:
+    - runtime `reasoning_enabled` / `reasoning_effort` now reach the OpenRouter
+      adapter as the provider-native `reasoning` request object
+    - unset still omits the field and keeps provider/model defaults
+    - `reasoning = true` is not treated as globally better; policy should enable
+      it only for routes/turns that need the extra reasoning budget
+    - OpenRouter's normalized `reasoning` response field is mapped back into
+      the shared `reasoning_content` response field
 - next:
   - Slice 12 follow-through:
     - widen provenance beyond cached provider catalogs as more profile data moves into catalogs
     - continue feeding profile confidence into remaining tool-capability decisions
       beyond route-switch and lane admission
   - Slice 13 follow-through:
-    - add condensed artifact cache selection instead of only “history compaction or not”
-    - continue moving admission and route-switch policy toward direct consumption
-      of the richer pressure snapshot
+    - move selected compression presets into the model catalog if route-specific
+      pressure behavior becomes common enough to share out of the box
+  - reasoning-control follow-through:
+    - promote provider reasoning controls from global runtime override to a
+      capability/lane policy once the model-profile registry exposes support
+      and provider cost tradeoffs consistently
+    - add full `reasoning_details` preservation when the shared provider
+      response/history model can carry provider-native reasoning blocks without
+      leaking adapter-specific shapes into the core runtime
   - Slice 11 follow-through:
     - unify channel/web route mutation and admission state persistence semantics
   - quality tail after Slice 6/7:

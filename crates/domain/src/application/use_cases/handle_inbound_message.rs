@@ -858,7 +858,8 @@ async fn execute_agent_turn(
             current_lane: route.lane,
             current_profile: &route_profile,
             provider_capabilities: &route_capabilities,
-            provider_context: provider_context_input_for_history(&history),
+            provider_context: provider_context_input_for_history(&history)
+                .with_target_model_profile(&route_profile),
             catalog: ports.model_profile_catalog.as_deref(),
         },
     );
@@ -1343,6 +1344,7 @@ mod tests {
                 recent_admissions: Vec::new(),
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
+                context_cache: None,
             }
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}
@@ -1774,6 +1776,7 @@ mod tests {
                         crate::config::schema::CapabilityLane::ImageGeneration,
                     ),
                 ),
+                condensation_plan: None,
                 requires_compaction: false,
             },
         );
@@ -1800,6 +1803,7 @@ mod tests {
                 recommended_action: Some(
                     crate::domain::turn_admission::AdmissionRepairHint::StartFreshHandoff,
                 ),
+                condensation_plan: None,
                 requires_compaction: false,
             },
         );

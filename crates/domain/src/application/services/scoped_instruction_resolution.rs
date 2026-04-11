@@ -4,6 +4,7 @@
 //! surfaces path hints for adapter-side discovery. It intentionally stays
 //! structural: paths and recent typed resource/search context, not phrase rules.
 
+use crate::application::services::provider_context_budget::ProviderContextBudgetTier;
 use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::application::services::turn_model_routing::infer_turn_capability_requirement;
 use crate::domain::tool_fact::{ResourceKind, SearchDomain};
@@ -119,6 +120,33 @@ pub fn build_scoped_instruction_plan(
     }
 }
 
+pub fn adjust_scoped_instruction_plan_for_context_pressure(
+    mut plan: ScopedInstructionPlan,
+    pressure: ProviderContextBudgetTier,
+) -> Option<ScopedInstructionPlan> {
+    let has_explicit_user_path = plan
+        .hints
+        .iter()
+        .any(|hint| hint.source == ScopedInstructionHintSource::UserMessagePath);
+
+    match pressure {
+        ProviderContextBudgetTier::Healthy => Some(plan),
+        ProviderContextBudgetTier::Caution => {
+            plan.max_files = plan.max_files.min(1);
+            plan.max_total_chars =
+                plan.max_total_chars
+                    .min(if has_explicit_user_path { 900 } else { 600 });
+            Some(plan)
+        }
+        ProviderContextBudgetTier::OverBudget if has_explicit_user_path => {
+            plan.max_files = 1;
+            plan.max_total_chars = plan.max_total_chars.min(600);
+            Some(plan)
+        }
+        ProviderContextBudgetTier::OverBudget => None,
+    }
+}
+
 pub fn format_scoped_instruction_block(snippets: &[ScopedInstructionSnippet]) -> Option<String> {
     if snippets.is_empty() {
         return None;
@@ -215,6 +243,58 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(paths.contains(&"src/core/agent.rs".to_string()));
         assert!(paths.contains(&"./Cargo.toml".to_string()));
+    }
+
+    #[test]
+    fn pressure_adjustment_bounds_inferred_scoped_context() {
+        let interpretation = TurnInterpretation {
+            dialogue_state: Some(DialogueStateSnapshot {
+                focus_entities: Vec::new(),
+                comparison_set: Vec::new(),
+                reference_anchors: Vec::new(),
+                last_tool_subjects: Vec::new(),
+                recent_delivery_target: None,
+                recent_schedule_job: None,
+                recent_resource: Some(ResourceReference {
+                    kind: ResourceKind::Directory,
+                    operation: ResourceOperation::Read,
+                    locator: "src/agent".into(),
+                    host: None,
+                }),
+                recent_search: None,
+                recent_workspace: None,
+            }),
+            ..Default::default()
+        };
+        let plan = build_scoped_instruction_plan("continue", Some(&interpretation)).expect("plan");
+
+        let caution = adjust_scoped_instruction_plan_for_context_pressure(
+            plan.clone(),
+            ProviderContextBudgetTier::Caution,
+        )
+        .expect("bounded plan");
+        assert_eq!(caution.max_files, 1);
+        assert_eq!(caution.max_total_chars, 600);
+
+        assert!(adjust_scoped_instruction_plan_for_context_pressure(
+            plan,
+            ProviderContextBudgetTier::OverBudget
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn pressure_adjustment_keeps_explicit_user_path_with_tighter_cap() {
+        let plan = build_scoped_instruction_plan("Open src/core/agent.rs", None).expect("plan");
+
+        let adjusted = adjust_scoped_instruction_plan_for_context_pressure(
+            plan,
+            ProviderContextBudgetTier::OverBudget,
+        )
+        .expect("explicit path survives");
+
+        assert_eq!(adjusted.max_files, 1);
+        assert_eq!(adjusted.max_total_chars, 600);
     }
 
     #[test]

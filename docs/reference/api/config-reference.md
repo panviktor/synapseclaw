@@ -254,12 +254,14 @@ temperature = 0.2
 | Key | Default | Purpose |
 |---|---|---|
 | `reasoning_enabled` | unset (`None`) | Global reasoning/thinking override for providers that support explicit controls |
+| `reasoning_effort` | unset (`None`) | Optional reasoning effort (`minimal`, `low`, `medium`, `high`, `xhigh`) for providers that support an effort control |
 
 Notes:
 
-- `reasoning_enabled = false` explicitly disables provider-side reasoning for supported providers (currently `ollama`, via request field `think: false`).
-- `reasoning_enabled = true` explicitly requests reasoning for supported providers (`think: true` on `ollama`).
-- Unset keeps provider defaults.
+- `reasoning_enabled = false` explicitly disables provider-side reasoning for supported providers (`think: false` on Ollama, `reasoning.enabled = false` on OpenRouter).
+- `reasoning_enabled = true` explicitly requests reasoning for supported providers (`think: true` on Ollama, `reasoning.enabled = true` on OpenRouter).
+- `reasoning_effort` is forwarded where the provider API supports an explicit effort control, including OpenRouter's `reasoning.effort` and OpenAI/Codex-compatible reasoning-effort paths.
+- Unset keeps provider/model defaults and is preferred for simple low-latency turns.
 
 ## `[skills]`
 

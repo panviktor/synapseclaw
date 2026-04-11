@@ -14,22 +14,31 @@ use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::io::Write as IoWrite;
+use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use synapse_domain::application::services::dialogue_state_service::DialogueStateStore;
 use synapse_domain::application::services::dialogue_state_service::{self};
 use synapse_domain::application::services::history_compaction;
+use synapse_domain::application::services::history_compaction::HistoryCompressionPolicy;
+#[cfg(test)]
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
+use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileConfidence;
 use synapse_domain::application::services::provider_context_budget::{
     assess_provider_context_budget, provider_context_artifact_name,
-    provider_context_budget_tier_name, provider_context_turn_shape_name,
+    provider_context_budget_tier_name, provider_context_condensation_mode_name,
+    provider_context_reserved_output_headroom_tokens, provider_context_turn_shape_name,
     ProviderContextBudgetInput,
 };
+use synapse_domain::application::services::provider_native_context_policy::{
+    resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
+};
 use synapse_domain::application::services::route_switch_preflight::{
-    assess_route_switch_preflight, RouteSwitchPreflight, RouteSwitchStatus,
+    assess_route_switch_preflight_for_budget, RouteSwitchPreflight, RouteSwitchStatus,
 };
 use synapse_domain::application::services::scoped_instruction_resolution::{
-    build_scoped_instruction_plan, format_scoped_instruction_block,
+    adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
+    format_scoped_instruction_block,
 };
 use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_domain::application::services::turn_admission::{
@@ -40,7 +49,7 @@ use synapse_domain::application::services::turn_context::{
 };
 use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
-use synapse_domain::config::schema::Config;
+use synapse_domain::config::schema::{Config, ContextCompressionConfig};
 use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::domain::tool_repair::ToolRepairTrace;
 use synapse_domain::domain::turn_admission::{
@@ -49,7 +58,8 @@ use synapse_domain::domain::turn_admission::{
 use synapse_domain::ports::channel_registry::ChannelRegistryPort;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
-use synapse_domain::ports::route_selection::RouteAdmissionState;
+use synapse_domain::ports::history_compaction_cache::HistoryCompactionCachePort;
+use synapse_domain::ports::route_selection::{ContextCacheStats, RouteAdmissionState};
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
 use synapse_domain::ports::scoped_instruction_context::{
     ScopedInstructionContextPort, ScopedInstructionRequest,
@@ -79,6 +89,7 @@ pub struct AgentRuntimePorts {
     pub scoped_instruction_context: Option<Arc<dyn ScopedInstructionContextPort>>,
     pub channel_registry: Option<Arc<dyn ChannelRegistryPort>>,
     pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
+    pub history_compaction_cache: Option<Arc<dyn HistoryCompactionCachePort>>,
 }
 
 fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
@@ -125,6 +136,8 @@ fn provider_context_budget_input_from_stats(
         total_chars: stats.total_chars,
         prior_chat_messages: stats.prior_chat_messages,
         current_turn_messages: stats.current_turn_messages,
+        target_context_window_tokens: None,
+        target_max_output_tokens: None,
         bootstrap_chars: stats.bootstrap_chars,
         core_memory_chars: stats.core_memory_chars,
         runtime_interpretation_chars: stats.runtime_interpretation_chars,
@@ -133,6 +146,48 @@ fn provider_context_budget_input_from_stats(
         prior_chat_chars: stats.prior_chat_chars,
         current_turn_chars: stats.current_turn_chars,
     }
+}
+
+fn provider_context_budget_input_from_stats_for_profile(
+    stats: &synapse_observability::ProviderContextStats,
+    profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+) -> ProviderContextBudgetInput {
+    provider_context_budget_input_from_stats(stats).with_target_model_profile(profile)
+}
+
+fn history_compaction_cache_key(
+    transcript: &str,
+    policy: &HistoryCompressionPolicy,
+    context_window_tokens: Option<usize>,
+) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"synapseclaw:history-compaction:v2\0");
+    hasher.update(history_compaction_policy_fingerprint(policy, context_window_tokens).as_bytes());
+    hasher.update(b"\0");
+    hasher.update(transcript.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn history_compaction_policy_fingerprint(
+    policy: &HistoryCompressionPolicy,
+    context_window_tokens: Option<usize>,
+) -> String {
+    format!(
+        "enabled={} threshold={:.6} target={:.6} first={} last={} summary={:.6} min={} max={} source_chars={} summary_chars={} context={}",
+        policy.enabled,
+        policy.threshold_ratio,
+        policy.target_ratio,
+        policy.protect_first_n,
+        policy.protect_last_n,
+        policy.summary_ratio,
+        policy.min_summary_tokens,
+        policy.max_summary_tokens,
+        policy.max_source_chars,
+        policy.max_summary_chars,
+        context_window_tokens.unwrap_or(0),
+    )
 }
 
 pub struct Agent {
@@ -148,6 +203,9 @@ pub struct Agent {
     /// Turn counter within current session (for continuation policy).
     turn_count: usize,
     config: synapse_domain::config::schema::AgentConfig,
+    compression: ContextCompressionConfig,
+    compression_overrides:
+        Vec<synapse_domain::config::schema::ContextCompressionRouteOverrideConfig>,
     provider_name: String,
     model_name: String,
     temperature: f64,
@@ -179,6 +237,7 @@ pub struct Agent {
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
+    history_compaction_cache: Arc<dyn HistoryCompactionCachePort>,
     /// Canonical agent ID for memory scoping.
     agent_id: String,
     dialogue_state_store: Option<Arc<DialogueStateStore>>,
@@ -202,6 +261,9 @@ pub struct AgentBuilder {
     prompt_budget: Option<PromptBudget>,
     continuation_policy: Option<ContinuationPolicy>,
     config: Option<synapse_domain::config::schema::AgentConfig>,
+    compression: Option<ContextCompressionConfig>,
+    compression_overrides:
+        Option<Vec<synapse_domain::config::schema::ContextCompressionRouteOverrideConfig>>,
     provider_name: Option<String>,
     model_name: Option<String>,
     temperature: Option<f64>,
@@ -222,6 +284,7 @@ pub struct AgentBuilder {
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
+    history_compaction_cache: Option<Arc<dyn HistoryCompactionCachePort>>,
     agent_id: Option<String>,
     dialogue_state_store: Option<Arc<DialogueStateStore>>,
     conversation_store: Option<Arc<dyn ConversationStorePort>>,
@@ -246,6 +309,8 @@ impl AgentBuilder {
             prompt_budget: None,
             continuation_policy: None,
             config: None,
+            compression: None,
+            compression_overrides: None,
             provider_name: None,
             model_name: None,
             temperature: None,
@@ -265,6 +330,7 @@ impl AgentBuilder {
             allowed_tools: None,
             response_cache: None,
             history_summary_generator: None,
+            history_compaction_cache: None,
             agent_id: None,
             dialogue_state_store: None,
             conversation_store: None,
@@ -320,6 +386,21 @@ impl AgentBuilder {
 
     pub fn config(mut self, config: synapse_domain::config::schema::AgentConfig) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    pub fn compression(mut self, compression: ContextCompressionConfig) -> Self {
+        self.compression = Some(compression);
+        self
+    }
+
+    pub fn compression_overrides(
+        mut self,
+        compression_overrides: Vec<
+            synapse_domain::config::schema::ContextCompressionRouteOverrideConfig,
+        >,
+    ) -> Self {
+        self.compression_overrides = Some(compression_overrides);
         self
     }
 
@@ -443,6 +524,14 @@ impl AgentBuilder {
         self
     }
 
+    pub fn history_compaction_cache(
+        mut self,
+        cache: Option<Arc<dyn HistoryCompactionCachePort>>,
+    ) -> Self {
+        self.history_compaction_cache = cache;
+        self
+    }
+
     pub fn agent_id(mut self, id: String) -> Self {
         self.agent_id = Some(id);
         self
@@ -522,6 +611,16 @@ impl AgentBuilder {
         let config = self.config.unwrap_or_default();
         let provider_name = self.provider_name.unwrap_or_else(|| "unknown".into());
         let model_name = self.model_name.unwrap_or_else(|| "default".into());
+        let workspace_dir = self
+            .workspace_dir
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let agent_id = self.agent_id.unwrap_or_else(|| "default".to_string());
+        let history_compaction_cache = self.history_compaction_cache.unwrap_or_else(|| {
+            crate::runtime::history_compaction_cache::shared_history_compaction_cache(
+                &workspace_dir,
+                &agent_id,
+            )
+        });
 
         Ok(Agent {
             provider: self
@@ -545,12 +644,12 @@ impl AgentBuilder {
             continuation_policy: self.continuation_policy.unwrap_or_default(),
             turn_count: 0,
             config,
+            compression: self.compression.unwrap_or_default(),
+            compression_overrides: self.compression_overrides.unwrap_or_default(),
             provider_name,
             model_name,
             temperature: self.temperature.unwrap_or(0.7),
-            workspace_dir: self
-                .workspace_dir
-                .unwrap_or_else(|| std::path::PathBuf::from(".")),
+            workspace_dir,
             identity_config: self.identity_config.unwrap_or_default(),
             skills: self.skills.unwrap_or_default(),
             skills_prompt_mode: self.skills_prompt_mode.unwrap_or_default(),
@@ -572,7 +671,8 @@ impl AgentBuilder {
             allowed_tools: allowed,
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
-            agent_id: self.agent_id.unwrap_or_else(|| "default".to_string()),
+            history_compaction_cache,
+            agent_id,
             dialogue_state_store: self.dialogue_state_store,
             conversation_store: self.conversation_store,
             run_recipe_store: self.run_recipe_store,
@@ -591,11 +691,15 @@ impl Agent {
         AgentBuilder::new()
     }
 
-    fn build_provider_prompt_snapshot(&self) -> ProviderPromptSnapshot {
+    fn build_provider_prompt_snapshot_for_profile(
+        &self,
+        target_profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+    ) -> ProviderPromptSnapshot {
         build_provider_prompt_snapshot(
             self.tool_dispatcher.as_ref(),
             &self.history,
             PROVIDER_CONTEXT_CHAT_MESSAGES,
+            Some(target_profile),
         )
     }
 
@@ -651,33 +755,42 @@ impl Agent {
         &mut self,
         target_context_window_tokens: usize,
     ) -> RouteSwitchPreflight {
-        let mut assessment = assess_route_switch_preflight(
-            self.build_provider_prompt_snapshot().stats.total_chars,
-            &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
+        let target_profile =
+            synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
                 context_window_tokens: Some(target_context_window_tokens),
                 context_window_source:
                     synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
                 max_output_tokens: None,
                 features: Vec::new(),
                 ..Default::default()
-            },
+            };
+        let snapshot = self.build_provider_prompt_snapshot_for_profile(&target_profile);
+        let budget = assess_provider_context_budget(
+            provider_context_budget_input_from_stats_for_profile(&snapshot.stats, &target_profile),
         );
+        let mut assessment = assess_route_switch_preflight_for_budget(&budget, &target_profile);
 
         while assessment.status == RouteSwitchStatus::CompactRecommended {
-            if !self.maybe_compact_history().await {
+            let compression = self.history_compression_for_route(
+                &self.provider_name,
+                &self.model_name,
+                None,
+                None,
+            );
+            if !self
+                .maybe_compact_history_with_route(&compression, &target_profile)
+                .await
+            {
                 break;
             }
-            assessment = assess_route_switch_preflight(
-                self.build_provider_prompt_snapshot().stats.total_chars,
-                &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
-                    context_window_tokens: Some(target_context_window_tokens),
-                    context_window_source:
-                        synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
-                    max_output_tokens: None,
-                    features: Vec::new(),
-                    ..Default::default()
-                },
+            let snapshot = self.build_provider_prompt_snapshot_for_profile(&target_profile);
+            let budget = assess_provider_context_budget(
+                provider_context_budget_input_from_stats_for_profile(
+                    &snapshot.stats,
+                    &target_profile,
+                ),
             );
+            assessment = assess_route_switch_preflight_for_budget(&budget, &target_profile);
         }
 
         assessment
@@ -776,6 +889,11 @@ impl Agent {
         let user_profile_context = Arc::clone(&self.user_profile_context);
         let turn_defaults_context = Arc::clone(&self.turn_defaults_context);
         let scoped_instruction_context = self.scoped_instruction_context.clone();
+        let history_compaction_cache = Arc::clone(&self.history_compaction_cache);
+        let mut runtime_ports = runtime_ports;
+        runtime_ports
+            .history_compaction_cache
+            .get_or_insert(history_compaction_cache);
 
         let mut rebuilt = Self::from_config_with_runtime_context(
             &effective_config,
@@ -1068,6 +1186,15 @@ impl Agent {
                 }
             }
         };
+        let history_compaction_cache = runtime_ports
+            .history_compaction_cache
+            .clone()
+            .unwrap_or_else(|| {
+                crate::runtime::history_compaction_cache::shared_history_compaction_cache(
+                    &config.workspace_dir,
+                    &resolved_agent_id,
+                )
+            });
 
         Agent::builder()
             .provider(provider)
@@ -1076,6 +1203,7 @@ impl Agent {
             .observer(observer)
             .response_cache(response_cache)
             .history_summary_generator(history_summary_generator)
+            .history_compaction_cache(Some(history_compaction_cache))
             .tool_dispatcher(tool_dispatcher)
             .prompt_budget({
                 let mut b = config.memory.prompt_budget.to_prompt_budget();
@@ -1085,6 +1213,8 @@ impl Agent {
             .continuation_policy(config.memory.prompt_budget.to_continuation_policy())
             .prompt_builder(SystemPromptBuilder::with_defaults())
             .config(config.agent.clone())
+            .compression(config.compression.clone())
+            .compression_overrides(config.compression_overrides.clone())
             .provider_name(provider_name.to_string())
             .agent_id(resolved_agent_id)
             .model_name(model_name)
@@ -1196,17 +1326,164 @@ impl Agent {
         (projected, original_indices)
     }
 
-    async fn maybe_compact_history(&mut self) -> bool {
-        let Some(summary_generator) = self.history_summary_generator.as_ref() else {
-            return false;
+    fn history_compression_for_route(
+        &self,
+        provider: &str,
+        model: &str,
+        lane: Option<synapse_domain::config::schema::CapabilityLane>,
+        hint: Option<&str>,
+    ) -> ContextCompressionConfig {
+        history_compaction::resolve_context_compression_config_for_route(
+            &self.compression,
+            &self.compression_overrides,
+            provider,
+            model,
+            lane,
+            hint,
+        )
+    }
+
+    fn history_compression_policy(&self) -> HistoryCompressionPolicy {
+        HistoryCompressionPolicy::from(&self.history_compression_for_route(
+            &self.provider_name,
+            &self.model_name,
+            None,
+            None,
+        ))
+    }
+
+    fn history_compaction_context_window_tokens_for_profile(
+        profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+    ) -> Option<usize> {
+        (profile.context_window_confidence() >= ResolvedModelProfileConfidence::Medium)
+            .then_some(profile.context_window_tokens)
+            .flatten()
+    }
+
+    fn history_compaction_context_window_tokens(&self) -> Option<usize> {
+        Self::history_compaction_context_window_tokens_for_profile(&self.current_model_profile)
+    }
+
+    fn history_compaction_max_output_tokens_for_profile(
+        profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+    ) -> Option<usize> {
+        (profile.max_output_confidence() >= ResolvedModelProfileConfidence::Medium)
+            .then_some(profile.max_output_tokens)
+            .flatten()
+    }
+
+    fn history_compaction_max_output_tokens(&self) -> Option<usize> {
+        Self::history_compaction_max_output_tokens_for_profile(&self.current_model_profile)
+    }
+
+    fn history_compaction_threshold_tokens_for_profile(
+        &self,
+        policy: &HistoryCompressionPolicy,
+        profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+    ) -> usize {
+        let Some(context_window_tokens) =
+            Self::history_compaction_context_window_tokens_for_profile(profile)
+        else {
+            return history_compaction::history_compression_threshold_tokens(
+                self.config.max_context_tokens.max(1),
+                policy,
+            );
         };
 
+        let reserved_output_tokens = provider_context_reserved_output_headroom_tokens(
+            Some(context_window_tokens),
+            Self::history_compaction_max_output_tokens_for_profile(profile),
+            128,
+        );
+        let safe_input_tokens = context_window_tokens.saturating_sub(reserved_output_tokens);
+        if safe_input_tokens == 0 {
+            return history_compaction::history_compression_threshold_tokens(
+                self.config.max_context_tokens.max(1),
+                policy,
+            );
+        }
+
+        history_compaction::history_compression_threshold_tokens(safe_input_tokens, policy)
+    }
+
+    fn history_compaction_threshold_tokens(&self, policy: &HistoryCompressionPolicy) -> usize {
+        self.history_compaction_threshold_tokens_for_profile(policy, &self.current_model_profile)
+    }
+
+    fn latest_compaction_summary_text(&self) -> Option<String> {
+        self.history.iter().rev().find_map(|message| match message {
+            ConversationMessage::Chat(chat)
+                if history_compaction::is_compaction_summary(&chat.content) =>
+            {
+                Some(
+                    chat.content
+                        .trim_start_matches(history_compaction::COMPACTION_SUMMARY_PREFIX)
+                        .trim()
+                        .to_string(),
+                )
+            }
+            _ => None,
+        })
+    }
+
+    pub fn history_compaction_cache_stats(&self) -> ContextCacheStats {
+        self.history_compaction_cache_stats_for_compression(&self.compression)
+    }
+
+    pub fn history_compaction_cache_stats_for_route(
+        &self,
+        provider: &str,
+        model: &str,
+        lane: Option<synapse_domain::config::schema::CapabilityLane>,
+        hint: Option<&str>,
+    ) -> ContextCacheStats {
+        let compression = self.history_compression_for_route(provider, model, lane, hint);
+        self.history_compaction_cache_stats_for_compression(&compression)
+    }
+
+    fn history_compaction_cache_stats_for_compression(
+        &self,
+        compression: &ContextCompressionConfig,
+    ) -> ContextCacheStats {
+        self.history_compaction_cache.stats(compression)
+    }
+
+    async fn maybe_compact_history(&mut self) -> bool {
+        let compression =
+            self.history_compression_for_route(&self.provider_name, &self.model_name, None, None);
+        let profile = self.current_model_profile.clone();
+        self.maybe_compact_history_with_route(&compression, &profile)
+            .await
+    }
+
+    async fn maybe_compact_history_with_route(
+        &mut self,
+        compression: &ContextCompressionConfig,
+        profile: &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
+    ) -> bool {
+        let policy = HistoryCompressionPolicy::from(compression);
+        if !policy.enabled {
+            return false;
+        }
+
+        let Some(summary_generator) = self.history_summary_generator.clone() else {
+            return false;
+        };
+        if let Err(error) = self.history_compaction_cache.load(compression).await {
+            tracing::debug!(%error, "Failed to load history compaction cache");
+        }
+
         let (projected, original_indices) = self.project_non_system_history_for_compaction();
-        let Some((start, compact_end, transcript)) = history_compaction::prepare_compaction(
-            &projected,
-            self.config.max_history_messages,
-            self.config.max_context_tokens,
-        ) else {
+        let threshold_tokens =
+            self.history_compaction_threshold_tokens_for_profile(&policy, profile);
+        let Some((start, compact_end, transcript)) =
+            history_compaction::prepare_compaction_with_policy(
+                &projected,
+                self.config.max_history_messages,
+                threshold_tokens,
+                &policy,
+            )
+        else {
             return false;
         };
 
@@ -1218,21 +1495,66 @@ impl Agent {
             .map(|index| index + 1)
             .expect("compaction end should map to original history");
 
-        let prompt = history_compaction::compaction_summarizer_prompt(&transcript);
-        let summary_raw = match summary_generator.generate_summary(&prompt).await {
+        let context_window_tokens =
+            Self::history_compaction_context_window_tokens_for_profile(profile);
+        let cache_key = history_compaction_cache_key(&transcript, &policy, context_window_tokens);
+        let summary_raw = if let Some(summary) = match self
+            .history_compaction_cache
+            .get_summary(compression, &cache_key)
+            .await
+        {
             Ok(summary) => summary,
             Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "Live agent history compaction summary failed; using transcript fallback"
-                );
-                String::new()
+                tracing::debug!(%error, "Failed to read history compaction cache entry");
+                None
+            }
+        } {
+            tracing::debug!(
+                cache_key = %cache_key,
+                "Live agent history compaction summary cache hit"
+            );
+            summary
+        } else {
+            let previous_summary = self.latest_compaction_summary_text();
+            let prompt = history_compaction::compaction_summarizer_prompt_with_policy(
+                &transcript,
+                previous_summary.as_deref(),
+                &policy,
+                context_window_tokens,
+            );
+            match summary_generator.generate_summary(&prompt).await {
+                Ok(summary) => {
+                    let summary = summary.trim().to_string();
+                    if !summary.is_empty() {
+                        if let Err(error) = self
+                            .history_compaction_cache
+                            .remember_summary(compression, cache_key, summary.clone())
+                            .await
+                        {
+                            tracing::debug!(%error, "Failed to persist history compaction cache entry");
+                        }
+                    }
+                    summary
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "Live agent history compaction summary failed; using transcript fallback"
+                    );
+                    String::new()
+                }
             }
         };
         let summary = if summary_raw.is_empty() {
-            synapse_domain::domain::util::truncate_with_ellipsis(&transcript, 2_000)
+            synapse_domain::domain::util::truncate_with_ellipsis(
+                &transcript,
+                policy.max_summary_chars,
+            )
         } else {
-            synapse_domain::domain::util::truncate_with_ellipsis(&summary_raw, 2_000)
+            synapse_domain::domain::util::truncate_with_ellipsis(
+                &summary_raw,
+                policy.max_summary_chars,
+            )
         };
         self.history.splice(
             original_start..original_end,
@@ -1457,6 +1779,8 @@ impl Agent {
         config.model_preset = self.route_model_preset.clone();
         config.model_lanes = self.route_model_lanes.clone();
         config.model_routes = self.route_model_routes.clone();
+        config.compression = self.compression.clone();
+        config.compression_overrides = self.compression_overrides.clone();
         config
     }
 
@@ -1519,16 +1843,39 @@ impl Agent {
             self.scoped_instruction_context.as_ref(),
             build_scoped_instruction_plan(user_message, turn_interpretation.as_ref()),
         ) {
-            let snippets = loader
-                .load_scoped_instructions(ScopedInstructionRequest {
-                    session_id: self.memory_session_id.clone(),
-                    path_hints: plan.hints.into_iter().map(|hint| hint.path).collect(),
-                    max_files: plan.max_files,
-                    max_total_chars: plan.max_total_chars,
-                })
-                .await
-                .unwrap_or_default();
-            format_scoped_instruction_block(&snippets)
+            let scoped_pressure = {
+                let snapshot =
+                    self.build_provider_prompt_snapshot_for_profile(&self.current_model_profile);
+                assess_provider_context_budget(
+                    provider_context_budget_input_from_stats_for_profile(
+                        &snapshot.stats,
+                        &self.current_model_profile,
+                    ),
+                )
+                .tier
+            };
+            match adjust_scoped_instruction_plan_for_context_pressure(plan, scoped_pressure) {
+                Some(plan) => {
+                    let snippets = loader
+                        .load_scoped_instructions(ScopedInstructionRequest {
+                            session_id: self.memory_session_id.clone(),
+                            path_hints: plan.hints.into_iter().map(|hint| hint.path).collect(),
+                            max_files: plan.max_files,
+                            max_total_chars: plan.max_total_chars,
+                        })
+                        .await
+                        .unwrap_or_default();
+                    format_scoped_instruction_block(&snippets)
+                }
+                None => {
+                    tracing::debug!(
+                        target: "agent.scoped_context",
+                        pressure = provider_context_budget_tier_name(scoped_pressure),
+                        "Skipped inferred scoped context under provider-context pressure"
+                    );
+                    None
+                }
+            }
         } else {
             None
         };
@@ -1649,6 +1996,7 @@ impl Agent {
         let mut effective_model = self.classify_model(user_message);
         let mut effective_model_profile = self.current_model_profile.clone();
         let mut effective_lane = None;
+        let mut effective_candidate_index = None;
         if !effective_model.starts_with("hint:") {
             let routing_config = self.build_turn_routing_config();
             let profile_catalog = crate::runtime_routes::WorkspaceModelProfileCatalog::new(
@@ -1665,6 +2013,7 @@ impl Agent {
             ) {
                 if route_override.provider == self.provider_name {
                     effective_lane = Some(route_override.lane);
+                    effective_candidate_index = route_override.candidate_index;
                     effective_model = route_override.model;
                     effective_model_profile = synapse_domain::application::services::model_lane_resolution::resolve_lane_candidates(
                         &routing_config,
@@ -1688,6 +2037,13 @@ impl Agent {
                 }
             }
         }
+        let effective_hint = effective_model.strip_prefix("hint:");
+        let effective_compression = self.history_compression_for_route(
+            &self.provider_name,
+            &effective_model,
+            effective_lane,
+            effective_hint,
+        );
         let turn_tool_specs =
             synapse_domain::application::services::turn_tool_narrowing::prepare_tool_specs_for_turn(
                 self.tool_specs.clone(),
@@ -1703,10 +2059,20 @@ impl Agent {
             HashMap::new();
 
         for _ in 0..self.config.max_tool_iterations {
-            let snapshot = self.build_provider_prompt_snapshot();
-            let provider_context_input = provider_context_budget_input_from_stats(&snapshot.stats);
+            let snapshot =
+                self.build_provider_prompt_snapshot_for_profile(&effective_model_profile);
+            let provider_context_input = provider_context_budget_input_from_stats_for_profile(
+                &snapshot.stats,
+                &effective_model_profile,
+            );
             let budget_assessment = assess_provider_context_budget(provider_context_input);
             let provider_capabilities = self.provider.capabilities();
+            let native_context_policy =
+                resolve_provider_native_context_policy(ProviderNativeContextPolicyInput {
+                    profile: &effective_model_profile,
+                    provider_prompt_caching: provider_capabilities.prompt_caching,
+                    operator_prompt_caching_enabled: self.config.prompt_caching,
+                });
             let admission_decision = assess_turn_admission(TurnAdmissionInput {
                 config: None,
                 user_message,
@@ -1738,6 +2104,7 @@ impl Agent {
                 .map(|(name, chars)| format!("{name}={chars}"))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let condensation_plan = admission_decision.condensation_plan;
             tracing::info!(
                 target: "agent.provider_context",
                 system_messages = snapshot.stats.system_messages,
@@ -1778,6 +2145,17 @@ impl Agent {
                     .primary_ballast_artifact
                     .map(provider_context_artifact_name)
                     .unwrap_or("none"),
+                context_condensation_mode = condensation_plan
+                    .map(|plan| provider_context_condensation_mode_name(plan.mode))
+                    .unwrap_or("none"),
+                context_condensation_target = condensation_plan
+                    .and_then(|plan| plan.target_artifact)
+                    .map(provider_context_artifact_name)
+                    .unwrap_or("none"),
+                context_condensation_min_reclaim_chars =
+                    condensation_plan.map(|plan| plan.minimum_reclaim_chars).unwrap_or(0),
+                context_condensation_prefers_cached_artifact =
+                    condensation_plan.is_some_and(|plan| plan.prefer_cached_artifact),
                 admission_intent = turn_intent_name(admission_decision.snapshot.intent),
                 admission_pressure = context_pressure_state_name(
                     admission_decision.snapshot.pressure_state
@@ -1785,6 +2163,21 @@ impl Agent {
                 admission_action = turn_admission_action_name(admission_decision.snapshot.action),
                 admission_requires_compaction = admission_decision.requires_compaction,
                 admission_reasons = ?admission_decision.reasons,
+                effective_lane = effective_lane
+                    .map(|lane| format!("{lane:?}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                effective_candidate_index = effective_candidate_index
+                    .map(|index| index.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                compression_threshold_ratio = %effective_compression.threshold,
+                compression_target_ratio = %effective_compression.target_ratio,
+                compression_cache_ttl_secs = effective_compression.cache_ttl_secs,
+                compression_cache_max_entries = effective_compression.cache_max_entries,
+                native_prompt_caching_supported =
+                    native_context_policy.prompt_caching_supported,
+                native_prompt_caching_enabled = native_context_policy.prompt_caching_enabled,
+                native_server_continuation_supported =
+                    native_context_policy.server_continuation_supported,
                 tool_specs = turn_tool_specs.len(),
                 tool_spec_names = turn_tool_specs
                     .iter()
@@ -1795,7 +2188,14 @@ impl Agent {
                 "Built provider-facing context snapshot"
             );
 
-            if admission_decision.requires_compaction && self.maybe_compact_history().await {
+            if admission_decision.requires_compaction
+                && self
+                    .maybe_compact_history_with_route(
+                        &effective_compression,
+                        &effective_model_profile,
+                    )
+                    .await
+            {
                 tracing::info!(
                     target: "agent.turn_admission",
                     action = "compact_and_retry",
@@ -1874,7 +2274,12 @@ impl Agent {
                         .push(ConversationMessage::Chat(ChatMessage::assistant(
                             cached.clone(),
                         )));
-                    let compacted = self.maybe_compact_history().await;
+                    let compacted = self
+                        .maybe_compact_history_with_route(
+                            &effective_compression,
+                            &effective_model_profile,
+                        )
+                        .await;
                     if compacted {
                         tracing::debug!(
                             "Live agent history auto-compaction complete after cache hit"
@@ -1973,7 +2378,12 @@ impl Agent {
                     .push(ConversationMessage::Chat(ChatMessage::assistant(
                         final_text.clone(),
                     )));
-                let compacted = self.maybe_compact_history().await;
+                let compacted = self
+                    .maybe_compact_history_with_route(
+                        &effective_compression,
+                        &effective_model_profile,
+                    )
+                    .await;
                 if compacted {
                     tracing::debug!("Live agent history auto-compaction complete");
                 }
@@ -2118,12 +2528,7 @@ pub async fn run_with_memory(
     let start = Instant::now();
 
     let mut effective_config = config;
-    if let Some(p) = provider_override {
-        effective_config.default_provider = Some(p);
-    }
-    if let Some(m) = model_override {
-        effective_config.default_model = Some(m);
-    }
+    apply_cli_agent_overrides(&mut effective_config, provider_override, model_override);
     effective_config.default_temperature = temperature;
 
     let mut agent = Agent::from_config_with_memory(&effective_config, shared_memory).await?;
@@ -2165,6 +2570,23 @@ pub async fn run_with_memory(
     Ok(())
 }
 
+fn apply_cli_agent_overrides(
+    config: &mut Config,
+    provider_override: Option<String>,
+    model_override: Option<String>,
+) {
+    if let Some(provider) = provider_override {
+        if config.default_provider.as_deref() != Some(provider.as_str()) {
+            config.api_key = None;
+            config.api_url = None;
+        }
+        config.default_provider = Some(provider);
+    }
+    if let Some(model) = model_override {
+        config.default_model = Some(model);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2172,9 +2594,42 @@ mod tests {
     use parking_lot::Mutex;
     use std::collections::HashMap;
     use synapse_domain::config::schema::{
-        CapabilityLane, ModelCandidateProfileConfig, ModelFeature, ModelLaneCandidateConfig,
-        ModelLaneConfig,
+        AgentConfig, CapabilityLane, ContextCompressionConfig,
+        ContextCompressionRouteOverrideConfig, ModelCandidateProfileConfig, ModelFeature,
+        ModelLaneCandidateConfig, ModelLaneConfig,
     };
+
+    #[test]
+    fn cli_provider_override_drops_cross_provider_global_credentials() {
+        let mut config = Config::default();
+        config.default_provider = Some("openai-codex".into());
+        config.default_model = Some("gpt-5.4".into());
+        config.api_key = Some("fake-openai-like-key".into());
+        config.api_url = Some("https://api.openai.com/v1".into());
+
+        apply_cli_agent_overrides(
+            &mut config,
+            Some("openrouter".into()),
+            Some("x-ai/grok-4.20".into()),
+        );
+
+        assert_eq!(config.default_provider.as_deref(), Some("openrouter"));
+        assert_eq!(config.default_model.as_deref(), Some("x-ai/grok-4.20"));
+        assert_eq!(config.api_key, None);
+        assert_eq!(config.api_url, None);
+    }
+
+    #[test]
+    fn cli_provider_override_keeps_credentials_for_same_provider() {
+        let mut config = Config::default();
+        config.default_provider = Some("openrouter".into());
+        config.api_key = Some("fake-openrouter-route-key".into());
+
+        apply_cli_agent_overrides(&mut config, Some("openrouter".into()), None);
+
+        assert_eq!(config.default_provider.as_deref(), Some("openrouter"));
+        assert_eq!(config.api_key.as_deref(), Some("fake-openrouter-route-key"));
+    }
 
     struct MockProvider {
         responses: Mutex<Vec<synapse_providers::ChatResponse>>,
@@ -2245,6 +2700,19 @@ mod tests {
                 });
             }
             Ok(guard.remove(0))
+        }
+    }
+
+    struct CountingSummaryGenerator {
+        calls: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait]
+    impl SummaryGeneratorPort for CountingSummaryGenerator {
+        async fn generate_summary(&self, _prompt: &str) -> Result<String> {
+            let mut calls = self.calls.lock();
+            *calls += 1;
+            Ok(format!("- cached summary call {}", *calls))
         }
     }
 
@@ -2343,6 +2811,190 @@ mod tests {
             .history()
             .iter()
             .any(|msg| matches!(msg, ConversationMessage::ToolResults(_))));
+    }
+
+    #[tokio::test]
+    async fn history_compaction_reuses_cached_summary_for_same_transcript_digest() {
+        fn long_history() -> Vec<ConversationMessage> {
+            let mut history = vec![ConversationMessage::Chat(ChatMessage::system("bootstrap"))];
+            for idx in 0..12 {
+                history.push(ConversationMessage::Chat(ChatMessage::user(format!(
+                    "user fact {idx}"
+                ))));
+                history.push(ConversationMessage::Chat(ChatMessage::assistant(format!(
+                    "assistant response {idx}"
+                ))));
+            }
+            history
+        }
+
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let cache_path = tmp
+            .path()
+            .join("state")
+            .join("history_compaction_cache")
+            .join("persistent-cache.json");
+        let calls = Arc::new(Mutex::new(0));
+        let summary_generator: Arc<dyn SummaryGeneratorPort> = Arc::new(CountingSummaryGenerator {
+            calls: calls.clone(),
+        });
+
+        let build_agent = |summary_generator: Arc<dyn SummaryGeneratorPort>,
+                           cache: Arc<dyn HistoryCompactionCachePort>| {
+            let provider = Box::new(MockProvider {
+                responses: Mutex::new(Vec::new()),
+            });
+            let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+            let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
+            Agent::builder()
+                .provider(provider)
+                .tools(vec![Box::new(MockTool)])
+                .memory(mem)
+                .observer(observer)
+                .tool_dispatcher(Box::new(NativeToolDispatcher))
+                .workspace_dir(tmp.path().to_path_buf())
+                .agent_id("cache-test-agent".to_string())
+                .config(AgentConfig {
+                    max_history_messages: 4,
+                    max_context_tokens: usize::MAX,
+                    ..Default::default()
+                })
+                .history_summary_generator(Some(summary_generator))
+                .history_compaction_cache(Some(cache))
+                .build()
+                .expect("agent builder should succeed with valid config")
+        };
+
+        let first_cache: Arc<dyn HistoryCompactionCachePort> = Arc::new(
+            crate::runtime::history_compaction_cache::FileHistoryCompactionCache::new(
+                cache_path.clone(),
+            ),
+        );
+        let mut agent = build_agent(summary_generator.clone(), first_cache);
+
+        agent.history = long_history();
+        assert!(agent.maybe_compact_history().await);
+        assert_eq!(*calls.lock(), 1);
+
+        agent.history = long_history();
+        assert!(agent.maybe_compact_history().await);
+        assert_eq!(*calls.lock(), 1);
+        assert_eq!(agent.history_compaction_cache_stats().entries, 1);
+
+        let restarted_cache: Arc<dyn HistoryCompactionCachePort> = Arc::new(
+            crate::runtime::history_compaction_cache::FileHistoryCompactionCache::new(cache_path),
+        );
+        let mut restarted_agent = build_agent(summary_generator, restarted_cache);
+        restarted_agent.history = long_history();
+        assert!(restarted_agent.maybe_compact_history().await);
+        assert_eq!(
+            *calls.lock(),
+            1,
+            "restarted agent should reuse persistent cache"
+        );
+    }
+
+    #[test]
+    fn model_profile_threshold_scales_history_compaction_trigger() {
+        let agent = Agent::builder()
+            .provider(Box::new(MockProvider {
+                responses: Mutex::new(Vec::new()),
+            }))
+            .tools(vec![Box::new(MockTool)])
+            .memory(Arc::new(synapse_memory::NoopUnifiedMemory))
+            .observer(Arc::from(synapse_observability::NoopObserver {}))
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .config(AgentConfig {
+                max_history_messages: 4,
+                max_context_tokens: 32,
+                ..Default::default()
+            })
+            .current_model_profile(ResolvedModelProfile {
+                context_window_tokens: Some(200_000),
+                context_window_source:
+                    synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
+                max_output_tokens: None,
+                ..Default::default()
+            })
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        let policy = agent.history_compression_policy();
+        assert_eq!(agent.history_compaction_threshold_tokens(&policy), 87_500);
+    }
+
+    #[test]
+    fn route_compression_overrides_scale_thresholds_for_different_context_windows() {
+        let source =
+            synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig;
+        let agent = Agent::builder()
+            .provider(Box::new(MockProvider {
+                responses: Mutex::new(Vec::new()),
+            }))
+            .tools(vec![Box::new(MockTool)])
+            .memory(Arc::new(synapse_memory::NoopUnifiedMemory))
+            .observer(Arc::from(synapse_observability::NoopObserver {}))
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .compression(ContextCompressionConfig {
+                threshold: 0.50,
+                ..Default::default()
+            })
+            .compression_overrides(vec![
+                ContextCompressionRouteOverrideConfig {
+                    provider: Some("deepseek".into()),
+                    lane: Some(CapabilityLane::CheapReasoning),
+                    threshold: Some(0.25),
+                    ..Default::default()
+                },
+                ContextCompressionRouteOverrideConfig {
+                    provider: Some("xai".into()),
+                    threshold: Some(0.60),
+                    ..Default::default()
+                },
+            ])
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        let deepseek_policy = HistoryCompressionPolicy::from(&agent.history_compression_for_route(
+            "deepseek",
+            "deepseek-chat",
+            Some(CapabilityLane::CheapReasoning),
+            None,
+        ));
+        let deepseek_profile = ResolvedModelProfile {
+            context_window_tokens: Some(128_000),
+            context_window_source: source,
+            max_output_tokens: Some(8_000),
+            max_output_source: source,
+            ..Default::default()
+        };
+        assert_eq!(
+            agent.history_compaction_threshold_tokens_for_profile(
+                &deepseek_policy,
+                &deepseek_profile
+            ),
+            30_000
+        );
+
+        let grok_policy = HistoryCompressionPolicy::from(&agent.history_compression_for_route(
+            "xai",
+            "grok-4.20",
+            Some(CapabilityLane::Reasoning),
+            None,
+        ));
+        let grok_profile = ResolvedModelProfile {
+            context_window_tokens: Some(2_000_000),
+            context_window_source: source,
+            max_output_tokens: Some(128_000),
+            max_output_source: source,
+            ..Default::default()
+        };
+        assert_eq!(
+            agent.history_compaction_threshold_tokens_for_profile(&grok_policy, &grok_profile),
+            1_123_200
+        );
     }
 
     #[tokio::test]

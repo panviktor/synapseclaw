@@ -14,6 +14,7 @@ pub mod conversation_context;
 pub mod conversation_history;
 pub mod conversation_store;
 pub mod dead_letter;
+pub mod history_compaction_cache;
 pub mod hooks;
 pub mod ipc_bus;
 pub mod ipc_client;

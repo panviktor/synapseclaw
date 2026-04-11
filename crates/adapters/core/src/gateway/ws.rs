@@ -59,6 +59,7 @@ fn web_runtime_ports(state: &AppState) -> crate::agent::AgentRuntimePorts {
         scoped_instruction_context: Some(Arc::clone(&state.scoped_instruction_context)),
         channel_registry: state.channel_registry.clone(),
         run_recipe_store: Some(Arc::clone(&state.run_recipe_store)),
+        history_compaction_cache: None,
     }
 }
 
@@ -1330,15 +1331,22 @@ fn current_web_route_selection(
     let session = sessions
         .get(session_key)
         .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+    let provider = session.agent.provider_name_str().to_string();
+    let model = session.agent.model_name_str().to_string();
     Ok(RouteSelection {
-        provider: session.agent.provider_name_str().to_string(),
-        model: session.agent.model_name_str().to_string(),
+        provider: provider.clone(),
+        model: model.clone(),
         lane: None,
         candidate_index: None,
         last_admission: session.agent.recent_turn_admissions().last().cloned(),
         recent_admissions: session.agent.recent_turn_admissions().to_vec(),
         last_tool_repair: session.agent.last_turn_tool_repair().cloned(),
         recent_tool_repairs: session.agent.recent_turn_tool_repairs().to_vec(),
+        context_cache: Some(
+            session
+                .agent
+                .history_compaction_cache_stats_for_route(&provider, &model, None, None),
+        ),
     })
 }
 

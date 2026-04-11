@@ -482,7 +482,7 @@ impl Tool for CronAddTool {
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional model override for agent jobs, e.g. 'x-ai/grok-4-1-fast'"
+                    "description": "Optional model override for agent jobs, e.g. a configured route alias or provider-specific model id"
                 },
                 "delivery": {
                     "type": "object",
