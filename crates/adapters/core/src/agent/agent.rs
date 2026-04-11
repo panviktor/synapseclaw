@@ -68,6 +68,7 @@ use synapse_providers::{self, ChatMessage, ChatRequest, ConversationMessage, Pro
 use synapse_security::security_policy_from_config;
 
 const PROVIDER_CONTEXT_CHAT_MESSAGES: usize = 6;
+const HISTORY_COMPACTION_CACHE_MAX_ENTRIES: usize = 32;
 
 #[derive(Clone, Default)]
 pub struct AgentRuntimePorts {
@@ -144,6 +145,15 @@ fn provider_context_budget_input_from_stats_for_profile(
     provider_context_budget_input_from_stats(stats).with_target_model_profile(profile)
 }
 
+fn history_compaction_cache_key(transcript: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(b"synapseclaw:history-compaction:v1\0");
+    hasher.update(transcript.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 pub struct Agent {
     provider: Box<dyn Provider>,
     tools: Vec<Box<dyn Tool>>,
@@ -188,6 +198,7 @@ pub struct Agent {
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
+    history_compaction_cache: HashMap<String, String>,
     /// Canonical agent ID for memory scoping.
     agent_id: String,
     dialogue_state_store: Option<Arc<DialogueStateStore>>,
@@ -581,6 +592,7 @@ impl AgentBuilder {
             allowed_tools: allowed,
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
+            history_compaction_cache: HashMap::new(),
             agent_id: self.agent_id.unwrap_or_else(|| "default".to_string()),
             dialogue_state_store: self.dialogue_state_store,
             conversation_store: self.conversation_store,
@@ -1231,15 +1243,30 @@ impl Agent {
             .map(|index| index + 1)
             .expect("compaction end should map to original history");
 
-        let prompt = history_compaction::compaction_summarizer_prompt(&transcript);
-        let summary_raw = match summary_generator.generate_summary(&prompt).await {
-            Ok(summary) => summary,
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    "Live agent history compaction summary failed; using transcript fallback"
-                );
-                String::new()
+        let cache_key = history_compaction_cache_key(&transcript);
+        let summary_raw = if let Some(summary) = self.history_compaction_cache.get(&cache_key) {
+            tracing::debug!(
+                cache_key = %cache_key,
+                "Live agent history compaction summary cache hit"
+            );
+            summary.clone()
+        } else {
+            let prompt = history_compaction::compaction_summarizer_prompt(&transcript);
+            match summary_generator.generate_summary(&prompt).await {
+                Ok(summary) => {
+                    let summary = summary.trim().to_string();
+                    if !summary.is_empty() {
+                        self.remember_history_compaction_summary(cache_key, summary.clone());
+                    }
+                    summary
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "Live agent history compaction summary failed; using transcript fallback"
+                    );
+                    String::new()
+                }
             }
         };
         let summary = if summary_raw.is_empty() {
@@ -1256,6 +1283,18 @@ impl Agent {
             )))),
         );
         true
+    }
+
+    fn remember_history_compaction_summary(&mut self, cache_key: String, summary: String) {
+        if !self.history_compaction_cache.contains_key(&cache_key)
+            && self.history_compaction_cache.len() >= HISTORY_COMPACTION_CACHE_MAX_ENTRIES
+        {
+            if let Some(evicted_key) = self.history_compaction_cache.keys().next().cloned() {
+                self.history_compaction_cache.remove(&evicted_key);
+            }
+        }
+
+        self.history_compaction_cache.insert(cache_key, summary);
     }
 
     fn build_system_prompt(&self) -> Result<String> {
@@ -2201,8 +2240,8 @@ mod tests {
     use parking_lot::Mutex;
     use std::collections::HashMap;
     use synapse_domain::config::schema::{
-        CapabilityLane, ModelCandidateProfileConfig, ModelFeature, ModelLaneCandidateConfig,
-        ModelLaneConfig,
+        AgentConfig, CapabilityLane, ModelCandidateProfileConfig, ModelFeature,
+        ModelLaneCandidateConfig, ModelLaneConfig,
     };
 
     struct MockProvider {
@@ -2274,6 +2313,19 @@ mod tests {
                 });
             }
             Ok(guard.remove(0))
+        }
+    }
+
+    struct CountingSummaryGenerator {
+        calls: Arc<Mutex<usize>>,
+    }
+
+    #[async_trait]
+    impl SummaryGeneratorPort for CountingSummaryGenerator {
+        async fn generate_summary(&self, _prompt: &str) -> Result<String> {
+            let mut calls = self.calls.lock();
+            *calls += 1;
+            Ok(format!("- cached summary call {}", *calls))
         }
     }
 
@@ -2372,6 +2424,56 @@ mod tests {
             .history()
             .iter()
             .any(|msg| matches!(msg, ConversationMessage::ToolResults(_))));
+    }
+
+    #[tokio::test]
+    async fn history_compaction_reuses_cached_summary_for_same_transcript_digest() {
+        fn long_history() -> Vec<ConversationMessage> {
+            let mut history = vec![ConversationMessage::Chat(ChatMessage::system("bootstrap"))];
+            for idx in 0..12 {
+                history.push(ConversationMessage::Chat(ChatMessage::user(format!(
+                    "user fact {idx}"
+                ))));
+                history.push(ConversationMessage::Chat(ChatMessage::assistant(format!(
+                    "assistant response {idx}"
+                ))));
+            }
+            history
+        }
+
+        let provider = Box::new(MockProvider {
+            responses: Mutex::new(Vec::new()),
+        });
+        let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
+        let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
+        let calls = Arc::new(Mutex::new(0));
+        let summary_generator: Arc<dyn SummaryGeneratorPort> = Arc::new(CountingSummaryGenerator {
+            calls: calls.clone(),
+        });
+        let mut agent = Agent::builder()
+            .provider(provider)
+            .tools(vec![Box::new(MockTool)])
+            .memory(mem)
+            .observer(observer)
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
+            .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .config(AgentConfig {
+                max_history_messages: 4,
+                max_context_tokens: usize::MAX,
+                ..Default::default()
+            })
+            .history_summary_generator(Some(summary_generator))
+            .build()
+            .expect("agent builder should succeed with valid config");
+
+        agent.history = long_history();
+        assert!(agent.maybe_compact_history().await);
+        assert_eq!(*calls.lock(), 1);
+
+        agent.history = long_history();
+        assert!(agent.maybe_compact_history().await);
+        assert_eq!(*calls.lock(), 1);
+        assert_eq!(agent.history_compaction_cache.len(), 1);
     }
 
     #[tokio::test]
