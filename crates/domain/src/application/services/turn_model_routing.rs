@@ -404,4 +404,56 @@ mod tests {
 
         assert!(override_result.is_none());
     }
+
+    #[test]
+    fn universal_reasoning_candidate_can_supply_media_generation_lanes() {
+        let mut config = Config::default();
+        config.model_lanes.push(ModelLaneConfig {
+            lane: CapabilityLane::Reasoning,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: "provider-universal".into(),
+                model: "universal-media-model".into(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: ModelCandidateProfileConfig {
+                    context_window_tokens: None,
+                    max_output_tokens: None,
+                    features: vec![
+                        ModelFeature::ToolCalling,
+                        ModelFeature::ImageGeneration,
+                        ModelFeature::AudioGeneration,
+                        ModelFeature::VideoGeneration,
+                        ModelFeature::MusicGeneration,
+                    ],
+                },
+            }],
+        });
+
+        let video_override = resolve_turn_route_override(
+            &config,
+            "[GENERATE:VIDEO] launch teaser",
+            "provider-text",
+            "plain-model",
+            &ResolvedModelProfile::default(),
+            false,
+            None,
+        )
+        .expect("video should reuse the universal reasoning candidate");
+        let music_override = resolve_turn_route_override(
+            &config,
+            "[GENERATE:MUSIC] title theme",
+            "provider-text",
+            "plain-model",
+            &ResolvedModelProfile::default(),
+            false,
+            None,
+        )
+        .expect("music should reuse the universal reasoning candidate");
+
+        assert_eq!(video_override.lane, CapabilityLane::VideoGeneration);
+        assert_eq!(music_override.lane, CapabilityLane::MusicGeneration);
+        assert_eq!(video_override.provider, "provider-universal");
+        assert_eq!(music_override.provider, "provider-universal");
+    }
 }

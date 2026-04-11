@@ -1,5 +1,8 @@
 use crate::agent::dispatcher::ToolDispatcher;
 use synapse_domain::application::services::history_compaction;
+use synapse_domain::application::services::provider_context_budget::{
+    provider_context_prune_policy, ProviderContextBudgetInput,
+};
 use synapse_observability::ProviderContextStats;
 use synapse_providers::{ChatMessage, ConversationMessage, ToolCall, ToolResultMessage};
 
@@ -19,11 +22,19 @@ pub(crate) fn total_message_chars(messages: &[ChatMessage]) -> usize {
 }
 
 pub(crate) fn system_message_breakdown(history: &[ConversationMessage]) -> Vec<(String, usize)> {
+    let system_messages = history
+        .iter()
+        .filter_map(|msg| match msg {
+            ConversationMessage::Chat(chat) if chat.role == "system" => Some(chat.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    system_message_breakdown_from_chat_messages(&system_messages)
+}
+
+fn system_message_breakdown_from_chat_messages(messages: &[ChatMessage]) -> Vec<(String, usize)> {
     let mut breakdown = std::collections::BTreeMap::<String, usize>::new();
-    for msg in history {
-        let ConversationMessage::Chat(chat) = msg else {
-            continue;
-        };
+    for chat in messages {
         if chat.role != "system" {
             continue;
         }
@@ -46,7 +57,7 @@ pub(crate) fn build_provider_prompt_snapshot(
         )
     });
 
-    let system_messages: Vec<ChatMessage> = history
+    let mut system_messages: Vec<ChatMessage> = history
         .iter()
         .filter_map(|msg| match msg {
             ConversationMessage::Chat(chat) if chat.role == "system" => Some(chat.clone()),
@@ -103,6 +114,12 @@ pub(crate) fn build_provider_prompt_snapshot(
         .collect::<Vec<_>>();
     let current_turn_messages = dispatcher.to_provider_messages(&bounded_current_turn);
 
+    system_messages = prune_system_messages_for_pressure(
+        system_messages,
+        &prior_chat_messages,
+        &current_turn_messages,
+    );
+
     let mut messages = Vec::with_capacity(
         system_messages.len() + prior_chat_messages.len() + current_turn_messages.len(),
     );
@@ -110,7 +127,53 @@ pub(crate) fn build_provider_prompt_snapshot(
     messages.extend(prior_chat_messages.iter().cloned());
     messages.extend(current_turn_messages.iter().cloned());
 
-    let system_breakdown = system_message_breakdown(history);
+    let stats = provider_context_stats_for_parts(
+        &system_messages,
+        &prior_chat_messages,
+        &current_turn_messages,
+    );
+
+    ProviderPromptSnapshot { messages, stats }
+}
+
+fn prune_system_messages_for_pressure(
+    system_messages: Vec<ChatMessage>,
+    prior_chat_messages: &[ChatMessage],
+    current_turn_messages: &[ChatMessage],
+) -> Vec<ChatMessage> {
+    let stats = provider_context_stats_for_parts(
+        &system_messages,
+        prior_chat_messages,
+        current_turn_messages,
+    );
+    let policy = provider_context_prune_policy(provider_context_budget_input_from_stats(&stats));
+    if !policy.drop_scoped_context && policy.max_runtime_interpretation_chars.is_none() {
+        return system_messages;
+    }
+
+    system_messages
+        .into_iter()
+        .filter_map(|mut message| {
+            if policy.drop_scoped_context && message.content.starts_with("[scoped-context]\n") {
+                return None;
+            }
+            if let Some(max_chars) = policy.max_runtime_interpretation_chars {
+                if message.content.starts_with("[runtime-interpretation]\n") {
+                    message.content =
+                        compact_runtime_interpretation_for_pressure(&message.content, max_chars);
+                }
+            }
+            Some(message)
+        })
+        .collect()
+}
+
+fn provider_context_stats_for_parts(
+    system_messages: &[ChatMessage],
+    prior_chat_messages: &[ChatMessage],
+    current_turn_messages: &[ChatMessage],
+) -> ProviderContextStats {
+    let system_breakdown = system_message_breakdown_from_chat_messages(system_messages);
     let bootstrap_chars = lookup_section_chars(&system_breakdown, "bootstrap");
     let core_memory_chars = lookup_section_chars(&system_breakdown, "core_memory");
     let runtime_interpretation_chars =
@@ -119,10 +182,13 @@ pub(crate) fn build_provider_prompt_snapshot(
     let resolution_chars = lookup_section_chars(&system_breakdown, "resolution");
     let dynamic_system_chars =
         core_memory_chars + runtime_interpretation_chars + scoped_context_chars + resolution_chars;
+    let system_chars = total_message_chars(system_messages);
+    let prior_chat_chars = total_message_chars(prior_chat_messages);
+    let current_turn_chars = total_message_chars(current_turn_messages);
 
-    let stats = ProviderContextStats {
+    ProviderContextStats {
         system_messages: system_messages.len(),
-        system_chars: total_message_chars(&system_messages),
+        system_chars,
         bootstrap_chars,
         core_memory_chars,
         runtime_interpretation_chars,
@@ -131,14 +197,89 @@ pub(crate) fn build_provider_prompt_snapshot(
         dynamic_system_chars,
         stable_system_chars: bootstrap_chars,
         prior_chat_messages: prior_chat_messages.len(),
-        prior_chat_chars: total_message_chars(&prior_chat_messages),
+        prior_chat_chars,
         current_turn_messages: current_turn_messages.len(),
-        current_turn_chars: total_message_chars(&current_turn_messages),
-        total_messages: messages.len(),
-        total_chars: total_message_chars(&messages),
+        current_turn_chars,
+        total_messages: system_messages.len()
+            + prior_chat_messages.len()
+            + current_turn_messages.len(),
+        total_chars: system_chars
+            .saturating_add(prior_chat_chars)
+            .saturating_add(current_turn_chars),
+    }
+}
+
+fn provider_context_budget_input_from_stats(
+    stats: &ProviderContextStats,
+) -> ProviderContextBudgetInput {
+    ProviderContextBudgetInput {
+        total_chars: stats.total_chars,
+        prior_chat_messages: stats.prior_chat_messages,
+        current_turn_messages: stats.current_turn_messages,
+        bootstrap_chars: stats.bootstrap_chars,
+        core_memory_chars: stats.core_memory_chars,
+        runtime_interpretation_chars: stats.runtime_interpretation_chars,
+        scoped_context_chars: stats.scoped_context_chars,
+        resolution_chars: stats.resolution_chars,
+        prior_chat_chars: stats.prior_chat_chars,
+        current_turn_chars: stats.current_turn_chars,
+    }
+}
+
+fn compact_runtime_interpretation_for_pressure(content: &str, max_chars: usize) -> String {
+    if content.chars().count() <= max_chars {
+        return content.to_string();
+    }
+    let marker = "[runtime-interpretation]\n";
+    let Some(body) = content.strip_prefix(marker) else {
+        return truncate_chars(content, max_chars);
     };
 
-    ProviderPromptSnapshot { messages, stats }
+    let blocks = body
+        .trim()
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|block| !block.is_empty())
+        .collect::<Vec<_>>();
+    let priority_markers = [
+        "[user-profile]",
+        "[configured-runtime]",
+        "[working-state]",
+        "[current-conversation]",
+        "[bounded-interpretation]",
+    ];
+    let mut selected = Vec::new();
+    for marker in priority_markers {
+        if let Some(block) = blocks.iter().find(|block| block.starts_with(marker)) {
+            if !selected.iter().any(|existing| existing == block) {
+                selected.push(*block);
+            }
+        }
+    }
+    if selected.is_empty() {
+        selected.extend(blocks.iter().take(1).copied());
+    }
+
+    let mut output = marker.to_string();
+    for block in selected {
+        let separator = if output.ends_with('\n') { "" } else { "\n\n" };
+        let candidate = format!("{output}{separator}{block}");
+        if candidate.chars().count() <= max_chars {
+            output = candidate;
+            continue;
+        }
+        let remaining = max_chars.saturating_sub(output.chars().count());
+        if remaining > 16 {
+            output.push_str(separator);
+            output.push_str(&truncate_chars(block, remaining));
+        }
+        break;
+    }
+
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
 }
 
 fn classify_system_message(content: &str) -> &'static str {
@@ -559,5 +700,43 @@ mod tests {
 
         assert!(rendered.contains(COMPACTION_SUMMARY_PREFIX));
         assert!(rendered.contains("assistant 7"));
+    }
+
+    #[test]
+    fn pressure_pruning_drops_scoped_context_and_compacts_runtime_interpretation() {
+        let scoped = format!("[scoped-context]\n{}\n", "scoped rules\n".repeat(260));
+        let runtime = format!(
+            concat!(
+                "[runtime-interpretation]\n",
+                "[user-profile]\n",
+                "- preferred_language: ru\n\n",
+                "[working-state]\n",
+                "{}\n\n",
+                "[bounded-interpretation]\n",
+                "{}\n"
+            ),
+            "workspace=old\n".repeat(160),
+            "candidate=stale\n".repeat(160)
+        );
+        let history = vec![
+            ConversationMessage::Chat(ChatMessage::system("bootstrap")),
+            ConversationMessage::Chat(ChatMessage::system(runtime)),
+            ConversationMessage::Chat(ChatMessage::system(scoped)),
+            ConversationMessage::Chat(ChatMessage::user("reply briefly")),
+        ];
+
+        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6);
+        let rendered = snapshot
+            .messages
+            .iter()
+            .map(|msg| msg.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!rendered.contains("[scoped-context]"));
+        assert!(rendered.contains("[runtime-interpretation]"));
+        assert!(rendered.contains("[user-profile]"));
+        assert!(snapshot.stats.scoped_context_chars == 0);
+        assert!(snapshot.stats.runtime_interpretation_chars <= 430);
     }
 }

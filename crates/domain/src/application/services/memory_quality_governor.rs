@@ -2,7 +2,7 @@ use crate::application::services::learning_candidate_service::LearningCandidate;
 use crate::application::services::learning_evidence_service::LearningEvidenceEnvelope;
 use crate::application::services::learning_quality_service::LearningCandidateAssessment;
 use crate::application::services::turn_markup::leading_media_control_marker;
-use crate::domain::memory::ReflectionOutcome;
+use crate::domain::memory::{MemoryCategory, ReflectionOutcome};
 use crate::domain::util::{is_low_information_repetition, should_skip_autosave_content};
 use std::collections::HashMap;
 
@@ -243,6 +243,18 @@ pub fn assess_background_learning_input(content: &str) -> BackgroundLearningInpu
     BackgroundLearningInputVerdict::Allow
 }
 
+pub fn retrieval_noise_score_delta(category: &MemoryCategory, lexical_anchor_bonus: f64) -> f64 {
+    if lexical_anchor_bonus > 0.0 {
+        return 0.0;
+    }
+
+    match category {
+        MemoryCategory::Daily => -0.10,
+        MemoryCategory::Custom(name) if name == "precedent" => -0.16,
+        _ => 0.0,
+    }
+}
+
 pub fn derive_reflection_outcome(
     evidence: &LearningEvidenceEnvelope,
     tools_used: &[String],
@@ -302,12 +314,18 @@ mod tests {
     #[test]
     fn rejects_low_confidence_concept_pair() {
         let entity_types = HashMap::from([
-            ("children".to_string(), "concept".to_string()),
-            ("parents".to_string(), "concept".to_string()),
+            ("abstract_topic_a".to_string(), "concept".to_string()),
+            ("abstract_topic_b".to_string(), "concept".to_string()),
         ]);
 
         assert_eq!(
-            assess_extracted_relationship("Children", "learn_from", "Parents", 0.9, &entity_types),
+            assess_extracted_relationship(
+                "abstract_topic_a",
+                "relates_to",
+                "abstract_topic_b",
+                0.9,
+                &entity_types
+            ),
             RelationshipStorageVerdict::Reject(
                 RelationshipRejectReason::AbstractConceptPairLowConfidence
             )
@@ -334,7 +352,7 @@ mod tests {
                 candidate: LearningCandidate::Precedent(PrecedentLearningCandidate {
                     summary: "tools=memory_recall".into(),
                     tool_pattern: vec!["memory_recall".into()],
-                    subjects: vec!["meaning of life".into()],
+                    subjects: vec!["reflective_memory_topic".into()],
                 }),
                 confidence: 0.74,
                 accepted: true,
@@ -421,7 +439,7 @@ mod tests {
                     facets: vec![LearningEvidenceFacet::Search],
                     ..Default::default()
                 },
-                "Tell me what meaning means after we queried memory.",
+                "Tell me about the reflective memory topic after we queried memory.",
                 20,
             ),
             ConsolidationStartVerdict::Skip(
@@ -518,5 +536,22 @@ mod tests {
             ),
             BackgroundLearningInputVerdict::Skip(AutosaveSkipReason::LowInformationRepetition)
         );
+    }
+
+    #[test]
+    fn retrieval_noise_penalty_applies_only_without_lexical_anchor() {
+        assert_eq!(
+            retrieval_noise_score_delta(&MemoryCategory::Custom("precedent".into()), 0.0),
+            -0.16
+        );
+        assert_eq!(
+            retrieval_noise_score_delta(&MemoryCategory::Daily, 0.0),
+            -0.10
+        );
+        assert_eq!(
+            retrieval_noise_score_delta(&MemoryCategory::Daily, 0.01),
+            0.0
+        );
+        assert_eq!(retrieval_noise_score_delta(&MemoryCategory::Core, 0.0), 0.0);
     }
 }

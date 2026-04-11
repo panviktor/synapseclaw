@@ -196,7 +196,7 @@ impl Tool for MemoryRecallTool {
     }
 
     fn runtime_role(&self) -> Option<synapse_domain::ports::tool::ToolRuntimeRole> {
-        Some(synapse_domain::ports::tool::ToolRuntimeRole::MemoryMutation)
+        Some(synapse_domain::ports::tool::ToolRuntimeRole::HistoricalLookup)
     }
 
     async fn execute(&self, args: serde_json::Value) -> anyhow::Result<ToolResult> {

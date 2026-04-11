@@ -1228,7 +1228,7 @@ mod tests {
             &memory,
             PostTurnInput {
                 agent_id: "agent".into(),
-                user_message: "Let's continue the philosophical discussion about the meaning of life"
+                user_message: "Let's continue the reflective memory-only discussion"
                     .into(),
                 assistant_response:
                     "I revisited a few earlier notes and compared them to the current thread, but this was still a reflective discussion rather than an external procedure worth learning."
@@ -1239,7 +1239,7 @@ mod tests {
                         tool_id: "memory_recall".into(),
                         payload: ToolFactPayload::Search(SearchFact {
                             domain: SearchDomain::Memory,
-                            query: Some("meaning of life".into()),
+                            query: Some("reflective_memory_topic".into()),
                             result_count: Some(3),
                             primary_locator: Some("daily_123".into()),
                         }),
@@ -1248,7 +1248,7 @@ mod tests {
                         "memory_recall",
                         vec![FocusEntity {
                             kind: "topic".into(),
-                            name: "meaning of life".into(),
+                            name: "reflective_memory_topic".into(),
                             metadata: None,
                         }],
                         Vec::new(),
@@ -1280,9 +1280,9 @@ mod tests {
             &memory,
             PostTurnInput {
                 agent_id: "agent".into(),
-                user_message: "I want to keep exploring the meaning of life through responsibility, memory, and how a person changes over time.".into(),
+                user_message: "I want to keep exploring a reflective memory topic through responsibility, memory, and how a person changes over time.".into(),
                 assistant_response:
-                    "We can treat meaning as something partially discovered and partially constructed through repeated commitments."
+                    "We can treat the topic as something partially discovered and partially constructed through repeated commitments."
                         .into(),
                 tools_used: vec![],
                 tool_facts: vec![],

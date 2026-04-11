@@ -601,6 +601,9 @@ Expected outcome:
     - route state now carries the most recent admission snapshot and typed reasons
     - admission now classifies and guards `image/audio/video/music` generation turns
       instead of only multimodal-understanding/image/audio
+    - pressured turns with low-confidence / unknown context-window metadata now
+      carry an explicit `window_metadata_unknown` admission reason instead of
+      pretending the target window is trustworthy
   - Slice 12 initial registry hardening:
     - `ResolvedModelProfile` now carries field-level provenance
       (`manual_config`, `cached_provider_catalog`, etc.)
@@ -616,6 +619,10 @@ Expected outcome:
     - runtime help now surfaces profile quality, not just profile source
     - stale capability metadata now appears as an explicit admission reason
       instead of collapsing into generic `MissingFeature`
+    - route-switch preflight now consumes context-window values only when their
+      resolved profile confidence is at least `medium`
+    - manual synthetic route-switch targets are marked as `manual_config`, so
+      explicit operator-supplied windows are still trusted
   - Slice 13 initial pressure snapshot:
     - `ProviderContextBudgetInput` now tracks artifact-level breakdown for:
       - bootstrap
@@ -651,6 +658,18 @@ Expected outcome:
       - structured media/vision turns use a compact runtime block with only
         profile language/style, not full working-state/current-conversation/bounded
         interpretation ballast
+    - artifact-aware provider-prune policy now gives the adapter a deterministic
+      pressure response:
+      - drop `[scoped-context]` when it is removable ballast
+      - compact oversized `[runtime-interpretation]` before the provider call
+      - recompute provider-facing stats after pruning
+  - Slice 14 follow-through partial:
+    - the same structured marker routing now covers image/audio/video/music
+      generation instead of relying on free-text phrase detection
+    - universal all-in-one reasoning candidates can satisfy media-generation
+      lanes when their resolved feature metadata confidently advertises support
+    - text-only/current routes still fail early or reroute through admission
+      rather than silently absorbing media turns
   - Slice 15 follow-through partial:
     - bounded route-admission and tool-repair traces now feed back into
       `[execution-guidance]` as recent failure / recent admission hints
@@ -669,6 +688,11 @@ Expected outcome:
     - the same governor now gates cheap background mutation / promotion paths,
       so low-information repetition and structured control noise no longer
       bypass autosave rules and still learn recipes or mutations
+    - retrieval reranking now uses the governor-owned low-anchor noise penalty
+      for `daily` / `precedent` memories instead of path-local retrieval hacks
+    - `memory_recall` is now a `historical_lookup` tool, not a memory mutation
+      tool, so direct resolved-state turns do not keep it in the mutation-safe
+      tool subset
   - Phase-close validation harness:
     - added `dev/gateway-chat-harness/scripts/phase4_10_live_pack.sh`
     - base pack covers `cheap`, `deepseek`, and `gpt-5.4` route smoke:
@@ -686,19 +710,14 @@ Expected outcome:
 - next:
   - Slice 12 follow-through:
     - widen provenance beyond cached provider catalogs as more profile data moves into catalogs
-    - add per-field unknown-state handling beyond the current stale/low-confidence gating
-    - feed profile confidence into more route-switch and tool-capability decisions
+    - continue feeding profile confidence into remaining tool-capability decisions
+      beyond route-switch and lane admission
   - Slice 13 follow-through:
-    - replace char-only thresholds with token/headroom aware pressure accounting
     - add condensed artifact cache selection instead of only “history compaction or not”
-    - let admission and route-switch policy consume the richer pressure snapshot directly
+    - continue moving admission and route-switch policy toward direct consumption
+      of the richer pressure snapshot
   - Slice 11 follow-through:
-    - extend admission consumers beyond the current multimodal / reasoning safety checks
-    - add first-class admission for image/audio/video generation lanes
-    - make route-switch/runtime UX surfaces show admission outcome more directly
     - unify channel/web route mutation and admission state persistence semantics
-  - capability-based model routing for multimodal / specialized lanes
-    beyond the current reasoning / cheap / embedding / preset-first groundwork
   - quality tail after Slice 6/7:
     - long-dialogue semantic anchor ranking
     - pure-dialogue graph hygiene

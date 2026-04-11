@@ -655,6 +655,8 @@ impl Agent {
             self.build_provider_prompt_snapshot().stats.total_chars,
             &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
                 context_window_tokens: Some(target_context_window_tokens),
+                context_window_source:
+                    synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
                 max_output_tokens: None,
                 features: Vec::new(),
                 ..Default::default()
@@ -669,6 +671,8 @@ impl Agent {
                 self.build_provider_prompt_snapshot().stats.total_chars,
                 &synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile {
                     context_window_tokens: Some(target_context_window_tokens),
+                    context_window_source:
+                        synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig,
                     max_output_tokens: None,
                     features: Vec::new(),
                     ..Default::default()

@@ -47,6 +47,7 @@ pub enum CandidateAdmissionReason {
     CapabilityMetadataStale(CapabilityLane),
     CapabilityMetadataLowConfidence(CapabilityLane),
     SpecializedLaneMismatch(CapabilityLane),
+    CandidateWindowMetadataUnknown,
     CandidateWindowNearLimit,
     CandidateWindowExceeded,
     ProviderContextWarning,
@@ -123,6 +124,9 @@ pub fn candidate_admission_reason_label(reason: &CandidateAdmissionReason) -> St
         }
         CandidateAdmissionReason::SpecializedLaneMismatch(lane) => {
             format!("lane_mismatch_{}", capability_lane_name(*lane))
+        }
+        CandidateAdmissionReason::CandidateWindowMetadataUnknown => {
+            "window_metadata_unknown".to_string()
         }
         CandidateAdmissionReason::CandidateWindowNearLimit => "window_near_limit".to_string(),
         CandidateAdmissionReason::CandidateWindowExceeded => "window_exceeded".to_string(),

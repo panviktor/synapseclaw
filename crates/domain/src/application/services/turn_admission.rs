@@ -4,6 +4,7 @@ use crate::application::services::model_capability_support::{
 };
 use crate::application::services::model_lane_resolution::{
     resolve_lane_candidates, ResolvedModelCandidate, ResolvedModelProfile,
+    ResolvedModelProfileConfidence,
 };
 use crate::application::services::provider_context_budget::{
     assess_provider_context_budget, ProviderContextBudgetInput, ProviderContextBudgetTier,
@@ -64,6 +65,12 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
         assess_route_switch_preflight(input.provider_context.total_chars, input.current_profile);
     let pressure_state = classify_pressure_state(&budget_assessment.tier, window_preflight.status);
     push_pressure_reason(&mut reasons, pressure_state);
+    push_window_metadata_reason(
+        &mut reasons,
+        pressure_state,
+        window_preflight.status,
+        input.current_profile,
+    );
 
     if let Some(required_lane) = required_lane {
         reasons.push(CandidateAdmissionReason::RequiresLane(required_lane));
@@ -321,6 +328,22 @@ fn push_pressure_reason(
     }
 }
 
+fn push_window_metadata_reason(
+    reasons: &mut Vec<CandidateAdmissionReason>,
+    pressure_state: ContextPressureState,
+    route_status: RouteSwitchStatus,
+    profile: &ResolvedModelProfile,
+) {
+    if !matches!(route_status, RouteSwitchStatus::Unknown)
+        || matches!(pressure_state, ContextPressureState::Healthy)
+    {
+        return;
+    }
+    if profile.context_window_confidence() < ResolvedModelProfileConfidence::Medium {
+        reasons.push(CandidateAdmissionReason::CandidateWindowMetadataUnknown);
+    }
+}
+
 fn current_candidate_supports_lane(
     lane: CapabilityLane,
     profile: &ResolvedModelProfile,
@@ -551,6 +574,7 @@ mod tests {
             current_lane: Some(CapabilityLane::Reasoning),
             current_profile: &ResolvedModelProfile {
                 context_window_tokens: Some(8_000),
+                context_window_source: ResolvedModelProfileSource::ManualConfig,
                 max_output_tokens: None,
                 features: vec![],
                 ..Default::default()
@@ -574,6 +598,43 @@ mod tests {
             decision.recommended_action,
             Some(AdmissionRepairHint::StartFreshHandoff)
         );
+    }
+
+    #[test]
+    fn oversized_context_with_low_confidence_window_reports_unknown_window_metadata() {
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "continue",
+            execution_guidance: None,
+            tool_specs: &[],
+            current_provider: "openrouter",
+            current_model: "fallback-model",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                context_window_tokens: Some(8_000),
+                context_window_source: ResolvedModelProfileSource::AdapterFallback,
+                max_output_tokens: None,
+                features: vec![],
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 50_000,
+                prior_chat_messages: 5,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            catalog: None,
+        });
+
+        assert_eq!(
+            decision.snapshot.pressure_state,
+            ContextPressureState::Critical
+        );
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Compact);
+        assert!(decision
+            .reasons
+            .contains(&CandidateAdmissionReason::CandidateWindowMetadataUnknown));
     }
 
     #[test]
@@ -605,6 +666,7 @@ mod tests {
             current_lane: Some(CapabilityLane::Embedding),
             current_profile: &ResolvedModelProfile {
                 context_window_tokens: Some(32_000),
+                context_window_source: ResolvedModelProfileSource::ManualConfig,
                 max_output_tokens: None,
                 features: vec![ModelFeature::Embedding],
                 ..Default::default()

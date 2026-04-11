@@ -70,6 +70,12 @@ pub struct ProviderContextBudgetAssessment {
     pub snapshot: ContextBudgetSnapshot,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ProviderContextPrunePolicy {
+    pub drop_scoped_context: bool,
+    pub max_runtime_interpretation_chars: Option<usize>,
+}
+
 pub fn assess_provider_context_budget(
     input: ProviderContextBudgetInput,
 ) -> ProviderContextBudgetAssessment {
@@ -154,6 +160,32 @@ pub fn assess_provider_context_budget(
             tokens_headroom_to_ceiling,
             reserved_output_headroom_tokens,
             primary_ballast_artifact,
+        },
+    }
+}
+
+pub fn provider_context_prune_policy(
+    input: ProviderContextBudgetInput,
+) -> ProviderContextPrunePolicy {
+    let assessment = assess_provider_context_budget(input);
+
+    match assessment.tier {
+        ProviderContextBudgetTier::Healthy => ProviderContextPrunePolicy::default(),
+        ProviderContextBudgetTier::Caution => ProviderContextPrunePolicy {
+            drop_scoped_context: matches!(
+                assessment.snapshot.primary_ballast_artifact,
+                Some(ProviderContextArtifact::ScopedContext)
+            ) && input.scoped_context_chars > 0,
+            max_runtime_interpretation_chars: (matches!(
+                assessment.snapshot.primary_ballast_artifact,
+                Some(ProviderContextArtifact::RuntimeInterpretation)
+            ) && input.runtime_interpretation_chars > 640)
+                .then_some(640),
+        },
+        ProviderContextBudgetTier::OverBudget => ProviderContextPrunePolicy {
+            drop_scoped_context: input.scoped_context_chars > 0,
+            max_runtime_interpretation_chars: (input.runtime_interpretation_chars > 420)
+                .then_some(420),
         },
     }
 }
@@ -289,5 +321,36 @@ mod tests {
         assert_eq!(assessment.snapshot.target_total_tokens, 875);
         assert_eq!(assessment.snapshot.reserved_output_headroom_tokens, 96);
         assert_eq!(assessment.tier, ProviderContextBudgetTier::Caution);
+    }
+
+    #[test]
+    fn prune_policy_drops_scoped_context_when_it_is_caution_ballast() {
+        let policy = provider_context_prune_policy(ProviderContextBudgetInput {
+            total_chars: 4_400,
+            current_turn_messages: 1,
+            scoped_context_chars: 1_600,
+            runtime_interpretation_chars: 300,
+            prior_chat_chars: 400,
+            current_turn_chars: 500,
+            ..Default::default()
+        });
+
+        assert!(policy.drop_scoped_context);
+        assert_eq!(policy.max_runtime_interpretation_chars, None);
+    }
+
+    #[test]
+    fn prune_policy_compacts_runtime_interpretation_under_over_budget_pressure() {
+        let policy = provider_context_prune_policy(ProviderContextBudgetInput {
+            total_chars: 7_200,
+            current_turn_messages: 1,
+            runtime_interpretation_chars: 1_500,
+            scoped_context_chars: 800,
+            current_turn_chars: 500,
+            ..Default::default()
+        });
+
+        assert!(policy.drop_scoped_context);
+        assert_eq!(policy.max_runtime_interpretation_chars, Some(420));
     }
 }

@@ -212,7 +212,7 @@ mod tests {
                 tool_id: "memory_recall".into(),
                 payload: ToolFactPayload::Search(SearchFact {
                     domain: SearchDomain::Memory,
-                    query: Some("meaning of life".into()),
+                    query: Some("reflective_memory_topic".into()),
                     result_count: Some(3),
                     primary_locator: Some("daily_123".into()),
                 }),

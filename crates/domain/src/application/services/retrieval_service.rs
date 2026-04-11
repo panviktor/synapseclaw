@@ -4,6 +4,7 @@
 //! should reuse one application-level search implementation instead of
 //! duplicating ad-hoc scoring logic.
 
+use crate::application::services::memory_quality_governor;
 use crate::domain::conversation::{ConversationEvent, ConversationKind, EventType};
 use crate::domain::memory::{
     Entity, MemoryCategory, MemoryEntry, MemoryError, MemoryQuery, Skill, SkillOrigin, SkillStatus,
@@ -759,7 +760,9 @@ fn adjusted_memory_match_score(
     let mut score = entry.score.unwrap_or(0.0);
     score += memory_category_bonus(&entry.category);
     score += session_match_bonus(entry, session_id);
-    score += lexical_anchor_bonus(entry, keywords);
+    let lexical_bonus = lexical_anchor_bonus(entry, keywords);
+    score += lexical_bonus;
+    score += memory_quality_governor::retrieval_noise_score_delta(&entry.category, lexical_bonus);
     score
 }
 
@@ -1835,6 +1838,53 @@ mod tests {
                 "deploy-pattern",
             ]
         );
+    }
+
+    #[test]
+    fn rerank_memory_matches_penalizes_low_anchor_daily_and_precedent_noise() {
+        let hits = vec![
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "precedent-1".into(),
+                    key: "old-procedure".into(),
+                    content: "generic procedure from another task".into(),
+                    category: MemoryCategory::Custom("precedent".into()),
+                    timestamp: String::new(),
+                    session_id: None,
+                    score: Some(0.96),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "daily-1".into(),
+                    key: "daily-note".into(),
+                    content: "miscellaneous recap from yesterday".into(),
+                    category: MemoryCategory::Daily,
+                    timestamp: String::new(),
+                    session_id: None,
+                    score: Some(0.93),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "core-1".into(),
+                    key: "atlas-anchor".into(),
+                    content: "branch release/hotfix-17".into(),
+                    category: MemoryCategory::Core,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.78),
+                },
+            },
+        ];
+
+        let reranked = rerank_memory_matches("Atlas release hotfix", Some("session-1"), hits, 3);
+        let keys = reranked
+            .into_iter()
+            .map(|hit| hit.entry.key)
+            .collect::<Vec<_>>();
+
+        assert_eq!(keys, vec!["atlas-anchor", "daily-note", "old-procedure"]);
     }
 
     #[test]

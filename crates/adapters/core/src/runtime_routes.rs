@@ -419,6 +419,9 @@ fn format_candidate_admission_reason(reason: &CandidateAdmissionReason) -> Strin
                 capability_lane_name(*lane)
             )
         }
+        CandidateAdmissionReason::CandidateWindowMetadataUnknown => {
+            "window metadata unknown".to_string()
+        }
         CandidateAdmissionReason::CandidateWindowNearLimit => "window near limit".to_string(),
         CandidateAdmissionReason::CandidateWindowExceeded => "window exceeded".to_string(),
         CandidateAdmissionReason::ProviderContextWarning => "context warning".to_string(),

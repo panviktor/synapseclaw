@@ -342,13 +342,13 @@ mod tests {
     #[test]
     fn concept_to_concept_relationships_require_very_high_confidence() {
         let entity_types = std::collections::HashMap::from([
-            ("children".to_string(), "concept".to_string()),
-            ("parents".to_string(), "concept".to_string()),
+            ("abstract_topic_a".to_string(), "concept".to_string()),
+            ("abstract_topic_b".to_string(), "concept".to_string()),
         ]);
         let rel = ExtractedRelationship {
-            subject: "Children".into(),
-            predicate: "learn_from".into(),
-            object: "Parents".into(),
+            subject: "abstract_topic_a".into(),
+            predicate: "relates_to".into(),
+            object: "abstract_topic_b".into(),
             confidence: 0.9,
         };
 

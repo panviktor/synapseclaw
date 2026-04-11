@@ -345,7 +345,7 @@ mod tests {
         let specs = vec![
             spec("core_memory_update", Some(ToolRuntimeRole::MemoryMutation)),
             spec("user_profile", Some(ToolRuntimeRole::ProfileMutation)),
-            spec("memory_recall", Some(ToolRuntimeRole::MemoryMutation)),
+            spec("memory_recall", Some(ToolRuntimeRole::HistoricalLookup)),
             spec("web_search_tool", Some(ToolRuntimeRole::ExternalLookup)),
             spec("file_read", Some(ToolRuntimeRole::WorkspaceDiscovery)),
         ];
@@ -363,12 +363,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            vec![
-                "core_memory_update",
-                "user_profile",
-                "memory_recall",
-                "web_search_tool",
-            ]
+            vec!["core_memory_update", "user_profile", "web_search_tool",]
         );
     }
 
