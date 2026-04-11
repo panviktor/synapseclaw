@@ -12,10 +12,20 @@
 
 use super::chat_db::ChatMessageRow;
 use super::{AppState, ChatSession};
+use crate::runtime_adapter_contract::{
+    execute_runtime_command_effect, RuntimeCommandHost, RuntimeModelHelpSnapshot,
+    RuntimeModelSwitchOutcome, RuntimeProviderSwitchOutcome, RuntimeRouteMutationRequest,
+    WebRuntimeAdapterContract,
+};
 use crate::runtime_routes::WorkspaceModelProfileCatalog;
+use crate::runtime_tool_notifications::RuntimeToolNotification;
+use crate::runtime_tool_observer::{RuntimeToolNotificationHandler, RuntimeToolNotifyObserver};
 use synapse_domain::application::services::model_lane_resolution::resolve_candidate_profile;
-use synapse_domain::application::services::route_switch_preflight::RouteSwitchStatus;
+use synapse_domain::application::services::route_switch_preflight::{
+    RouteSwitchPreflight, RouteSwitchStatus,
+};
 use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
+use synapse_domain::config::schema::CapabilityLane;
 use synapse_domain::domain::channel::ChannelCapability;
 use synapse_domain::domain::conversation::{
     ConversationEvent, ConversationKind, ConversationSession, EventType,
@@ -597,6 +607,12 @@ async fn ensure_session(state: &AppState, session_key: &str) -> anyhow::Result<(
 
     // Bind memory recall to this web session (episodic recall is session-scoped).
     agent.set_memory_session_id(Some(session_key.to_string()));
+    if agent.compact_for_session_hygiene().await {
+        tracing::info!(
+            session_key = %session_key,
+            "Compacted resumed web session before agent execution"
+        );
+    }
 
     let session = ChatSession {
         agent,
@@ -1027,7 +1043,7 @@ async fn handle_chat_send_rpc(
             s.run_id = None;
             s.abort_tx = None;
             s.last_active = Instant::now();
-            // Tool events already pushed in real-time via WsToolNotifyObserver.
+            // Tool events already pushed in real-time via RuntimeToolNotifyObserver.
             // Snapshot history for async persist (after lock release)
             let history = s.agent.history();
             if history_len_before <= history.len() {
@@ -1223,79 +1239,25 @@ async fn handle_runtime_command_if_needed(
         &command,
         &config_snapshot.model_routes,
     );
-
-    let response = match &effect {
-        synapse_domain::application::services::inbound_message_service::CommandEffect::ShowProviders => {
-            format_web_providers_help(state, session_key)?
-        }
-        synapse_domain::application::services::inbound_message_service::CommandEffect::ShowModel => {
-            format_web_model_help(state, session_key, &config_snapshot)?
-        }
-        synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchModel {
-            model,
-            inferred_provider,
-        } => {
-            let provider = inferred_provider
-                .clone()
-                .or_else(|| {
-                    current_web_route_selection(state, session_key)
-                        .ok()
-                        .map(|route| route.provider)
-                })
-                .unwrap_or_else(|| {
-                    config_snapshot
-                        .default_provider
-                        .clone()
-                        .unwrap_or_else(|| "openrouter".to_string())
-                });
-            let catalog = WorkspaceModelProfileCatalog::new(config_snapshot.workspace_dir.as_path());
-            let target_profile = resolve_candidate_profile(
-                provider.as_str(),
-                model.as_str(),
-                &synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
-                Some(&catalog),
-            );
-            match apply_web_runtime_route(
-                state,
-                session_key,
-                &config_snapshot,
-                Some(provider.as_str()),
-                Some(model.as_str()),
-                target_profile.context_window_tokens,
-                token_prefix,
-            )
-            .await
-            {
-                Ok(()) => {
-                    format!("Model switched to `{model}` (provider: `{provider}`). Context preserved.")
-                }
-                Err(error) => {
-                    format!("Model switch to `{model}` blocked: {error}")
-                }
-            }
-        }
-        synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchProvider {
-            provider,
-        } => {
-            apply_web_runtime_route(
-                state,
-                session_key,
-                &config_snapshot,
-                Some(provider.as_str()),
-                None,
-                None,
-                token_prefix,
-            )
-            .await?;
-            format!(
-                "Provider switched to `{provider}`. Use `/model <model-id>` or `/model <hint>` to choose a model."
-            )
-        }
-        synapse_domain::application::services::inbound_message_service::CommandEffect::ClearSession => {
-            clear_web_session_runtime_state(state, session_key)?;
-            "Conversation history cleared. Starting fresh.".to_string()
-        }
+    let default_provider = config_snapshot
+        .default_provider
+        .clone()
+        .unwrap_or_else(|| "openrouter".to_string());
+    let adapter_contract = WebRuntimeAdapterContract;
+    let mut command_host = WebRuntimeCommandHost {
+        state,
+        session_key,
+        config: &config_snapshot,
+        default_provider: default_provider.as_str(),
+        token_prefix,
     };
+    let response = execute_runtime_command_effect(
+        &adapter_contract,
+        &mut command_host,
+        &effect,
+        default_provider.as_str(),
+    )
+    .await?;
 
     let _ = out_tx.send(
         serde_json::json!({
@@ -1336,34 +1298,133 @@ fn current_web_route_selection(
     Ok(RouteSelection {
         provider: provider.clone(),
         model: model.clone(),
-        lane: None,
-        candidate_index: None,
+        lane: session.agent.active_lane(),
+        candidate_index: session.agent.active_candidate_index(),
         last_admission: session.agent.recent_turn_admissions().last().cloned(),
         recent_admissions: session.agent.recent_turn_admissions().to_vec(),
         last_tool_repair: session.agent.last_turn_tool_repair().cloned(),
         recent_tool_repairs: session.agent.recent_turn_tool_repairs().to_vec(),
-        context_cache: Some(
-            session
-                .agent
-                .history_compaction_cache_stats_for_route(&provider, &model, None, None),
-        ),
+        context_cache: Some(session.agent.history_compaction_cache_stats_for_route(
+            &provider,
+            &model,
+            session.agent.active_lane(),
+            None,
+        )),
     })
 }
 
-fn format_web_model_help(
-    state: &AppState,
-    session_key: &str,
-    config: &synapse_domain::config::schema::Config,
-) -> anyhow::Result<String> {
-    let route = current_web_route_selection(state, session_key)?;
-    Ok(crate::runtime_routes::build_models_help_response(
-        &route, config,
-    ))
+struct WebRuntimeCommandHost<'a> {
+    state: &'a AppState,
+    session_key: &'a str,
+    config: &'a synapse_domain::config::schema::Config,
+    default_provider: &'a str,
+    token_prefix: &'a str,
 }
 
-fn format_web_providers_help(state: &AppState, session_key: &str) -> anyhow::Result<String> {
-    let route = current_web_route_selection(state, session_key)?;
-    Ok(crate::runtime_routes::build_providers_help_response(&route))
+#[async_trait::async_trait]
+impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
+    fn fallback_provider(&self) -> String {
+        current_web_route_selection(self.state, self.session_key)
+            .ok()
+            .map(|route| route.provider)
+            .unwrap_or_else(|| self.default_provider.to_string())
+    }
+
+    async fn provider_help_route(&mut self) -> anyhow::Result<RouteSelection> {
+        current_web_route_selection(self.state, self.session_key)
+    }
+
+    async fn model_help_snapshot(&mut self) -> anyhow::Result<RuntimeModelHelpSnapshot> {
+        Ok(RuntimeModelHelpSnapshot {
+            route: current_web_route_selection(self.state, self.session_key)?,
+            config: self.config.clone(),
+        })
+    }
+
+    async fn switch_provider(
+        &mut self,
+        request: RuntimeRouteMutationRequest,
+    ) -> anyhow::Result<RuntimeProviderSwitchOutcome> {
+        let provider = request
+            .provider
+            .ok_or_else(|| anyhow::anyhow!("provider route mutation request missing provider"))?;
+        apply_web_runtime_route(
+            self.state,
+            self.session_key,
+            self.config,
+            Some(provider.as_str()),
+            None,
+            None,
+            None,
+            None,
+            self.token_prefix,
+        )
+        .await
+        .map(|_| RuntimeProviderSwitchOutcome {
+            provider,
+            already_current: false,
+        })
+    }
+
+    async fn switch_model(
+        &mut self,
+        request: RuntimeRouteMutationRequest,
+        _compacted: bool,
+    ) -> anyhow::Result<RuntimeModelSwitchOutcome> {
+        let provider = request
+            .provider
+            .clone()
+            .unwrap_or_else(|| self.fallback_provider());
+        let model = request
+            .model
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("model route mutation request missing model"))?;
+        let catalog = WorkspaceModelProfileCatalog::from_config(self.config);
+        let target_profile = resolve_candidate_profile(
+            provider.as_str(),
+            model.as_str(),
+            &synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
+            Some(&catalog),
+        );
+        let outcome = apply_web_runtime_route(
+            self.state,
+            self.session_key,
+            self.config,
+            Some(provider.as_str()),
+            Some(model.as_str()),
+            request.lane,
+            request.candidate_index,
+            request
+                .target_context_window_tokens
+                .or(target_profile.context_window_tokens),
+            self.token_prefix,
+        )
+        .await?;
+        if let Some(preflight) = outcome.blocked_preflight {
+            Ok(RuntimeModelSwitchOutcome::Blocked {
+                provider,
+                lane: request.lane,
+                compacted: outcome.compacted,
+                preflight,
+            })
+        } else {
+            Ok(RuntimeModelSwitchOutcome::Applied {
+                provider,
+                lane: request.lane,
+                compacted: outcome.compacted,
+            })
+        }
+    }
+
+    async fn clear_session(&mut self) -> anyhow::Result<()> {
+        clear_web_session_runtime_state(self.state, self.session_key)
+    }
+}
+
+#[derive(Debug)]
+struct WebRuntimeRouteApplyOutcome {
+    compacted: bool,
+    blocked_preflight: Option<RouteSwitchPreflight>,
 }
 
 async fn apply_web_runtime_route(
@@ -1372,9 +1433,11 @@ async fn apply_web_runtime_route(
     config: &synapse_domain::config::schema::Config,
     provider_override: Option<&str>,
     model_override: Option<&str>,
+    route_lane: Option<CapabilityLane>,
+    route_candidate_index: Option<usize>,
     target_context_window_tokens: Option<usize>,
     token_prefix: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<WebRuntimeRouteApplyOutcome> {
     let placeholder = crate::agent::Agent::from_config_with_runtime_context(
         config,
         Some(state.mem.clone()),
@@ -1393,11 +1456,15 @@ async fn apply_web_runtime_route(
         std::mem::replace(&mut session.agent, placeholder)
     };
 
+    let mut compacted = false;
+
     if let Some(target_context_window_tokens) = target_context_window_tokens {
         let preflight = agent
             .prepare_for_target_context_window(target_context_window_tokens)
             .await;
-        if preflight.status == RouteSwitchStatus::TooLarge {
+        compacted = preflight.compacted;
+        if preflight.preflight.status == RouteSwitchStatus::TooLarge {
+            let blocked_preflight = preflight.into_preflight();
             let mut sessions = state
                 .chat_sessions
                 .lock()
@@ -1406,15 +1473,10 @@ async fn apply_web_runtime_route(
                 .get_mut(session_key)
                 .ok_or_else(|| anyhow::anyhow!("session not found"))?;
             session.agent = agent;
-            anyhow::bail!(
-                "target context window {} tokens leaves a safe context budget of ~{} tokens after reserving ~{} output tokens, but the current provider-facing context is ~{} tokens. Compact or start a new session first",
-                target_context_window_tokens,
-                preflight
-                    .safe_context_budget_tokens
-                    .unwrap_or(target_context_window_tokens),
-                preflight.reserved_output_headroom_tokens.unwrap_or(0),
-                preflight.estimated_context_tokens
-            );
+            return Ok(WebRuntimeRouteApplyOutcome {
+                compacted,
+                blocked_preflight: Some(blocked_preflight),
+            });
         }
     }
 
@@ -1423,6 +1485,8 @@ async fn apply_web_runtime_route(
             config,
             provider_override,
             model_override,
+            route_lane,
+            route_candidate_index,
             state.mem.clone(),
             web_runtime_ports(state),
         )
@@ -1458,7 +1522,10 @@ async fn apply_web_runtime_route(
         session.last_active = Instant::now();
     }
 
-    Ok(())
+    Ok(WebRuntimeRouteApplyOutcome {
+        compacted,
+        blocked_preflight: None,
+    })
 }
 
 fn clear_web_session_runtime_state(state: &AppState, session_key: &str) -> anyhow::Result<()> {
@@ -1538,13 +1605,16 @@ async fn run_agent_turn_with_abort(
     // Wrap the agent's observer to push real-time tool events through WS.
     let base_observer = agent.observer_arc();
     let ws_observer: std::sync::Arc<dyn synapse_observability::Observer> =
-        std::sync::Arc::new(WsToolNotifyObserver {
-            inner: Arc::clone(&base_observer),
-            tx: out_tx.clone(),
-            session_key: session_key.to_string(),
-            seen_tool_calls: std::sync::Mutex::new(std::collections::HashSet::new()),
-            seen_tool_results: std::sync::Mutex::new(std::collections::HashSet::new()),
-        });
+        std::sync::Arc::new(RuntimeToolNotifyObserver::new(
+            Arc::clone(&base_observer),
+            WsToolNotificationHandler {
+                tx: out_tx.clone(),
+                session_key: session_key.to_string(),
+                seen_tool_calls: std::sync::Mutex::new(std::collections::HashSet::new()),
+                seen_tool_results: std::sync::Mutex::new(std::collections::HashSet::new()),
+            },
+            "ws-tool-notify",
+        ));
     agent.set_observer(ws_observer);
 
     // Race: agent.turn vs abort signal
@@ -2104,82 +2174,38 @@ fn emit_run_event(state: &AppState, event_type: &str, session_key: &str, run_id:
     }));
 }
 
-/// Observer wrapper that pushes real-time tool events to a WebSocket client.
-/// Events are sent through the same `out_tx` channel as the assistant response,
-/// guaranteeing FIFO order: tool_call → tool_result → assistant.
-struct WsToolNotifyObserver {
-    inner: std::sync::Arc<dyn synapse_observability::Observer>,
+/// WebSocket transport sink for real-time tool notifications.
+/// Events are sent through the same `out_tx` channel as the assistant response.
+struct WsToolNotificationHandler {
     tx: tokio::sync::mpsc::UnboundedSender<String>,
     session_key: String,
     seen_tool_calls: std::sync::Mutex<std::collections::HashSet<String>>,
     seen_tool_results: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
-impl synapse_observability::Observer for WsToolNotifyObserver {
-    fn record_event(&self, event: &synapse_observability::traits::ObserverEvent) {
-        use synapse_observability::traits::ObserverEvent;
-        match event {
-            ObserverEvent::ToolCallStart { tool, arguments } => {
-                let content = if let Some(args) = arguments {
-                    format!("{tool}({args})")
-                } else {
-                    tool.clone()
-                };
+impl RuntimeToolNotificationHandler for WsToolNotificationHandler {
+    fn notify(&self, notification: RuntimeToolNotification) {
+        match &notification {
+            RuntimeToolNotification::CallStart { .. } => {
+                let key = notification.web_dedupe_key();
                 if let Ok(mut seen) = self.seen_tool_calls.lock() {
-                    if !seen.insert(content.clone()) {
-                        self.inner.record_event(event);
+                    if !seen.insert(key) {
                         return;
                     }
                 }
-                let evt = serde_json::json!({
-                    "type": "tool_call",
-                    "session_key": self.session_key,
-                    "tool_name": tool,
-                    "content": content,
-                    "timestamp": now_secs(),
-                });
-                let _ = self.tx.send(evt.to_string());
             }
-            ObserverEvent::ToolResult {
-                tool,
-                output,
-                success,
-            } => {
-                let content = if *success {
-                    truncate_str(output, 500)
-                } else {
-                    format!("Error: {}", truncate_str(output, 500))
-                };
-                let result_key = format!("{tool}:{content}");
+            RuntimeToolNotification::Result { .. } => {
+                let result_key = notification.web_dedupe_key();
                 if let Ok(mut seen) = self.seen_tool_results.lock() {
                     if !seen.insert(result_key) {
-                        self.inner.record_event(event);
                         return;
                     }
                 }
-                let evt = serde_json::json!({
-                    "type": "tool_result",
-                    "session_key": self.session_key,
-                    "content": content,
-                    "timestamp": now_secs(),
-                });
-                let _ = self.tx.send(evt.to_string());
             }
-            _ => {}
         }
-        self.inner.record_event(event);
-    }
-    fn record_metric(&self, metric: &synapse_observability::traits::ObserverMetric) {
-        self.inner.record_metric(metric);
-    }
-    fn flush(&self) {
-        self.inner.flush();
-    }
-    fn name(&self) -> &str {
-        "ws-tool-notify"
-    }
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
+        let _ = self
+            .tx
+            .send(notification.web_json(&self.session_key, now_secs()));
     }
 }
 

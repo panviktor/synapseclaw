@@ -37,6 +37,7 @@ pub enum RelationshipRejectReason {
     SelfReference,
     PredicateTooLong,
     AbstractConceptPairLowConfidence,
+    GenericPluralRolePairLowConfidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +135,17 @@ pub fn assess_extracted_relationship(
     {
         return RelationshipStorageVerdict::Reject(
             RelationshipRejectReason::AbstractConceptPairLowConfidence,
+        );
+    }
+    if generic_plural_role_pair_low_confidence(
+        subject,
+        object,
+        subject_type.map(String::as_str),
+        object_type.map(String::as_str),
+        confidence,
+    ) {
+        return RelationshipStorageVerdict::Reject(
+            RelationshipRejectReason::GenericPluralRolePairLowConfidence,
         );
     }
 
@@ -294,6 +306,48 @@ fn learning_assessment_reject_reason_name(reason: LearningAssessmentRejectReason
     }
 }
 
+fn generic_plural_role_pair_low_confidence(
+    subject: &str,
+    object: &str,
+    subject_type: Option<&str>,
+    object_type: Option<&str>,
+    confidence: f32,
+) -> bool {
+    if confidence >= 0.99 {
+        return false;
+    }
+    if !entity_type_allows_generic_role_filter(subject_type)
+        || !entity_type_allows_generic_role_filter(object_type)
+    {
+        return false;
+    }
+
+    looks_like_generic_plural_role(subject) && looks_like_generic_plural_role(object)
+}
+
+fn entity_type_allows_generic_role_filter(entity_type: Option<&str>) -> bool {
+    matches!(entity_type, Some("person" | "concept"))
+}
+
+fn looks_like_generic_plural_role(name: &str) -> bool {
+    let normalized = name
+        .trim()
+        .trim_matches(|c: char| !c.is_alphanumeric())
+        .to_ascii_lowercase();
+    if normalized.is_empty() || normalized.split_whitespace().count() != 1 {
+        return false;
+    }
+
+    normalized == "people"
+        || (normalized.len() > 5 && normalized.ends_with("ren"))
+        || (normalized.len() > 3 && normalized.ends_with("men"))
+        || (normalized.len() > 4
+            && normalized.ends_with('s')
+            && !normalized.ends_with("ss")
+            && !normalized.ends_with("us")
+            && !normalized.ends_with("is"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +382,21 @@ mod tests {
             ),
             RelationshipStorageVerdict::Reject(
                 RelationshipRejectReason::AbstractConceptPairLowConfidence
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_low_confidence_generic_plural_role_relationship() {
+        let entity_types = HashMap::from([
+            ("children".to_string(), "person".to_string()),
+            ("parents".to_string(), "person".to_string()),
+        ]);
+
+        assert_eq!(
+            assess_extracted_relationship("Children", "learn_from", "Parents", 0.95, &entity_types),
+            RelationshipStorageVerdict::Reject(
+                RelationshipRejectReason::GenericPluralRolePairLowConfidence
             )
         );
     }

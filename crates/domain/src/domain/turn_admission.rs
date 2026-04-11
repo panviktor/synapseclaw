@@ -161,16 +161,7 @@ pub fn admission_repair_hint_label(hint: AdmissionRepairHint) -> String {
 }
 
 fn capability_lane_name(lane: CapabilityLane) -> &'static str {
-    match lane {
-        CapabilityLane::Reasoning => "reasoning",
-        CapabilityLane::CheapReasoning => "cheap_reasoning",
-        CapabilityLane::Embedding => "embedding",
-        CapabilityLane::MultimodalUnderstanding => "multimodal_understanding",
-        CapabilityLane::ImageGeneration => "image_generation",
-        CapabilityLane::AudioGeneration => "audio_generation",
-        CapabilityLane::VideoGeneration => "video_generation",
-        CapabilityLane::MusicGeneration => "music_generation",
-    }
+    lane.as_str()
 }
 
 fn model_feature_name(feature: ModelFeature) -> &'static str {

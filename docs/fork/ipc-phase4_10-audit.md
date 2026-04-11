@@ -218,6 +218,32 @@ Observed pattern:
 - It uses progressive context-file discovery rather than dumping every context
   file on launch.
 
+2026-04-11 source audit update:
+
+- Hermes has a pluggable `ContextEngine` interface, but SynapseClaw should defer
+  a pluggable engine layer until the domain pressure service/port boundary is
+  stable.
+- Hermes' compressor tracks provider-reported prompt/input tokens after
+  responses and uses those tokens for future compression decisions; SynapseClaw
+  now uses provider-reported input tokens as the next compaction pressure input
+  when they are available.
+- Hermes' gateway has a pre-agent session hygiene safety net for already-large
+  transcripts; SynapseClaw now has a high-water web-session hygiene path and a
+  channel provider-history compaction valve when admission already requires
+  compaction.
+- Hermes prunes old large tool results before summarization and sanitizes
+  tool-call/tool-result pair integrity after compaction; SynapseClaw now does
+  the same through typed placeholders and a protocol-aware sanitizer.
+- Hermes resolves context windows through explicit config, persistent
+  model+endpoint cache, live endpoint metadata, provider-aware registry lookup,
+  and thin fallbacks; SynapseClaw now scopes cached live model/profile metadata
+  by endpoint and infers provider identity from catalog-owned base URLs, while
+  external provider-aware registry sources and adapter-local context-limit
+  feedback remain future Slice 18 work.
+- Hermes' progressive subdirectory hint tracker is useful, but its shell/path
+  string extraction should not be copied into core policy; SynapseClaw should
+  keep scoped context driven by typed tool facts and adapter-local fallbacks.
+
 What this implies:
 
 - compact continuation should be a default runtime concern, not a later cleanup
@@ -228,12 +254,18 @@ What we should take:
 - cache-friendly stable prefix
 - progressive discovery
 - compression as a core loop concern
+- provider usage feedback for compaction
+- pre-agent session hygiene
+- cheap old-tool-result pruning before summary-lane calls
+- post-compaction tool protocol sanitization
+- endpoint-aware model context-window resolution
 
 References:
 
 - <https://hermes-agent.nousresearch.com/docs/developer-guide/agent-loop/>
 - <https://hermes-agent.nousresearch.com/docs/developer-guide/context-compression-and-caching/>
 - <https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files/>
+- local source audit clone: `/home/protosik00/hermes-agent`
 
 ### 7. OpenCode
 
@@ -297,6 +329,11 @@ Reference:
 3. Everyday memory turns no longer depend on reading `SOUL.md` / `USER.md` on
    every cycle.
 4. CJK working-chain storage/recall works after the UTF-8 trimming fix.
+5. Progressive scoped instruction loading exists in both web and channel paths.
+6. Context pressure now consumes trusted model windows, provider-reported usage
+   tokens, and endpoint-scoped cached model metadata when available.
+7. Compaction now has Hermes-style hygiene for old large tool results and
+   post-compaction tool-call/result protocol repair.
 
 ### What is still behind the better agent products
 
@@ -304,9 +341,9 @@ Reference:
    - assembly behavior is still spread across runtime pieces instead of being a
      named lifecycle surface
 
-2. **No progressive project-context discovery yet**
-   - we removed eager file injection, but we do not yet have a smart replacement
-     like scoped lazy rule loading
+2. **Progressive project-context discovery is first pass only**
+   - scoped lazy rule loading exists, but there is not yet a repo/project brief
+     that can replace file archaeology for broad repository questions
 
 3. **No explicit repo/project brief**
    - we still fall back to file archaeology where a compact structural project

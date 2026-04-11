@@ -2,6 +2,9 @@
 
 Date: 2026-04-10
 
+Updated: 2026-04-11 after the Slice 12/13 follow-through and local Hermes
+source audit.
+
 ## Purpose
 
 This audit answers a specific question:
@@ -19,8 +22,10 @@ The current codebase is **not stuck because nothing exists**.
 It is stuck because several important systems now exist only in **first-pass**
 form:
 
-- compact context exists, but pressure management is still too heuristic
-- model-profile routing exists, but profile knowledge is still shallow
+- compact context exists and is now artifact/window-aware, but runtime hygiene
+  still lacks several Hermes-style safety valves
+- model-profile routing exists and now carries provenance/freshness/confidence,
+  but endpoint-aware context-window discovery is still incomplete
 - admission exists, but only for a narrow subset of turn classes
 - retrieval hardening exists, but not yet as an explicit memory-quality policy
 
@@ -166,47 +171,80 @@ Research-driven upgrade required:
 
 ## Current Code: What Is “Base but Too Weak”
 
-### 1. Model profile resolution exists, but remains shallow
+### 1. Model profile resolution exists, but discovery is still incomplete
 
 Current implementation:
 
 - [model_lane_resolution.rs](../../crates/domain/src/application/services/model_lane_resolution.rs)
 - [model_profile_catalog.rs](../../crates/domain/src/ports/model_profile_catalog.rs)
 
-Current weakness:
+Current status:
 
-- `ResolvedModelProfile` only carries:
+- `ResolvedModelProfile` now carries:
   - `context_window_tokens`
   - `max_output_tokens`
   - `features`
-- it does **not** yet carry:
   - provenance
   - freshness
   - confidence
   - explicit unknown-state
+- bundled/local/cached catalogs can feed route profiles
+- `/model` and `/models` surface profile provenance and quality
+- cached live model/profile metadata is now scoped by normalized endpoint in
+  addition to provider name
+- custom endpoint provider inference is catalog-driven through editable
+  `api_base_urls`, not Rust model/URL match arms
+
+Current weakness:
+
+- no models.dev-style provider-aware registry source yet
+- no adapter-local context-limit-error parser that feeds typed profile/cache
+  updates yet
+- no explicit probe-down tier strategy for unknown/local endpoints yet
 
 Implication:
 
-- `Slice 12` must upgrade the existing profile object, not add another metadata layer
+- `Slice 12` / `Slice 18` should strengthen the existing profile resolver
+  instead of adding another metadata layer
 
-### 2. Context pressure exists, but mostly as char-threshold policy
+### 2. Context pressure is artifact-aware, but runtime hygiene gaps remain
 
 Current implementation:
 
 - [provider_context_budget.rs](../../crates/domain/src/application/services/provider_context_budget.rs)
 - [history_compaction.rs](../../crates/domain/src/application/services/history_compaction.rs)
 - [turn_admission.rs](../../crates/domain/src/application/services/turn_admission.rs)
+- [history_compaction_cache.rs](../../crates/domain/src/ports/history_compaction_cache.rs)
 
-Current weakness:
+Current status:
 
-- context pressure is still mostly driven by:
-  - character counts
-  - message counts
-  - one main compaction style
+- `ContextBudgetSnapshot` tracks artifact-level provider-facing pressure
+- trusted model context is treated as `input + output`
+- safe input subtracts reserved output headroom
+- compression threshold is `50%` of safe input
+- hard safety ceiling is `85%` of safe input
+- large trusted windows scale by ratio
+- route-switch preflight can compact or block big-window -> small-window moves
+- compaction has protected head/tail and avoids splitting tool-call/tool-result
+  groups
+- persistent shared compaction cache is visible through web and channel route
+  inspection
+- provider-reported input/prompt token usage can feed the next compaction decision
+- web/channel session hygiene now provides a pre-provider guard for already-bloated
+  provider-facing history
+- old large tool results are pruned before summary-lane calls
+- post-compaction tool protocol sanitization removes orphan results and inserts
+  bounded missing-result stubs
+
+Current weakness after Hermes source audit:
+
+- no pluggable context-engine interface yet; defer until the domain service/port
+  boundary stabilizes
 
 Implication:
 
-- `Slice 13` should replace these weak heuristics with artifact-aware pressure policy
+- `Slice 13` should continue as a follow-through on the existing pressure
+  manager, not a replacement subsystem
 
 ### 3. Admission exists, but the intent/capability matrix is narrow
 
@@ -251,13 +289,13 @@ Implication:
 
 | Slice | Earlier plan overlap | Current code baseline exists? | Research-driven upgrade required? | Notes |
 |---|---|---:|---:|---|
-| 12 `ResolvedModelProfile` registry | capability-driven channels, current `4.10` routing groundwork | yes | medium | upgrade current profile merge into provenance-aware registry |
-| 13 context-pressure manager | `4.10` compaction + `4.6` continuation/state bridge | yes | yes | replace char-threshold policy with artifact-aware budget policy |
+| 12 `ResolvedModelProfile` registry | capability-driven channels, current `4.10` routing groundwork | yes | medium | provenance/confidence, endpoint-scoped live cache, and catalog-driven URL inference landed; next upgrade is provider-aware registry/error feedback |
+| 13 context-pressure manager | `4.10` compaction + `4.6` continuation/state bridge | yes | yes | artifact/window-aware pressure plus Hermes-style hygiene/tool-result pruning landed; defer pluggable context-engine layer |
 | 14 modality routing | capability routing already present in channels + `4.10` lanes | yes | medium | finish matrix, do not add a second router |
 | 15 explainable self-repair | reflections/failure memory in `4.3/4.9` | partial | yes | bounded typed repair ledger should replace ad hoc failure traces |
 | 16 memory-quality governor | `4.9` memory quality + foundation plan | yes | yes | current retrieval/entity filters should be unified under one policy |
 | 17 typed handoff packets | `4.1` typed handoffs + `4.6` continuation policy | partial | yes | make handoff a first-class typed bridge |
-| 18 background capability probe | current catalog/profile groundwork | partial | medium | mostly systems/product research, not pure papers |
+| 18 background capability probe | current catalog/profile groundwork | partial | medium | endpoint-scoped cache and catalog-driven URL inference landed; add context-limit error parsing and optional probe-down fallback |
 | 19 assumption tracker | `4.6` dialogue state and referential resolution | partial | yes | promote implicit defaults into explicit assumptions |
 | 20 epistemic state | `4.3` fact confidence + foundation conflict rules | partial | yes | upgrade confidence/conflict into proper knowledge-state categories |
 | 21 watchdog + digest | `4.1` resilient execution and existing health checks | partial | medium | strong systems pattern, less prior direct code |
@@ -283,7 +321,14 @@ These are the main research/product tracks worth consulting before strengthening
 
 Non-paper systems references also remain directly relevant:
 
-- Hermes context compression / provider runtime / fallback models
+- Hermes context compression / provider runtime / fallback models:
+  - provider usage feedback into future compaction decisions
+  - pre-agent gateway/session hygiene safety net
+  - cheap pruning of old tool results before summary-lane calls
+  - post-compaction tool-pair sanitizer
+  - endpoint-aware context-window cache
+  - catalog-driven provider URL inference
+  - still open: context-limit feedback
 - OpenClaw context engine and modality-specific model slots
 - LangGraph durable execution / checkpointing
 

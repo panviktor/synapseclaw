@@ -9,9 +9,13 @@ use crate::application::services::channel_presentation::{
     self, ChannelPresentationMode, CompactProgressSurface,
 };
 use crate::application::services::dialogue_state_service::{self, DialogueStateStore};
+use crate::application::services::history_compaction::{
+    compact_provider_history_for_session_hygiene, SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+};
 use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
+use crate::application::services::provider_context_budget::provider_context_input_for_history;
 use crate::application::services::turn_markup::{
     contains_image_attachment_marker, strip_image_attachment_markers,
 };
@@ -39,7 +43,6 @@ use std::sync::Arc;
 
 /// Max chars for hook-modified outbound content.
 const HOOK_MAX_OUTBOUND_CHARS: usize = 20_000;
-
 /// Configuration for the inbound message handler.
 #[derive(Clone)]
 pub struct InboundMessageConfig {
@@ -172,38 +175,23 @@ pub async fn handle(
             // Apply state changes
             match &effect {
                 CommandEffect::ClearSession => {
-                    ports.history.clear_history(&conversation_key);
-                    ports.routes.clear_route(&conversation_key);
+                    // Clear semantics are adapter lifecycle-specific. Channel
+                    // command hosts clear the concrete in-memory route/history
+                    // backend after command dispatch.
                 }
-                CommandEffect::SwitchProvider { provider } => {
-                    let mut route = ports.routes.get_route(&conversation_key);
-                    route.provider = provider.clone();
-                    route.lane = None;
-                    route.candidate_index = None;
-                    route.last_admission = None;
-                    route.last_tool_repair = None;
-                    route.recent_admissions.clear();
-                    route.recent_tool_repairs.clear();
-                    ports.routes.set_route(&conversation_key, route);
+                CommandEffect::SwitchProvider { .. } => {
+                    // Provider validation/canonicalization is adapter-owned because it
+                    // depends on concrete provider initialization. The adapter runtime
+                    // command host applies the route mutation only after validation.
                 }
-                CommandEffect::SwitchModel {
-                    model,
-                    inferred_provider,
-                } => {
-                    let mut route = ports.routes.get_route(&conversation_key);
-                    route.model = model.clone();
-                    if let Some(p) = inferred_provider {
-                        route.provider = p.clone();
-                    }
-                    route.lane = None;
-                    route.candidate_index = None;
-                    route.last_admission = None;
-                    route.last_tool_repair = None;
-                    route.recent_admissions.clear();
-                    route.recent_tool_repairs.clear();
-                    ports.routes.set_route(&conversation_key, route);
+                CommandEffect::SwitchModel { .. } => {
+                    // Model route mutation and target-window preflight need the
+                    // concrete runtime route backend, provider catalog, and
+                    // compaction lifecycle, so adapters own the side effect.
                 }
-                CommandEffect::ShowProviders | CommandEffect::ShowModel => {}
+                CommandEffect::SwitchModelBlocked { .. }
+                | CommandEffect::ShowProviders
+                | CommandEffect::ShowModel => {}
             }
 
             Ok(HandleResult::Command {
@@ -265,10 +253,7 @@ async fn handle_regular_message(
                 route.model = route_match.model.clone();
                 route.lane = route_match.capability;
                 route.candidate_index = None;
-                route.last_admission = None;
-                route.last_tool_repair = None;
-                route.recent_admissions.clear();
-                route.recent_tool_repairs.clear();
+                route.clear_runtime_diagnostics();
             }
         }
     }
@@ -305,10 +290,7 @@ async fn handle_regular_message(
         route.model = route_override.model.clone();
         route.lane = Some(route_override.lane);
         route.candidate_index = route_override.candidate_index;
-        route.last_admission = None;
-        route.last_tool_repair = None;
-        route.recent_admissions.clear();
-        route.recent_tool_repairs.clear();
+        route.clear_runtime_diagnostics();
     }
 
     // ── #5: Auto-save memory on inbound ──────────────────────────
@@ -626,105 +608,6 @@ fn build_model_routing_config(config: &InboundMessageConfig) -> crate::config::s
     routing
 }
 
-fn provider_context_input_for_history(
-    history: &[ChatMessage],
-) -> crate::application::services::provider_context_budget::ProviderContextBudgetInput {
-    let non_system_messages = history.iter().filter(|msg| msg.role != "system").count();
-    let prior_chat_messages = non_system_messages.saturating_sub(1);
-    let total_chars: usize = history.iter().map(|msg| msg.content.chars().count()).sum();
-    let system_breakdown = provider_history_system_breakdown(history);
-    let system_chars: usize = history
-        .iter()
-        .filter(|msg| msg.role == "system")
-        .map(|msg| msg.content.chars().count())
-        .sum();
-    let current_turn_chars = history
-        .iter()
-        .rev()
-        .find(|msg| msg.role != "system")
-        .map(|msg| msg.content.chars().count())
-        .unwrap_or(0);
-    let prior_chat_chars = total_chars
-        .saturating_sub(system_chars)
-        .saturating_sub(current_turn_chars);
-
-    crate::application::services::provider_context_budget::ProviderContextBudgetInput {
-        total_chars,
-        prior_chat_messages,
-        current_turn_messages: usize::from(non_system_messages > 0),
-        bootstrap_chars: lookup_system_section_chars(&system_breakdown, "bootstrap"),
-        core_memory_chars: lookup_system_section_chars(&system_breakdown, "core_memory"),
-        runtime_interpretation_chars: lookup_system_section_chars(
-            &system_breakdown,
-            "runtime_interpretation",
-        ),
-        scoped_context_chars: lookup_system_section_chars(&system_breakdown, "scoped_context"),
-        resolution_chars: lookup_system_section_chars(&system_breakdown, "resolution"),
-        prior_chat_chars,
-        current_turn_chars,
-        ..Default::default()
-    }
-}
-
-fn provider_history_system_breakdown(history: &[ChatMessage]) -> Vec<(String, usize)> {
-    let mut breakdown = std::collections::BTreeMap::<String, usize>::new();
-    for message in history.iter().filter(|msg| msg.role == "system") {
-        for (name, chars) in classify_system_message_sections(&message.content) {
-            *breakdown.entry(name.to_string()).or_default() += chars;
-        }
-    }
-    breakdown.into_iter().collect()
-}
-
-fn classify_system_message_sections(content: &str) -> Vec<(&'static str, usize)> {
-    let markers = [
-        ("[core-memory]\n", "core_memory"),
-        ("[runtime-interpretation]\n", "runtime_interpretation"),
-        ("[scoped-context]\n", "scoped_context"),
-        ("[resolution-plan]\n", "resolution"),
-        ("[clarification-policy]\n", "resolution"),
-        ("[execution-guidance]\n", "resolution"),
-    ];
-
-    let mut ranges = markers
-        .iter()
-        .filter_map(|(marker, name)| content.find(marker).map(|start| (start, *marker, *name)))
-        .collect::<Vec<_>>();
-    ranges.sort_by_key(|(start, _, _)| *start);
-
-    if ranges.is_empty() {
-        return vec![("bootstrap", content.chars().count())];
-    }
-
-    let mut sections = Vec::new();
-    if let Some((first_start, _, _)) = ranges.first().copied() {
-        if first_start > 0 {
-            sections.push(("bootstrap", content[..first_start].chars().count()));
-        }
-    }
-
-    for (index, (start, marker, name)) in ranges.iter().enumerate() {
-        let end = ranges
-            .get(index + 1)
-            .map(|(next_start, _, _)| *next_start)
-            .unwrap_or(content.len());
-        let slice = &content[*start..end];
-        if !slice.is_empty() {
-            let marker_chars = marker.chars().count();
-            sections.push((*name, slice.chars().count().max(marker_chars)));
-        }
-    }
-
-    sections
-}
-
-fn lookup_system_section_chars(breakdown: &[(String, usize)], section: &str) -> usize {
-    breakdown
-        .iter()
-        .find_map(|(name, chars)| (name == section).then_some(*chars))
-        .unwrap_or(0)
-}
-
 fn format_blocked_turn_admission_response(
     decision: &crate::application::services::turn_admission::CandidateAdmissionDecision,
 ) -> String {
@@ -781,18 +664,7 @@ fn format_blocked_turn_admission_response(
 }
 
 fn blocked_lane_name(lane: crate::config::schema::CapabilityLane) -> &'static str {
-    match lane {
-        crate::config::schema::CapabilityLane::Reasoning => "reasoning",
-        crate::config::schema::CapabilityLane::CheapReasoning => "cheap_reasoning",
-        crate::config::schema::CapabilityLane::Embedding => "embedding",
-        crate::config::schema::CapabilityLane::MultimodalUnderstanding => {
-            "multimodal_understanding"
-        }
-        crate::config::schema::CapabilityLane::ImageGeneration => "image_generation",
-        crate::config::schema::CapabilityLane::AudioGeneration => "audio_generation",
-        crate::config::schema::CapabilityLane::VideoGeneration => "video_generation",
-        crate::config::schema::CapabilityLane::MusicGeneration => "music_generation",
-    }
+    lane.as_str()
 }
 
 /// Execute the agent turn and handle the response.
@@ -805,7 +677,7 @@ async fn execute_agent_turn(
     ports: &InboundMessagePorts,
     resolved_turn_defaults: crate::domain::turn_defaults::ResolvedTurnDefaults,
     mut route: crate::ports::route_selection::RouteSelection,
-    history: Vec<ChatMessage>,
+    mut history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
     struct ConversationContextGuard {
         port: Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
@@ -913,6 +785,22 @@ async fn execute_agent_turn(
             tool_summary: String::new(),
             tools_used: false,
         });
+    }
+
+    if admission_decision.requires_compaction {
+        let stored_compacted = ports
+            .history
+            .compact_history(conversation_key, SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS);
+        let provider_history_compacted = compact_provider_history_for_session_hygiene(
+            &mut history,
+            SESSION_HYGIENE_KEEP_NON_SYSTEM_TURNS,
+        );
+        tracing::info!(
+            conversation_key,
+            stored_compacted,
+            provider_history_compacted,
+            "Compacted channel session before agent execution"
+        );
     }
 
     // ── Set current conversation context for tools that need "here" ──
@@ -1264,6 +1152,7 @@ fn channel_user_profile_key(envelope: &InboundEnvelope) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::schema::{ModelCandidateProfileConfig, ModelRouteConfig};
     use crate::domain::channel::SourceKind;
     use crate::ports::hooks::NoOpHooks;
     use crate::ports::route_selection::RouteSelection;
@@ -1309,8 +1198,11 @@ mod tests {
         fn clear_history(&self, key: &str) {
             self.turns.lock().unwrap().remove(key);
         }
-        fn compact_history(&self, _key: &str, _keep: usize) -> bool {
-            false
+        fn compact_history(&self, key: &str, keep: usize) -> bool {
+            let mut turns = self.turns.lock().unwrap();
+            turns
+                .get_mut(key)
+                .is_some_and(|history| compact_provider_history_for_session_hygiene(history, keep))
         }
         fn rollback_last_turn(&self, key: &str, _expected: &str) -> bool {
             if let Some(turns) = self.turns.lock().unwrap().get_mut(key) {
@@ -1349,6 +1241,65 @@ mod tests {
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}
         fn clear_route(&self, _key: &str) {}
+    }
+
+    struct RecordingRoutes {
+        default_provider: String,
+        default_model: String,
+        route: Mutex<Option<RouteSelection>>,
+        set_count: Mutex<usize>,
+    }
+
+    impl RecordingRoutes {
+        fn new(default_provider: &str, default_model: &str) -> Self {
+            Self {
+                default_provider: default_provider.to_string(),
+                default_model: default_model.to_string(),
+                route: Mutex::new(None),
+                set_count: Mutex::new(0),
+            }
+        }
+
+        fn set_count(&self) -> usize {
+            *self.set_count.lock().unwrap()
+        }
+
+        fn current_route(&self) -> Option<RouteSelection> {
+            self.route.lock().unwrap().clone()
+        }
+
+        fn default_route(&self) -> RouteSelection {
+            RouteSelection {
+                provider: self.default_provider.clone(),
+                model: self.default_model.clone(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: None,
+            }
+        }
+    }
+
+    impl RouteSelectionPort for RecordingRoutes {
+        fn get_route(&self, _key: &str) -> RouteSelection {
+            self.route
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| self.default_route())
+        }
+
+        fn set_route(&self, _key: &str, route: RouteSelection) {
+            *self.route.lock().unwrap() = Some(route);
+            *self.set_count.lock().unwrap() += 1;
+        }
+
+        fn clear_route(&self, _key: &str) {
+            *self.route.lock().unwrap() = None;
+        }
     }
 
     struct MockRuntime {
@@ -1501,6 +1452,35 @@ mod tests {
         assert_eq!(input.current_turn_messages, 1);
     }
 
+    #[test]
+    fn session_hygiene_compaction_preserves_system_and_recent_turns() {
+        let mut history = vec![
+            ChatMessage::system("bootstrap"),
+            ChatMessage::system("[runtime-interpretation]\nstate"),
+        ];
+        for idx in 0..10 {
+            history.push(ChatMessage::user(format!("user {idx}")));
+            history.push(ChatMessage::assistant(format!("assistant {idx}")));
+        }
+
+        assert!(compact_provider_history_for_session_hygiene(
+            &mut history,
+            4
+        ));
+
+        assert_eq!(history[0].role, "system");
+        assert_eq!(history[1].role, "system");
+        let non_system = history
+            .iter()
+            .filter(|message| message.role != "system")
+            .map(|message| message.content.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            non_system,
+            vec!["user 8", "assistant 8", "user 9", "assistant 9"]
+        );
+    }
+
     struct MockRegistry;
     #[async_trait]
     impl ChannelRegistryPort for MockRegistry {
@@ -1544,6 +1524,27 @@ mod tests {
         }
     }
 
+    fn config_with_route_window(
+        hint: &str,
+        provider: &str,
+        model: &str,
+        context_window_tokens: usize,
+    ) -> InboundMessageConfig {
+        let mut config = test_config();
+        config.model_routes = vec![ModelRouteConfig {
+            hint: hint.to_string(),
+            capability: None,
+            provider: provider.to_string(),
+            model: model.to_string(),
+            api_key: None,
+            profile: ModelCandidateProfileConfig {
+                context_window_tokens: Some(context_window_tokens),
+                ..Default::default()
+            },
+        }];
+        config
+    }
+
     fn test_envelope(content: &str) -> InboundEnvelope {
         InboundEnvelope {
             source_kind: SourceKind::Channel,
@@ -1559,12 +1560,24 @@ mod tests {
     }
 
     fn test_ports(response: &str) -> InboundMessagePorts {
-        InboundMessagePorts {
-            history: Arc::new(MockHistory::new()),
-            routes: Arc::new(MockRoutes {
+        test_ports_with_state(
+            Arc::new(MockHistory::new()),
+            Arc::new(MockRoutes {
                 default_provider: "openrouter".into(),
                 default_model: "default-model".into(),
             }),
+            response,
+        )
+    }
+
+    fn test_ports_with_state(
+        history: Arc<dyn ConversationHistoryPort>,
+        routes: Arc<dyn RouteSelectionPort>,
+        response: &str,
+    ) -> InboundMessagePorts {
+        InboundMessagePorts {
+            history,
+            routes,
             hooks: Arc::new(NoOpHooks),
             channel_output: Arc::new(MockChannelOutput),
             agent_runtime: Arc::new(MockRuntime {
@@ -1605,6 +1618,29 @@ mod tests {
         let ports = test_ports("Hi!");
         handle(&env, &caps, &test_config(), &ports).await.unwrap();
         assert_eq!(ports.history.get_history("telegram_user1").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn channel_provider_switch_waits_for_adapter_validation() {
+        let env = test_envelope("/models grok");
+        let caps = vec![
+            ChannelCapability::SendText,
+            ChannelCapability::RuntimeCommands,
+        ];
+        let routes = Arc::new(RecordingRoutes::new("openrouter", "default-model"));
+        let ports = test_ports_with_state(Arc::new(MockHistory::new()), routes.clone(), "");
+
+        let result = handle(&env, &caps, &test_config(), &ports).await.unwrap();
+
+        match result {
+            HandleResult::Command {
+                effect: CommandEffect::SwitchProvider { provider },
+                ..
+            } => assert_eq!(provider, "grok"),
+            other => panic!("expected provider switch command, got {other:?}"),
+        }
+        assert_eq!(routes.set_count(), 0);
+        assert!(routes.current_route().is_none());
     }
 
     #[tokio::test]
@@ -1670,7 +1706,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_command_clears_session() {
+    async fn handle_command_defers_clear_session_to_adapter() {
         let env = test_envelope("/new");
         let caps = vec![
             ChannelCapability::SendText,
@@ -1688,7 +1724,87 @@ mod tests {
                 ..
             }
         ));
-        assert!(!ports.history.has_history("telegram_user1"));
+        assert!(ports.history.has_history("telegram_user1"));
+    }
+
+    #[tokio::test]
+    async fn channel_model_switch_waits_for_adapter_preflight() {
+        let env = test_envelope("/model tiny");
+        let caps = vec![
+            ChannelCapability::SendText,
+            ChannelCapability::RuntimeCommands,
+        ];
+        let history = Arc::new(MockHistory::new());
+        history.append_turn("telegram_user1", ChatMessage::user("x".repeat(20_000)));
+        let routes = Arc::new(RecordingRoutes::new("openrouter", "large-model"));
+        let ports = test_ports_with_state(history, routes.clone(), "");
+        let config = config_with_route_window("tiny", "openrouter", "tiny-model", 1_000);
+
+        let result = handle(&env, &caps, &config, &ports).await.unwrap();
+
+        match result {
+            HandleResult::Command {
+                effect:
+                    CommandEffect::SwitchModel {
+                        model,
+                        inferred_provider,
+                        lane,
+                        compacted,
+                    },
+                ..
+            } => {
+                assert_eq!(model, "tiny-model");
+                assert_eq!(inferred_provider, Some("openrouter".to_string()));
+                assert_eq!(lane, None);
+                assert!(!compacted);
+            }
+            other => panic!("expected model switch command, got {other:?}"),
+        }
+        assert_eq!(routes.set_count(), 0);
+        assert!(routes.current_route().is_none());
+    }
+
+    #[tokio::test]
+    async fn channel_model_switch_defers_safe_downshift_mutation_to_adapter() {
+        let env = test_envelope("/model compact");
+        let caps = vec![
+            ChannelCapability::SendText,
+            ChannelCapability::RuntimeCommands,
+        ];
+        let history = Arc::new(MockHistory::new());
+        for idx in 0..20 {
+            history.append_turn(
+                "telegram_user1",
+                ChatMessage::user(format!("{idx}: {}", "x".repeat(1_000))),
+            );
+        }
+        let routes = Arc::new(RecordingRoutes::new("openrouter", "large-model"));
+        let ports = test_ports_with_state(history.clone(), routes.clone(), "");
+        let config = config_with_route_window("compact", "openrouter", "compact-model", 8_000);
+
+        let result = handle(&env, &caps, &config, &ports).await.unwrap();
+
+        match result {
+            HandleResult::Command {
+                effect:
+                    CommandEffect::SwitchModel {
+                        model,
+                        inferred_provider,
+                        compacted,
+                        ..
+                    },
+                ..
+            } => {
+                assert_eq!(model, "compact-model");
+                assert_eq!(inferred_provider, Some("openrouter".to_string()));
+                assert!(!compacted);
+            }
+            other => panic!("expected switched model, got {other:?}"),
+        }
+
+        assert_eq!(routes.set_count(), 0);
+        assert!(routes.current_route().is_none());
+        assert_eq!(history.get_history("telegram_user1").len(), 20);
     }
 
     #[tokio::test]
