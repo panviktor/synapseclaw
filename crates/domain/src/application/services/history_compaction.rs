@@ -94,6 +94,53 @@ impl From<&crate::config::schema::ContextCompressionConfig> for HistoryCompressi
     }
 }
 
+pub fn resolve_context_compression_config_for_route(
+    base: &crate::config::schema::ContextCompressionConfig,
+    overrides: &[crate::config::schema::ContextCompressionRouteOverrideConfig],
+    provider: &str,
+    model: &str,
+    lane: Option<crate::config::schema::CapabilityLane>,
+    hint: Option<&str>,
+) -> crate::config::schema::ContextCompressionConfig {
+    overrides.iter().fold(base.clone(), |policy, candidate| {
+        if compression_override_matches(candidate, provider, model, lane, hint) {
+            policy.apply_override(candidate)
+        } else {
+            policy
+        }
+    })
+}
+
+fn compression_override_matches(
+    candidate: &crate::config::schema::ContextCompressionRouteOverrideConfig,
+    provider: &str,
+    model: &str,
+    lane: Option<crate::config::schema::CapabilityLane>,
+    hint: Option<&str>,
+) -> bool {
+    let has_selector = candidate.hint.is_some()
+        || candidate.provider.is_some()
+        || candidate.model.is_some()
+        || candidate.lane.is_some();
+    if !has_selector {
+        return true;
+    }
+
+    candidate.hint.as_deref().map_or(true, |expected| {
+        hint.is_some_and(|actual| expected.eq_ignore_ascii_case(actual))
+    }) && candidate
+        .provider
+        .as_deref()
+        .map_or(true, |expected| expected.eq_ignore_ascii_case(provider))
+        && candidate
+            .model
+            .as_deref()
+            .map_or(true, |expected| expected == model)
+        && candidate
+            .lane
+            .map_or(true, |expected| lane == Some(expected))
+}
+
 /// Estimate token count for a message history using ~4 chars/token heuristic.
 /// Includes a small overhead per message for role/framing tokens.
 pub fn estimate_history_tokens(history: &[ChatMessage]) -> usize {
@@ -464,6 +511,9 @@ pub fn apply_compaction_with_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::schema::{
+        CapabilityLane, ContextCompressionConfig, ContextCompressionRouteOverrideConfig,
+    };
 
     #[test]
     fn trim_history_preserves_system() {
@@ -636,6 +686,68 @@ mod tests {
             history_compression_summary_budget_tokens(100_000, Some(20_000), &policy),
             1_000
         );
+    }
+
+    #[test]
+    fn route_compression_overrides_compose_by_selector_order() {
+        let base = ContextCompressionConfig::default();
+        let overrides = vec![
+            ContextCompressionRouteOverrideConfig {
+                provider: Some("deepseek".into()),
+                threshold: Some(0.35),
+                protect_last_n: Some(10),
+                ..Default::default()
+            },
+            ContextCompressionRouteOverrideConfig {
+                provider: Some("deepseek".into()),
+                lane: Some(CapabilityLane::CheapReasoning),
+                threshold: Some(0.25),
+                cache_ttl_secs: Some(3_600),
+                ..Default::default()
+            },
+            ContextCompressionRouteOverrideConfig {
+                hint: Some("grok-long".into()),
+                target_ratio: Some(0.30),
+                cache_max_entries: Some(1_024),
+                ..Default::default()
+            },
+        ];
+
+        let deepseek_reasoning = resolve_context_compression_config_for_route(
+            &base,
+            &overrides,
+            "deepseek",
+            "deepseek-chat",
+            Some(CapabilityLane::Reasoning),
+            None,
+        );
+        assert_eq!(deepseek_reasoning.threshold, 0.35);
+        assert_eq!(deepseek_reasoning.protect_last_n, 10);
+        assert_eq!(deepseek_reasoning.cache_ttl_secs, base.cache_ttl_secs);
+
+        let deepseek_cheap = resolve_context_compression_config_for_route(
+            &base,
+            &overrides,
+            "deepseek",
+            "deepseek-chat",
+            Some(CapabilityLane::CheapReasoning),
+            None,
+        );
+        assert_eq!(deepseek_cheap.threshold, 0.25);
+        assert_eq!(deepseek_cheap.protect_last_n, 10);
+        assert_eq!(deepseek_cheap.cache_ttl_secs, 3_600);
+
+        let grok_long = resolve_context_compression_config_for_route(
+            &base,
+            &overrides,
+            "openrouter",
+            "x-ai/grok-4.20",
+            Some(CapabilityLane::Reasoning),
+            Some("grok-long"),
+        );
+        assert_eq!(grok_long.threshold, base.threshold);
+        assert_eq!(grok_long.target_ratio, 0.30);
+        assert_eq!(grok_long.cache_max_entries, 1_024);
     }
 
     #[test]

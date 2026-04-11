@@ -582,6 +582,45 @@ mod tests {
     }
 
     #[test]
+    fn different_provider_windows_shift_pressure_boundaries() {
+        let source =
+            crate::application::services::model_lane_resolution::ResolvedModelProfileSource::ManualConfig;
+        let deepseek_profile = ResolvedModelProfile {
+            context_window_tokens: Some(128_000),
+            context_window_source: source,
+            max_output_tokens: Some(8_000),
+            max_output_source: source,
+            ..Default::default()
+        };
+        let grok_profile = ResolvedModelProfile {
+            context_window_tokens: Some(2_000_000),
+            context_window_source: source,
+            max_output_tokens: Some(128_000),
+            max_output_source: source,
+            ..Default::default()
+        };
+        let input = ProviderContextBudgetInput {
+            total_chars: 300_000,
+            prior_chat_messages: 6,
+            current_turn_messages: 1,
+            prior_chat_chars: 250_000,
+            current_turn_chars: 4_000,
+            ..Default::default()
+        };
+
+        let deepseek =
+            assess_provider_context_budget(input.with_target_model_profile(&deepseek_profile));
+        let grok = assess_provider_context_budget(input.with_target_model_profile(&grok_profile));
+
+        assert_eq!(deepseek.tier, ProviderContextBudgetTier::Caution);
+        assert_eq!(deepseek.target_total_chars, 240_000);
+        assert_eq!(deepseek.snapshot.reserved_output_headroom_tokens, 8_000);
+        assert_eq!(grok.tier, ProviderContextBudgetTier::Healthy);
+        assert_eq!(grok.target_total_chars, 3_744_000);
+        assert_eq!(grok.snapshot.reserved_output_headroom_tokens, 128_000);
+    }
+
+    #[test]
     fn low_confidence_window_metadata_keeps_legacy_compact_budget() {
         let profile = ResolvedModelProfile {
             context_window_tokens: Some(262_144),

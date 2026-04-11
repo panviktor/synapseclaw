@@ -1339,6 +1339,7 @@ fn current_web_route_selection(
         recent_admissions: session.agent.recent_turn_admissions().to_vec(),
         last_tool_repair: session.agent.last_turn_tool_repair().cloned(),
         recent_tool_repairs: session.agent.recent_turn_tool_repairs().to_vec(),
+        context_cache: Some(session.agent.history_compaction_cache_stats()),
     })
 }
 

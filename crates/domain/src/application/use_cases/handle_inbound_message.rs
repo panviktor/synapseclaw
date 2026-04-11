@@ -1344,6 +1344,7 @@ mod tests {
                 recent_admissions: Vec::new(),
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
+                context_cache: None,
             }
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}

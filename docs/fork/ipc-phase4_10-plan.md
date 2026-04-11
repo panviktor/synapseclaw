@@ -702,6 +702,14 @@ Expected outcome:
       TTL-bounded by default to 2 days, and LRU-capped by config; this makes
       restart/fleet behavior closer to Hermes-style prompt caching while staying
       provider-agnostic
+    - compression policy now supports per-route overrides selected by
+      `hint` / `provider` / `model` / `lane`, composed in deterministic selector
+      order rather than model-specific Rust match arms
+    - live agent compaction now resolves those route-specific compression
+      settings before thresholding, cache lookup, and cache eviction
+    - route/runtime inspection now carries condensed artifact cache stats
+      (`entries`, `hits`, `max`, `ttl`, `loaded`) through `RouteSelection`
+      and `/models`, so cache behavior is visible without reading workspace state
   - Slice 14 follow-through partial:
     - the same structured marker routing now covers image/audio/video/music
       generation instead of relying on free-text phrase detection
@@ -756,6 +764,16 @@ Expected outcome:
       default preset remains `chatgpt`
     - provider model cache still wins when fresh, then bundled/local catalog
       profile metadata is used as fallback
+  - OpenRouter Grok 4.20 is now catalog-driven as a standard optional/test route:
+    - curated id: `x-ai/grok-4.20`
+    - aliases: `grok420` and `grok-4.20`
+    - profile metadata records the OpenRouter route's `2_000_000` token context
+      window and `66_000` max output
+    - pricing metadata records OpenRouter's current `2.0 / 6.0` input/output
+      per-million-token prices
+    - stale `grok-4.1` examples were removed from tool schema descriptions and
+      the ambiguous Venice curated list rather than being guessed into another
+      provider's support matrix
   - OpenRouter reasoning-control follow-through:
     - runtime `reasoning_enabled` / `reasoning_effort` now reach the OpenRouter
       adapter as the provider-native `reasoning` request object
@@ -770,10 +788,10 @@ Expected outcome:
     - continue feeding profile confidence into remaining tool-capability decisions
       beyond route-switch and lane admission
   - Slice 13 follow-through:
-    - promote compression policy from top-level operator knobs to optional
-      per-route/catalog overrides if specific lanes need different pressure
-      behavior later
-    - expose condensed artifact cache stats in operator/runtime inspection
+    - move selected compression presets into the model catalog if route-specific
+      pressure behavior becomes common enough to share out of the box
+    - add per-route cache stats once runtime inspection has an active route context;
+      the current `/models` surface reports the shared per-agent cache state
   - reasoning-control follow-through:
     - promote provider reasoning controls from global runtime override to a
       capability/lane policy once the model-profile registry exposes support

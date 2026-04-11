@@ -16,6 +16,15 @@ pub struct RouteAdmissionState {
     pub recommended_action: Option<AdmissionRepairHint>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextCacheStats {
+    pub entries: usize,
+    pub hits: u64,
+    pub max_entries: usize,
+    pub ttl_secs: u64,
+    pub loaded: bool,
+}
+
 /// A sender's active routed model selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteSelection {
@@ -33,6 +42,8 @@ pub struct RouteSelection {
     pub last_tool_repair: Option<ToolRepairTrace>,
     /// Bounded recent structured tool self-repair traces for explainability.
     pub recent_tool_repairs: Vec<ToolRepairTrace>,
+    /// Current context/compaction cache stats, when this route is backed by a live agent.
+    pub context_cache: Option<ContextCacheStats>,
 }
 
 /// Port for managing per-sender route overrides.

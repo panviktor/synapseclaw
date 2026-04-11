@@ -394,6 +394,7 @@ mod tests {
         assert!(curated
             .iter()
             .any(|(model, _)| model == "google/gemma-4-26b-a4b-it"));
+        assert!(curated.iter().any(|(model, _)| model == "x-ai/grok-4.20"));
 
         let pricing = default_pricing_table();
         let price = pricing
@@ -406,6 +407,9 @@ mod tests {
             .expect("pricing should exist");
         assert_eq!(price.input, 0.12);
         assert_eq!(price.output, 0.40);
+        let price = pricing.get("x-ai/grok-4.20").expect("pricing should exist");
+        assert_eq!(price.input, 2.0);
+        assert_eq!(price.output, 6.0);
 
         let profile =
             model_profile("openrouter", "google/gemma-4-31b-it").expect("profile should exist");
@@ -435,12 +439,25 @@ mod tests {
             Some(CatalogModelProfileSource::BundledCatalog)
         );
 
+        let profile = model_profile("openrouter", "x-ai/grok-4.20").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(2_000_000));
+        assert_eq!(profile.max_output_tokens, Some(66_000));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+
         let aliases = model_route_aliases();
         assert!(aliases.iter().any(|route| route.hint == "gemma31b"));
         assert!(aliases.iter().any(|route| route.hint == "gemma26b"));
+        assert!(aliases.iter().any(|route| route.hint == "grok420"));
         let alias = model_route_alias("gemma31b").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "google/gemma-4-31b-it");
+        let alias = model_route_alias("grok-4.20").expect("alias should exist");
+        assert_eq!(alias.provider, "openrouter");
+        assert_eq!(alias.model, "x-ai/grok-4.20");
         let alias = model_route_alias("qwen36").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "qwen/qwen3.6-plus");

@@ -86,7 +86,8 @@
         { "id": "google/gemma-4-26b-a4b-it", "label": "Gemma 4 26B A4B IT (paid OpenRouter, efficient multimodal input)" },
         { "id": "qwen/qwen3.6-plus", "label": "Qwen3.6 Plus (frontier, free preview)" },
         { "id": "deepseek/deepseek-v4", "label": "DeepSeek V4 (latest, strong value)" },
-        { "id": "x-ai/grok-4.1-fast", "label": "Grok 4.1 Fast (reasoning + speed)" },
+        { "id": "x-ai/grok-4.20", "label": "Grok 4.20 (xAI flagship, 2M context)" },
+        { "id": "x-ai/grok-4.20-multi-agent", "label": "Grok 4.20 Multi-Agent (OpenRouter experimental)" },
         { "id": "meta-llama/llama-4-maverick", "label": "Llama 4 Maverick (open model)" },
         { "id": "moonshot/kimi-k2.5", "label": "Kimi K2.5 (agentic specialist)" }
       ]
@@ -129,8 +130,7 @@
       "curated_models": [
         { "id": "glm-5.1", "label": "GLM-5.1 via Venice (latest coding flagship)" },
         { "id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6 via Venice (best quality)" },
-        { "id": "deepseek-v4", "label": "DeepSeek V4 via Venice (latest)" },
-        { "id": "grok-4.1-fast", "label": "Grok 4.1 Fast via Venice (low latency)" }
+        { "id": "deepseek-v4", "label": "DeepSeek V4 via Venice (latest)" }
       ]
     },
     {
@@ -161,10 +161,10 @@
     },
     {
       "provider": "xai",
-      "default_model": "grok-4.1-fast-reasoning",
+      "default_model": "grok-4.20",
       "curated_models": [
-        { "id": "grok-4.1-fast-reasoning", "label": "Grok 4.1 Fast Reasoning (recommended)" },
-        { "id": "grok-4.1-fast-non-reasoning", "label": "Grok 4.1 Fast Non-Reasoning (low latency)" },
+        { "id": "grok-4.20", "label": "Grok 4.20 (recommended)" },
+        { "id": "grok-4.20-multi-agent", "label": "Grok 4.20 Multi-Agent" },
         { "id": "grok-4", "label": "Grok 4 (max quality)" }
       ]
     },
@@ -426,6 +426,7 @@
     { "model": "google/gemma-4-26b-a4b-it", "input": 0.12, "output": 0.40 },
     { "model": "deepseek/deepseek-v4", "input": 0.25, "output": 1.1 },
     { "model": "deepseek/deepseek-r1", "input": 0.55, "output": 2.19 },
+    { "model": "x-ai/grok-4.20", "input": 2.0, "output": 6.0 },
     { "model": "meta-llama/llama-4-maverick", "input": 0.2, "output": 0.6 },
     { "model": "moonshot/kimi-k2.5", "input": 0.6, "output": 2.5 },
     { "model": "mistral/mistral-large-3", "input": 0.5, "output": 1.5 },
@@ -446,6 +447,13 @@
       "context_window_tokens": 262144,
       "max_output_tokens": 262144,
       "features": ["tool_calling", "vision", "multimodal_understanding"]
+    },
+    {
+      "provider": "openrouter",
+      "model": "x-ai/grok-4.20",
+      "context_window_tokens": 2000000,
+      "max_output_tokens": 66000,
+      "features": ["tool_calling"]
     }
   ],
   "route_aliases": [
@@ -488,6 +496,16 @@
       "hint": "gemma26b",
       "provider": "openrouter",
       "model": "google/gemma-4-26b-a4b-it"
+    },
+    {
+      "hint": "grok420",
+      "provider": "openrouter",
+      "model": "x-ai/grok-4.20"
+    },
+    {
+      "hint": "grok-4.20",
+      "provider": "openrouter",
+      "model": "x-ai/grok-4.20"
     }
   ]
 }

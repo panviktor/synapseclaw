@@ -539,6 +539,7 @@ fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection
         recent_admissions: Vec::new(),
         last_tool_repair: None,
         recent_tool_repairs: Vec::new(),
+        context_cache: None,
     }
 }
 

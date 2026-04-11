@@ -41,6 +41,7 @@ pub mod procedural_cluster_review_service;
 pub mod procedural_cluster_service;
 pub mod procedural_contradiction_service;
 pub mod provider_context_budget;
+pub mod provider_native_context_policy;
 pub mod recipe_evolution_service;
 pub mod resolution_router;
 pub mod retention;

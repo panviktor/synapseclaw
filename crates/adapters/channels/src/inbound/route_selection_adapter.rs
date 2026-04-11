@@ -40,6 +40,7 @@ impl RouteSelectionPort for MutexMapRouteSelection {
                 recent_admissions: Vec::new(),
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
+                context_cache: None,
             })
     }
 

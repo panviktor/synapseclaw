@@ -201,6 +201,7 @@ pub async fn run_wizard(force: bool) -> Result<Config> {
         pipelines: synapse_domain::config::schema::PipelineEngineConfig::default(),
         summary_model: None,
         compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
+        compression_overrides: Vec::new(),
         summary: synapse_domain::config::schema::SummaryConfig::default(),
     };
 
@@ -552,6 +553,7 @@ async fn run_quick_setup_with_home(
         pipelines: synapse_domain::config::schema::PipelineEngineConfig::default(),
         summary_model: None,
         compression: synapse_domain::config::schema::ContextCompressionConfig::default(),
+        compression_overrides: Vec::new(),
         summary: synapse_domain::config::schema::SummaryConfig::default(),
     };
 

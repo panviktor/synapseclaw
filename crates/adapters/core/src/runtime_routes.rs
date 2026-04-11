@@ -7,6 +7,9 @@ use synapse_domain::application::services::model_lane_resolution::{
     resolved_model_profile_source_name,
 };
 use synapse_domain::application::services::model_preset_resolution::preset_title;
+use synapse_domain::application::services::provider_native_context_policy::{
+    resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
+};
 use synapse_domain::config::schema::{CapabilityLane, Config, ModelFeature};
 use synapse_domain::domain::tool_repair::{
     tool_failure_kind_name, tool_repair_action_name, ToolRepairAction, ToolRepairTrace,
@@ -184,6 +187,26 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
         "Current route feature coverage: {}",
         format_profile_feature_coverage(&current_profile)
     );
+    let native_context_policy =
+        resolve_provider_native_context_policy(ProviderNativeContextPolicyInput {
+            profile: &current_profile,
+            provider_prompt_caching: false,
+            operator_prompt_caching_enabled: config.agent.prompt_caching,
+        });
+    let _ = writeln!(
+        response,
+        "Native context policy: prompt_cache_supported=`{}` prompt_cache_enabled=`{}` server_continuation_supported=`{}`",
+        native_context_policy.prompt_caching_supported,
+        native_context_policy.prompt_caching_enabled,
+        native_context_policy.server_continuation_supported,
+    );
+    if let Some(cache) = current.context_cache {
+        let _ = writeln!(
+            response,
+            "History compaction cache: entries=`{}` hits=`{}` max=`{}` ttl_secs=`{}` loaded=`{}`",
+            cache.entries, cache.hits, cache.max_entries, cache.ttl_secs, cache.loaded,
+        );
+    }
 
     if let Some(preset) = config.model_preset.as_deref() {
         let _ = writeln!(
@@ -626,13 +649,16 @@ fn load_cached_model_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synapse_domain::config::schema::{Config, ModelRouteConfig};
+    use synapse_domain::config::schema::{
+        Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
+        ModelRouteConfig,
+    };
     use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairAction, ToolRepairTrace};
     use synapse_domain::domain::turn_admission::{
         CandidateAdmissionReason, ContextPressureState, TurnAdmissionAction, TurnAdmissionSnapshot,
         TurnIntentCategory,
     };
-    use synapse_domain::ports::route_selection::RouteAdmissionState;
+    use synapse_domain::ports::route_selection::{ContextCacheStats, RouteAdmissionState};
 
     #[test]
     fn providers_help_includes_current_route() {
@@ -645,6 +671,7 @@ mod tests {
             recent_admissions: Vec::new(),
             last_tool_repair: None,
             recent_tool_repairs: Vec::new(),
+            context_cache: None,
         });
         assert!(response.contains("Current provider: `openai-codex`"));
         assert!(response.contains("Switch provider with `/models <provider>`"));
@@ -673,6 +700,7 @@ mod tests {
                 recent_admissions: Vec::new(),
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
+                context_cache: None,
             },
             &config,
         );
@@ -716,6 +744,7 @@ mod tests {
                 recent_admissions: Vec::new(),
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
+                context_cache: None,
             },
             &config,
         );
@@ -759,6 +788,7 @@ mod tests {
                 recent_admissions: vec![recent],
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
+                context_cache: None,
             },
             &config,
         );
@@ -798,6 +828,7 @@ mod tests {
                     suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
                     detail: Some("missing delivery target".into()),
                 }],
+                context_cache: None,
             },
             &config,
         );
@@ -849,11 +880,66 @@ mod tests {
                 recent_admissions: Vec::new(),
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
+                context_cache: None,
             },
             &config,
         );
 
         assert!(response.contains("Current route feature coverage: reasoning, multimodal_understanding, image_generation, audio_generation"));
+    }
+
+    #[test]
+    fn models_help_includes_native_context_policy_and_cache_stats() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workspace_dir = workspace.path().to_path_buf();
+        config.agent.prompt_caching = true;
+        config.model_lanes = vec![ModelLaneConfig {
+            lane: CapabilityLane::Reasoning,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: "openrouter".into(),
+                model: "x-ai/grok-4.20".into(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: ModelCandidateProfileConfig {
+                    context_window_tokens: Some(2_000_000),
+                    max_output_tokens: Some(128_000),
+                    features: vec![
+                        ModelFeature::PromptCaching,
+                        ModelFeature::ServerContinuation,
+                    ],
+                },
+            }],
+        }];
+
+        let response = build_models_help_response(
+            &RouteSelection {
+                provider: "openrouter".into(),
+                model: "x-ai/grok-4.20".into(),
+                lane: Some(CapabilityLane::Reasoning),
+                candidate_index: Some(0),
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: Some(ContextCacheStats {
+                    entries: 7,
+                    hits: 11,
+                    max_entries: 256,
+                    ttl_secs: 172_800,
+                    loaded: true,
+                }),
+            },
+            &config,
+        );
+
+        assert!(response.contains(
+            "Native context policy: prompt_cache_supported=`true` prompt_cache_enabled=`true` server_continuation_supported=`true`"
+        ));
+        assert!(response.contains(
+            "History compaction cache: entries=`7` hits=`11` max=`256` ttl_secs=`172800` loaded=`true`"
+        ));
     }
 
     #[test]
