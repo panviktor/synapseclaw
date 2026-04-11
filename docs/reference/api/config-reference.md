@@ -50,8 +50,12 @@ Relevant keys:
 
 Operational notes:
 
-- Built-in preset seeds, provider defaults, curated provider model lists, and
-  default pricing come from the bundled model catalog.
+- Built-in preset seeds, provider defaults, curated provider model lists,
+  default pricing, and curated provider:model profile metadata come from the
+  bundled model catalog.
+- Provider model cache metadata wins first; bundled/local catalog profiles are
+  fallback metadata for context windows, max output, and feature coverage when
+  the live cache is missing.
 - Users can materialize a local editable override with:
   - `synapseclaw models catalog init`
 - The override file lives next to the resolved `config.toml`:

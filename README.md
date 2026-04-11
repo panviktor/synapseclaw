@@ -230,9 +230,10 @@ synapseclaw service status
 lane-based routing under the hood. Advanced users can still override the
 generated capability lanes later in `config.toml`.
 
-Built-in preset data, provider defaults, curated model lists, and default
-pricing now come from an external catalog. If you want to customize that
-catalog locally without editing repository files, run:
+Built-in preset data, provider defaults, curated model lists, curated
+provider:model profiles, and default pricing now come from an external catalog.
+If you want to customize that catalog locally without editing repository files,
+run:
 
 ```bash
 synapseclaw models catalog init
@@ -247,6 +248,9 @@ This writes `model_catalog.json` next to the active `config.toml`:
 At runtime SynapseClaw merges the local file over the built-in catalog on
 startup. This works the same way on Linux, macOS, BSD, and WSL2 because the
 runtime already resolves a single active config directory first.
+Live provider model-cache metadata wins over bundled profile metadata when it
+exists; catalog profiles are the fallback for context windows, max output, and
+feature coverage.
 
 > **Dev fallback (no global install):** prefix commands with `cargo run --release --` (example: `cargo run --release -- status`).
 

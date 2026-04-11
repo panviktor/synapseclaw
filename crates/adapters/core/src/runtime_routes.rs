@@ -64,6 +64,7 @@ impl WorkspaceModelProfileCatalog {
 impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
     fn lookup_model_profile(&self, provider: &str, model: &str) -> Option<CatalogModelProfile> {
         load_cached_model_profile(self.workspace_dir.as_path(), provider, model)
+            .or_else(|| synapse_domain::config::model_catalog::model_profile(provider, model))
     }
 }
 
@@ -832,5 +833,25 @@ mod tests {
         );
 
         assert!(response.contains("Current route feature coverage: reasoning, multimodal_understanding, image_generation, audio_generation"));
+    }
+
+    #[test]
+    fn workspace_profile_catalog_falls_back_to_bundled_catalog() {
+        let workspace = tempfile::tempdir().unwrap();
+        let catalog = WorkspaceModelProfileCatalog::new(workspace.path());
+
+        let profile = catalog
+            .lookup_model_profile("openrouter", "google/gemma-4-31b-it")
+            .expect("bundled Gemma profile should resolve without live cache");
+
+        assert_eq!(profile.context_window_tokens, Some(262_144));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile
+            .features
+            .contains(&ModelFeature::MultimodalUnderstanding));
     }
 }

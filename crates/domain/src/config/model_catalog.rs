@@ -4,7 +4,10 @@ use std::sync::{OnceLock, RwLock};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use crate::config::schema::{ModelLaneCandidateConfig, ModelLaneConfig, ModelPricing};
+use crate::config::schema::{
+    ModelFeature, ModelLaneCandidateConfig, ModelLaneConfig, ModelPricing,
+};
+use crate::ports::model_profile_catalog::{CatalogModelProfile, CatalogModelProfileSource};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownModelPreset {
@@ -27,6 +30,8 @@ struct ModelCatalogData {
     providers: Vec<ProviderModelCatalogEntry>,
     #[serde(default)]
     pricing: Vec<ModelPricingCatalogEntry>,
+    #[serde(default, alias = "model_profiles")]
+    profiles: Vec<ModelProfileCatalogEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +60,18 @@ struct ModelPricingCatalogEntry {
     model: String,
     input: f64,
     output: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ModelProfileCatalogEntry {
+    provider: String,
+    model: String,
+    #[serde(default)]
+    context_window_tokens: Option<usize>,
+    #[serde(default)]
+    max_output_tokens: Option<usize>,
+    #[serde(default)]
+    features: Vec<ModelFeature>,
 }
 
 #[derive(Debug)]
@@ -142,6 +159,17 @@ fn merge_catalog_data(
             *existing = pricing;
         } else {
             merged.pricing.push(pricing);
+        }
+    }
+
+    for profile in override_data.profiles {
+        if let Some(existing) = merged.profiles.iter_mut().find(|item| {
+            item.provider.eq_ignore_ascii_case(&profile.provider)
+                && item.model.eq_ignore_ascii_case(&profile.model)
+        }) {
+            *existing = profile;
+        } else {
+            merged.profiles.push(profile);
         }
     }
 
@@ -263,6 +291,29 @@ pub fn default_pricing_table() -> HashMap<String, ModelPricing> {
         .collect()
 }
 
+pub fn model_profile(provider: &str, model: &str) -> Option<CatalogModelProfile> {
+    let provider = provider.trim();
+    let model = model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+
+    active_model_catalog()
+        .data
+        .profiles
+        .iter()
+        .find(|entry| {
+            entry.provider.eq_ignore_ascii_case(provider) && entry.model.eq_ignore_ascii_case(model)
+        })
+        .map(|entry| CatalogModelProfile {
+            context_window_tokens: entry.context_window_tokens,
+            max_output_tokens: entry.max_output_tokens,
+            features: entry.features.clone(),
+            source: Some(CatalogModelProfileSource::BundledCatalog),
+            observed_at_unix: None,
+        })
+}
+
 pub fn apply_default_api_key(lanes: &mut [ModelLaneConfig], api_key: Option<&String>) {
     for lane in lanes {
         for candidate in &mut lane.candidates {
@@ -301,9 +352,60 @@ mod tests {
     }
 
     #[test]
+    fn openrouter_catalog_exposes_gemma_trial_profile_and_pricing() {
+        let curated = provider_curated_models("openrouter").expect("provider should exist");
+        assert!(curated
+            .iter()
+            .any(|(model, _)| model == "google/gemma-4-31b-it"));
+        assert!(curated
+            .iter()
+            .any(|(model, _)| model == "google/gemma-4-26b-a4b-it"));
+
+        let pricing = default_pricing_table();
+        let price = pricing
+            .get("google/gemma-4-31b-it")
+            .expect("pricing should exist");
+        assert_eq!(price.input, 0.14);
+        assert_eq!(price.output, 0.40);
+        let price = pricing
+            .get("google/gemma-4-26b-a4b-it")
+            .expect("pricing should exist");
+        assert_eq!(price.input, 0.12);
+        assert_eq!(price.output, 0.40);
+
+        let profile =
+            model_profile("openrouter", "google/gemma-4-31b-it").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(262_144));
+        assert_eq!(profile.max_output_tokens, Some(131_072));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::Vision));
+        assert!(profile
+            .features
+            .contains(&ModelFeature::MultimodalUnderstanding));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+
+        let profile =
+            model_profile("openrouter", "google/gemma-4-26b-a4b-it").expect("profile should exist");
+        assert_eq!(profile.context_window_tokens, Some(262_144));
+        assert_eq!(profile.max_output_tokens, Some(262_144));
+        assert!(profile.features.contains(&ModelFeature::ToolCalling));
+        assert!(profile.features.contains(&ModelFeature::Vision));
+        assert!(profile
+            .features
+            .contains(&ModelFeature::MultimodalUnderstanding));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::BundledCatalog)
+        );
+    }
+
+    #[test]
     fn provider_defaults_come_from_catalog_data() {
         assert_eq!(provider_default_model("openai-codex"), Some("gpt-5.4"));
-        assert_eq!(provider_default_model("ollama"), Some("llama3.2"));
+        assert_eq!(provider_default_model("ollama"), Some("llama4-scout"));
     }
 
     #[test]
@@ -315,6 +417,14 @@ mod tests {
                   "provider": "openai-codex",
                   "default_model": "example-main",
                   "curated_models": [{ "id": "example-main", "label": "Example Main" }]
+                }
+              ],
+              "profiles": [
+                {
+                  "provider": "openrouter",
+                  "model": "google/gemma-4-31b-it",
+                  "context_window_tokens": 128000,
+                  "features": ["tool_calling"]
                 }
               ]
             }"#,
@@ -329,5 +439,14 @@ mod tests {
             .expect("provider should exist");
         assert_eq!(openai.default_model, "example-main");
         assert_eq!(openai.curated_models.len(), 1);
+        let gemma = merged
+            .profiles
+            .iter()
+            .find(|profile| {
+                profile.provider == "openrouter" && profile.model == "google/gemma-4-31b-it"
+            })
+            .expect("profile should merge by provider/model key");
+        assert_eq!(gemma.context_window_tokens, Some(128_000));
+        assert_eq!(gemma.features, vec![ModelFeature::ToolCalling]);
     }
 }

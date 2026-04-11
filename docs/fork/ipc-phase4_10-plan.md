@@ -707,6 +707,13 @@ Expected outcome:
       can be made hard failures with `STRICT_CONTEXT_BUDGET=1`
     - the expensive long semantic dialogue check is opt-in with `RUN_HEAVY=1`
       and should be run only at slice-close points
+  - OpenRouter Gemma 4 31B paid trial candidate is now catalog-driven:
+    - curated id: `google/gemma-4-31b-it`
+    - follow-up paid 26B A4B id: `google/gemma-4-26b-a4b-it`
+    - pricing/profile metadata live in `model_catalog.json`, not runtime
+      match arms
+    - provider model cache still wins when fresh, then bundled/local catalog
+      profile metadata is used as fallback
 - next:
   - Slice 12 follow-through:
     - widen provenance beyond cached provider catalogs as more profile data moves into catalogs
@@ -1521,6 +1528,9 @@ Expected outcome:
 - OpenRouter/native/provider-specific routes may expose different context windows,
   max output, or features for the same model family; candidate metadata must
   capture those differences
+- OpenRouter Gemma paid-route smoke starts with `google/gemma-4-31b-it`;
+  `google/gemma-4-26b-a4b-it` is the follow-up efficient trial candidate after
+  the 31B route is healthy.
 - direct DeepSeek provider validation should use official API model ids:
   - `deepseek-chat`
   - `deepseek-reasoner`
