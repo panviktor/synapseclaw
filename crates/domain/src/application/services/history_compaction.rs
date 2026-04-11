@@ -139,8 +139,22 @@ pub fn compact_provider_history_for_session_hygiene(
         }
     }
     compacted.reverse();
+    drop_leading_non_user_provider_messages(&mut compacted);
     *history = compacted;
     true
+}
+
+fn drop_leading_non_user_provider_messages(history: &mut Vec<ChatMessage>) {
+    loop {
+        let Some(first_non_system) = history.iter().position(|message| message.role != "system")
+        else {
+            return;
+        };
+        if history[first_non_system].role == "user" {
+            return;
+        }
+        history.remove(first_non_system);
+    }
 }
 
 fn compression_override_matches(

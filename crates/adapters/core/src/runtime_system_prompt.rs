@@ -12,6 +12,12 @@ use synapse_infra::identity;
 
 pub const BOOTSTRAP_MAX_CHARS: usize = 20_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimePromptSurface {
+    Generic,
+    Channel,
+}
+
 /// Load workspace identity files and build a system prompt.
 ///
 /// Daily memory files (`memory/*.md`) are not injected; they are accessed
@@ -36,6 +42,27 @@ pub fn build_system_prompt(
     )
 }
 
+pub fn build_channel_system_prompt(
+    workspace_dir: &Path,
+    model_name: &str,
+    tools: &[(&str, &str)],
+    skills: &[Skill],
+    identity_config: Option<&IdentityConfig>,
+    bootstrap_max_chars: Option<usize>,
+) -> String {
+    build_system_prompt_with_surface(
+        workspace_dir,
+        model_name,
+        tools,
+        skills,
+        identity_config,
+        bootstrap_max_chars,
+        false,
+        SkillsPromptInjectionMode::Full,
+        RuntimePromptSurface::Channel,
+    )
+}
+
 pub fn build_system_prompt_with_mode(
     workspace_dir: &Path,
     model_name: &str,
@@ -45,6 +72,53 @@ pub fn build_system_prompt_with_mode(
     bootstrap_max_chars: Option<usize>,
     native_tools: bool,
     skills_prompt_mode: SkillsPromptInjectionMode,
+) -> String {
+    build_system_prompt_with_surface(
+        workspace_dir,
+        model_name,
+        tools,
+        skills,
+        identity_config,
+        bootstrap_max_chars,
+        native_tools,
+        skills_prompt_mode,
+        RuntimePromptSurface::Generic,
+    )
+}
+
+pub fn build_channel_system_prompt_with_mode(
+    workspace_dir: &Path,
+    model_name: &str,
+    tools: &[(&str, &str)],
+    skills: &[Skill],
+    identity_config: Option<&IdentityConfig>,
+    bootstrap_max_chars: Option<usize>,
+    native_tools: bool,
+    skills_prompt_mode: SkillsPromptInjectionMode,
+) -> String {
+    build_system_prompt_with_surface(
+        workspace_dir,
+        model_name,
+        tools,
+        skills,
+        identity_config,
+        bootstrap_max_chars,
+        native_tools,
+        skills_prompt_mode,
+        RuntimePromptSurface::Channel,
+    )
+}
+
+pub fn build_system_prompt_with_surface(
+    workspace_dir: &Path,
+    model_name: &str,
+    tools: &[(&str, &str)],
+    skills: &[Skill],
+    identity_config: Option<&IdentityConfig>,
+    bootstrap_max_chars: Option<usize>,
+    native_tools: bool,
+    skills_prompt_mode: SkillsPromptInjectionMode,
+    surface: RuntimePromptSurface,
 ) -> String {
     let mut prompt = String::with_capacity(8192);
 
@@ -147,13 +221,16 @@ pub fn build_system_prompt_with_mode(
         std::env::consts::OS,
     );
 
-    prompt.push_str("## Channel Capabilities\n\n");
-    prompt.push_str("- You are running as a messaging bot. Your response is automatically sent back to the user's channel.\n");
-    prompt.push_str("- You do NOT need to ask permission to respond — just respond directly.\n");
-    prompt.push_str("- NEVER repeat, describe, or echo credentials, tokens, API keys, or secrets in your responses.\n");
-    prompt.push_str("- If a tool output contains credentials, they have already been redacted — do not mention them.\n");
-    prompt.push_str("- When a user sends a voice note, it is automatically transcribed to text. Your text reply is automatically converted to a voice note and sent back. Do NOT attempt to generate audio yourself — TTS is handled by the channel.\n");
-    prompt.push_str("- NEVER narrate or describe your tool usage. Do NOT say 'Let me fetch...', 'I will use...', 'Searching...', or similar. Give the FINAL ANSWER only — no intermediate steps, no tool mentions, no progress updates.\n\n");
+    if surface == RuntimePromptSurface::Channel {
+        prompt.push_str("## Channel Capabilities\n\n");
+        prompt.push_str("- You are running as a messaging bot. Your response is automatically sent back to the user's channel.\n");
+        prompt
+            .push_str("- You do NOT need to ask permission to respond — just respond directly.\n");
+        prompt.push_str("- NEVER repeat, describe, or echo credentials, tokens, API keys, or secrets in your responses.\n");
+        prompt.push_str("- If a tool output contains credentials, they have already been redacted — do not mention them.\n");
+        prompt.push_str("- When a user sends a voice note, it is automatically transcribed to text. Your text reply is automatically converted to a voice note and sent back. Do NOT attempt to generate audio yourself — TTS is handled by the channel.\n");
+        prompt.push_str("- NEVER narrate or describe your tool usage. Do NOT say 'Let me fetch...', 'I will use...', 'Searching...', or similar. Give the FINAL ANSWER only — no intermediate steps, no tool mentions, no progress updates.\n\n");
+    }
 
     if prompt.is_empty() {
         "You are SynapseClaw, a fast and efficient AI assistant built in Rust. Be helpful, concise, and direct."

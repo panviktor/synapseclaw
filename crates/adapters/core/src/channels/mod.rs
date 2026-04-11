@@ -55,7 +55,10 @@ use synapse_providers::{self, ChatMessage, Provider};
 use synapse_security::security_factory::security_policy_from_config;
 use tokio_util::sync::CancellationToken;
 
-pub use crate::runtime_system_prompt::{build_system_prompt, build_system_prompt_with_mode};
+pub use crate::runtime_system_prompt::{
+    build_channel_system_prompt, build_channel_system_prompt_with_mode, build_system_prompt,
+    build_system_prompt_with_mode,
+};
 
 /// Channel transport sink for real-time tool notifications.
 struct ChannelToolNotificationHandler {
@@ -1347,6 +1350,9 @@ impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
 
     async fn clear_session(&mut self) -> anyhow::Result<()> {
         clear_sender_history(self.ctx, self.conversation_key);
+        if let Some(store) = self.ctx.session_store.as_ref() {
+            let _ = store.delete(self.conversation_key).await;
+        }
         self.ctx
             .route_overrides
             .lock()
@@ -2665,7 +2671,7 @@ pub async fn start_channels(
         None
     };
     let native_tools = provider.supports_native_tools();
-    let mut system_prompt = build_system_prompt_with_mode(
+    let mut system_prompt = build_channel_system_prompt_with_mode(
         &workspace,
         &model,
         &tool_descs,
@@ -4569,7 +4575,7 @@ mod tests {
     #[test]
     fn prompt_contains_channel_capabilities() {
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+        let prompt = build_channel_system_prompt(ws.path(), "model", &[], &[], None, None);
 
         assert!(
             prompt.contains("## Channel Capabilities"),
@@ -4583,6 +4589,15 @@ mod tests {
             prompt.contains("NEVER repeat, describe, or echo credentials"),
             "missing security instruction"
         );
+    }
+
+    #[test]
+    fn generic_prompt_omits_channel_capabilities() {
+        let ws = make_workspace();
+        let prompt = build_system_prompt(ws.path(), "model", &[], &[], None, None);
+
+        assert!(!prompt.contains("## Channel Capabilities"));
+        assert!(!prompt.contains("running as a messaging bot"));
     }
 
     #[test]

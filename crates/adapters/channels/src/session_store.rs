@@ -152,6 +152,10 @@ impl SessionBackend for SessionStore {
         self.remove_last(session_key)
     }
 
+    async fn replace(&self, session_key: &str, messages: &[ChatMessage]) -> std::io::Result<()> {
+        self.rewrite(session_key, messages)
+    }
+
     async fn list_sessions(&self) -> Vec<String> {
         self.list_sessions()
     }
@@ -321,41 +325,42 @@ mod tests {
         assert_eq!(raw.trim().lines().count(), 2);
     }
 
-    #[test]
-    fn session_backend_trait_works_via_dyn() {
+    #[tokio::test]
+    async fn session_backend_trait_works_via_dyn() {
         let tmp = TempDir::new().unwrap();
         let store = SessionStore::new(tmp.path()).unwrap();
         let backend: &dyn SessionBackend = &store;
 
         backend
             .append("trait_test", &ChatMessage::user("hello"))
+            .await
             .unwrap();
-        let msgs = backend.load("trait_test");
+        let msgs = backend.load("trait_test").await;
         assert_eq!(msgs.len(), 1);
     }
 
-    #[test]
-    fn summary_save_and_load_roundtrip() {
+    #[tokio::test]
+    async fn summary_save_and_load_roundtrip() {
         let tmp = TempDir::new().unwrap();
         let store = SessionStore::new(tmp.path()).unwrap();
         let backend: &dyn SessionBackend = &store;
 
-        assert!(backend.load_summary("test_key").is_none());
+        assert!(backend.load_summary("test_key").await.is_none());
 
         let summary = ChannelSummary {
             summary: "User asked about Rust. Bot explained ownership.".into(),
             message_count_at_summary: 20,
             updated_at: chrono::Utc::now(),
         };
-        backend.save_summary("test_key", &summary).unwrap();
+        backend.save_summary("test_key", &summary).await.unwrap();
 
-        let loaded = backend.load_summary("test_key").unwrap();
+        let loaded = backend.load_summary("test_key").await.unwrap();
         assert_eq!(loaded.summary, summary.summary);
         assert_eq!(loaded.message_count_at_summary, 20);
     }
 
-    #[test]
-    fn summary_atomic_write_uses_rename() {
+    #[tokio::test]
+    async fn summary_atomic_write_uses_rename() {
         let tmp = TempDir::new().unwrap();
         let store = SessionStore::new(tmp.path()).unwrap();
 
@@ -364,7 +369,7 @@ mod tests {
             message_count_at_summary: 5,
             updated_at: chrono::Utc::now(),
         };
-        store.save_summary("atomic_test", &summary).unwrap();
+        store.save_summary("atomic_test", &summary).await.unwrap();
 
         // No .tmp file should remain
         let tmp_path = store.summary_path("atomic_test").with_extension("json.tmp");
@@ -373,32 +378,62 @@ mod tests {
         assert!(store.summary_path("atomic_test").exists());
     }
 
-    #[test]
-    fn delete_removes_session_and_summary() {
+    #[tokio::test]
+    async fn delete_removes_session_and_summary() {
         let tmp = TempDir::new().unwrap();
         let store = SessionStore::new(tmp.path()).unwrap();
         let backend: &dyn SessionBackend = &store;
 
         backend
             .append("del_test", &ChatMessage::user("hello"))
+            .await
             .unwrap();
         let summary = ChannelSummary {
             summary: "test".into(),
             message_count_at_summary: 1,
             updated_at: chrono::Utc::now(),
         };
-        backend.save_summary("del_test", &summary).unwrap();
+        backend.save_summary("del_test", &summary).await.unwrap();
 
-        assert!(backend.delete("del_test").unwrap());
-        assert!(backend.load("del_test").is_empty());
-        assert!(backend.load_summary("del_test").is_none());
+        assert!(backend.delete("del_test").await.unwrap());
+        assert!(backend.load("del_test").await.is_empty());
+        assert!(backend.load_summary("del_test").await.is_none());
     }
 
-    #[test]
-    fn delete_nonexistent_returns_false() {
+    #[tokio::test]
+    async fn replace_preserves_summary() {
         let tmp = TempDir::new().unwrap();
         let store = SessionStore::new(tmp.path()).unwrap();
-        assert!(!store.delete("nonexistent").unwrap());
+        let backend: &dyn SessionBackend = &store;
+        let summary = ChannelSummary {
+            summary: "keep me".into(),
+            message_count_at_summary: 2,
+            updated_at: chrono::Utc::now(),
+        };
+
+        backend
+            .save_summary("replace_test", &summary)
+            .await
+            .unwrap();
+        backend
+            .replace("replace_test", &[ChatMessage::user("new")])
+            .await
+            .unwrap();
+
+        let messages = backend.load("replace_test").await;
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "new");
+        assert_eq!(
+            backend.load_summary("replace_test").await.unwrap().summary,
+            "keep me"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_nonexistent_returns_false() {
+        let tmp = TempDir::new().unwrap();
+        let store = SessionStore::new(tmp.path()).unwrap();
+        assert!(!store.delete("nonexistent").await.unwrap());
     }
 
     #[test]

@@ -231,6 +231,48 @@ impl SessionBackend for SqliteSessionBackend {
         Ok(true)
     }
 
+    async fn replace(&self, session_key: &str, messages: &[ChatMessage]) -> std::io::Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction().map_err(std::io::Error::other)?;
+        let now = Utc::now().to_rfc3339();
+
+        tx.execute(
+            "DELETE FROM sessions WHERE session_key = ?1",
+            params![session_key],
+        )
+        .map_err(std::io::Error::other)?;
+
+        for message in messages {
+            tx.execute(
+                "INSERT INTO sessions (session_key, role, content, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![session_key, message.role, message.content, now],
+            )
+            .map_err(std::io::Error::other)?;
+        }
+
+        if messages.is_empty() {
+            tx.execute(
+                "DELETE FROM session_metadata WHERE session_key = ?1",
+                params![session_key],
+            )
+            .map_err(std::io::Error::other)?;
+        } else {
+            tx.execute(
+                "INSERT INTO session_metadata (session_key, created_at, last_activity, message_count)
+                 VALUES (?1, ?2, ?2, ?3)
+                 ON CONFLICT(session_key) DO UPDATE SET
+                    last_activity = excluded.last_activity,
+                    message_count = excluded.message_count",
+                params![session_key, now, messages.len() as i64],
+            )
+            .map_err(std::io::Error::other)?;
+        }
+
+        tx.commit().map_err(std::io::Error::other)?;
+        Ok(())
+    }
+
     async fn list_sessions(&self) -> Vec<String> {
         let conn = self.conn.lock();
         let mut stmt = match conn
@@ -443,73 +485,78 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn round_trip_sqlite() {
+    #[tokio::test]
+    async fn round_trip_sqlite() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
 
         backend
             .append("user1", &ChatMessage::user("hello"))
+            .await
             .unwrap();
         backend
             .append("user1", &ChatMessage::assistant("hi"))
+            .await
             .unwrap();
 
-        let msgs = backend.load("user1");
+        let msgs = backend.load("user1").await;
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].role, "user");
         assert_eq!(msgs[1].role, "assistant");
     }
 
-    #[test]
-    fn remove_last_sqlite() {
+    #[tokio::test]
+    async fn remove_last_sqlite() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
 
-        backend.append("u", &ChatMessage::user("a")).unwrap();
-        backend.append("u", &ChatMessage::user("b")).unwrap();
+        backend.append("u", &ChatMessage::user("a")).await.unwrap();
+        backend.append("u", &ChatMessage::user("b")).await.unwrap();
 
-        assert!(backend.remove_last("u").unwrap());
-        let msgs = backend.load("u");
+        assert!(backend.remove_last("u").await.unwrap());
+        let msgs = backend.load("u").await;
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "a");
     }
 
-    #[test]
-    fn remove_last_empty_sqlite() {
+    #[tokio::test]
+    async fn remove_last_empty_sqlite() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
-        assert!(!backend.remove_last("nonexistent").unwrap());
+        assert!(!backend.remove_last("nonexistent").await.unwrap());
     }
 
-    #[test]
-    fn list_sessions_sqlite() {
+    #[tokio::test]
+    async fn list_sessions_sqlite() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
 
-        backend.append("a", &ChatMessage::user("hi")).unwrap();
-        backend.append("b", &ChatMessage::user("hey")).unwrap();
+        backend.append("a", &ChatMessage::user("hi")).await.unwrap();
+        backend
+            .append("b", &ChatMessage::user("hey"))
+            .await
+            .unwrap();
 
-        let sessions = backend.list_sessions();
+        let sessions = backend.list_sessions().await;
         assert_eq!(sessions.len(), 2);
     }
 
-    #[test]
-    fn metadata_tracks_counts() {
+    #[tokio::test]
+    async fn metadata_tracks_counts() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
 
-        backend.append("s1", &ChatMessage::user("a")).unwrap();
-        backend.append("s1", &ChatMessage::user("b")).unwrap();
-        backend.append("s1", &ChatMessage::user("c")).unwrap();
+        backend.append("s1", &ChatMessage::user("a")).await.unwrap();
+        backend.append("s1", &ChatMessage::user("b")).await.unwrap();
+        backend.append("s1", &ChatMessage::user("c")).await.unwrap();
 
-        let meta = backend.list_sessions_with_metadata();
+        let meta = backend.list_sessions_with_metadata().await;
         assert_eq!(meta.len(), 1);
         assert_eq!(meta[0].message_count, 3);
     }
 
-    #[test]
-    fn fts5_search_finds_content() {
+    #[tokio::test]
+    async fn fts5_search_finds_content() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
 
@@ -518,21 +565,25 @@ mod tests {
                 "code_chat",
                 &ChatMessage::user("How do I parse JSON in Rust?"),
             )
+            .await
             .unwrap();
         backend
             .append("weather", &ChatMessage::user("What's the weather today?"))
+            .await
             .unwrap();
 
-        let results = backend.search(&SessionQuery {
-            keyword: Some("Rust".into()),
-            limit: Some(10),
-        });
+        let results = backend
+            .search(&SessionQuery {
+                keyword: Some("Rust".into()),
+                limit: Some(10),
+            })
+            .await;
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].key, "code_chat");
     }
 
-    #[test]
-    fn cleanup_stale_removes_old_sessions() {
+    #[tokio::test]
+    async fn cleanup_stale_removes_old_sessions() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
 
@@ -552,18 +603,19 @@ mod tests {
 
         backend
             .append("new_session", &ChatMessage::user("fresh"))
+            .await
             .unwrap();
 
-        let cleaned = backend.cleanup_stale(48).unwrap(); // 48h TTL
+        let cleaned = backend.cleanup_stale(48).await.unwrap(); // 48h TTL
         assert_eq!(cleaned, 1);
 
-        let sessions = backend.list_sessions();
+        let sessions = backend.list_sessions().await;
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0], "new_session");
     }
 
-    #[test]
-    fn migrate_from_jsonl_imports_and_renames() {
+    #[tokio::test]
+    async fn migrate_from_jsonl_imports_and_renames() {
         let tmp = TempDir::new().unwrap();
         let sessions_dir = tmp.path().join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -585,32 +637,32 @@ mod tests {
         assert!(sessions_dir.join("test_user.jsonl.migrated").exists());
 
         // Messages should be in SQLite
-        let msgs = backend.load("test_user");
+        let msgs = backend.load("test_user").await;
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].content, "hello");
     }
 
-    #[test]
-    fn summary_round_trip() {
+    #[tokio::test]
+    async fn summary_round_trip() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
 
-        assert!(backend.load_summary("user1").is_none());
+        assert!(backend.load_summary("user1").await.is_none());
 
         let summary = ChannelSummary {
             summary: "User asked about Rust async patterns".to_string(),
             message_count_at_summary: 10,
             updated_at: chrono::Utc::now(),
         };
-        backend.save_summary("user1", &summary).unwrap();
+        backend.save_summary("user1", &summary).await.unwrap();
 
-        let loaded = backend.load_summary("user1").unwrap();
+        let loaded = backend.load_summary("user1").await.unwrap();
         assert_eq!(loaded.summary, "User asked about Rust async patterns");
         assert_eq!(loaded.message_count_at_summary, 10);
     }
 
-    #[test]
-    fn summary_upsert_overwrites() {
+    #[tokio::test]
+    async fn summary_upsert_overwrites() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
 
@@ -619,35 +671,60 @@ mod tests {
             message_count_at_summary: 5,
             updated_at: chrono::Utc::now(),
         };
-        backend.save_summary("k", &s1).unwrap();
+        backend.save_summary("k", &s1).await.unwrap();
 
         let s2 = ChannelSummary {
             summary: "updated".to_string(),
             message_count_at_summary: 15,
             updated_at: chrono::Utc::now(),
         };
-        backend.save_summary("k", &s2).unwrap();
+        backend.save_summary("k", &s2).await.unwrap();
 
-        let loaded = backend.load_summary("k").unwrap();
+        let loaded = backend.load_summary("k").await.unwrap();
         assert_eq!(loaded.summary, "updated");
         assert_eq!(loaded.message_count_at_summary, 15);
     }
 
-    #[test]
-    fn delete_removes_summary_too() {
+    #[tokio::test]
+    async fn delete_removes_summary_too() {
         let tmp = TempDir::new().unwrap();
         let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
 
-        backend.append("k", &ChatMessage::user("hi")).unwrap();
+        backend.append("k", &ChatMessage::user("hi")).await.unwrap();
         let summary = ChannelSummary {
             summary: "test".to_string(),
             message_count_at_summary: 1,
             updated_at: chrono::Utc::now(),
         };
-        backend.save_summary("k", &summary).unwrap();
+        backend.save_summary("k", &summary).await.unwrap();
 
-        assert!(backend.delete("k").unwrap());
-        assert!(backend.load_summary("k").is_none());
-        assert!(backend.load("k").is_empty());
+        assert!(backend.delete("k").await.unwrap());
+        assert!(backend.load_summary("k").await.is_none());
+        assert!(backend.load("k").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replace_preserves_summary() {
+        let tmp = TempDir::new().unwrap();
+        let backend = SqliteSessionBackend::new(tmp.path()).unwrap();
+        let summary = ChannelSummary {
+            summary: "keep me".to_string(),
+            message_count_at_summary: 2,
+            updated_at: chrono::Utc::now(),
+        };
+
+        backend.save_summary("k", &summary).await.unwrap();
+        backend
+            .replace(
+                "k",
+                &[ChatMessage::system("bootstrap"), ChatMessage::user("new")],
+            )
+            .await
+            .unwrap();
+
+        let messages = backend.load("k").await;
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].content, "new");
+        assert_eq!(backend.load_summary("k").await.unwrap().summary, "keep me");
     }
 }

@@ -1481,6 +1481,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn session_hygiene_compaction_drops_leading_orphan_assistant() {
+        let mut history = vec![ChatMessage::system("bootstrap")];
+        for idx in 0..10 {
+            history.push(ChatMessage::user(format!("user {idx}")));
+            history.push(ChatMessage::assistant(format!("assistant {idx}")));
+        }
+        history.push(ChatMessage::user("current"));
+
+        assert!(compact_provider_history_for_session_hygiene(
+            &mut history,
+            12
+        ));
+
+        let non_system = history
+            .iter()
+            .filter(|message| message.role != "system")
+            .map(|message| (message.role.as_str(), message.content.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(non_system.first(), Some(&("user", "user 5")));
+        assert_eq!(non_system.last(), Some(&("user", "current")));
+    }
+
     struct MockRegistry;
     #[async_trait]
     impl ChannelRegistryPort for MockRegistry {

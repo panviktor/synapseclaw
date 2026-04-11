@@ -158,6 +158,63 @@ impl SessionBackend for SurrealSessionBackend {
         Ok(true)
     }
 
+    async fn replace(&self, session_key: &str, messages: &[ChatMessage]) -> std::io::Result<()> {
+        self.db
+            .query("DELETE FROM channel_session WHERE session_key = $key")
+            .bind(("key", session_key.to_string()))
+            .await
+            .map_err(std::io::Error::other)?;
+
+        for message in messages {
+            let created_at = Utc::now().to_rfc3339();
+            self.db
+                .query(
+                    "CREATE channel_session SET \
+                     session_key = $key, role = $role, content = $content, created_at = $created_at",
+                )
+                .bind(("key", session_key.to_string()))
+                .bind(("role", message.role.clone()))
+                .bind(("content", message.content.clone()))
+                .bind(("created_at", created_at))
+                .await
+                .map_err(std::io::Error::other)?;
+        }
+
+        if messages.is_empty() {
+            self.db
+                .query("DELETE FROM channel_session_meta WHERE session_key = $key")
+                .bind(("key", session_key.to_string()))
+                .await
+                .map_err(std::io::Error::other)?;
+        } else {
+            let now = Utc::now().to_rfc3339();
+            self.db
+                .query(
+                    "IF (SELECT count() FROM channel_session_meta \
+                       WHERE session_key = $key GROUP ALL)[0].count > 0 \
+                     { \
+                         UPDATE channel_session_meta SET \
+                             last_activity = $now, \
+                             message_count = $mcount \
+                         WHERE session_key = $key; \
+                     } ELSE { \
+                         CREATE channel_session_meta SET \
+                             session_key = $key, \
+                             created_at = $now, \
+                             last_activity = $now, \
+                             message_count = $mcount; \
+                     };",
+                )
+                .bind(("key", session_key.to_string()))
+                .bind(("now", now))
+                .bind(("mcount", messages.len() as i64))
+                .await
+                .map_err(std::io::Error::other)?;
+        }
+
+        Ok(())
+    }
+
     async fn list_sessions(&self) -> Vec<String> {
         let mut resp = match self
             .db

@@ -389,12 +389,12 @@ mod tests {
     #[test]
     fn rejects_low_confidence_generic_plural_role_relationship() {
         let entity_types = HashMap::from([
-            ("children".to_string(), "person".to_string()),
-            ("parents".to_string(), "person".to_string()),
+            ("managers".to_string(), "person".to_string()),
+            ("teams".to_string(), "concept".to_string()),
         ]);
 
         assert_eq!(
-            assess_extracted_relationship("Children", "learn_from", "Parents", 0.95, &entity_types),
+            assess_extracted_relationship("Managers", "coordinate", "Teams", 0.95, &entity_types),
             RelationshipStorageVerdict::Reject(
                 RelationshipRejectReason::GenericPluralRolePairLowConfidence
             )

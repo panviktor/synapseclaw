@@ -159,25 +159,12 @@ pub(crate) fn extract_json_values(input: &str) -> Vec<serde_json::Value> {
 /// </tool_call>
 /// ```
 ///
-/// Also supports JSON with `tool_calls` arrays from native tool-calling providers.
 pub(crate) fn parse_canonical_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
     let cleaned = strip_think_tags(response);
     let response = cleaned.as_str();
     let mut text_parts = Vec::new();
     let mut calls = Vec::new();
     let mut remaining = response;
-
-    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(response.trim()) {
-        calls = parse_tool_calls_from_json_value(&json_value);
-        if !calls.is_empty() {
-            if let Some(content) = json_value.get("content").and_then(|v| v.as_str()) {
-                if !content.trim().is_empty() {
-                    text_parts.push(content.trim().to_string());
-                }
-            }
-            return (text_parts.join("\n"), calls);
-        }
-    }
 
     while let Some(start) = remaining.find("<tool_call>") {
         let before = &remaining[..start];

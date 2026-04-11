@@ -60,6 +60,10 @@ pub trait SessionBackend: Send + Sync {
     /// Remove the last message from a session. Returns `true` if a message was removed.
     async fn remove_last(&self, session_key: &str) -> std::io::Result<bool>;
 
+    /// Replace only the message history with already-compacted provider history.
+    /// Rolling summaries must be preserved.
+    async fn replace(&self, session_key: &str, messages: &[ChatMessage]) -> std::io::Result<()>;
+
     /// List all session keys.
     async fn list_sessions(&self) -> Vec<String>;
 

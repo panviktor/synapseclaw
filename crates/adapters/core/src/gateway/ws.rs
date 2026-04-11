@@ -20,7 +20,6 @@ use crate::runtime_adapter_contract::{
 use crate::runtime_routes::WorkspaceModelProfileCatalog;
 use crate::runtime_tool_notifications::RuntimeToolNotification;
 use crate::runtime_tool_observer::{RuntimeToolNotificationHandler, RuntimeToolNotifyObserver};
-use synapse_domain::application::services::model_lane_resolution::resolve_candidate_profile;
 use synapse_domain::application::services::route_switch_preflight::{
     RouteSwitchPreflight, RouteSwitchStatus,
 };
@@ -1380,10 +1379,19 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("model route mutation request missing model"))?;
         let catalog = WorkspaceModelProfileCatalog::from_config(self.config);
-        let target_profile = resolve_candidate_profile(
-            provider.as_str(),
-            model.as_str(),
-            &synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
+        let route_profile = synapse_domain::application::services::model_lane_resolution::resolve_route_selection_profile(
+            self.config,
+            &RouteSelection {
+                provider: provider.clone(),
+                model: model.clone(),
+                lane: request.lane,
+                candidate_index: request.candidate_index,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: None,
+            },
             Some(&catalog),
         );
         let outcome = apply_web_runtime_route(
@@ -1396,7 +1404,7 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
             request.candidate_index,
             request
                 .target_context_window_tokens
-                .or(target_profile.context_window_tokens),
+                .or(route_profile.context_window_tokens),
             self.token_prefix,
         )
         .await?;
