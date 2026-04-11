@@ -708,7 +708,7 @@ Expected outcome:
     - the expensive long semantic dialogue check is opt-in with `RUN_HEAVY=1`
       and should be run only at slice-close points
   - OpenRouter Gemma paid candidates are now catalog-driven and treated as
-    штатные optional/test routes, not default routes:
+    standard optional/test routes, not default routes:
     - curated id: `google/gemma-4-31b-it`
     - efficient 26B A4B id: `google/gemma-4-26b-a4b-it`
     - pricing/profile/route-alias metadata live in `model_catalog.json`, not
@@ -1531,7 +1531,7 @@ Expected outcome:
 - OpenRouter/native/provider-specific routes may expose different context windows,
   max output, or features for the same model family; candidate metadata must
   capture those differences
-- OpenRouter Gemma paid-route smoke covers штатные optional aliases
+- OpenRouter Gemma paid-route smoke covers standard optional aliases
   `gemma31b` and `gemma26b`; keep them available for tests/manual routing but
   do not make them default.
 - direct DeepSeek provider validation should use official API model ids:
