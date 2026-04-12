@@ -4,7 +4,7 @@ use crate::agent::context_engine::{
     ProviderPromptSnapshot,
 };
 use crate::agent::dispatcher::{
-    NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
+    NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult,
 };
 use crate::agent::execute_one_tool;
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
@@ -12,7 +12,7 @@ use crate::agent::tool_repair_classification::classify_tool_execution_error;
 use crate::agent::turn_context_fmt;
 use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
@@ -1219,19 +1219,14 @@ impl Agent {
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("user_profiles.json");
-            match synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path) {
-                Ok(store) => Arc::new(store),
-                Err(error) => {
-                    tracing::warn!(
-                        path = %profile_path.display(),
-                        %error,
-                        "Failed to initialize persistent user profile store, falling back to memory"
-                    );
-                    Arc::new(
-                        synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+            let store = synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path)
+                .with_context(|| {
+                    format!(
+                        "failed to initialize persistent user profile store at {}",
+                        profile_path.display()
                     )
-                }
-            }
+                })?;
+            Arc::new(store)
         };
         let user_profile_context: Arc<dyn UserProfileContextPort> = runtime_ports
             .user_profile_context
@@ -1331,10 +1326,17 @@ impl Agent {
 
         let dispatcher_choice = config.agent.tool_dispatcher.as_str();
         let tool_dispatcher: Box<dyn ToolDispatcher> = match dispatcher_choice {
-            "native" => Box::new(NativeToolDispatcher),
-            "xml" => Box::new(XmlToolDispatcher),
-            _ if provider.supports_native_tools() => Box::new(NativeToolDispatcher),
-            _ => Box::new(XmlToolDispatcher),
+            "auto" | "native" | "" => Box::new(NativeToolDispatcher),
+            "xml" => {
+                anyhow::bail!(
+                    "agent.tool_dispatcher=xml has been removed; configure a provider with native tool calling"
+                )
+            }
+            other => {
+                anyhow::bail!(
+                    "unsupported agent.tool_dispatcher={other}; supported values are auto and native"
+                )
+            }
         };
 
         let route_model_by_hint: HashMap<String, String> = config
@@ -1802,23 +1804,20 @@ impl Agent {
                 Err(error) => {
                     tracing::warn!(
                         %error,
-                        "Live agent history compaction summary failed; using transcript fallback"
+                        "Live agent history compaction summary failed; skipping compaction"
                     );
-                    String::new()
+                    return false;
                 }
             }
         };
-        let summary = if summary_raw.is_empty() {
-            synapse_domain::domain::util::truncate_with_ellipsis(
-                &transcript,
-                policy.max_summary_chars,
-            )
-        } else {
-            synapse_domain::domain::util::truncate_with_ellipsis(
-                &summary_raw,
-                policy.max_summary_chars,
-            )
-        };
+        if summary_raw.trim().is_empty() {
+            tracing::warn!("Live agent history compaction summary was empty; skipping compaction");
+            return false;
+        }
+        let summary = synapse_domain::domain::util::truncate_with_ellipsis(
+            &summary_raw,
+            policy.max_summary_chars,
+        );
         self.history.splice(
             original_start..original_end,
             std::iter::once(ConversationMessage::Chat(ChatMessage::assistant(format!(
@@ -1855,7 +1854,6 @@ impl Agent {
     }
 
     fn build_system_prompt(&self) -> Result<String> {
-        let instructions = self.tool_dispatcher.prompt_instructions(&self.tools);
         let ctx = PromptContext {
             workspace_dir: &self.workspace_dir,
             model_name: &self.model_name,
@@ -1863,7 +1861,7 @@ impl Agent {
             skills: &self.skills,
             skills_prompt_mode: self.skills_prompt_mode,
             identity_config: Some(&self.identity_config),
-            dispatcher_instructions: &instructions,
+            dispatcher_instructions: "",
             tool_specs_are_out_of_band: self.tool_dispatcher.should_send_tool_specs(),
         };
         let (prompt, section_stats) = self.prompt_builder.build_with_stats(&ctx)?;
@@ -2769,7 +2767,7 @@ impl Agent {
                     Some(prev.output_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0));
             }
 
-            let (text, parsed_calls) = self.tool_dispatcher.parse_response(&response);
+            let (text, parsed_calls) = self.tool_dispatcher.parse_response(&response)?;
             let calls = self
                 .deduplicate_turn_calls(parsed_calls)
                 .into_iter()
@@ -2903,7 +2901,7 @@ impl Agent {
                     .iter()
                     .filter_map(|result| result.repair_trace.clone()),
             );
-            let formatted = self.tool_dispatcher.format_results(&results);
+            let formatted = self.tool_dispatcher.format_results(&results)?;
             self.history.push(formatted);
             self.trim_history();
         }
@@ -3207,7 +3205,7 @@ mod tests {
             .tools(vec![Box::new(MockTool)])
             .memory(mem)
             .observer(observer)
-            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
             .workspace_dir(std::path::PathBuf::from("/tmp"))
             .build()
             .expect("agent builder should succeed with valid config");
@@ -3234,7 +3232,7 @@ mod tests {
             .tools(vec![Box::new(MockTool)])
             .memory(mem)
             .observer(observer)
-            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
             .workspace_dir(std::path::PathBuf::from("/tmp"))
             .current_model_profile(ResolvedModelProfile {
                 features: vec![ModelFeature::Vision],

@@ -1,13 +1,12 @@
 use crate::runtime;
 use crate::tools::{self, Tool};
 use anyhow::Result;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Write;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use synapse_domain::config::schema::{Config, ContextCompressionConfig};
 use synapse_domain::domain::util::truncate_with_ellipsis;
@@ -27,7 +26,7 @@ pub(crate) use crate::agent::autosave_memory_key;
 const STREAM_CHUNK_MIN_CHARS: usize = 80;
 
 /// Default maximum agentic tool-use iterations per user message to prevent runaway loops.
-/// Used as a safe fallback when `max_tool_iterations` is unset or configured as zero.
+/// Used when `max_tool_iterations` is unset or configured as zero.
 const DEFAULT_MAX_TOOL_ITERATIONS: usize = 10;
 
 // ── Tool filtering — delegated to domain services ───────────────────
@@ -138,7 +137,7 @@ async fn auto_compact_history(
     let summarizer_user =
         compaction::compaction_summarizer_prompt_with_policy(&transcript, None, &policy, None);
 
-    let summary_raw = provider
+    let summary_raw = match provider
         .chat_with_system(
             Some(compaction::COMPACTION_SUMMARIZER_SYSTEM),
             &summarizer_user,
@@ -146,16 +145,25 @@ async fn auto_compact_history(
             0.2,
         )
         .await
-        .unwrap_or_default();
+    {
+        Ok(summary) if !summary.trim().is_empty() => summary,
+        Ok(_) => {
+            tracing::warn!("Interactive history compaction summary was empty; skipping compaction");
+            return Ok(false);
+        }
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "Interactive history compaction summary failed; skipping compaction"
+            );
+            return Ok(false);
+        }
+    };
 
-    compaction::apply_compaction_with_policy(
-        history,
-        start,
-        compact_end,
-        &summary_raw,
-        &transcript,
-        &policy,
-    );
+    if !compaction::apply_compaction_with_policy(history, start, compact_end, &summary_raw, &policy)
+    {
+        return Ok(false);
+    }
 
     Ok(true)
 }
@@ -348,8 +356,6 @@ pub(super) mod tool_execution;
 // Re-export public API from sub-modules.
 pub use cli_run::{process_message, run, run_with_shared_memory};
 #[allow(unused_imports)]
-pub(crate) use synapse_domain::application::services::tool_filtering::build_tool_instructions;
-#[allow(unused_imports)]
 pub(crate) use tool_call_parsing::ParsedToolCall;
 #[allow(unused_imports)]
 pub(crate) use tool_execution::{agent_turn, is_tool_loop_cancelled, ToolLoopCancelled};
@@ -359,10 +365,7 @@ pub(crate) use tool_execution::{
 
 #[cfg(test)]
 pub(crate) use tool_call_parsing::{
-    build_native_assistant_history, build_native_assistant_history_from_parsed_calls,
-    detect_tool_call_parse_issue, extract_json_values, parse_arguments_value,
-    parse_tool_call_value, parse_tool_calls, parse_tool_calls_from_json_value,
-    resolve_display_text, strip_think_tags, strip_tool_result_blocks,
+    build_native_assistant_history, detect_tool_call_parse_issue, parse_structured_tool_calls,
 };
 #[cfg(test)]
 pub(crate) use tool_execution::should_execute_tools_in_parallel;

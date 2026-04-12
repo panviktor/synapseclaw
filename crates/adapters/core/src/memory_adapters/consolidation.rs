@@ -74,6 +74,7 @@ pub async fn consolidate_turn(
     assistant_response: &str,
     agent_id: &str,
 ) -> anyhow::Result<ConsolidationOutcome> {
+    let mut outcome = ConsolidationOutcome::default();
     let turn_text = format!("User: {user_message}\nAssistant: {assistant_response}");
 
     // Truncate very long turns to avoid wasting tokens on consolidation.
@@ -96,7 +97,17 @@ pub async fn consolidate_turn(
         .chat_with_system(Some(CONSOLIDATION_SYSTEM_PROMPT), &truncated, model, 0.1)
         .await?;
 
-    let result: ConsolidationResult = parse_consolidation_response(&raw, &turn_text);
+    let result = match parse_consolidation_response(&raw) {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::warn!(
+                agent_id,
+                error = %error,
+                "memory.consolidation.invalid_response"
+            );
+            return Ok(outcome);
+        }
+    };
 
     tracing::info!(
         agent_id,
@@ -158,8 +169,6 @@ pub async fn consolidate_turn(
 
     // Phase 3: Entity extraction — populate knowledge graph.
     // Best-effort: errors logged but don't fail consolidation.
-    let mut outcome = ConsolidationOutcome::default();
-
     if !result
         .memory_update
         .as_ref()
@@ -198,8 +207,8 @@ pub async fn consolidate_turn(
     Ok(outcome)
 }
 
-/// Parse the LLM's consolidation response, with fallback for malformed JSON.
-fn parse_consolidation_response(raw: &str, fallback_text: &str) -> ConsolidationResult {
+/// Parse the LLM's consolidation response.
+fn parse_consolidation_response(raw: &str) -> anyhow::Result<ConsolidationResult> {
     // Try to extract JSON from the response (LLM may wrap in markdown code blocks).
     let cleaned = raw
         .trim()
@@ -208,24 +217,8 @@ fn parse_consolidation_response(raw: &str, fallback_text: &str) -> Consolidation
         .trim_end_matches("```")
         .trim();
 
-    serde_json::from_str(cleaned).unwrap_or_else(|_| {
-        // Fallback: use truncated turn text as history entry.
-        // Use char-boundary-safe slicing to prevent panic on multi-byte UTF-8.
-        let summary = if fallback_text.len() > 200 {
-            let end = fallback_text
-                .char_indices()
-                .map(|(i, _)| i)
-                .take_while(|&i| i <= 200)
-                .last()
-                .unwrap_or(0);
-            format!("{}…", &fallback_text[..end])
-        } else {
-            fallback_text.to_string()
-        };
-        ConsolidationResult {
-            history_entry: summary,
-            memory_update: None,
-        }
+    serde_json::from_str(cleaned).map_err(|error| {
+        anyhow::anyhow!("consolidation response is not valid JSON object: {error}")
     })
 }
 
@@ -276,7 +269,7 @@ mod tests {
     #[test]
     fn parse_valid_json_response() {
         let raw = r#"{"history_entry": "User asked about Rust.", "memory_update": "User prefers Rust over Go."}"#;
-        let result = parse_consolidation_response(raw, "fallback");
+        let result = parse_consolidation_response(raw).unwrap();
         assert_eq!(result.history_entry, "User asked about Rust.");
         assert_eq!(
             result
@@ -290,7 +283,7 @@ mod tests {
     #[test]
     fn parse_typed_memory_update_response() {
         let raw = r#"{"history_entry": "User discussed deployment.", "memory_update": {"class":"task_state","text":"Atlas deployment is blocked on SSO login verification.","confidence":0.82}}"#;
-        let result = parse_consolidation_response(raw, "fallback");
+        let result = parse_consolidation_response(raw).unwrap();
         let update = result.memory_update.as_ref().unwrap();
         assert_eq!(
             update.write_class(),
@@ -307,7 +300,7 @@ mod tests {
     #[test]
     fn generic_dialogue_memory_update_does_not_allow_graph_extraction() {
         let raw = r#"{"history_entry": "User discussed abstract reflection.", "memory_update": {"class":"generic_dialogue","text":"The dialogue explored abstract reflection without durable task facts.","confidence":0.62}}"#;
-        let result = parse_consolidation_response(raw, "fallback");
+        let result = parse_consolidation_response(raw).unwrap();
         let update = result.memory_update.as_ref().unwrap();
 
         assert_eq!(
@@ -320,7 +313,7 @@ mod tests {
     #[test]
     fn legacy_memory_update_does_not_allow_graph_extraction() {
         let raw = r#"{"history_entry": "User discussed a preference.", "memory_update": "User prefers concise reports."}"#;
-        let result = parse_consolidation_response(raw, "fallback");
+        let result = parse_consolidation_response(raw).unwrap();
         let update = result.memory_update.as_ref().unwrap();
 
         assert_eq!(
@@ -333,7 +326,7 @@ mod tests {
     #[test]
     fn parse_json_with_null_memory() {
         let raw = r#"{"history_entry": "Routine greeting.", "memory_update": null}"#;
-        let result = parse_consolidation_response(raw, "fallback");
+        let result = parse_consolidation_response(raw).unwrap();
         assert_eq!(result.history_entry, "Routine greeting.");
         assert!(result.memory_update.is_none());
     }
@@ -342,35 +335,14 @@ mod tests {
     fn parse_json_wrapped_in_code_block() {
         let raw =
             "```json\n{\"history_entry\": \"Discussed deployment.\", \"memory_update\": null}\n```";
-        let result = parse_consolidation_response(raw, "fallback");
+        let result = parse_consolidation_response(raw).unwrap();
         assert_eq!(result.history_entry, "Discussed deployment.");
     }
 
     #[test]
-    fn fallback_on_malformed_response() {
+    fn rejects_malformed_response() {
         let raw = "I'm sorry, I can't do that.";
-        let result = parse_consolidation_response(raw, "User: hello\nAssistant: hi");
-        assert_eq!(result.history_entry, "User: hello\nAssistant: hi");
-        assert!(result.memory_update.is_none());
-    }
-
-    #[test]
-    fn fallback_truncates_long_text() {
-        let long_text = "x".repeat(500);
-        let result = parse_consolidation_response("invalid", &long_text);
-        // 200 bytes + "…" (3 bytes in UTF-8) = 203
-        assert!(result.history_entry.len() <= 203);
-    }
-
-    #[test]
-    fn fallback_truncates_cjk_text_without_panic() {
-        // Each CJK character is 3 bytes in UTF-8; byte index 200 may land
-        // inside a character. This must not panic.
-        let cjk_text = "二手书项目".repeat(50); // 250 chars = 750 bytes
-        let result = parse_consolidation_response("invalid", &cjk_text);
-        assert!(result
-            .history_entry
-            .is_char_boundary(result.history_entry.len()));
-        assert!(result.history_entry.ends_with('…'));
+        let err = parse_consolidation_response(raw).unwrap_err();
+        assert!(err.to_string().contains("not valid JSON"));
     }
 }

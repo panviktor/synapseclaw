@@ -12,7 +12,7 @@
 //!   7. Parallel tool dispatch
 //!   8. History trimming during long conversations
 //!   9. Memory auto-save round-trip
-//!  10. Native vs XML dispatcher integration
+//!  10. Native dispatcher integration
 //!  11. Empty / whitespace-only LLM responses
 //!  12. Mixed text + tool call responses
 //!  13. Multi-tool batch in a single response
@@ -25,9 +25,7 @@
 //!  20. Idempotent system prompt insertion
 
 use crate::agent::agent::Agent;
-use crate::agent::dispatcher::{
-    NativeToolDispatcher, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
-};
+use crate::agent::dispatcher::{NativeToolDispatcher, ToolDispatcher, ToolExecutionResult};
 use crate::tools::{Tool, ToolResult};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -68,6 +66,10 @@ impl ScriptedProvider {
 
 #[async_trait]
 impl Provider for ScriptedProvider {
+    fn supports_native_tools(&self) -> bool {
+        true
+    }
+
     async fn chat_with_system(
         &self,
         _system_prompt: Option<&str>,
@@ -99,6 +101,24 @@ impl Provider for ScriptedProvider {
             });
         }
         Ok(guard.remove(0))
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        _tools: &[serde_json::Value],
+        model: &str,
+        temperature: f64,
+    ) -> Result<ChatResponse> {
+        self.chat(
+            ChatRequest {
+                messages,
+                tools: None,
+            },
+            model,
+            temperature,
+        )
+        .await
     }
 }
 
@@ -367,18 +387,6 @@ fn text_response(text: &str) -> ChatResponse {
     }
 }
 
-/// Helper: create an XML-style tool call response.
-fn xml_tool_response(name: &str, args: &str) -> ChatResponse {
-    ChatResponse {
-        text: Some(format!(
-            "<tool_call>\n{{\"name\": \"{name}\", \"arguments\": {args}}}\n</tool_call>"
-        )),
-        tool_calls: vec![],
-        usage: None,
-        reasoning_content: None,
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. Simple text response (no tools)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -439,17 +447,17 @@ async fn turn_handles_multi_step_tool_chain() {
         tool_response(vec![ToolCall {
             id: "tc1".into(),
             name: "counter".into(),
-            arguments: "{}".into(),
+            arguments: r#"{"step":1}"#.into(),
         }]),
         tool_response(vec![ToolCall {
             id: "tc2".into(),
             name: "counter".into(),
-            arguments: "{}".into(),
+            arguments: r#"{"step":2}"#.into(),
         }]),
         tool_response(vec![ToolCall {
             id: "tc3".into(),
             name: "counter".into(),
-            arguments: "{}".into(),
+            arguments: r#"{"step":3}"#.into(),
         }]),
         text_response("Done after 3 calls"),
     ]));
@@ -732,28 +740,8 @@ async fn auto_save_disabled_does_not_store() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// 10. Native vs XML dispatcher integration
+// 10. Native dispatcher integration
 // ═══════════════════════════════════════════════════════════════════════════
-
-#[tokio::test]
-async fn xml_dispatcher_parses_and_loops() {
-    let provider = Box::new(ScriptedProvider::new(vec![
-        xml_tool_response("echo", r#"{"message": "xml-test"}"#),
-        text_response("XML tool completed"),
-    ]));
-
-    let mut agent = build_agent_with(
-        provider,
-        vec![Box::new(EchoTool)],
-        Box::new(XmlToolDispatcher),
-    );
-
-    let response = agent.turn("test xml").await.unwrap();
-    assert!(
-        !response.is_empty(),
-        "Expected non-empty response from XML dispatcher"
-    );
-}
 
 #[tokio::test]
 async fn native_dispatcher_sends_tool_specs() {
@@ -769,12 +757,6 @@ async fn native_dispatcher_sends_tool_specs() {
     // NativeToolDispatcher.should_send_tool_specs() returns true
     let dispatcher = NativeToolDispatcher;
     assert!(dispatcher.should_send_tool_specs());
-}
-
-#[tokio::test]
-async fn xml_dispatcher_does_not_send_tool_specs() {
-    let dispatcher = XmlToolDispatcher;
-    assert!(!dispatcher.should_send_tool_specs());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -865,17 +847,17 @@ async fn turn_handles_multiple_tools_in_one_response() {
             ToolCall {
                 id: "tc1".into(),
                 name: "counter".into(),
-                arguments: "{}".into(),
+                arguments: r#"{"step":1}"#.into(),
             },
             ToolCall {
                 id: "tc2".into(),
                 name: "counter".into(),
-                arguments: "{}".into(),
+                arguments: r#"{"step":2}"#.into(),
             },
             ToolCall {
                 id: "tc3".into(),
                 name: "counter".into(),
-                arguments: "{}".into(),
+                arguments: r#"{"step":3}"#.into(),
             },
         ]),
         text_response("All 3 done"),
@@ -1068,72 +1050,13 @@ async fn native_dispatcher_handles_stringified_arguments() {
         reasoning_content: None,
     };
 
-    let (_, calls) = dispatcher.parse_response(&response);
+    let (_, calls) = dispatcher.parse_response(&response).unwrap();
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].name, "echo");
     assert_eq!(
         calls[0].arguments.get("message").unwrap().as_str().unwrap(),
         "hello"
     );
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 19. XML dispatcher edge cases
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn xml_dispatcher_handles_nested_json() {
-    let response = ChatResponse {
-        text: Some(
-            r#"<tool_call>
-{"name": "file_write", "arguments": {"path": "test.json", "content": "{\"key\": \"value\"}"}}
-</tool_call>"#
-                .into(),
-        ),
-        tool_calls: vec![],
-        usage: None,
-        reasoning_content: None,
-    };
-
-    let dispatcher = XmlToolDispatcher;
-    let (_, calls) = dispatcher.parse_response(&response);
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].name, "file_write");
-    assert_eq!(
-        calls[0].arguments.get("path").unwrap().as_str().unwrap(),
-        "test.json"
-    );
-}
-
-#[test]
-fn xml_dispatcher_handles_empty_tool_call_tag() {
-    let response = ChatResponse {
-        text: Some("<tool_call>\n</tool_call>\nSome text".into()),
-        tool_calls: vec![],
-        usage: None,
-        reasoning_content: None,
-    };
-
-    let dispatcher = XmlToolDispatcher;
-    let (text, calls) = dispatcher.parse_response(&response);
-    assert!(calls.is_empty());
-    assert!(text.contains("Some text"));
-}
-
-#[test]
-fn xml_dispatcher_handles_unclosed_tool_call() {
-    let response = ChatResponse {
-        text: Some("Before\n<tool_call>\n{\"name\": \"shell\"}".into()),
-        tool_calls: vec![],
-        usage: None,
-        reasoning_content: None,
-    };
-
-    let dispatcher = XmlToolDispatcher;
-    let (text, calls) = dispatcher.parse_response(&response);
-    // Should not panic — just treat as text
-    assert!(calls.is_empty());
-    assert!(text.contains("Before"));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1199,41 +1122,6 @@ fn conversation_message_serialization_roundtrip() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 #[test]
-fn xml_format_results_includes_status_and_output() {
-    let dispatcher = XmlToolDispatcher;
-    let results = vec![
-        ToolExecutionResult {
-            name: "shell".into(),
-            output: "file1.txt\nfile2.txt".into(),
-            success: true,
-            tool_call_id: None,
-            tool_facts: vec![],
-            repair_trace: None,
-        },
-        ToolExecutionResult {
-            name: "file_read".into(),
-            output: "Error: file not found".into(),
-            success: false,
-            tool_call_id: None,
-            tool_facts: vec![],
-            repair_trace: None,
-        },
-    ];
-
-    let msg = dispatcher.format_results(&results);
-    let content = match msg {
-        ConversationMessage::Chat(c) => c.content,
-        _ => panic!("Expected Chat variant"),
-    };
-
-    assert!(content.contains("shell"));
-    assert!(content.contains("file1.txt"));
-    assert!(content.contains("ok"));
-    assert!(content.contains("file_read"));
-    assert!(content.contains("error"));
-}
-
-#[test]
 fn native_format_results_maps_tool_call_ids() {
     let dispatcher = NativeToolDispatcher;
     let results = vec![
@@ -1255,7 +1143,7 @@ fn native_format_results_maps_tool_call_ids() {
         },
     ];
 
-    let msg = dispatcher.format_results(&results);
+    let msg = dispatcher.format_results(&results).unwrap();
     match msg {
         ConversationMessage::ToolResults(r) => {
             assert_eq!(r.len(), 2);
@@ -1271,36 +1159,6 @@ fn native_format_results_maps_tool_call_ids() {
 // ═══════════════════════════════════════════════════════════════════════════
 // 22. to_provider_messages conversion
 // ═══════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn xml_dispatcher_converts_history_to_provider_messages() {
-    let dispatcher = XmlToolDispatcher;
-    let history = vec![
-        ConversationMessage::Chat(ChatMessage::system("sys")),
-        ConversationMessage::Chat(ChatMessage::user("hi")),
-        ConversationMessage::AssistantToolCalls {
-            text: Some("checking".into()),
-            tool_calls: vec![ToolCall {
-                id: "tc1".into(),
-                name: "shell".into(),
-                arguments: "{}".into(),
-            }],
-            reasoning_content: None,
-        },
-        ConversationMessage::ToolResults(vec![ToolResultMessage {
-            tool_call_id: "tc1".into(),
-            content: "ok".into(),
-        }]),
-        ConversationMessage::Chat(ChatMessage::assistant("done")),
-    ];
-
-    let messages = dispatcher.to_provider_messages(&history);
-
-    // Should have: system, user, assistant (from tool calls), user (tool results), assistant
-    assert!(messages.len() >= 4);
-    assert_eq!(messages[0].role, "system");
-    assert_eq!(messages[1].role, "user");
-}
 
 #[test]
 fn native_dispatcher_converts_tool_results_to_tool_messages() {
@@ -1320,34 +1178,6 @@ fn native_dispatcher_converts_tool_results_to_tool_messages() {
     assert_eq!(messages.len(), 2);
     assert_eq!(messages[0].role, "tool");
     assert_eq!(messages[1].role, "tool");
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// 23. Tool-call envelope instructions generation
-// ═══════════════════════════════════════════════════════════════════════════
-
-#[test]
-fn xml_dispatcher_generates_tool_instructions() {
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
-    let dispatcher = XmlToolDispatcher;
-    let instructions = dispatcher.prompt_instructions(&tools);
-
-    assert!(instructions.contains("## Tool Use Protocol"));
-    assert!(instructions.contains("<tool_call>"));
-    // Tool listing is handled by ToolsSection in prompt.rs, not by the
-    // dispatcher.  prompt_instructions() must only emit the protocol envelope.
-    assert!(
-        !instructions.contains("echo"),
-        "dispatcher should not duplicate tool listing"
-    );
-}
-
-#[test]
-fn native_dispatcher_returns_empty_instructions() {
-    let tools: Vec<Box<dyn Tool>> = vec![Box::new(EchoTool)];
-    let dispatcher = NativeToolDispatcher;
-    let instructions = dispatcher.prompt_instructions(&tools);
-    assert!(instructions.is_empty());
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

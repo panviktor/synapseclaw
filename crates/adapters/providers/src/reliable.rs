@@ -654,9 +654,23 @@ impl Provider for ReliableProvider {
     ) -> anyhow::Result<ChatResponse> {
         let models = self.model_chain(model);
         let mut failures = Vec::new();
+        let requires_native_tools = request.tools.is_some_and(|tools| !tools.is_empty());
 
         for current_model in &models {
             for (provider_name, provider) in &self.providers {
+                if requires_native_tools && !provider.supports_native_tools() {
+                    push_failure(
+                        &mut failures,
+                        provider_name,
+                        current_model,
+                        1,
+                        1,
+                        "unsupported",
+                        "provider does not advertise native tool calling",
+                    );
+                    continue;
+                }
+
                 let mut backoff_ms = self.base_backoff_ms;
 
                 for attempt in 0..=self.max_retries {

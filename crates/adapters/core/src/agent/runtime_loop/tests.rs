@@ -261,6 +261,50 @@ impl ScriptedProvider {
     }
 }
 
+fn native_call(id: &str, name: &str, arguments: serde_json::Value) -> ToolCall {
+    ToolCall {
+        id: id.to_string(),
+        name: name.to_string(),
+        arguments: arguments.to_string(),
+    }
+}
+
+fn native_tool_response(calls: Vec<ToolCall>) -> ChatResponse {
+    ChatResponse {
+        text: Some(String::new()),
+        tool_calls: calls,
+        usage: None,
+        reasoning_content: None,
+    }
+}
+
+fn text_chat_response(text: &str) -> ChatResponse {
+    ChatResponse {
+        text: Some(text.to_string()),
+        tool_calls: Vec::new(),
+        usage: None,
+        reasoning_content: None,
+    }
+}
+
+fn native_tool_result_contents(history: &[ChatMessage]) -> Vec<String> {
+    history
+        .iter()
+        .filter(|message| message.role == "tool")
+        .map(|message| {
+            serde_json::from_str::<serde_json::Value>(&message.content)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| message.content.clone())
+        })
+        .collect()
+}
+
 #[async_trait]
 impl Provider for ScriptedProvider {
     fn capabilities(&self) -> ProviderCapabilities {
@@ -695,15 +739,14 @@ fn should_execute_tools_in_parallel_returns_true_when_cli_has_no_interactive_app
 
 #[tokio::test]
 async fn run_tool_call_loop_executes_multiple_tools_with_ordered_results() {
-    let provider = ScriptedProvider::from_text_responses(vec![
-        r#"<tool_call>
-{"name":"delay_a","arguments":{"value":"A"}}
-</tool_call>
-<tool_call>
-{"name":"delay_b","arguments":{"value":"B"}}
-</tool_call>"#,
-        "done",
-    ]);
+    let provider = ScriptedProvider::from_chat_responses(vec![
+        native_tool_response(vec![
+            native_call("call_delay_a", "delay_a", serde_json::json!({"value":"A"})),
+            native_call("call_delay_b", "delay_b", serde_json::json!({"value":"B"})),
+        ]),
+        text_chat_response("done"),
+    ])
+    .with_native_tool_support();
 
     let active = Arc::new(AtomicUsize::new(0));
     let max_active = Arc::new(AtomicUsize::new(0));
@@ -765,17 +808,14 @@ async fn run_tool_call_loop_executes_multiple_tools_with_ordered_results() {
         "tools should execute successfully"
     );
 
-    let tool_results_message = history
+    let tool_results = native_tool_result_contents(&history);
+    let idx_a = tool_results
         .iter()
-        .find(|msg| msg.role == "user" && msg.content.starts_with("[Tool results]"))
-        .expect("tool results message should be present");
-    let idx_a = tool_results_message
-        .content
-        .find("name=\"delay_a\"")
+        .position(|content| content.contains("ok:A"))
         .expect("delay_a result should be present");
-    let idx_b = tool_results_message
-        .content
-        .find("name=\"delay_b\"")
+    let idx_b = tool_results
+        .iter()
+        .position(|content| content.contains("ok:B"))
         .expect("delay_b result should be present");
     assert!(
         idx_a < idx_b,
@@ -785,15 +825,22 @@ async fn run_tool_call_loop_executes_multiple_tools_with_ordered_results() {
 
 #[tokio::test]
 async fn run_tool_call_loop_deduplicates_repeated_tool_calls() {
-    let provider = ScriptedProvider::from_text_responses(vec![
-        r#"<tool_call>
-{"name":"count_tool","arguments":{"value":"A"}}
-</tool_call>
-<tool_call>
-{"name":"count_tool","arguments":{"value":"A"}}
-</tool_call>"#,
-        "done",
-    ]);
+    let provider = ScriptedProvider::from_chat_responses(vec![
+        native_tool_response(vec![
+            native_call(
+                "call_count_1",
+                "count_tool",
+                serde_json::json!({"value":"A"}),
+            ),
+            native_call(
+                "call_count_2",
+                "count_tool",
+                serde_json::json!({"value":"A"}),
+            ),
+        ]),
+        text_chat_response("done"),
+    ])
+    .with_native_tool_support();
 
     let invocations = Arc::new(AtomicUsize::new(0));
     let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(CountingTool::new(
@@ -839,22 +886,22 @@ async fn run_tool_call_loop_deduplicates_repeated_tool_calls() {
         "duplicate tool call with same args should not execute twice"
     );
 
-    let tool_results = history
-        .iter()
-        .find(|msg| msg.role == "user" && msg.content.starts_with("[Tool results]"))
-        .expect("prompt-mode tool result payload should be present");
-    assert!(tool_results.content.contains("counted:A"));
-    assert!(tool_results.content.contains("Skipped duplicate tool call"));
+    let tool_results = native_tool_result_contents(&history).join("\n");
+    assert!(tool_results.contains("counted:A"));
+    assert!(tool_results.contains("Skipped duplicate tool call"));
 }
 
 #[tokio::test]
 async fn run_tool_call_loop_allows_low_risk_shell_in_non_interactive_mode() {
-    let provider = ScriptedProvider::from_text_responses(vec![
-        r#"<tool_call>
-{"name":"shell","arguments":{"command":"echo hello"}}
-</tool_call>"#,
-        "done",
-    ]);
+    let provider = ScriptedProvider::from_chat_responses(vec![
+        native_tool_response(vec![native_call(
+            "call_shell",
+            "shell",
+            serde_json::json!({"command":"echo hello"}),
+        )]),
+        text_chat_response("done"),
+    ])
+    .with_native_tool_support();
 
     let tmp = TempDir::new().expect("temp dir");
     let security = Arc::new(synapse_security::SecurityPolicy {
@@ -904,25 +951,29 @@ async fn run_tool_call_loop_allows_low_risk_shell_in_non_interactive_mode() {
 
     assert_eq!(result.response, "done");
 
-    let tool_results = history
-        .iter()
-        .find(|msg| msg.role == "user" && msg.content.starts_with("[Tool results]"))
-        .expect("tool results message should be present");
-    assert!(tool_results.content.contains("hello"));
-    assert!(!tool_results.content.contains("Denied by user."));
+    let tool_results = native_tool_result_contents(&history).join("\n");
+    assert!(tool_results.contains("hello"));
+    assert!(!tool_results.contains("Denied by user."));
 }
 
 #[tokio::test]
 async fn run_tool_call_loop_dedup_exempt_allows_repeated_calls() {
-    let provider = ScriptedProvider::from_text_responses(vec![
-        r#"<tool_call>
-{"name":"count_tool","arguments":{"value":"A"}}
-</tool_call>
-<tool_call>
-{"name":"count_tool","arguments":{"value":"A"}}
-</tool_call>"#,
-        "done",
-    ]);
+    let provider = ScriptedProvider::from_chat_responses(vec![
+        native_tool_response(vec![
+            native_call(
+                "call_count_1",
+                "count_tool",
+                serde_json::json!({"value":"A"}),
+            ),
+            native_call(
+                "call_count_2",
+                "count_tool",
+                serde_json::json!({"value":"A"}),
+            ),
+        ]),
+        text_chat_response("done"),
+    ])
+    .with_native_tool_support();
 
     let invocations = Arc::new(AtomicUsize::new(0));
     let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(CountingTool::new(
@@ -969,33 +1020,41 @@ async fn run_tool_call_loop_dedup_exempt_allows_repeated_calls() {
         "exempt tool should execute both duplicate calls"
     );
 
-    let tool_results = history
-        .iter()
-        .find(|msg| msg.role == "user" && msg.content.starts_with("[Tool results]"))
-        .expect("prompt-mode tool result payload should be present");
+    let tool_results = native_tool_result_contents(&history).join("\n");
     assert!(
-        !tool_results.content.contains("Skipped duplicate tool call"),
+        !tool_results.contains("Skipped duplicate tool call"),
         "exempt tool calls should not be suppressed"
     );
 }
 
 #[tokio::test]
 async fn run_tool_call_loop_dedup_exempt_only_affects_listed_tools() {
-    let provider = ScriptedProvider::from_text_responses(vec![
-        r#"<tool_call>
-{"name":"count_tool","arguments":{"value":"A"}}
-</tool_call>
-<tool_call>
-{"name":"count_tool","arguments":{"value":"A"}}
-</tool_call>
-<tool_call>
-{"name":"other_tool","arguments":{"value":"B"}}
-</tool_call>
-<tool_call>
-{"name":"other_tool","arguments":{"value":"B"}}
-</tool_call>"#,
-        "done",
-    ]);
+    let provider = ScriptedProvider::from_chat_responses(vec![
+        native_tool_response(vec![
+            native_call(
+                "call_count_1",
+                "count_tool",
+                serde_json::json!({"value":"A"}),
+            ),
+            native_call(
+                "call_count_2",
+                "count_tool",
+                serde_json::json!({"value":"A"}),
+            ),
+            native_call(
+                "call_other_1",
+                "other_tool",
+                serde_json::json!({"value":"B"}),
+            ),
+            native_call(
+                "call_other_2",
+                "other_tool",
+                serde_json::json!({"value":"B"}),
+            ),
+        ]),
+        text_chat_response("done"),
+    ])
+    .with_native_tool_support();
 
     let count_invocations = Arc::new(AtomicUsize::new(0));
     let other_invocations = Arc::new(AtomicUsize::new(0));
@@ -1119,13 +1178,13 @@ async fn run_tool_call_loop_native_mode_preserves_structured_tool_call_ids() {
         history.iter().any(|msg| {
             msg.role == "tool" && msg.content.contains("\"tool_call_id\":\"call_abc\"")
         }),
-        "tool result should preserve parsed fallback tool_call_id in native mode"
+        "tool result should preserve native tool_call_id"
     );
     assert!(
         history
             .iter()
             .all(|msg| !(msg.role == "user" && msg.content.starts_with("[Tool results]"))),
-        "native mode should use role=tool history instead of prompt fallback wrapper"
+        "native mode should use role=tool history"
     );
 }
 
@@ -1137,12 +1196,15 @@ fn agent_turn_executes_activated_tool_from_wrapper() {
         .expect("test runtime should initialize");
 
     runtime.block_on(async {
-        let provider = ScriptedProvider::from_text_responses(vec![
-            r#"<tool_call>
-{"name":"pixel__get_api_health","arguments":{"value":"ok"}}
-</tool_call>"#,
-            "done",
-        ]);
+        let provider = ScriptedProvider::from_chat_responses(vec![
+            native_tool_response(vec![native_call(
+                "call_pixel_health",
+                "pixel__get_api_health",
+                serde_json::json!({"value":"ok"}),
+            )]),
+            text_chat_response("done"),
+        ])
+        .with_native_tool_support();
 
         let invocations = Arc::new(AtomicUsize::new(0));
         let activated = Arc::new(std::sync::Mutex::new(crate::tools::ActivatedToolSet::new()));
@@ -1184,204 +1246,6 @@ fn agent_turn_executes_activated_tool_from_wrapper() {
         assert_eq!(result, "done");
         assert_eq!(invocations.load(Ordering::SeqCst), 1);
     });
-}
-
-#[test]
-fn resolve_display_text_hides_raw_payload_for_tool_only_turns() {
-    let display = resolve_display_text(
-        "<tool_call>{\"name\":\"memory_store\"}</tool_call>",
-        "",
-        true,
-    );
-    assert!(display.is_empty());
-}
-
-#[test]
-fn resolve_display_text_keeps_plain_text_for_tool_turns() {
-    let display = resolve_display_text(
-        "<tool_call>{\"name\":\"shell\"}</tool_call>",
-        "Let me check that.",
-        true,
-    );
-    assert_eq!(display, "Let me check that.");
-}
-
-#[test]
-fn resolve_display_text_uses_response_text_for_final_turns() {
-    let display = resolve_display_text("Final answer", "", false);
-    assert_eq!(display, "Final answer");
-}
-
-#[test]
-fn parse_tool_calls_extracts_single_call() {
-    let response = r#"Let me check that.
-<tool_call>
-{"name": "shell", "arguments": {"command": "ls -la"}}
-</tool_call>"#;
-
-    let (text, calls) = parse_tool_calls(response);
-    assert_eq!(text, "Let me check that.");
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].name, "shell");
-    assert_eq!(
-        calls[0].arguments.get("command").unwrap().as_str().unwrap(),
-        "ls -la"
-    );
-}
-
-#[test]
-fn parse_tool_calls_extracts_multiple_calls() {
-    let response = r#"<tool_call>
-{"name": "file_read", "arguments": {"path": "a.txt"}}
-</tool_call>
-<tool_call>
-{"name": "file_read", "arguments": {"path": "b.txt"}}
-</tool_call>"#;
-
-    let (_, calls) = parse_tool_calls(response);
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].name, "file_read");
-    assert_eq!(calls[1].name, "file_read");
-}
-
-#[test]
-fn parse_tool_calls_returns_text_only_when_no_calls() {
-    let response = "Just a normal response with no tools.";
-    let (text, calls) = parse_tool_calls(response);
-    assert_eq!(text, "Just a normal response with no tools.");
-    assert!(calls.is_empty());
-}
-
-#[test]
-fn parse_tool_calls_handles_malformed_json() {
-    let response = r#"<tool_call>
-not valid json
-</tool_call>
-Some text after."#;
-
-    let (text, calls) = parse_tool_calls(response);
-    assert!(calls.is_empty());
-    assert!(text.contains("Some text after."));
-}
-
-#[test]
-fn parse_tool_calls_text_before_and_after() {
-    let response = r#"Before text.
-<tool_call>
-{"name": "shell", "arguments": {"command": "echo hi"}}
-</tool_call>
-After text."#;
-
-    let (text, calls) = parse_tool_calls(response);
-    assert!(text.contains("Before text."));
-    assert!(text.contains("After text."));
-    assert_eq!(calls.len(), 1);
-}
-
-#[test]
-fn parse_tool_calls_rejects_raw_openai_format_without_tags() {
-    // Provider adapters must expose native tool calls through LlmResponse.tool_calls.
-    // The shared text fallback intentionally rejects bare OpenAI-shaped JSON.
-    let response = r#"{"content": "Let me check that for you.", "tool_calls": [{"type": "function", "function": {"name": "shell", "arguments": "{\"command\": \"ls -la\"}"}}]}"#;
-
-    let (text, calls) = parse_tool_calls(response);
-    assert_eq!(text, response);
-    assert!(calls.is_empty());
-}
-
-#[test]
-fn parse_tool_calls_rejects_raw_openai_format_multiple_calls_without_tags() {
-    let response = r#"{"tool_calls": [{"type": "function", "function": {"name": "file_read", "arguments": "{\"path\": \"a.txt\"}"}}, {"type": "function", "function": {"name": "file_read", "arguments": "{\"path\": \"b.txt\"}"}}]}"#;
-
-    let (text, calls) = parse_tool_calls(response);
-    assert_eq!(text, response);
-    assert!(calls.is_empty());
-}
-
-#[test]
-fn parse_tool_calls_rejects_raw_canonical_format_without_tags() {
-    let response = r#"{"tool_calls": [{"name": "memory_recall", "arguments": "{}"}]}"#;
-
-    let (text, calls) = parse_tool_calls(response);
-    assert_eq!(text, response);
-    assert!(calls.is_empty());
-}
-
-#[test]
-fn parse_tool_calls_preserves_canonical_tool_call_ids_inside_tags() {
-    let response = r#"<tool_call>{"tool_calls":[{"id":"call_42","name":"shell","arguments":"{\"command\":\"pwd\"}"}]}</tool_call>"#;
-    let (_, calls) = parse_tool_calls(response);
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].tool_call_id.as_deref(), Some("call_42"));
-}
-
-#[test]
-fn parse_tool_calls_handles_markdown_json_inside_tool_call_tag() {
-    let response = r#"<tool_call>
-```json
-{"name": "file_write", "arguments": {"path": "test.py", "content": "print('ok')"}}
-```
-</tool_call>"#;
-
-    let (text, calls) = parse_tool_calls(response);
-    assert!(text.is_empty());
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].name, "file_write");
-    assert_eq!(
-        calls[0].arguments.get("path").unwrap().as_str().unwrap(),
-        "test.py"
-    );
-}
-
-#[test]
-fn parse_tool_calls_handles_noisy_tool_call_tag_body() {
-    let response = r#"<tool_call>
-I will now call the tool with this payload:
-{"name": "shell", "arguments": {"command": "pwd"}}
-</tool_call>"#;
-
-    let (text, calls) = parse_tool_calls(response);
-    assert!(text.is_empty());
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].name, "shell");
-    assert_eq!(
-        calls[0].arguments.get("command").unwrap().as_str().unwrap(),
-        "pwd"
-    );
-}
-
-#[test]
-fn parse_tool_calls_rejects_raw_tool_json_without_tags() {
-    // SECURITY: Raw JSON without explicit wrappers should NOT be parsed
-    // This prevents prompt injection attacks where malicious content
-    // could include JSON that mimics a tool call.
-    let response = r#"Sure, creating the file now.
-{"name": "file_write", "arguments": {"path": "hello.py", "content": "print('hello')"}}"#;
-
-    let (text, calls) = parse_tool_calls(response);
-    assert!(text.contains("Sure, creating the file now."));
-    assert_eq!(
-        calls.len(),
-        0,
-        "Raw JSON without wrappers should not be parsed"
-    );
-}
-
-#[test]
-fn build_tool_instructions_includes_all_tools() {
-    use synapse_security::security_policy_from_config;
-    let security = Arc::new(security_policy_from_config(
-        &synapse_domain::config::schema::AutonomyConfig::default(),
-        std::path::Path::new("/tmp"),
-    ));
-    let tools = tools::default_tools(security);
-    let instructions = build_tool_instructions(&tools);
-
-    assert!(instructions.contains("## Tool Use Protocol"));
-    assert!(instructions.contains("<tool_call>"));
-    assert!(instructions.contains("shell"));
-    assert!(instructions.contains("file_read"));
-    assert!(instructions.contains("file_write"));
 }
 
 #[test]
@@ -1477,154 +1341,49 @@ async fn build_context_ignores_legacy_assistant_autosave_entries() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Recovery Tests - Tool Call Parsing Edge Cases
+// Native tool-call parsing and visible-output hygiene
 // ═══════════════════════════════════════════════════════════════════════
 
 #[test]
-fn parse_tool_calls_handles_empty_tool_result() {
-    // Recovery: Empty tool_result tag should be handled gracefully
-    let response = r#"I'll run that command.
-<tool_result name="shell">
+fn parse_structured_tool_calls_preserves_native_id_and_arguments() {
+    let calls = vec![native_call(
+        "call_shell_1",
+        "shell",
+        serde_json::json!({"command":"pwd"}),
+    )];
 
-</tool_result>
-Done."#;
-    let (text, calls) = parse_tool_calls(response);
-    assert!(text.contains("Done."));
-    assert!(calls.is_empty());
+    let parsed = parse_structured_tool_calls(&calls).unwrap();
+
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0].name, "shell");
+    assert_eq!(parsed[0].tool_call_id.as_deref(), Some("call_shell_1"));
+    assert_eq!(parsed[0].arguments["command"], "pwd");
 }
 
 #[test]
-fn strip_tool_result_blocks_removes_single_block() {
-    let input = r#"<tool_result name="memory_recall" status="ok">
-{"matches":["hello"]}
-</tool_result>
-Here is my answer."#;
-    assert_eq!(strip_tool_result_blocks(input), "Here is my answer.");
+fn parse_structured_tool_calls_rejects_invalid_arguments_json() {
+    let calls = vec![synapse_providers::ToolCall {
+        id: "call_bad".into(),
+        name: "shell".into(),
+        arguments: "{not-json".into(),
+    }];
+
+    let error = parse_structured_tool_calls(&calls).unwrap_err();
+
+    assert!(error.to_string().contains("invalid JSON arguments"));
 }
 
 #[test]
-fn strip_tool_result_blocks_removes_multiple_blocks() {
-    let input = r#"<tool_result name="memory_recall" status="ok">
-{"matches":[]}
-</tool_result>
-<tool_result name="shell" status="ok">
-done
-</tool_result>
-Final answer."#;
-    assert_eq!(strip_tool_result_blocks(input), "Final answer.");
-}
+fn parse_structured_tool_calls_rejects_missing_id() {
+    let calls = vec![synapse_providers::ToolCall {
+        id: " ".into(),
+        name: "shell".into(),
+        arguments: "{}".into(),
+    }];
 
-#[test]
-fn strip_tool_result_blocks_removes_prefix() {
-    let input =
-        "[Tool results]\n<tool_result name=\"shell\" status=\"ok\">\nok\n</tool_result>\nDone.";
-    assert_eq!(strip_tool_result_blocks(input), "Done.");
-}
+    let error = parse_structured_tool_calls(&calls).unwrap_err();
 
-#[test]
-fn strip_tool_result_blocks_removes_thinking() {
-    let input = "<thinking>\nLet me think...\n</thinking>\nHere is the answer.";
-    assert_eq!(strip_tool_result_blocks(input), "Here is the answer.");
-}
-
-#[test]
-fn strip_tool_result_blocks_removes_think_tags() {
-    let input = "<think>\nLet me reason...\n</think>\nHere is the answer.";
-    assert_eq!(strip_tool_result_blocks(input), "Here is the answer.");
-}
-
-#[test]
-fn strip_think_tags_removes_single_block() {
-    assert_eq!(strip_think_tags("<think>reasoning</think>Hello"), "Hello");
-}
-
-#[test]
-fn strip_think_tags_removes_multiple_blocks() {
-    assert_eq!(strip_think_tags("<think>a</think>X<think>b</think>Y"), "XY");
-}
-
-#[test]
-fn strip_think_tags_handles_unclosed_block() {
-    assert_eq!(strip_think_tags("visible<think>hidden"), "visible");
-}
-
-#[test]
-fn strip_think_tags_preserves_text_without_tags() {
-    assert_eq!(strip_think_tags("plain text"), "plain text");
-}
-
-#[test]
-fn parse_tool_calls_strips_think_before_tool_call() {
-    // Qwen regression: <think> tags before <tool_call> tags should be
-    // stripped, allowing the tool call to be parsed correctly.
-    let response = "<think>I need to list files to understand the project</think>\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}\n</tool_call>";
-    let (text, calls) = parse_tool_calls(response);
-    assert_eq!(
-        calls.len(),
-        1,
-        "should parse tool call after stripping think tags"
-    );
-    assert_eq!(calls[0].name, "shell");
-    assert_eq!(
-        calls[0].arguments.get("command").unwrap().as_str().unwrap(),
-        "ls"
-    );
-    assert!(text.is_empty(), "think content should not appear as text");
-}
-
-#[test]
-fn parse_tool_calls_strips_think_only_returns_empty() {
-    // When response is only <think> tags with no tool calls, should
-    // return empty text and no calls.
-    let response = "<think>Just thinking, no action needed</think>";
-    let (text, calls) = parse_tool_calls(response);
-    assert!(calls.is_empty());
-    assert!(text.is_empty());
-}
-
-#[test]
-fn parse_tool_calls_handles_qwen_think_with_multiple_tool_calls() {
-    let response = "<think>I need to check two things</think>\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"date\"}}\n</tool_call>\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"pwd\"}}\n</tool_call>";
-    let (_, calls) = parse_tool_calls(response);
-    assert_eq!(calls.len(), 2);
-    assert_eq!(
-        calls[0].arguments.get("command").unwrap().as_str().unwrap(),
-        "date"
-    );
-    assert_eq!(
-        calls[1].arguments.get("command").unwrap().as_str().unwrap(),
-        "pwd"
-    );
-}
-
-#[test]
-fn strip_tool_result_blocks_preserves_clean_text() {
-    let input = "Hello, this is a normal response.";
-    assert_eq!(strip_tool_result_blocks(input), input);
-}
-
-#[test]
-fn strip_tool_result_blocks_returns_empty_for_only_tags() {
-    let input = "<tool_result name=\"memory_recall\" status=\"ok\">\n{}\n</tool_result>";
-    assert_eq!(strip_tool_result_blocks(input), "");
-}
-
-#[test]
-fn parse_arguments_value_handles_null() {
-    // Recovery: null arguments are returned as-is (Value::Null)
-    let value = serde_json::json!(null);
-    let result = parse_arguments_value(Some(&value));
-    assert!(result.is_null());
-}
-
-#[test]
-fn parse_tool_calls_handles_empty_tool_calls_array() {
-    // Recovery: Empty tool_calls array returns original response (no tool parsing)
-    let response = r#"{"content": "Hello", "tool_calls": []}"#;
-    let (text, calls) = parse_tool_calls(response);
-    // When tool_calls is empty, the entire JSON is returned as text
-    assert!(text.contains("Hello"));
-    assert!(calls.is_empty());
+    assert!(error.to_string().contains("missing call id"));
 }
 
 #[test]
@@ -1641,23 +1400,6 @@ fn detect_tool_call_parse_issue_flags_malformed_payloads() {
 fn detect_tool_call_parse_issue_ignores_normal_text() {
     let issue = detect_tool_call_parse_issue("Thanks, done.", &[]);
     assert!(issue.is_none());
-}
-
-#[test]
-fn parse_tool_calls_handles_whitespace_only_name() {
-    // Recovery: Whitespace-only tool name should return None
-    let value = serde_json::json!({"function": {"name": "   ", "arguments": {}}});
-    let result = parse_tool_call_value(&value);
-    assert!(result.is_none());
-}
-
-#[test]
-fn parse_tool_calls_handles_empty_string_arguments() {
-    // Recovery: Empty string arguments should be handled
-    let value = serde_json::json!({"name": "test", "arguments": ""});
-    let result = parse_tool_call_value(&value);
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().name, "test");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1697,61 +1439,6 @@ fn trim_history_with_only_system_prompt() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// Recovery Tests - Arguments Parsing
-// ═══════════════════════════════════════════════════════════════════════
-
-#[test]
-fn parse_arguments_value_handles_invalid_json_string() {
-    // Recovery: Invalid JSON string should return empty object
-    let value = serde_json::Value::String("not valid json".to_string());
-    let result = parse_arguments_value(Some(&value));
-    assert!(result.is_object());
-    assert!(result.as_object().unwrap().is_empty());
-}
-
-#[test]
-fn parse_arguments_value_handles_none() {
-    // Recovery: None arguments should return empty object
-    let result = parse_arguments_value(None);
-    assert!(result.is_object());
-    assert!(result.as_object().unwrap().is_empty());
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Recovery Tests - JSON Extraction
-// ═══════════════════════════════════════════════════════════════════════
-
-#[test]
-fn extract_json_values_handles_empty_string() {
-    // Recovery: Empty input should return empty vec
-    let result = extract_json_values("");
-    assert!(result.is_empty());
-}
-
-#[test]
-fn extract_json_values_handles_whitespace_only() {
-    // Recovery: Whitespace only should return empty vec
-    let result = extract_json_values("   \n\t  ");
-    assert!(result.is_empty());
-}
-
-#[test]
-fn extract_json_values_handles_multiple_objects() {
-    // Recovery: Multiple JSON objects should all be extracted
-    let input = r#"{"a": 1}{"b": 2}{"c": 3}"#;
-    let result = extract_json_values(input);
-    assert_eq!(result.len(), 3);
-}
-
-#[test]
-fn extract_json_values_handles_arrays() {
-    // Recovery: JSON arrays should be extracted
-    let input = r#"[1, 2, 3]{"key": "value"}"#;
-    let result = extract_json_values(input);
-    assert_eq!(result.len(), 2);
-}
-
-// ═══════════════════════════════════════════════════════════════════════
 // Recovery Tests - Constants Validation
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1765,173 +1452,6 @@ const _: () = {
 #[test]
 fn constants_bounds_are_compile_time_checked() {
     // Bounds are enforced by the const assertions above.
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Recovery Tests - Tool Call Value Parsing
-// ═══════════════════════════════════════════════════════════════════════
-
-#[test]
-fn parse_tool_call_value_handles_missing_name_field() {
-    // Recovery: Missing name field should return None
-    let value = serde_json::json!({"function": {"arguments": {}}});
-    let result = parse_tool_call_value(&value);
-    assert!(result.is_none());
-}
-
-#[test]
-fn parse_tool_call_value_handles_top_level_name() {
-    // Recovery: Tool call with name at top level (non-OpenAI format)
-    let value = serde_json::json!({"name": "test_tool", "arguments": {}});
-    let result = parse_tool_call_value(&value);
-    assert!(result.is_some());
-    assert_eq!(result.unwrap().name, "test_tool");
-}
-
-#[test]
-fn parse_tool_calls_from_json_value_handles_empty_array() {
-    // Recovery: Empty tool_calls array should return empty vec
-    let value = serde_json::json!({"tool_calls": []});
-    let result = parse_tool_calls_from_json_value(&value);
-    assert!(result.is_empty());
-}
-
-#[test]
-fn parse_tool_calls_from_json_value_handles_missing_tool_calls() {
-    // Recovery: Missing tool_calls field should fall through
-    let value = serde_json::json!({"name": "test", "arguments": {}});
-    let result = parse_tool_calls_from_json_value(&value);
-    assert_eq!(result.len(), 1);
-}
-
-#[test]
-fn parse_tool_calls_from_json_value_handles_top_level_array() {
-    // Recovery: Top-level array of tool calls
-    let value = serde_json::json!([
-        {"name": "tool_a", "arguments": {}},
-        {"name": "tool_b", "arguments": {}}
-    ]);
-    let result = parse_tool_calls_from_json_value(&value);
-    assert_eq!(result.len(), 2);
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// TG4 (inline): parse_tool_calls robustness — malformed/edge-case inputs
-// Prevents: Pattern 4 issues #746, #418, #777, #848
-// ─────────────────────────────────────────────────────────────────────
-
-#[test]
-fn parse_tool_calls_empty_input_returns_empty() {
-    let (text, calls) = parse_tool_calls("");
-    assert!(calls.is_empty(), "empty input should produce no tool calls");
-    assert!(text.is_empty(), "empty input should produce no text");
-}
-
-#[test]
-fn parse_tool_calls_whitespace_only_returns_empty_calls() {
-    let (text, calls) = parse_tool_calls("   \n\t  ");
-    assert!(calls.is_empty());
-    assert!(text.is_empty() || text.trim().is_empty());
-}
-
-#[test]
-fn parse_tool_calls_nested_xml_tags_handled() {
-    // Double-wrapped tool call should still parse the inner call
-    let response =
-        r#"<tool_call><tool_call>{"name":"echo","arguments":{"msg":"hi"}}</tool_call></tool_call>"#;
-    let (_text, calls) = parse_tool_calls(response);
-    // Should find at least one tool call
-    assert!(
-        !calls.is_empty(),
-        "nested XML tags should still yield at least one tool call"
-    );
-}
-
-#[test]
-fn parse_tool_calls_truncated_json_no_panic() {
-    // Incomplete JSON inside tool_call tags
-    let response = r#"<tool_call>{"name":"shell","arguments":{"command":"ls"</tool_call>"#;
-    let (_text, _calls) = parse_tool_calls(response);
-    // Should not panic — graceful handling of truncated JSON
-}
-
-#[test]
-fn parse_tool_calls_empty_json_object_in_tag() {
-    let response = "<tool_call>{}</tool_call>";
-    let (_text, calls) = parse_tool_calls(response);
-    // Empty JSON object has no name field — should not produce valid tool call
-    assert!(
-        calls.is_empty(),
-        "empty JSON object should not produce a tool call"
-    );
-}
-
-#[test]
-fn parse_tool_calls_closing_tag_only_returns_text() {
-    let response = "Some text </tool_call> more text";
-    let (text, calls) = parse_tool_calls(response);
-    assert!(
-        calls.is_empty(),
-        "closing tag only should not produce calls"
-    );
-    assert!(
-        !text.is_empty(),
-        "text around orphaned closing tag should be preserved"
-    );
-}
-
-#[test]
-fn parse_tool_calls_very_large_arguments_no_panic() {
-    let large_arg = "x".repeat(100_000);
-    let response = format!(
-        r#"<tool_call>{{"name":"echo","arguments":{{"message":"{}"}}}}</tool_call>"#,
-        large_arg
-    );
-    let (_text, calls) = parse_tool_calls(&response);
-    assert_eq!(calls.len(), 1, "large arguments should still parse");
-    assert_eq!(calls[0].name, "echo");
-}
-
-#[test]
-fn parse_tool_calls_special_characters_in_arguments() {
-    let response = r#"<tool_call>{"name":"echo","arguments":{"message":"hello \"world\" <>&'\n\t"}}</tool_call>"#;
-    let (_text, calls) = parse_tool_calls(response);
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].name, "echo");
-}
-
-#[test]
-fn parse_tool_calls_text_with_embedded_json_not_extracted() {
-    // Raw JSON without any tags should NOT be extracted as a tool call
-    let response = r#"Here is some data: {"name":"echo","arguments":{"message":"hi"}} end."#;
-    let (_text, calls) = parse_tool_calls(response);
-    assert!(
-        calls.is_empty(),
-        "raw JSON in text without tags should not be extracted"
-    );
-}
-
-#[test]
-fn parse_tool_calls_multiple_formats_mixed() {
-    // Mix of text and properly tagged tool call
-    let response = r#"I'll help you with that.
-
-<tool_call>
-{"name":"shell","arguments":{"command":"echo hello"}}
-</tool_call>
-
-Let me check the result."#;
-    let (text, calls) = parse_tool_calls(response);
-    assert_eq!(
-        calls.len(),
-        1,
-        "should extract one tool call from mixed content"
-    );
-    assert_eq!(calls[0].name, "shell");
-    assert!(
-        text.contains("help you"),
-        "text before tool call should be preserved"
-    );
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -2022,9 +1542,7 @@ fn trim_history_removes_oldest_non_system() {
 }
 
 /// When `build_system_prompt_with_mode` is called with `native_tools = true`,
-/// the output must contain ZERO tool-call envelope artifacts. In the native path
-/// `build_tool_instructions` is never called, so the system prompt alone
-/// must be clean of fallback envelope protocol.
+/// the output must contain ZERO tool-call envelope artifacts.
 #[test]
 fn native_tools_system_prompt_contains_zero_xml() {
     use crate::channels::build_system_prompt_with_mode;
@@ -2043,7 +1561,8 @@ fn native_tools_system_prompt_contains_zero_xml() {
         None, // no bootstrap_max_chars
         true, // native_tools
         synapse_domain::config::schema::SkillsPromptInjectionMode::Full,
-    );
+    )
+    .unwrap();
 
     // Must contain zero XML protocol artifacts
     assert!(
@@ -2105,36 +1624,6 @@ fn build_native_assistant_history_omits_reasoning_content_when_none() {
     }];
     let result = build_native_assistant_history("answer", &calls, None);
     let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
-    assert_eq!(parsed["content"].as_str(), Some("answer"));
-    assert!(parsed.get("reasoning_content").is_none());
-}
-
-#[test]
-fn build_native_assistant_history_from_parsed_calls_includes_reasoning_content() {
-    let calls = vec![ParsedToolCall {
-        name: "shell".into(),
-        arguments: serde_json::json!({"command": "pwd"}),
-        tool_call_id: Some("call_2".into()),
-    }];
-    let result =
-        build_native_assistant_history_from_parsed_calls("answer", &calls, Some("deep thought"));
-    assert!(result.is_some());
-    let parsed: serde_json::Value = serde_json::from_str(result.as_deref().unwrap()).unwrap();
-    assert_eq!(parsed["content"].as_str(), Some("answer"));
-    assert_eq!(parsed["reasoning_content"].as_str(), Some("deep thought"));
-    assert!(parsed["tool_calls"].is_array());
-}
-
-#[test]
-fn build_native_assistant_history_from_parsed_calls_omits_reasoning_content_when_none() {
-    let calls = vec![ParsedToolCall {
-        name: "shell".into(),
-        arguments: serde_json::json!({"command": "pwd"}),
-        tool_call_id: Some("call_2".into()),
-    }];
-    let result = build_native_assistant_history_from_parsed_calls("answer", &calls, None);
-    assert!(result.is_some());
-    let parsed: serde_json::Value = serde_json::from_str(result.as_deref().unwrap()).unwrap();
     assert_eq!(parsed["content"].as_str(), Some("answer"));
     assert!(parsed.get("reasoning_content").is_none());
 }
@@ -2287,12 +1776,15 @@ fn estimate_history_tokens_multiple_messages() {
 
 #[tokio::test]
 async fn run_tool_call_loop_surfaces_tool_failure_reason_in_on_delta() {
-    let provider = ScriptedProvider::from_text_responses(vec![
-        r#"<tool_call>
-{"name":"failing_shell","arguments":{"command":"rm -rf /"}}
-</tool_call>"#,
-        "I could not execute that command.",
-    ]);
+    let provider = ScriptedProvider::from_chat_responses(vec![
+        native_tool_response(vec![native_call(
+            "call_failing_shell",
+            "failing_shell",
+            serde_json::json!({"command":"rm -rf /"}),
+        )]),
+        text_chat_response("I could not execute that command."),
+    ])
+    .with_native_tool_support();
 
     let tools_registry: Vec<Box<dyn Tool>> = vec![Box::new(FailingTool::new(
         "failing_shell",

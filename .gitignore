@@ -41,6 +41,7 @@ credentials.json
 .local-state-backups/
 *.local-state-backup/
 /AGENTS.md
+/.qwen/
 
 # Coverage artifacts
 lcov.info

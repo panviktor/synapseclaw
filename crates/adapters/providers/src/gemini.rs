@@ -199,11 +199,10 @@ impl CandidateContent {
     /// - `{"text": "actual answer"}` — the real response
     /// - `{"thoughtSignature": "..."}` — opaque signature (no text field)
     ///
-    /// Returns the non-thinking text, falling back to thinking text only when
-    /// no non-thinking content is available.
+    /// Returns only non-thinking text. Thinking-only responses are treated as
+    /// empty visible content instead of leaking internal reasoning.
     fn effective_text(self) -> Option<String> {
         let mut answer_parts: Vec<String> = Vec::new();
-        let mut first_thinking: Option<String> = None;
 
         for part in self.parts {
             if let Some(text) = part.text {
@@ -212,14 +211,12 @@ impl CandidateContent {
                 }
                 if !part.thought {
                     answer_parts.push(text);
-                } else if first_thinking.is_none() {
-                    first_thinking = Some(text);
                 }
             }
         }
 
         if answer_parts.is_empty() {
-            first_thinking
+            None
         } else {
             Some(answer_parts.join(""))
         }
@@ -1229,6 +1226,10 @@ impl Provider for GeminiProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
+        if request.tools.is_some_and(|tools| !tools.is_empty()) {
+            anyhow::bail!("Gemini provider does not support native tool calls");
+        }
+
         let mut system_parts: Vec<&str> = Vec::new();
         let mut contents: Vec<Content> = Vec::new();
 
@@ -1968,7 +1969,7 @@ mod tests {
     }
 
     #[test]
-    fn thinking_only_response_falls_back_to_thinking_text() {
+    fn thinking_only_response_returns_none() {
         let json = r#"{
             "candidates": [{
                 "content": {
@@ -1983,7 +1984,7 @@ mod tests {
         let response: GenerateContentResponse = serde_json::from_str(json).unwrap();
         let candidate = response.candidates.unwrap().into_iter().next().unwrap();
         let text = candidate.content.unwrap().effective_text();
-        assert_eq!(text, Some("I need more context...".to_string()));
+        assert_eq!(text, None);
     }
 
     #[test]

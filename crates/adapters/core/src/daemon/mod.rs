@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use std::future::Future;
 use std::path::PathBuf;
@@ -181,20 +181,15 @@ pub async fn run(
         .join("standing_orders.json");
     let standing_order_store: std::sync::Arc<
         dyn synapse_domain::ports::standing_order_store::StandingOrderStorePort,
-    > = match synapse_infra::standing_order_store::FileStandingOrderStore::new(&standing_order_path)
-    {
-        Ok(store) => std::sync::Arc::new(store),
-        Err(error) => {
-            tracing::warn!(
-                path = %standing_order_path.display(),
-                %error,
-                "Failed to initialize persistent standing order store, falling back to memory"
-            );
-            std::sync::Arc::new(
-                synapse_domain::ports::standing_order_store::InMemoryStandingOrderStore::new(),
-            )
-        }
-    };
+    > = std::sync::Arc::new(
+        synapse_infra::standing_order_store::FileStandingOrderStore::new(&standing_order_path)
+            .with_context(|| {
+                format!(
+                    "failed to initialize persistent standing order store at {}",
+                    standing_order_path.display()
+                )
+            })?,
+    );
 
     let run_recipe_path = config
         .config_path
@@ -203,19 +198,16 @@ pub async fn run(
         .join("run_recipes.json");
     let run_recipe_store: std::sync::Arc<
         dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort,
-    > = match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&run_recipe_path) {
-        Ok(store) => std::sync::Arc::new(store),
-        Err(error) => {
-            tracing::warn!(
-                path = %run_recipe_path.display(),
-                %error,
-                "Failed to initialize persistent run recipe store, falling back to memory"
-            );
-            std::sync::Arc::new(
-                synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new(),
-            )
-        }
-    };
+    > = std::sync::Arc::new(
+        synapse_infra::run_recipe_store::FileRunRecipeStore::new(&run_recipe_path).with_context(
+            || {
+                format!(
+                    "failed to initialize persistent run recipe store at {}",
+                    run_recipe_path.display()
+                )
+            },
+        )?,
+    );
 
     // OutboundIntent bus: gateway emits intents, relay delivers via registry.
     let outbound_tx = if config.agents_ipc.push_relay_channel.is_some()

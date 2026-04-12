@@ -2,7 +2,9 @@
 
 This directory contains the strategy, plans, and operational docs for the SynapseClaw fork.
 
-SynapseClaw is an independent project (originally forked from ZeroClaw) with its own **multi-agent IPC system** (broker, trust model, quarantine, control plane), **web-based operator dashboard**, **security hardening** (execution profiles, Ed25519 identity, PromptGuard), and **hexagonal core** (fork_core workspace crate). See [`delta-registry.md`](delta-registry.md) for the full delta inventory.
+SynapseClaw is an independent project (originally forked from ZeroClaw) with its own **multi-agent IPC system** (broker, trust model, quarantine, control plane), **web-based operator dashboard**, **security hardening** (execution profiles, Ed25519 identity, PromptGuard), and **hexagonal core** (`synapse_domain` workspace crate). See [`delta-registry.md`](delta-registry.md) for the full delta inventory.
+
+> **Note**: Some documents in this directory still reference old crate names (`fork_core` → `synapse_domain`, `fork_adapters` → `synapse_adapters`). See [`doc-discrepancies.md`](doc-discrepancies.md) for known discrepancies.
 
 ## News & Changelog
 
@@ -15,6 +17,7 @@ See [`news.md`](news.md) for the latest updates and release notes.
 | Document | Purpose | Who reads it |
 |----------|---------|-------------|
 | [delta-registry.md](delta-registry.md) | All project deltas (IPC, security, gateway, web UI, core, infra) | Everyone |
+| [doc-discrepancies.md](doc-discrepancies.md) | Known differences between these docs and actual code | Everyone |
 | [sync-strategy.md](sync-strategy.md) | ARCHIVED — historical upstream sync strategy (discontinued) | Reference only |
 | [sync-review-rubric.md](sync-review-rubric.md) | ARCHIVED — historical sync PR review policy | Reference only |
 

@@ -244,11 +244,6 @@ fn parse_path_only_attachment(message: &str) -> Option<TelegramAttachment> {
     })
 }
 
-/// Delegate to the shared `strip_tool_call_tags` in the parent module.
-fn strip_tool_call_tags(message: &str) -> String {
-    crate::strip_tool_call_tags(message)
-}
-
 fn find_matching_close(s: &str) -> Option<usize> {
     let mut depth = 1usize;
     for (i, ch) in s.char_indices() {
@@ -2309,7 +2304,6 @@ impl Channel for TelegramChannel {
         message_id: &str,
         text: &str,
     ) -> anyhow::Result<()> {
-        let text = &strip_tool_call_tags(text);
         let (chat_id, thread_id) = Self::parse_reply_target(recipient);
 
         // Clean up rate-limit tracking for this chat
@@ -2496,8 +2490,7 @@ impl Channel for TelegramChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-        // Strip tool_call tags before processing to prevent Markdown parsing failures
-        let content = strip_tool_call_tags(&message.content);
+        let content = message.content.as_str();
 
         // Parse recipient: "chat_id" or "chat_id:thread_id" format
         let (chat_id, thread_id) = match message.recipient.split_once(':') {
@@ -2505,7 +2498,7 @@ impl Channel for TelegramChannel {
             None => (message.recipient.as_str(), None),
         };
 
-        let (text_without_markers, attachments) = parse_attachment_markers(&content);
+        let (text_without_markers, attachments) = parse_attachment_markers(content);
 
         if !attachments.is_empty() {
             if !text_without_markers.is_empty() {
@@ -2520,13 +2513,13 @@ impl Channel for TelegramChannel {
             return Ok(());
         }
 
-        if let Some(attachment) = parse_path_only_attachment(&content) {
+        if let Some(attachment) = parse_path_only_attachment(content) {
             self.send_attachment(chat_id, thread_id, &attachment)
                 .await?;
             return Ok(());
         }
 
-        self.send_text_chunks(&content, chat_id, thread_id).await
+        self.send_text_chunks(content, chat_id, thread_id).await
     }
 
     async fn listen(&self, tx: tokio::sync::mpsc::Sender<ChannelMessage>) -> anyhow::Result<()> {
@@ -3584,109 +3577,6 @@ mod tests {
         let message_id = 0;
         let id = format!("telegram_{chat_id}_{message_id}");
         assert_eq!(id, "telegram_123456_0");
-    }
-
-    // ── Tool call tag stripping tests ───────────────────────────────────
-
-    #[test]
-    fn strip_tool_call_tags_removes_standard_tags() {
-        let input =
-            "Hello <tool>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool> world";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Hello  world");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_removes_alias_tags() {
-        let input = "Hello <toolcall>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</toolcall> world";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Hello  world");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_removes_dash_tags() {
-        let input = "Hello <tool-call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool-call> world";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Hello  world");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_removes_tool_call_tags() {
-        let input = "Hello <tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call> world";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Hello  world");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_removes_invoke_tags() {
-        let input = "Hello <invoke>{\"name\":\"shell\",\"arguments\":{\"command\":\"date\"}}</invoke> world";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Hello  world");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_handles_multiple_tags() {
-        let input = "Start <tool>a</tool> middle <tool>b</tool> end";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Start  middle  end");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_handles_mixed_tags() {
-        let input = "A <tool>a</tool> B <toolcall>b</toolcall> C <tool-call>c</tool-call> D";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "A  B  C  D");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_preserves_normal_text() {
-        let input = "Hello world! This is a test.";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Hello world! This is a test.");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_handles_unclosed_tags() {
-        let input = "Hello <tool>world";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Hello <tool>world");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_handles_unclosed_tool_call_with_json() {
-        let input =
-            "Status:\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"uptime\"}}";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Status:");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_handles_mismatched_close_tag() {
-        let input =
-            "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"uptime\"}}</arg_value>";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_cleans_extra_newlines() {
-        let input = "Hello\n\n<tool>\ntest\n</tool>\n\n\nworld";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "Hello\n\nworld");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_handles_empty_input() {
-        let input = "";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn strip_tool_call_tags_handles_only_tags() {
-        let input = "<tool>{\"name\":\"test\"}</tool>";
-        let result = strip_tool_call_tags(input);
-        assert_eq!(result, "");
     }
 
     #[test]

@@ -488,8 +488,7 @@ impl Channel for DiscordChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-        let raw_content = crate::strip_tool_call_tags(&message.content);
-        let (cleaned_content, parsed_attachments) = parse_attachment_markers(&raw_content);
+        let (cleaned_content, parsed_attachments) = parse_attachment_markers(&message.content);
         let (mut local_files, remote_urls, unresolved_markers) =
             classify_outgoing_attachments(&parsed_attachments);
 

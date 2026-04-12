@@ -581,7 +581,7 @@ mod tests {
     use anyhow::anyhow;
     use synapse_domain::domain::config::AutonomyLevel;
     use synapse_domain::domain::security_policy::SecurityPolicy;
-    use synapse_providers::{ChatRequest, ChatResponse, ToolCall};
+    use synapse_providers::{traits::ProviderCapabilities, ChatRequest, ChatResponse, ToolCall};
 
     fn test_security() -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy::default())
@@ -661,6 +661,13 @@ mod tests {
 
     #[async_trait]
     impl Provider for OneToolThenFinalProvider {
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                native_tool_calling: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,
@@ -704,6 +711,13 @@ mod tests {
 
     #[async_trait]
     impl Provider for InfiniteToolCallProvider {
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                native_tool_calling: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,
@@ -737,6 +751,13 @@ mod tests {
 
     #[async_trait]
     impl Provider for FailingProvider {
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                native_tool_calling: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,
@@ -1234,6 +1255,13 @@ mod tests {
 
     #[async_trait]
     impl Provider for McpToolThenFinalProvider {
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                native_tool_calling: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,

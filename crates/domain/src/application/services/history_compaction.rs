@@ -582,20 +582,19 @@ pub fn compaction_summarizer_prompt_with_policy(
 
 /// Apply a compaction summary to the history, replacing the compacted range.
 ///
-/// `summary_raw` is the raw summarizer output (or fallback transcript).
+/// `summary_raw` is the raw summarizer output. Empty summaries are rejected so
+/// callers cannot silently replay raw transcript as compacted context.
 pub fn apply_compaction(
     history: &mut Vec<ChatMessage>,
     start: usize,
     compact_end: usize,
     summary_raw: &str,
-    fallback_transcript: &str,
-) {
+) -> bool {
     apply_compaction_with_policy(
         history,
         start,
         compact_end,
         summary_raw,
-        fallback_transcript,
         &HistoryCompressionPolicy::default(),
     )
 }
@@ -605,15 +604,15 @@ pub fn apply_compaction_with_policy(
     start: usize,
     compact_end: usize,
     summary_raw: &str,
-    fallback_transcript: &str,
     policy: &HistoryCompressionPolicy,
-) {
-    let summary = if summary_raw.is_empty() {
-        truncate_with_ellipsis(fallback_transcript, policy.max_summary_chars)
-    } else {
-        truncate_with_ellipsis(summary_raw, policy.max_summary_chars)
-    };
+) -> bool {
+    let summary_raw = summary_raw.trim();
+    if summary_raw.is_empty() {
+        return false;
+    }
+    let summary = truncate_with_ellipsis(summary_raw, policy.max_summary_chars);
     apply_compaction_summary(history, start, compact_end, &summary);
+    true
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1045,10 +1044,28 @@ mod tests {
             ChatMessage::assistant("old4"),
             ChatMessage::user("recent"),
         ];
-        apply_compaction(&mut history, 1, 5, "Summary of old messages", "fallback");
+        assert!(apply_compaction(
+            &mut history,
+            1,
+            5,
+            "Summary of old messages"
+        ));
         assert_eq!(history.len(), 3); // system + summary + recent
         assert!(history[1].content.contains("Compaction summary"));
         assert!(history[1].content.contains("Summary of old messages"));
         assert_eq!(history[2].content, "recent");
+    }
+
+    #[test]
+    fn apply_compaction_rejects_empty_summary() {
+        let mut history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("old1"),
+            ChatMessage::assistant("old2"),
+            ChatMessage::user("recent"),
+        ];
+        let original = history.clone();
+        assert!(!apply_compaction(&mut history, 1, 3, "   "));
+        assert_eq!(history, original);
     }
 }

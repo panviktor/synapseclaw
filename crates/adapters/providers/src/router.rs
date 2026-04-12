@@ -202,6 +202,10 @@ mod tests {
 
     #[async_trait]
     impl Provider for MockProvider {
+        fn supports_native_tools(&self) -> bool {
+            true
+        }
+
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,
@@ -212,6 +216,22 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             *self.last_model.lock() = model.to_string();
             Ok(self.response.to_string())
+        }
+
+        async fn chat_with_tools(
+            &self,
+            messages: &[ChatMessage],
+            _tools: &[serde_json::Value],
+            model: &str,
+            temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            let text = self.chat_with_history(messages, model, temperature).await?;
+            Ok(ChatResponse {
+                text: Some(text),
+                tool_calls: Vec::new(),
+                usage: None,
+                reasoning_content: None,
+            })
         }
     }
 
@@ -256,6 +276,10 @@ mod tests {
     // Arc<MockProvider> should also be a Provider
     #[async_trait]
     impl Provider for Arc<MockProvider> {
+        fn supports_native_tools(&self) -> bool {
+            self.as_ref().supports_native_tools()
+        }
+
         async fn chat_with_system(
             &self,
             system_prompt: Option<&str>,
@@ -265,6 +289,18 @@ mod tests {
         ) -> anyhow::Result<String> {
             self.as_ref()
                 .chat_with_system(system_prompt, message, model, temperature)
+                .await
+        }
+
+        async fn chat_with_tools(
+            &self,
+            messages: &[ChatMessage],
+            tools: &[serde_json::Value],
+            model: &str,
+            temperature: f64,
+        ) -> anyhow::Result<ChatResponse> {
+            self.as_ref()
+                .chat_with_tools(messages, tools, model, temperature)
                 .await
         }
     }
@@ -423,7 +459,6 @@ mod tests {
         })];
 
         // chat_with_tools should delegate through the router to the mock.
-        // MockProvider's default chat_with_tools calls chat_with_history -> chat_with_system.
         let result = router
             .chat_with_tools(&messages, &tools, "model", 0.7)
             .await

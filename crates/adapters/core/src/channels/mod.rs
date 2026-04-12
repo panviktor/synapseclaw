@@ -27,7 +27,6 @@ use crate::channel_runtime_support::{
 };
 use crate::channels::session_backend::SessionBackend as LocalSessionBackend;
 use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
-use synapse_domain::application::services::tool_filtering::build_tool_instructions;
 use synapse_infra::approval::ApprovalManager;
 use synapse_infra::config_io::ConfigIO;
 // memory module used indirectly via synapse_memory
@@ -2299,17 +2298,15 @@ pub async fn start_channels(
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("run_recipes.json");
-            match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path) {
-                Ok(store) => Arc::new(store),
-                Err(error) => {
-                    tracing::warn!(
-                        path = %store_path.display(),
-                        %error,
-                        "Failed to initialize persistent run recipe store, falling back to memory"
-                    );
-                    Arc::new(synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new())
-                }
-            }
+            Arc::new(
+                synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path)
+                    .with_context(|| {
+                        format!(
+                            "failed to initialize persistent run recipe store at {}",
+                            store_path.display()
+                        )
+                    })?,
+            )
         };
     let user_profile_store: Arc<
         dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
@@ -2321,17 +2318,15 @@ pub async fn start_channels(
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("user_profiles.json");
-        match synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path) {
-            Ok(store) => Arc::new(store),
-            Err(error) => {
-                tracing::warn!(
-                    path = %store_path.display(),
-                    %error,
-                    "Failed to initialize persistent user profile store, falling back to memory"
-                );
-                Arc::new(synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new())
-            }
-        }
+        Arc::new(
+            synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path)
+                .with_context(|| {
+                    format!(
+                        "failed to initialize persistent user profile store at {}",
+                        store_path.display()
+                    )
+                })?,
+        )
     };
 
     let provider_name = resolved_default_provider(&config);
@@ -2686,9 +2681,12 @@ pub async fn start_channels(
         bootstrap_max_chars,
         native_tools,
         config.skills.prompt_injection_mode,
-    );
-    if !native_tools {
-        system_prompt.push_str(&build_tool_instructions(tools_registry.as_ref()));
+    )?;
+    if !native_tools && !tools_registry.is_empty() {
+        anyhow::bail!(
+            "provider {} does not support native tool calling; prompt-guided tool fallback has been removed",
+            provider_name
+        );
     }
 
     // Append deferred MCP tool names so the LLM knows what is available
@@ -3082,6 +3080,67 @@ mod tests {
         )
         .unwrap();
         tmp
+    }
+
+    fn build_system_prompt(
+        workspace_dir: &std::path::Path,
+        model_name: &str,
+        tools: &[(&str, &str)],
+        skills: &[crate::skills::Skill],
+        identity_config: Option<&synapse_domain::config::schema::IdentityConfig>,
+        bootstrap_max_chars: Option<usize>,
+    ) -> String {
+        crate::runtime_system_prompt::build_system_prompt(
+            workspace_dir,
+            model_name,
+            tools,
+            skills,
+            identity_config,
+            bootstrap_max_chars,
+        )
+        .unwrap()
+    }
+
+    fn build_system_prompt_with_mode(
+        workspace_dir: &std::path::Path,
+        model_name: &str,
+        tools: &[(&str, &str)],
+        skills: &[crate::skills::Skill],
+        identity_config: Option<&synapse_domain::config::schema::IdentityConfig>,
+        bootstrap_max_chars: Option<usize>,
+        native_tools: bool,
+        skills_prompt_mode: synapse_domain::config::schema::SkillsPromptInjectionMode,
+    ) -> String {
+        crate::runtime_system_prompt::build_system_prompt_with_mode(
+            workspace_dir,
+            model_name,
+            tools,
+            skills,
+            identity_config,
+            bootstrap_max_chars,
+            native_tools,
+            skills_prompt_mode,
+        )
+        .unwrap()
+    }
+
+    fn build_channel_system_prompt(
+        workspace_dir: &std::path::Path,
+        model_name: &str,
+        tools: &[(&str, &str)],
+        skills: &[crate::skills::Skill],
+        identity_config: Option<&synapse_domain::config::schema::IdentityConfig>,
+        bootstrap_max_chars: Option<usize>,
+    ) -> String {
+        crate::runtime_system_prompt::build_channel_system_prompt(
+            workspace_dir,
+            model_name,
+            tools,
+            skills,
+            identity_config,
+            bootstrap_max_chars,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -4249,7 +4308,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt_injects_tools() {
+    fn prompt_does_not_advertise_tools_without_native_interface() {
         let ws = make_workspace();
         let tools = vec![
             ("shell", "Run commands"),
@@ -4257,9 +4316,10 @@ mod tests {
         ];
         let prompt = build_system_prompt(ws.path(), "gpt-4o", &tools, &[], None, None);
 
-        assert!(prompt.contains("**shell**"));
-        assert!(prompt.contains("Run commands"));
-        assert!(prompt.contains("**memory_recall**"));
+        assert!(prompt.contains("No provider-native tool interface is registered"));
+        assert!(!prompt.contains("**shell**"));
+        assert!(!prompt.contains("Run commands"));
+        assert!(!prompt.contains("**memory_recall**"));
     }
 
     #[test]
@@ -4283,26 +4343,6 @@ mod tests {
         assert!(prompt.contains("registered out-of-band via native tool calling"));
         assert!(!prompt.contains("**shell**"));
         assert!(!prompt.contains("**memory_recall**"));
-    }
-
-    #[test]
-    fn prompt_includes_single_tool_protocol_block_after_append() {
-        let ws = make_workspace();
-        let tools = vec![("shell", "Run commands")];
-        let mut prompt = build_system_prompt(ws.path(), "gpt-4o", &tools, &[], None, None);
-
-        assert!(
-            !prompt.contains("## Tool Use Protocol"),
-            "build_system_prompt should not emit protocol block directly"
-        );
-
-        prompt.push_str(&build_tool_instructions(&[]));
-
-        assert_eq!(
-            prompt.matches("## Tool Use Protocol").count(),
-            1,
-            "protocol block should appear exactly once in the final prompt"
-        );
     }
 
     #[test]
@@ -4365,9 +4405,10 @@ mod tests {
         // Empty workspace — no files at all
         let prompt = build_system_prompt(tmp.path(), "model", &[], &[], None, None);
 
-        assert!(prompt.contains("[File not found: IDENTITY.md]"));
-        assert!(!prompt.contains("[File not found: SOUL.md]"));
-        assert!(!prompt.contains("[File not found: AGENTS.md]"));
+        assert!(!prompt.contains("[File not found"));
+        assert!(!prompt.contains("### IDENTITY.md"));
+        assert!(!prompt.contains("### SOUL.md"));
+        assert!(!prompt.contains("### AGENTS.md"));
     }
 
     #[test]
@@ -4771,7 +4812,7 @@ This is an example JSON object for profile settings."#;
     }
 
     #[test]
-    fn aieos_fallback_to_openclaw_on_parse_error() {
+    fn aieos_parse_error_fails_without_openclaw_fallback() {
         use synapse_domain::config::schema::IdentityConfig;
 
         let config = IdentityConfig {
@@ -4781,16 +4822,23 @@ This is an example JSON object for profile settings."#;
         };
 
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None);
+        let error = crate::runtime_system_prompt::build_system_prompt(
+            ws.path(),
+            "model",
+            &[],
+            &[],
+            Some(&config),
+            None,
+        )
+        .expect_err("configured AIEOS load failure must fail loudly");
 
-        // Should fall back to OpenClaw format when AIEOS file is not found
-        // (Error is logged to stderr with filename, not included in prompt)
-        assert!(prompt.contains("### IDENTITY.md"));
-        assert!(prompt.contains("Name: SynapseClaw"));
+        assert!(error
+            .to_string()
+            .contains("failed to load configured AIEOS identity"));
     }
 
     #[test]
-    fn aieos_empty_uses_openclaw() {
+    fn aieos_missing_source_fails_without_openclaw_fallback() {
         use synapse_domain::config::schema::IdentityConfig;
 
         // Format is "aieos" but neither path nor inline is set
@@ -4801,11 +4849,19 @@ This is an example JSON object for profile settings."#;
         };
 
         let ws = make_workspace();
-        let prompt = build_system_prompt(ws.path(), "model", &[], &[], Some(&config), None);
+        let error = crate::runtime_system_prompt::build_system_prompt(
+            ws.path(),
+            "model",
+            &[],
+            &[],
+            Some(&config),
+            None,
+        )
+        .expect_err("configured AIEOS without source must fail loudly");
 
-        // Should use OpenClaw format (not configured for AIEOS)
-        assert!(prompt.contains("### IDENTITY.md"));
-        assert!(prompt.contains("Name: SynapseClaw"));
+        assert!(error
+            .to_string()
+            .contains("failed to load configured AIEOS identity"));
     }
 
     #[test]

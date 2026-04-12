@@ -117,7 +117,7 @@ What to preserve and adapt:
 
 - use provider-native continuation where it is real and measurable
 - avoid assuming one provider-specific flow for everyone else
-- keep a provider-agnostic compact replay fallback
+- keep a provider-agnostic compact replay path
 
 References:
 
@@ -367,7 +367,7 @@ That means:
 
 - adapter-level capability advertisement
 - runtime selection based on capability, not prompt text
-- compact replay remains the universal fallback
+- compact replay remains the universal provider-independent path
 
 For OpenAI-family providers, that points directly at Responses-style chaining via
 `previous_response_id`.
@@ -378,9 +378,8 @@ The shared runtime must not accumulate vendor-specific tool dialects.
 
 Canonical rule:
 
-- native structured tool calls when the provider supports them
-- otherwise one fallback envelope only:
-  - `<tool_call>{ "name": "...", "arguments": { ... } }</tool_call>`
+- shared runtime executes native structured tool calls only
+- if a provider emits a text envelope, only its adapter may normalize or reject it
 
 Everything else is non-canonical:
 
@@ -519,7 +518,7 @@ Scope:
 
 - provider capability for native continuation / server-side state
 - use on supported providers
-- preserve generic compact replay fallback for others
+- preserve generic compact replay path for others
 
 Expected outcome:
 
@@ -566,13 +565,44 @@ Expected outcome:
   - Slice 6: cheap-model condensation lane for history and summaries
   - Slice 7: progressive scoped instruction loading for nearest-scope project context
   - Slice 9: strict canonical tool protocol in shared runtime paths
-    - follow-through: shared text fallback now rejects bare OpenAI-shaped /
-      canonical `tool_calls` JSON unless it is inside the canonical
-      `<tool_call>...</tool_call>` envelope; provider-native JSON must arrive
-      through structured provider response fields or be normalized in the
-      provider adapter
+    - follow-through: shared text fallback was removed; provider-native JSON
+      must arrive through structured provider response fields or be normalized
+      in the provider adapter
     - native structured tool-call ids are still preserved through the shared
       runtime loop
+    - follow-through: provider trait defaults and CLI/Gemini providers now
+      reject non-empty tool sets when they do not implement native tool calls,
+      instead of silently injecting prompt-guided tool text or ignoring tools
+    - follow-through: generic OpenAI-compatible provider no longer retries a
+      native tool request through a text/history path, and no longer accepts
+      top-level `name` / `arguments` / `parameters` tool-call dialect fields;
+      those formats must be handled by an explicit provider adapter if needed
+    - follow-through: shared XML/text tool dispatcher, XML parser tests, and
+      unreachable `[Tool results]` history fallback were removed; runtime loop,
+      CLI, and channels now require native tool calls for tool-capable turns
+    - follow-through: OpenAI-compatible and Ollama text-only chat paths now
+      reject unexpected native tool calls instead of serializing them back into
+      JSON text for a shared parser
+    - follow-through: generic OpenAI-compatible, OpenAI, Azure OpenAI, Gemini,
+      and Ollama adapters no longer surface `reasoning_content` / `thinking`
+      as visible assistant text; they keep reasoning separate or fail on empty
+      visible content, so provider dialect quirks do not become shared-runtime
+      answer fallbacks
+    - follow-through: channel-level XML tool-call tag stripping and shared
+      runtime `<tool_result>` / `<think>` visible-output scrubbing were removed;
+      raw tool/reasoning artifacts must be handled at the concrete provider
+      adapter boundary or surface as defects, not be hidden by web/channel/core
+      presentation code
+    - follow-through: provider adapters no longer synthesize missing native
+      `tool_call.id` values with UUIDs; missing ids are treated as provider
+      schema defects so the assistant tool-call / role=`tool` result link stays
+      explicit and auditable
+    - follow-through: web run creation no longer falls through to a synthetic
+      UUID when the configured `run_store` fails; persistence failures now
+      surface instead of producing an unaudited run id
+    - follow-through: configured AIEOS identity now fails loud when the JSON
+      source is missing, invalid, or renders empty instead of silently mixing in
+      OpenClaw `IDENTITY.md`
   - Slice 10 groundwork:
     - lane candidate schema and manual profile metadata
     - preset expansion (`chatgpt`, `claude`, `openrouter`, `gemini`, `local`)
@@ -739,6 +769,9 @@ Expected outcome:
       scoped per workspace agent and keyed by source transcript, compression
       policy, and trusted context window digest; repeated compaction of the same
       source no longer re-burns the summary lane
+    - live agent history compaction now skips compaction when the summary lane
+      fails or returns an empty summary, instead of injecting a raw transcript
+      truncation as a hidden fallback artifact
     - condensed artifact cache is now persistent under the workspace state dir,
       TTL-bounded by default to 2 days, and LRU-capped by config; this makes
       restart/fleet behavior closer to Hermes-style prompt caching while staying
@@ -1007,6 +1040,8 @@ Expected outcome:
     key constant and consumed by typed default/assumption/handoff logic
   - public `user_profile` tool schema examples no longer advertise weather/time
     facts as a built-in profile schema
+  - persistent user-profile store initialization now fails explicitly instead
+    of silently degrading to memory-only storage
   - executable-code fixtures no longer use legacy city/locale profile keys;
     profile tests use arbitrary dynamic facts
 
@@ -1101,7 +1136,7 @@ Expected outcome:
 - add provider-native continuation support where it genuinely helps
 - preserve hexagonal boundaries:
   - provider-native continuation state must live in the provider adapter
-  - shared runtime stays on one canonical tool protocol and compact replay fallback
+  - shared runtime stays on one canonical tool protocol and compact replay path
 - current status:
   - adapter-local response-id tracking and delta-input assembly were implemented in
     `openai_codex`
@@ -1124,8 +1159,8 @@ Expected outcome:
 ### Slice 9
 
 - enforce a strict canonical tool protocol in shared runtime paths:
-  - native structured tool calls
-  - one fallback `<tool_call>{json}</tool_call>` envelope
+  - native structured tool calls only
+  - no shared text-envelope fallback
 - move any provider-specific dialect handling to adapter-local code only if it
   is ever still needed
 - explicitly keep OpenAI/Codex-specific recovery in the provider adapter rather
@@ -1710,6 +1745,8 @@ Expected outcome:
       `memory_update` object; old string-shaped compact outputs still parse
       for history safety, but are classified as `generic_dialogue` and rejected
       before durable memory mutation
+    - malformed consolidation responses no longer create raw-turn daily memory
+      entries; they are logged as invalid consolidation output and skipped
     - generic dialogue and ephemeral repair traces are rejected before durable
       memory mutation, while specific project/runtime task-state updates remain
       writable
@@ -2204,8 +2241,8 @@ Expected outcome:
      transport needs it
   8. leave summary/run-lifecycle unification as a typed service follow-up
      unless it can be done without crossing store/lifecycle boundaries
-  9. add tests/guards that prove extraction preserves prompt, sanitizer, and
-     history hygiene behavior
+  9. add tests/guards that prove extraction preserves prompt and provider-history
+     hygiene behavior without reintroducing shared XML/tag sanitizers
 - invariant:
   - `channels/mod.rs` must not be the home for shared runtime prompt or tool
     artifact semantics
@@ -2213,8 +2250,8 @@ Expected outcome:
 - implementation status:
   - runtime system prompt/bootstrap lives in adapter-core runtime prompt module,
     with channel re-exports kept only for backward-compatible call sites
-  - tool artifact cleanup and provider-history hygiene live outside
-    `channels/mod.rs`
+  - provider-history hygiene lives outside `channels/mod.rs`; presentation
+    adapters no longer strip raw XML tool artifacts
   - tool notification event interpretation and observer forwarding are shared;
     web/channel retain only transport-specific JSON/text sinks
   - channel health supervision helpers live outside `channels/mod.rs`

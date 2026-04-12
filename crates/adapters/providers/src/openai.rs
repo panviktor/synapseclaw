@@ -39,16 +39,17 @@ struct Choice {
 struct ResponseMessage {
     #[serde(default)]
     content: Option<String>,
-    /// Reasoning/thinking models may return output in `reasoning_content`.
+    /// Provider reasoning content is captured separately and must not be used
+    /// as assistant-visible text.
     #[serde(default)]
     reasoning_content: Option<String>,
 }
 
 impl ResponseMessage {
-    fn effective_content(&self) -> String {
+    fn effective_content(&self) -> Option<String> {
         match &self.content {
-            Some(c) if !c.is_empty() => c.clone(),
-            _ => self.reasoning_content.clone().unwrap_or_default(),
+            Some(c) if !c.is_empty() => Some(c.clone()),
+            _ => None,
         }
     }
 }
@@ -154,7 +155,8 @@ struct NativeChoice {
 struct NativeResponseMessage {
     #[serde(default)]
     content: Option<String>,
-    /// Reasoning/thinking models may return output in `reasoning_content`.
+    /// Provider reasoning content is captured separately and must not be used
+    /// as assistant-visible text.
     #[serde(default)]
     reasoning_content: Option<String>,
     #[serde(default)]
@@ -165,7 +167,7 @@ impl NativeResponseMessage {
     fn effective_content(&self) -> Option<String> {
         match &self.content {
             Some(c) if !c.is_empty() => Some(c.clone()),
-            _ => self.reasoning_content.clone(),
+            _ => None,
         }
     }
 }
@@ -308,26 +310,34 @@ impl OpenAiProvider {
             .collect()
     }
 
-    fn parse_native_response(message: NativeResponseMessage) -> ProviderChatResponse {
+    fn parse_native_response(
+        message: NativeResponseMessage,
+    ) -> anyhow::Result<ProviderChatResponse> {
         let text = message.effective_content();
         let reasoning_content = message.reasoning_content.clone();
         let tool_calls = message
             .tool_calls
             .unwrap_or_default()
             .into_iter()
-            .map(|tc| ProviderToolCall {
-                id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                name: tc.function.name,
-                arguments: tc.function.arguments,
+            .map(|tc| {
+                let id = tc
+                    .id
+                    .filter(|id| !id.trim().is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("OpenAI native tool call missing call id"))?;
+                Ok(ProviderToolCall {
+                    id,
+                    name: tc.function.name,
+                    arguments: tc.function.arguments,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
-        ProviderChatResponse {
+        Ok(ProviderChatResponse {
             text,
             tool_calls,
             usage: None,
             reasoning_content,
-        }
+        })
     }
 
     fn http_client(&self) -> Client {
@@ -388,8 +398,10 @@ impl Provider for OpenAiProvider {
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.effective_content())
-            .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))
+            .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?
+            .message
+            .effective_content()
+            .ok_or_else(|| anyhow::anyhow!("OpenAI returned empty assistant content"))
     }
 
     async fn chat(
@@ -437,7 +449,7 @@ impl Provider for OpenAiProvider {
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
-        let mut result = Self::parse_native_response(message);
+        let mut result = Self::parse_native_response(message)?;
         result.usage = usage;
         Ok(result)
     }
@@ -503,7 +515,7 @@ impl Provider for OpenAiProvider {
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenAI"))?;
-        let mut result = Self::parse_native_response(message);
+        let mut result = Self::parse_native_response(message)?;
         result.usage = usage;
         Ok(result)
     }
@@ -602,7 +614,10 @@ mod tests {
         let json = r#"{"choices":[{"message":{"content":"Hi!"}}]}"#;
         let resp: ChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices.len(), 1);
-        assert_eq!(resp.choices[0].message.effective_content(), "Hi!");
+        assert_eq!(
+            resp.choices[0].message.effective_content().as_deref(),
+            Some("Hi!")
+        );
     }
 
     #[test]
@@ -617,7 +632,10 @@ mod tests {
         let json = r#"{"choices":[{"message":{"content":"A"}},{"message":{"content":"B"}}]}"#;
         let resp: ChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices.len(), 2);
-        assert_eq!(resp.choices[0].message.effective_content(), "A");
+        assert_eq!(
+            resp.choices[0].message.effective_content().as_deref(),
+            Some("A")
+        );
     }
 
     #[test]
@@ -625,8 +643,8 @@ mod tests {
         let json = r#"{"choices":[{"message":{"content":"Hello \u03A9"}}]}"#;
         let resp: ChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(
-            resp.choices[0].message.effective_content(),
-            "Hello \u{03A9}"
+            resp.choices[0].message.effective_content().as_deref(),
+            Some("Hello \u{03A9}")
         );
     }
 
@@ -649,38 +667,41 @@ mod tests {
     }
 
     // ----------------------------------------------------------
-    // Reasoning model fallback tests (reasoning_content)
+    // Reasoning content visibility tests
     // ----------------------------------------------------------
 
     #[test]
-    fn reasoning_content_fallback_empty_content() {
+    fn reasoning_content_not_used_when_content_empty() {
         let json = r#"{"choices":[{"message":{"content":"","reasoning_content":"Thinking..."}}]}"#;
         let resp: ChatResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.choices[0].message.effective_content(), "Thinking...");
+        assert_eq!(resp.choices[0].message.effective_content(), None);
     }
 
     #[test]
-    fn reasoning_content_fallback_null_content() {
+    fn reasoning_content_not_used_when_content_null() {
         let json =
             r#"{"choices":[{"message":{"content":null,"reasoning_content":"Thinking..."}}]}"#;
         let resp: ChatResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.choices[0].message.effective_content(), "Thinking...");
+        assert_eq!(resp.choices[0].message.effective_content(), None);
     }
 
     #[test]
     fn reasoning_content_not_used_when_content_present() {
         let json = r#"{"choices":[{"message":{"content":"Hello","reasoning_content":"Ignored"}}]}"#;
         let resp: ChatResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(resp.choices[0].message.effective_content(), "Hello");
+        assert_eq!(
+            resp.choices[0].message.effective_content().as_deref(),
+            Some("Hello")
+        );
     }
 
     #[test]
-    fn native_response_reasoning_content_fallback() {
+    fn native_response_reasoning_content_not_used_as_text() {
         let json =
             r#"{"choices":[{"message":{"content":"","reasoning_content":"Native thinking"}}]}"#;
         let resp: NativeChatResponse = serde_json::from_str(json).unwrap();
         let msg = &resp.choices[0].message;
-        assert_eq!(msg.effective_content(), Some("Native thinking".to_string()));
+        assert_eq!(msg.effective_content(), None);
     }
 
     #[test]
@@ -794,7 +815,7 @@ mod tests {
         }}]}"#;
         let resp: NativeChatResponse = serde_json::from_str(json).unwrap();
         let message = resp.choices.into_iter().next().unwrap().message;
-        let parsed = OpenAiProvider::parse_native_response(message);
+        let parsed = OpenAiProvider::parse_native_response(message).unwrap();
         assert_eq!(parsed.reasoning_content.as_deref(), Some("thinking step"));
         assert_eq!(parsed.tool_calls.len(), 1);
     }
@@ -804,7 +825,7 @@ mod tests {
         let json = r#"{"choices":[{"message":{"content":"hello"}}]}"#;
         let resp: NativeChatResponse = serde_json::from_str(json).unwrap();
         let message = resp.choices.into_iter().next().unwrap().message;
-        let parsed = OpenAiProvider::parse_native_response(message);
+        let parsed = OpenAiProvider::parse_native_response(message).unwrap();
         assert!(parsed.reasoning_content.is_none());
     }
 

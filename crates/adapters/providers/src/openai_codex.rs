@@ -1891,6 +1891,14 @@ impl Provider for OpenAiCodexProvider {
 mod tests {
     use super::*;
 
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     struct EnvGuard {
         key: &'static str,
         original: Option<String>,
@@ -1969,6 +1977,7 @@ mod tests {
 
     #[test]
     fn resolve_responses_url_prefers_explicit_endpoint_env() {
+        let _env_lock = env_lock();
         let _endpoint_guard = EnvGuard::set(
             CODEX_RESPONSES_URL_ENV,
             Some("https://env.example.com/v1/responses"),
@@ -1984,6 +1993,7 @@ mod tests {
 
     #[test]
     fn resolve_responses_url_uses_provider_api_url_override() {
+        let _env_lock = env_lock();
         let _endpoint_guard = EnvGuard::set(CODEX_RESPONSES_URL_ENV, None);
         let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, None);
 
@@ -2023,6 +2033,7 @@ mod tests {
 
     #[test]
     fn detects_official_openai_responses_api_endpoint() {
+        let _env_lock = env_lock();
         let _endpoint_guard = EnvGuard::set(CODEX_RESPONSES_URL_ENV, None);
         let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, None);
         let options = ProviderRuntimeOptions {
@@ -2040,6 +2051,7 @@ mod tests {
 
     #[test]
     fn official_or_custom_endpoint_enables_store_when_continuation_is_enabled() {
+        let _env_lock = env_lock();
         let _endpoint_guard = EnvGuard::set(CODEX_RESPONSES_URL_ENV, None);
         let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, None);
         let _guard = EnvGuard::set(CODEX_PREVIOUS_RESPONSE_ID_ENV, Some("true"));
@@ -2054,6 +2066,7 @@ mod tests {
 
     #[test]
     fn default_codex_endpoint_keeps_store_disabled_even_with_continuation_flag() {
+        let _env_lock = env_lock();
         let _endpoint_guard = EnvGuard::set(CODEX_RESPONSES_URL_ENV, None);
         let _base_guard = EnvGuard::set(CODEX_BASE_URL_ENV, None);
         let _guard = EnvGuard::set(CODEX_PREVIOUS_RESPONSE_ID_ENV, Some("true"));
@@ -2135,6 +2148,7 @@ mod tests {
 
     #[test]
     fn resolve_reasoning_effort_prefers_configured_override() {
+        let _env_lock = env_lock();
         let _guard = EnvGuard::set("SYNAPSECLAW_CODEX_REASONING_EFFORT", Some("low"));
         assert_eq!(
             resolve_reasoning_effort("gpt-5-codex", Some("high")),
@@ -2144,6 +2158,7 @@ mod tests {
 
     #[test]
     fn resolve_reasoning_effort_uses_legacy_env_when_unconfigured() {
+        let _env_lock = env_lock();
         let _guard = EnvGuard::set("SYNAPSECLAW_CODEX_REASONING_EFFORT", Some("minimal"));
         assert_eq!(
             resolve_reasoning_effort("gpt-5-codex", None),

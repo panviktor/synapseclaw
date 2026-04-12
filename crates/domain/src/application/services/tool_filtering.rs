@@ -7,7 +7,6 @@
 use crate::config::schema::{ToolFilterGroup, ToolFilterGroupMode};
 use crate::ports::tool::{Tool, ToolSpec};
 use std::collections::HashSet;
-use std::fmt::Write;
 
 // ── Glob matching (single `*` wildcard) ─────────────────────────────
 
@@ -109,39 +108,6 @@ pub fn compute_excluded_mcp_tools(
         .filter(|t| t.name().starts_with("mcp_") && !included.contains(t.name()))
         .map(|t| t.name().to_string())
         .collect()
-}
-
-// ── Tool instruction builder ────────────────────────────────────────
-
-/// Build the tool instruction block for the system prompt so the LLM knows
-/// how to invoke tools. Takes a registry of `Box<dyn Tool>` and formats
-/// each tool's metadata into a prompt-friendly text block.
-pub fn build_tool_instructions(tools_registry: &[Box<dyn Tool>]) -> String {
-    let mut instructions = String::new();
-    instructions.push_str("\n## Tool Use Protocol\n\n");
-    instructions.push_str("To use a tool, wrap a JSON object in <tool_call></tool_call> tags:\n\n");
-    instructions.push_str("```\n<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n```\n\n");
-    instructions.push_str(
-        "CRITICAL: Output actual <tool_call> tags\u{2014}never describe steps or give examples.\n\n",
-    );
-    instructions.push_str("Example: User says \"what's the date?\". You MUST respond with:\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"date\"}}\n</tool_call>\n\n");
-    instructions.push_str("You may use multiple tool calls in a single response. ");
-    instructions.push_str("After tool execution, results appear in <tool_result> tags. ");
-    instructions
-        .push_str("Continue reasoning with the results until you can give a final answer.\n\n");
-    instructions.push_str("### Available Tools\n\n");
-
-    for tool in tools_registry {
-        let _ = writeln!(
-            instructions,
-            "**{}**: {}\nParameters: `{}`\n",
-            tool.name(),
-            tool.description(),
-            tool.parameters_schema()
-        );
-    }
-
-    instructions
 }
 
 #[cfg(test)]

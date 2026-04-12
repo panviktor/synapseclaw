@@ -976,9 +976,11 @@ pub fn aieos_to_system_prompt(identity: &AieosIdentity) -> String {
 
 /// Check if AIEOS identity is configured and should be used.
 ///
-/// Returns true if format is "aieos" and either aieos_path or aieos_inline is set.
+/// Returns true when the identity dialect is explicitly set to AIEOS. Missing
+/// AIEOS source is a configuration error handled by `load_aieos_identity`, not
+/// a signal to fall back to another dialect.
 pub fn is_aieos_configured(config: &IdentityConfig) -> bool {
-    config.format == "aieos" && (config.aieos_path.is_some() || config.aieos_inline.is_some())
+    config.format == "aieos"
 }
 
 #[cfg(test)]
@@ -1265,13 +1267,13 @@ mod tests {
     }
 
     #[test]
-    fn is_aieos_configured_false_no_config() {
+    fn is_aieos_configured_true_without_source() {
         let config = IdentityConfig {
             format: "aieos".into(),
             aieos_path: None,
             aieos_inline: None,
         };
-        assert!(!is_aieos_configured(&config));
+        assert!(is_aieos_configured(&config));
     }
 
     #[test]

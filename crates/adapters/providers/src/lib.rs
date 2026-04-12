@@ -1227,7 +1227,7 @@ fn create_provider_with_url_and_options(
             AuthStyle::Bearer,
         ))),
         name if glm_base_url(name).is_some() => {
-            Ok(compat(OpenAiCompatibleProvider::new_no_responses_fallback(
+            Ok(compat(OpenAiCompatibleProvider::new_without_responses_retry(
                 "GLM",
                 glm_base_url(name).expect("checked in guard"),
                 key,
@@ -1392,7 +1392,7 @@ fn create_provider_with_url_and_options(
             )))
         }
         "nvidia" | "nvidia-nim" | "build.nvidia.com" => Ok(compat(
-            OpenAiCompatibleProvider::new_no_responses_fallback(
+            OpenAiCompatibleProvider::new_without_responses_retry(
                 "NVIDIA NIM",
                 "https://integrate.api.nvidia.com/v1",
                 key,
