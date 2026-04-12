@@ -1912,6 +1912,21 @@ Expected outcome:
 - require freshness/confidence/source on epistemic entries
 - let admission, retrieval, and self-repair consume epistemic state directly
   instead of treating all recalled facts as equally trustworthy
+- current status:
+  - landed:
+    - `epistemic_state` domain service defines a typed bounded state model for
+      runtime assumptions, model-profile facts, and memory entries
+    - model-profile context-window facts now map source/freshness/confidence
+      into `known`/`inferred`/`stale`/`needs_verification`/`unknown`
+    - memory recall lines surface `state/source/confidence` metadata next to
+      anchors so provider-facing recall is no longer undifferentiated memory
+    - domain tests cover stale model-profile facts and low-confidence memory
+      requiring verification
+  - still open:
+    - admission, retrieval ranking, and self-repair do not yet consume the
+      epistemic state directly
+    - delivery/runtime defaults and external recency-sensitive facts are not
+      fully projected through the same epistemic surface yet
 - expected outcome:
   - fewer overconfident wrong decisions
   - better contradiction handling

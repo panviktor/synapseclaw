@@ -11,6 +11,7 @@ pub mod clarification_policy;
 pub mod conversation_service;
 pub mod delivery_service;
 pub mod dialogue_state_service;
+pub mod epistemic_state;
 pub mod everyday_eval_harness;
 pub mod execution_guidance;
 pub mod failure_similarity_service;

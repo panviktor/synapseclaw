@@ -9,6 +9,9 @@
 //! The adapter `turn_context_fmt` re-exports these functions.
 
 use crate::application::services::clarification_policy;
+use crate::application::services::epistemic_state::{
+    epistemic_entry_for_memory_entry, format_epistemic_entry,
+};
 use crate::application::services::execution_guidance;
 use crate::application::services::failure_similarity_service;
 use crate::application::services::precedent_similarity_service;
@@ -1456,7 +1459,12 @@ fn append_memory_line(section: &mut String, entry: &MemoryEntry, max_chars: usiz
     } else {
         entry.content.clone()
     };
-    section.push_str(&format!("- {}: {content}\n", entry.key));
+    let epistemic = epistemic_entry_for_memory_entry(entry);
+    section.push_str(&format!(
+        "- {} [{}]: {content}\n",
+        entry.key,
+        format_epistemic_entry(&epistemic)
+    ));
 }
 
 fn format_session_section(ctx: &TurnMemoryContext) -> Option<String> {
@@ -2118,7 +2126,8 @@ mod tests {
         };
         let fmt = format_turn_context(&ctx, &PromptBudget::default());
         assert!(fmt.enrichment_prefix.starts_with("[Memory context]\n"));
-        assert!(fmt.enrichment_prefix.contains("- fact1: User likes Rust"));
+        assert!(fmt.enrichment_prefix.contains("- fact1 [state=known"));
+        assert!(fmt.enrichment_prefix.contains("User likes Rust"));
     }
 
     #[test]
@@ -2148,11 +2157,16 @@ mod tests {
         };
         let fmt = format_turn_context(&ctx, &PromptBudget::default());
         assert!(fmt.enrichment_prefix.contains("[Memory context]"));
-        assert!(fmt.enrichment_prefix.contains("- fact1: Primary fact"));
+        assert!(fmt.enrichment_prefix.contains("- fact1 [state=known"));
+        assert!(fmt.enrichment_prefix.contains("Primary fact"));
         assert!(fmt.enrichment_prefix.contains("[Nearby memory]"));
-        assert!(fmt.enrichment_prefix.contains("- fact2: Nearby fact"));
+        assert!(fmt.enrichment_prefix.contains("- fact2 [state=known"));
+        assert!(fmt.enrichment_prefix.contains("Nearby fact"));
         assert!(fmt.enrichment_prefix.contains("[Recent echoes]"));
-        assert!(fmt.enrichment_prefix.contains("- fact3: Recent echo"));
+        assert!(fmt
+            .enrichment_prefix
+            .contains("- fact3 [state=needs_verification"));
+        assert!(fmt.enrichment_prefix.contains("Recent echo"));
     }
 
     #[test]
