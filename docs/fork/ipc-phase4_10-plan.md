@@ -1583,12 +1583,13 @@ Expected outcome:
       `auth_failure`, `runtime_failure`) so the channel use-case no longer
       parses provider/runtime error strings directly for timeout or
       context-overflow recovery
+    - route-admission context now consumes the bounded recent-admission ledger,
+      not only the last admission state; web and channel use the same helper to
+      surface distinct recent reasons plus the latest recommended repair action
   - remaining:
     - broaden repair-ledger consumers beyond current route/help/operator surfaces
     - extend typed failure reasons further without falling back to string parsing
       in core/runtime
-    - decide whether recent route-admission hints should remain “last distinct
-      outcome only” or become a tiny bounded ledger parallel to tool repairs
 - expected outcome:
   - fewer opaque failures
   - fewer repeated bad tool attempts

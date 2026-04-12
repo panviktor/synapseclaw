@@ -461,6 +461,14 @@ async fn handle_regular_message(
             // #8: Memory context enrichment via unified assembler
             if let Some(ref mem) = ports.memory {
                 use crate::application::services::turn_context as tc;
+                let recent_admission_reasons =
+                    crate::application::services::route_admission_history::recent_route_admission_reasons(
+                        &route.recent_admissions,
+                    );
+                let recent_admission_repair =
+                    crate::application::services::route_admission_history::latest_route_admission_repair(
+                        &route.recent_admissions,
+                    );
                 let turn_ctx = tc::assemble_turn_context(
                     mem.as_ref(),
                     ports.run_recipe_store.as_ref().map(|store| store.as_ref()),
@@ -473,15 +481,8 @@ async fn handle_regular_message(
                     Some(&conv_key),
                     interpretation.as_ref(),
                     &route.recent_tool_repairs,
-                    route
-                        .last_admission
-                        .as_ref()
-                        .map(|admission| admission.reasons.as_slice())
-                        .unwrap_or(&[]),
-                    route
-                        .last_admission
-                        .as_ref()
-                        .and_then(|admission| admission.recommended_action),
+                    &recent_admission_reasons,
+                    recent_admission_repair,
                     &config.prompt_budget,
                     None, // first turn → full context
                 )
@@ -530,6 +531,14 @@ async fn handle_regular_message(
             if let Some(ref mem) = ports.memory {
                 use crate::application::services::turn_context as tc;
                 let continuation = config.continuation_policy.clone();
+                let recent_admission_reasons =
+                    crate::application::services::route_admission_history::recent_route_admission_reasons(
+                        &route.recent_admissions,
+                    );
+                let recent_admission_repair =
+                    crate::application::services::route_admission_history::latest_route_admission_repair(
+                        &route.recent_admissions,
+                    );
                 let turn_ctx = tc::assemble_turn_context(
                     mem.as_ref(),
                     ports.run_recipe_store.as_ref().map(|store| store.as_ref()),
@@ -542,15 +551,8 @@ async fn handle_regular_message(
                     Some(conversation_key),
                     interpretation.as_ref(),
                     &route.recent_tool_repairs,
-                    route
-                        .last_admission
-                        .as_ref()
-                        .map(|admission| admission.reasons.as_slice())
-                        .unwrap_or(&[]),
-                    route
-                        .last_admission
-                        .as_ref()
-                        .and_then(|admission| admission.recommended_action),
+                    &recent_admission_reasons,
+                    recent_admission_repair,
                     &config.prompt_budget,
                     Some(&continuation),
                 )

@@ -37,6 +37,9 @@ use synapse_domain::application::services::provider_context_budget::{
 use synapse_domain::application::services::provider_native_context_policy::{
     resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
 };
+use synapse_domain::application::services::route_admission_history::{
+    latest_route_admission_repair, recent_route_admission_reasons,
+};
 use synapse_domain::application::services::route_switch_preflight::{
     assess_route_switch_preflight_for_budget, RouteSwitchPreflightResolution,
 };
@@ -2153,20 +2156,13 @@ impl Agent {
         } else {
             None
         };
-        let recent_admission_reasons = self
-            .recent_turn_admissions
-            .last()
-            .map(|admission| admission.reasons.as_slice())
-            .unwrap_or(&[]);
-        let recent_admission_repair = self
-            .recent_turn_admissions
-            .last()
-            .and_then(|admission| admission.recommended_action);
+        let recent_admission_reasons = recent_route_admission_reasons(&self.recent_turn_admissions);
+        let recent_admission_repair = latest_route_admission_repair(&self.recent_turn_admissions);
         let observed_assumptions = build_runtime_assumptions(RuntimeAssumptionInput {
             user_message,
             interpretation: turn_interpretation.as_ref(),
             recent_admission_repair,
-            recent_admission_reasons,
+            recent_admission_reasons: &recent_admission_reasons,
         });
         self.recent_runtime_assumptions = merge_runtime_assumption_ledger(
             &self.recent_runtime_assumptions,
@@ -2181,7 +2177,7 @@ impl Agent {
             self.memory_session_id.as_deref(),
             turn_interpretation.as_ref(),
             &self.recent_turn_tool_repairs,
-            recent_admission_reasons,
+            &recent_admission_reasons,
             recent_admission_repair,
             &self.prompt_budget,
             continuation,
