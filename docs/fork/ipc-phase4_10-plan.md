@@ -2006,10 +2006,14 @@ Expected outcome:
     - live web/agent and channel execution both inject that bounded block before
       provider/runtime execution, using the same typed digest rather than
       adapter-specific prompt prose
+    - live web/agent and channel execution now feed memory-backend health,
+      configured embedding-profile degradation, and channel-registry availability
+      through the same typed subsystem observation helper before building the
+      watchdog digest
   - still open:
     - no autonomous background polling loop is wired yet
-    - live memory/embedding/channel health observations are not injected into
-      the digest outside explicit callers yet
+    - channel observations are still availability-level rather than a full
+      independent `Channel::health_check` polling loop
 - expected outcome:
   - better self-diagnosis without prompt bloat
   - earlier detection of degraded subsystems

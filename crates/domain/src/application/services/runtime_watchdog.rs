@@ -4,6 +4,7 @@ use crate::application::services::epistemic_state::{
 use crate::application::services::runtime_assumptions::{
     RuntimeAssumption, RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
+use crate::domain::memory::EmbeddingProfile;
 use crate::domain::tool_repair::{ToolFailureKind, ToolRepairTrace};
 use crate::domain::turn_admission::{CandidateAdmissionReason, ContextPressureState};
 use crate::ports::route_selection::{ContextCacheStats, RouteAdmissionState};
@@ -80,6 +81,14 @@ pub struct RuntimeSubsystemObservation {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct RuntimeSubsystemObservationInput<'a> {
+    pub memory_backend_healthy: Option<bool>,
+    pub embedding_profile: Option<&'a EmbeddingProfile>,
+    pub channel_available: Option<bool>,
+    pub now_unix: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct RuntimeWatchdogInput<'a> {
     pub last_admission: Option<&'a RouteAdmissionState>,
     pub recent_admissions: &'a [RouteAdmissionState],
@@ -89,6 +98,40 @@ pub struct RuntimeWatchdogInput<'a> {
     pub assumptions: &'a [RuntimeAssumption],
     pub subsystem_observations: &'a [RuntimeSubsystemObservation],
     pub now_unix: i64,
+}
+
+pub fn build_runtime_subsystem_observations(
+    input: RuntimeSubsystemObservationInput<'_>,
+) -> Vec<RuntimeSubsystemObservation> {
+    let mut observations = Vec::new();
+
+    if let Some(healthy) = input.memory_backend_healthy {
+        observations.push(RuntimeSubsystemObservation {
+            subsystem: RuntimeWatchdogSubsystem::MemoryBackend,
+            degraded: !healthy,
+            observed_at_unix: input.now_unix,
+        });
+    }
+
+    if let Some(profile) = input.embedding_profile {
+        if profile != &EmbeddingProfile::default() {
+            observations.push(RuntimeSubsystemObservation {
+                subsystem: RuntimeWatchdogSubsystem::EmbeddingBackend,
+                degraded: profile.dimensions == 0,
+                observed_at_unix: input.now_unix,
+            });
+        }
+    }
+
+    if let Some(available) = input.channel_available {
+        observations.push(RuntimeSubsystemObservation {
+            subsystem: RuntimeWatchdogSubsystem::ChannelDelivery,
+            degraded: !available,
+            observed_at_unix: input.now_unix,
+        });
+    }
+
+    observations
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -653,6 +696,51 @@ mod tests {
         assert!(digest
             .degraded_subsystems()
             .contains(&RuntimeWatchdogSubsystem::ToolExecution));
+    }
+
+    #[test]
+    fn builds_live_subsystem_observations_without_flagging_disabled_embeddings() {
+        let observations = build_runtime_subsystem_observations(RuntimeSubsystemObservationInput {
+            memory_backend_healthy: Some(false),
+            embedding_profile: Some(&crate::domain::memory::EmbeddingProfile::default()),
+            channel_available: Some(false),
+            now_unix: 42,
+        });
+
+        assert!(observations.iter().any(|observation| {
+            observation.subsystem == RuntimeWatchdogSubsystem::MemoryBackend && observation.degraded
+        }));
+        assert!(observations.iter().any(|observation| {
+            observation.subsystem == RuntimeWatchdogSubsystem::ChannelDelivery
+                && observation.degraded
+        }));
+        assert!(
+            !observations
+                .iter()
+                .any(|observation| observation.subsystem
+                    == RuntimeWatchdogSubsystem::EmbeddingBackend)
+        );
+    }
+
+    #[test]
+    fn builds_embedding_observation_for_configured_zero_dimensional_profile() {
+        let mut profile = crate::domain::memory::EmbeddingProfile::default();
+        profile.profile_id = "custom:model:0".into();
+        profile.provider_family = "custom".into();
+        profile.model_id = "model".into();
+
+        let observations = build_runtime_subsystem_observations(RuntimeSubsystemObservationInput {
+            embedding_profile: Some(&profile),
+            now_unix: 43,
+            ..Default::default()
+        });
+
+        assert_eq!(observations.len(), 1);
+        assert_eq!(
+            observations[0].subsystem,
+            RuntimeWatchdogSubsystem::EmbeddingBackend
+        );
+        assert!(observations[0].degraded);
     }
 
     #[test]

@@ -58,7 +58,8 @@ use synapse_domain::application::services::runtime_trace_janitor::{
     run_runtime_trace_janitor, RuntimeTraceJanitorInput,
 };
 use synapse_domain::application::services::runtime_watchdog::{
-    build_runtime_watchdog_digest, format_runtime_watchdog_context, RuntimeWatchdogInput,
+    build_runtime_subsystem_observations, build_runtime_watchdog_digest,
+    format_runtime_watchdog_context, RuntimeSubsystemObservationInput, RuntimeWatchdogInput,
 };
 use synapse_domain::application::services::scoped_instruction_resolution::{
     adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
@@ -2385,6 +2386,15 @@ impl Agent {
             );
             let context_cache_stats =
                 self.history_compaction_cache_stats_for_compression(&effective_compression);
+            let memory_backend_healthy = self.memory.health_check().await;
+            let embedding_profile = self.memory.embedding_profile();
+            let subsystem_observations =
+                build_runtime_subsystem_observations(RuntimeSubsystemObservationInput {
+                    memory_backend_healthy: Some(memory_backend_healthy),
+                    embedding_profile: Some(&embedding_profile),
+                    now_unix: observed_at_unix,
+                    ..Default::default()
+                });
             let runtime_watchdog_digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
                 last_admission: self.recent_turn_admissions.last(),
                 recent_admissions: &self.recent_turn_admissions,
@@ -2392,7 +2402,7 @@ impl Agent {
                 recent_tool_repairs: &self.recent_turn_tool_repairs,
                 context_cache: Some(&context_cache_stats),
                 assumptions: &self.recent_runtime_assumptions,
-                subsystem_observations: &[],
+                subsystem_observations: &subsystem_observations,
                 now_unix: observed_at_unix,
             });
             let system_breakdown = system_message_breakdown(&self.history)

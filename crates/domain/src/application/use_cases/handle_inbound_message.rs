@@ -23,14 +23,15 @@ use crate::application::services::runtime_assumptions::{
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
 use crate::application::services::runtime_watchdog::{
-    build_runtime_watchdog_digest, format_runtime_watchdog_context, RuntimeWatchdogInput,
+    build_runtime_subsystem_observations, build_runtime_watchdog_digest,
+    format_runtime_watchdog_context, RuntimeSubsystemObservationInput, RuntimeWatchdogInput,
 };
 use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::application::services::turn_markup::{
     contains_image_attachment_marker, strip_image_attachment_markers,
 };
 use crate::config::schema::ModelRouteConfig;
-use crate::domain::channel::{ChannelCapability, InboundEnvelope};
+use crate::domain::channel::{ChannelCapability, InboundEnvelope, SourceKind};
 use crate::domain::message::ChatMessage;
 use crate::ports::agent_runtime::{AgentRuntimeErrorKind, AgentRuntimePort};
 use crate::ports::channel_output::ChannelOutputPort;
@@ -833,6 +834,24 @@ async fn execute_agent_turn(
             observed_at_unix,
         );
     route.last_admission = Some(admission_state);
+    let memory_backend_healthy = if let Some(memory) = ports.memory.as_ref() {
+        Some(memory.health_check().await)
+    } else {
+        None
+    };
+    let embedding_profile = ports
+        .memory
+        .as_ref()
+        .map(|memory| memory.embedding_profile());
+    let channel_available = matches!(envelope.source_kind, SourceKind::Channel)
+        .then(|| ports.channel_registry.has_channel(&envelope.source_adapter));
+    let subsystem_observations =
+        build_runtime_subsystem_observations(RuntimeSubsystemObservationInput {
+            memory_backend_healthy,
+            embedding_profile: embedding_profile.as_ref(),
+            channel_available,
+            now_unix: observed_at_unix,
+        });
     let runtime_watchdog_digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
         last_admission: route.last_admission.as_ref(),
         recent_admissions: &route.recent_admissions,
@@ -840,7 +859,7 @@ async fn execute_agent_turn(
         recent_tool_repairs: &route.recent_tool_repairs,
         context_cache: route.context_cache.as_ref(),
         assumptions: &route.assumptions,
-        subsystem_observations: &[],
+        subsystem_observations: &subsystem_observations,
         now_unix: observed_at_unix,
     });
     route.last_tool_repair = None;
