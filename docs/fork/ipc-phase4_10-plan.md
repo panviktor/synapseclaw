@@ -1279,6 +1279,9 @@ Expected outcome:
   - the effective-lane/catalog provider-router alias table is now a shared
     domain helper consumed by live Agent and CLI runtime, avoiding a second
     legacy `model_routes` route table in adapter code
+  - channel inbound/use-case runtime snapshots no longer carry `model_routes`
+    through the turn path; they pass only model lanes/preset into shared route
+    resolution
   - remaining work:
     - historical note: earlier remaining items about image/audio/video/music
       first-class turn routing are now mostly owned by Slice 14 and the shared

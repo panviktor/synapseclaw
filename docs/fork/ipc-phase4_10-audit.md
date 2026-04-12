@@ -72,6 +72,8 @@ Our best move is:
 - Live Agent and CLI provider-router alias tables are now derived from the
   shared effective-lane/catalog helper instead of passing configured
   `model_routes` directly into the router.
+- Channel inbound/use-case route snapshots no longer carry `model_routes`
+  through turn execution; they now pass lane/preset state only.
 - Remaining audit target: old config/API surfaces still expose `model_routes`
   as compatibility/catalog-alias data; future cleanup should either rename that
   data shape to catalog aliases or fully retire it.

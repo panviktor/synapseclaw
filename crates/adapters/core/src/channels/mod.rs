@@ -180,7 +180,6 @@ struct ChannelRuntimeContext {
     hooks: Option<Arc<crate::hooks::HookRunner>>,
     non_cli_excluded_tools: Arc<Vec<String>>,
     tool_call_dedup_exempt: Arc<Vec<String>>,
-    model_routes: Arc<Vec<synapse_domain::config::schema::ModelRouteConfig>>,
     model_lanes: Arc<Vec<synapse_domain::config::schema::ModelLaneConfig>>,
     model_preset: Option<String>,
     query_classification: synapse_domain::config::schema::QueryClassificationConfig,
@@ -483,7 +482,6 @@ fn channel_runtime_config_snapshot(ctx: &ChannelRuntimeContext) -> Config {
     config.workspace_dir = ctx.workspace_dir.as_ref().clone();
     config.default_provider = Some(ctx.default_provider.as_ref().clone());
     config.default_model = Some(ctx.model.as_ref().clone());
-    config.model_routes = ctx.model_routes.as_ref().clone();
     config.model_lanes = ctx.model_lanes.as_ref().clone();
     config.model_preset = ctx.model_preset.clone();
     config
@@ -642,7 +640,6 @@ async fn summarize_channel_session_if_needed(ctx: &ChannelRuntimeContext, histor
     let mut summary_config = synapse_domain::config::schema::Config::default();
     summary_config.summary = ctx.summary_config.as_ref().clone();
     summary_config.summary_model = ctx.summary_model.clone();
-    summary_config.model_routes = ctx.model_routes.as_ref().clone();
     summary_config.model_lanes = ctx.model_lanes.as_ref().clone();
     let summary_route = resolve_summary_route(&summary_config, &ctx.model);
 
@@ -974,7 +971,6 @@ async fn handle_message_via_orchestrator(
         temperature: ctx.temperature,
         max_tool_iterations: ctx.max_tool_iterations,
         auto_save_memory: ctx.auto_save_memory,
-        model_routes: ctx.model_routes.as_ref().clone(),
         model_lanes: ctx.model_lanes.as_ref().clone(),
         model_preset: ctx.model_preset.clone(),
         thread_root_max_chars: 500,
@@ -2953,7 +2949,6 @@ pub async fn start_channels(
         },
         non_cli_excluded_tools: Arc::new(config.autonomy.non_cli_excluded_tools.clone()),
         tool_call_dedup_exempt: Arc::new(config.agent.tool_call_dedup_exempt.clone()),
-        model_routes: Arc::new(config.model_routes.clone()),
         model_lanes: Arc::new(config.model_lanes.clone()),
         model_preset: config.model_preset.clone(),
         query_classification: config.query_classification.clone(),
@@ -3316,7 +3311,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             query_classification:
@@ -3828,7 +3822,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             query_classification:
@@ -3944,7 +3937,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             query_classification:
@@ -4092,7 +4084,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             approval_manager: Arc::new(ApprovalManager::for_non_interactive(
@@ -4203,7 +4194,6 @@ mod tests {
             hooks: None,
             non_cli_excluded_tools: Arc::new(Vec::new()),
             tool_call_dedup_exempt: Arc::new(Vec::new()),
-            model_routes: Arc::new(Vec::new()),
             model_lanes: Arc::new(Vec::new()),
             model_preset: None,
             query_classification:

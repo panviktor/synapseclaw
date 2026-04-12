@@ -37,7 +37,6 @@ use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::application::services::turn_markup::{
     contains_image_attachment_marker, strip_image_attachment_markers,
 };
-use crate::config::schema::ModelRouteConfig;
 use crate::domain::channel::{ChannelCapability, InboundEnvelope, SourceKind};
 use crate::domain::message::ChatMessage;
 use crate::ports::agent_runtime::{AgentRuntimeErrorKind, AgentRuntimePort};
@@ -70,7 +69,6 @@ pub struct InboundMessageConfig {
     pub temperature: f64,
     pub max_tool_iterations: usize,
     pub auto_save_memory: bool,
-    pub model_routes: Vec<ModelRouteConfig>,
     pub model_lanes: Vec<crate::config::schema::ModelLaneConfig>,
     pub model_preset: Option<String>,
     pub thread_root_max_chars: usize,
@@ -626,7 +624,6 @@ fn build_model_routing_config(config: &InboundMessageConfig) -> crate::config::s
     routing.default_model = Some(config.default_model.clone());
     routing.model_preset = config.model_preset.clone();
     routing.model_lanes = config.model_lanes.clone();
-    routing.model_routes = config.model_routes.iter().cloned().collect();
     routing
 }
 
@@ -1704,7 +1701,6 @@ mod tests {
             temperature: 0.7,
             max_tool_iterations: 5,
             auto_save_memory: false,
-            model_routes: vec![],
             model_lanes: vec![],
             model_preset: None,
             thread_root_max_chars: 500,
