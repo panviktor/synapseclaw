@@ -329,8 +329,8 @@ The model should not “decide” defaults that the runtime already knows.
 
 Examples:
 
-- weather/time without city -> `user_profile.default_city`
-- “send it there” -> `default_delivery_target` or `recent_delivery_target`
+- weather/time without explicit city -> dynamic profile fact such as `weather_city`
+- “send it there” -> dynamic `delivery_target_preference` fact or `recent_delivery_target`
 - “switch back there” -> dialogue-state workspace anchor
 
 These should be resolved structurally before the model improvises.
@@ -540,6 +540,21 @@ Expected outcome:
     - which landed base it upgrades
     - which weak heuristic or threshold it replaces
     - which new invariant becomes enforceable after the upgrade
+- status audit correction (2026-04-12):
+  - `landed` below means a usable base layer exists, not that every slice is
+    phase-close complete.
+  - Slices 1-5 and 9 are treated as closed at code level.
+  - Slice 8 is code-closed but still live-unvalidated on an official/key-based
+    Responses continuation endpoint.
+  - Slices 6, 7, 10, 11, 12, 13, 14, 15, 16, and 18 remain partial or have
+    explicit follow-through tails listed in their slice sections.
+  - Slice 17 is code-landed except live large-window -> small-window route
+    downgrade validation.
+  - Slice 19 has an initial typed-assumption layer; Slices 20-23 are planned /
+    not yet implemented.
+  - Slices 24-26 are treated as code-closed extraction/parity hardening, with
+    future summary/run-lifecycle unification intentionally left outside their
+    current scope.
 
 - landed:
   - Slice 1: provider-facing context accounting and observability
@@ -589,6 +604,10 @@ Expected outcome:
     - `/model` help now resolves effective lanes through the same runtime
       lane resolver, so implicit reasoning fallbacks are visible instead of
       only explicit config lanes
+    - status note: this is not a full Slice 10 close; remaining Slice 10 work
+      is now mostly registry/profile clean-up, adapter-heuristic shrinkage, and
+      keeping lane/candidate-first explanations consistent as Slice 14/18
+      continue hardening.
 - code-closed / live-unvalidated:
   - Slice 8:
     - adapter-local provider-native continuation scaffolding exists for `openai-codex`
@@ -763,6 +782,12 @@ Expected outcome:
     - `memory_recall` is now a `historical_lookup` tool, not a memory mutation
       tool, so direct resolved-state turns do not keep it in the mutation-safe
       tool subset
+    - central AUDN-lite mutation evaluation now calls the same governor before
+      durable writes, with explicit write classes and typed consolidation
+      `memory_update` parsing
+    - status note: this is still partial, but the bypass audit is now narrowed
+      to broader semantic/paraphrase loop detection, adapter-only graph
+      extraction tails, and future write classes.
   - Phase-close validation harness:
     - added `dev/gateway-chat-harness/scripts/phase4_10_live_pack.sh`
     - base pack covers `cheap`, `deepseek`, and `gpt-5.4` route smoke:
@@ -938,6 +963,18 @@ Expected outcome:
     - pure-dialogue graph hygiene
     - better cheap-lane use of already-loaded scoped context on ambiguous prompts
   - provider-native continuation on an endpoint that actually advertises / accepts it
+  - Slice 16 follow-through:
+    - remaining policy-bypass audit is now narrowed after central mutation
+      governance and graph-extraction hygiene landed; keep watching future
+      write classes and adapter paths that introduce new durable-write sources
+    - strengthen low-information paraphrase loop detection beyond lexical
+      repetition gates
+    - re-run the expensive long-dialogue semantic check only at slice-close
+      points
+  - Slice 17:
+    - bounded structured handoff packets landed for route/admission pressure
+      surfaces; cross-channel transition and delegation now have a shared packet
+      shape to reuse instead of new prose-only summaries
 
 ### Slice 1
 
@@ -949,13 +986,13 @@ Expected outcome:
 
 - resolve implicit delivery target from typed turn state instead of prompt prose
 - expose per-turn defaults through a scoped runtime context port
-- wire `message_send` to prefer recent delivery target, then profile default
+- wire `message_send` to prefer recent delivery target, then user-profile fact
 
 ### Slice 3
 
 - implement non-mutating structured recall for:
   - direct working-chain recap
-  - direct default-city recap
+  - direct weather-city fact recap
   - direct current-conversation / recent-target recap
 - narrow tool exposure to zero when typed runtime state is already sufficient
 
@@ -1001,8 +1038,16 @@ Expected outcome:
   - late-anchor compare turn now completes after a single `memory_recall`
   - repeated `memory_recall` churn no longer reproduced in the same scenario
   - provider-facing context stayed bounded with `prior_chat_messages = 6`
+- 2026-04-12 follow-through:
+  - turn-context hybrid recall now passes candidate entries through the same
+    governor-backed memory reranker as `memory_recall`, so daily/precedent noise
+    and low-information loops are not ranked differently only because recall
+    entered through the automatic context path
+  - low-information detection now catches repeated semantic shingles, not only
+    exact token chants or contiguous repeated phrases
 - remaining quality tail after the hardening:
-  - recall ranking is better, but still not ideal on concept-heavy semantic sessions
+  - recall ranking is better, but still needs live long-dialogue validation on
+    concept-heavy semantic sessions after the hybrid-rerank follow-through
   - pure-dialogue extraction is quieter, but anchor-like conceptual turns can still emit
     concept entities/relationships that may be too generic
 
@@ -1022,8 +1067,12 @@ Expected outcome:
     - `SUBTREE_SCOPE_CONFIRMED`
   - media/vision turns now suppress stale inferred scoped context and keep explicit
     user path hints as the only way to force scoped project instructions into that turn
-  - cheap route can still underuse already-loaded scoped context on weaker or more ambiguous prompts
-    even though the scoped block is present in provider context
+  - scoped-context blocks now carry explicit bounded metadata
+    (`active_for_this_turn`, `use_before_workspace_or_bootstrap_lookup`) so cheap
+    routes have a clearer typed instruction to consume already-loaded scoped
+    context before generic workspace/bootstrap discovery
+  - cheap route behavior still needs live validation on weaker or more ambiguous
+    prompts after the scoped-context block hardening
 
 ### Slice 8
 
@@ -1134,15 +1183,17 @@ Expected outcome:
     non-default provider instance has not been warmed yet
   - `model_routing_config` preset operations now participate in typed routing facts
   - remaining work:
-  - auto-selection for image / audio generation turns still needs a first-class lane chooser
-  - provider capability metadata is still narrower than the eventual lane matrix
-  - a few provider-local model-family heuristics still remain adapter-side
-    (for example reasoning-effort clamps and embedding-family inference)
-  - route state stores lane/candidate identity, and route-switch UX now renders lane
-    for lane-aware switches; downstream runtime surfaces should keep moving toward
-    lane/candidate-first explanations
-  - modality routing still has only one live consumer (`multimodal_understanding`);
-    image/audio generation lanes are not first-class yet
+    - historical note: earlier remaining items about image/audio/video/music
+      first-class turn routing are now mostly owned by Slice 14 and the shared
+      marker/admission path, not by a separate Slice 10 routing fork
+    - provider capability metadata is still narrower than the eventual lane matrix
+    - a few provider-local model-family heuristics still remain adapter-side
+      (for example reasoning-effort clamps and embedding-family inference)
+    - route state stores lane/candidate identity, and route-switch UX now renders lane
+      for lane-aware switches; downstream runtime surfaces should keep moving toward
+      lane/candidate-first explanations
+    - keep auditing that new routing decisions enter through domain/profile
+      services rather than brand-string heuristics
 
 ### Slice 11
 
@@ -1424,6 +1475,9 @@ Expected outcome:
     - modality inference remains conservative and marker-based; richer intent recognition
       should come later through typed interpretation or an explicit classifier, not keyword lists
     - more route/runtime UX should render lane identity first and `provider/model` second
+    - status note: do not reintroduce keyword phrase lists for media detection;
+      until typed interpretation exists, structured markers are the accepted
+      deterministic interface.
 
 ### Slice 15
 
@@ -1603,15 +1657,61 @@ Expected outcome:
     - the governor now has a first repetition-aware gate:
       long low-information repetition is skipped for raw autosave and
       background consolidation unless stronger typed evidence already exists
-    - generic plural role-pair relationships such as model-invented social-role
-      world knowledge are rejected by the relationship governor at normal
-      confidence, so examples like `Children learn_from Parents` do not enter
-      the graph as durable facts
+    - model-invented generic world-knowledge relationships are now blocked
+      primarily by the durable typed consolidation gate before graph extraction,
+      rather than by language-specific role-name or suffix filters
+    - standalone generic concept entities now require an accepted relationship
+      endpoint before they can be stored, so pure dialogue does not create loose
+      abstract graph nodes without a useful anchor
+    - low-confidence relationships between generic concept endpoints are
+      rejected by the same domain governor, then applied by the adapter
+      extractor before graph writes
+    - mutation writes now carry an explicit durable write class
+      (`preference`, `task_state`, `fact_anchor`, `recipe`, `failure_pattern`,
+      `ephemeral_repair_trace`, `generic_dialogue`) instead of relying only on
+      source/category inference
+    - the AUDN-lite mutation service now calls the memory-quality governor
+      before recall/add/update/delete, so consolidation, explicit learning,
+      precedent writes, and failure-pattern writes share the same durable-write
+      stop-line
+    - consolidation now asks the compacting model for a typed
+      `memory_update` object; old string-shaped compact outputs still parse
+      for history safety, but are classified as `generic_dialogue` and rejected
+      before durable memory mutation
+    - generic dialogue and ephemeral repair traces are rejected before durable
+      memory mutation, while specific project/runtime task-state updates remain
+      writable
+    - graph extraction now requires a durable typed consolidation update
+      (`preference`, `task_state`, or `fact_anchor`) before it runs; ordinary
+      dialogue, `generic_dialogue`, `null`, and legacy string-shaped updates do
+      not enter the entity/relationship graph path
+    - generic concept hygiene now relies on extractor type and relationship
+      endpoint/confidence gates rather than language-specific role-name,
+      suffix, or phrase filters
+    - provider-facing current-session context now uses a bounded
+      relevant/head/tail selector instead of tail-only chat replay, so explicit
+      early and late anchors from the active long dialogue can survive when the
+      persistent session search intentionally excludes the current session
+    - current-session relevance scoring uses corpus-weighted query terms from
+      the active session history; it does not carry a built-in
+      language-specific token blacklist or phrase-specific anchor rules
+    - focused cheap-route long-dialogue semantic regression passed after the
+      selector fix:
+      - session: `phase410-long-semantic-focused-1775951001`
+      - report: `/tmp/synapseclaw-long-semantic-1775951001`
+      - retained anchors: `freedom`, `responsibility`, `joy`, `alignment`
+      - provider context rows: 21
+      - embedding rows: 55
+      - compaction rows: 0 because the live route stayed inside its effective
+        context budget
   - remaining:
-    - extend the governor beyond current raw write paths into more bounded
-      autosave/consolidation policy where it makes sense
     - strengthen repetition-aware policy beyond the current lexical first pass
       for broader low-information paraphrase loops
+    - continue auditing retrieval ranking for concept-heavy sessions after real
+      compaction, because the passing focused run did not need a compaction row
+    - keep generic world-knowledge relationships and generic consolidation
+      `memory_update` outputs as regression cases for memory hygiene, alongside
+      pure-dialogue graph extraction bypasses
 - expected outcome:
   - better retrieval quality
   - less memory pollution
@@ -1636,6 +1736,24 @@ Expected outcome:
   - relevant recent failures or cautions
 - use this as the preferred bridge when a route switch or context budget does
   not allow continuing with the full active context
+- current status:
+  - landed first pass:
+    - shared domain `session_handoff` service builds a bounded packet from typed
+      turn interpretation, admission repair hints, recalled anchors, session
+      matches, and run recipes
+    - `turn_context` includes the formatted packet in the shared provider-facing
+      resolution context, so web/channel call paths can consume the same shape
+      instead of diverging prompt prose
+    - blocked admission responses now surface the same handoff packet for
+      domain use-case and live-agent paths
+    - helper-agent delegation now accepts an optional strict `handoff_packet`
+      object and prepends the bounded shared packet before `[Context]` / `[Task]`
+    - `agents_spawn` now accepts the same optional strict `handoff_packet`
+      object and prepends it before the spawned agent task in both legacy and
+      broker-backed modes
+  - remaining:
+    - add live route-downgrade validation with large-window -> small-window
+      model switches after the long-dialogue semantic pack is green
 - expected outcome:
   - safer cross-model and cross-channel continuity
   - less reliance on free-form summaries
@@ -1682,11 +1800,23 @@ Expected outcome:
       onboarding cache operations all consume the same endpoint-aware cache key
     - cached profile metadata from one endpoint no longer leaks into the same
       provider/model when another endpoint is configured
+    - generic OpenAI-compatible `/models` refresh now persists common
+      provider-exposed context-window and max-output metadata when endpoints
+      expose fields such as `context_length`, `max_context_length`,
+      `max_model_len`, `max_input_tokens`, `max_output_tokens`, or
+      `max_completion_tokens`
+    - provider context-window error classification is now centralized in the
+      provider adapter layer and reused by reliable-provider retry/fallback
+      suppression plus the channel runtime `AgentRuntimeErrorKind` mapping
   - still open after Hermes source audit:
     - no models.dev-style provider-aware registry source yet
-    - no adapter-local context-limit-error parser that feeds typed profile/cache
-      updates yet
+    - no automatic failed-turn context-limit observation that mutates the
+      endpoint-aware model cache/profile yet
     - no explicit probe-down tier strategy for unknown/local endpoints yet
+  - status note:
+    - treat Slice 18 as partial: catalog/cache/refresh/endpoint-aware lookup are
+      landed, but live failure-driven profile repair and external registry
+      ingestion are not complete.
 - Hermes-derived model-window resolver follow-through:
   - keep explicit user override first
   - completed: persistent live model cache lookup is now endpoint-aware, so the
@@ -1696,8 +1826,11 @@ Expected outcome:
     `max_input_tokens`, or `max_output_tokens`
   - completed: infer provider identity from catalog-owned base URLs when a
     custom endpoint is configured, so provider-aware metadata can still be used
-  - parse context-limit errors only in adapter-local code and convert them into
-    typed profile/cache updates or route repair hints
+  - completed: parse context-limit errors only in adapter-local provider code
+    and convert them into typed runtime route-repair hints
+  - remaining: persist failed-turn context-limit observations as typed
+    endpoint-aware profile/cache updates when a trustworthy lower window can be
+    inferred
   - keep broad hardcoded family fallbacks out of core Rust; if unavoidable,
     they belong in local/bundled catalog data with provenance and freshness
   - consider a probe-down tier strategy only as an explicit adapter fallback
@@ -1714,7 +1847,7 @@ Expected outcome:
   - makes runtime assumptions explicit instead of leaving them implicit in prompt prose
 - add a first-class assumption tracker for active runtime hypotheses such as:
   - resolved delivery target
-  - active default city / timezone
+  - active weather-city / local-timezone facts
   - currently trusted credential or auth profile
   - expected tool capability / route capability
   - assumed current task / branch / workspace anchor
@@ -1730,6 +1863,23 @@ Expected outcome:
 - keep assumptions bounded and mostly ephemeral:
   - scoped to active sessions/routes unless promoted by a separate policy
   - aggressively evicted when stale or contradicted
+- current status:
+  - landed:
+    - `runtime_assumptions` domain service models bounded typed runtime
+      assumptions with kind/source/freshness/confidence/invalidation/replacement
+      path
+    - assumptions are derived from structured turn interpretation and recent
+      route admission/repair state, not prompt phrase matching
+    - `SessionHandoffPacket` carries bounded assumptions so route switches,
+      compaction, and fresh handoff surfaces can preserve current hypotheses
+      explicitly
+    - helper-agent handoff schemas accept the same strict assumption objects
+  - still open:
+    - no persistent/session ledger for assumption invalidation and downgrade yet
+    - self-repair can carry challenged assumptions, but does not yet mutate a
+      stored assumption set after failures
+    - promotion from ephemeral assumptions into durable memory remains
+      intentionally blocked until a separate policy gate exists
 - expected outcome:
   - less hidden guesswork
   - cleaner failure diagnosis
@@ -1923,6 +2073,10 @@ Expected outcome:
   - summary/run-lifecycle unification is intentionally left as a typed service
     follow-up because the current web and channel stores/lifecycles are not the
     same boundary
+  - status note:
+    - Slice 24-26 are code-closed for the current extraction/parity target.
+    - Any future web/channel run-lifecycle unification should be planned as a
+      separate typed service slice, not reopened as hidden Slice 26 scope creep.
 - expected outcome:
   - less channel-monolith drift
   - clearer adapter-core seams for prompt assembly and response cleanup
@@ -1944,7 +2098,7 @@ Expected outcome:
 - `Atlas` / `Borealis` working-chain isolation
 - recency override (`hotfix-17` -> `hotfix-18`)
 - Matrix target resolution without workspace archaeology
-- weather/time using the correct profile default city
+- weather/time using the correct user-profile weather-city fact
 
 ### Language checks
 
@@ -2155,16 +2309,21 @@ Expected outcome:
   - late points from the final quarter are also answerable
   - the provider-facing context stays within budget after compaction rather
     than growing linearly with turn count
-- current empirical status after Slice 7 close validation:
+- current empirical status after Slice 16/17 close validation:
   - mechanics: pass
     - long cheap-route dialogue stayed alive through 20 turns
-    - provider-facing history stayed compact after compaction
-    - procedural skill count stayed flat during the run
-  - semantic retention: partial
-    - the late anchor was retained
-    - the final recall/compression turns substituted the original early anchor
-      with a later generational anchor
-    - treat this as a ranking / memory-quality tail, not a compaction-lane failure
+    - provider-facing history stayed compact through bounded current-session
+      relevant/head/tail selection
+    - procedural skill promotion did not appear in the transcript
+  - semantic retention: pass on focused cheap-route live run
+    - report: `/tmp/synapseclaw-long-semantic-1775951001`
+    - final answer retained both the early anchor (`freedom` +
+      `responsibility`) and late anchor (`joy` + `alignment`)
+    - provider context rows: 21
+    - embedding rows: 55
+    - compaction rows: 0 because the selected live route stayed within budget
+    - treat the remaining risk as a real-compaction / route-downgrade ranking
+      validation item, not a known failure of the long-dialogue selector
 - verify memory / embedding behavior:
   - episodic or semantic recall anchors may be created
   - stable user-preference learning is acceptable if the user actually states

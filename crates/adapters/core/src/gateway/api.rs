@@ -147,16 +147,12 @@ pub struct ChatMessagesQuery {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UserProfileUpsertBody {
-    pub preferred_language: Option<String>,
-    pub timezone: Option<String>,
-    pub default_city: Option<String>,
-    pub communication_style: Option<String>,
-    pub known_environments: Option<Vec<String>>,
-    pub default_delivery_target:
-        Option<synapse_domain::domain::conversation_target::ConversationDeliveryTarget>,
     #[serde(default)]
-    pub clear_fields: Vec<String>,
+    pub facts: std::collections::BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub clear_keys: Vec<String>,
 }
 
 // ── Handlers ────────────────────────────────────────────────────
@@ -2058,7 +2054,7 @@ pub async fn handle_api_memory_learning_evals(
     .into_response()
 }
 
-/// GET /api/user-profiles — list structured user profiles
+/// GET /api/user-profiles — list dynamic user profiles
 pub async fn handle_api_user_profiles_list(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2194,7 +2190,7 @@ fn clarification_shape_name(
     }
 }
 
-/// GET /api/user-profiles/:key — fetch a structured user profile
+/// GET /api/user-profiles/:key — fetch a dynamic user profile
 pub async fn handle_api_user_profile_get(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2219,7 +2215,7 @@ pub async fn handle_api_user_profile_get(
     }
 }
 
-/// PUT /api/user-profiles/:key — upsert a structured user profile
+/// PUT /api/user-profiles/:key — upsert a dynamic user profile
 pub async fn handle_api_user_profile_put(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -2230,63 +2226,14 @@ pub async fn handle_api_user_profile_put(
         return e.into_response();
     }
 
-    let clear = |field: &str| body.clear_fields.iter().any(|item| item == field);
-    let patch = synapse_domain::application::services::user_profile_service::UserProfilePatch {
-        preferred_language: if clear("preferred_language") {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
-        } else if let Some(value) = body.preferred_language {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
-                value,
-            )
-        } else {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
-        },
-        timezone: if clear("timezone") {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
-        } else if let Some(value) = body.timezone {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
-                value,
-            )
-        } else {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
-        },
-        default_city: if clear("default_city") {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
-        } else if let Some(value) = body.default_city {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
-                value,
-            )
-        } else {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
-        },
-        communication_style: if clear("communication_style") {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
-        } else if let Some(value) = body.communication_style {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
-                value,
-            )
-        } else {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
-        },
-        known_environments: if clear("known_environments") {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
-        } else if let Some(values) = body.known_environments {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
-                values,
-            )
-        } else {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
-        },
-        default_delivery_target: if clear("default_delivery_target") {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Clear
-        } else if let Some(value) = body.default_delivery_target {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Set(
-                value,
-            )
-        } else {
-            synapse_domain::application::services::user_profile_service::ProfileFieldPatch::Keep
-        },
-    };
+    let mut patch =
+        synapse_domain::application::services::user_profile_service::UserProfilePatch::default();
+    for (key, value) in body.facts {
+        patch.set(key, value);
+    }
+    for key in body.clear_keys {
+        patch.clear(key);
+    }
 
     let updated = synapse_domain::application::services::user_profile_service::apply_patch(
         state.user_profile_store.load(&key),
@@ -2324,7 +2271,7 @@ pub async fn handle_api_user_profile_put(
     }
 }
 
-/// DELETE /api/user-profiles/:key — delete a structured user profile
+/// DELETE /api/user-profiles/:key — delete a dynamic user profile
 pub async fn handle_api_user_profile_delete(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -44,7 +44,7 @@ pub struct ProjectContext {
     pub user_name: String,
     pub timezone: String,
     pub agent_name: String,
-    pub communication_style: String,
+    pub response_style: String,
 }
 
 // ── Banner ───────────────────────────────────────────────────────
@@ -69,6 +69,19 @@ const MODEL_PREVIEW_LIMIT: usize = 20;
 const MODEL_CACHE_FILE: &str = "models_cache.json";
 const MODEL_CACHE_TTL_SECS: u64 = 12 * 60 * 60;
 const CUSTOM_MODEL_SENTINEL: &str = "__custom_model__";
+const MODEL_CONTEXT_WINDOW_FIELDS: &[&str] = &[
+    "context_length",
+    "max_context_length",
+    "max_model_len",
+    "max_input_tokens",
+    "context_window_tokens",
+];
+const MODEL_MAX_OUTPUT_FIELDS: &[&str] = &[
+    "max_output_tokens",
+    "max_completion_tokens",
+    "output_token_limit",
+    "completion_token_limit",
+];
 
 fn has_launchable_channels(channels: &ChannelsConfig) -> bool {
     channels.channels_except_webhook().iter().any(|(_, ok)| *ok)
@@ -565,7 +578,7 @@ async fn run_quick_setup_with_home(
         user_name: std::env::var("USER").unwrap_or_else(|_| "User".into()),
         timezone: "UTC".into(),
         agent_name: "SynapseClaw".into(),
-        communication_style:
+        response_style:
             "Be warm, natural, and clear. Use occasional relevant emojis (1-2 max) and avoid robotic phrasing."
                 .into(),
     };
@@ -833,24 +846,66 @@ fn normalize_model_profiles(profiles: Vec<ModelProfileCacheEntry>) -> Vec<ModelP
     unique.into_values().collect()
 }
 
+#[cfg(test)]
 fn parse_openai_compatible_model_ids(payload: &Value) -> Vec<String> {
+    parse_openai_compatible_model_catalog(payload).models
+}
+
+fn parse_openai_compatible_model_catalog(payload: &Value) -> LiveModelCatalog {
     let mut models = Vec::new();
+    let mut profiles = Vec::new();
 
     if let Some(data) = payload.get("data").and_then(Value::as_array) {
         for model in data {
             if let Some(id) = model.get("id").and_then(Value::as_str) {
                 models.push(id.to_string());
+                profiles.push(generic_model_profile_from_value(id, model));
             }
         }
     } else if let Some(data) = payload.as_array() {
         for model in data {
             if let Some(id) = model.get("id").and_then(Value::as_str) {
                 models.push(id.to_string());
+                profiles.push(generic_model_profile_from_value(id, model));
             }
         }
     }
 
-    normalize_model_ids(models)
+    LiveModelCatalog {
+        models: normalize_model_ids(models),
+        profiles: normalize_model_profiles(profiles),
+    }
+}
+
+fn generic_model_profile_from_value(model_id: &str, model: &Value) -> ModelProfileCacheEntry {
+    ModelProfileCacheEntry {
+        model: model_id.to_string(),
+        context_window_tokens: first_usize_field(model, MODEL_CONTEXT_WINDOW_FIELDS),
+        max_output_tokens: first_usize_field(model, MODEL_MAX_OUTPUT_FIELDS)
+            .or_else(|| nested_usize_field(model, &["top_provider"], MODEL_MAX_OUTPUT_FIELDS)),
+        features: Vec::new(),
+    }
+}
+
+fn first_usize_field(value: &Value, fields: &[&str]) -> Option<usize> {
+    fields
+        .iter()
+        .find_map(|field| value.get(*field).and_then(value_as_usize))
+}
+
+fn nested_usize_field(value: &Value, path: &[&str], fields: &[&str]) -> Option<usize> {
+    let mut current = value;
+    for segment in path {
+        current = current.get(*segment)?;
+    }
+    first_usize_field(current, fields)
+}
+
+fn value_as_usize(value: &Value) -> Option<usize> {
+    value
+        .as_u64()
+        .and_then(|raw| usize::try_from(raw).ok())
+        .or_else(|| value.as_str()?.trim().parse::<usize>().ok())
 }
 
 fn parse_openrouter_model_catalog(payload: &Value) -> LiveModelCatalog {
@@ -1021,10 +1076,7 @@ fn fetch_openai_compatible_models(
         .json()
         .context("failed to parse model list response")?;
 
-    Ok(LiveModelCatalog {
-        models: parse_openai_compatible_model_ids(&payload),
-        profiles: Vec::new(),
-    })
+    Ok(parse_openai_compatible_model_catalog(&payload))
 }
 
 fn fetch_openrouter_models(api_key: Option<&str>) -> Result<LiveModelCatalog> {
@@ -1076,10 +1128,7 @@ fn fetch_anthropic_models(api_key: Option<&str>) -> Result<LiveModelCatalog> {
         .json()
         .context("failed to parse Anthropic model list response")?;
 
-    Ok(LiveModelCatalog {
-        models: parse_openai_compatible_model_ids(&payload),
-        profiles: Vec::new(),
-    })
+    Ok(parse_openai_compatible_model_catalog(&payload))
 }
 
 fn fetch_gemini_models(api_key: Option<&str>) -> Result<LiveModelCatalog> {
@@ -3072,12 +3121,12 @@ fn setup_project_context() -> Result<ProjectContext> {
     ];
 
     let style_idx = Select::new()
-        .with_prompt("  Communication style")
+        .with_prompt("  Response style")
         .items(&style_options)
         .default(1)
         .interact()?;
 
-    let communication_style = match style_idx {
+    let response_style = match style_idx {
         0 => "Be direct and concise. Skip pleasantries. Get to the point.".to_string(),
         1 => "Be friendly, human, and conversational. Show warmth and empathy while staying efficient. Use natural contractions.".to_string(),
         2 => "Be professional and polished. Stay calm, structured, and respectful. Use occasional tone-setting emojis only when appropriate.".to_string(),
@@ -3085,7 +3134,7 @@ fn setup_project_context() -> Result<ProjectContext> {
         4 => "Be technical and detailed. Thorough explanations, code-first.".to_string(),
         5 => "Adapt to the situation. Default to warm and clear communication; be concise when needed, thorough when it matters.".to_string(),
         _ => Input::new()
-            .with_prompt("  Custom communication style")
+            .with_prompt("  Custom response style")
             .default(
                 "Be warm, natural, and clear. Use occasional relevant emojis (1-2 max) and avoid robotic phrasing.".into(),
             )
@@ -3098,14 +3147,14 @@ fn setup_project_context() -> Result<ProjectContext> {
         style(&user_name).green(),
         style(&timezone).green(),
         style(&agent_name).green(),
-        style(&communication_style).green().dim()
+        style(&response_style).green().dim()
     );
 
     Ok(ProjectContext {
         user_name,
         timezone,
         agent_name,
-        communication_style,
+        response_style,
     })
 }
 
@@ -5074,10 +5123,10 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
     } else {
         &ctx.timezone
     };
-    let comm_style = if ctx.communication_style.is_empty() {
+    let response_style = if ctx.response_style.is_empty() {
         "Be warm, natural, and clear. Use occasional relevant emojis (1-2 max) and avoid robotic phrasing."
     } else {
-        &ctx.communication_style
+        &ctx.response_style
     };
 
     let identity = format!(
@@ -5168,7 +5217,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - NEVER mention OpenAI, Anthropic, DeepSeek, Google by name\n\
          - Always introduce yourself as {agent} if asked\n\n\
          ## Communication\n\n\
-         {comm_style}\n\n\
+         {response_style}\n\n\
          - Sound like a real person, not a support script.\n\
          - Mirror the user's energy: calm when serious, upbeat when casual.\n\
          - Use emojis naturally (0-2 max when they help tone, not every sentence).\n\
@@ -5194,8 +5243,8 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - **Name:** {user}\n\
          - **Timezone:** {tz}\n\
          - **Languages:** English\n\n\
-         ## Communication Style\n\
-         - {comm_style}\n\n\
+         ## Response Style\n\
+         - {response_style}\n\n\
          ## Preferences\n\
          - (Add your preferences here — e.g. I work with Rust and TypeScript)\n\n\
          ## Work Context\n\
@@ -5240,7 +5289,7 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
         "# BOOTSTRAP.md — Hello, World\n\n\
          *You just woke up. Time to figure out who you are.*\n\n\
          Your human's name is **{user}** (timezone: {tz}).\n\
-         They prefer: {comm_style}\n\n\
+         They prefer: {response_style}\n\n\
          ## First Conversation\n\n\
          Don't interrogate. Don't be robotic. Just... talk.\n\
          Introduce yourself as {agent} and get to know each other.\n\n\
@@ -5575,7 +5624,7 @@ mod tests {
         assert!(ctx.user_name.is_empty());
         assert!(ctx.timezone.is_empty());
         assert!(ctx.agent_name.is_empty());
-        assert!(ctx.communication_style.is_empty());
+        assert!(ctx.response_style.is_empty());
     }
 
     #[test]
@@ -5913,10 +5962,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scaffold_bakes_communication_style() {
+    async fn scaffold_bakes_response_style() {
         let tmp = TempDir::new().unwrap();
         let ctx = ProjectContext {
-            communication_style: "Be technical and detailed.".into(),
+            response_style: "Be technical and detailed.".into(),
             ..Default::default()
         };
         scaffold_workspace(tmp.path(), &ctx).await.unwrap();
@@ -5926,7 +5975,7 @@ mod tests {
             .unwrap();
         assert!(
             soul.contains("Be technical and detailed."),
-            "SOUL.md should contain communication style"
+            "SOUL.md should contain response style"
         );
 
         let user_md = tokio::fs::read_to_string(tmp.path().join("USER.md"))
@@ -5934,7 +5983,7 @@ mod tests {
             .unwrap();
         assert!(
             user_md.contains("Be technical and detailed."),
-            "USER.md should contain communication style"
+            "USER.md should contain response style"
         );
 
         let bootstrap = tokio::fs::read_to_string(tmp.path().join("BOOTSTRAP.md"))
@@ -5942,7 +5991,7 @@ mod tests {
             .unwrap();
         assert!(
             bootstrap.contains("Be technical and detailed."),
-            "BOOTSTRAP.md should contain communication style"
+            "BOOTSTRAP.md should contain response style"
         );
     }
 
@@ -5979,7 +6028,7 @@ mod tests {
             .unwrap();
         assert!(
             soul.contains("Be warm, natural, and clear."),
-            "should default communication style"
+            "should default response style"
         );
     }
 
@@ -6163,7 +6212,7 @@ mod tests {
             user_name: "José María".into(),
             agent_name: "SynapseClaw-v2".into(),
             timezone: "Europe/Madrid".into(),
-            communication_style: "Be direct.".into(),
+            response_style: "Be direct.".into(),
         };
         scaffold_workspace(tmp.path(), &ctx).await.unwrap();
 
@@ -6187,7 +6236,7 @@ mod tests {
             user_name: "Argenis".into(),
             timezone: "US/Eastern".into(),
             agent_name: "Claw".into(),
-            communication_style:
+            response_style:
                 "Be friendly, human, and conversational. Show warmth and empathy while staying efficient. Use natural contractions."
                     .into(),
         };
@@ -6675,6 +6724,38 @@ mod tests {
 
         let ids = parse_openai_compatible_model_ids(&payload);
         assert_eq!(ids, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[test]
+    fn parse_openai_model_catalog_extracts_common_profile_metadata() {
+        let payload = json!({
+            "data": [
+                {
+                    "id": "local-small",
+                    "max_model_len": 8192,
+                    "max_output_tokens": "2048"
+                },
+                {
+                    "id": "router-style",
+                    "context_length": 128000,
+                    "top_provider": {
+                        "max_completion_tokens": 4096
+                    }
+                }
+            ]
+        });
+
+        let catalog = parse_openai_compatible_model_catalog(&payload);
+
+        assert_eq!(
+            catalog.models,
+            vec!["local-small".to_string(), "router-style".to_string()]
+        );
+        assert_eq!(catalog.profiles.len(), 2);
+        assert_eq!(catalog.profiles[0].context_window_tokens, Some(8192));
+        assert_eq!(catalog.profiles[0].max_output_tokens, Some(2048));
+        assert_eq!(catalog.profiles[1].context_window_tokens, Some(128000));
+        assert_eq!(catalog.profiles[1].max_output_tokens, Some(4096));
     }
 
     #[test]

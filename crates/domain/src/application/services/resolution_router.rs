@@ -302,25 +302,7 @@ fn score_user_profile(interpretation: Option<&TurnInterpretation>) -> Option<f64
     let current_conversation_reference_count =
         count_reference_candidates(interpretation, ReferenceSource::CurrentConversation);
     let direct_dialogue_reference_count = count_direct_dialogue_state_references(interpretation);
-    let mut field_count = 0usize;
-    if profile.preferred_language.is_some() {
-        field_count += 1;
-    }
-    if profile.timezone.is_some() {
-        field_count += 1;
-    }
-    if profile.default_city.is_some() {
-        field_count += 1;
-    }
-    if profile.communication_style.is_some() {
-        field_count += 1;
-    }
-    if !profile.known_environments.is_empty() {
-        field_count += 1;
-    }
-    if profile.default_delivery_target.is_some() {
-        field_count += 1;
-    }
+    let field_count = profile.fact_count();
 
     let competing_context_penalty = if direct_dialogue_reference_count > 0 {
         0.16
@@ -497,18 +479,18 @@ fn score_gap_i64(top: i64, second: Option<i64>) -> i64 {
 mod tests {
     use super::*;
     use crate::application::services::turn_interpretation::{
-        CurrentConversationSnapshot, DialogueStateSnapshot, ProfileReferenceKind,
-        ReferenceCandidate, ReferenceCandidateKind, TurnInterpretation,
+        CurrentConversationSnapshot, DialogueStateSnapshot, ReferenceCandidate,
+        ReferenceCandidateKind, TurnInterpretation,
     };
     use crate::domain::user_profile::UserProfile;
 
     #[test]
     fn ranks_sources_from_typed_evidence_without_fixed_order_branches() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                preferred_language: Some("ru".into()),
-                ..Default::default()
-            }),
+            user_profile: Some(profile_with_facts(&[(
+                "language_preference",
+                serde_json::json!("ru"),
+            )])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "matrix".into(),
                 has_thread: true,
@@ -652,17 +634,19 @@ mod tests {
     #[test]
     fn current_conversation_outranks_profile_when_both_are_present() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_city: Some("Berlin".into()),
-                ..Default::default()
-            }),
+            user_profile: Some(profile_with_facts(&[(
+                "weather_city",
+                serde_json::json!("Berlin"),
+            )])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "matrix".into(),
                 has_thread: false,
             }),
             reference_candidates: vec![
                 ReferenceCandidate {
-                    kind: ReferenceCandidateKind::Profile(ProfileReferenceKind::City),
+                    kind: ReferenceCandidateKind::Profile {
+                        key: "weather_city".into(),
+                    },
                     value: "Berlin".into(),
                     source: ReferenceSource::UserProfile,
                 },
@@ -687,12 +671,12 @@ mod tests {
     }
 
     #[test]
-    fn direct_dialogue_state_outranks_profile_defaults() {
+    fn direct_dialogue_state_outranks_profile_facts() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_city: Some("Berlin".into()),
-                ..Default::default()
-            }),
+            user_profile: Some(profile_with_facts(&[(
+                "weather_city",
+                serde_json::json!("Berlin"),
+            )])),
             dialogue_state: Some(DialogueStateSnapshot {
                 focus_entities: vec![],
                 comparison_set: vec![],
@@ -713,7 +697,9 @@ mod tests {
             }),
             reference_candidates: vec![
                 ReferenceCandidate {
-                    kind: ReferenceCandidateKind::Profile(ProfileReferenceKind::City),
+                    kind: ReferenceCandidateKind::Profile {
+                        key: "weather_city".into(),
+                    },
                     value: "Berlin".into(),
                     source: ReferenceSource::UserProfile,
                 },
@@ -740,16 +726,17 @@ mod tests {
     #[test]
     fn configured_runtime_target_outranks_profile_and_conversation_defaults() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_delivery_target: Some(
+            user_profile: Some(profile_with_facts(&[(
+                "delivery_target_preference",
+                serde_json::to_value(
                     crate::domain::conversation_target::ConversationDeliveryTarget::Explicit {
                         channel: "slack".into(),
                         recipient: "C123".into(),
                         thread_ref: None,
                     },
-                ),
-                ..Default::default()
-            }),
+                )
+                .unwrap(),
+            )])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "matrix".into(),
                 has_thread: false,
@@ -763,7 +750,9 @@ mod tests {
             ),
             reference_candidates: vec![
                 ReferenceCandidate {
-                    kind: ReferenceCandidateKind::Profile(ProfileReferenceKind::DeliveryTarget),
+                    kind: ReferenceCandidateKind::Profile {
+                        key: "delivery_target_preference".into(),
+                    },
                     value: "explicit:slack:C123".into(),
                     source: ReferenceSource::UserProfile,
                 },
@@ -790,5 +779,13 @@ mod tests {
             plan.source_order.first(),
             Some(&ResolutionSource::ConfiguredRuntime)
         );
+    }
+
+    fn profile_with_facts(facts: &[(&str, serde_json::Value)]) -> UserProfile {
+        let mut profile = UserProfile::default();
+        for (key, value) in facts {
+            profile.set(*key, value.clone());
+        }
+        profile
     }
 }

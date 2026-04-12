@@ -1,4 +1,4 @@
-//! Port for durable structured user profiles.
+//! Port for durable dynamic user profiles.
 
 use crate::domain::user_profile::UserProfile;
 use anyhow::Result;
@@ -58,21 +58,22 @@ impl UserProfileStorePort for InMemoryUserProfileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn upsert_and_load_profile() {
         let store = InMemoryUserProfileStore::new();
         store
-            .upsert(
-                "matrix:alice",
-                UserProfile {
-                    timezone: Some("Europe/Berlin".into()),
-                    ..Default::default()
-                },
-            )
+            .upsert("matrix:alice", {
+                let mut profile = UserProfile::default();
+                profile.set("local_timezone", json!("Europe/Berlin"));
+                profile
+            })
             .unwrap();
         assert_eq!(
-            store.load("matrix:alice").and_then(|p| p.timezone),
+            store
+                .load("matrix:alice")
+                .and_then(|p| p.get_text("local_timezone")),
             Some("Europe/Berlin".into())
         );
     }

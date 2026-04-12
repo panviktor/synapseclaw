@@ -295,7 +295,7 @@ fn truncate(value: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::memory_mutation::MutationSource;
+    use crate::domain::memory_mutation::{MutationSource, MutationWriteClass};
 
     fn candidate() -> MutationCandidate {
         MutationCandidate {
@@ -304,6 +304,7 @@ mod tests {
                 .into(),
             confidence: 0.74,
             source: MutationSource::Reflection,
+            write_class: Some(MutationWriteClass::FailurePattern),
         }
     }
 

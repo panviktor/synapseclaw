@@ -164,11 +164,11 @@ Target behavior:
 Priority mappings:
 - `user_knowledge`
   - emit `UserProfileFact` when content clearly encodes:
-    - preferred language
-    - timezone
-    - default city
-    - communication style
-    - default delivery target
+    - language preference
+    - local timezone
+    - weather city
+    - response style
+    - delivery target preference
 - `task_state`
   - emit `FocusFact`
   - emit `WorkspaceFact` / `ResourceFact` / `DeliveryFact` when content clearly contains those anchors

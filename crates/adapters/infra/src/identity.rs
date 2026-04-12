@@ -806,7 +806,7 @@ pub fn aieos_to_system_prompt(identity: &AieosIdentity) -> String {
 
     // ── Linguistics Section ────────────────────────────────────────
     if let Some(ref ling) = identity.linguistics {
-        prompt.push_str("## Communication Style\n\n");
+        prompt.push_str("## Response Style\n\n");
 
         if let Some(ref style) = ling.style {
             let _ = writeln!(prompt, "**Style:** {}", style);
@@ -1162,7 +1162,7 @@ mod tests {
         assert!(prompt.contains("- creativity: 0.95"));
         assert!(prompt.contains("- Be helpful"));
 
-        assert!(prompt.contains("## Communication Style"));
+        assert!(prompt.contains("## Response Style"));
         assert!(prompt.contains("**Style:** concise"));
         assert!(prompt.contains("**Formality Level:** casual"));
         assert!(prompt.contains("- \"Let's go!\""));

@@ -1,20 +1,22 @@
-//! Structured user profile tool.
+//! Dynamic user profile tool.
 //!
-//! This is the explicit runtime path for stable user defaults and preferences.
+//! Stores durable user facts as arbitrary key/value data. The tool does not
+//! expose fixed profile fields; consumers may agree on data keys when needed.
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use synapse_domain::application::services::user_profile_service::{
-    self, ProfileFieldPatch, UserProfilePatch,
+    self, ProfileFactPatch, UserProfilePatch,
 };
 use synapse_domain::domain::config::ToolOperation;
-use synapse_domain::domain::conversation_target::ConversationDeliveryTarget;
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
-    ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
+    ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileFact,
 };
+use synapse_domain::domain::user_profile::normalize_fact_key;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::tool::{Tool, ToolResult};
 use synapse_domain::ports::user_profile_context::UserProfileContextPort;
@@ -68,28 +70,14 @@ enum ProfileAction {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum DeliveryTargetInput {
-    Keyword(String),
-    Explicit {
-        channel: String,
-        recipient: String,
-        thread_ref: Option<String>,
-    },
-}
-
-#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UserProfileArgs {
     #[serde(default = "default_action")]
     action: ProfileAction,
-    preferred_language: Option<String>,
-    timezone: Option<String>,
-    default_city: Option<String>,
-    communication_style: Option<String>,
-    known_environments: Option<Vec<String>>,
-    default_delivery_target: Option<DeliveryTargetInput>,
     #[serde(default)]
-    clear_fields: Vec<String>,
+    facts: BTreeMap<String, Value>,
+    #[serde(default)]
+    clear_keys: Vec<String>,
 }
 
 fn default_action() -> ProfileAction {
@@ -103,7 +91,7 @@ impl Tool for UserProfileTool {
     }
 
     fn description(&self) -> &str {
-        "Get or update the structured user profile for stable defaults like preferred language, timezone, default city, communication style, known environments, and default delivery target. Use this when the user explicitly states a durable preference or corrects an existing default."
+        "Get or update durable user facts as an arbitrary key/value profile. Use only when the user explicitly states a durable preference, default, identity fact, or correction. Keys are dynamic; do not assume a fixed profile schema."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -115,47 +103,15 @@ impl Tool for UserProfileTool {
                     "enum": ["get", "upsert", "clear", "delete"],
                     "description": "Profile operation"
                 },
-                "preferred_language": { "type": "string" },
-                "timezone": { "type": "string", "description": "IANA timezone like Europe/Berlin" },
-                "default_city": { "type": "string" },
-                "communication_style": { "type": "string" },
-                "known_environments": {
+                "facts": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "description": "Arbitrary profile facts to set. Example: {\"language_preference\":\"ru\", \"weather_city\":\"Berlin\"}. Structured values are allowed."
+                },
+                "clear_keys": {
                     "type": "array",
                     "items": { "type": "string" },
-                    "description": "Replace the full known environments list"
-                },
-                "default_delivery_target": {
-                    "description": "Use 'current_conversation' to snapshot this chat, or provide explicit channel/recipient",
-                    "oneOf": [
-                        {
-                            "type": "string",
-                            "enum": ["current_conversation"]
-                        },
-                        {
-                            "type": "object",
-                            "properties": {
-                                "channel": { "type": "string" },
-                                "recipient": { "type": "string" },
-                                "thread_ref": { "type": "string" }
-                            },
-                            "required": ["channel", "recipient"]
-                        }
-                    ]
-                },
-                "clear_fields": {
-                    "type": "array",
-                    "items": {
-                        "type": "string",
-                        "enum": [
-                            "preferred_language",
-                            "timezone",
-                            "default_city",
-                            "communication_style",
-                            "known_environments",
-                            "default_delivery_target"
-                        ]
-                    },
-                    "description": "Fields to clear when action is upsert or clear"
+                    "description": "Dynamic fact keys to clear. With action=clear and no keys, all current facts are cleared."
                 }
             }
         })
@@ -182,116 +138,30 @@ impl Tool for UserProfileTool {
             return Vec::new();
         }
 
-        if matches!(args.action, ProfileAction::Delete) {
-            return [
-                UserProfileField::PreferredLanguage,
-                UserProfileField::Timezone,
-                UserProfileField::DefaultCity,
-                UserProfileField::CommunicationStyle,
-                UserProfileField::KnownEnvironments,
-                UserProfileField::DefaultDeliveryTarget,
-            ]
-            .into_iter()
-            .map(|field| TypedToolFact {
-                tool_id: self.name().to_string(),
-                payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    field,
-                    operation: ProfileOperation::Clear,
-                    value: None,
-                }),
-            })
-            .collect();
-        }
-
-        let clear = |field: &str, args: &UserProfileArgs| {
-            args.clear_fields.iter().any(|item| item == field)
-        };
-        let clear_only = matches!(args.action, ProfileAction::Clear);
         let mut facts = Vec::new();
-
-        collect_profile_fact(
-            &mut facts,
-            self.name(),
-            UserProfileField::PreferredLanguage,
-            args.preferred_language.as_deref(),
-            clear_only || clear("preferred_language", &args),
-        );
-        collect_profile_fact(
-            &mut facts,
-            self.name(),
-            UserProfileField::Timezone,
-            args.timezone.as_deref(),
-            clear_only || clear("timezone", &args),
-        );
-        collect_profile_fact(
-            &mut facts,
-            self.name(),
-            UserProfileField::DefaultCity,
-            args.default_city.as_deref(),
-            clear_only || clear("default_city", &args),
-        );
-        collect_profile_fact(
-            &mut facts,
-            self.name(),
-            UserProfileField::CommunicationStyle,
-            args.communication_style.as_deref(),
-            clear_only || clear("communication_style", &args),
-        );
-
-        if clear_only || clear("known_environments", &args) {
-            facts.push(TypedToolFact {
-                tool_id: self.name().to_string(),
-                payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    field: UserProfileField::KnownEnvironments,
-                    operation: ProfileOperation::Clear,
-                    value: None,
-                }),
-            });
-        } else if let Some(values) = args.known_environments.as_ref() {
-            facts.push(TypedToolFact {
-                tool_id: self.name().to_string(),
-                payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    field: UserProfileField::KnownEnvironments,
-                    operation: ProfileOperation::Set,
-                    value: Some(values.join(", ")),
-                }),
-            });
-        }
-
-        if clear_only || clear("default_delivery_target", &args) {
-            facts.push(TypedToolFact {
-                tool_id: self.name().to_string(),
-                payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    field: UserProfileField::DefaultDeliveryTarget,
-                    operation: ProfileOperation::Clear,
-                    value: None,
-                }),
-            });
-        } else if let Some(target) = args.default_delivery_target.as_ref() {
-            let value = match target {
-                DeliveryTargetInput::Keyword(value) => value.clone(),
-                DeliveryTargetInput::Explicit {
-                    channel,
-                    recipient,
-                    thread_ref,
-                } => format!(
-                    "{}:{}{}",
-                    channel,
-                    recipient,
-                    thread_ref
-                        .as_deref()
-                        .map(|value| format!("#{value}"))
+        match args.action {
+            ProfileAction::Get => {}
+            ProfileAction::Upsert => {
+                for (key, value) in &args.facts {
+                    collect_profile_fact(&mut facts, self.name(), key, Some(value), false);
+                }
+                for key in &args.clear_keys {
+                    collect_profile_fact(&mut facts, self.name(), key, None, true);
+                }
+            }
+            ProfileAction::Clear | ProfileAction::Delete => {
+                let keys = if args.clear_keys.is_empty() {
+                    self.resolve_user_key()
+                        .and_then(|key| self.store.load(&key))
+                        .map(|profile| profile.iter().map(|(key, _)| key.clone()).collect())
                         .unwrap_or_default()
-                ),
-            };
-            facts.push(TypedToolFact {
-                tool_id: self.name().to_string(),
-                payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    field: UserProfileField::DefaultDeliveryTarget,
-                    operation: ProfileOperation::Set,
-                    value: Some(value),
-                }),
-            });
+                } else {
+                    args.clear_keys.clone()
+                };
+                for key in &keys {
+                    collect_profile_fact(&mut facts, self.name(), key, None, true);
+                }
+            }
         }
 
         facts
@@ -347,14 +217,12 @@ impl Tool for UserProfileTool {
                 })
             }
             ProfileAction::Upsert | ProfileAction::Clear => {
+                let current = self.store.load(&user_key);
                 let patch = build_patch(
                     &args,
-                    self.conversation_context
-                        .as_ref()
-                        .and_then(|port| port.get_current())
-                        .as_ref(),
+                    current.as_ref(),
                     matches!(args.action, ProfileAction::Clear),
-                )?;
+                );
                 if patch.is_noop() {
                     return Ok(ToolResult {
                         success: false,
@@ -363,7 +231,7 @@ impl Tool for UserProfileTool {
                     });
                 }
 
-                let updated = user_profile_service::apply_patch(self.store.load(&user_key), &patch);
+                let updated = user_profile_service::apply_patch(current, &patch);
                 match updated {
                     Some(profile) => {
                         self.store.upsert(&user_key, profile.clone())?;
@@ -395,122 +263,74 @@ impl Tool for UserProfileTool {
 fn collect_profile_fact(
     facts: &mut Vec<TypedToolFact>,
     tool_name: &str,
-    field: UserProfileField,
-    value: Option<&str>,
+    key: &str,
+    value: Option<&Value>,
     clear: bool,
 ) {
-    if clear {
-        facts.push(TypedToolFact {
-            tool_id: tool_name.to_string(),
-            payload: ToolFactPayload::UserProfile(UserProfileFact {
-                field,
-                operation: ProfileOperation::Clear,
-                value: None,
-            }),
-        });
-    } else if let Some(value) = value {
-        facts.push(TypedToolFact {
-            tool_id: tool_name.to_string(),
-            payload: ToolFactPayload::UserProfile(UserProfileFact {
-                field,
-                operation: ProfileOperation::Set,
-                value: Some(value.to_string()),
-            }),
-        });
-    }
+    let Some(key) = normalize_fact_key(key) else {
+        return;
+    };
+    let (operation, value) = if clear {
+        (ProfileOperation::Clear, None)
+    } else {
+        let Some(value) = value else {
+            return;
+        };
+        (ProfileOperation::Set, Some(render_fact_value(value)))
+    };
+
+    facts.push(TypedToolFact {
+        tool_id: tool_name.to_string(),
+        payload: ToolFactPayload::UserProfile(UserProfileFact {
+            key,
+            operation,
+            value,
+        }),
+    });
 }
 
 fn build_patch(
     args: &UserProfileArgs,
-    current_conversation: Option<
-        &synapse_domain::domain::conversation_target::CurrentConversationContext,
-    >,
+    current_profile: Option<&synapse_domain::domain::user_profile::UserProfile>,
     clear_only: bool,
-) -> anyhow::Result<UserProfilePatch> {
+) -> UserProfilePatch {
     let mut patch = UserProfilePatch::default();
-    let clear =
-        |field: &str, args: &UserProfileArgs| args.clear_fields.iter().any(|item| item == field);
 
-    patch.preferred_language = if clear_only || clear("preferred_language", args) {
-        ProfileFieldPatch::Clear
-    } else if let Some(value) = args.preferred_language.as_ref() {
-        ProfileFieldPatch::Set(value.clone())
-    } else {
-        ProfileFieldPatch::Keep
-    };
+    if clear_only && args.clear_keys.is_empty() {
+        if let Some(profile) = current_profile {
+            for (key, _) in profile.iter() {
+                patch.clear(key);
+            }
+        }
+        return patch;
+    }
 
-    patch.timezone = if clear_only || clear("timezone", args) {
-        ProfileFieldPatch::Clear
-    } else if let Some(value) = args.timezone.as_ref() {
-        ProfileFieldPatch::Set(value.clone())
-    } else {
-        ProfileFieldPatch::Keep
-    };
+    for (key, value) in &args.facts {
+        patch.set(key, value.clone());
+    }
+    for key in &args.clear_keys {
+        if let Some(key) = normalize_fact_key(key) {
+            patch.facts.insert(key, ProfileFactPatch::Clear);
+        }
+    }
 
-    patch.default_city = if clear_only || clear("default_city", args) {
-        ProfileFieldPatch::Clear
-    } else if let Some(value) = args.default_city.as_ref() {
-        ProfileFieldPatch::Set(value.clone())
-    } else {
-        ProfileFieldPatch::Keep
-    };
+    patch
+}
 
-    patch.communication_style = if clear_only || clear("communication_style", args) {
-        ProfileFieldPatch::Clear
-    } else if let Some(value) = args.communication_style.as_ref() {
-        ProfileFieldPatch::Set(value.clone())
-    } else {
-        ProfileFieldPatch::Keep
-    };
-
-    patch.known_environments = if clear_only || clear("known_environments", args) {
-        ProfileFieldPatch::Clear
-    } else if let Some(values) = args.known_environments.as_ref() {
-        ProfileFieldPatch::Set(values.clone())
-    } else {
-        ProfileFieldPatch::Keep
-    };
-
-    patch.default_delivery_target = if clear_only || clear("default_delivery_target", args) {
-        ProfileFieldPatch::Clear
-    } else if let Some(target) = args.default_delivery_target.as_ref() {
-        ProfileFieldPatch::Set(match target {
-                DeliveryTargetInput::Keyword(value) if value == "current_conversation" => {
-                    current_conversation
-                        .map(|ctx| ctx.to_explicit_target())
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "default_delivery_target='current_conversation' requires live conversation context"
-                            )
-                        })?
-                }
-                DeliveryTargetInput::Keyword(_) => {
-                    anyhow::bail!(
-                        "default_delivery_target must be 'current_conversation' or an explicit object"
-                    );
-                }
-                DeliveryTargetInput::Explicit {
-                    channel,
-                    recipient,
-                    thread_ref,
-                } => ConversationDeliveryTarget::Explicit {
-                    channel: channel.clone(),
-                    recipient: recipient.clone(),
-                    thread_ref: thread_ref.clone(),
-                },
-            })
-    } else {
-        ProfileFieldPatch::Keep
-    };
-
-    Ok(patch)
+fn render_fact_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        value => value.to_string(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use parking_lot::RwLock;
-    use synapse_domain::domain::conversation_target::CurrentConversationContext;
+    use synapse_domain::domain::conversation_target::{
+        ConversationDeliveryTarget, CurrentConversationContext,
+    };
     use synapse_domain::ports::conversation_context::ConversationContextPort;
     use synapse_domain::ports::user_profile_context::InMemoryUserProfileContext;
     use synapse_domain::ports::user_profile_store::InMemoryUserProfileStore;
@@ -535,7 +355,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upserts_profile_for_current_web_user() {
+    async fn upserts_dynamic_facts_for_current_web_user() {
         let store = Arc::new(InMemoryUserProfileStore::new());
         let profile_context = Arc::new(InMemoryUserProfileContext::new());
         profile_context.set_current_key(Some("web:abc".into()));
@@ -544,20 +364,25 @@ mod tests {
         let result = tool
             .execute(json!({
                 "action": "upsert",
-                "preferred_language": "ru",
-                "timezone": "Europe/Berlin"
+                "facts": {
+                    "language_preference": "ru",
+                    "weather_city": "Berlin"
+                }
             }))
             .await
             .unwrap();
 
         assert!(result.success);
         let profile = store.load("web:abc").unwrap();
-        assert_eq!(profile.preferred_language.as_deref(), Some("ru"));
-        assert_eq!(profile.timezone.as_deref(), Some("Europe/Berlin"));
+        assert_eq!(
+            profile.get_text("language_preference").as_deref(),
+            Some("ru")
+        );
+        assert_eq!(profile.get_text("weather_city").as_deref(), Some("Berlin"));
     }
 
     #[tokio::test]
-    async fn snapshots_current_conversation_delivery_target() {
+    async fn stores_structured_delivery_target_as_dynamic_fact() {
         let store = Arc::new(InMemoryUserProfileStore::new());
         let profile_context = Arc::new(InMemoryUserProfileContext::new());
         profile_context.set_current_key(Some("web:abc".into()));
@@ -569,6 +394,10 @@ mod tests {
             thread_ref: Some("$thread".into()),
             actor_id: "alice".into(),
         }));
+        let target = conversation_context
+            .get_current()
+            .unwrap()
+            .to_explicit_target();
         let tool = UserProfileTool::new(
             store.clone(),
             security(),
@@ -579,13 +408,19 @@ mod tests {
         let result = tool
             .execute(json!({
                 "action": "upsert",
-                "default_delivery_target": "current_conversation"
+                "facts": {
+                    "delivery_target_preference": target
+                }
             }))
             .await
             .unwrap();
 
         assert!(result.success);
-        match store.load("web:abc").unwrap().default_delivery_target {
+        match store
+            .load("web:abc")
+            .unwrap()
+            .get_delivery_target("delivery_target_preference")
+        {
             Some(ConversationDeliveryTarget::Explicit {
                 channel,
                 recipient,

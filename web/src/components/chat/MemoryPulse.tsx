@@ -375,9 +375,9 @@ export default function MemoryPulse({
               </pre>
             </div>
             <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-card)] px-3 py-3">
-              <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Profile defaults</p>
+              <p className="text-[10px] uppercase tracking-[0.2em] text-[var(--text-placeholder)]">Profile facts</p>
               <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-[var(--text-secondary)]">
-                {profilePreview ?? 'No structured user-profile projection is available for this scope yet.'}
+                {profilePreview ?? 'No dynamic user-profile fact projection is available for this scope yet.'}
               </pre>
             </div>
           </div>

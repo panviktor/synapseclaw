@@ -24,7 +24,9 @@ use crate::application::services::skill_feedback_service;
 use crate::application::services::skill_promotion_service::{self, SkillPromotionAssessment};
 use crate::application::services::user_profile_service;
 use crate::domain::memory::MemoryCategory;
-use crate::domain::memory_mutation::{MutationCandidate, MutationSource, MutationThresholds};
+use crate::domain::memory_mutation::{
+    MutationCandidate, MutationSource, MutationThresholds, MutationWriteClass,
+};
 use crate::domain::tool_fact::TypedToolFact;
 use crate::ports::memory::UnifiedMemoryPort;
 use crate::ports::run_recipe_store::RunRecipeStorePort;
@@ -79,7 +81,7 @@ pub struct PostTurnReport {
     pub skills_upserted: usize,
     /// Count of learned skills cooled down by accepted failure evidence.
     pub skills_penalized: usize,
-    /// Whether a structured user profile patch was applied.
+    /// Whether a dynamic user profile patch was applied.
     pub user_profile_updated: bool,
 }
 
@@ -184,6 +186,7 @@ pub async fn execute_post_turn_learning(
             text: input.user_message.clone(),
             confidence: signal.confidence(),
             source: MutationSource::ExplicitUser,
+            write_class: Some(MutationWriteClass::FactAnchor),
         };
         let decision = mutation::evaluate_candidate(
             mem,
@@ -762,7 +765,7 @@ mod tests {
     use crate::domain::tool_fact::{
         OutcomeStatus, ProfileOperation, ResourceFact, ResourceKind, ResourceMetadata,
         ResourceOperation, SearchDomain, SearchFact, ToolFactPayload, TypedToolFact,
-        UserProfileFact, UserProfileField,
+        UserProfileFact,
     };
     use crate::domain::user_profile::UserProfile;
     use crate::ports::memory::{
@@ -1081,7 +1084,7 @@ mod tests {
                 tool_facts: vec![TypedToolFact {
                     tool_id: "user_profile".into(),
                     payload: ToolFactPayload::UserProfile(UserProfileFact {
-                        field: UserProfileField::Timezone,
+                        key: "local_timezone".into(),
                         operation: ProfileOperation::Set,
                         value: Some("Europe/Berlin".into()),
                     }),
@@ -1097,7 +1100,9 @@ mod tests {
 
         assert!(report.user_profile_updated);
         assert_eq!(
-            store.load("web:test").and_then(|profile| profile.timezone),
+            store
+                .load("web:test")
+                .and_then(|profile| profile.get_text("local_timezone")),
             Some("Europe/Berlin".into())
         );
     }
@@ -1107,13 +1112,11 @@ mod tests {
         let memory = StubMemory::default();
         let store = Arc::new(InMemoryUserProfileStore::new());
         store
-            .upsert(
-                "web:test",
-                UserProfile {
-                    timezone: Some("Europe/Berlin".into()),
-                    ..Default::default()
-                },
-            )
+            .upsert("web:test", {
+                let mut profile = UserProfile::default();
+                profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+                profile
+            })
             .unwrap();
 
         let report = execute_post_turn_learning(
@@ -1126,7 +1129,7 @@ mod tests {
                 tool_facts: vec![TypedToolFact {
                     tool_id: "user_profile".into(),
                     payload: ToolFactPayload::UserProfile(UserProfileFact {
-                        field: UserProfileField::Timezone,
+                        key: "local_timezone".into(),
                         operation: ProfileOperation::Set,
                         value: Some("Europe/Berlin".into()),
                     }),
@@ -1159,7 +1162,7 @@ mod tests {
                     TypedToolFact {
                         tool_id: "user_profile".into(),
                         payload: ToolFactPayload::UserProfile(UserProfileFact {
-                            field: UserProfileField::Timezone,
+                            key: "local_timezone".into(),
                             operation: ProfileOperation::Set,
                             value: Some("Europe/Berlin".into()),
                         }),
@@ -1167,7 +1170,7 @@ mod tests {
                     TypedToolFact {
                         tool_id: "user_profile".into(),
                         payload: ToolFactPayload::UserProfile(UserProfileFact {
-                            field: UserProfileField::Timezone,
+                            key: "local_timezone".into(),
                             operation: ProfileOperation::Set,
                             value: Some("Europe/Paris".into()),
                         }),

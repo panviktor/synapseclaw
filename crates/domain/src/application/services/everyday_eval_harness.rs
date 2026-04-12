@@ -103,11 +103,12 @@ pub async fn evaluate_scenario(
 pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
     vec![
         EverydayEvalScenario {
-            id: "weather_uses_default_city",
+            id: "weather_uses_profile_city",
             user_message: "What's the weather?",
-            profile: Some(UserProfile {
-                default_city: Some("Berlin".into()),
-                ..Default::default()
+            profile: Some({
+                let mut profile = UserProfile::default();
+                profile.set("weather_city", serde_json::json!("Berlin"));
+                profile
             }),
             current_conversation: None,
             dialogue_state: None,
@@ -122,11 +123,12 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
             entity_hits: 0,
         },
         EverydayEvalScenario {
-            id: "translate_uses_preferred_language",
+            id: "translate_uses_language_preference",
             user_message: "Translate it to my language",
-            profile: Some(UserProfile {
-                preferred_language: Some("ru".into()),
-                ..Default::default()
+            profile: Some({
+                let mut profile = UserProfile::default();
+                profile.set("language_preference", serde_json::json!("ru"));
+                profile
             }),
             current_conversation: None,
             dialogue_state: None,
@@ -143,9 +145,10 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
         EverydayEvalScenario {
             id: "reminder_uses_timezone",
             user_message: "Remind me tomorrow",
-            profile: Some(UserProfile {
-                timezone: Some("Europe/Berlin".into()),
-                ..Default::default()
+            profile: Some({
+                let mut profile = UserProfile::default();
+                profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+                profile
             }),
             current_conversation: None,
             dialogue_state: None,
@@ -739,11 +742,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_city_scenario_prefers_profile_without_generic_clarify() {
+    async fn weather_city_scenario_prefers_profile_without_generic_clarify() {
         let memory = StubMemory;
         let scenario = default_golden_scenarios()
             .into_iter()
-            .find(|scenario| scenario.id == "weather_uses_default_city")
+            .find(|scenario| scenario.id == "weather_uses_profile_city")
             .unwrap();
 
         let result = evaluate_scenario(&memory, &scenario).await;
@@ -920,7 +923,7 @@ mod tests {
         let memory = StubMemory;
         let scenario = default_golden_scenarios()
             .into_iter()
-            .find(|scenario| scenario.id == "translate_uses_preferred_language")
+            .find(|scenario| scenario.id == "translate_uses_language_preference")
             .unwrap();
 
         let result = evaluate_scenario(&memory, &scenario).await;
@@ -928,13 +931,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_delivery_target_scenario_can_be_represented() {
+    async fn delivery_target_preference_scenario_can_be_represented() {
         let scenario = EverydayEvalScenario {
-            id: "default_delivery_target",
+            id: "delivery_target_preference",
             user_message: "Send it to my usual chat",
-            profile: Some(UserProfile {
-                default_delivery_target: Some(ConversationDeliveryTarget::CurrentConversation),
-                ..Default::default()
+            profile: Some({
+                let mut profile = UserProfile::default();
+                profile.set(
+                    "delivery_target_preference",
+                    serde_json::json!(ConversationDeliveryTarget::CurrentConversation),
+                );
+                profile
             }),
             current_conversation: None,
             dialogue_state: None,

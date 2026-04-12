@@ -223,7 +223,7 @@ pub fn format_skill_conflict_policy_projection() -> String {
         "- precedence: explicit current-turn user instruction".to_string(),
         "- precedence: manual skill".to_string(),
         "- precedence: imported skill".to_string(),
-        "- precedence: hard user-profile defaults".to_string(),
+        "- precedence: durable user-profile facts".to_string(),
         "- precedence: learned skill".to_string(),
         "- precedence: recipe".to_string(),
         "- precedence: precedent".to_string(),

@@ -350,7 +350,7 @@ fn truncate(value: &str, max: usize) -> String {
 mod tests {
     use super::*;
     use crate::domain::memory::MemoryCategory;
-    use crate::domain::memory_mutation::MutationSource;
+    use crate::domain::memory_mutation::{MutationSource, MutationWriteClass};
 
     fn candidate() -> MutationCandidate {
         MutationCandidate {
@@ -358,6 +358,7 @@ mod tests {
             text: "tools=web_search -> message_send | subjects=status.example.com".into(),
             confidence: 0.81,
             source: MutationSource::ToolOutput,
+            write_class: Some(MutationWriteClass::Recipe),
         }
     }
 

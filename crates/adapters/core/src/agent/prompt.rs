@@ -320,7 +320,7 @@ fn canonical_tool_language_contract(tools: &[Box<dyn Tool>]) -> String {
     }
     if has_tool("user_profile") {
         lines.push(
-            "- `user_profile` uses canonical top-level fields: `{ \"action\": \"get|upsert|clear|delete\", \"default_city\": \"...\", \"preferred_language\": \"...\", \"timezone\": \"...\", \"communication_style\": \"...\" }`."
+            "- `user_profile` stores dynamic facts: `{ \"action\": \"get|upsert|clear|delete\", \"facts\": { \"any_key\": \"value\" }, \"clear_keys\": [\"any_key\"] }`. Do not invent a fixed profile schema."
                 .to_string(),
         );
     }

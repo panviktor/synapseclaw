@@ -360,8 +360,8 @@ Reference:
      brief or scoped instruction summary should exist
 
 4. **Deterministic default resolution is still incomplete**
-   - `default_city = Tokyo` can be recalled correctly but is not consistently
-     applied on fresh weather/time turns
+   - a dynamic weather-city profile fact can be recalled correctly but is not
+     consistently applied on fresh weather/time turns
    - Matrix send can still prefer workspace archaeology over direct configured
      target routing
 
@@ -412,11 +412,11 @@ This should be closer to:
 
 than to raw eager Markdown replay.
 
-### D. Typed default resolvers
+### D. Typed fact resolvers
 
 Resolve before the model improvises:
-- default city
-- default delivery target
+- weather city
+- delivery target preference
 - workspace/resource anchor
 - likely channel or route
 

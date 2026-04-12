@@ -2,7 +2,7 @@
 //!
 //! This is not a phrase engine. It turns structured interpretation and
 //! resolution output into narrow execution policy so the runtime can avoid
-//! unnecessary archaeology when a direct structured default is already enough.
+//! unnecessary archaeology when a direct structured runtime fact is already enough.
 
 use crate::application::services::resolution_router::{ResolutionPlan, ResolutionSource};
 use crate::application::services::turn_interpretation::{
@@ -21,7 +21,7 @@ const MAX_EXECUTION_ADMISSION_REASONS: usize = 3;
 pub enum ExecutionCapability {
     ConversationReply,
     Delivery,
-    ProfileDefaults,
+    ProfileFacts,
     DirectReferenceAction,
 }
 
@@ -67,37 +67,28 @@ pub fn build_execution_guidance(
             && interpretation.current_conversation.is_some();
 
     let delivery_ready = match resolved_from {
-        Some(ResolutionSource::DialogueState) => interpretation.reference_candidates.iter().any(
-            |candidate| {
+        Some(ResolutionSource::DialogueState) => {
+            interpretation.reference_candidates.iter().any(|candidate| {
                 candidate.source == ReferenceSource::DialogueState
                     && matches!(candidate.kind, ReferenceCandidateKind::DeliveryTarget)
-            },
-        ),
-        Some(ResolutionSource::UserProfile) => interpretation.reference_candidates.iter().any(
-            |candidate| {
+            })
+        }
+        Some(ResolutionSource::UserProfile) => {
+            interpretation.reference_candidates.iter().any(|candidate| {
                 candidate.source == ReferenceSource::UserProfile
                     && matches!(
-                        candidate.kind,
-                        ReferenceCandidateKind::Profile(
-                            crate::application::services::turn_interpretation::ProfileReferenceKind::DeliveryTarget
-                        )
+                        &candidate.kind,
+                        ReferenceCandidateKind::Profile { key } if key == "delivery_target_preference"
                     )
-            },
-        ),
+            })
+        }
         _ => false,
     };
 
-    let profile_defaults_ready = matches!(resolved_from, Some(ResolutionSource::UserProfile))
+    let profile_facts_ready = matches!(resolved_from, Some(ResolutionSource::UserProfile))
         && interpretation.reference_candidates.iter().any(|candidate| {
             candidate.source == ReferenceSource::UserProfile
-                && matches!(
-                    candidate.kind,
-                    ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::Language
-                            | crate::application::services::turn_interpretation::ProfileReferenceKind::Timezone
-                            | crate::application::services::turn_interpretation::ProfileReferenceKind::City
-                    )
-                )
+                && matches!(candidate.kind, ReferenceCandidateKind::Profile { .. })
         });
 
     let direct_reference_ready = matches!(resolved_from, Some(ResolutionSource::DialogueState))
@@ -137,8 +128,8 @@ pub fn build_execution_guidance(
     );
     push_capability(
         &mut preferred_capabilities,
-        profile_defaults_ready,
-        ExecutionCapability::ProfileDefaults,
+        profile_facts_ready,
+        ExecutionCapability::ProfileFacts,
     );
     push_capability(
         &mut preferred_capabilities,
@@ -159,7 +150,7 @@ pub fn build_execution_guidance(
 
     let avoid_historical_lookup = prefer_answer_from_resolved_state
         || (direct_resolution_ready
-            && (delivery_ready || profile_defaults_ready || direct_reference_ready));
+            && (delivery_ready || profile_facts_ready || direct_reference_ready));
 
     let guidance = ExecutionGuidance {
         resolved_from,
@@ -263,9 +254,9 @@ pub fn format_execution_guidance(guidance: &ExecutionGuidance) -> Option<String>
     if guidance.direct_resolution_ready
         && guidance
             .preferred_capabilities
-            .contains(&ExecutionCapability::ProfileDefaults)
+            .contains(&ExecutionCapability::ProfileFacts)
     {
-        lines.push("- apply_profile_defaults_before_lookup: true".to_string());
+        lines.push("- apply_profile_facts_before_lookup: true".to_string());
     }
     if guidance.avoid_session_history_lookup {
         lines.push("- avoid_session_history_lookup: true".to_string());
@@ -309,7 +300,7 @@ fn capability_name(capability: ExecutionCapability) -> &'static str {
     match capability {
         ExecutionCapability::ConversationReply => "conversation_reply",
         ExecutionCapability::Delivery => "delivery",
-        ExecutionCapability::ProfileDefaults => "profile_defaults",
+        ExecutionCapability::ProfileFacts => "profile_facts",
         ExecutionCapability::DirectReferenceAction => "direct_reference_action",
     }
 }
@@ -452,33 +443,32 @@ mod tests {
     }
 
     #[test]
-    fn profile_default_turn_avoids_historical_lookup_without_string_rules() {
+    fn profile_fact_turn_avoids_historical_lookup_without_string_rules() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_city: Some("Tokyo".into()),
-                timezone: Some("Asia/Tokyo".into()),
-                preferred_language: Some("ja".into()),
-                ..UserProfile::default()
-            }),
+            user_profile: Some(profile_with_facts(&[
+                ("weather_city", serde_json::json!("Tokyo")),
+                ("local_timezone", serde_json::json!("Asia/Tokyo")),
+                ("language_preference", serde_json::json!("ja")),
+            ])),
             reference_candidates: vec![
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::City,
-                    ),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "weather_city".into(),
+                    },
                     value: "Tokyo".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::Timezone,
-                    ),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "local_timezone".into(),
+                    },
                     value: "Asia/Tokyo".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::Language,
-                    ),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "language_preference".into(),
+                    },
                     value: "ja".into(),
                     source: ReferenceSource::UserProfile,
                 },
@@ -497,17 +487,17 @@ mod tests {
         assert!(guidance.direct_resolution_ready);
         assert!(guidance
             .preferred_capabilities
-            .contains(&ExecutionCapability::ProfileDefaults));
+            .contains(&ExecutionCapability::ProfileFacts));
         assert!(guidance.avoid_run_recipe_lookup);
     }
 
     #[test]
     fn ambiguous_turn_does_not_claim_direct_resolution_ready() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_city: Some("Berlin".into()),
-                ..UserProfile::default()
-            }),
+            user_profile: Some(profile_with_facts(&[(
+                "weather_city",
+                serde_json::json!("Berlin"),
+            )])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "matrix".into(),
                 has_thread: false,
@@ -537,30 +527,29 @@ mod tests {
     }
 
     #[test]
-    fn current_conversation_does_not_trigger_profile_default_narrowing_by_itself() {
+    fn current_conversation_does_not_trigger_profile_fact_narrowing_by_itself() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_city: Some("Tokyo".into()),
-                timezone: Some("Asia/Tokyo".into()),
-                preferred_language: Some("ja".into()),
-                ..UserProfile::default()
-            }),
+            user_profile: Some(profile_with_facts(&[
+                ("weather_city", serde_json::json!("Tokyo")),
+                ("local_timezone", serde_json::json!("Asia/Tokyo")),
+                ("language_preference", serde_json::json!("ja")),
+            ])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "web".into(),
                 has_thread: false,
             }),
             reference_candidates: vec![
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::City,
-                    ),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "weather_city".into(),
+                    },
                     value: "Tokyo".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::Timezone,
-                    ),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "local_timezone".into(),
+                    },
                     value: "Asia/Tokyo".into(),
                     source: ReferenceSource::UserProfile,
                 },
@@ -644,6 +633,14 @@ mod tests {
         assert!(block.contains("message_send_requires_content_only_when_target_is_resolved: true"));
         assert!(block.contains("avoid_delegate_delivery_when_target_is_resolved: true"));
         assert!(block.contains("avoid_workspace_discovery: true"));
+    }
+
+    fn profile_with_facts(facts: &[(&str, serde_json::Value)]) -> UserProfile {
+        let mut profile = UserProfile::default();
+        for (key, value) in facts {
+            profile.set(*key, value.clone());
+        }
+        profile
     }
 
     #[test]

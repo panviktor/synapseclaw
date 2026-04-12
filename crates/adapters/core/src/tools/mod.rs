@@ -277,6 +277,8 @@ pub fn all_tools_with_runtime(
         dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
     > = if let Some(store) = user_profile_store {
         store
+    } else if let Some(db) = cron_db.as_ref() {
+        Arc::new(synapse_memory::SurrealUserProfileStore::new(Arc::clone(db)))
     } else {
         let store_path = config
             .config_path

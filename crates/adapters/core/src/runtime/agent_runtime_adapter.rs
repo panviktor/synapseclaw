@@ -22,6 +22,7 @@ use synapse_domain::ports::agent_runtime::{
 use synapse_domain::ports::model_profile_catalog::ModelProfileCatalogPort;
 use synapse_domain::ports::provider::ProviderCapabilities;
 use synapse_infra::approval::ApprovalManager;
+use synapse_providers::error_classification::classify_context_limit_error;
 use synapse_providers::{ChatMessage, Provider, ProviderCapabilityError, ProviderRuntimeOptions};
 use synapse_security::scrub_credentials;
 
@@ -286,18 +287,7 @@ fn classify_agent_runtime_error(err: anyhow::Error) -> AgentRuntimeError {
     }
 
     let detail = scrub_credentials(&err.to_string());
-    let lower = detail.to_lowercase();
-    let context_hints = [
-        "exceeds the context window",
-        "context window of this model",
-        "maximum context length",
-        "context length exceeded",
-        "too many tokens",
-        "token limit exceeded",
-        "prompt is too long",
-        "input is too long",
-    ];
-    if context_hints.iter().any(|hint| lower.contains(hint)) {
+    if classify_context_limit_error(&err).is_some() {
         return AgentRuntimeError::new(AgentRuntimeErrorKind::ContextLimitExceeded, detail);
     }
 

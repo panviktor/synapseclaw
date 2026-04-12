@@ -74,7 +74,7 @@ pub struct DeliveryFact {
 pub enum DeliveryTargetKind {
     CurrentConversation,
     Explicit(ConversationDeliveryTarget),
-    ProfileDefault(ConversationDeliveryTarget),
+    UserProfile(ConversationDeliveryTarget),
     ConfiguredDefault(ConversationDeliveryTarget),
 }
 
@@ -175,19 +175,9 @@ pub struct ScheduleTarget {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct UserProfileFact {
-    pub field: UserProfileField,
+    pub key: String,
     pub operation: ProfileOperation,
     pub value: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum UserProfileField {
-    PreferredLanguage,
-    Timezone,
-    DefaultCity,
-    CommunicationStyle,
-    KnownEnvironments,
-    DefaultDeliveryTarget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -444,7 +434,7 @@ impl TypedToolFact {
             ToolFactPayload::Delivery(delivery) => match &delivery.target {
                 DeliveryTargetKind::CurrentConversation
                 | DeliveryTargetKind::Explicit(ConversationDeliveryTarget::CurrentConversation)
-                | DeliveryTargetKind::ProfileDefault(
+                | DeliveryTargetKind::UserProfile(
                     ConversationDeliveryTarget::CurrentConversation,
                 )
                 | DeliveryTargetKind::ConfiguredDefault(
@@ -455,7 +445,7 @@ impl TypedToolFact {
                     recipient,
                     ..
                 })
-                | DeliveryTargetKind::ProfileDefault(ConversationDeliveryTarget::Explicit {
+                | DeliveryTargetKind::UserProfile(ConversationDeliveryTarget::Explicit {
                     channel,
                     recipient,
                     ..
@@ -573,7 +563,7 @@ fn project_delivery_focus(delivery: &DeliveryFact) -> FocusEntity {
     match &delivery.target {
         DeliveryTargetKind::CurrentConversation
         | DeliveryTargetKind::Explicit(ConversationDeliveryTarget::CurrentConversation)
-        | DeliveryTargetKind::ProfileDefault(ConversationDeliveryTarget::CurrentConversation)
+        | DeliveryTargetKind::UserProfile(ConversationDeliveryTarget::CurrentConversation)
         | DeliveryTargetKind::ConfiguredDefault(ConversationDeliveryTarget::CurrentConversation) => {
             FocusEntity {
                 kind: "delivery_target".into(),
@@ -590,14 +580,14 @@ fn project_delivery_focus(delivery: &DeliveryFact) -> FocusEntity {
             name: recipient.clone(),
             metadata: Some(channel.clone()),
         },
-        DeliveryTargetKind::ProfileDefault(ConversationDeliveryTarget::Explicit {
+        DeliveryTargetKind::UserProfile(ConversationDeliveryTarget::Explicit {
             channel,
             recipient,
             ..
         }) => FocusEntity {
             kind: "delivery_target".into(),
             name: recipient.clone(),
-            metadata: Some(format!("profile_default:{channel}")),
+            metadata: Some(format!("user_profile:{channel}")),
         },
         DeliveryTargetKind::ConfiguredDefault(ConversationDeliveryTarget::Explicit {
             channel,
@@ -677,7 +667,7 @@ fn project_schedule_focus(schedule: &ScheduleFact) -> Vec<FocusEntity> {
 fn project_profile_focus(profile: &UserProfileFact) -> Option<FocusEntity> {
     let value = profile.value.clone()?;
     Some(FocusEntity {
-        kind: user_profile_kind(&profile.field).into(),
+        kind: profile.key.clone(),
         name: value,
         metadata: Some(profile_operation_name(&profile.operation).into()),
     })
@@ -822,17 +812,6 @@ fn schedule_kind_name(kind: &ScheduleKind) -> &'static str {
         ScheduleKind::Cron => "cron",
         ScheduleKind::At => "at",
         ScheduleKind::Every => "every",
-    }
-}
-
-fn user_profile_kind(field: &UserProfileField) -> &'static str {
-    match field {
-        UserProfileField::PreferredLanguage => "preferred_language",
-        UserProfileField::Timezone => "timezone",
-        UserProfileField::DefaultCity => "default_city",
-        UserProfileField::CommunicationStyle => "communication_style",
-        UserProfileField::KnownEnvironments => "known_environment",
-        UserProfileField::DefaultDeliveryTarget => "default_delivery_target",
     }
 }
 

@@ -21,9 +21,9 @@ Typical examples:
 
 | User asks | Current weak behavior | Desired behavior |
 |-----------|------------------------|------------------|
-| "What's the weather?" | asks which city | uses known default city or recent focus |
-| "Translate to my language" | asks which language | uses preferred language |
-| "Remind me tomorrow" | asks which timezone | uses known timezone |
+| "What's the weather?" | asks which city | uses `weather_city` or recent focus |
+| "Translate to my language" | asks which language | uses `language_preference` |
+| "Remind me tomorrow" | asks which timezone | uses `local_timezone` |
 | "What did we discuss last week?" | recall may miss | routes to session search / recap |
 | "Do it like last time" | weak or inconsistent | uses prior successful run / skill / session recap |
 
@@ -94,7 +94,10 @@ Useful references:
 What SynapseClaw still lacks relative to the best product behavior of those systems:
 
 1. **Structured user defaults**
-   `preferred_language`, `timezone`, `default_city`, and similar fields should not live only as soft text in memory blocks.
+   Durable profile facts should not live only as soft text in memory blocks, but
+   they also should not be frozen as Rust fields. The runtime profile is a
+   schemaless fact map with explicit conventions only where a resolver needs
+   one.
 
 2. **Reference resolution**
    Queries like "the second one", "that service", "our chat", "like before", "there", and "tomorrow" need deterministic handling.
@@ -131,7 +134,7 @@ Introduce a canonical precedence order:
 ```text
 explicit user input
 -> dialogue state / working state
--> structured user profile
+-> dynamic user profile
 -> past-work/session resolver
 -> long-term semantic memory
 -> narrow clarification
@@ -143,7 +146,7 @@ This order should be enforced by application services, not left entirely to mode
 
 ## Phase Slices
 
-## Slice 1 — Structured User Profile
+## Slice 1 — Dynamic User Profile
 
 ### Problem
 
@@ -151,16 +154,13 @@ Stable user facts currently live mostly as soft text in `user_knowledge`-style m
 
 ### Goal
 
-Add a first-class structured user profile layer for stable defaults and preferences.
+Add a first-class dynamic user profile layer for stable defaults and preferences.
 
-### Initial fields
+### Dynamic facts
 
-- `preferred_language`
-- `timezone`
-- `default_city`
-- `communication_style`
-- `known_environments`
-- `default_delivery_target`
+The profile stores arbitrary facts as a normalized key/value map. Runtime
+services may agree on narrow conventions such as `delivery_target_preference` or
+`weather_city`, but the domain model must not encode a fixed profile schema.
 
 ### Design
 
@@ -168,12 +168,7 @@ Add a domain model like:
 
 ```rust
 pub struct UserProfile {
-    pub preferred_language: Option<String>,
-    pub timezone: Option<String>,
-    pub default_city: Option<String>,
-    pub communication_style: Option<String>,
-    pub known_environments: Vec<String>,
-    pub default_delivery_target: Option<String>,
+    pub facts: BTreeMap<String, serde_json::Value>,
 }
 ```
 
@@ -194,9 +189,9 @@ pub trait UserProfileStorePort {
 
 ### Acceptance criteria
 
-1. "Translate to my language" resolves through `preferred_language` without asking.
+1. "Translate to my language" resolves through `language_preference` without asking.
 2. "Remind me tomorrow" resolves through `timezone` without asking.
-3. "What's the weather?" can use `default_city` when no stronger signal exists.
+3. "What's the weather?" can use a dynamic weather-city fact when no stronger signal exists.
 
 ---
 
@@ -247,7 +242,7 @@ Short follow-up questions should resolve against:
 
 1. current turn explicit entities
 2. dialogue state / comparison set
-3. structured user profile
+3. dynamic user profile
 4. session search / past work
 5. only then clarification
 
@@ -522,7 +517,7 @@ This order front-loads the highest user-visible gains.
 
 Suggested PR breakdown:
 
-1. `phase4_7a`: structured user profile + store + sync hooks
+1. `phase4_7a`: dynamic user profile + store + sync hooks
 2. `phase4_7b`: dialogue/reference resolver
 3. `phase4_7c`: past-work resolver + session/runs routing
 4. `phase4_7d`: intent router + clarification policy

@@ -11,10 +11,12 @@ pub mod chunker;
 pub mod embeddings;
 pub mod response_cache;
 pub mod surrealdb_adapter;
+pub mod user_profile_store;
 pub mod vector;
 
 pub use response_cache::ResponseCache;
 pub use surrealdb_adapter::SurrealMemoryAdapter;
+pub use user_profile_store::SurrealUserProfileStore;
 // NoopUnifiedMemory is defined below and re-exported here for convenience.
 
 // Re-export domain types for convenience.

@@ -8,13 +8,12 @@ use crate::application::services::learning_evidence_service::{
     LearningEvidenceEnvelope, LearningEvidenceFacet,
 };
 use crate::application::services::learning_quality_service::LearningCandidateAssessment;
-use crate::application::services::user_profile_service::{ProfileFieldPatch, UserProfilePatch};
+use crate::application::services::user_profile_service::UserProfilePatch;
 use crate::domain::memory::MemoryCategory;
-use crate::domain::memory_mutation::{MutationCandidate, MutationSource};
-use crate::domain::tool_fact::{
-    OutcomeStatus, ProfileOperation, ToolFactPayload, TypedToolFact, UserProfileField,
-};
+use crate::domain::memory_mutation::{MutationCandidate, MutationSource, MutationWriteClass};
+use crate::domain::tool_fact::{OutcomeStatus, ProfileOperation, ToolFactPayload, TypedToolFact};
 use crate::domain::user_profile::UserProfile;
+use serde_json::Value;
 
 fn precedent_memory_category() -> MemoryCategory {
     MemoryCategory::Custom("precedent".into())
@@ -35,7 +34,7 @@ pub enum LearningCandidate {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct UserProfileLearningCandidate {
-    pub field: UserProfileField,
+    pub key: String,
     pub operation: ProfileOperation,
     pub value: Option<String>,
 }
@@ -76,7 +75,7 @@ pub fn build_learning_candidates(
         if let ToolFactPayload::UserProfile(profile) = &fact.payload {
             candidates.push(LearningCandidate::UserProfile(
                 UserProfileLearningCandidate {
-                    field: profile.field.clone(),
+                    key: profile.key.clone(),
                     operation: profile.operation.clone(),
                     value: profile.value.clone(),
                 },
@@ -140,6 +139,7 @@ pub fn build_mutation_candidates(candidates: &[LearningCandidate]) -> Vec<Mutati
                 text: precedent.summary.clone(),
                 confidence: 0.72,
                 source: MutationSource::ToolOutput,
+                write_class: Some(MutationWriteClass::Recipe),
             });
         } else if let LearningCandidate::FailurePattern(failure) = candidate {
             mutations.push(MutationCandidate {
@@ -147,6 +147,7 @@ pub fn build_mutation_candidates(candidates: &[LearningCandidate]) -> Vec<Mutati
                 text: failure.summary.clone(),
                 confidence: 0.74,
                 source: MutationSource::Reflection,
+                write_class: Some(MutationWriteClass::FailurePattern),
             });
         }
     }
@@ -174,12 +175,14 @@ pub fn build_mutation_candidate_from_assessment(
             text: precedent.summary.clone(),
             confidence: assessment.confidence,
             source: MutationSource::ToolOutput,
+            write_class: Some(MutationWriteClass::Recipe),
         }),
         LearningCandidate::FailurePattern(failure) => Some(MutationCandidate {
             category: failure_pattern_memory_category(),
             text: failure.summary.clone(),
             confidence: assessment.confidence,
             source: MutationSource::Reflection,
+            write_class: Some(MutationWriteClass::FailurePattern),
         }),
         _ => None,
     }
@@ -187,81 +190,24 @@ pub fn build_mutation_candidate_from_assessment(
 
 pub fn build_user_profile_patch(
     candidates: &[LearningCandidate],
-    current: Option<&UserProfile>,
+    _current: Option<&UserProfile>,
 ) -> UserProfilePatch {
     let mut patch = UserProfilePatch::default();
-    let mut known_environments = current
-        .map(|profile| profile.known_environments.clone())
-        .unwrap_or_default();
-    let mut known_environments_op = None;
 
     for candidate in candidates {
         let LearningCandidate::UserProfile(profile_candidate) = candidate else {
             continue;
         };
-        match (&profile_candidate.field, &profile_candidate.operation) {
-            (UserProfileField::PreferredLanguage, ProfileOperation::Set) => {
+        match profile_candidate.operation {
+            ProfileOperation::Set => {
                 if let Some(value) = profile_candidate.value.as_ref() {
-                    patch.preferred_language = ProfileFieldPatch::Set(value.clone());
+                    patch.set(&profile_candidate.key, Value::String(value.clone()));
                 }
             }
-            (UserProfileField::PreferredLanguage, ProfileOperation::Clear) => {
-                patch.preferred_language = ProfileFieldPatch::Clear;
-            }
-            (UserProfileField::Timezone, ProfileOperation::Set) => {
-                if let Some(value) = profile_candidate.value.as_ref() {
-                    patch.timezone = ProfileFieldPatch::Set(value.clone());
-                }
-            }
-            (UserProfileField::Timezone, ProfileOperation::Clear) => {
-                patch.timezone = ProfileFieldPatch::Clear;
-            }
-            (UserProfileField::DefaultCity, ProfileOperation::Set) => {
-                if let Some(value) = profile_candidate.value.as_ref() {
-                    patch.default_city = ProfileFieldPatch::Set(value.clone());
-                }
-            }
-            (UserProfileField::DefaultCity, ProfileOperation::Clear) => {
-                patch.default_city = ProfileFieldPatch::Clear;
-            }
-            (UserProfileField::CommunicationStyle, ProfileOperation::Set) => {
-                if let Some(value) = profile_candidate.value.as_ref() {
-                    patch.communication_style = ProfileFieldPatch::Set(value.clone());
-                }
-            }
-            (UserProfileField::CommunicationStyle, ProfileOperation::Clear) => {
-                patch.communication_style = ProfileFieldPatch::Clear;
-            }
-            (UserProfileField::KnownEnvironments, ProfileOperation::Set) => {
-                if let Some(value) = profile_candidate.value.as_ref() {
-                    known_environments_op = Some(ProfileOperation::Set);
-                    if !known_environments
-                        .iter()
-                        .any(|existing| existing.eq_ignore_ascii_case(value))
-                    {
-                        known_environments.push(value.clone());
-                    }
-                }
-            }
-            (UserProfileField::KnownEnvironments, ProfileOperation::Clear) => {
-                known_environments_op = Some(ProfileOperation::Clear);
-                known_environments.clear();
-            }
-            (UserProfileField::DefaultDeliveryTarget, _) => {
-                // Keep structured delivery targets tool-driven for now. The
-                // learning bridge only auto-applies string-safe fields.
+            ProfileOperation::Clear => {
+                patch.clear(&profile_candidate.key);
             }
         }
-    }
-
-    match known_environments_op {
-        Some(ProfileOperation::Set) => {
-            patch.known_environments = ProfileFieldPatch::Set(known_environments);
-        }
-        Some(ProfileOperation::Clear) => {
-            patch.known_environments = ProfileFieldPatch::Clear;
-        }
-        None => {}
     }
 
     patch
@@ -490,9 +436,8 @@ mod tests {
     use crate::domain::dialogue_state::FocusEntity;
     use crate::domain::tool_fact::{
         DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation,
-        ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
+        ToolFactPayload, TypedToolFact, UserProfileFact,
     };
-    use crate::domain::user_profile::UserProfile;
 
     #[test]
     fn builds_profile_and_recipe_candidates_from_typed_turn_data() {
@@ -500,7 +445,7 @@ mod tests {
             TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    field: UserProfileField::Timezone,
+                    key: "local_timezone".into(),
                     operation: ProfileOperation::Set,
                     value: Some("Europe/Berlin".into()),
                 }),
@@ -539,10 +484,10 @@ mod tests {
         assert!(candidates.iter().any(|candidate| matches!(
             candidate,
             LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                field: UserProfileField::Timezone,
+                key,
                 operation: ProfileOperation::Set,
                 value,
-            }) if value.as_deref() == Some("Europe/Berlin")
+            }) if key == "local_timezone" && value.as_deref() == Some("Europe/Berlin")
         )));
         assert!(candidates
             .iter()
@@ -601,7 +546,7 @@ mod tests {
                 subjects: vec!["Berlin".into()],
             }),
             LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                field: UserProfileField::Timezone,
+                key: "local_timezone".into(),
                 operation: ProfileOperation::Set,
                 value: Some("Europe/Berlin".into()),
             }),
@@ -675,12 +620,12 @@ mod tests {
     fn builds_safe_user_profile_patch_from_candidates() {
         let candidates = vec![
             LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                field: UserProfileField::Timezone,
+                key: "local_timezone".into(),
                 operation: ProfileOperation::Set,
                 value: Some("Europe/Berlin".into()),
             }),
             LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                field: UserProfileField::DefaultCity,
+                key: "weather_city".into(),
                 operation: ProfileOperation::Set,
                 value: Some("Berlin".into()),
             }),
@@ -688,12 +633,14 @@ mod tests {
 
         let patch = build_user_profile_patch(&candidates, None);
         assert!(matches!(
-            patch.timezone,
-            ProfileFieldPatch::Set(ref value) if value == "Europe/Berlin"
+            patch.facts.get("local_timezone"),
+            Some(crate::application::services::user_profile_service::ProfileFactPatch::Set(value))
+                if value == &serde_json::json!("Europe/Berlin")
         ));
         assert!(matches!(
-            patch.default_city,
-            ProfileFieldPatch::Set(ref value) if value == "Berlin"
+            patch.facts.get("weather_city"),
+            Some(crate::application::services::user_profile_service::ProfileFactPatch::Set(value))
+                if value == &serde_json::json!("Berlin")
         ));
     }
 
@@ -702,7 +649,7 @@ mod tests {
         let tool_facts = vec![TypedToolFact {
             tool_id: "user_profile".into(),
             payload: ToolFactPayload::UserProfile(UserProfileFact {
-                field: UserProfileField::PreferredLanguage,
+                key: "language_preference".into(),
                 operation: ProfileOperation::Set,
                 value: Some("ru".into()),
             }),
@@ -731,27 +678,21 @@ mod tests {
     }
 
     #[test]
-    fn profile_patch_merges_known_environments_with_existing_profile() {
+    fn profile_patch_sets_dynamic_fact() {
         let candidates = vec![LearningCandidate::UserProfile(
             UserProfileLearningCandidate {
-                field: UserProfileField::KnownEnvironments,
+                key: "deployment_environments".into(),
                 operation: ProfileOperation::Set,
                 value: Some("staging".into()),
             },
         )];
 
-        let patch = build_user_profile_patch(
-            &candidates,
-            Some(&UserProfile {
-                known_environments: vec!["prod".into()],
-                ..Default::default()
-            }),
-        );
+        let patch = build_user_profile_patch(&candidates, None);
 
         assert!(matches!(
-            patch.known_environments,
-            ProfileFieldPatch::Set(ref values)
-                if values == &vec!["prod".to_string(), "staging".to_string()]
+            patch.facts.get("deployment_environments"),
+            Some(crate::application::services::user_profile_service::ProfileFactPatch::Set(value))
+                if value == &serde_json::json!("staging")
         ));
     }
 }

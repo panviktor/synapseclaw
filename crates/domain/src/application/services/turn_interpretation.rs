@@ -4,6 +4,7 @@
 //! without turning into a phrase-engine.
 
 use crate::application::services::turn_model_routing::infer_turn_capability_requirement;
+use crate::application::services::user_profile_service::format_profile_projection;
 use crate::domain::conversation_target::{ConversationDeliveryTarget, CurrentConversationContext};
 use crate::domain::dialogue_state::{
     DialogueState, ReferenceAnchor, ReferenceAnchorSelector, ReferenceOrdinal, ResourceReference,
@@ -59,7 +60,9 @@ pub enum ReferenceCandidateKind {
         selector: ReferenceAnchorSelector,
         entity_kind: Option<String>,
     },
-    Profile(ProfileReferenceKind),
+    Profile {
+        key: String,
+    },
     DeliveryTarget,
     ScheduleJob,
     ResourceLocator {
@@ -82,14 +85,6 @@ pub struct ReferenceCandidate {
     pub kind: ReferenceCandidateKind,
     pub value: String,
     pub source: ReferenceSource,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProfileReferenceKind {
-    Language,
-    Timezone,
-    City,
-    DeliveryTarget,
 }
 
 pub async fn build_turn_interpretation(
@@ -142,30 +137,11 @@ pub fn format_turn_interpretation(interpretation: &TurnInterpretation) -> Option
 
     if let Some(profile) = &interpretation.user_profile {
         lines.push("[user-profile]".to_string());
-        if let Some(language) = &profile.preferred_language {
-            lines.push(format!("- preferred_language: {language}"));
-        }
-        if let Some(timezone) = &profile.timezone {
-            lines.push(format!("- timezone: {timezone}"));
-        }
-        if let Some(city) = &profile.default_city {
-            lines.push(format!("- default_city: {city}"));
-        }
-        if let Some(style) = &profile.communication_style {
-            lines.push(format!("- communication_style: {style}"));
-        }
-        if !profile.known_environments.is_empty() {
-            lines.push(format!(
-                "- known_environments: {}",
-                profile.known_environments.join(", ")
-            ));
-        }
-        if let Some(target) = &profile.default_delivery_target {
-            lines.push(format!(
-                "- default_delivery_target: {}",
-                format_delivery_target(target)
-            ));
-        }
+        lines.extend(
+            format_profile_projection(profile)
+                .lines()
+                .map(str::to_string),
+        );
     }
 
     if let Some(conversation) = &interpretation.current_conversation {
@@ -303,18 +279,13 @@ fn format_media_turn_interpretation(interpretation: &TurnInterpretation) -> Opti
     let mut lines = Vec::new();
 
     if let Some(profile) = &interpretation.user_profile {
-        let mut profile_lines = Vec::new();
-        if let Some(language) = &profile.preferred_language {
-            profile_lines.push(format!("- preferred_language: {language}"));
-        }
-        if let Some(style) = &profile.communication_style {
-            profile_lines.push(format!("- communication_style: {style}"));
-        }
-
-        if !profile_lines.is_empty() {
-            lines.push("[user-profile]".to_string());
-            lines.extend(profile_lines);
-        }
+        lines.push("[user-profile]".to_string());
+        lines.extend(
+            format_profile_projection(profile)
+                .lines()
+                .take(4)
+                .map(str::to_string),
+        );
     }
 
     if lines.is_empty() {
@@ -503,45 +474,16 @@ fn collect_reference_candidates(
     }
 
     if let Some(profile) = profile {
-        if let Some(city) = profile.default_city.as_deref() {
+        for (key, value) in profile.iter() {
+            let candidate_value = if let Some(target) = profile.get_delivery_target(key) {
+                format_delivery_target(&target)
+            } else {
+                profile.get_text(key).unwrap_or_else(|| value.to_string())
+            };
             push_reference_candidate(
                 &mut candidates,
-                ReferenceCandidateKind::Profile(ProfileReferenceKind::City),
-                city,
-                ReferenceSource::UserProfile,
-            );
-        }
-        if let Some(language) = profile.preferred_language.as_deref() {
-            push_reference_candidate(
-                &mut candidates,
-                ReferenceCandidateKind::Profile(ProfileReferenceKind::Language),
-                language,
-                ReferenceSource::UserProfile,
-            );
-        }
-        if let Some(timezone) = profile.timezone.as_deref() {
-            push_reference_candidate(
-                &mut candidates,
-                ReferenceCandidateKind::Profile(ProfileReferenceKind::Timezone),
-                timezone,
-                ReferenceSource::UserProfile,
-            );
-        }
-        for environment in &profile.known_environments {
-            push_reference_candidate(
-                &mut candidates,
-                ReferenceCandidateKind::Entity {
-                    entity_kind: "environment".into(),
-                },
-                environment,
-                ReferenceSource::UserProfile,
-            );
-        }
-        if let Some(target) = profile.default_delivery_target.as_ref() {
-            push_reference_candidate(
-                &mut candidates,
-                ReferenceCandidateKind::Profile(ProfileReferenceKind::DeliveryTarget),
-                &format_delivery_target(target),
+                ReferenceCandidateKind::Profile { key: key.clone() },
+                &candidate_value,
                 ReferenceSource::UserProfile,
             );
         }
@@ -578,9 +520,13 @@ fn collect_clarification_candidates(
 
     if values.is_empty() {
         if let Some(profile) = profile {
-            if (2..=6).contains(&profile.known_environments.len()) {
-                for environment in &profile.known_environments {
-                    push_unique_string(&mut values, environment);
+            let profile_values = profile
+                .iter()
+                .filter_map(|(key, _)| profile.get_text(key))
+                .collect::<Vec<_>>();
+            if (2..=6).contains(&profile_values.len()) {
+                for value in &profile_values {
+                    push_unique_string(&mut values, value);
                 }
             }
         }
@@ -722,15 +668,6 @@ fn reference_source_name(source: ReferenceSource) -> &'static str {
     }
 }
 
-fn profile_reference_kind_name(kind: ProfileReferenceKind) -> &'static str {
-    match kind {
-        ProfileReferenceKind::Language => "language",
-        ProfileReferenceKind::Timezone => "timezone",
-        ProfileReferenceKind::City => "city",
-        ProfileReferenceKind::DeliveryTarget => "delivery_target",
-    }
-}
-
 fn reference_candidate_kind_name(kind: &ReferenceCandidateKind) -> String {
     match kind {
         ReferenceCandidateKind::Entity { entity_kind } => format!("entity<{entity_kind}>"),
@@ -741,9 +678,7 @@ fn reference_candidate_kind_name(kind: &ReferenceCandidateKind) -> String {
             Some(entity_kind) => format!("anchor<{}:{}>", selector_name(selector), entity_kind),
             None => format!("anchor<{}>", selector_name(selector)),
         },
-        ReferenceCandidateKind::Profile(kind) => {
-            format!("profile<{}>", profile_reference_kind_name(*kind))
-        }
+        ReferenceCandidateKind::Profile { key } => format!("profile<{key}>"),
         ReferenceCandidateKind::DeliveryTarget => "delivery_target".into(),
         ReferenceCandidateKind::ScheduleJob => "schedule_job".into(),
         ReferenceCandidateKind::ResourceLocator { resource_kind } => {
@@ -1075,11 +1010,9 @@ mod tests {
     #[tokio::test]
     async fn builds_profile_and_followup_candidates_without_phrase_router() {
         let memory = StubMemory;
-        let profile = UserProfile {
-            preferred_language: Some("ru".into()),
-            default_city: Some("Berlin".into()),
-            ..Default::default()
-        };
+        let mut profile = UserProfile::default();
+        profile.set("language_preference", serde_json::json!("ru"));
+        profile.set("weather_city", serde_json::json!("Berlin"));
         let state = DialogueState {
             comparison_set: vec![
                 crate::domain::dialogue_state::FocusEntity {
@@ -1117,11 +1050,9 @@ mod tests {
     #[tokio::test]
     async fn formats_profile_and_structured_interpretation() {
         let memory = StubMemory;
-        let profile = UserProfile {
-            preferred_language: Some("ru".into()),
-            timezone: Some("Europe/Berlin".into()),
-            ..Default::default()
-        };
+        let mut profile = UserProfile::default();
+        profile.set("language_preference", serde_json::json!("ru"));
+        profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
         let state = DialogueState {
             focus_entities: vec![crate::domain::dialogue_state::FocusEntity {
                 kind: "city".into(),
@@ -1152,7 +1083,7 @@ mod tests {
         let block = format_turn_interpretation(&interpretation).unwrap();
 
         assert!(block.contains("[runtime-interpretation]"));
-        assert!(block.contains("preferred_language: ru"));
+        assert!(block.contains("language_preference: ru"));
         assert!(block.contains("adapter: matrix"));
         assert!(block.contains("focus_entities: city=Berlin"));
         assert!(block.contains("last_tool_subjects: weather_lookup"));
@@ -1341,13 +1272,17 @@ mod tests {
         let interpretation = build_turn_interpretation(
             None,
             "send it to my default place",
-            Some(UserProfile {
-                default_delivery_target: Some(ConversationDeliveryTarget::Explicit {
-                    channel: "telegram".into(),
-                    recipient: "@synapseclaw".into(),
-                    thread_ref: None,
-                }),
-                ..Default::default()
+            Some({
+                let mut profile = UserProfile::default();
+                profile.set(
+                    "delivery_target_preference",
+                    serde_json::json!(ConversationDeliveryTarget::Explicit {
+                        channel: "telegram".into(),
+                        recipient: "@synapseclaw".into(),
+                        thread_ref: None,
+                    }),
+                );
+                profile
             }),
             None,
             None,
@@ -1358,8 +1293,8 @@ mod tests {
 
         assert!(interpretation.reference_candidates.iter().any(|candidate| {
             matches!(
-                candidate.kind,
-                ReferenceCandidateKind::Profile(ProfileReferenceKind::DeliveryTarget)
+                &candidate.kind,
+                ReferenceCandidateKind::Profile { key } if key == "delivery_target_preference"
             ) && candidate.value == "explicit:telegram:@synapseclaw"
         }));
     }
@@ -1389,13 +1324,18 @@ mod tests {
     #[test]
     fn media_turn_interpretation_uses_compact_profile_only_block() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                preferred_language: Some("ru".into()),
-                timezone: Some("Europe/Berlin".into()),
-                default_city: Some("Berlin".into()),
-                communication_style: Some("direct".into()),
-                known_environments: vec!["linux".into()],
-                default_delivery_target: Some(ConversationDeliveryTarget::CurrentConversation),
+            user_profile: Some({
+                let mut profile = UserProfile::default();
+                profile.set("language_preference", serde_json::json!("ru"));
+                profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+                profile.set("weather_city", serde_json::json!("Berlin"));
+                profile.set("response_style", serde_json::json!("direct"));
+                profile.set("deployment_environments", serde_json::json!(["linux"]));
+                profile.set(
+                    "delivery_target_preference",
+                    serde_json::json!(ConversationDeliveryTarget::CurrentConversation),
+                );
+                profile
             }),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "matrix".into(),
@@ -1430,13 +1370,13 @@ mod tests {
 
         assert!(block.contains("[runtime-interpretation]"));
         assert!(block.contains("[user-profile]"));
-        assert!(block.contains("preferred_language: ru"));
-        assert!(block.contains("communication_style: direct"));
+        assert!(block.contains("language_preference: ru"));
+        assert!(!block.contains("response_style"));
         assert!(!block.contains("[current-conversation]"));
         assert!(!block.contains("[configured-runtime]"));
         assert!(!block.contains("[working-state]"));
         assert!(!block.contains("[bounded-interpretation]"));
-        assert!(!block.contains("default_city"));
-        assert!(!block.contains("timezone"));
+        assert!(block.contains("local_timezone: Europe/Berlin"));
+        assert!(!block.contains("weather_city"));
     }
 }

@@ -406,3 +406,14 @@ DEFINE FIELD IF NOT EXISTS language    ON learning_signal_pattern TYPE option<st
 DEFINE FIELD IF NOT EXISTS enabled     ON learning_signal_pattern TYPE option<bool> DEFAULT true;
 DEFINE FIELD IF NOT EXISTS created_at  ON learning_signal_pattern TYPE option<datetime>;
 DEFINE INDEX IF NOT EXISTS idx_lsp_type ON learning_signal_pattern FIELDS signal_type;
+
+-- ═══════════════════════════════════════════
+-- USER PROFILE FACTS (dynamic, schemaless)
+-- ═══════════════════════════════════════════
+
+DEFINE TABLE IF NOT EXISTS user_profile SCHEMALESS;
+DEFINE FIELD IF NOT EXISTS user_key   ON user_profile TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS facts      ON user_profile TYPE option<object>;
+DEFINE FIELD IF NOT EXISTS created_at ON user_profile TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS updated_at ON user_profile TYPE option<datetime>;
+DEFINE INDEX IF NOT EXISTS idx_user_profile_key ON user_profile FIELDS user_key UNIQUE;

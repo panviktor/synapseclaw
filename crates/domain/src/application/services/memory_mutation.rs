@@ -10,6 +10,7 @@
 //! - Applies deterministic similarity thresholds (not per-fact LLM calls).
 //! - Emits decisions that callers apply through memory ports.
 
+use crate::application::services::memory_quality_governor::{self, MemoryMutationVerdict};
 use crate::domain::memory::{MemoryCategory, MemoryError};
 use crate::domain::memory_mutation::{
     MutationAction, MutationCandidate, MutationDecision, MutationSource, MutationThresholds,
@@ -26,6 +27,32 @@ pub async fn evaluate_candidate(
     _agent_id: &str,
     thresholds: &MutationThresholds,
 ) -> MutationDecision {
+    match memory_quality_governor::assess_memory_mutation_candidate(&candidate) {
+        MemoryMutationVerdict::Accept(write_class) => {
+            tracing::debug!(
+                target: "memory_mutation",
+                write_class = ?write_class,
+                source = ?candidate.source,
+                "Mutation candidate passed memory-quality governor"
+            );
+        }
+        MemoryMutationVerdict::Reject(reason) => {
+            let reason_name = memory_quality_governor::memory_mutation_reject_reason_name(reason);
+            tracing::debug!(
+                target: "memory_mutation",
+                reason = reason_name,
+                source = ?candidate.source,
+                "Mutation candidate rejected by memory-quality governor"
+            );
+            return MutationDecision {
+                action: MutationAction::Noop,
+                candidate,
+                reason: reason_name.into(),
+                similarity: None,
+            };
+        }
+    }
+
     // Fetch shortlist of similar existing memories
     let existing = match mem.recall(&candidate.text, 3, None).await {
         Ok(entries) => entries,

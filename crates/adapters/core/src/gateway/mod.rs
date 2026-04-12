@@ -972,7 +972,9 @@ pub async fn run_gateway(
             ),
         ),
         run_recipe_store,
-        user_profile_store: {
+        user_profile_store: if let Some(db) = shared_surreal.as_ref() {
+            Arc::new(synapse_memory::SurrealUserProfileStore::new(Arc::clone(db)))
+        } else {
             let profile_path = config
                 .config_path
                 .parent()

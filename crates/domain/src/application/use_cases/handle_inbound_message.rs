@@ -610,56 +610,77 @@ fn build_model_routing_config(config: &InboundMessageConfig) -> crate::config::s
 
 fn format_blocked_turn_admission_response(
     decision: &crate::application::services::turn_admission::CandidateAdmissionDecision,
+    user_message: &str,
 ) -> String {
     use crate::domain::turn_admission::{
         AdmissionRepairHint, CandidateAdmissionReason, ContextPressureState, TurnIntentCategory,
     };
 
-    if let Some(AdmissionRepairHint::RefreshCapabilityMetadata(lane)) = decision.recommended_action
+    let base = if let Some(AdmissionRepairHint::RefreshCapabilityMetadata(lane)) =
+        decision.recommended_action
     {
-        return format!(
+        format!(
             "Capability metadata for `{}` is stale or low-confidence on the current route. Refresh model profiles or switch to a compatible lane and try again.",
             blocked_lane_name(lane)
-        );
-    }
-
-    match (decision.snapshot.intent, decision.snapshot.pressure_state) {
-        (_, ContextPressureState::OverflowRisk) => {
-            match decision.recommended_action {
+        )
+    } else {
+        match (decision.snapshot.intent, decision.snapshot.pressure_state) {
+            (_, ContextPressureState::OverflowRisk) => match decision.recommended_action {
                 Some(AdmissionRepairHint::StartFreshHandoff) => {
                     "This turn is too large for the current route's safe context budget. Start a fresh handoff or switch to a larger-context model.".into()
                 }
                 _ => {
                     "This turn is too large for the current route's safe context budget. Compact the session first or switch to a larger-context model.".into()
                 }
+            },
+            (TurnIntentCategory::MultimodalUnderstanding, _) => {
+                "The current route cannot handle image-aware input. Switch to a multimodal route and try again.".into()
             }
+            (TurnIntentCategory::ImageGeneration, _) => {
+                "The current route cannot generate images. Switch to an image-generation lane and try again.".into()
+            }
+            (TurnIntentCategory::AudioGeneration, _) => {
+                "The current route cannot generate audio. Switch to an audio-capable lane and try again.".into()
+            }
+            (TurnIntentCategory::VideoGeneration, _) => {
+                "The current route cannot generate video. Switch to a video-capable lane and try again.".into()
+            }
+            (TurnIntentCategory::MusicGeneration, _) => {
+                "The current route cannot generate music. Switch to a music-capable lane and try again.".into()
+            }
+            (_, _) if decision.reasons.iter().any(|reason| {
+                matches!(
+                    reason,
+                    CandidateAdmissionReason::CapabilityMetadataUnknown(_)
+                        | CandidateAdmissionReason::CapabilityMetadataLowConfidence(_)
+                        | CandidateAdmissionReason::CapabilityMetadataStale(_)
+                )
+            }) => {
+                "The current route has incomplete capability metadata for this turn. Refresh model profiles or switch to a compatible lane and try again.".into()
+            }
+            _ => "The current route cannot safely execute this turn. Switch to a compatible lane or start a fresh handoff.".into(),
         }
-        (TurnIntentCategory::MultimodalUnderstanding, _) => {
-            "The current route cannot handle image-aware input. Switch to a multimodal route and try again.".into()
-        }
-        (TurnIntentCategory::ImageGeneration, _) => {
-            "The current route cannot generate images. Switch to an image-generation lane and try again.".into()
-        }
-        (TurnIntentCategory::AudioGeneration, _) => {
-            "The current route cannot generate audio. Switch to an audio-capable lane and try again.".into()
-        }
-        (TurnIntentCategory::VideoGeneration, _) => {
-            "The current route cannot generate video. Switch to a video-capable lane and try again.".into()
-        }
-        (TurnIntentCategory::MusicGeneration, _) => {
-            "The current route cannot generate music. Switch to a music-capable lane and try again.".into()
-        }
-        (_, _) if decision.reasons.iter().any(|reason| {
-            matches!(
-                reason,
-                CandidateAdmissionReason::CapabilityMetadataUnknown(_)
-                    | CandidateAdmissionReason::CapabilityMetadataLowConfidence(_)
-                    | CandidateAdmissionReason::CapabilityMetadataStale(_)
-            )
-        }) => {
-            "The current route has incomplete capability metadata for this turn. Refresh model profiles or switch to a compatible lane and try again.".into()
-        }
-        _ => "The current route cannot safely execute this turn. Switch to a compatible lane or start a fresh handoff.".into(),
+    };
+
+    if let Some(packet) =
+        crate::application::services::session_handoff::build_session_handoff_packet(
+            crate::application::services::session_handoff::SessionHandoffInput {
+                user_message,
+                interpretation: None,
+                recent_admission_repair: decision.recommended_action,
+                recent_admission_reasons: &decision.reasons,
+                recalled_entries: &[],
+                session_matches: &[],
+                run_recipes: &[],
+            },
+        )
+    {
+        format!(
+            "{base}\n\n{}",
+            crate::application::services::session_handoff::format_session_handoff_packet(&packet)
+        )
+    } else {
+        base
     }
 }
 
@@ -781,7 +802,7 @@ async fn execute_agent_turn(
     {
         return Ok(HandleResult::Response {
             conversation_key: conversation_key.to_string(),
-            response_text: format_blocked_turn_admission_response(&admission_decision),
+            response_text: format_blocked_turn_admission_response(&admission_decision, content),
             tool_summary: String::new(),
             tools_used: false,
         });
@@ -1918,6 +1939,7 @@ mod tests {
                 condensation_plan: None,
                 requires_compaction: false,
             },
+            "Generate an image for the current task.",
         );
 
         assert!(response.contains("image_generation"));
@@ -1945,6 +1967,7 @@ mod tests {
                 condensation_plan: None,
                 requires_compaction: false,
             },
+            "Continue the current task after compaction.",
         );
 
         assert!(response.contains("safe context budget"));

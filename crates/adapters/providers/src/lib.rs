@@ -28,6 +28,7 @@
 //! in [`create_provider_with_url`]. See `AGENTS.md` §7.1 for the full change playbook.
 
 pub mod auth;
+pub mod error_classification;
 pub mod multimodal;
 pub mod proxy;
 

@@ -1021,6 +1021,8 @@ impl Agent {
             runtime_ports.user_profile_store.clone()
         {
             store
+        } else if let Some(db) = surreal_handle.as_ref() {
+            Arc::new(synapse_memory::SurrealUserProfileStore::new(Arc::clone(db)))
         } else {
             let profile_path = config
                 .config_path
@@ -2303,12 +2305,31 @@ impl Agent {
             }
 
             if admission_decision.snapshot.action == TurnAdmissionAction::Block {
+                let handoff_packet =
+                    synapse_domain::application::services::session_handoff::build_session_handoff_packet(
+                        synapse_domain::application::services::session_handoff::SessionHandoffInput {
+                            user_message,
+                            interpretation: turn_interpretation.as_ref(),
+                            recent_admission_repair: admission_decision.recommended_action,
+                            recent_admission_reasons: &admission_decision.reasons,
+                            recalled_entries: &turn_ctx.recalled_entries,
+                            session_matches: &turn_ctx.session_matches,
+                            run_recipes: &turn_ctx.run_recipes,
+                        },
+                    )
+                    .map(|packet| {
+                        synapse_domain::application::services::session_handoff::format_session_handoff_packet(
+                            &packet,
+                        )
+                    })
+                    .unwrap_or_default();
                 anyhow::bail!(
-                    "turn admission blocked provider call intent={} pressure={} provider={} model={}",
+                    "turn admission blocked provider call intent={} pressure={} provider={} model={}\n{}",
                     turn_intent_name(admission_decision.snapshot.intent),
                     context_pressure_state_name(admission_decision.snapshot.pressure_state),
                     self.provider_name,
-                    effective_model
+                    effective_model,
+                    handoff_packet
                 );
             }
             let mut messages = snapshot.messages;

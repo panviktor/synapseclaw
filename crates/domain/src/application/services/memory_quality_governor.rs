@@ -3,6 +3,7 @@ use crate::application::services::learning_evidence_service::LearningEvidenceEnv
 use crate::application::services::learning_quality_service::LearningCandidateAssessment;
 use crate::application::services::turn_markup::leading_media_control_marker;
 use crate::domain::memory::{MemoryCategory, ReflectionOutcome};
+use crate::domain::memory_mutation::{MutationCandidate, MutationSource, MutationWriteClass};
 use crate::domain::util::{is_low_information_repetition, should_skip_autosave_content};
 use std::collections::HashMap;
 
@@ -21,6 +22,7 @@ pub enum EntityStorageVerdict {
 pub enum EntityRejectReason {
     MissingName,
     MissingType,
+    UnanchoredGenericConcept,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +39,6 @@ pub enum RelationshipRejectReason {
     SelfReference,
     PredicateTooLong,
     AbstractConceptPairLowConfidence,
-    GenericPluralRolePairLowConfidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,12 +94,36 @@ pub enum BackgroundLearningInputVerdict {
     Skip(AutosaveSkipReason),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMutationVerdict {
+    Accept(MutationWriteClass),
+    Reject(MemoryMutationRejectReason),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMutationRejectReason {
+    LowInformationRepetition,
+    EphemeralRepairTrace,
+    GenericDialogueNotDurable,
+}
+
 pub fn assess_extracted_entity(name: &str, entity_type: &str) -> EntityStorageVerdict {
+    assess_extracted_entity_with_context(name, entity_type, false)
+}
+
+pub fn assess_extracted_entity_with_context(
+    name: &str,
+    entity_type: &str,
+    is_accepted_relationship_endpoint: bool,
+) -> EntityStorageVerdict {
     if name.trim().is_empty() {
         return EntityStorageVerdict::Reject(EntityRejectReason::MissingName);
     }
     if entity_type.trim().is_empty() {
         return EntityStorageVerdict::Reject(EntityRejectReason::MissingType);
+    }
+    if !is_accepted_relationship_endpoint && entity_type.trim().eq_ignore_ascii_case("concept") {
+        return EntityStorageVerdict::Reject(EntityRejectReason::UnanchoredGenericConcept);
     }
 
     EntityStorageVerdict::Accept
@@ -131,21 +156,10 @@ pub fn assess_extracted_relationship(
     let object_type = entity_types.get(&object.trim().to_lowercase());
     if matches!(subject_type, Some(kind) if kind == "concept")
         && matches!(object_type, Some(kind) if kind == "concept")
-        && confidence < 0.97
+        && confidence < 0.995
     {
         return RelationshipStorageVerdict::Reject(
             RelationshipRejectReason::AbstractConceptPairLowConfidence,
-        );
-    }
-    if generic_plural_role_pair_low_confidence(
-        subject,
-        object,
-        subject_type.map(String::as_str),
-        object_type.map(String::as_str),
-        confidence,
-    ) {
-        return RelationshipStorageVerdict::Reject(
-            RelationshipRejectReason::GenericPluralRolePairLowConfidence,
         );
     }
 
@@ -255,6 +269,38 @@ pub fn assess_background_learning_input(content: &str) -> BackgroundLearningInpu
     BackgroundLearningInputVerdict::Allow
 }
 
+pub fn assess_memory_mutation_candidate(candidate: &MutationCandidate) -> MemoryMutationVerdict {
+    let write_class = candidate
+        .write_class
+        .unwrap_or_else(|| infer_memory_write_class(candidate));
+
+    if matches!(write_class, MutationWriteClass::EphemeralRepairTrace) {
+        return MemoryMutationVerdict::Reject(MemoryMutationRejectReason::EphemeralRepairTrace);
+    }
+
+    if is_low_information_repetition(&candidate.text) {
+        return MemoryMutationVerdict::Reject(MemoryMutationRejectReason::LowInformationRepetition);
+    }
+
+    if matches!(candidate.source, MutationSource::Consolidation) {
+        if matches!(write_class, MutationWriteClass::GenericDialogue) {
+            return MemoryMutationVerdict::Reject(
+                MemoryMutationRejectReason::GenericDialogueNotDurable,
+            );
+        }
+    }
+
+    MemoryMutationVerdict::Accept(write_class)
+}
+
+pub fn memory_mutation_reject_reason_name(reason: MemoryMutationRejectReason) -> &'static str {
+    match reason {
+        MemoryMutationRejectReason::LowInformationRepetition => "low_information_repetition",
+        MemoryMutationRejectReason::EphemeralRepairTrace => "ephemeral_repair_trace_not_durable",
+        MemoryMutationRejectReason::GenericDialogueNotDurable => "generic_dialogue_not_durable",
+    }
+}
+
 pub fn retrieval_noise_score_delta(category: &MemoryCategory, lexical_anchor_bonus: f64) -> f64 {
     if lexical_anchor_bonus > 0.0 {
         return 0.0;
@@ -264,6 +310,14 @@ pub fn retrieval_noise_score_delta(category: &MemoryCategory, lexical_anchor_bon
         MemoryCategory::Daily => -0.10,
         MemoryCategory::Custom(name) if name == "precedent" => -0.16,
         _ => 0.0,
+    }
+}
+
+pub fn retrieval_content_noise_score_delta(content: &str) -> f64 {
+    if is_low_information_repetition(content) {
+        -0.24
+    } else {
+        0.0
     }
 }
 
@@ -298,54 +352,28 @@ fn reject_learning_assessment(
     }
 }
 
+fn infer_memory_write_class(candidate: &MutationCandidate) -> MutationWriteClass {
+    match (&candidate.category, &candidate.source) {
+        (MemoryCategory::Custom(name), _) if name == "failure_pattern" => {
+            MutationWriteClass::FailurePattern
+        }
+        (MemoryCategory::Custom(name), _) if name == "precedent" => MutationWriteClass::Recipe,
+        (_, MutationSource::Reflection) => MutationWriteClass::FailurePattern,
+        (_, MutationSource::ToolOutput) => MutationWriteClass::FactAnchor,
+        (_, MutationSource::ExplicitUser) => MutationWriteClass::FactAnchor,
+        (MemoryCategory::Core, MutationSource::Consolidation) => {
+            MutationWriteClass::GenericDialogue
+        }
+        _ => MutationWriteClass::FactAnchor,
+    }
+}
+
 fn learning_assessment_reject_reason_name(reason: LearningAssessmentRejectReason) -> &'static str {
     match reason {
         LearningAssessmentRejectReason::InternalOnlyProceduralEvidence => {
             "internal_only_procedural_turn"
         }
     }
-}
-
-fn generic_plural_role_pair_low_confidence(
-    subject: &str,
-    object: &str,
-    subject_type: Option<&str>,
-    object_type: Option<&str>,
-    confidence: f32,
-) -> bool {
-    if confidence >= 0.99 {
-        return false;
-    }
-    if !entity_type_allows_generic_role_filter(subject_type)
-        || !entity_type_allows_generic_role_filter(object_type)
-    {
-        return false;
-    }
-
-    looks_like_generic_plural_role(subject) && looks_like_generic_plural_role(object)
-}
-
-fn entity_type_allows_generic_role_filter(entity_type: Option<&str>) -> bool {
-    matches!(entity_type, Some("person" | "concept"))
-}
-
-fn looks_like_generic_plural_role(name: &str) -> bool {
-    let normalized = name
-        .trim()
-        .trim_matches(|c: char| !c.is_alphanumeric())
-        .to_ascii_lowercase();
-    if normalized.is_empty() || normalized.split_whitespace().count() != 1 {
-        return false;
-    }
-
-    normalized == "people"
-        || (normalized.len() > 5 && normalized.ends_with("ren"))
-        || (normalized.len() > 3 && normalized.ends_with("men"))
-        || (normalized.len() > 4
-            && normalized.ends_with('s')
-            && !normalized.ends_with("ss")
-            && !normalized.ends_with("us")
-            && !normalized.ends_with("is"))
 }
 
 #[cfg(test)]
@@ -356,6 +384,7 @@ mod tests {
     };
     use crate::application::services::learning_evidence_service::LearningEvidenceFacet;
     use crate::application::services::learning_quality_service::LearningCandidateAssessment;
+    use crate::domain::memory_mutation::{MutationCandidate, MutationSource, MutationWriteClass};
 
     #[test]
     fn rejects_empty_entity_name() {
@@ -387,16 +416,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_low_confidence_generic_plural_role_relationship() {
+    fn rejects_standalone_generic_concept_entities_without_graph_anchor() {
+        assert_eq!(
+            assess_extracted_entity_with_context("Meaning", "concept", false),
+            EntityStorageVerdict::Reject(EntityRejectReason::UnanchoredGenericConcept)
+        );
+        assert_eq!(
+            assess_extracted_entity_with_context("Meaning", "concept", true),
+            EntityStorageVerdict::Accept
+        );
+    }
+
+    #[test]
+    fn rejects_concept_pair_relationships_below_strict_confidence() {
         let entity_types = HashMap::from([
-            ("managers".to_string(), "person".to_string()),
-            ("teams".to_string(), "concept".to_string()),
+            ("meaning".to_string(), "concept".to_string()),
+            ("responsibility".to_string(), "concept".to_string()),
         ]);
 
         assert_eq!(
-            assess_extracted_relationship("Managers", "coordinate", "Teams", 0.95, &entity_types),
+            assess_extracted_relationship(
+                "Meaning",
+                "relates_to",
+                "Responsibility",
+                0.99,
+                &entity_types
+            ),
             RelationshipStorageVerdict::Reject(
-                RelationshipRejectReason::GenericPluralRolePairLowConfidence
+                RelationshipRejectReason::AbstractConceptPairLowConfidence
             )
         );
     }
@@ -439,6 +486,72 @@ mod tests {
 
         assert!(!assessments[0].accepted);
         assert_eq!(assessments[0].reason, "internal_only_procedural_turn");
+    }
+
+    #[test]
+    fn mutation_governor_rejects_ephemeral_repair_traces_as_durable_memory() {
+        let verdict = assess_memory_mutation_candidate(&MutationCandidate {
+            category: MemoryCategory::Core,
+            text: "tool failure: missing delivery target".into(),
+            confidence: 0.8,
+            source: MutationSource::Reflection,
+            write_class: Some(MutationWriteClass::EphemeralRepairTrace),
+        });
+
+        assert_eq!(
+            verdict,
+            MemoryMutationVerdict::Reject(MemoryMutationRejectReason::EphemeralRepairTrace)
+        );
+    }
+
+    #[test]
+    fn mutation_governor_rejects_generic_dialogue_consolidation_updates() {
+        let verdict = assess_memory_mutation_candidate(&MutationCandidate {
+            category: MemoryCategory::Core,
+            text: "Meaning is shaped by responsibility, relationships, and attention to time."
+                .into(),
+            confidence: 0.74,
+            source: MutationSource::Consolidation,
+            write_class: Some(MutationWriteClass::GenericDialogue),
+        });
+
+        assert_eq!(
+            verdict,
+            MemoryMutationVerdict::Reject(MemoryMutationRejectReason::GenericDialogueNotDurable)
+        );
+    }
+
+    #[test]
+    fn mutation_governor_rejects_unanchored_legacy_abstract_updates() {
+        let verdict = assess_memory_mutation_candidate(&MutationCandidate {
+            category: MemoryCategory::Core,
+            text: "Meaning is shaped by responsibility, relationships, and attention to time."
+                .into(),
+            confidence: 0.74,
+            source: MutationSource::Consolidation,
+            write_class: None,
+        });
+
+        assert_eq!(
+            verdict,
+            MemoryMutationVerdict::Reject(MemoryMutationRejectReason::GenericDialogueNotDurable)
+        );
+    }
+
+    #[test]
+    fn mutation_governor_accepts_specific_task_state_updates() {
+        let verdict = assess_memory_mutation_candidate(&MutationCandidate {
+            category: MemoryCategory::Core,
+            text: "Atlas deployment is blocked on SSO login verification.".into(),
+            confidence: 0.82,
+            source: MutationSource::Consolidation,
+            write_class: Some(MutationWriteClass::TaskState),
+        });
+
+        assert_eq!(
+            verdict,
+            MemoryMutationVerdict::Accept(MutationWriteClass::TaskState)
+        );
     }
 
     #[test]
@@ -622,5 +735,21 @@ mod tests {
             0.0
         );
         assert_eq!(retrieval_noise_score_delta(&MemoryCategory::Core, 0.0), 0.0);
+    }
+
+    #[test]
+    fn retrieval_content_noise_penalizes_low_information_loops() {
+        assert_eq!(
+            retrieval_content_noise_score_delta(
+                "meaning comes from choice and purpose comes from choice because meaning grows from choice and purpose grows from choice because meaning comes from choice",
+            ),
+            -0.24
+        );
+        assert_eq!(
+            retrieval_content_noise_score_delta(
+                "The early anchor was about responsibility, while the later point shifted toward relationships and work."
+            ),
+            0.0
+        );
     }
 }

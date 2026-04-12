@@ -5,9 +5,10 @@
 //! via SemanticMemoryPort.
 
 use chrono::Utc;
+use std::collections::HashSet;
 use synapse_domain::application::services::memory_quality_governor::{
-    assess_extracted_entity, assess_extracted_relationship, EntityStorageVerdict,
-    RelationshipStorageVerdict,
+    assess_extracted_entity, assess_extracted_entity_with_context, assess_extracted_relationship,
+    EntityStorageVerdict, RelationshipStorageVerdict,
 };
 use synapse_domain::domain::memory::{Entity, MemoryError, TemporalFact};
 use synapse_domain::ports::memory::UnifiedMemoryPort;
@@ -98,12 +99,12 @@ pub async fn store_extraction(
     extraction: &ExtractionResult,
     agent_id: &str,
 ) -> Result<(), MemoryError> {
-    let accepted_entities = extraction
+    let candidate_entities = extraction
         .entities
         .iter()
         .filter(|entity| should_store_entity(entity))
         .collect::<Vec<_>>();
-    let entity_types = accepted_entities
+    let entity_types = candidate_entities
         .iter()
         .map(|entity| {
             (
@@ -112,6 +113,25 @@ pub async fn store_extraction(
             )
         })
         .collect::<std::collections::HashMap<_, _>>();
+    let accepted_relationships = extraction
+        .relationships
+        .iter()
+        .filter(|rel| should_store_relationship(rel, &entity_types))
+        .collect::<Vec<_>>();
+    let relationship_entity_names = accepted_relationships
+        .iter()
+        .flat_map(|rel| [&rel.subject, &rel.object])
+        .map(|name| name.trim().to_lowercase())
+        .collect::<HashSet<_>>();
+    let accepted_entities = candidate_entities
+        .into_iter()
+        .filter(|entity| {
+            should_store_entity_with_context(
+                entity,
+                relationship_entity_names.contains(&entity.name.trim().to_lowercase()),
+            )
+        })
+        .collect::<Vec<_>>();
 
     // 1. Upsert entities
     for extracted in &accepted_entities {
@@ -140,10 +160,7 @@ pub async fn store_extraction(
     }
 
     // 2. Add facts with AUDN deduplication (Add/Update/Delete/Noop)
-    for rel in &extraction.relationships {
-        if !should_store_relationship(rel, &entity_types) {
-            continue;
-        }
+    for rel in &accepted_relationships {
         let subject_entity = memory.find_entity(&rel.subject).await.ok().flatten();
         let object_entity = memory.find_entity(&rel.object).await.ok().flatten();
 
@@ -269,6 +286,20 @@ fn should_store_entity(entity: &ExtractedEntity) -> bool {
     )
 }
 
+fn should_store_entity_with_context(
+    entity: &ExtractedEntity,
+    is_accepted_relationship_endpoint: bool,
+) -> bool {
+    matches!(
+        assess_extracted_entity_with_context(
+            &entity.name,
+            &entity.entity_type,
+            is_accepted_relationship_endpoint
+        ),
+        EntityStorageVerdict::Accept
+    )
+}
+
 fn should_store_relationship(
     rel: &ExtractedRelationship,
     entity_types: &std::collections::HashMap<String, String>,
@@ -369,5 +400,17 @@ mod tests {
         };
 
         assert!(should_store_relationship(&rel, &entity_types));
+    }
+
+    #[test]
+    fn standalone_generic_concepts_require_accepted_relationship_endpoint() {
+        let entity = ExtractedEntity {
+            name: "Meaning".into(),
+            entity_type: "concept".into(),
+            summary: Some("abstract topic".into()),
+        };
+
+        assert!(!should_store_entity_with_context(&entity, false));
+        assert!(should_store_entity_with_context(&entity, true));
     }
 }

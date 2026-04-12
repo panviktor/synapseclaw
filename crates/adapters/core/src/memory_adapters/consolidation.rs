@@ -18,7 +18,28 @@ pub struct ConsolidationResult {
     /// Brief timestamped summary for the conversation history log.
     pub history_entry: String,
     /// New facts/preferences/decisions to store long-term, or None.
-    pub memory_update: Option<String>,
+    pub memory_update: Option<ConsolidatedMemoryUpdate>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+pub enum ConsolidatedMemoryUpdate {
+    Classified {
+        class: ConsolidatedMemoryClass,
+        text: String,
+        #[serde(default)]
+        confidence: Option<f32>,
+    },
+    LegacyText(String),
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsolidatedMemoryClass {
+    Preference,
+    TaskState,
+    FactAnchor,
+    GenericDialogue,
 }
 
 /// Summary of what consolidation produced (returned to caller for IPC broadcast).
@@ -29,9 +50,14 @@ pub struct ConsolidationOutcome {
 
 const CONSOLIDATION_SYSTEM_PROMPT: &str = r#"You are a memory consolidation engine. Given a conversation turn, extract:
 1. "history_entry": A brief summary of what happened in this turn (1-2 sentences). Include the key topic or action.
-2. "memory_update": Any NEW facts, preferences, decisions, or commitments worth remembering long-term. Return null if nothing new was learned.
+2. "memory_update": a typed object only for NEW durable user/project/runtime facts, preferences, decisions, or commitments worth remembering long-term; otherwise null.
 
-Respond ONLY with valid JSON: {"history_entry": "...", "memory_update": "..." or null}
+memory_update format:
+{"class":"preference|task_state|fact_anchor","text":"durable user/project/runtime-scoped update","confidence":0.0-1.0}
+
+Use null for generic world knowledge, abstract philosophy, broad opinions, or ordinary dialogue that belongs only in history_entry.
+
+Respond ONLY with valid JSON: {"history_entry": "...", "memory_update": {...} or null}
 Do not include any text outside the JSON object."#;
 
 /// Run two-phase LLM-driven consolidation on a conversation turn.
@@ -94,7 +120,8 @@ pub async fn consolidate_turn(
 
     // Phase 2: Evaluate memory update via AUDN-lite mutation service.
     if let Some(ref update) = result.memory_update {
-        if !update.trim().is_empty() {
+        let update_text = update.text();
+        if !update_text.trim().is_empty() {
             use synapse_domain::application::services::memory_mutation as mutation;
             use synapse_domain::domain::memory_mutation::{
                 MutationCandidate, MutationSource, MutationThresholds,
@@ -102,9 +129,10 @@ pub async fn consolidate_turn(
 
             let candidate = MutationCandidate {
                 category: MemoryCategory::Core,
-                text: update.clone(),
-                confidence: 0.7,
+                text: update_text.to_string(),
+                confidence: update.confidence().unwrap_or(0.7).clamp(0.0, 1.0),
                 source: MutationSource::Consolidation,
+                write_class: Some(update.write_class()),
             };
             let thresholds = MutationThresholds::default();
             let decision =
@@ -131,6 +159,18 @@ pub async fn consolidate_turn(
     // Phase 3: Entity extraction — populate knowledge graph.
     // Best-effort: errors logged but don't fail consolidation.
     let mut outcome = ConsolidationOutcome::default();
+
+    if !result
+        .memory_update
+        .as_ref()
+        .is_some_and(ConsolidatedMemoryUpdate::allows_graph_extraction)
+    {
+        tracing::info!(
+            agent_id,
+            "memory.consolidation.entity_extraction_skipped_no_durable_update"
+        );
+        return Ok(outcome);
+    }
 
     tracing::info!(agent_id, "memory.consolidation.entity_extraction_start");
 
@@ -189,6 +229,46 @@ fn parse_consolidation_response(raw: &str, fallback_text: &str) -> Consolidation
     })
 }
 
+impl ConsolidatedMemoryUpdate {
+    fn text(&self) -> &str {
+        match self {
+            Self::Classified { text, .. } | Self::LegacyText(text) => text,
+        }
+    }
+
+    fn confidence(&self) -> Option<f32> {
+        match self {
+            Self::Classified { confidence, .. } => *confidence,
+            Self::LegacyText(_) => None,
+        }
+    }
+
+    fn write_class(&self) -> synapse_domain::domain::memory_mutation::MutationWriteClass {
+        use synapse_domain::domain::memory_mutation::MutationWriteClass;
+        match self {
+            Self::Classified { class, .. } => match class {
+                ConsolidatedMemoryClass::Preference => MutationWriteClass::Preference,
+                ConsolidatedMemoryClass::TaskState => MutationWriteClass::TaskState,
+                ConsolidatedMemoryClass::FactAnchor => MutationWriteClass::FactAnchor,
+                ConsolidatedMemoryClass::GenericDialogue => MutationWriteClass::GenericDialogue,
+            },
+            Self::LegacyText(_) => MutationWriteClass::GenericDialogue,
+        }
+    }
+
+    fn allows_graph_extraction(&self) -> bool {
+        matches!(
+            self,
+            Self::Classified {
+                class: ConsolidatedMemoryClass::Preference
+                    | ConsolidatedMemoryClass::TaskState
+                    | ConsolidatedMemoryClass::FactAnchor,
+                ..
+            }
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,9 +279,55 @@ mod tests {
         let result = parse_consolidation_response(raw, "fallback");
         assert_eq!(result.history_entry, "User asked about Rust.");
         assert_eq!(
-            result.memory_update.as_deref(),
+            result
+                .memory_update
+                .as_ref()
+                .map(ConsolidatedMemoryUpdate::text),
             Some("User prefers Rust over Go.")
         );
+    }
+
+    #[test]
+    fn parse_typed_memory_update_response() {
+        let raw = r#"{"history_entry": "User discussed deployment.", "memory_update": {"class":"task_state","text":"Atlas deployment is blocked on SSO login verification.","confidence":0.82}}"#;
+        let result = parse_consolidation_response(raw, "fallback");
+        let update = result.memory_update.as_ref().unwrap();
+        assert_eq!(
+            update.write_class(),
+            synapse_domain::domain::memory_mutation::MutationWriteClass::TaskState
+        );
+        assert_eq!(
+            update.text(),
+            "Atlas deployment is blocked on SSO login verification."
+        );
+        assert_eq!(update.confidence(), Some(0.82));
+        assert!(update.allows_graph_extraction());
+    }
+
+    #[test]
+    fn generic_dialogue_memory_update_does_not_allow_graph_extraction() {
+        let raw = r#"{"history_entry": "User discussed abstract reflection.", "memory_update": {"class":"generic_dialogue","text":"The dialogue explored abstract reflection without durable task facts.","confidence":0.62}}"#;
+        let result = parse_consolidation_response(raw, "fallback");
+        let update = result.memory_update.as_ref().unwrap();
+
+        assert_eq!(
+            update.write_class(),
+            synapse_domain::domain::memory_mutation::MutationWriteClass::GenericDialogue
+        );
+        assert!(!update.allows_graph_extraction());
+    }
+
+    #[test]
+    fn legacy_memory_update_does_not_allow_graph_extraction() {
+        let raw = r#"{"history_entry": "User discussed a preference.", "memory_update": "User prefers concise reports."}"#;
+        let result = parse_consolidation_response(raw, "fallback");
+        let update = result.memory_update.as_ref().unwrap();
+
+        assert_eq!(
+            update.write_class(),
+            synapse_domain::domain::memory_mutation::MutationWriteClass::GenericDialogue
+        );
+        assert!(!update.allows_graph_extraction());
     }
 
     #[test]

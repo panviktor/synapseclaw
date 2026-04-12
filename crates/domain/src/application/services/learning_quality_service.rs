@@ -170,14 +170,14 @@ mod tests {
         UserProfileLearningCandidate,
     };
     use crate::application::services::learning_evidence_service::LearningEvidenceFacet;
-    use crate::domain::tool_fact::{OutcomeStatus, ProfileOperation, UserProfileField};
+    use crate::domain::tool_fact::{OutcomeStatus, ProfileOperation};
 
     #[test]
     fn accepts_profile_candidates_immediately() {
         let assessments = assess_learning_candidates(
             &[LearningCandidate::UserProfile(
                 UserProfileLearningCandidate {
-                    field: UserProfileField::Timezone,
+                    key: "local_timezone".into(),
                     operation: ProfileOperation::Set,
                     value: Some("Europe/Berlin".into()),
                 },

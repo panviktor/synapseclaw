@@ -89,7 +89,7 @@ pub fn narrow_tool_specs_for_turn(
     if guidance.direct_resolution_ready
         && guidance
             .preferred_capabilities
-            .contains(&ExecutionCapability::ProfileDefaults)
+            .contains(&ExecutionCapability::ProfileFacts)
     {
         let filtered = tool_specs
             .iter()
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_default_guidance_keeps_lookup_but_removes_history_archaeology() {
+    fn profile_fact_guidance_keeps_lookup_but_removes_history_archaeology() {
         let specs = vec![
             spec("user_profile", Some(ToolRuntimeRole::ProfileMutation)),
             spec("session_search", Some(ToolRuntimeRole::HistoricalLookup)),
@@ -306,7 +306,7 @@ mod tests {
         ];
         let guidance = ExecutionGuidance {
             direct_resolution_ready: true,
-            preferred_capabilities: vec![ExecutionCapability::ProfileDefaults],
+            preferred_capabilities: vec![ExecutionCapability::ProfileFacts],
             recent_failure_hints: Vec::new(),
             ..ExecutionGuidance::default()
         };

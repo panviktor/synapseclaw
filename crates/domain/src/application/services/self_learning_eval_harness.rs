@@ -27,7 +27,7 @@ use crate::domain::run_recipe::RunRecipe;
 use crate::domain::tool_fact::{
     DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation, ResourceFact,
     ResourceKind, ResourceMetadata, ResourceOperation, SearchDomain, SearchFact, ToolFactPayload,
-    TypedToolFact, UserProfileFact, UserProfileField,
+    TypedToolFact, UserProfileFact,
 };
 use crate::domain::user_profile::UserProfile;
 
@@ -309,7 +309,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             tool_facts: vec![TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    field: UserProfileField::Timezone,
+                    key: "local_timezone".into(),
                     operation: ProfileOperation::Set,
                     value: Some("Europe/Berlin".into()),
                 }),
@@ -355,12 +355,13 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             ],
         },
         SelfLearningEvalScenario {
-            id: "known_environment_merges_with_existing_profile",
+            id: "deployment_environment_merges_with_existing_profile",
             user_message: "Remember staging too",
             assistant_response: "Saved staging.",
-            current_profile: Some(UserProfile {
-                known_environments: vec!["prod".into()],
-                ..Default::default()
+            current_profile: Some({
+                let mut profile = UserProfile::default();
+                profile.set("deployment_environments", serde_json::json!("prod"));
+                profile
             }),
             existing_precedents: Vec::new(),
             existing_failure_patterns: Vec::new(),
@@ -369,7 +370,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             tool_facts: vec![TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    field: UserProfileField::KnownEnvironments,
+                    key: "deployment_environments".into(),
                     operation: ProfileOperation::Set,
                     value: Some("staging".into()),
                 }),
@@ -388,7 +389,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 TypedToolFact {
                     tool_id: "user_profile".into(),
                     payload: ToolFactPayload::UserProfile(UserProfileFact {
-                        field: UserProfileField::Timezone,
+                        key: "local_timezone".into(),
                         operation: ProfileOperation::Set,
                         value: Some("Europe/Berlin".into()),
                     }),
@@ -396,7 +397,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 TypedToolFact {
                     tool_id: "user_profile".into(),
                     payload: ToolFactPayload::UserProfile(UserProfileFact {
-                        field: UserProfileField::Timezone,
+                        key: "local_timezone".into(),
                         operation: ProfileOperation::Set,
                         value: Some("Europe/Paris".into()),
                     }),
@@ -1436,8 +1437,8 @@ mod tests {
                 )
         }));
         assert!(matches!(
-            result.profile_patch.timezone,
-            user_profile_service::ProfileFieldPatch::Set(_)
+            result.profile_patch.facts.get("local_timezone"),
+            Some(user_profile_service::ProfileFactPatch::Set(_))
         ));
         assert!(result
             .profile_projection
@@ -1463,15 +1464,15 @@ mod tests {
     }
 
     #[test]
-    fn profile_patch_merges_known_environments() {
+    fn profile_patch_sets_deployment_environments_fact() {
         let scenario = default_golden_scenarios()
             .into_iter()
-            .find(|scenario| scenario.id == "known_environment_merges_with_existing_profile")
+            .find(|scenario| scenario.id == "deployment_environment_merges_with_existing_profile")
             .unwrap();
 
         let result = evaluate_scenario(&scenario);
         let projection = result.profile_projection.unwrap();
-        assert!(projection.contains("known_environments: prod, staging"));
+        assert!(projection.contains("deployment_environments: staging"));
     }
 
     #[test]

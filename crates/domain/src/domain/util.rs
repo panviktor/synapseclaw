@@ -81,8 +81,13 @@ pub fn is_low_information_repetition(content: &str) -> bool {
     };
 
     let repetitive_token_pattern = has_repeated_token_pattern(&tokens, 2, 8, 3);
+    let repetitive_semantic_shingles =
+        repeated_shingle_ratio(&tokens, 2) >= 0.45 || repeated_shingle_ratio(&tokens, 3) >= 0.35;
 
-    repetitive_lines || repetitive_token_pattern || (unique_ratio < 0.35 && max_token_ratio >= 0.24)
+    repetitive_lines
+        || repetitive_token_pattern
+        || (unique_ratio < 0.35 && max_token_ratio >= 0.24)
+        || (unique_ratio < 0.62 && repetitive_semantic_shingles)
 }
 
 fn has_repeated_token_pattern(
@@ -126,6 +131,28 @@ fn normalize_repetition_token(token: &str) -> Option<String> {
     } else {
         Some(normalized)
     }
+}
+
+fn repeated_shingle_ratio(tokens: &[String], width: usize) -> f32 {
+    if width == 0 || tokens.len() < width.saturating_mul(3) {
+        return 0.0;
+    }
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for window in tokens.windows(width) {
+        *counts.entry(window.join("\u{1f}")).or_insert(0) += 1;
+    }
+
+    let total = tokens.len().saturating_sub(width).saturating_add(1);
+    if total == 0 {
+        return 0.0;
+    }
+    let repeated = counts
+        .values()
+        .copied()
+        .filter(|count| *count > 1)
+        .sum::<usize>();
+    repeated as f32 / total as f32
 }
 
 /// Utility enum for handling optional values with three states.
@@ -224,6 +251,12 @@ mod tests {
     #[test]
     fn low_information_repetition_detects_repeated_multiword_pattern() {
         let text = "I want peace and meaning I want peace and meaning I want peace and meaning";
+        assert!(is_low_information_repetition(text));
+    }
+
+    #[test]
+    fn low_information_repetition_detects_semantic_shingle_loop() {
+        let text = "meaning comes from choice and purpose comes from choice because meaning grows from choice and purpose grows from choice because meaning comes from choice";
         assert!(is_low_information_repetition(text));
     }
 

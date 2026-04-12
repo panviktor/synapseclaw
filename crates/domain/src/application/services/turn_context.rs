@@ -17,6 +17,7 @@ use crate::application::services::procedural_contradiction_service;
 use crate::application::services::resolution_router;
 use crate::application::services::retrieval_service;
 use crate::application::services::run_recipe_cluster_service;
+use crate::application::services::session_handoff;
 use crate::application::services::turn_budget_policy;
 use crate::application::services::turn_interpretation::{
     ReferenceCandidateKind, ReferenceSource, TurnInterpretation,
@@ -61,12 +62,14 @@ pub struct TurnMemoryContext {
     pub procedural_contradictions: Vec<procedural_contradiction_service::ProceduralContradiction>,
     /// Deterministic resolver ordering for this turn.
     pub resolution_plan: Option<resolution_router::ResolutionPlan>,
-    /// Structured clarification guidance from known defaults and candidates.
+    /// Structured clarification guidance from known runtime facts and candidates.
     pub clarification_guidance: Option<clarification_policy::ClarificationGuidance>,
     /// Typed execution policy for direct-resolution turns.
     pub execution_guidance: Option<execution_guidance::ExecutionGuidance>,
     /// Cheap-path gating and retrieval limits for this turn.
     pub execution_budget: Option<turn_budget_policy::TurnExecutionBudget>,
+    /// Bounded typed handoff packet when the previous/current route needs a fresh session.
+    pub handoff_packet: Option<session_handoff::SessionHandoffPacket>,
 }
 
 /// Token/char budget for turn context assembly.
@@ -167,6 +170,7 @@ pub async fn assemble_turn_context(
         Some(ContinuationPolicy::CoreOnly) => {
             apply_resolution_plan(
                 &mut ctx,
+                user_message,
                 interpretation,
                 recent_tool_repairs,
                 recent_admission_reasons,
@@ -194,6 +198,7 @@ pub async fn assemble_turn_context(
             load_recent_echoes(mem, budget, &mut ctx).await;
             apply_resolution_plan(
                 &mut ctx,
+                user_message,
                 interpretation,
                 recent_tool_repairs,
                 recent_admission_reasons,
@@ -375,6 +380,7 @@ pub async fn assemble_turn_context(
 
     apply_resolution_plan(
         &mut ctx,
+        user_message,
         interpretation,
         recent_tool_repairs,
         recent_admission_reasons,
@@ -881,6 +887,11 @@ pub fn format_turn_context(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Fo
             result.resolution_system.push_str(&block);
         }
     }
+    if let Some(packet) = &ctx.handoff_packet {
+        result
+            .resolution_system
+            .push_str(&session_handoff::format_session_handoff_packet(packet));
+    }
 
     for section in ordered_enrichment_sections(ctx, budget) {
         let Some(section) = take_section_lines(&section, &mut remaining_projection_lines) else {
@@ -974,14 +985,9 @@ fn build_query_text(user_message: &str, interpretation: Option<&TurnInterpretati
     let mut parts = vec![base.to_string()];
 
     if let Some(profile) = interpretation.user_profile.as_ref() {
-        if let Some(city) = profile.default_city.as_deref() {
-            parts.push(format!("Default city: {city}"));
-        }
-        if let Some(language) = profile.preferred_language.as_deref() {
-            parts.push(format!("Preferred language: {language}"));
-        }
-        if let Some(timezone) = profile.timezone.as_deref() {
-            parts.push(format!("Timezone: {timezone}"));
+        for (key, value) in profile.iter() {
+            let value = profile.get_text(key).unwrap_or_else(|| value.to_string());
+            parts.push(format!("Profile fact {key}: {value}"));
         }
     }
 
@@ -1157,15 +1163,10 @@ fn build_execution_budget(
                 || state.recent_search.is_some()
                 || state.recent_workspace.is_some()
         }),
-        has_profile_defaults: user_profile.is_some_and(|profile| {
-            profile.preferred_language.is_some()
-                || profile.timezone.is_some()
-                || profile.default_city.is_some()
-                || profile.default_delivery_target.is_some()
-        }),
+        has_profile_facts: user_profile.is_some_and(|profile| !profile.is_empty()),
         has_reference_candidates: !interpretation.reference_candidates.is_empty(),
         direct_reference_count: count_direct_reference_candidates(interpretation),
-        structured_default_count: count_structured_default_candidates(interpretation),
+        structured_resolution_fact_count: count_structured_resolution_facts(interpretation),
         ambiguity_candidate_count: interpretation.clarification_candidates.len(),
         recent_tool_fact_count: dialogue_state.map_or(0, |state| state.last_tool_subjects.len()),
         explicit_user_correction: false,
@@ -1192,7 +1193,7 @@ fn count_direct_reference_candidates(interpretation: &TurnInterpretation) -> usi
         .count()
 }
 
-fn count_structured_default_candidates(interpretation: &TurnInterpretation) -> usize {
+fn count_structured_resolution_facts(interpretation: &TurnInterpretation) -> usize {
     let mut count = 0usize;
 
     if interpretation.configured_delivery_target.is_some() {
@@ -1200,18 +1201,7 @@ fn count_structured_default_candidates(interpretation: &TurnInterpretation) -> u
     }
 
     if let Some(profile) = interpretation.user_profile.as_ref() {
-        if profile.default_city.is_some() {
-            count += 1;
-        }
-        if profile.timezone.is_some() {
-            count += 1;
-        }
-        if profile.preferred_language.is_some() {
-            count += 1;
-        }
-        if profile.default_delivery_target.is_some() {
-            count += 1;
-        }
+        count += profile.fact_count();
     }
 
     count
@@ -1219,6 +1209,7 @@ fn count_structured_default_candidates(interpretation: &TurnInterpretation) -> u
 
 fn apply_resolution_plan(
     ctx: &mut TurnMemoryContext,
+    user_message: &str,
     interpretation: Option<&TurnInterpretation>,
     recent_tool_repairs: &[ToolRepairTrace],
     recent_admission_reasons: &[CandidateAdmissionReason],
@@ -1258,6 +1249,16 @@ fn apply_resolution_plan(
             recent_admission_repair,
         );
     }
+    ctx.handoff_packet =
+        session_handoff::build_session_handoff_packet(session_handoff::SessionHandoffInput {
+            user_message,
+            interpretation,
+            recent_admission_repair,
+            recent_admission_reasons,
+            recalled_entries: &ctx.recalled_entries,
+            session_matches: &ctx.session_matches,
+            run_recipes: &ctx.run_recipes,
+        });
 }
 
 fn ordered_enrichment_sections(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Vec<String> {
@@ -1611,10 +1612,11 @@ mod tests {
             crate::application::services::turn_interpretation::build_turn_interpretation(
                 None,
                 "what's the weather?",
-                Some(crate::domain::user_profile::UserProfile {
-                    default_city: Some("Berlin".into()),
-                    timezone: Some("Europe/Berlin".into()),
-                    ..Default::default()
+                Some({
+                    let mut profile = crate::domain::user_profile::UserProfile::default();
+                    profile.set("weather_city", serde_json::json!("Berlin"));
+                    profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+                    profile
                 }),
                 None,
                 Some(&state),
@@ -1624,7 +1626,7 @@ mod tests {
             .unwrap();
         let query = build_query_text("what's the weather?", Some(&interpretation));
         assert!(query.contains("what's the weather?"));
-        assert!(query.contains("Default city: Berlin"));
+        assert!(query.contains("Profile fact weather_city: Berlin"));
         assert!(query.contains("Focus: Berlin"));
         assert!(query.contains("Recent tools: weather_lookup"));
     }
@@ -1689,9 +1691,10 @@ mod tests {
     fn execution_budget_uses_interpretation_signals() {
         let interpretation =
             crate::application::services::turn_interpretation::TurnInterpretation {
-                user_profile: Some(crate::domain::user_profile::UserProfile {
-                    default_city: Some("Berlin".into()),
-                    ..Default::default()
+                user_profile: Some({
+                    let mut profile = crate::domain::user_profile::UserProfile::default();
+                    profile.set("weather_city", serde_json::json!("Berlin"));
+                    profile
                 }),
                 dialogue_state: Some(
                     crate::application::services::turn_interpretation::DialogueStateSnapshot {
@@ -1779,13 +1782,14 @@ mod tests {
     }
 
     #[test]
-    fn execution_budget_trims_history_when_structured_defaults_exist() {
+    fn execution_budget_trims_history_when_structured_profile_facts_exist() {
         let interpretation =
             crate::application::services::turn_interpretation::TurnInterpretation {
-                user_profile: Some(crate::domain::user_profile::UserProfile {
-                    default_city: Some("Tokyo".into()),
-                    timezone: Some("Asia/Tokyo".into()),
-                    ..Default::default()
+                user_profile: Some({
+                    let mut profile = crate::domain::user_profile::UserProfile::default();
+                    profile.set("weather_city", serde_json::json!("Tokyo"));
+                    profile.set("local_timezone", serde_json::json!("Asia/Tokyo"));
+                    profile
                 }),
                 clarification_candidates: vec![],
                 ..Default::default()
@@ -2419,6 +2423,30 @@ mod tests {
         assert!(fmt
             .resolution_system
             .contains("preferred_capabilities: delivery"));
+    }
+
+    #[test]
+    fn format_turn_context_includes_bounded_session_handoff_packet() {
+        let ctx = TurnMemoryContext {
+            handoff_packet: Some(session_handoff::SessionHandoffPacket {
+                reason: session_handoff::SessionHandoffReason::ContextOverflow,
+                recommended_action: Some("start_fresh_handoff".into()),
+                active_task: Some("continue after route downgrade".into()),
+                current_defaults: vec!["local_timezone=Europe/Berlin".into()],
+                anchors: vec!["memory=early anchor".into()],
+                unresolved_questions: Vec::new(),
+                assumptions: Vec::new(),
+            }),
+            ..Default::default()
+        };
+
+        let fmt = format_turn_context(&ctx, &PromptBudget::default());
+        assert!(fmt.resolution_system.contains("[session-handoff]"));
+        assert!(fmt.resolution_system.contains("reason: context_overflow"));
+        assert!(fmt
+            .resolution_system
+            .contains("recommended_action: start_fresh_handoff"));
+        assert!(fmt.resolution_system.contains("[/session-handoff]"));
     }
 
     #[test]

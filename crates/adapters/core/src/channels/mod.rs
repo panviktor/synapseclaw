@@ -2309,7 +2309,9 @@ pub async fn start_channels(
         };
     let user_profile_store: Arc<
         dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
-    > = {
+    > = if let Some(db) = shared_surreal.as_ref() {
+        Arc::new(synapse_memory::SurrealUserProfileStore::new(Arc::clone(db)))
+    } else {
         let store_path = config
             .config_path
             .parent()
@@ -4667,7 +4669,7 @@ Done reminder set for 1:38 AM."#;
         let mut known_tools = HashSet::new();
         known_tools.insert("shell".to_string());
 
-        let input = r#"{"name":"profile","arguments":{"timezone":"UTC"}}
+        let input = r#"{"name":"profile","arguments":{"display_mode":"compact"}}
 This is an example JSON object for profile settings."#;
 
         let result = strip_isolated_tool_json_artifacts(input, &known_tools);
@@ -4723,7 +4725,7 @@ This is an example JSON object for profile settings."#;
         assert!(prompt.contains("**Moral Compass:**"));
         assert!(prompt.contains("- Be helpful"));
 
-        assert!(prompt.contains("## Communication Style"));
+        assert!(prompt.contains("## Response Style"));
         assert!(prompt.contains("**Style:** concise"));
         assert!(prompt.contains("**Formality Level:** casual"));
 

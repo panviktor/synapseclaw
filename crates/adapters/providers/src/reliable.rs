@@ -2,6 +2,7 @@ use super::traits::{
     ChatMessage, ChatRequest, ChatResponse, StreamChunk, StreamOptions, StreamResult,
 };
 use super::Provider;
+use crate::error_classification::is_context_window_exceeded;
 use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
 use std::collections::HashMap;
@@ -69,22 +70,6 @@ pub fn is_non_retryable(err: &anyhow::Error) -> bool {
             || msg_lower.contains("unsupported")
             || msg_lower.contains("does not exist")
             || msg_lower.contains("invalid"))
-}
-
-fn is_context_window_exceeded(err: &anyhow::Error) -> bool {
-    let lower = err.to_string().to_lowercase();
-    let hints = [
-        "exceeds the context window",
-        "context window of this model",
-        "maximum context length",
-        "context length exceeded",
-        "too many tokens",
-        "token limit exceeded",
-        "prompt is too long",
-        "input is too long",
-    ];
-
-    hints.iter().any(|hint| lower.contains(hint))
 }
 
 /// Check if an error is a rate-limit (429) error.
