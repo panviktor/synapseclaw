@@ -1581,8 +1581,12 @@ Expected outcome:
     - onboarding/provider-catalog parsing now preserves explicit `video` and `music`
       output modalities when a provider catalog surfaces them
     - runtime help/config surfaces render the new lanes/features
+    - preset expansion now auto-seeds missing media-generation lanes from the
+      reasoning seed only when that seed's resolved catalog/profile metadata
+      explicitly advertises the corresponding `ModelFeature`; universal
+      models can therefore supply image/audio/video/music lanes without
+      natural-language phrase detection or Rust model-id match arms
   - remaining:
-    - presets/local catalogs do not yet seed safe built-in video/music candidates by default
     - modality inference remains conservative and marker-based; richer intent recognition
       should come later through typed interpretation or an explicit classifier, not keyword lists
     - more route/runtime UX should render lane identity first and `provider/model` second

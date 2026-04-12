@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
+use crate::application::services::model_capability_support::lane_required_feature;
 use crate::config::model_catalog::{
     apply_default_api_key, known_model_presets as catalog_known_model_presets,
+    model_profile as catalog_model_profile,
     normalize_model_preset_id as catalog_normalize_model_preset_id,
     preset_description as catalog_preset_description, preset_extra_lanes,
     preset_reasoning_seed as catalog_preset_reasoning_seed, preset_seed_multimodal_from_reasoning,
@@ -140,27 +142,24 @@ fn build_preset_model_lanes(config: &Config, preset: &str) -> Option<Vec<ModelLa
             .unwrap_or(default_reasoning_model)
             == default_reasoning_model;
 
+    let reasoning_candidate = ModelLaneCandidateConfig {
+        provider: reasoning_provider.clone(),
+        model: reasoning_model.clone(),
+        api_key: config.api_key.clone(),
+        api_key_env: None,
+        dimensions: None,
+        profile: ModelCandidateProfileConfig::default(),
+    };
+
     let mut lanes = vec![ModelLaneConfig {
         lane: CapabilityLane::Reasoning,
-        candidates: vec![ModelLaneCandidateConfig {
-            provider: reasoning_provider.clone(),
-            model: reasoning_model.clone(),
-            api_key: config.api_key.clone(),
-            api_key_env: None,
-            dimensions: None,
-            profile: ModelCandidateProfileConfig::default(),
-        }],
+        candidates: vec![reasoning_candidate.clone()],
     }];
 
     if uses_preset_reasoning_seed && preset_seed_multimodal_from_reasoning(preset) {
         lanes.push(ModelLaneConfig {
             lane: CapabilityLane::MultimodalUnderstanding,
             candidates: vec![ModelLaneCandidateConfig {
-                provider: reasoning_provider.clone(),
-                model: reasoning_model.clone(),
-                api_key: config.api_key.clone(),
-                api_key_env: None,
-                dimensions: None,
                 profile: ModelCandidateProfileConfig {
                     context_window_tokens: None,
                     max_output_tokens: None,
@@ -170,6 +169,7 @@ fn build_preset_model_lanes(config: &Config, preset: &str) -> Option<Vec<ModelLa
                         ModelFeature::MultimodalUnderstanding,
                     ],
                 },
+                ..reasoning_candidate.clone()
             }],
         });
     }
@@ -178,8 +178,73 @@ fn build_preset_model_lanes(config: &Config, preset: &str) -> Option<Vec<ModelLa
         apply_default_api_key(&mut extra_lanes, config.api_key.as_ref());
         lanes.extend(extra_lanes);
     }
+    seed_declared_media_lanes_from_reasoning_profile(&mut lanes, &reasoning_candidate);
 
     Some(lanes)
+}
+
+fn seed_declared_media_lanes_from_reasoning_profile(
+    lanes: &mut Vec<ModelLaneConfig>,
+    reasoning_candidate: &ModelLaneCandidateConfig,
+) {
+    let Some(profile) =
+        catalog_model_profile(&reasoning_candidate.provider, &reasoning_candidate.model)
+    else {
+        return;
+    };
+    seed_declared_media_lanes_from_profile(
+        lanes,
+        reasoning_candidate,
+        ModelCandidateProfileConfig {
+            context_window_tokens: profile.context_window_tokens,
+            max_output_tokens: profile.max_output_tokens,
+            features: profile.features,
+        },
+    );
+}
+
+fn seed_declared_media_lanes_from_profile(
+    lanes: &mut Vec<ModelLaneConfig>,
+    reasoning_candidate: &ModelLaneCandidateConfig,
+    profile: ModelCandidateProfileConfig,
+) {
+    for lane in [
+        CapabilityLane::MultimodalUnderstanding,
+        CapabilityLane::ImageGeneration,
+        CapabilityLane::AudioGeneration,
+        CapabilityLane::VideoGeneration,
+        CapabilityLane::MusicGeneration,
+    ] {
+        if lanes.iter().any(|existing| existing.lane == lane) {
+            continue;
+        }
+        if !profile_supports_seeded_lane(&profile, lane) {
+            continue;
+        }
+        lanes.push(ModelLaneConfig {
+            lane,
+            candidates: vec![ModelLaneCandidateConfig {
+                profile: profile.clone(),
+                ..reasoning_candidate.clone()
+            }],
+        });
+    }
+}
+
+fn profile_supports_seeded_lane(
+    profile: &ModelCandidateProfileConfig,
+    lane: CapabilityLane,
+) -> bool {
+    match lane_required_feature(lane) {
+        Some(ModelFeature::MultimodalUnderstanding) => {
+            profile
+                .features
+                .contains(&ModelFeature::MultimodalUnderstanding)
+                || profile.features.contains(&ModelFeature::Vision)
+        }
+        Some(feature) => profile.features.contains(&feature),
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -257,6 +322,124 @@ mod tests {
             .profile
             .features
             .contains(&ModelFeature::Vision));
+    }
+
+    #[test]
+    fn declared_reasoning_profile_features_seed_media_lanes() {
+        let reasoning_candidate = ModelLaneCandidateConfig {
+            provider: "test-provider".into(),
+            model: "test-universal-model".into(),
+            api_key: Some("test-key".into()),
+            api_key_env: None,
+            dimensions: None,
+            profile: ModelCandidateProfileConfig::default(),
+        };
+        let mut lanes = vec![ModelLaneConfig {
+            lane: CapabilityLane::Reasoning,
+            candidates: vec![reasoning_candidate.clone()],
+        }];
+
+        seed_declared_media_lanes_from_profile(
+            &mut lanes,
+            &reasoning_candidate,
+            ModelCandidateProfileConfig {
+                context_window_tokens: Some(1_000_000),
+                max_output_tokens: Some(64_000),
+                features: vec![
+                    ModelFeature::ToolCalling,
+                    ModelFeature::Vision,
+                    ModelFeature::ImageGeneration,
+                    ModelFeature::VideoGeneration,
+                    ModelFeature::MusicGeneration,
+                ],
+            },
+        );
+
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::MultimodalUnderstanding));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::ImageGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::VideoGeneration));
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::MusicGeneration));
+        assert!(!lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::AudioGeneration));
+        let seeded = lanes
+            .iter()
+            .find(|lane| lane.lane == CapabilityLane::VideoGeneration)
+            .expect("video lane should be seeded");
+        assert_eq!(seeded.candidates[0].provider, "test-provider");
+        assert_eq!(seeded.candidates[0].model, "test-universal-model");
+        assert_eq!(seeded.candidates[0].api_key.as_deref(), Some("test-key"));
+        assert_eq!(
+            seeded.candidates[0].profile.context_window_tokens,
+            Some(1_000_000)
+        );
+    }
+
+    #[test]
+    fn declared_reasoning_profile_features_do_not_override_existing_lanes() {
+        let reasoning_candidate = ModelLaneCandidateConfig {
+            provider: "test-provider".into(),
+            model: "test-universal-model".into(),
+            api_key: None,
+            api_key_env: None,
+            dimensions: None,
+            profile: ModelCandidateProfileConfig::default(),
+        };
+        let mut lanes = vec![
+            ModelLaneConfig {
+                lane: CapabilityLane::Reasoning,
+                candidates: vec![reasoning_candidate.clone()],
+            },
+            ModelLaneConfig {
+                lane: CapabilityLane::ImageGeneration,
+                candidates: vec![ModelLaneCandidateConfig {
+                    provider: "explicit-provider".into(),
+                    model: "explicit-image-model".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: ModelCandidateProfileConfig {
+                        context_window_tokens: Some(128_000),
+                        max_output_tokens: None,
+                        features: vec![ModelFeature::ImageGeneration],
+                    },
+                }],
+            },
+        ];
+
+        seed_declared_media_lanes_from_profile(
+            &mut lanes,
+            &reasoning_candidate,
+            ModelCandidateProfileConfig {
+                context_window_tokens: Some(1_000_000),
+                max_output_tokens: None,
+                features: vec![ModelFeature::ImageGeneration, ModelFeature::AudioGeneration],
+            },
+        );
+
+        let image = lanes
+            .iter()
+            .find(|lane| lane.lane == CapabilityLane::ImageGeneration)
+            .expect("explicit image lane should remain");
+        assert_eq!(image.candidates[0].provider, "explicit-provider");
+        assert_eq!(
+            lanes
+                .iter()
+                .filter(|lane| lane.lane == CapabilityLane::ImageGeneration)
+                .count(),
+            1
+        );
+        assert!(lanes
+            .iter()
+            .any(|lane| lane.lane == CapabilityLane::AudioGeneration));
     }
 
     #[test]
