@@ -1366,6 +1366,9 @@ Expected outcome:
       or blocks before provider execution when the current candidate
       confidently lacks `tool_calling`; unknown/low-confidence metadata is not
       treated as a hard no
+    - route inspection now surfaces admission required-lane state before the
+      broader intent/pressure/action tuple for both latest and recent retained
+      admission records
   - remaining:
     - widen intent consumers past the current multimodal + specialized-lane protection
   - continue making runtime UX surfaces display admission state explicitly beyond

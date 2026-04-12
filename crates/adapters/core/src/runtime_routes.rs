@@ -667,6 +667,21 @@ fn format_admission_repair_hint(hint: AdmissionRepairHint) -> String {
     }
 }
 
+fn admission_required_lane(admission: &RouteAdmissionState) -> Option<CapabilityLane> {
+    admission
+        .reasons
+        .iter()
+        .find_map(|reason| match reason {
+            CandidateAdmissionReason::RequiresLane(lane) => Some(*lane),
+            _ => None,
+        })
+        .or_else(|| match admission.recommended_action {
+            Some(AdmissionRepairHint::SwitchToLane(lane))
+            | Some(AdmissionRepairHint::RefreshCapabilityMetadata(lane)) => Some(lane),
+            _ => None,
+        })
+}
+
 fn format_tool_repair_action(trace: &ToolRepairTrace) -> String {
     match trace.suggested_action {
         ToolRepairAction::SwitchRouteLane(lane) => format!(
@@ -689,6 +704,13 @@ fn write_route_runtime_diagnostics(response: &mut String, current: &RouteSelecti
 
 fn write_route_admission_diagnostics(response: &mut String, current: &RouteSelection) {
     if let Some(admission) = current.last_admission.as_ref() {
+        if let Some(lane) = admission_required_lane(admission) {
+            let _ = writeln!(
+                response,
+                "Last admission required lane: `{}`",
+                capability_lane_name(lane)
+            );
+        }
         let _ = writeln!(
             response,
             "Last admission: `{}` / `{}` / `{}`",
@@ -783,6 +805,13 @@ fn write_recent_tool_repairs(response: &mut String, recent_tool_repairs: &[ToolR
 
 fn write_recent_admissions(response: &mut String, recent_admissions: &[RouteAdmissionState]) {
     for admission in recent_admissions.iter().rev().take(3) {
+        if let Some(lane) = admission_required_lane(admission) {
+            let _ = writeln!(
+                response,
+                "Recent admission required lane: `{}`",
+                capability_lane_name(lane)
+            );
+        }
         let _ = writeln!(
             response,
             "Recent admission: {} / {} / {}",
@@ -1202,6 +1231,7 @@ mod tests {
         assert!(
             response.contains("Last admission: `multimodal_understanding` / `warning` / `reroute`")
         );
+        assert!(response.contains("Last admission required lane: `multimodal_understanding`"));
         assert!(response.contains(
             "Last admission reasons: requires multimodal_understanding, context warning"
         ));
@@ -1248,6 +1278,7 @@ mod tests {
         );
 
         assert!(response.contains("Recent admissions retained: 1"));
+        assert!(response.contains("Recent admission required lane: `image_generation`"));
         assert!(response.contains("Recent admission: image_generation / critical / compact"));
         assert!(response
             .contains("Recent admission reasons: requires image_generation, window near limit"));
