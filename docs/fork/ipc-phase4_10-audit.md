@@ -66,6 +66,9 @@ Our best move is:
   `model_routes`; scenario upserts now write the selected capability lane's
   ordered candidate list and classification rules resolve through the shared
   lane/catalog selector path.
+- Live web/Agent query classification now follows the same lane/catalog
+  selector resolver instead of maintaining an Agent-local `model_routes`
+  hint/model map.
 - Remaining audit target: old config/API surfaces still expose `model_routes`
   as compatibility/catalog-alias data; future cleanup should either rename that
   data shape to catalog aliases or fully retire it.

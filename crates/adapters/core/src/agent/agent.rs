@@ -27,6 +27,7 @@ use synapse_domain::application::services::model_capability_support::{
 #[cfg(test)]
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileConfidence;
+use synapse_domain::application::services::model_preset_resolution::resolve_effective_model_lanes;
 use synapse_domain::application::services::provider_context_budget::{
     assess_provider_context_budget, provider_context_artifact_name,
     provider_context_budget_tier_name, provider_context_condensation_mode_name,
@@ -76,7 +77,9 @@ use synapse_domain::application::services::turn_context::{
 };
 use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
-use synapse_domain::config::schema::{CapabilityLane, Config, ContextCompressionConfig};
+use synapse_domain::config::schema::{
+    CapabilityLane, Config, ContextCompressionConfig, ModelRouteConfig,
+};
 use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::domain::tool_repair::{tool_failure_kind_name, ToolRepairTrace};
 use synapse_domain::domain::turn_admission::{
@@ -110,6 +113,16 @@ use synapse_security::security_policy_from_config;
 const PROVIDER_CONTEXT_CHAT_MESSAGES: usize = 6;
 const SESSION_HYGIENE_HARD_MESSAGE_LIMIT: usize = 400;
 
+#[derive(Debug, Clone)]
+struct AgentModelSelection {
+    provider: String,
+    actual_model: String,
+    provider_model_argument: String,
+    lane: Option<CapabilityLane>,
+    candidate_index: Option<usize>,
+    hint: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub struct AgentRuntimePorts {
     pub conversation_store: Option<Arc<dyn ConversationStorePort>>,
@@ -121,6 +134,46 @@ pub struct AgentRuntimePorts {
     pub channel_registry: Option<Arc<dyn ChannelRegistryPort>>,
     pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
     pub history_compaction_cache: Option<Arc<dyn HistoryCompactionCachePort>>,
+}
+
+fn build_provider_router_routes(config: &Config) -> Vec<ModelRouteConfig> {
+    let mut routes = Vec::new();
+    let mut seen_hints = HashSet::new();
+
+    for lane in resolve_effective_model_lanes(config) {
+        if let Some(candidate) = lane.candidates.first() {
+            push_provider_router_route(
+                &mut routes,
+                &mut seen_hints,
+                ModelRouteConfig {
+                    hint: lane.lane.as_str().to_string(),
+                    capability: Some(lane.lane),
+                    provider: candidate.provider.clone(),
+                    model: candidate.model.clone(),
+                    api_key: candidate.api_key.clone(),
+                    profile: candidate.profile.clone(),
+                },
+            );
+        }
+    }
+
+    for alias in synapse_domain::config::model_catalog::model_route_aliases() {
+        push_provider_router_route(&mut routes, &mut seen_hints, alias);
+    }
+
+    routes
+}
+
+fn push_provider_router_route(
+    routes: &mut Vec<ModelRouteConfig>,
+    seen_hints: &mut HashSet<String>,
+    route: ModelRouteConfig,
+) {
+    let hint = route.hint.trim();
+    if hint.is_empty() || !seen_hints.insert(hint.to_ascii_lowercase()) {
+        return;
+    }
+    routes.push(route);
 }
 
 fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
@@ -292,11 +345,8 @@ pub struct Agent {
     memory_session_id: Option<String>,
     history: Vec<ConversationMessage>,
     classification_config: synapse_domain::config::schema::QueryClassificationConfig,
-    available_hints: Vec<String>,
-    route_model_by_hint: HashMap<String, String>,
     route_model_preset: Option<String>,
     route_model_lanes: Vec<synapse_domain::config::schema::ModelLaneConfig>,
-    route_model_routes: Vec<synapse_domain::config::schema::ModelRouteConfig>,
     current_model_profile:
         synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile,
     /// Cumulative token usage from the last turn (provider-reported).
@@ -358,11 +408,8 @@ pub struct AgentBuilder {
     auto_save: Option<bool>,
     memory_session_id: Option<String>,
     classification_config: Option<synapse_domain::config::schema::QueryClassificationConfig>,
-    available_hints: Option<Vec<String>>,
-    route_model_by_hint: Option<HashMap<String, String>>,
     route_model_preset: Option<Option<String>>,
     route_model_lanes: Option<Vec<synapse_domain::config::schema::ModelLaneConfig>>,
-    route_model_routes: Option<Vec<synapse_domain::config::schema::ModelRouteConfig>>,
     current_model_profile:
         Option<synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile>,
     allowed_tools: Option<Vec<String>>,
@@ -406,11 +453,8 @@ impl AgentBuilder {
             auto_save: None,
             memory_session_id: None,
             classification_config: None,
-            available_hints: None,
-            route_model_by_hint: None,
             route_model_preset: None,
             route_model_lanes: None,
-            route_model_routes: None,
             current_model_profile: None,
             allowed_tools: None,
             response_cache: None,
@@ -548,16 +592,6 @@ impl AgentBuilder {
         self
     }
 
-    pub fn available_hints(mut self, available_hints: Vec<String>) -> Self {
-        self.available_hints = Some(available_hints);
-        self
-    }
-
-    pub fn route_model_by_hint(mut self, route_model_by_hint: HashMap<String, String>) -> Self {
-        self.route_model_by_hint = Some(route_model_by_hint);
-        self
-    }
-
     pub fn route_model_preset(mut self, route_model_preset: Option<String>) -> Self {
         self.route_model_preset = Some(route_model_preset);
         self
@@ -568,14 +602,6 @@ impl AgentBuilder {
         route_model_lanes: Vec<synapse_domain::config::schema::ModelLaneConfig>,
     ) -> Self {
         self.route_model_lanes = Some(route_model_lanes);
-        self
-    }
-
-    pub fn route_model_routes(
-        mut self,
-        route_model_routes: Vec<synapse_domain::config::schema::ModelRouteConfig>,
-    ) -> Self {
-        self.route_model_routes = Some(route_model_routes);
         self
     }
 
@@ -750,11 +776,8 @@ impl AgentBuilder {
             memory_session_id: self.memory_session_id,
             history: Vec::new(),
             classification_config: self.classification_config.unwrap_or_default(),
-            available_hints: self.available_hints.unwrap_or_default(),
-            route_model_by_hint: self.route_model_by_hint.unwrap_or_default(),
             route_model_preset: self.route_model_preset.unwrap_or_default(),
             route_model_lanes: self.route_model_lanes.unwrap_or_default(),
-            route_model_routes: self.route_model_routes.unwrap_or_default(),
             current_model_profile: self.current_model_profile.unwrap_or_default(),
             last_turn_usage: None,
             last_turn_tool_facts: Vec::new(),
@@ -990,6 +1013,7 @@ impl Agent {
         decision: &CandidateAdmissionDecision,
         outcome: RuntimeCalibrationOutcome,
         observed_at_unix: i64,
+        effective_provider: &str,
         effective_model: &str,
     ) {
         if decision.snapshot.action == TurnAdmissionAction::Block {
@@ -998,12 +1022,12 @@ impl Agent {
         self.record_runtime_calibration_observation(RuntimeCalibrationObservation {
             decision_kind: RuntimeCalibrationDecisionKind::RouteChoice,
             decision_signature: route_calibration_signature(
-                &self.provider_name,
+                effective_provider,
                 effective_model,
                 decision,
             ),
             suppression_key: Some(RuntimeCalibrationSuppressionKey::Route {
-                provider: self.provider_name.clone(),
+                provider: effective_provider.to_string(),
                 model: effective_model.to_string(),
             }),
             confidence_basis_points: route_calibration_confidence(decision),
@@ -1289,13 +1313,14 @@ impl Agent {
 
         let provider_runtime_options =
             synapse_providers::provider_runtime_options_from_config(config);
+        let provider_router_routes = build_provider_router_routes(config);
 
         let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
             provider_name,
             config.api_key.as_deref(),
             config.api_url.as_deref(),
             &config.reliability,
-            &config.model_routes,
+            &provider_router_routes,
             &model_name,
             &provider_runtime_options,
         )?;
@@ -1308,7 +1333,7 @@ impl Agent {
                 config.api_key.as_deref(),
                 config.api_url.as_deref(),
                 &config.reliability,
-                &config.model_routes,
+                &provider_router_routes,
                 &model_name,
                 &provider_runtime_options,
             )?);
@@ -1339,12 +1364,6 @@ impl Agent {
             }
         };
 
-        let route_model_by_hint: HashMap<String, String> = config
-            .model_routes
-            .iter()
-            .map(|route| (route.hint.clone(), route.model.clone()))
-            .collect();
-        let available_hints: Vec<String> = route_model_by_hint.keys().cloned().collect();
         let profile_catalog =
             crate::runtime_routes::WorkspaceModelProfileCatalog::from_config(config);
         let current_model_profile =
@@ -1453,11 +1472,8 @@ impl Agent {
             .temperature(config.default_temperature)
             .workspace_dir(config.workspace_dir.clone())
             .classification_config(config.query_classification.clone())
-            .available_hints(available_hints)
-            .route_model_by_hint(route_model_by_hint)
             .route_model_preset(config.model_preset.clone())
             .route_model_lanes(config.model_lanes.clone())
-            .route_model_routes(config.model_routes.clone())
             .current_model_profile(current_model_profile)
             .identity_config(config.identity.clone())
             .conversation_store(runtime_ports.conversation_store)
@@ -2033,28 +2049,49 @@ impl Agent {
             .collect()
     }
 
-    fn classify_model(&self, user_message: &str) -> String {
+    fn classify_model(&self, user_message: &str) -> AgentModelSelection {
         if let Some(decision) =
             super::classifier::classify_with_decision(&self.classification_config, user_message)
         {
-            if self.available_hints.contains(&decision.hint) {
-                let resolved_model = self
-                    .route_model_by_hint
-                    .get(&decision.hint)
-                    .map(String::as_str)
-                    .unwrap_or("unknown");
+            let routing_config = self.build_turn_routing_config();
+            if let Some(route) =
+                synapse_domain::application::services::inbound_message_service::resolve_model_command_route(
+                    &decision.hint,
+                    &routing_config,
+                )
+            {
                 tracing::info!(
                     target: "query_classification",
                     hint = decision.hint.as_str(),
-                    model = resolved_model,
+                    provider = route.provider.as_str(),
+                    model = route.model.as_str(),
+                    lane = route.lane.map(|lane| lane.as_str()).unwrap_or("none"),
+                    candidate_index = route
+                        .candidate_index
+                        .map(|index| index.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
                     rule_priority = decision.priority,
                     message_length = user_message.len(),
                     "Classified message route"
                 );
-                return format!("hint:{}", decision.hint);
+                return AgentModelSelection {
+                    provider: route.provider,
+                    actual_model: route.model,
+                    provider_model_argument: format!("hint:{}", decision.hint),
+                    lane: route.lane,
+                    candidate_index: route.candidate_index,
+                    hint: Some(decision.hint),
+                };
             }
         }
-        self.model_name.clone()
+        AgentModelSelection {
+            provider: self.provider_name.clone(),
+            actual_model: self.model_name.clone(),
+            provider_model_argument: self.model_name.clone(),
+            lane: self.active_lane,
+            candidate_index: self.active_candidate_index,
+            hint: None,
+        }
     }
 
     fn build_turn_routing_config(&self) -> Config {
@@ -2063,7 +2100,6 @@ impl Agent {
         config.default_model = Some(self.model_name.clone());
         config.model_preset = self.route_model_preset.clone();
         config.model_lanes = self.route_model_lanes.clone();
-        config.model_routes = self.route_model_routes.clone();
         config.compression = self.compression.clone();
         config.compression_overrides = self.compression_overrides.clone();
         config
@@ -2282,59 +2318,83 @@ impl Agent {
         let ephemeral_prefix = formatted.enrichment_prefix;
         self.turn_count += 1;
 
-        let mut effective_model = self.classify_model(user_message);
+        let classified_model = self.classify_model(user_message);
+        let mut provider_model_argument = classified_model.provider_model_argument;
+        let mut effective_provider = classified_model.provider;
+        let mut effective_model = classified_model.actual_model;
         let mut effective_model_profile = self.current_model_profile.clone();
-        let mut effective_lane = None;
-        let mut effective_candidate_index = None;
-        if !effective_model.starts_with("hint:") {
-            let routing_config = self.build_turn_routing_config();
-            let profile_catalog =
-                crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
-                    self.workspace_dir.clone(),
-                    Some(&self.provider_name),
-                    self.provider_api_url.as_deref(),
+        let mut effective_lane = classified_model.lane;
+        let mut effective_candidate_index = classified_model.candidate_index;
+        let mut effective_hint = classified_model.hint;
+        let profile_catalog =
+            crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
+                self.workspace_dir.clone(),
+                Some(&effective_provider),
+                self.provider_api_url.as_deref(),
+            );
+        if effective_provider != self.provider_name || effective_model != self.model_name {
+            effective_model_profile =
+                synapse_domain::application::services::model_lane_resolution::resolve_candidate_profile(
+                    &effective_provider,
+                    &effective_model,
+                    &synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
+                    Some(&profile_catalog),
                 );
+        }
+        if effective_hint.is_none() {
+            let routing_config = self.build_turn_routing_config();
             if let Some(route_override) = resolve_turn_route_override(
                 &routing_config,
                 user_message,
-                &self.provider_name,
+                &effective_provider,
                 &effective_model,
                 &effective_model_profile,
                 self.provider.supports_vision(),
                 Some(&profile_catalog),
             ) {
-                if route_override.provider == self.provider_name {
-                    effective_lane = Some(route_override.lane);
-                    effective_candidate_index = route_override.candidate_index;
-                    effective_model = route_override.model;
-                    effective_model_profile = synapse_domain::application::services::model_lane_resolution::resolve_lane_candidates(
+                effective_provider = route_override.provider;
+                effective_lane = Some(route_override.lane);
+                effective_candidate_index = route_override.candidate_index;
+                effective_model = route_override.model;
+                provider_model_argument = if effective_provider == self.provider_name {
+                    effective_model.clone()
+                } else {
+                    format!("hint:{}", route_override.lane.as_str())
+                };
+                effective_hint = (effective_provider != self.provider_name)
+                    .then(|| route_override.lane.as_str().to_string());
+                let route_profile_catalog =
+                    crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
+                        self.workspace_dir.clone(),
+                        Some(&effective_provider),
+                        self.provider_api_url.as_deref(),
+                    );
+                effective_model_profile =
+                    synapse_domain::application::services::model_lane_resolution::resolve_lane_candidates(
                         &routing_config,
                         route_override.lane,
-                        Some(&profile_catalog),
+                        Some(&route_profile_catalog),
                     )
                     .into_iter()
                     .find(|candidate| {
-                        candidate.provider == self.provider_name
-                            && candidate.model == effective_model
+                        candidate.provider == effective_provider && candidate.model == effective_model
                     })
                     .map(|candidate| candidate.profile)
                     .unwrap_or_else(|| {
                         synapse_domain::application::services::model_lane_resolution::resolve_candidate_profile(
-                            &self.provider_name,
+                            &effective_provider,
                             &effective_model,
                             &synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
-                            Some(&profile_catalog),
+                            Some(&route_profile_catalog),
                         )
                     });
-                }
             }
         }
-        let effective_hint = effective_model.strip_prefix("hint:");
         let effective_compression = self.history_compression_for_route(
-            &self.provider_name,
+            &effective_provider,
             &effective_model,
             effective_lane,
-            effective_hint,
+            effective_hint.as_deref(),
         );
         let turn_tool_specs =
             synapse_domain::application::services::turn_tool_narrowing::prepare_tool_specs_for_turn(
@@ -2564,7 +2624,7 @@ impl Agent {
                     "turn admission blocked provider call intent={} pressure={} provider={} model={}\n{}",
                     turn_intent_name(admission_decision.snapshot.intent),
                     context_pressure_state_name(admission_decision.snapshot.pressure_state),
-                    self.provider_name,
+                    effective_provider,
                     effective_model,
                     handoff_packet_text
                 );
@@ -2587,7 +2647,7 @@ impl Agent {
             request_context.total_messages = messages.len();
             request_context.total_chars = total_message_chars(&messages);
             self.observer.record_event(&ObserverEvent::LlmRequest {
-                provider: self.provider_name.clone(),
+                provider: effective_provider.clone(),
                 model: effective_model.clone(),
                 messages_count: messages.len(),
                 context: Some(request_context),
@@ -2672,7 +2732,7 @@ impl Agent {
                             },
                         );
                         return Err(ProviderCapabilityError {
-                            provider: self.provider_name.clone(),
+                            provider: effective_provider.clone(),
                             capability: "vision".to_string(),
                             message: format!(
                                 "received {image_marker_count} image marker(s), but this route does not support vision input"
@@ -2694,7 +2754,7 @@ impl Agent {
                             None
                         },
                     },
-                    &effective_model,
+                    &provider_model_argument,
                     self.temperature,
                 )
                 .await
@@ -2704,6 +2764,7 @@ impl Agent {
                         &admission_decision,
                         RuntimeCalibrationOutcome::Succeeded,
                         chrono::Utc::now().timestamp(),
+                        &effective_provider,
                         &effective_model,
                     );
                     resp
@@ -2723,18 +2784,18 @@ impl Agent {
                             let profile_catalog =
                                 crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
                                     self.workspace_dir.clone(),
-                                    Some(&self.provider_name),
+                                    Some(&effective_provider),
                                     self.provider_api_url.as_deref(),
                                 );
                             if let Err(record_error) = profile_catalog
                                 .record_context_limit_observation(
-                                    &self.provider_name,
+                                    &effective_provider,
                                     &effective_model,
                                     observation,
                                 )
                             {
                                 tracing::debug!(
-                                    provider = self.provider_name,
+                                    provider = effective_provider,
                                     model = effective_model,
                                     error = %record_error,
                                     "Failed to record context-limit model profile observation"
@@ -2746,6 +2807,7 @@ impl Agent {
                         &admission_decision,
                         RuntimeCalibrationOutcome::Failed,
                         chrono::Utc::now().timestamp(),
+                        &effective_provider,
                         &effective_model,
                     );
                     return Err(err);
@@ -3495,8 +3557,6 @@ mod tests {
         let mem: Arc<dyn UnifiedMemoryPort> = Arc::new(synapse_memory::NoopUnifiedMemory);
 
         let observer: Arc<dyn Observer> = Arc::from(synapse_observability::NoopObserver {});
-        let mut route_model_by_hint = HashMap::new();
-        route_model_by_hint.insert("fast".to_string(), "anthropic/claude-haiku-4-5".to_string());
         let mut agent = Agent::builder()
             .provider(provider)
             .tools(vec![Box::new(MockTool)])
@@ -3504,10 +3564,21 @@ mod tests {
             .observer(observer)
             .tool_dispatcher(Box::new(NativeToolDispatcher))
             .workspace_dir(std::path::PathBuf::from("/tmp"))
+            .route_model_lanes(vec![ModelLaneConfig {
+                lane: CapabilityLane::CheapReasoning,
+                candidates: vec![ModelLaneCandidateConfig {
+                    provider: "test-provider".into(),
+                    model: "test-cheap-model".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: ModelCandidateProfileConfig::default(),
+                }],
+            }])
             .classification_config(synapse_domain::config::schema::QueryClassificationConfig {
                 enabled: true,
                 rules: vec![synapse_domain::config::schema::ClassificationRule {
-                    hint: "fast".to_string(),
+                    hint: "cheap_reasoning".to_string(),
                     keywords: vec!["quick".to_string()],
                     patterns: vec![],
                     min_length: None,
@@ -3515,15 +3586,13 @@ mod tests {
                     priority: 10,
                 }],
             })
-            .available_hints(vec!["fast".to_string()])
-            .route_model_by_hint(route_model_by_hint)
             .build()
             .expect("agent builder should succeed with valid config");
 
         let response = agent.turn("quick summary please").await.unwrap();
         assert_eq!(response, "classified");
         let seen = seen_models.lock();
-        assert_eq!(seen.as_slice(), &["hint:fast".to_string()]);
+        assert_eq!(seen.as_slice(), &["hint:cheap_reasoning".to_string()]);
     }
 
     #[tokio::test]

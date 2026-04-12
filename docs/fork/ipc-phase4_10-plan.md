@@ -1273,6 +1273,9 @@ Expected outcome:
     so operator UX matches the runtime selector path
   - query-classifier route overrides now reuse the same lane/catalog selector
     resolver instead of scanning `model_routes` by hint
+  - live web/Agent query classification now uses that same lane/catalog selector
+    resolver and its provider router is seeded from effective lanes plus catalog
+    aliases, not from configured legacy `model_routes`
   - remaining work:
     - historical note: earlier remaining items about image/audio/video/music
       first-class turn routing are now mostly owned by Slice 14 and the shared
