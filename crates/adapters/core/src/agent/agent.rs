@@ -2419,6 +2419,7 @@ impl Agent {
             let admission_state = RouteAdmissionState {
                 observed_at_unix,
                 snapshot: admission_decision.snapshot.clone(),
+                required_lane: admission_decision.required_lane,
                 reasons: admission_decision.reasons.clone(),
                 recommended_action: admission_decision.recommended_action,
             };

@@ -575,6 +575,7 @@ mod tests {
                 pressure_state: ContextPressureState::OverflowRisk,
                 action: TurnAdmissionAction::Compact,
             },
+            required_lane: None,
             reasons: vec![CandidateAdmissionReason::ProviderContextOverflowRisk],
             recommended_action: Some(AdmissionRepairHint::StartFreshHandoff),
         };
@@ -752,6 +753,7 @@ mod tests {
                 pressure_state: ContextPressureState::Healthy,
                 action: TurnAdmissionAction::Reroute,
             },
+            required_lane: Some(CapabilityLane::ImageGeneration),
             reasons: vec![CandidateAdmissionReason::CapabilityMetadataLowConfidence(
                 CapabilityLane::ImageGeneration,
             )],

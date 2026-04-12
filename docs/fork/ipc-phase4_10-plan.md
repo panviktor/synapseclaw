@@ -1369,6 +1369,8 @@ Expected outcome:
     - route inspection now surfaces admission required-lane state before the
       broader intent/pressure/action tuple for both latest and recent retained
       admission records
+    - route admission state now stores `required_lane` explicitly instead of
+      deriving that operator-facing fact back out of reasons or repair hints
   - remaining:
     - widen intent consumers past the current multimodal + specialized-lane protection
   - continue making runtime UX surfaces display admission state explicitly beyond

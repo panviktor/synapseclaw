@@ -668,18 +668,7 @@ fn format_admission_repair_hint(hint: AdmissionRepairHint) -> String {
 }
 
 fn admission_required_lane(admission: &RouteAdmissionState) -> Option<CapabilityLane> {
-    admission
-        .reasons
-        .iter()
-        .find_map(|reason| match reason {
-            CandidateAdmissionReason::RequiresLane(lane) => Some(*lane),
-            _ => None,
-        })
-        .or_else(|| match admission.recommended_action {
-            Some(AdmissionRepairHint::SwitchToLane(lane))
-            | Some(AdmissionRepairHint::RefreshCapabilityMetadata(lane)) => Some(lane),
-            _ => None,
-        })
+    admission.required_lane
 }
 
 fn format_tool_repair_action(trace: &ToolRepairTrace) -> String {
@@ -1206,6 +1195,7 @@ mod tests {
                         pressure_state: ContextPressureState::Warning,
                         action: TurnAdmissionAction::Reroute,
                     },
+                    required_lane: Some(CapabilityLane::MultimodalUnderstanding),
                     reasons: vec![
                         CandidateAdmissionReason::RequiresLane(
                             CapabilityLane::MultimodalUnderstanding,
@@ -1251,6 +1241,7 @@ mod tests {
                 pressure_state: ContextPressureState::Critical,
                 action: TurnAdmissionAction::Compact,
             },
+            required_lane: Some(CapabilityLane::ImageGeneration),
             reasons: vec![
                 CandidateAdmissionReason::RequiresLane(CapabilityLane::ImageGeneration),
                 CandidateAdmissionReason::CandidateWindowNearLimit,

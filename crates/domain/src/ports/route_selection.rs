@@ -16,6 +16,7 @@ use crate::domain::turn_admission::{
 pub struct RouteAdmissionState {
     pub observed_at_unix: i64,
     pub snapshot: TurnAdmissionSnapshot,
+    pub required_lane: Option<CapabilityLane>,
     pub reasons: Vec<CandidateAdmissionReason>,
     pub recommended_action: Option<AdmissionRepairHint>,
 }
