@@ -2,29 +2,35 @@
   "presets": [
     {
       "id": "chatgpt",
+      "aliases": ["openai", "openai-codex", "codex"],
       "title": "ChatGPT / Codex",
       "description": "OpenAI-style reasoning lane with minimal defaults.",
       "default_provider": "openai-codex",
       "default_model": "gpt-5.4",
       "seed_multimodal_from_reasoning": true,
+      "provider_aliases": ["openai", "openai-codex"],
       "extra_lanes": []
     },
     {
       "id": "claude",
+      "aliases": ["anthropic"],
       "title": "Claude",
       "description": "Anthropic-style reasoning lane with minimal defaults.",
       "default_provider": "anthropic",
       "default_model": "claude-sonnet-4-6",
       "seed_multimodal_from_reasoning": true,
+      "provider_aliases": ["anthropic"],
       "extra_lanes": []
     },
     {
       "id": "openrouter",
+      "aliases": [],
       "title": "OpenRouter",
       "description": "Reasoning lane plus cheap Qwen summary and embedding defaults.",
       "default_provider": "openrouter",
       "default_model": "anthropic/claude-sonnet-4-6",
       "seed_multimodal_from_reasoning": false,
+      "provider_aliases": ["openrouter"],
       "extra_lanes": [
         {
           "lane": "cheap_reasoning",
@@ -56,20 +62,24 @@
     },
     {
       "id": "gemini",
+      "aliases": ["google"],
       "title": "Gemini",
       "description": "Gemini reasoning lane with room for multimodal expansion.",
       "default_provider": "gemini",
       "default_model": "gemini-3.1-pro",
       "seed_multimodal_from_reasoning": true,
+      "provider_aliases": ["gemini"],
       "extra_lanes": []
     },
     {
       "id": "local",
+      "aliases": ["local-ai", "self-hosted", "ollama"],
       "title": "Local / self-hosted",
       "description": "Single local reasoning lane without cloud-only helper lanes.",
       "default_provider": "ollama",
       "default_model": "llama4-scout:latest",
       "seed_multimodal_from_reasoning": false,
+      "provider_aliases": ["ollama", "llamacpp", "sglang", "vllm", "osaurus"],
       "extra_lanes": []
     }
   ],

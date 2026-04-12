@@ -1242,6 +1242,8 @@ Expected outcome:
   - onboarding starts from simple presets and then populates the richer lane-aware config
   - preset seeds, provider defaults, curated model lists, and default pricing now live in a
     built-in external catalog instead of hardcoded Rust match arms
+  - preset aliases and provider-to-preset recommendations now also resolve from
+    the catalog instead of Rust provider-name match arms
   - users can now materialize and edit a local override catalog next to `config.toml`
     via `synapseclaw models catalog init`; runtime merges that file over the built-in catalog
   - `/model` help and routing config inspection now surface preset/effective-lane information

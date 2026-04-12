@@ -1,8 +1,10 @@
 use crate::config::model_catalog::{
     apply_default_api_key, known_model_presets as catalog_known_model_presets,
+    normalize_model_preset_id as catalog_normalize_model_preset_id,
     preset_description as catalog_preset_description, preset_extra_lanes,
     preset_reasoning_seed as catalog_preset_reasoning_seed, preset_seed_multimodal_from_reasoning,
-    preset_title as catalog_preset_title, KnownModelPreset,
+    preset_title as catalog_preset_title,
+    recommended_preset_for_provider as catalog_recommended_preset_for_provider, KnownModelPreset,
 };
 use crate::config::schema::{
     CapabilityLane, Config, ModelCandidateProfileConfig, ModelFeature, ModelLaneCandidateConfig,
@@ -14,26 +16,11 @@ pub fn known_model_presets() -> &'static [KnownModelPreset] {
 }
 
 pub fn recommended_model_preset_for_provider(provider: &str) -> Option<&'static str> {
-    match provider {
-        "openai" | "openai-codex" => Some("chatgpt"),
-        "anthropic" => Some("claude"),
-        "openrouter" => Some("openrouter"),
-        "gemini" => Some("gemini"),
-        "ollama" | "llamacpp" | "sglang" | "vllm" | "osaurus" => Some("local"),
-        _ => None,
-    }
+    catalog_recommended_preset_for_provider(provider)
 }
 
 pub fn normalize_model_preset_id(value: &str) -> Option<&'static str> {
-    let normalized = value.trim().to_ascii_lowercase();
-    match normalized.as_str() {
-        "chatgpt" | "openai" | "openai-codex" | "codex" => Some("chatgpt"),
-        "claude" | "anthropic" => Some("claude"),
-        "openrouter" => Some("openrouter"),
-        "gemini" | "google" => Some("gemini"),
-        "local" | "local-ai" | "self-hosted" | "ollama" => Some("local"),
-        _ => None,
-    }
+    catalog_normalize_model_preset_id(value)
 }
 
 pub fn preset_title(preset_id: &str) -> Option<&'static str> {

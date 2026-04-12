@@ -44,12 +44,16 @@ struct ModelCatalogData {
 #[derive(Debug, Clone, Deserialize)]
 struct ModelPresetCatalogEntry {
     id: String,
+    #[serde(default)]
+    aliases: Vec<String>,
     title: String,
     description: String,
     default_provider: String,
     default_model: String,
     #[serde(default)]
     seed_multimodal_from_reasoning: bool,
+    #[serde(default)]
+    provider_aliases: Vec<String>,
     #[serde(default)]
     extra_lanes: Vec<ModelLaneConfig>,
 }
@@ -327,6 +331,46 @@ pub fn preset_description(preset_id: &str) -> Option<&'static str> {
         .map(|preset| preset.description.as_str())
 }
 
+pub fn normalize_model_preset_id(value: &str) -> Option<&'static str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    active_model_catalog()
+        .data
+        .presets
+        .iter()
+        .find(|preset| {
+            preset.id.eq_ignore_ascii_case(value)
+                || preset
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(value))
+        })
+        .map(|preset| preset.id.as_str())
+}
+
+pub fn recommended_preset_for_provider(provider: &str) -> Option<&'static str> {
+    let provider = provider.trim();
+    if provider.is_empty() {
+        return None;
+    }
+
+    active_model_catalog()
+        .data
+        .presets
+        .iter()
+        .find(|preset| {
+            preset.default_provider.eq_ignore_ascii_case(provider)
+                || preset
+                    .provider_aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(provider))
+        })
+        .map(|preset| preset.id.as_str())
+}
+
 pub fn preset_reasoning_seed(preset_id: &str) -> Option<(&'static str, &'static str)> {
     active_model_catalog()
         .data
@@ -590,6 +634,16 @@ mod tests {
         let presets = known_model_presets();
         assert!(presets.iter().any(|preset| preset.id == "chatgpt"));
         assert!(presets.iter().any(|preset| preset.id == "openrouter"));
+    }
+
+    #[test]
+    fn preset_aliases_come_from_catalog_data() {
+        assert_eq!(normalize_model_preset_id("codex"), Some("chatgpt"));
+        assert_eq!(
+            recommended_preset_for_provider("openai-codex"),
+            Some("chatgpt")
+        );
+        assert_eq!(recommended_preset_for_provider("llamacpp"), Some("local"));
     }
 
     #[test]
