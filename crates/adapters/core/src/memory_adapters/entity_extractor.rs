@@ -371,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn concept_to_concept_relationships_require_very_high_confidence() {
+    fn concept_to_concept_relationships_are_not_stored() {
         let entity_types = std::collections::HashMap::from([
             ("abstract_topic_a".to_string(), "concept".to_string()),
             ("abstract_topic_b".to_string(), "concept".to_string()),
@@ -380,7 +380,7 @@ mod tests {
             subject: "abstract_topic_a".into(),
             predicate: "relates_to".into(),
             object: "abstract_topic_b".into(),
-            confidence: 0.9,
+            confidence: 1.0,
         };
 
         assert!(!should_store_relationship(&rel, &entity_types));

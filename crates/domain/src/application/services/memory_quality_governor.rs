@@ -38,7 +38,7 @@ pub enum RelationshipRejectReason {
     MissingPredicate,
     SelfReference,
     PredicateTooLong,
-    AbstractConceptPairLowConfidence,
+    AbstractConceptPair,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,7 +133,7 @@ pub fn assess_extracted_relationship(
     subject: &str,
     predicate: &str,
     object: &str,
-    confidence: f32,
+    _confidence: f32,
     entity_types: &HashMap<String, String>,
 ) -> RelationshipStorageVerdict {
     if subject.trim().is_empty() {
@@ -156,11 +156,8 @@ pub fn assess_extracted_relationship(
     let object_type = entity_types.get(&object.trim().to_lowercase());
     if matches!(subject_type, Some(kind) if kind == "concept")
         && matches!(object_type, Some(kind) if kind == "concept")
-        && confidence < 0.995
     {
-        return RelationshipStorageVerdict::Reject(
-            RelationshipRejectReason::AbstractConceptPairLowConfidence,
-        );
+        return RelationshipStorageVerdict::Reject(RelationshipRejectReason::AbstractConceptPair);
     }
 
     RelationshipStorageVerdict::Accept
@@ -395,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_low_confidence_concept_pair() {
+    fn rejects_concept_pair_relationships() {
         let entity_types = HashMap::from([
             ("abstract_topic_a".to_string(), "concept".to_string()),
             ("abstract_topic_b".to_string(), "concept".to_string()),
@@ -409,9 +406,7 @@ mod tests {
                 0.9,
                 &entity_types
             ),
-            RelationshipStorageVerdict::Reject(
-                RelationshipRejectReason::AbstractConceptPairLowConfidence
-            )
+            RelationshipStorageVerdict::Reject(RelationshipRejectReason::AbstractConceptPair)
         );
     }
 
@@ -428,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_concept_pair_relationships_below_strict_confidence() {
+    fn rejects_concept_pair_relationships_even_at_high_confidence() {
         let entity_types = HashMap::from([
             ("meaning".to_string(), "concept".to_string()),
             ("responsibility".to_string(), "concept".to_string()),
@@ -442,9 +437,7 @@ mod tests {
                 0.99,
                 &entity_types
             ),
-            RelationshipStorageVerdict::Reject(
-                RelationshipRejectReason::AbstractConceptPairLowConfidence
-            )
+            RelationshipStorageVerdict::Reject(RelationshipRejectReason::AbstractConceptPair)
         );
     }
 

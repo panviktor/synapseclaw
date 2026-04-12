@@ -1721,6 +1721,9 @@ Expected outcome:
       overlap and low incremental-information windows, so reordered paraphrase
       loops can be suppressed without phrase lists or language-specific
       stopword rules
+    - graph extraction now rejects all concept-to-concept relationships at the
+      domain governor layer, so high-confidence generic world-knowledge edges
+      cannot bypass memory hygiene just because the extractor sounded certain
     - focused cheap-route long-dialogue semantic regression passed after the
       selector fix:
       - session: `phase410-long-semantic-focused-1775951001`
