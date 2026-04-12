@@ -1255,6 +1255,9 @@ Expected outcome:
   - provider router now rejects unknown `hint:*` model selectors before
     dispatch instead of executing them on the default provider
   - `model_routing_config` preset operations now participate in typed routing facts
+  - `model_routing_config` scenario upsert/remove now manages explicit
+    capability-lane candidate lists plus classification rules instead of
+    writing legacy `model_routes`
   - `resolve_lane_candidates` no longer treats legacy `model_routes` or
     `embedding_routes` as capability-lane fallbacks; fallback to the default
     reasoning route now requires both configured provider and configured model,
@@ -1280,6 +1283,9 @@ Expected outcome:
     - route state stores lane/candidate identity, and route-switch UX now renders lane
       for lane-aware switches; downstream runtime surfaces should keep moving toward
       lane/candidate-first explanations
+    - old config/API surfaces still expose `model_routes` as compatibility or
+      catalog-alias data; remove or rename that surface in a dedicated cleanup
+      when the gateway/UI contract is ready to change
     - keep auditing that new routing decisions enter through domain/profile
       services rather than brand-string heuristics
 

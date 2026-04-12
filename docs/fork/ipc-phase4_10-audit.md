@@ -62,9 +62,13 @@ Our best move is:
 - `/model` help now renders effective capability lanes and catalog aliases
   instead of promoting configured `model_routes` as a first-class runtime
   surface.
-- Remaining audit target: old config/API/tooling surfaces still expose
-  `model_routes` as editable compatibility data; future cleanup should either
-  rename that data shape to catalog aliases or fully retire it.
+- `model_routing_config` no longer creates or removes editable
+  `model_routes`; scenario upserts now write the selected capability lane's
+  ordered candidate list and classification rules resolve through the shared
+  lane/catalog selector path.
+- Remaining audit target: old config/API surfaces still expose `model_routes`
+  as compatibility/catalog-alias data; future cleanup should either rename that
+  data shape to catalog aliases or fully retire it.
 
 ---
 

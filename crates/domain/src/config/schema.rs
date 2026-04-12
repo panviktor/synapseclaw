@@ -4290,24 +4290,25 @@ pub struct ModelLaneConfig {
     pub candidates: Vec<ModelLaneCandidateConfig>,
 }
 
-/// Route a task hint to a specific provider + model.
+/// Legacy catalog alias from a task hint to a specific provider + model.
 ///
 /// ```toml
 /// [[model_routes]]
 /// hint = "reasoning"
-/// provider = "openrouter"
-/// model = "anthropic/claude-opus-4-20250514"
+/// provider = "example-provider"
+/// model = "example-reasoning-model"
 ///
 /// [[model_routes]]
 /// hint = "fast"
-/// provider = "groq"
-/// model = "llama-3.3-70b-versatile"
+/// provider = "example-provider"
+/// model = "example-fast-model"
 /// ```
 ///
-/// Usage: pass `hint:reasoning` as the model parameter to route the request.
+/// Runtime routing should prefer `[[model_lanes]]`; this shape remains for
+/// catalog aliases and legacy config/API surfaces.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ModelRouteConfig {
-    /// Task hint name (e.g. "reasoning", "fast", "code", "summarize")
+    /// Alias name, such as a capability selector or operator-defined shortcut.
     pub hint: String,
     /// Optional capability lane resolved by runtime/domain services.
     #[serde(default)]

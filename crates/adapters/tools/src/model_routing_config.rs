@@ -9,7 +9,8 @@ use synapse_domain::application::services::model_preset_resolution::{
     preset_title, resolve_effective_model_lanes,
 };
 use synapse_domain::config::schema::{
-    CapabilityLane, ClassificationRule, Config, DelegateAgentConfig, ModelRouteConfig,
+    CapabilityLane, ClassificationRule, Config, DelegateAgentConfig, ModelCandidateProfileConfig,
+    ModelLaneCandidateConfig, ModelLaneConfig,
 };
 use synapse_domain::domain::security_policy::SecurityPolicy;
 use synapse_domain::domain::tool_fact::{
@@ -211,26 +212,27 @@ impl ModelRoutingConfigTool {
         Ok(Some(value))
     }
 
-    fn scenario_row(route: &ModelRouteConfig, rule: Option<&ClassificationRule>) -> Value {
-        let classification = rule.map(|r| {
-            json!({
-                "keywords": r.keywords,
-                "patterns": r.patterns,
-                "min_length": r.min_length,
-                "max_length": r.max_length,
-                "priority": r.priority,
-            })
-        });
-
+    fn scenario_row(rule: &ClassificationRule, cfg: &Config) -> Value {
+        let resolved =
+            synapse_domain::application::services::inbound_message_service::resolve_model_command_route(
+                &rule.hint,
+                cfg,
+            );
         json!({
-            "hint": route.hint,
-            "provider": route.provider,
-            "model": route.model,
-            "api_key_configured": route
-                .api_key
-                .as_ref()
-                .is_some_and(|value| !value.trim().is_empty()),
-            "classification": classification,
+            "selector": rule.hint,
+            "resolved_route": resolved.map(|route| json!({
+                "provider": route.provider,
+                "model": route.model,
+                "lane": route.lane.map(Self::lane_name),
+                "candidate_index": route.candidate_index,
+            })),
+            "classification": {
+                "keywords": rule.keywords,
+                "patterns": rule.patterns,
+                "min_length": rule.min_length,
+                "max_length": rule.max_length,
+                "priority": rule.priority,
+            },
         })
     }
 
@@ -272,9 +274,6 @@ impl ModelRoutingConfigTool {
     }
 
     fn snapshot(cfg: &Config) -> Value {
-        let mut routes = cfg.model_routes.clone();
-        routes.sort_by(|a, b| a.hint.cmp(&b.hint));
-
         let mut rules = cfg.query_classification.rules.clone();
         rules.sort_by(|a, b| {
             b.priority
@@ -282,18 +281,23 @@ impl ModelRoutingConfigTool {
                 .then_with(|| a.hint.cmp(&b.hint))
         });
 
-        let mut scenarios = Vec::with_capacity(routes.len());
-        for route in &routes {
-            let rule = rules.iter().find(|r| r.hint == route.hint);
-            scenarios.push(Self::scenario_row(route, rule));
-        }
-
-        let classification_only_rules: Vec<Value> = rules
+        let scenarios = rules
             .iter()
-            .filter(|rule| !routes.iter().any(|route| route.hint == rule.hint))
+            .map(|rule| Self::scenario_row(rule, cfg))
+            .collect::<Vec<_>>();
+
+        let unresolved_classification_rules: Vec<Value> = rules
+            .iter()
+            .filter(|rule| {
+                synapse_domain::application::services::inbound_message_service::resolve_model_command_route(
+                    &rule.hint,
+                    cfg,
+                )
+                .is_none()
+            })
             .map(|rule| {
                 json!({
-                    "hint": rule.hint,
+                    "selector": rule.hint,
                     "keywords": rule.keywords,
                     "patterns": rule.patterns,
                     "min_length": rule.min_length,
@@ -341,14 +345,9 @@ impl ModelRoutingConfigTool {
                 "rules_count": cfg.query_classification.rules.len(),
             },
             "scenarios": scenarios,
-            "classification_only_rules": classification_only_rules,
+            "unresolved_classification_rules": unresolved_classification_rules,
             "agents": agents,
         })
-    }
-
-    fn normalize_and_sort_routes(routes: &mut Vec<ModelRouteConfig>) {
-        routes.retain(|route| !route.hint.trim().is_empty());
-        routes.sort_by(|a, b| a.hint.cmp(&b.hint));
     }
 
     fn normalize_and_sort_rules(rules: &mut Vec<ClassificationRule>) {
@@ -373,6 +372,75 @@ impl ModelRoutingConfigTool {
         }
     }
 
+    fn parse_lane_selector(args: &Value) -> anyhow::Result<CapabilityLane> {
+        let raw = args
+            .get("lane")
+            .or_else(|| args.get("hint"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Missing 'lane'"))?
+            .trim();
+        raw.parse::<CapabilityLane>().map_err(|_| {
+            anyhow::anyhow!(
+                "'lane' must be one of: {}",
+                CapabilityLane::ALL
+                    .into_iter()
+                    .map(Self::lane_name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })
+    }
+
+    fn upsert_lane_candidate(
+        cfg: &mut Config,
+        lane: CapabilityLane,
+        provider: String,
+        model: String,
+        api_key_update: MaybeSet<String>,
+    ) {
+        let existing = cfg
+            .model_lanes
+            .iter()
+            .find(|entry| entry.lane == lane)
+            .and_then(|entry| {
+                entry
+                    .candidates
+                    .iter()
+                    .find(|candidate| candidate.provider == provider && candidate.model == model)
+                    .cloned()
+            });
+        let mut candidate = existing.unwrap_or_else(|| ModelLaneCandidateConfig {
+            provider: provider.clone(),
+            model: model.clone(),
+            api_key: None,
+            api_key_env: None,
+            dimensions: None,
+            profile: ModelCandidateProfileConfig::default(),
+        });
+
+        candidate.provider = provider;
+        candidate.model = model;
+        match api_key_update {
+            MaybeSet::Set(api_key) => candidate.api_key = Some(api_key),
+            MaybeSet::Null => candidate.api_key = None,
+            MaybeSet::Unset => {}
+        }
+
+        if let Some(entry) = cfg.model_lanes.iter_mut().find(|entry| entry.lane == lane) {
+            entry.candidates.retain(|existing| {
+                existing.provider != candidate.provider || existing.model != candidate.model
+            });
+            entry.candidates.insert(0, candidate);
+        } else {
+            cfg.model_lanes.push(ModelLaneConfig {
+                lane,
+                candidates: vec![candidate],
+            });
+        }
+        cfg.model_lanes
+            .sort_by(|left, right| left.lane.as_str().cmp(right.lane.as_str()));
+    }
+
     fn handle_get(&self) -> anyhow::Result<ToolResult> {
         let cfg = self.load_config_without_env()?;
         Ok(ToolResult {
@@ -384,10 +452,17 @@ impl ModelRoutingConfigTool {
 
     fn handle_list_hints(&self) -> anyhow::Result<ToolResult> {
         let cfg = self.load_config_without_env()?;
-        let mut route_hints: Vec<String> =
-            cfg.model_routes.iter().map(|r| r.hint.clone()).collect();
-        route_hints.sort();
-        route_hints.dedup();
+        let lane_selectors: Vec<&'static str> = CapabilityLane::ALL
+            .into_iter()
+            .map(Self::lane_name)
+            .collect();
+        let mut catalog_aliases: Vec<String> =
+            synapse_domain::config::model_catalog::model_route_aliases()
+                .into_iter()
+                .map(|alias| alias.hint)
+                .collect();
+        catalog_aliases.sort();
+        catalog_aliases.dedup();
 
         let mut classification_hints: Vec<String> = cfg
             .query_classification
@@ -401,24 +476,24 @@ impl ModelRoutingConfigTool {
         Ok(ToolResult {
             success: true,
             output: serde_json::to_string_pretty(&json!({
-                "model_route_hints": route_hints,
+                "lane_selectors": lane_selectors,
+                "catalog_aliases": catalog_aliases,
                 "classification_hints": classification_hints,
                 "example": {
-                    "conversation": {
+                    "reasoning_lane": {
                         "action": "upsert_scenario",
-                        "hint": "conversation",
-                        "provider": "kimi",
-                        "model": "moonshot-v1-8k",
+                        "hint": "reasoning",
+                        "provider": "example-provider",
+                        "model": "example-reasoning-model",
                         "classification_enabled": false
                     },
-                    "coding": {
+                    "cheap_lane": {
                         "action": "upsert_scenario",
-                        "hint": "coding",
-                        "provider": "openai",
-                        "model": "gpt-5.3-codex",
+                        "hint": "cheap_reasoning",
+                        "provider": "test-provider",
+                        "model": "test-fast-model",
                         "classification_enabled": true,
-                        "keywords": ["code", "bug", "refactor", "test"],
-                        "patterns": ["```"],
+                        "keywords": ["summarize", "short"],
                         "priority": 50
                     }
                 }
@@ -608,7 +683,8 @@ impl ModelRoutingConfigTool {
     }
 
     async fn handle_upsert_scenario(&self, args: &Value) -> anyhow::Result<ToolResult> {
-        let hint = Self::parse_non_empty_string(args, "hint")?;
+        let lane = Self::parse_lane_selector(args)?;
+        let selector = Self::lane_name(lane).to_string();
         let provider = Self::parse_non_empty_string(args, "provider")?;
         let model = Self::parse_non_empty_string(args, "model")?;
         let api_key_update = Self::parse_optional_string_update(args, "api_key")?;
@@ -636,53 +712,26 @@ impl ModelRoutingConfigTool {
             || !matches!(priority_update, MaybeSet::Unset);
 
         let mut cfg = self.load_config_without_env()?;
-
-        let existing_route = cfg
-            .model_routes
-            .iter()
-            .find(|route| route.hint == hint)
-            .cloned();
-
-        let mut next_route = existing_route.unwrap_or(ModelRouteConfig {
-            hint: hint.clone(),
-            capability: None,
-            provider: provider.clone(),
-            model: model.clone(),
-            api_key: None,
-            profile: synapse_domain::config::schema::ModelCandidateProfileConfig::default(),
-        });
-
-        next_route.hint = hint.clone();
-        next_route.provider = provider;
-        next_route.model = model;
-
-        match api_key_update {
-            MaybeSet::Set(api_key) => next_route.api_key = Some(api_key),
-            MaybeSet::Null => next_route.api_key = None,
-            MaybeSet::Unset => {}
-        }
-
-        cfg.model_routes.retain(|route| route.hint != hint);
-        cfg.model_routes.push(next_route);
-        Self::normalize_and_sort_routes(&mut cfg.model_routes);
+        Self::upsert_lane_candidate(&mut cfg, lane, provider, model, api_key_update);
 
         if should_touch_rule {
             if matches!(classification_enabled, Some(false)) {
                 cfg.query_classification
                     .rules
-                    .retain(|rule| rule.hint != hint);
+                    .retain(|rule| rule.hint != selector);
             } else {
                 let existing_rule = cfg
                     .query_classification
                     .rules
                     .iter()
-                    .find(|rule| rule.hint == hint)
+                    .find(|rule| rule.hint == selector)
                     .cloned();
 
                 let mut next_rule = existing_rule.unwrap_or_else(|| ClassificationRule {
-                    hint: hint.clone(),
+                    hint: selector.clone(),
                     ..ClassificationRule::default()
                 });
+                next_rule.hint = selector.clone();
 
                 if let Some(keywords) = keywords_update {
                     next_rule.keywords = keywords;
@@ -710,18 +759,18 @@ impl ModelRoutingConfigTool {
                 }
 
                 if matches!(classification_enabled, Some(true)) {
-                    Self::ensure_rule_defaults(&mut next_rule, &hint);
+                    Self::ensure_rule_defaults(&mut next_rule, &selector);
                 }
 
                 if !Self::has_rule_matcher(&next_rule) {
                     anyhow::bail!(
-                        "Classification rule for hint '{hint}' has no matching criteria. Provide keywords/patterns or set min_length/max_length."
+                        "Classification rule for selector '{selector}' has no matching criteria. Provide keywords/patterns or set min_length/max_length."
                     );
                 }
 
                 cfg.query_classification
                     .rules
-                    .retain(|rule| rule.hint != hint);
+                    .retain(|rule| rule.hint != selector);
                 cfg.query_classification.rules.push(next_rule);
             }
         }
@@ -734,8 +783,9 @@ impl ModelRoutingConfigTool {
         Ok(ToolResult {
             success: true,
             output: serde_json::to_string_pretty(&json!({
-                "message": "Scenario route upserted",
-                "hint": hint,
+                "message": "Scenario lane candidate upserted",
+                "selector": selector,
+                "lane": Self::lane_name(lane),
                 "config": Self::snapshot(&cfg),
             }))?,
             error: None,
@@ -743,7 +793,8 @@ impl ModelRoutingConfigTool {
     }
 
     async fn handle_remove_scenario(&self, args: &Value) -> anyhow::Result<ToolResult> {
-        let hint = Self::parse_non_empty_string(args, "hint")?;
+        let lane = Self::parse_lane_selector(args)?;
+        let selector = Self::lane_name(lane).to_string();
         let remove_classification = args
             .get("remove_classification")
             .and_then(Value::as_bool)
@@ -751,24 +802,23 @@ impl ModelRoutingConfigTool {
 
         let mut cfg = self.load_config_without_env()?;
 
-        let before_routes = cfg.model_routes.len();
-        cfg.model_routes.retain(|route| route.hint != hint);
-        let routes_removed = before_routes.saturating_sub(cfg.model_routes.len());
+        let before_lanes = cfg.model_lanes.len();
+        cfg.model_lanes.retain(|entry| entry.lane != lane);
+        let lanes_removed = before_lanes.saturating_sub(cfg.model_lanes.len());
 
         let mut rules_removed = 0usize;
         if remove_classification {
             let before_rules = cfg.query_classification.rules.len();
             cfg.query_classification
                 .rules
-                .retain(|rule| rule.hint != hint);
+                .retain(|rule| rule.hint != selector);
             rules_removed = before_rules.saturating_sub(cfg.query_classification.rules.len());
         }
 
-        if routes_removed == 0 && rules_removed == 0 {
-            anyhow::bail!("No scenario found for hint '{hint}'");
+        if lanes_removed == 0 && rules_removed == 0 {
+            anyhow::bail!("No scenario found for selector '{selector}'");
         }
 
-        Self::normalize_and_sort_routes(&mut cfg.model_routes);
         Self::normalize_and_sort_rules(&mut cfg.query_classification.rules);
         cfg.query_classification.enabled = !cfg.query_classification.rules.is_empty();
 
@@ -778,8 +828,9 @@ impl ModelRoutingConfigTool {
             success: true,
             output: serde_json::to_string_pretty(&json!({
                 "message": "Scenario removed",
-                "hint": hint,
-                "routes_removed": routes_removed,
+                "selector": selector,
+                "lane": Self::lane_name(lane),
+                "lanes_removed": lanes_removed,
                 "classification_rules_removed": rules_removed,
                 "config": Self::snapshot(&cfg),
             }))?,
@@ -926,7 +977,7 @@ impl Tool for ModelRoutingConfigTool {
     }
 
     fn description(&self) -> &str {
-        "Manage default model settings, scenario-based provider/model routes, classification rules, and delegate sub-agent profiles"
+        "Manage default model settings, capability-lane candidates, classification rules, and delegate sub-agent profiles"
     }
 
     fn parameters_schema(&self) -> Value {
@@ -950,7 +1001,11 @@ impl Tool for ModelRoutingConfigTool {
                 },
                 "hint": {
                     "type": "string",
-                    "description": "Scenario hint name (for example: conversation, coding, reasoning)"
+                    "description": "Capability-lane selector for scenario routing (for example: reasoning, cheap_reasoning, image_generation). Prefer 'lane' for new calls."
+                },
+                "lane": {
+                    "type": "string",
+                    "description": "Capability lane for upsert_scenario/remove_scenario (reasoning, cheap_reasoning, embedding, multimodal_understanding, image_generation, audio_generation, video_generation, music_generation)"
                 },
                 "preset": {
                     "type": ["string", "null"],
@@ -974,7 +1029,7 @@ impl Tool for ModelRoutingConfigTool {
                 },
                 "api_key": {
                     "type": ["string", "null"],
-                    "description": "Optional API key override for scenario route or delegate agent"
+                    "description": "Optional API key override for lane candidate or delegate agent"
                 },
                 "keywords": {
                     "description": "Classification keywords for upsert_scenario (string or string array)",
@@ -1006,7 +1061,7 @@ impl Tool for ModelRoutingConfigTool {
                 },
                 "classification_enabled": {
                     "type": "boolean",
-                    "description": "When true, upsert classification rule for this hint; false removes it"
+                    "description": "When true, upsert classification rule for this lane selector; false removes it"
                 },
                 "remove_classification": {
                     "type": "boolean",
@@ -1082,7 +1137,8 @@ impl Tool for ModelRoutingConfigTool {
                     .filter(|value| !value.is_empty())
                     .map(ToOwned::to_owned),
                 hint: args
-                    .get("hint")
+                    .get("lane")
+                    .or_else(|| args.get("hint"))
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
@@ -1203,8 +1259,8 @@ mod tests {
         let result = tool
             .execute(json!({
                 "action": "set_default",
-                "provider": "kimi",
-                "model": "moonshot-v1-8k",
+                "provider": "test-provider",
+                "model": "test-default-model",
                 "temperature": 0.2
             }))
             .await
@@ -1214,11 +1270,11 @@ mod tests {
         let output: Value = serde_json::from_str(&result.output).unwrap();
         assert_eq!(
             output["config"]["default"]["provider"].as_str(),
-            Some("kimi")
+            Some("test-provider")
         );
         assert_eq!(
             output["config"]["default"]["model"].as_str(),
-            Some("moonshot-v1-8k")
+            Some("test-default-model")
         );
         assert_eq!(
             output["config"]["default"]["temperature"].as_f64(),
@@ -1227,16 +1283,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upsert_scenario_creates_route_and_rule() {
+    async fn upsert_scenario_creates_lane_candidate_and_rule() {
         let tmp = TempDir::new().unwrap();
         let tool = ModelRoutingConfigTool::new(Box::pin(test_config(&tmp)).await, test_security());
 
         let result = tool
             .execute(json!({
                 "action": "upsert_scenario",
-                "hint": "coding",
-                "provider": "openai",
-                "model": "gpt-5.3-codex",
+                "lane": "reasoning",
+                "provider": "test-provider",
+                "model": "test-reasoning-model",
                 "classification_enabled": true,
                 "keywords": ["code", "bug", "refactor"],
                 "patterns": ["```"],
@@ -1255,9 +1311,10 @@ mod tests {
 
         let scenarios = output["scenarios"].as_array().unwrap();
         assert!(scenarios.iter().any(|item| {
-            item["hint"] == json!("coding")
-                && item["provider"] == json!("openai")
-                && item["model"] == json!("gpt-5.3-codex")
+            item["selector"] == json!("reasoning")
+                && item["resolved_route"]["provider"] == json!("test-provider")
+                && item["resolved_route"]["model"] == json!("test-reasoning-model")
+                && item["resolved_route"]["lane"] == json!("reasoning")
         }));
     }
 
@@ -1269,9 +1326,9 @@ mod tests {
         let _ = tool
             .execute(json!({
                 "action": "upsert_scenario",
-                "hint": "coding",
-                "provider": "openai",
-                "model": "gpt-5.3-codex",
+                "lane": "reasoning",
+                "provider": "test-provider",
+                "model": "test-reasoning-model",
                 "classification_enabled": true,
                 "keywords": ["code"]
             }))
@@ -1281,7 +1338,7 @@ mod tests {
         let removed = tool
             .execute(json!({
                 "action": "remove_scenario",
-                "hint": "coding"
+                "lane": "reasoning"
             }))
             .await
             .unwrap();
@@ -1302,8 +1359,8 @@ mod tests {
             .execute(json!({
                 "action": "upsert_agent",
                 "name": "coder",
-                "provider": "openai",
-                "model": "gpt-5.3-codex",
+                "provider": "test-provider",
+                "model": "test-agent-model",
                 "agentic": true,
                 "allowed_tools": ["file_read", "file_write", "shell"],
                 "max_iterations": 6
@@ -1314,8 +1371,14 @@ mod tests {
 
         let get_result = tool.execute(json!({"action": "get"})).await.unwrap();
         let output: Value = serde_json::from_str(&get_result.output).unwrap();
-        assert_eq!(output["agents"]["coder"]["provider"], json!("openai"));
-        assert_eq!(output["agents"]["coder"]["model"], json!("gpt-5.3-codex"));
+        assert_eq!(
+            output["agents"]["coder"]["provider"],
+            json!("test-provider")
+        );
+        assert_eq!(
+            output["agents"]["coder"]["model"],
+            json!("test-agent-model")
+        );
         assert_eq!(output["agents"]["coder"]["agentic"], json!(true));
 
         let remove = tool
@@ -1341,7 +1404,7 @@ mod tests {
         let result = tool
             .execute(json!({
                 "action": "set_default",
-                "provider": "openai"
+                "provider": "test-provider"
             }))
             .await
             .unwrap();
@@ -1361,7 +1424,7 @@ mod tests {
         let result = tool
             .execute(json!({
                 "action": "set_default",
-                "provider": "anthropic",
+                "provider": "test-provider",
                 "model": "totally-fake-model-12345"
             }))
             .await
