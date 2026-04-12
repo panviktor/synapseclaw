@@ -1,7 +1,7 @@
 //! Typed calibration ledger for runtime decisions.
 
-const RUNTIME_CALIBRATION_TTL_SECS: i64 = 48 * 60 * 60;
-const MAX_RUNTIME_CALIBRATION_RECORDS: usize = 12;
+pub const RUNTIME_CALIBRATION_TTL_SECS: i64 = 48 * 60 * 60;
+pub const MAX_RUNTIME_CALIBRATION_RECORDS: usize = 12;
 const HIGH_CONFIDENCE_BASIS_POINTS: u16 = 7_500;
 const LOW_CONFIDENCE_BASIS_POINTS: u16 = 4_500;
 
@@ -69,7 +69,7 @@ pub fn append_runtime_calibration_observation(
     observation: RuntimeCalibrationObservation,
     now_unix: i64,
 ) -> RuntimeCalibrationLedger {
-    let mut records = retained_runtime_calibration_records(history, now_unix);
+    let mut records = clean_runtime_calibration_records(history, now_unix);
     let Some(record) = build_runtime_calibration_record(observation) else {
         return RuntimeCalibrationLedger { records };
     };
@@ -94,6 +94,47 @@ pub fn append_runtime_calibration_observation(
     records.truncate(MAX_RUNTIME_CALIBRATION_RECORDS);
 
     RuntimeCalibrationLedger { records }
+}
+
+pub fn clean_runtime_calibration_records(
+    history: &[RuntimeCalibrationRecord],
+    now_unix: i64,
+) -> Vec<RuntimeCalibrationRecord> {
+    let mut by_signature = std::collections::BTreeMap::<
+        (
+            RuntimeCalibrationDecisionKind,
+            String,
+            RuntimeCalibrationComparison,
+        ),
+        RuntimeCalibrationRecord,
+    >::new();
+    for record in retained_runtime_calibration_records(history, now_unix) {
+        let signature = (
+            record.decision_kind,
+            record.decision_signature.clone(),
+            record.comparison,
+        );
+        match by_signature.get_mut(&signature) {
+            Some(existing) if existing.observed_at_unix < record.observed_at_unix => {
+                *existing = record;
+            }
+            None => {
+                by_signature.insert(signature, record);
+            }
+            Some(_) => {}
+        }
+    }
+
+    let mut records = by_signature.into_values().collect::<Vec<_>>();
+    records.sort_by(|left, right| {
+        right
+            .observed_at_unix
+            .cmp(&left.observed_at_unix)
+            .then_with(|| left.decision_kind.cmp(&right.decision_kind))
+            .then_with(|| left.decision_signature.cmp(&right.decision_signature))
+    });
+    records.truncate(MAX_RUNTIME_CALIBRATION_RECORDS);
+    records
 }
 
 pub fn build_runtime_calibration_record(
@@ -200,7 +241,9 @@ fn retained_runtime_calibration_records(
 ) -> Vec<RuntimeCalibrationRecord> {
     history
         .iter()
-        .filter(|record| record.observed_at_unix >= now_unix - RUNTIME_CALIBRATION_TTL_SECS)
+        .filter(|record| {
+            record.observed_at_unix >= now_unix.saturating_sub(RUNTIME_CALIBRATION_TTL_SECS)
+        })
         .cloned()
         .collect()
 }
@@ -331,5 +374,70 @@ mod tests {
             .records;
         }
         assert_eq!(records.len(), MAX_RUNTIME_CALIBRATION_RECORDS);
+    }
+
+    #[test]
+    fn clean_records_applies_ttl_and_count_bounds() {
+        let mut records = Vec::new();
+        records.push(
+            build_runtime_calibration_record(observation(
+                RuntimeCalibrationDecisionKind::RouteChoice,
+                "old",
+                9_000,
+                RuntimeCalibrationOutcome::Failed,
+                1,
+            ))
+            .unwrap(),
+        );
+        records.push(
+            build_runtime_calibration_record(observation(
+                RuntimeCalibrationDecisionKind::ToolChoice,
+                "tool:dupe",
+                4_000,
+                RuntimeCalibrationOutcome::Succeeded,
+                600,
+            ))
+            .unwrap(),
+        );
+        records.push(
+            build_runtime_calibration_record(observation(
+                RuntimeCalibrationDecisionKind::ToolChoice,
+                "tool:dupe",
+                4_500,
+                RuntimeCalibrationOutcome::Succeeded,
+                700,
+            ))
+            .unwrap(),
+        );
+        for index in 0..MAX_RUNTIME_CALIBRATION_RECORDS + 2 {
+            records.push(
+                build_runtime_calibration_record(observation(
+                    RuntimeCalibrationDecisionKind::ToolChoice,
+                    &format!("tool:{index}"),
+                    4_000,
+                    RuntimeCalibrationOutcome::Succeeded,
+                    500 + index as i64,
+                ))
+                .unwrap(),
+            );
+        }
+
+        let cleaned =
+            clean_runtime_calibration_records(&records, 500 + RUNTIME_CALIBRATION_TTL_SECS + 1);
+
+        assert_eq!(cleaned.len(), MAX_RUNTIME_CALIBRATION_RECORDS);
+        assert!(cleaned
+            .iter()
+            .all(|record| record.decision_signature != "old"));
+        assert_eq!(
+            cleaned
+                .iter()
+                .filter(|record| record.decision_signature == "tool:dupe")
+                .count(),
+            1
+        );
+        assert!(cleaned.iter().any(|record| {
+            record.decision_signature == "tool:dupe" && record.confidence_basis_points == 4_500
+        }));
     }
 }

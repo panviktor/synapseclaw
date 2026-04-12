@@ -46,6 +46,9 @@ use synapse_domain::application::services::runtime_assumptions::{
     RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
+use synapse_domain::application::services::runtime_trace_janitor::{
+    run_runtime_trace_janitor, RuntimeTraceJanitorInput,
+};
 use synapse_domain::application::services::scoped_instruction_resolution::{
     adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
     format_scoped_instruction_block,
@@ -867,6 +870,26 @@ impl Agent {
 
     pub fn recent_runtime_assumptions(&self) -> &[RuntimeAssumption] {
         &self.recent_runtime_assumptions
+    }
+
+    fn run_runtime_trace_janitor(&mut self, now_unix: i64) {
+        let cleaned = run_runtime_trace_janitor(RuntimeTraceJanitorInput {
+            tool_repairs: &self.recent_turn_tool_repairs,
+            assumptions: &self.recent_runtime_assumptions,
+            now_unix,
+            ..Default::default()
+        });
+        let removed_total = cleaned.report.removed_total();
+        let promotion_candidates = cleaned.report.promotion_candidates.len();
+        self.recent_turn_tool_repairs = cleaned.tool_repairs;
+        self.recent_runtime_assumptions = cleaned.assumptions;
+        if removed_total > 0 || promotion_candidates > 0 {
+            tracing::debug!(
+                removed_total,
+                promotion_candidates,
+                "Runtime trace janitor cleaned session ledgers"
+            );
+        }
     }
 
     pub fn user_profile_key(&self) -> Option<&str> {
@@ -1910,6 +1933,7 @@ impl Agent {
         self.last_turn_usage = None;
         self.last_turn_tool_facts.clear();
         self.last_turn_tool_repair = None;
+        self.run_runtime_trace_janitor(chrono::Utc::now().timestamp());
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -2641,6 +2665,7 @@ impl Agent {
                     &self.recent_runtime_assumptions,
                     &tool_repairs_this_turn,
                 );
+                self.run_runtime_trace_janitor(chrono::Utc::now().timestamp());
 
                 return Ok(final_text);
             }

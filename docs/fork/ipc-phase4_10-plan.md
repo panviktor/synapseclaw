@@ -2034,6 +2034,23 @@ Expected outcome:
   - bounded-count eviction
   - compacting repeated failure classes
   - promotion only through explicit policy gates
+- current status:
+  - landed:
+    - `runtime_trace_janitor` domain service cleans short-lived tool-repair,
+      watchdog, calibration, and session-handoff artifacts with TTL/dedupe/count
+      bounds
+    - runtime assumptions are re-bounded through the existing typed assumption
+      ledger, without inventing schema-specific user fields
+    - repeated tool-failure classes, challenged assumptions, critical watchdog
+      alerts, and overconfident calibration failures become typed promotion
+      candidates behind explicit gates only
+    - `Agent::turn` invokes the janitor through the shared runtime path, so web
+      and channel sessions do not fork cleanup behavior
+  - still open:
+    - there is no independent timer thread yet; cleanup is lazy per turn
+    - calibration/watchdog/handoff histories are cleaned when a caller provides
+      them, but only tool-repair and assumption ledgers are currently stored on
+      the live `Agent`
 - expected outcome:
   - bounded metacognitive state
   - less self-generated noise
