@@ -11,7 +11,9 @@ use synapse_domain::application::services::model_preset_resolution::preset_title
 use synapse_domain::application::services::provider_native_context_policy::{
     resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
 };
-use synapse_domain::application::services::runtime_assumptions::format_runtime_assumption;
+use synapse_domain::application::services::runtime_assumptions::{
+    format_runtime_assumption, RuntimeAssumption,
+};
 use synapse_domain::application::services::runtime_calibration::{
     runtime_calibration_action_name, runtime_calibration_comparison_name,
     runtime_calibration_decision_kind_name, RuntimeCalibrationRecord,
@@ -298,78 +300,7 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
         "Current provider: `{}`\nCurrent model: `{}`",
         current.provider, current.model
     );
-    if let Some(admission) = current.last_admission.as_ref() {
-        let _ = writeln!(
-            response,
-            "Last admission: `{}` / `{}` / `{}`",
-            turn_intent_name(admission.snapshot.intent),
-            context_pressure_state_name(admission.snapshot.pressure_state),
-            turn_admission_action_name(admission.snapshot.action),
-        );
-        if !admission.reasons.is_empty() {
-            let _ = writeln!(
-                response,
-                "Last admission reasons: {}",
-                admission
-                    .reasons
-                    .iter()
-                    .map(format_candidate_admission_reason)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        if let Some(repair) = admission.recommended_action {
-            let _ = writeln!(
-                response,
-                "Suggested next action: {}",
-                format_admission_repair_hint(repair)
-            );
-        }
-    }
-    if !current.recent_admissions.is_empty() {
-        let _ = writeln!(
-            response,
-            "Recent admissions retained: {}",
-            current.recent_admissions.len()
-        );
-        write_recent_admissions(&mut response, &current.recent_admissions);
-    }
-    if let Some(repair) = current.last_tool_repair.as_ref() {
-        let _ = writeln!(
-            response,
-            "Last tool repair: {} / {}",
-            tool_failure_kind_name(repair.failure_kind),
-            format_tool_repair_action(repair)
-        );
-        if let Some(detail) = repair.detail.as_deref() {
-            let _ = writeln!(response, "Last tool repair detail: {}", detail);
-        }
-    }
-    if !current.recent_tool_repairs.is_empty() {
-        let _ = writeln!(
-            response,
-            "Recent tool repairs retained: {}",
-            current.recent_tool_repairs.len()
-        );
-        write_recent_tool_repairs(&mut response, &current.recent_tool_repairs);
-    }
-    if !current.assumptions.is_empty() {
-        let _ = writeln!(
-            response,
-            "Runtime assumptions retained: {}",
-            current.assumptions.len()
-        );
-        for assumption in current.assumptions.iter().rev().take(3) {
-            let _ = writeln!(
-                response,
-                "Runtime assumption: {}",
-                format_runtime_assumption(assumption)
-            );
-        }
-    }
-    write_runtime_calibrations(&mut response, &current.calibrations);
-    write_runtime_handoff_artifacts(&mut response, &current.handoff_artifacts);
-    write_runtime_watchdog_digest(&mut response, current);
+    write_route_runtime_diagnostics(&mut response, current);
     if let Some(lane) = current.lane {
         let _ = writeln!(
             response,
@@ -594,64 +525,7 @@ pub(crate) fn build_providers_help_response(current: &RouteSelection) -> String 
         "Current provider: `{}`\nCurrent model: `{}`",
         current.provider, current.model
     );
-    if let Some(admission) = current.last_admission.as_ref() {
-        let _ = writeln!(
-            response,
-            "Last admission: `{}` / `{}` / `{}`",
-            turn_intent_name(admission.snapshot.intent),
-            context_pressure_state_name(admission.snapshot.pressure_state),
-            turn_admission_action_name(admission.snapshot.action),
-        );
-        if !admission.reasons.is_empty() {
-            let _ = writeln!(
-                response,
-                "Last admission reasons: {}",
-                admission
-                    .reasons
-                    .iter()
-                    .map(format_candidate_admission_reason)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        if let Some(repair) = admission.recommended_action {
-            let _ = writeln!(
-                response,
-                "Suggested next action: {}",
-                format_admission_repair_hint(repair)
-            );
-        }
-    }
-    if !current.recent_admissions.is_empty() {
-        let _ = writeln!(
-            response,
-            "Recent admissions retained: {}",
-            current.recent_admissions.len()
-        );
-        write_recent_admissions(&mut response, &current.recent_admissions);
-    }
-    if let Some(repair) = current.last_tool_repair.as_ref() {
-        let _ = writeln!(
-            response,
-            "Last tool repair: {} / {}",
-            tool_failure_kind_name(repair.failure_kind),
-            format_tool_repair_action(repair)
-        );
-        if let Some(detail) = repair.detail.as_deref() {
-            let _ = writeln!(response, "Last tool repair detail: {}", detail);
-        }
-    }
-    if !current.recent_tool_repairs.is_empty() {
-        let _ = writeln!(
-            response,
-            "Recent tool repairs retained: {}",
-            current.recent_tool_repairs.len()
-        );
-        write_recent_tool_repairs(&mut response, &current.recent_tool_repairs);
-    }
-    write_runtime_calibrations(&mut response, &current.calibrations);
-    write_runtime_handoff_artifacts(&mut response, &current.handoff_artifacts);
-    write_runtime_watchdog_digest(&mut response, current);
+    write_route_runtime_diagnostics(&mut response, current);
     response.push_str("\nSwitch provider with `/models <provider>`.\n");
     response.push_str("Switch model with `/model <model-id>`.\n\n");
     response.push_str("Available providers:\n");
@@ -820,6 +694,94 @@ fn format_tool_repair_action(trace: &ToolRepairTrace) -> String {
             capability_lane_name(lane)
         ),
         _ => tool_repair_action_name(trace.suggested_action).to_string(),
+    }
+}
+
+fn write_route_runtime_diagnostics(response: &mut String, current: &RouteSelection) {
+    write_route_admission_diagnostics(response, current);
+    write_tool_repair_diagnostics(response, current);
+    write_runtime_assumptions(response, &current.assumptions);
+    write_runtime_calibrations(response, &current.calibrations);
+    write_runtime_handoff_artifacts(response, &current.handoff_artifacts);
+    write_runtime_watchdog_digest(response, current);
+}
+
+fn write_route_admission_diagnostics(response: &mut String, current: &RouteSelection) {
+    if let Some(admission) = current.last_admission.as_ref() {
+        let _ = writeln!(
+            response,
+            "Last admission: `{}` / `{}` / `{}`",
+            turn_intent_name(admission.snapshot.intent),
+            context_pressure_state_name(admission.snapshot.pressure_state),
+            turn_admission_action_name(admission.snapshot.action),
+        );
+        if !admission.reasons.is_empty() {
+            let _ = writeln!(
+                response,
+                "Last admission reasons: {}",
+                admission
+                    .reasons
+                    .iter()
+                    .map(format_candidate_admission_reason)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if let Some(repair) = admission.recommended_action {
+            let _ = writeln!(
+                response,
+                "Suggested next action: {}",
+                format_admission_repair_hint(repair)
+            );
+        }
+    }
+    if !current.recent_admissions.is_empty() {
+        let _ = writeln!(
+            response,
+            "Recent admissions retained: {}",
+            current.recent_admissions.len()
+        );
+        write_recent_admissions(response, &current.recent_admissions);
+    }
+}
+
+fn write_tool_repair_diagnostics(response: &mut String, current: &RouteSelection) {
+    if let Some(repair) = current.last_tool_repair.as_ref() {
+        let _ = writeln!(
+            response,
+            "Last tool repair: {} / {}",
+            tool_failure_kind_name(repair.failure_kind),
+            format_tool_repair_action(repair)
+        );
+        if let Some(detail) = repair.detail.as_deref() {
+            let _ = writeln!(response, "Last tool repair detail: {}", detail);
+        }
+    }
+    if !current.recent_tool_repairs.is_empty() {
+        let _ = writeln!(
+            response,
+            "Recent tool repairs retained: {}",
+            current.recent_tool_repairs.len()
+        );
+        write_recent_tool_repairs(response, &current.recent_tool_repairs);
+    }
+}
+
+fn write_runtime_assumptions(response: &mut String, assumptions: &[RuntimeAssumption]) {
+    if assumptions.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        response,
+        "Runtime assumptions retained: {}",
+        assumptions.len()
+    );
+    for assumption in assumptions.iter().rev().take(3) {
+        let _ = writeln!(
+            response,
+            "Runtime assumption: {}",
+            format_runtime_assumption(assumption)
+        );
     }
 }
 
@@ -1548,6 +1510,38 @@ mod tests {
         assert!(response.contains(
             "Runtime calibration: route_choice / overconfident_failure / confidence=9000 / action=suppress_choice"
         ));
+    }
+
+    #[test]
+    fn providers_help_includes_runtime_assumption_ledger() {
+        let response = build_providers_help_response(&RouteSelection {
+            provider: "openrouter".into(),
+            model: "qwen/qwen3.6-plus".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: None,
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: vec![RuntimeAssumption {
+                kind: RuntimeAssumptionKind::ContextWindow,
+                source: RuntimeAssumptionSource::RouteAdmission,
+                freshness: RuntimeAssumptionFreshness::Challenged,
+                confidence_basis_points: 3_500,
+                value: "context_limit_exceeded".into(),
+                invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+                replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+            }],
+            calibrations: Vec::new(),
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
+        });
+
+        assert!(response.contains("Runtime assumptions retained: 1"));
+        assert!(response.contains("kind=context_window"));
+        assert!(response.contains("replacement_path=compact_session"));
+        assert!(response.contains("Runtime watchdog alerts: 1"));
     }
 
     #[test]

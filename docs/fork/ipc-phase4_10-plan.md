@@ -895,6 +895,9 @@ Expected outcome:
     - `/providers` and `/model` help rendering now flows through typed
       `RouteSelection` / config snapshots instead of adapter-owned pre-rendered
       strings
+    - `/providers` and `/model` now share the same adapter-core runtime
+      diagnostic writer for admission, tool repair, runtime assumptions,
+      calibrations, handoff artifacts, and watchdog blocks
     - provider/model route mutations now flow through typed request/outcome
       structures, including model-switch blocked outcomes, so web and channel
       can keep lifecycle differences without forking semantics
@@ -2130,6 +2133,9 @@ Expected outcome:
   - `execute_runtime_command_effect` owns common alias canonicalization,
     command-effect execution, switch success/failure/block rendering, and
     provider/model help rendering from typed snapshots
+  - adapter-core owns the shared provider/model runtime diagnostic writer, so
+    admission, repair, assumption, calibration, handoff, and watchdog help
+    blocks cannot drift between `/model` and `/providers`
   - adapters own only lifecycle-specific effects: provider initialization,
     live-agent route mutation, inbound-session route state, and transport clear
     semantics
