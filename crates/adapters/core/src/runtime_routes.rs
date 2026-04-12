@@ -16,11 +16,15 @@ use synapse_domain::application::services::runtime_calibration::{
     runtime_calibration_action_name, runtime_calibration_comparison_name,
     runtime_calibration_decision_kind_name, RuntimeCalibrationRecord,
 };
+use synapse_domain::application::services::runtime_trace_janitor::{
+    append_runtime_watchdog_alerts, RuntimeHandoffArtifact,
+};
 use synapse_domain::application::services::runtime_watchdog::{
     build_runtime_watchdog_digest, runtime_watchdog_action_name, runtime_watchdog_reason_name,
     runtime_watchdog_severity_name, runtime_watchdog_subsystem_name, RuntimeWatchdogAlert,
-    RuntimeWatchdogInput,
+    RuntimeWatchdogDigest, RuntimeWatchdogInput,
 };
+use synapse_domain::application::services::session_handoff::session_handoff_reason_name;
 use synapse_domain::config::schema::{CapabilityLane, Config, ModelFeature};
 use synapse_domain::domain::tool_repair::{
     tool_failure_kind_name, tool_repair_action_name, ToolRepairAction, ToolRepairTrace,
@@ -364,6 +368,7 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
         }
     }
     write_runtime_calibrations(&mut response, &current.calibrations);
+    write_runtime_handoff_artifacts(&mut response, &current.handoff_artifacts);
     write_runtime_watchdog_digest(&mut response, current);
     if let Some(lane) = current.lane {
         let _ = writeln!(
@@ -645,6 +650,7 @@ pub(crate) fn build_providers_help_response(current: &RouteSelection) -> String 
         write_recent_tool_repairs(&mut response, &current.recent_tool_repairs);
     }
     write_runtime_calibrations(&mut response, &current.calibrations);
+    write_runtime_handoff_artifacts(&mut response, &current.handoff_artifacts);
     write_runtime_watchdog_digest(&mut response, current);
     response.push_str("\nSwitch provider with `/models <provider>`.\n");
     response.push_str("Switch model with `/model <model-id>`.\n\n");
@@ -884,7 +890,35 @@ fn write_runtime_calibrations(response: &mut String, calibrations: &[RuntimeCali
     }
 }
 
+fn write_runtime_handoff_artifacts(response: &mut String, artifacts: &[RuntimeHandoffArtifact]) {
+    if artifacts.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        response,
+        "Runtime handoff artifacts retained: {}",
+        artifacts.len()
+    );
+    for artifact in artifacts.iter().take(2) {
+        let packet = &artifact.packet;
+        let _ = writeln!(
+            response,
+            "Runtime handoff: {}{}",
+            session_handoff_reason_name(packet.reason),
+            packet
+                .recommended_action
+                .as_deref()
+                .map(|action| format!(" / action={action}"))
+                .unwrap_or_default(),
+        );
+        if let Some(task) = packet.active_task.as_deref() {
+            let _ = writeln!(response, "Runtime handoff task: {task}");
+        }
+    }
+}
+
 fn write_runtime_watchdog_digest(response: &mut String, current: &RouteSelection) {
+    let now_unix = current_unix_seconds();
     let digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
         last_admission: current.last_admission.as_ref(),
         recent_admissions: &current.recent_admissions,
@@ -893,8 +927,13 @@ fn write_runtime_watchdog_digest(response: &mut String, current: &RouteSelection
         context_cache: current.context_cache.as_ref(),
         assumptions: &current.assumptions,
         subsystem_observations: &[],
-        now_unix: current_unix_seconds(),
+        now_unix,
     });
+    let alerts = append_runtime_watchdog_alerts(&current.watchdog_alerts, &digest.alerts, now_unix);
+    let digest = RuntimeWatchdogDigest {
+        generated_at_unix: digest.generated_at_unix,
+        alerts,
+    };
     if !digest.has_alerts() {
         return;
     }
@@ -1050,6 +1089,13 @@ mod tests {
         RuntimeCalibrationAction, RuntimeCalibrationComparison, RuntimeCalibrationDecisionKind,
         RuntimeCalibrationOutcome,
     };
+    use synapse_domain::application::services::runtime_watchdog::{
+        RuntimeWatchdogAction, RuntimeWatchdogReason, RuntimeWatchdogSeverity,
+        RuntimeWatchdogSubsystem,
+    };
+    use synapse_domain::application::services::session_handoff::{
+        SessionHandoffPacket, SessionHandoffReason,
+    };
     use synapse_domain::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
         ModelRouteConfig,
@@ -1075,6 +1121,8 @@ mod tests {
             context_cache: None,
             assumptions: Vec::new(),
             calibrations: Vec::new(),
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
         });
         assert!(response.contains("Current provider: `openai-codex`"));
         assert!(response.contains("Switch provider with `/models <provider>`"));
@@ -1152,6 +1200,8 @@ mod tests {
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1198,6 +1248,8 @@ mod tests {
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1244,6 +1296,8 @@ mod tests {
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1282,6 +1336,8 @@ mod tests {
                     replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
                 }],
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1326,6 +1382,8 @@ mod tests {
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: vec![calibration],
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1367,6 +1425,8 @@ mod tests {
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1384,6 +1444,7 @@ mod tests {
 
     #[test]
     fn providers_help_uses_shared_runtime_watchdog_digest() {
+        let observed_at_unix = current_unix_seconds();
         let response = build_providers_help_response(&RouteSelection {
             provider: "openrouter".into(),
             model: "qwen/qwen3.6-plus".into(),
@@ -1392,7 +1453,7 @@ mod tests {
             last_admission: None,
             recent_admissions: Vec::new(),
             last_tool_repair: Some(ToolRepairTrace {
-                observed_at_unix: 1_744_243_200,
+                observed_at_unix,
                 tool_name: "message_send".into(),
                 failure_kind: ToolFailureKind::ReportedFailure,
                 suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
@@ -1402,11 +1463,57 @@ mod tests {
             context_cache: None,
             assumptions: Vec::new(),
             calibrations: Vec::new(),
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
         });
 
         assert!(response.contains("Runtime watchdog alerts: 1"));
         assert!(response.contains(
             "Runtime watchdog: caution / tool_execution / tool_failure / action=repair_tool_request"
+        ));
+    }
+
+    #[test]
+    fn providers_help_includes_retained_runtime_trace_artifacts() {
+        let observed_at_unix = current_unix_seconds();
+        let response = build_providers_help_response(&RouteSelection {
+            provider: "openrouter".into(),
+            model: "qwen/qwen3.6-plus".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: None,
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: Vec::new(),
+            calibrations: Vec::new(),
+            watchdog_alerts: vec![RuntimeWatchdogAlert {
+                subsystem: RuntimeWatchdogSubsystem::MemoryBackend,
+                severity: RuntimeWatchdogSeverity::Degraded,
+                reason: RuntimeWatchdogReason::SubsystemDegraded,
+                recommended_action: RuntimeWatchdogAction::CheckMemoryBackend,
+                observed_at_unix,
+            }],
+            handoff_artifacts: vec![RuntimeHandoffArtifact {
+                observed_at_unix,
+                packet: SessionHandoffPacket {
+                    reason: SessionHandoffReason::ContextOverflow,
+                    recommended_action: Some("start_fresh_handoff".into()),
+                    active_task: Some("continue after compact handoff".into()),
+                    current_defaults: Vec::new(),
+                    anchors: Vec::new(),
+                    unresolved_questions: Vec::new(),
+                    assumptions: Vec::new(),
+                },
+            }],
+        });
+
+        assert!(response.contains("Runtime handoff artifacts retained: 1"));
+        assert!(response.contains("Runtime handoff: context_overflow / action=start_fresh_handoff"));
+        assert!(response.contains("Runtime watchdog degraded: memory_backend"));
+        assert!(response.contains(
+            "Runtime watchdog: degraded / memory_backend / subsystem_degraded / action=check_memory_backend"
         ));
     }
 
@@ -1433,6 +1540,8 @@ mod tests {
                 recommended_action: RuntimeCalibrationAction::SuppressChoice,
                 observed_at_unix: 1_744_243_260,
             }],
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
         });
 
         assert!(response.contains("Runtime calibrations retained: 1"));
@@ -1480,6 +1589,8 @@ mod tests {
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1538,6 +1649,8 @@ mod tests {
                 }),
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );

@@ -551,8 +551,8 @@ Expected outcome:
     explicit follow-through tails listed in their slice sections.
   - Slice 17 is code-landed except live large-window -> small-window route
     downgrade validation.
-  - Slice 19 has an initial typed-assumption layer; Slices 20-23 are planned /
-    not yet implemented.
+  - Slices 19-23 now have usable typed base layers; each still has explicit
+    follow-through tails listed in its slice section.
   - Slices 24-26 are treated as code-closed extraction/parity hardening, with
     future summary/run-lifecycle unification intentionally left outside their
     current scope.
@@ -2096,10 +2096,17 @@ Expected outcome:
       and channel sessions do not fork cleanup behavior
     - channel route state now runs the same lazy janitor for tool-repair,
       assumption, and calibration ledgers before admission/suppression decisions
+    - live web `Agent` state and channel `RouteSelection` now both own bounded
+      watchdog-alert and handoff-artifact histories, and both feed those
+      histories through the same runtime trace janitor
+    - blocked admission handoff packets are retained as short-lived typed
+      artifacts instead of being only formatted into the immediate response
+    - `/model` and `/providers` diagnostics now surface retained handoff
+      artifacts and merge retained watchdog alerts through janitor semantics
   - still open:
     - there is no independent timer thread yet; cleanup is lazy per turn
-    - watchdog/handoff histories are cleaned when a caller provides them, but
-      no independent storage owner is wired for them yet
+    - watchdog/handoff cleanup now has web/channel storage owners, but still
+      runs lazily rather than through an autonomous background polling loop
 - expected outcome:
   - bounded metacognitive state
   - less self-generated noise

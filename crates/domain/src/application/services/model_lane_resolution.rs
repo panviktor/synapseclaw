@@ -650,6 +650,8 @@ mod tests {
             context_cache: None,
             assumptions: Vec::new(),
             calibrations: Vec::new(),
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
         };
 
         let resolved = resolve_route_selection_profile(&config, &route, Some(&StubCatalog));

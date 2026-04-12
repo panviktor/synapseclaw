@@ -1311,6 +1311,8 @@ fn current_web_route_selection(
         )),
         assumptions: session.agent.recent_runtime_assumptions().to_vec(),
         calibrations: session.agent.recent_runtime_calibrations().to_vec(),
+        watchdog_alerts: session.agent.recent_runtime_watchdog_alerts().to_vec(),
+        handoff_artifacts: session.agent.recent_runtime_handoff_artifacts().to_vec(),
     })
 }
 
@@ -1395,6 +1397,8 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             Some(&catalog),
         );

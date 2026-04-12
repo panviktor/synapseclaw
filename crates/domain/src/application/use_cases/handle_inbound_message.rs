@@ -22,9 +22,16 @@ use crate::application::services::runtime_assumptions::{
     RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
+use crate::application::services::runtime_trace_janitor::{
+    append_runtime_handoff_packet, append_runtime_watchdog_alerts,
+};
 use crate::application::services::runtime_watchdog::{
     build_runtime_subsystem_observations, build_runtime_watchdog_digest,
     format_runtime_watchdog_context, RuntimeSubsystemObservationInput, RuntimeWatchdogInput,
+};
+use crate::application::services::session_handoff::{
+    build_session_handoff_packet, format_session_handoff_packet, SessionHandoffInput,
+    SessionHandoffPacket,
 };
 use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::application::services::turn_markup::{
@@ -626,7 +633,7 @@ fn build_model_routing_config(config: &InboundMessageConfig) -> crate::config::s
 
 fn format_blocked_turn_admission_response(
     decision: &crate::application::services::turn_admission::CandidateAdmissionDecision,
-    user_message: &str,
+    handoff_packet: Option<&SessionHandoffPacket>,
 ) -> String {
     use crate::domain::turn_admission::{
         AdmissionRepairHint, CandidateAdmissionReason, ContextPressureState, TurnIntentCategory,
@@ -678,23 +685,8 @@ fn format_blocked_turn_admission_response(
         }
     };
 
-    if let Some(packet) =
-        crate::application::services::session_handoff::build_session_handoff_packet(
-            crate::application::services::session_handoff::SessionHandoffInput {
-                user_message,
-                interpretation: None,
-                recent_admission_repair: decision.recommended_action,
-                recent_admission_reasons: &decision.reasons,
-                recalled_entries: &[],
-                session_matches: &[],
-                run_recipes: &[],
-            },
-        )
-    {
-        format!(
-            "{base}\n\n{}",
-            crate::application::services::session_handoff::format_session_handoff_packet(&packet)
-        )
+    if let Some(packet) = handoff_packet {
+        format!("{base}\n\n{}", format_session_handoff_packet(packet))
     } else {
         base
     }
@@ -723,15 +715,18 @@ async fn execute_agent_turn(
             crate::application::services::runtime_trace_janitor::RuntimeTraceJanitorInput {
                 tool_repairs: &route.recent_tool_repairs,
                 assumptions: &route.assumptions,
+                watchdog_alerts: &route.watchdog_alerts,
                 calibration_records: &route.calibrations,
+                handoff_artifacts: &route.handoff_artifacts,
                 now_unix: janitor_now_unix,
-                ..Default::default()
             },
         );
     route.recent_tool_repairs = cleaned_route_traces.tool_repairs;
     route.last_tool_repair = route.recent_tool_repairs.last().cloned();
     route.assumptions = cleaned_route_traces.assumptions;
     route.calibrations = cleaned_route_traces.calibration_records;
+    route.watchdog_alerts = cleaned_route_traces.watchdog_alerts;
+    route.handoff_artifacts = cleaned_route_traces.handoff_artifacts;
 
     struct ConversationContextGuard {
         port: Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
@@ -862,20 +857,42 @@ async fn execute_agent_turn(
         subsystem_observations: &subsystem_observations,
         now_unix: observed_at_unix,
     });
+    route.watchdog_alerts = append_runtime_watchdog_alerts(
+        &route.watchdog_alerts,
+        &runtime_watchdog_digest.alerts,
+        observed_at_unix,
+    );
     route.last_tool_repair = None;
     route.recent_tool_repairs.clear();
-    ports.routes.set_route(conversation_key, route.clone());
 
     if admission_decision.snapshot.action
         == crate::domain::turn_admission::TurnAdmissionAction::Block
     {
+        let handoff_packet = build_session_handoff_packet(SessionHandoffInput {
+            user_message: content,
+            interpretation: interpretation.as_ref(),
+            recent_admission_repair: admission_decision.recommended_action,
+            recent_admission_reasons: &admission_decision.reasons,
+            recalled_entries: &[],
+            session_matches: &[],
+            run_recipes: &[],
+        });
+        if let Some(packet) = handoff_packet.as_ref() {
+            route.handoff_artifacts =
+                append_runtime_handoff_packet(&route.handoff_artifacts, packet, observed_at_unix);
+        }
+        ports.routes.set_route(conversation_key, route.clone());
         return Ok(HandleResult::Response {
             conversation_key: conversation_key.to_string(),
-            response_text: format_blocked_turn_admission_response(&admission_decision, content),
+            response_text: format_blocked_turn_admission_response(
+                &admission_decision,
+                handoff_packet.as_ref(),
+            ),
             tool_summary: String::new(),
             tools_used: false,
         });
     }
+    ports.routes.set_route(conversation_key, route.clone());
 
     if admission_decision.requires_compaction {
         let stored_compacted = ports
@@ -1388,6 +1405,8 @@ mod tests {
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             }
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}
@@ -1432,6 +1451,8 @@ mod tests {
                 context_cache: None,
                 assumptions: Vec::new(),
                 calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             }
         }
     }
@@ -2092,7 +2113,7 @@ mod tests {
                 condensation_plan: None,
                 requires_compaction: false,
             },
-            "Generate an image for the current task.",
+            None,
         );
 
         assert!(response.contains("image_generation"));
@@ -2120,7 +2141,7 @@ mod tests {
                 condensation_plan: None,
                 requires_compaction: false,
             },
-            "Continue the current task after compaction.",
+            None,
         );
 
         assert!(response.contains("safe context budget"));

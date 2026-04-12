@@ -143,6 +143,56 @@ pub fn run_runtime_trace_janitor(input: RuntimeTraceJanitorInput<'_>) -> Runtime
     }
 }
 
+pub fn append_runtime_watchdog_alerts(
+    history: &[RuntimeWatchdogAlert],
+    alerts: &[RuntimeWatchdogAlert],
+    now_unix: i64,
+) -> Vec<RuntimeWatchdogAlert> {
+    if history.is_empty() && alerts.is_empty() {
+        return Vec::new();
+    }
+    let mut combined = Vec::with_capacity(history.len() + alerts.len());
+    combined.extend_from_slice(history);
+    combined.extend_from_slice(alerts);
+    run_runtime_trace_janitor(RuntimeTraceJanitorInput {
+        watchdog_alerts: &combined,
+        now_unix,
+        ..Default::default()
+    })
+    .watchdog_alerts
+}
+
+pub fn append_runtime_handoff_artifact(
+    history: &[RuntimeHandoffArtifact],
+    artifact: RuntimeHandoffArtifact,
+    now_unix: i64,
+) -> Vec<RuntimeHandoffArtifact> {
+    let mut combined = Vec::with_capacity(history.len() + 1);
+    combined.extend_from_slice(history);
+    combined.push(artifact);
+    run_runtime_trace_janitor(RuntimeTraceJanitorInput {
+        handoff_artifacts: &combined,
+        now_unix,
+        ..Default::default()
+    })
+    .handoff_artifacts
+}
+
+pub fn append_runtime_handoff_packet(
+    history: &[RuntimeHandoffArtifact],
+    packet: &SessionHandoffPacket,
+    observed_at_unix: i64,
+) -> Vec<RuntimeHandoffArtifact> {
+    append_runtime_handoff_artifact(
+        history,
+        RuntimeHandoffArtifact {
+            observed_at_unix,
+            packet: packet.clone(),
+        },
+        observed_at_unix,
+    )
+}
+
 fn clean_tool_repairs(history: &[ToolRepairTrace], now_unix: i64) -> Vec<ToolRepairTrace> {
     let cutoff = now_unix.saturating_sub(RUNTIME_TRACE_JANITOR_TTL_SECS);
     let mut by_signature = BTreeMap::<String, ToolRepairTrace>::new();
@@ -580,5 +630,52 @@ mod tests {
             candidate.source == RuntimeTraceSource::WatchdogAlert
                 && candidate.gate == RuntimeTracePromotionGate::WatchdogReview
         }));
+    }
+
+    #[test]
+    fn append_helpers_preserve_bounded_runtime_trace_semantics() {
+        let now = 900;
+        let older = RuntimeWatchdogAlert {
+            subsystem: RuntimeWatchdogSubsystem::ToolExecution,
+            severity: RuntimeWatchdogSeverity::Caution,
+            reason: RuntimeWatchdogReason::ToolFailure,
+            recommended_action: RuntimeWatchdogAction::RepairToolRequest,
+            observed_at_unix: now - 30,
+        };
+        let newer = RuntimeWatchdogAlert {
+            severity: RuntimeWatchdogSeverity::Critical,
+            observed_at_unix: now - 1,
+            ..older.clone()
+        };
+
+        let alerts = append_runtime_watchdog_alerts(&[older], &[newer], now);
+
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].severity, RuntimeWatchdogSeverity::Critical);
+
+        let artifact = RuntimeHandoffArtifact {
+            observed_at_unix: now,
+            packet: SessionHandoffPacket {
+                reason: SessionHandoffReason::ContextOverflow,
+                recommended_action: None,
+                active_task: Some("handoff".into()),
+                current_defaults: Vec::new(),
+                anchors: Vec::new(),
+                unresolved_questions: Vec::new(),
+                assumptions: Vec::new(),
+            },
+        };
+
+        let artifacts = append_runtime_handoff_artifact(&[], artifact, now);
+
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(
+            artifacts[0].packet.reason,
+            SessionHandoffReason::ContextOverflow
+        );
+
+        let artifacts = append_runtime_handoff_packet(&artifacts, &artifacts[0].packet, now);
+
+        assert_eq!(artifacts.len(), 1);
     }
 }

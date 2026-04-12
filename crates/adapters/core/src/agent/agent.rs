@@ -55,11 +55,13 @@ use synapse_domain::application::services::runtime_calibration::{
     RuntimeCalibrationRecord, RuntimeCalibrationSuppressionKey,
 };
 use synapse_domain::application::services::runtime_trace_janitor::{
-    run_runtime_trace_janitor, RuntimeTraceJanitorInput,
+    append_runtime_handoff_packet, append_runtime_watchdog_alerts, run_runtime_trace_janitor,
+    RuntimeHandoffArtifact, RuntimeTraceJanitorInput,
 };
 use synapse_domain::application::services::runtime_watchdog::{
     build_runtime_subsystem_observations, build_runtime_watchdog_digest,
-    format_runtime_watchdog_context, RuntimeSubsystemObservationInput, RuntimeWatchdogInput,
+    format_runtime_watchdog_context, RuntimeSubsystemObservationInput, RuntimeWatchdogAlert,
+    RuntimeWatchdogInput,
 };
 use synapse_domain::application::services::scoped_instruction_resolution::{
     adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
@@ -311,6 +313,10 @@ pub struct Agent {
     recent_runtime_assumptions: Vec<RuntimeAssumption>,
     /// Bounded session/runtime calibration ledger for this live agent.
     recent_runtime_calibrations: Vec<RuntimeCalibrationRecord>,
+    /// Bounded session/runtime watchdog alerts for this live agent.
+    recent_runtime_watchdog_alerts: Vec<RuntimeWatchdogAlert>,
+    /// Bounded short-lived handoff artifacts for this live agent.
+    recent_runtime_handoff_artifacts: Vec<RuntimeHandoffArtifact>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
@@ -757,6 +763,8 @@ impl AgentBuilder {
             recent_turn_admissions: Vec::new(),
             recent_runtime_assumptions: Vec::new(),
             recent_runtime_calibrations: Vec::new(),
+            recent_runtime_watchdog_alerts: Vec::new(),
+            recent_runtime_handoff_artifacts: Vec::new(),
             allowed_tools: allowed,
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
@@ -932,19 +940,30 @@ impl Agent {
         &self.recent_runtime_calibrations
     }
 
+    pub fn recent_runtime_watchdog_alerts(&self) -> &[RuntimeWatchdogAlert] {
+        &self.recent_runtime_watchdog_alerts
+    }
+
+    pub fn recent_runtime_handoff_artifacts(&self) -> &[RuntimeHandoffArtifact] {
+        &self.recent_runtime_handoff_artifacts
+    }
+
     fn run_runtime_trace_janitor(&mut self, now_unix: i64) {
         let cleaned = run_runtime_trace_janitor(RuntimeTraceJanitorInput {
             tool_repairs: &self.recent_turn_tool_repairs,
             assumptions: &self.recent_runtime_assumptions,
+            watchdog_alerts: &self.recent_runtime_watchdog_alerts,
             calibration_records: &self.recent_runtime_calibrations,
+            handoff_artifacts: &self.recent_runtime_handoff_artifacts,
             now_unix,
-            ..Default::default()
         });
         let removed_total = cleaned.report.removed_total();
         let promotion_candidates = cleaned.report.promotion_candidates.len();
         self.recent_turn_tool_repairs = cleaned.tool_repairs;
         self.recent_runtime_assumptions = cleaned.assumptions;
+        self.recent_runtime_watchdog_alerts = cleaned.watchdog_alerts;
         self.recent_runtime_calibrations = cleaned.calibration_records;
+        self.recent_runtime_handoff_artifacts = cleaned.handoff_artifacts;
         if removed_total > 0 || promotion_candidates > 0 {
             tracing::debug!(
                 removed_total,
@@ -1114,6 +1133,8 @@ impl Agent {
         rebuilt.recent_turn_admissions.clear();
         rebuilt.recent_runtime_assumptions.clear();
         rebuilt.recent_runtime_calibrations.clear();
+        rebuilt.recent_runtime_watchdog_alerts.clear();
+        rebuilt.recent_runtime_handoff_artifacts.clear();
         rebuilt.active_lane = route_lane;
         rebuilt.active_candidate_index = route_candidate_index;
         rebuilt.dialogue_state_store = dialogue_state_store;
@@ -2405,6 +2426,11 @@ impl Agent {
                 subsystem_observations: &subsystem_observations,
                 now_unix: observed_at_unix,
             });
+            self.recent_runtime_watchdog_alerts = append_runtime_watchdog_alerts(
+                &self.recent_runtime_watchdog_alerts,
+                &runtime_watchdog_digest.alerts,
+                observed_at_unix,
+            );
             let system_breakdown = system_message_breakdown(&self.history)
                 .into_iter()
                 .map(|(name, chars)| format!("{name}={chars}"))
@@ -2522,10 +2548,17 @@ impl Agent {
                             session_matches: &turn_ctx.session_matches,
                             run_recipes: &turn_ctx.run_recipes,
                         },
-                    )
+                    );
+                let handoff_packet_text = handoff_packet
+                    .as_ref()
                     .map(|packet| {
+                        self.recent_runtime_handoff_artifacts = append_runtime_handoff_packet(
+                            &self.recent_runtime_handoff_artifacts,
+                            packet,
+                            observed_at_unix,
+                        );
                         synapse_domain::application::services::session_handoff::format_session_handoff_packet(
-                            &packet,
+                            packet,
                         )
                     })
                     .unwrap_or_default();
@@ -2535,7 +2568,7 @@ impl Agent {
                     context_pressure_state_name(admission_decision.snapshot.pressure_state),
                     self.provider_name,
                     effective_model,
-                    handoff_packet
+                    handoff_packet_text
                 );
             }
             let mut messages = snapshot.messages;
