@@ -78,6 +78,7 @@ use synapse_domain::ports::user_profile_context::{
 use synapse_domain::ports::user_profile_store::UserProfileStorePort;
 use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
 use synapse_observability::{self, Observer, ObserverEvent};
+use synapse_providers::error_classification::classify_context_limit_error;
 use synapse_providers::{
     self, ChatMessage, ChatRequest, ConversationMessage, Provider, ProviderCapabilityError,
 };
@@ -2451,7 +2452,33 @@ impl Agent {
                 .await
             {
                 Ok(resp) => resp,
-                Err(err) => return Err(err),
+                Err(err) => {
+                    if let Some(observation) = classify_context_limit_error(&err) {
+                        if observation.observed_context_window_tokens.is_some() {
+                            let profile_catalog =
+                                crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
+                                    self.workspace_dir.clone(),
+                                    Some(&self.provider_name),
+                                    self.provider_api_url.as_deref(),
+                                );
+                            if let Err(record_error) = profile_catalog
+                                .record_context_limit_observation(
+                                    &self.provider_name,
+                                    &effective_model,
+                                    observation,
+                                )
+                            {
+                                tracing::debug!(
+                                    provider = self.provider_name,
+                                    model = effective_model,
+                                    error = %record_error,
+                                    "Failed to record context-limit model profile observation"
+                                );
+                            }
+                        }
+                    }
+                    return Err(err);
+                }
             };
 
             // Accumulate token usage from provider response

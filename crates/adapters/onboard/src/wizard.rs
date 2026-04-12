@@ -884,6 +884,7 @@ fn generic_model_profile_from_value(model_id: &str, model: &Value) -> ModelProfi
         max_output_tokens: first_usize_field(model, MODEL_MAX_OUTPUT_FIELDS)
             .or_else(|| nested_usize_field(model, &["top_provider"], MODEL_MAX_OUTPUT_FIELDS)),
         features: Vec::new(),
+        observed_at_unix: None,
     }
 }
 
@@ -1003,6 +1004,7 @@ fn parse_openrouter_model_catalog(payload: &Value) -> LiveModelCatalog {
                 .and_then(Value::as_u64)
                 .and_then(|value| usize::try_from(value).ok()),
             features,
+            observed_at_unix: None,
         });
     }
 
@@ -1412,6 +1414,8 @@ struct ModelProfileCacheEntry {
     max_output_tokens: Option<usize>,
     #[serde(default)]
     features: Vec<ModelFeature>,
+    #[serde(default)]
+    observed_at_unix: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]

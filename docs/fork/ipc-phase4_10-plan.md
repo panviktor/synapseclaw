@@ -1808,15 +1808,19 @@ Expected outcome:
     - provider context-window error classification is now centralized in the
       provider adapter layer and reused by reliable-provider retry/fallback
       suppression plus the channel runtime `AgentRuntimeErrorKind` mapping
+    - failed-turn context-limit observations now flow through a typed domain
+      port into the endpoint-aware model cache when the provider error exposes
+      a trustworthy lower context window; the cache repair only lowers or fills
+      unknown context windows, never raises them
+    - web `Agent` and channel `AgentRuntimePort` now record those observations
+      through the same `WorkspaceModelProfileCatalog` cache path
   - still open after Hermes source audit:
     - no models.dev-style provider-aware registry source yet
-    - no automatic failed-turn context-limit observation that mutates the
-      endpoint-aware model cache/profile yet
     - no explicit probe-down tier strategy for unknown/local endpoints yet
   - status note:
     - treat Slice 18 as partial: catalog/cache/refresh/endpoint-aware lookup are
-      landed, but live failure-driven profile repair and external registry
-      ingestion are not complete.
+      landed, but external registry ingestion and explicit unknown-endpoint
+      probe-down strategy are not complete.
 - Hermes-derived model-window resolver follow-through:
   - keep explicit user override first
   - completed: persistent live model cache lookup is now endpoint-aware, so the
@@ -1828,7 +1832,7 @@ Expected outcome:
     custom endpoint is configured, so provider-aware metadata can still be used
   - completed: parse context-limit errors only in adapter-local provider code
     and convert them into typed runtime route-repair hints
-  - remaining: persist failed-turn context-limit observations as typed
+  - completed: persist failed-turn context-limit observations as typed
     endpoint-aware profile/cache updates when a trustworthy lower window can be
     inferred
   - keep broad hardcoded family fallbacks out of core Rust; if unavoidable,

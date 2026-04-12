@@ -20,7 +20,8 @@ use synapse_domain::domain::turn_admission::{
     turn_intent_name, AdmissionRepairHint, CandidateAdmissionReason,
 };
 use synapse_domain::ports::model_profile_catalog::{
-    CatalogModelProfile, CatalogModelProfileSource, ModelProfileCatalogPort,
+    CatalogModelProfile, CatalogModelProfileSource, ContextLimitProfileObservation,
+    ModelProfileCatalogPort,
 };
 use synapse_domain::ports::route_selection::{RouteAdmissionState, RouteSelection};
 
@@ -45,12 +46,12 @@ pub(crate) fn resolve_provider_alias(name: &str) -> Option<String> {
         .map(|provider| provider.name.to_string())
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct ModelCacheState {
     entries: Vec<ModelCacheEntry>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct ModelCacheEntry {
     provider: String,
     #[serde(default)]
@@ -62,7 +63,7 @@ struct ModelCacheEntry {
     profiles: Vec<ModelProfileCacheEntry>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct ModelProfileCacheEntry {
     model: String,
     #[serde(default)]
@@ -71,6 +72,8 @@ struct ModelProfileCacheEntry {
     max_output_tokens: Option<usize>,
     #[serde(default)]
     features: Vec<ModelFeature>,
+    #[serde(default)]
+    observed_at_unix: Option<u64>,
 }
 
 pub(crate) struct WorkspaceModelProfileCatalog {
@@ -150,6 +153,89 @@ impl WorkspaceModelProfileCatalog {
         }
         candidates
     }
+
+    pub(crate) fn record_context_limit_observation(
+        &self,
+        provider: &str,
+        model: &str,
+        observation: ContextLimitProfileObservation,
+    ) -> anyhow::Result<()> {
+        let Some(observed_window) = observation
+            .observed_context_window_tokens
+            .filter(|tokens| *tokens > 0)
+        else {
+            return Ok(());
+        };
+        if observation
+            .requested_context_tokens
+            .is_some_and(|requested| requested <= observed_window)
+        {
+            return Ok(());
+        }
+
+        let endpoint = self.endpoint_for_provider(provider).map(str::to_string);
+        let candidates = self.provider_lookup_candidates(provider);
+        let cache_path = model_cache_path(self.workspace_dir.as_path());
+        let mut state = load_model_cache_state_for_update(cache_path.as_path())?;
+        let target_provider =
+            select_observation_cache_provider(&state, candidates.as_slice(), endpoint.as_deref());
+        let now = current_unix_secs();
+
+        let entry_index = if let Some(index) = state.entries.iter().position(|entry| {
+            model_cache_entry_matches(entry, target_provider.as_str(), endpoint.as_deref())
+        }) {
+            index
+        } else {
+            state.entries.push(ModelCacheEntry {
+                provider: target_provider.clone(),
+                endpoint: endpoint.clone(),
+                fetched_at_unix: now,
+                models: Vec::new(),
+                profiles: Vec::new(),
+            });
+            state.entries.len() - 1
+        };
+
+        let entry = &mut state.entries[entry_index];
+        let mut changed = false;
+        if !entry
+            .models
+            .iter()
+            .any(|cached_model| cached_model.eq_ignore_ascii_case(model))
+        {
+            entry.models.push(model.to_string());
+            changed = true;
+        }
+
+        if let Some(profile) = entry
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.model.eq_ignore_ascii_case(model))
+        {
+            if profile
+                .context_window_tokens
+                .is_none_or(|existing| observed_window <= existing)
+            {
+                profile.context_window_tokens = Some(observed_window);
+                profile.observed_at_unix = Some(now);
+                changed = true;
+            }
+        } else {
+            entry.profiles.push(ModelProfileCacheEntry {
+                model: model.to_string(),
+                context_window_tokens: Some(observed_window),
+                max_output_tokens: None,
+                features: Vec::new(),
+                observed_at_unix: Some(now),
+            });
+            changed = true;
+        }
+
+        if changed {
+            save_model_cache_state(cache_path.as_path(), &state)?;
+        }
+        Ok(())
+    }
 }
 
 impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
@@ -172,6 +258,20 @@ impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
                 })
             })
             .or_else(|| synapse_domain::config::model_catalog::model_profile(provider, model))
+    }
+
+    fn record_context_limit_observation(
+        &self,
+        provider: &str,
+        model: &str,
+        observation: ContextLimitProfileObservation,
+    ) -> anyhow::Result<()> {
+        WorkspaceModelProfileCatalog::record_context_limit_observation(
+            self,
+            provider,
+            model,
+            observation,
+        )
     }
 }
 
@@ -567,6 +667,56 @@ fn normalize_cache_endpoint(endpoint: &str) -> String {
     endpoint.trim().trim_end_matches('/').to_string()
 }
 
+fn model_cache_path(workspace_dir: &Path) -> PathBuf {
+    workspace_dir.join("state").join(MODEL_CACHE_FILE)
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn load_model_cache_state_for_update(cache_path: &Path) -> anyhow::Result<ModelCacheState> {
+    if !cache_path.exists() {
+        return Ok(ModelCacheState::default());
+    }
+    let raw = std::fs::read_to_string(cache_path)
+        .map_err(|error| anyhow::anyhow!("failed to read model cache: {error}"))?;
+    serde_json::from_str::<ModelCacheState>(&raw)
+        .map_err(|error| anyhow::anyhow!("failed to parse model cache: {error}"))
+}
+
+fn save_model_cache_state(cache_path: &Path, state: &ModelCacheState) -> anyhow::Result<()> {
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| anyhow::anyhow!("failed to create model cache directory: {error}"))?;
+    }
+    let json = serde_json::to_vec_pretty(state)
+        .map_err(|error| anyhow::anyhow!("failed to serialize model cache: {error}"))?;
+    std::fs::write(cache_path, json)
+        .map_err(|error| anyhow::anyhow!("failed to write model cache: {error}"))
+}
+
+fn select_observation_cache_provider(
+    state: &ModelCacheState,
+    candidates: &[&str],
+    endpoint: Option<&str>,
+) -> String {
+    candidates
+        .iter()
+        .find(|candidate| {
+            state
+                .entries
+                .iter()
+                .any(|entry| model_cache_entry_matches(entry, candidate, endpoint))
+        })
+        .or_else(|| candidates.last())
+        .copied()
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 fn format_candidate_admission_reason(reason: &CandidateAdmissionReason) -> String {
     match reason {
         CandidateAdmissionReason::RequiresLane(lane) => {
@@ -762,7 +912,7 @@ fn load_cached_model_profile(
         max_output_tokens: profile.max_output_tokens,
         features: profile.features,
         source: Some(CatalogModelProfileSource::CachedProviderCatalog),
-        observed_at_unix: Some(entry.fetched_at_unix),
+        observed_at_unix: profile.observed_at_unix.or(Some(entry.fetched_at_unix)),
     })
 }
 
@@ -1274,5 +1424,99 @@ mod tests {
             Some(CatalogModelProfileSource::CachedProviderCatalog)
         );
         assert_eq!(profile.observed_at_unix, Some(300));
+    }
+
+    #[test]
+    fn workspace_profile_catalog_records_lower_context_limit_observation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache_dir = workspace.path().join("state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(
+            cache_dir.join(MODEL_CACHE_FILE),
+            r#"{
+              "entries": [
+                {
+                  "provider": "openrouter",
+                  "endpoint": "https://openrouter.ai/api/v1",
+                  "fetched_at_unix": 100,
+                  "models": ["x-ai/grok-4.20"],
+                  "profiles": [
+                    {
+                      "model": "x-ai/grok-4.20",
+                      "context_window_tokens": 2000000,
+                      "max_output_tokens": 128000,
+                      "features": []
+                    }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let catalog = WorkspaceModelProfileCatalog::with_provider_endpoint(
+            workspace.path(),
+            Some("openrouter"),
+            Some("https://openrouter.ai/api/v1/"),
+        );
+
+        catalog
+            .record_context_limit_observation(
+                "openrouter",
+                "x-ai/grok-4.20",
+                ContextLimitProfileObservation {
+                    observed_context_window_tokens: Some(128_000),
+                    requested_context_tokens: Some(140_000),
+                },
+            )
+            .unwrap();
+
+        let profile = catalog
+            .lookup_model_profile("openrouter", "x-ai/grok-4.20")
+            .expect("observed profile should resolve");
+
+        assert_eq!(profile.context_window_tokens, Some(128_000));
+        assert_eq!(profile.max_output_tokens, Some(128_000));
+        assert!(profile.observed_at_unix.is_some_and(|value| value >= 100));
+    }
+
+    #[test]
+    fn workspace_profile_catalog_does_not_raise_context_limit_observation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let catalog = WorkspaceModelProfileCatalog::with_provider_endpoint(
+            workspace.path(),
+            Some("openai"),
+            Some("https://api.deepseek.com/v1/"),
+        );
+
+        catalog
+            .record_context_limit_observation(
+                "openai",
+                "deepseek-chat",
+                ContextLimitProfileObservation {
+                    observed_context_window_tokens: Some(64_000),
+                    requested_context_tokens: Some(70_000),
+                },
+            )
+            .unwrap();
+        catalog
+            .record_context_limit_observation(
+                "openai",
+                "deepseek-chat",
+                ContextLimitProfileObservation {
+                    observed_context_window_tokens: Some(128_000),
+                    requested_context_tokens: Some(140_000),
+                },
+            )
+            .unwrap();
+
+        let profile = catalog
+            .lookup_model_profile("openai", "deepseek-chat")
+            .expect("endpoint-inferred observation should resolve");
+
+        assert_eq!(profile.context_window_tokens, Some(64_000));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::CachedProviderCatalog)
+        );
     }
 }
