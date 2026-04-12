@@ -1359,6 +1359,9 @@ Expected outcome:
       image/audio/video/music, including universal reasoning candidates that
       explicitly advertise generation features; this remains structural and
       does not use natural-language phrase lists
+    - admission block presentation now lives in a shared domain service; channel
+      and live web/Agent use the same typed lane/intent/context-budget response
+      instead of diverging into adapter-local technical error text
   - remaining:
     - widen intent consumers past the current multimodal + specialized-lane protection
   - continue making runtime UX surfaces display admission state explicitly beyond

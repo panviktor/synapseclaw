@@ -16,6 +16,7 @@ use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
 use crate::application::services::provider_context_budget::provider_context_input_for_history;
+use crate::application::services::runtime_admission_presentation::format_blocked_turn_admission_response;
 use crate::application::services::runtime_assumptions::{
     apply_tool_repair_assumption_challenges, build_runtime_assumptions,
     challenge_runtime_assumption_ledger, merge_runtime_assumption_ledger,
@@ -30,8 +31,7 @@ use crate::application::services::runtime_watchdog::{
     format_runtime_watchdog_context, RuntimeSubsystemObservationInput, RuntimeWatchdogInput,
 };
 use crate::application::services::session_handoff::{
-    build_session_handoff_packet, format_session_handoff_packet, SessionHandoffInput,
-    SessionHandoffPacket,
+    build_session_handoff_packet, SessionHandoffInput,
 };
 use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::application::services::turn_markup::{
@@ -625,71 +625,6 @@ fn build_model_routing_config(config: &InboundMessageConfig) -> crate::config::s
     routing.model_preset = config.model_preset.clone();
     routing.model_lanes = config.model_lanes.clone();
     routing
-}
-
-fn format_blocked_turn_admission_response(
-    decision: &crate::application::services::turn_admission::CandidateAdmissionDecision,
-    handoff_packet: Option<&SessionHandoffPacket>,
-) -> String {
-    use crate::domain::turn_admission::{
-        AdmissionRepairHint, CandidateAdmissionReason, ContextPressureState, TurnIntentCategory,
-    };
-
-    let base = if let Some(AdmissionRepairHint::RefreshCapabilityMetadata(lane)) =
-        decision.recommended_action
-    {
-        format!(
-            "Capability metadata for `{}` is stale or low-confidence on the current route. Refresh model profiles or switch to a compatible lane and try again.",
-            blocked_lane_name(lane)
-        )
-    } else {
-        match (decision.snapshot.intent, decision.snapshot.pressure_state) {
-            (_, ContextPressureState::OverflowRisk) => match decision.recommended_action {
-                Some(AdmissionRepairHint::StartFreshHandoff) => {
-                    "This turn is too large for the current route's safe context budget. Start a fresh handoff or switch to a larger-context model.".into()
-                }
-                _ => {
-                    "This turn is too large for the current route's safe context budget. Compact the session first or switch to a larger-context model.".into()
-                }
-            },
-            (TurnIntentCategory::MultimodalUnderstanding, _) => {
-                "The current route cannot handle image-aware input. Switch to a multimodal route and try again.".into()
-            }
-            (TurnIntentCategory::ImageGeneration, _) => {
-                "The current route cannot generate images. Switch to an image-generation lane and try again.".into()
-            }
-            (TurnIntentCategory::AudioGeneration, _) => {
-                "The current route cannot generate audio. Switch to an audio-capable lane and try again.".into()
-            }
-            (TurnIntentCategory::VideoGeneration, _) => {
-                "The current route cannot generate video. Switch to a video-capable lane and try again.".into()
-            }
-            (TurnIntentCategory::MusicGeneration, _) => {
-                "The current route cannot generate music. Switch to a music-capable lane and try again.".into()
-            }
-            (_, _) if decision.reasons.iter().any(|reason| {
-                matches!(
-                    reason,
-                    CandidateAdmissionReason::CapabilityMetadataUnknown(_)
-                        | CandidateAdmissionReason::CapabilityMetadataLowConfidence(_)
-                        | CandidateAdmissionReason::CapabilityMetadataStale(_)
-                )
-            }) => {
-                "The current route has incomplete capability metadata for this turn. Refresh model profiles or switch to a compatible lane and try again.".into()
-            }
-            _ => "The current route cannot safely execute this turn. Switch to a compatible lane or start a fresh handoff.".into(),
-        }
-    };
-
-    if let Some(packet) = handoff_packet {
-        format!("{base}\n\n{}", format_session_handoff_packet(packet))
-    } else {
-        base
-    }
-}
-
-fn blocked_lane_name(lane: crate::config::schema::CapabilityLane) -> &'static str {
-    lane.as_str()
 }
 
 /// Execute the agent turn and handle the response.
@@ -2095,64 +2030,5 @@ mod tests {
     fn truncate_chars_over_limit() {
         let result = truncate_chars("hello world", 5);
         assert_eq!(result, "hello…");
-    }
-
-    #[test]
-    fn blocked_turn_response_mentions_stale_or_low_confidence_metadata() {
-        let response = format_blocked_turn_admission_response(
-            &crate::application::services::turn_admission::CandidateAdmissionDecision {
-                snapshot: crate::domain::turn_admission::TurnAdmissionSnapshot {
-                    intent: crate::domain::turn_admission::TurnIntentCategory::ImageGeneration,
-                    pressure_state: crate::domain::turn_admission::ContextPressureState::Warning,
-                    action: crate::domain::turn_admission::TurnAdmissionAction::Block,
-                },
-                required_lane: Some(crate::config::schema::CapabilityLane::ImageGeneration),
-                route_override: None,
-                reasons: vec![
-                    crate::domain::turn_admission::CandidateAdmissionReason::CapabilityMetadataLowConfidence(
-                        crate::config::schema::CapabilityLane::ImageGeneration,
-                    ),
-                ],
-                recommended_action: Some(
-                    crate::domain::turn_admission::AdmissionRepairHint::RefreshCapabilityMetadata(
-                        crate::config::schema::CapabilityLane::ImageGeneration,
-                    ),
-                ),
-                condensation_plan: None,
-                requires_compaction: false,
-            },
-            None,
-        );
-
-        assert!(response.contains("image_generation"));
-        assert!(response.contains("stale or low-confidence"));
-        assert!(response.contains("Refresh model profiles"));
-    }
-
-    #[test]
-    fn blocked_turn_response_mentions_safe_context_budget_on_overflow_risk() {
-        let response = format_blocked_turn_admission_response(
-            &crate::application::services::turn_admission::CandidateAdmissionDecision {
-                snapshot: crate::domain::turn_admission::TurnAdmissionSnapshot {
-                    intent: crate::domain::turn_admission::TurnIntentCategory::Reply,
-                    pressure_state: crate::domain::turn_admission::ContextPressureState::OverflowRisk,
-                    action: crate::domain::turn_admission::TurnAdmissionAction::Block,
-                },
-                required_lane: None,
-                route_override: None,
-                reasons: vec![
-                    crate::domain::turn_admission::CandidateAdmissionReason::CandidateWindowExceeded,
-                ],
-                recommended_action: Some(
-                    crate::domain::turn_admission::AdmissionRepairHint::StartFreshHandoff,
-                ),
-                condensation_plan: None,
-                requires_compaction: false,
-            },
-            None,
-        );
-
-        assert!(response.contains("safe context budget"));
-        assert!(response.contains("fresh handoff"));
     }
 }

@@ -51,6 +51,7 @@ pub mod route_admission_history;
 pub mod route_switch_preflight;
 pub mod run_recipe_cluster_service;
 pub mod run_recipe_review_service;
+pub mod runtime_admission_presentation;
 pub mod runtime_assumptions;
 pub mod runtime_calibration;
 pub mod runtime_command_presentation;

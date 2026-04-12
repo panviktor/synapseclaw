@@ -44,6 +44,7 @@ use synapse_domain::application::services::route_admission_history::{
 use synapse_domain::application::services::route_switch_preflight::{
     assess_route_switch_preflight_for_budget, RouteSwitchPreflightResolution,
 };
+use synapse_domain::application::services::runtime_admission_presentation::format_blocked_turn_admission_response;
 use synapse_domain::application::services::runtime_assumptions::{
     apply_tool_repair_assumption_challenges, build_runtime_assumptions,
     challenge_runtime_assumption_ledger, merge_runtime_assumption_ledger, RuntimeAssumption,
@@ -2588,26 +2589,19 @@ impl Agent {
                             recent_tool_repairs: &handoff_tool_repairs,
                         },
                     );
-                let handoff_packet_text = handoff_packet
-                    .as_ref()
-                    .map(|packet| {
-                        self.recent_runtime_handoff_artifacts = append_runtime_handoff_packet(
-                            &self.recent_runtime_handoff_artifacts,
-                            packet,
-                            observed_at_unix,
-                        );
-                        synapse_domain::application::services::session_handoff::format_session_handoff_packet(
-                            packet,
-                        )
-                    })
-                    .unwrap_or_default();
+                if let Some(packet) = handoff_packet.as_ref() {
+                    self.recent_runtime_handoff_artifacts = append_runtime_handoff_packet(
+                        &self.recent_runtime_handoff_artifacts,
+                        packet,
+                        observed_at_unix,
+                    );
+                }
                 anyhow::bail!(
-                    "turn admission blocked provider call intent={} pressure={} provider={} model={}\n{}",
-                    turn_intent_name(admission_decision.snapshot.intent),
-                    context_pressure_state_name(admission_decision.snapshot.pressure_state),
-                    effective_provider,
-                    effective_model,
-                    handoff_packet_text
+                    "{}",
+                    format_blocked_turn_admission_response(
+                        &admission_decision,
+                        handoff_packet.as_ref(),
+                    )
                 );
             }
             let mut messages = snapshot.messages;
