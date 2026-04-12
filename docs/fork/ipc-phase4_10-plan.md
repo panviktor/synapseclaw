@@ -1330,7 +1330,7 @@ Expected outcome:
 - protect against wrong-model execution structurally:
   - a default reasoning candidate is not implicitly allowed for vision, image, audio,
     music, or video turns
-  - unsupported tool-calling candidates are blocked from tool-heavy turns
+  - unsupported tool-calling candidates are blocked from typed tool-required turns
   - candidates with insufficient context window are blocked from current-turn execution
     unless preflight compaction succeeds
 - preserve hexagonal boundaries:
@@ -1362,8 +1362,9 @@ Expected outcome:
     - admission block presentation now lives in a shared domain service; channel
       and live web/Agent use the same typed lane/intent/context-budget response
       instead of diverging into adapter-local technical error text
-    - tool-heavy admission now reroutes to a tool-capable reasoning candidate
-      or blocks before provider execution when the current candidate
+    - typed tool-required admission now reroutes to a tool-capable reasoning
+      candidate or blocks before provider execution for `tool-heavy`,
+      `delivery`, and `mutation` intents when the current candidate
       confidently lacks `tool_calling`; unknown/low-confidence metadata is not
       treated as a hard no
     - route inspection now surfaces admission required-lane state before the
@@ -1372,7 +1373,8 @@ Expected outcome:
     - route admission state now stores `required_lane` explicitly instead of
       deriving that operator-facing fact back out of reasons or repair hints
   - remaining:
-    - widen intent consumers past the current multimodal + specialized-lane protection
+    - continue auditing intent consumers past the current multimodal,
+      specialized-lane, and typed tool-required protection
   - continue making runtime UX surfaces display admission state explicitly beyond
     `/model` help and lane-aware switch responses
     - settle whether admission snapshots should remain ephemeral or be persisted

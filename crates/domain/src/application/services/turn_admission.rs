@@ -125,7 +125,7 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
         }
     }
 
-    if intent == TurnIntentCategory::ToolHeavy
+    if intent_requires_tool_calling(intent)
         && current_candidate_explicitly_lacks_tool_support(
             input.current_lane,
             input.current_profile,
@@ -453,6 +453,13 @@ fn intent_uses_reasoning_lane(intent: TurnIntentCategory) -> bool {
     )
 }
 
+fn intent_requires_tool_calling(intent: TurnIntentCategory) -> bool {
+    matches!(
+        intent,
+        TurnIntentCategory::Deliver | TurnIntentCategory::Mutate | TurnIntentCategory::ToolHeavy
+    )
+}
+
 fn current_candidate_explicitly_lacks_tool_support(
     current_lane: Option<CapabilityLane>,
     profile: &ResolvedModelProfile,
@@ -585,6 +592,15 @@ mod tests {
             description: "fetch".into(),
             parameters: serde_json::json!({"type": "object"}),
             runtime_role: Some(ToolRuntimeRole::ExternalLookup),
+        }
+    }
+
+    fn profile_mutation_spec() -> ToolSpec {
+        ToolSpec {
+            name: "profile_update".into(),
+            description: "profile update".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            runtime_role: Some(ToolRuntimeRole::ProfileMutation),
         }
     }
 
@@ -935,6 +951,83 @@ mod tests {
         });
 
         assert_eq!(decision.snapshot.intent, TurnIntentCategory::Deliver);
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Proceed);
+    }
+
+    #[test]
+    fn delivery_turn_blocks_when_candidate_confidently_lacks_tools() {
+        let guidance = ExecutionGuidance {
+            direct_resolution_ready: true,
+            preferred_capabilities: vec![ExecutionCapability::Delivery],
+            recent_failure_hints: Vec::new(),
+            ..ExecutionGuidance::default()
+        };
+
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "Send it there",
+            execution_guidance: Some(&guidance),
+            tool_specs: &[direct_delivery_spec()],
+            current_provider: "openrouter",
+            current_model: "plain-reasoning",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_500,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(decision.snapshot.intent, TurnIntentCategory::Deliver);
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Block);
+        assert_eq!(
+            decision.recommended_action,
+            Some(AdmissionRepairHint::SwitchToToolCapableReasoning)
+        );
+    }
+
+    #[test]
+    fn mutation_turn_blocks_when_candidate_confidently_lacks_tools() {
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "Remember this preference",
+            execution_guidance: None,
+            tool_specs: &[profile_mutation_spec()],
+            current_provider: "openrouter",
+            current_model: "plain-reasoning",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                features: vec![ModelFeature::Vision],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_500,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(decision.snapshot.intent, TurnIntentCategory::Mutate);
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Block);
+        assert!(decision
+            .reasons
+            .contains(&CandidateAdmissionReason::MissingFeature(
+                ModelFeature::ToolCalling
+            )));
     }
 
     #[test]
