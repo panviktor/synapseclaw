@@ -7,6 +7,13 @@ use crate::application::services::runtime_assumptions::{
 };
 use crate::domain::memory::{MemoryCategory, MemoryEntry};
 
+const KNOWN_RETRIEVAL_SCORE_DELTA: f64 = 0.04;
+const INFERRED_RETRIEVAL_SCORE_DELTA: f64 = 0.0;
+const NEEDS_VERIFICATION_RETRIEVAL_SCORE_DELTA: f64 = -0.14;
+const STALE_RETRIEVAL_SCORE_DELTA: f64 = -0.18;
+const UNKNOWN_RETRIEVAL_SCORE_DELTA: f64 = -0.20;
+const CONTRADICTORY_RETRIEVAL_SCORE_DELTA: f64 = -0.32;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EpistemicState {
@@ -124,7 +131,10 @@ pub fn epistemic_entry_for_memory_entry(entry: &MemoryEntry) -> EpistemicEntry {
         EpistemicState::NeedsVerification
     } else if matches!(
         entry.category,
-        MemoryCategory::Reflection | MemoryCategory::Conversation
+        MemoryCategory::Conversation
+            | MemoryCategory::Daily
+            | MemoryCategory::Reflection
+            | MemoryCategory::Custom(_)
     ) {
         EpistemicState::Inferred
     } else {
@@ -137,6 +147,21 @@ pub fn epistemic_entry_for_memory_entry(entry: &MemoryEntry) -> EpistemicEntry {
         source: EpistemicSource::Memory,
         confidence_basis_points: confidence,
     }
+}
+
+pub fn epistemic_retrieval_score_delta(entry: &EpistemicEntry) -> f64 {
+    match entry.state {
+        EpistemicState::Known => KNOWN_RETRIEVAL_SCORE_DELTA,
+        EpistemicState::Inferred => INFERRED_RETRIEVAL_SCORE_DELTA,
+        EpistemicState::NeedsVerification => NEEDS_VERIFICATION_RETRIEVAL_SCORE_DELTA,
+        EpistemicState::Stale => STALE_RETRIEVAL_SCORE_DELTA,
+        EpistemicState::Unknown => UNKNOWN_RETRIEVAL_SCORE_DELTA,
+        EpistemicState::Contradictory => CONTRADICTORY_RETRIEVAL_SCORE_DELTA,
+    }
+}
+
+pub fn memory_epistemic_retrieval_score_delta(entry: &MemoryEntry) -> f64 {
+    epistemic_retrieval_score_delta(&epistemic_entry_for_memory_entry(entry))
 }
 
 fn epistemic_confidence_basis_points(confidence: ResolvedModelProfileConfidence) -> u16 {
@@ -196,5 +221,23 @@ mod tests {
 
         assert_eq!(entry.state, EpistemicState::NeedsVerification);
         assert_eq!(entry.confidence_basis_points, 4_200);
+    }
+
+    #[test]
+    fn episodic_memory_maps_to_inferred_even_with_high_similarity() {
+        let memory = MemoryEntry {
+            id: "m1".into(),
+            key: "m1".into(),
+            content: "Prior daily recap".into(),
+            category: MemoryCategory::Daily,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            session_id: None,
+            score: Some(0.91),
+        };
+
+        let entry = epistemic_entry_for_memory_entry(&memory);
+
+        assert_eq!(entry.state, EpistemicState::Inferred);
+        assert_eq!(epistemic_retrieval_score_delta(&entry), 0.0);
     }
 }

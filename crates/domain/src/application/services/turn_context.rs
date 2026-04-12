@@ -11,6 +11,7 @@
 use crate::application::services::clarification_policy;
 use crate::application::services::epistemic_state::{
     epistemic_entry_for_memory_entry, format_epistemic_entry,
+    memory_epistemic_retrieval_score_delta,
 };
 use crate::application::services::execution_guidance;
 use crate::application::services::failure_similarity_service;
@@ -1224,8 +1225,14 @@ fn apply_resolution_plan(
         second_session_score: ctx.session_matches.get(1).map(|session| session.score),
         top_recipe_score: ctx.run_recipes.first().map(|recipe| recipe.score),
         second_recipe_score: ctx.run_recipes.get(1).map(|recipe| recipe.score),
-        top_memory_score: ctx.recalled_entries.first().and_then(|entry| entry.score),
-        second_memory_score: ctx.recalled_entries.get(1).and_then(|entry| entry.score),
+        top_memory_score: ctx
+            .recalled_entries
+            .first()
+            .and_then(memory_resolution_score),
+        second_memory_score: ctx
+            .recalled_entries
+            .get(1)
+            .and_then(memory_resolution_score),
         recall_hits: ctx.recalled_entries.len(),
         skill_hits: ctx.skills.len(),
         entity_hits: ctx.entities.len(),
@@ -1262,6 +1269,11 @@ fn apply_resolution_plan(
             session_matches: &ctx.session_matches,
             run_recipes: &ctx.run_recipes,
         });
+}
+
+fn memory_resolution_score(entry: &MemoryEntry) -> Option<f64> {
+    let score = entry.score?;
+    Some((score + memory_epistemic_retrieval_score_delta(entry)).clamp(0.0, 1.0))
 }
 
 fn ordered_enrichment_sections(ctx: &TurnMemoryContext, budget: &PromptBudget) -> Vec<String> {
@@ -2128,6 +2140,15 @@ mod tests {
         assert!(fmt.enrichment_prefix.starts_with("[Memory context]\n"));
         assert!(fmt.enrichment_prefix.contains("- fact1 [state=known"));
         assert!(fmt.enrichment_prefix.contains("User likes Rust"));
+    }
+
+    #[test]
+    fn memory_resolution_score_applies_epistemic_adjustment() {
+        let weak = make_entry("weak", "Low-confidence memory", 0.64);
+        let known = make_entry("known", "High-confidence memory", 0.9);
+
+        assert!(memory_resolution_score(&weak).unwrap() < weak.score.unwrap());
+        assert!(memory_resolution_score(&known).unwrap() > known.score.unwrap());
     }
 
     #[test]

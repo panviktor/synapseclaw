@@ -1920,11 +1920,15 @@ Expected outcome:
       into `known`/`inferred`/`stale`/`needs_verification`/`unknown`
     - memory recall lines surface `state/source/confidence` metadata next to
       anchors so provider-facing recall is no longer undifferentiated memory
+    - retrieval reranking and resolution-plan evidence consume epistemic
+      memory state, so weak/needs-verification memory is penalized before it
+      can outrank stronger anchors
     - domain tests cover stale model-profile facts and low-confidence memory
-      requiring verification
+      requiring verification, plus epistemic rerank and resolution-score
+      adjustment
   - still open:
-    - admission, retrieval ranking, and self-repair do not yet consume the
-      epistemic state directly
+    - self-repair does not yet consume epistemic state directly beyond the
+      runtime assumption ledger freshness/confidence fields
     - delivery/runtime defaults and external recency-sensitive facts are not
       fully projected through the same epistemic surface yet
 - expected outcome:

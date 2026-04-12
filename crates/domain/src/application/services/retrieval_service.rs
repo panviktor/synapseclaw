@@ -4,6 +4,7 @@
 //! should reuse one application-level search implementation instead of
 //! duplicating ad-hoc scoring logic.
 
+use crate::application::services::epistemic_state;
 use crate::application::services::memory_quality_governor;
 use crate::domain::conversation::{ConversationEvent, ConversationKind, EventType};
 use crate::domain::memory::{
@@ -771,6 +772,7 @@ fn adjusted_memory_match_score(
     score += lexical_bonus;
     score += memory_quality_governor::retrieval_noise_score_delta(&entry.category, lexical_bonus);
     score += memory_quality_governor::retrieval_content_noise_score_delta(&entry.content);
+    score += epistemic_state::memory_epistemic_retrieval_score_delta(entry);
     score
 }
 
@@ -1973,6 +1975,42 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(keys, vec!["atlas-anchor", "daily-note", "old-procedure"]);
+    }
+
+    #[test]
+    fn rerank_memory_matches_penalizes_needs_verification_memory() {
+        let hits = vec![
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "weak-1".into(),
+                    key: "weak-anchor".into(),
+                    content: "project Atlas branch candidate".into(),
+                    category: MemoryCategory::Core,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.64),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "known-1".into(),
+                    key: "known-anchor".into(),
+                    content: "project Atlas branch confirmed".into(),
+                    category: MemoryCategory::Core,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.65),
+                },
+            },
+        ];
+
+        let reranked = rerank_memory_matches("project Atlas branch", Some("session-1"), hits, 2);
+        let keys = reranked
+            .into_iter()
+            .map(|hit| hit.entry.key)
+            .collect::<Vec<_>>();
+
+        assert_eq!(keys, vec!["known-anchor", "weak-anchor"]);
     }
 
     #[test]
