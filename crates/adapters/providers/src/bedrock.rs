@@ -668,70 +668,43 @@ impl BedrockProvider {
     /// Parse user message content, extracting [IMAGE:data:...] markers into image blocks.
     fn parse_user_content_blocks(content: &str) -> Vec<ContentBlock> {
         let mut blocks: Vec<ContentBlock> = Vec::new();
-        let mut remaining = content;
-        let has_image = content.contains("[IMAGE:");
-        tracing::info!(
-            "parse_user_content_blocks called, len={}, has_image={}",
-            content.len(),
-            has_image
-        );
 
-        while let Some(start) = remaining.find("[IMAGE:") {
-            // Add any text before the marker
-            let text_before = &remaining[..start];
-            if !text_before.trim().is_empty() {
-                blocks.push(ContentBlock::Text(TextBlock {
-                    text: text_before.to_string(),
-                }));
-            }
-
-            let after = &remaining[start + 7..]; // skip "[IMAGE:"
-            if let Some(end) = after.find(']') {
-                let src = &after[..end];
-                remaining = &after[end + 1..];
-
-                // Only handle data URIs (base64 encoded images)
-                if let Some(rest) = src.strip_prefix("data:") {
-                    if let Some(semi) = rest.find(';') {
-                        let mime = &rest[..semi];
-                        let after_semi = &rest[semi + 1..];
-                        if let Some(b64) = after_semi.strip_prefix("base64,") {
-                            let format = match mime {
-                                "image/png" => "png",
-                                "image/gif" => "gif",
-                                "image/webp" => "webp",
-                                _ => "jpeg",
-                            };
-                            blocks.push(ContentBlock::Image(ImageWrapper {
-                                image: ImageBlock {
-                                    format: format.to_string(),
-                                    source: ImageSource {
-                                        bytes: b64.to_string(),
-                                    },
-                                },
-                            }));
-                            continue;
-                        }
+        for part in crate::multimodal::parse_image_marker_parts(content) {
+            match part {
+                crate::multimodal::ImageMarkerPart::Text(text) => {
+                    if !text.trim().is_empty() {
+                        blocks.push(ContentBlock::Text(TextBlock { text }));
                     }
                 }
-                // Non-data-uri image: just include as text reference
-                blocks.push(ContentBlock::Text(TextBlock {
-                    text: format!("[image: {}]", src),
-                }));
-            } else {
-                // No closing bracket, treat rest as text
-                blocks.push(ContentBlock::Text(TextBlock {
-                    text: remaining.to_string(),
-                }));
-                break;
+                crate::multimodal::ImageMarkerPart::ImageRef(src) => {
+                    if let Some(rest) = src.strip_prefix("data:") {
+                        if let Some(semi) = rest.find(';') {
+                            let mime = &rest[..semi];
+                            let after_semi = &rest[semi + 1..];
+                            if let Some(b64) = after_semi.strip_prefix("base64,") {
+                                let format = match mime {
+                                    "image/png" => "png",
+                                    "image/gif" => "gif",
+                                    "image/webp" => "webp",
+                                    _ => "jpeg",
+                                };
+                                blocks.push(ContentBlock::Image(ImageWrapper {
+                                    image: ImageBlock {
+                                        format: format.to_string(),
+                                        source: ImageSource {
+                                            bytes: b64.to_string(),
+                                        },
+                                    },
+                                }));
+                                continue;
+                            }
+                        }
+                    }
+                    blocks.push(ContentBlock::Text(TextBlock {
+                        text: format!("[image: {}]", src),
+                    }));
+                }
             }
-        }
-
-        // Add any remaining text
-        if !remaining.trim().is_empty() {
-            blocks.push(ContentBlock::Text(TextBlock {
-                text: remaining.to_string(),
-            }));
         }
 
         if blocks.is_empty() {
@@ -1191,6 +1164,29 @@ mod tests {
         assert!(auth.contains("SignedHeaders=content-type;host;x-amz-date"));
         assert!(auth.contains("Signature="));
         assert!(auth.contains("/us-east-1/bedrock/aws4_request"));
+    }
+
+    #[test]
+    fn parse_user_content_blocks_preserves_text_around_image_markers() {
+        let blocks = BedrockProvider::parse_user_content_blocks(
+            "before [IMAGE:data:image/png;base64,abcd] after",
+        );
+
+        assert_eq!(blocks.len(), 3);
+        assert!(matches!(
+            &blocks[0],
+            ContentBlock::Text(TextBlock { text }) if text == "before "
+        ));
+        assert!(matches!(
+            &blocks[1],
+            ContentBlock::Image(ImageWrapper {
+                image: ImageBlock { format, source }
+            }) if format == "png" && source.bytes == "abcd"
+        ));
+        assert!(matches!(
+            &blocks[2],
+            ContentBlock::Text(TextBlock { text }) if text == " after"
+        ));
     }
 
     #[test]

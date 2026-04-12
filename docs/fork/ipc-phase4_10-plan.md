@@ -1610,6 +1610,10 @@ Expected outcome:
     - shared runtime command presentation now renders lane-aware model switch
       outcomes as `lane -> provider:model`; web and channel receive the same
       lane-first success/block text through the common runtime adapter contract
+    - Bedrock's provider adapter now consumes the shared provider-layer
+      multimodal image-marker parser instead of carrying a second `[IMAGE:]`
+      scanner, keeping marker semantics centralized without moving them into
+      core routing policy
   - remaining:
     - modality inference remains conservative and marker-based; richer intent recognition
       should come later through typed interpretation or an explicit classifier, not keyword lists
