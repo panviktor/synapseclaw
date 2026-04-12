@@ -2014,10 +2014,14 @@ Expected outcome:
       typed calibration observations without promoting them into durable memory
     - `/model` and `/providers` now expose the compact calibration ledger through
       the shared runtime route help path
+    - route/tool suppression now consumes typed calibration suppression keys:
+      - route admission can reroute away from a recently overconfident failing
+        route when a safe same-lane alternative exists
+      - tool narrowing can hide a recently overconfident failing tool when a
+        same-role alternative exists
   - still open:
     - live retrieval/delivery-specific call sites do not emit dedicated
       calibration observations yet
-    - calibration records are not yet consumed by route/tool suppression policy
 - expected outcome:
   - more calibrated runtime decisions
   - better post-failure learning without turning every turn into a reflection step

@@ -764,6 +764,7 @@ async fn execute_agent_turn(
             provider_capabilities: &route_capabilities,
             provider_context: provider_context_input_for_history(&history)
                 .with_target_model_profile(&route_profile),
+            calibration_records: &route.calibrations,
             catalog: ports.model_profile_catalog.as_deref(),
         },
     );

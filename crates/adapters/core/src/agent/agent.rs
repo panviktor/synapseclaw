@@ -49,6 +49,7 @@ use synapse_domain::application::services::runtime_assumptions::{
 use synapse_domain::application::services::runtime_calibration::{
     append_runtime_calibration_observation, RuntimeCalibrationDecisionKind,
     RuntimeCalibrationObservation, RuntimeCalibrationOutcome, RuntimeCalibrationRecord,
+    RuntimeCalibrationSuppressionKey,
 };
 use synapse_domain::application::services::runtime_trace_janitor::{
     run_runtime_trace_janitor, RuntimeTraceJanitorInput,
@@ -975,6 +976,10 @@ impl Agent {
                 effective_model,
                 decision,
             ),
+            suppression_key: Some(RuntimeCalibrationSuppressionKey::Route {
+                provider: self.provider_name.clone(),
+                model: effective_model.to_string(),
+            }),
             confidence_basis_points: route_calibration_confidence(decision),
             outcome,
             observed_at_unix,
@@ -986,6 +991,9 @@ impl Agent {
             self.record_runtime_calibration_observation(RuntimeCalibrationObservation {
                 decision_kind: RuntimeCalibrationDecisionKind::ToolChoice,
                 decision_signature: tool_calibration_signature(result),
+                suppression_key: Some(RuntimeCalibrationSuppressionKey::Tool {
+                    tool_name: result.name.clone(),
+                }),
                 confidence_basis_points: tool_calibration_confidence(result),
                 outcome: if result.success {
                     RuntimeCalibrationOutcome::Succeeded
@@ -2305,6 +2313,7 @@ impl Agent {
                 turn_ctx.execution_guidance.as_ref(),
                 &resolved_turn_defaults,
                 user_message,
+                &self.recent_runtime_calibrations,
             );
         let mut tool_facts_this_turn = Vec::new();
         let mut last_tool_repair_this_turn = None::<ToolRepairTrace>;
@@ -2339,6 +2348,7 @@ impl Agent {
                 current_profile: &effective_model_profile,
                 provider_capabilities: &provider_capabilities,
                 provider_context: provider_context_input,
+                calibration_records: &self.recent_runtime_calibrations,
                 catalog: None,
             });
             let observed_at_unix = chrono::Utc::now().timestamp();

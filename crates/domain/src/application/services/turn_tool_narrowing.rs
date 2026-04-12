@@ -5,6 +5,9 @@
 //! internals.
 
 use crate::application::services::execution_guidance::{ExecutionCapability, ExecutionGuidance};
+use crate::application::services::runtime_calibration::{
+    should_suppress_tool_choice, RuntimeCalibrationRecord,
+};
 use crate::application::services::turn_model_routing::infer_turn_capability_requirement;
 use crate::domain::tool_repair::ToolRepairAction;
 use crate::domain::turn_defaults::ResolvedTurnDefaults;
@@ -15,10 +18,12 @@ pub fn prepare_tool_specs_for_turn(
     guidance: Option<&ExecutionGuidance>,
     defaults: &ResolvedTurnDefaults,
     user_message: &str,
+    calibration_records: &[RuntimeCalibrationRecord],
 ) -> Vec<ToolSpec> {
     let narrowed = narrow_tool_specs_for_turn(tool_specs, guidance, user_message);
     let specialized = specialize_tool_specs_for_turn(narrowed, guidance, defaults);
-    suppress_recently_failed_tools(specialized, guidance)
+    let repaired = suppress_recently_failed_tools(specialized, guidance);
+    suppress_calibrated_failed_tools(repaired, calibration_records)
 }
 
 pub fn should_force_implicit_target_for_tool(
@@ -220,6 +225,31 @@ fn suppress_recently_failed_tools(
         .collect()
 }
 
+fn suppress_calibrated_failed_tools(
+    tool_specs: Vec<ToolSpec>,
+    calibration_records: &[RuntimeCalibrationRecord],
+) -> Vec<ToolSpec> {
+    if calibration_records.is_empty() {
+        return tool_specs;
+    }
+
+    let suppressible = tool_specs
+        .iter()
+        .filter(|spec| should_suppress_tool_choice(calibration_records, &spec.name))
+        .map(|spec| spec.name.as_str())
+        .collect::<Vec<_>>();
+
+    if suppressible.is_empty() {
+        return tool_specs;
+    }
+
+    tool_specs
+        .iter()
+        .filter(|spec| !should_drop_tool_spec(spec, &tool_specs, &suppressible))
+        .cloned()
+        .collect()
+}
+
 fn should_suppress_recently_failed_tool(action: ToolRepairAction) -> bool {
     matches!(
         action,
@@ -249,6 +279,10 @@ fn should_drop_tool_spec(spec: &ToolSpec, all_specs: &[ToolSpec], suppressible: 
 mod tests {
     use super::*;
     use crate::application::services::execution_guidance::ExecutionFailureHint;
+    use crate::application::services::runtime_calibration::{
+        RuntimeCalibrationAction, RuntimeCalibrationComparison, RuntimeCalibrationDecisionKind,
+        RuntimeCalibrationOutcome, RuntimeCalibrationSuppressionKey,
+    };
     use crate::domain::conversation_target::ConversationDeliveryTarget;
     use crate::domain::tool_repair::{ToolFailureKind, ToolRepairAction};
     use crate::domain::turn_defaults::{ResolvedDeliveryTarget, TurnDefaultSource};
@@ -266,6 +300,21 @@ mod tests {
                 "required": ["content"]
             }),
             runtime_role,
+        }
+    }
+
+    fn suppressed_tool(tool_name: &str) -> RuntimeCalibrationRecord {
+        RuntimeCalibrationRecord {
+            decision_kind: RuntimeCalibrationDecisionKind::ToolChoice,
+            decision_signature: format!("tool:{tool_name}"),
+            suppression_key: Some(RuntimeCalibrationSuppressionKey::Tool {
+                tool_name: tool_name.into(),
+            }),
+            confidence_basis_points: 9_000,
+            outcome: RuntimeCalibrationOutcome::Failed,
+            comparison: RuntimeCalibrationComparison::OverconfidentFailure,
+            recommended_action: RuntimeCalibrationAction::SuppressChoice,
+            observed_at_unix: 100,
         }
     }
 
@@ -425,7 +474,7 @@ mod tests {
             }),
         };
 
-        let prepared = prepare_tool_specs_for_turn(specs, Some(&guidance), &defaults, "");
+        let prepared = prepare_tool_specs_for_turn(specs, Some(&guidance), &defaults, "", &[]);
         let message_send = prepared
             .iter()
             .find(|spec| spec.runtime_role == Some(ToolRuntimeRole::DirectDelivery))
@@ -498,7 +547,7 @@ mod tests {
             &defaults,
         ));
 
-        let prepared = prepare_tool_specs_for_turn(specs, None, &defaults, "");
+        let prepared = prepare_tool_specs_for_turn(specs, None, &defaults, "", &[]);
         let message_send = prepared.first().expect("message_send");
         assert!(!message_send
             .parameters
@@ -530,6 +579,30 @@ mod tests {
             Some(&guidance),
             &ResolvedTurnDefaults::default(),
             "",
+            &[],
+        );
+        let names = filtered
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(names, vec!["vision_describe"]);
+    }
+
+    #[test]
+    fn suppresses_calibrated_failed_tool_when_same_role_alternative_exists() {
+        let specs = vec![
+            spec("image_info", Some(ToolRuntimeRole::ExternalLookup)),
+            spec("vision_describe", Some(ToolRuntimeRole::ExternalLookup)),
+        ];
+        let calibrations = vec![suppressed_tool("image_info")];
+
+        let filtered = prepare_tool_specs_for_turn(
+            specs,
+            None,
+            &ResolvedTurnDefaults::default(),
+            "",
+            &calibrations,
         );
         let names = filtered
             .into_iter()
@@ -558,6 +631,7 @@ mod tests {
             Some(&guidance),
             &ResolvedTurnDefaults::default(),
             "",
+            &[],
         );
 
         assert_eq!(filtered.len(), 1);

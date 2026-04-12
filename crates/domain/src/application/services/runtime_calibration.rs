@@ -39,10 +39,18 @@ pub enum RuntimeCalibrationAction {
     InspectOutcome,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeCalibrationSuppressionKey {
+    Route { provider: String, model: String },
+    Tool { tool_name: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeCalibrationObservation {
     pub decision_kind: RuntimeCalibrationDecisionKind,
     pub decision_signature: String,
+    pub suppression_key: Option<RuntimeCalibrationSuppressionKey>,
     pub confidence_basis_points: u16,
     pub outcome: RuntimeCalibrationOutcome,
     pub observed_at_unix: i64,
@@ -52,6 +60,7 @@ pub struct RuntimeCalibrationObservation {
 pub struct RuntimeCalibrationRecord {
     pub decision_kind: RuntimeCalibrationDecisionKind,
     pub decision_signature: String,
+    pub suppression_key: Option<RuntimeCalibrationSuppressionKey>,
     pub confidence_basis_points: u16,
     pub outcome: RuntimeCalibrationOutcome,
     pub comparison: RuntimeCalibrationComparison,
@@ -146,6 +155,7 @@ pub fn build_runtime_calibration_record(
     Some(RuntimeCalibrationRecord {
         decision_kind: observation.decision_kind,
         decision_signature: signature,
+        suppression_key: observation.suppression_key,
         confidence_basis_points: confidence,
         outcome: observation.outcome,
         comparison,
@@ -235,6 +245,39 @@ pub fn runtime_calibration_action_name(action: RuntimeCalibrationAction) -> &'st
     }
 }
 
+pub fn should_suppress_runtime_choice(
+    records: &[RuntimeCalibrationRecord],
+    suppression_key: &RuntimeCalibrationSuppressionKey,
+) -> bool {
+    records.iter().any(|record| {
+        record.recommended_action == RuntimeCalibrationAction::SuppressChoice
+            && record.suppression_key.as_ref() == Some(suppression_key)
+    })
+}
+
+pub fn should_suppress_route_choice(
+    records: &[RuntimeCalibrationRecord],
+    provider: &str,
+    model: &str,
+) -> bool {
+    should_suppress_runtime_choice(
+        records,
+        &RuntimeCalibrationSuppressionKey::Route {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        },
+    )
+}
+
+pub fn should_suppress_tool_choice(records: &[RuntimeCalibrationRecord], tool_name: &str) -> bool {
+    should_suppress_runtime_choice(
+        records,
+        &RuntimeCalibrationSuppressionKey::Tool {
+            tool_name: tool_name.to_string(),
+        },
+    )
+}
+
 fn retained_runtime_calibration_records(
     history: &[RuntimeCalibrationRecord],
     now_unix: i64,
@@ -270,6 +313,7 @@ mod tests {
         RuntimeCalibrationObservation {
             decision_kind,
             decision_signature: signature.into(),
+            suppression_key: None,
             confidence_basis_points,
             outcome,
             observed_at_unix,
@@ -295,6 +339,23 @@ mod tests {
             record.recommended_action,
             RuntimeCalibrationAction::SuppressChoice
         );
+    }
+
+    #[test]
+    fn suppression_uses_typed_key_not_signature_parsing() {
+        let record = build_runtime_calibration_record(RuntimeCalibrationObservation {
+            decision_kind: RuntimeCalibrationDecisionKind::ToolChoice,
+            decision_signature: "opaque-display-only".into(),
+            suppression_key: Some(RuntimeCalibrationSuppressionKey::Tool {
+                tool_name: "message_send".into(),
+            }),
+            confidence_basis_points: 9_000,
+            outcome: RuntimeCalibrationOutcome::Failed,
+            observed_at_unix: 100,
+        })
+        .unwrap();
+
+        assert!(should_suppress_tool_choice(&[record], "message_send"));
     }
 
     #[test]

@@ -499,6 +499,7 @@ mod tests {
         let calibration = build_runtime_calibration_record(RuntimeCalibrationObservation {
             decision_kind: RuntimeCalibrationDecisionKind::RouteChoice,
             decision_signature: "route:primary".into(),
+            suppression_key: None,
             confidence_basis_points: 9_000,
             outcome: RuntimeCalibrationOutcome::Failed,
             observed_at_unix: now - 1,

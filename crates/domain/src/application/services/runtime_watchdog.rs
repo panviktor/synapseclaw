@@ -302,7 +302,8 @@ fn admission_reason_alert(
         )),
         CandidateAdmissionReason::RequiresLane(_)
         | CandidateAdmissionReason::MissingFeature(_)
-        | CandidateAdmissionReason::SpecializedLaneMismatch(_) => Some((
+        | CandidateAdmissionReason::SpecializedLaneMismatch(_)
+        | CandidateAdmissionReason::CalibrationSuppressedRoute => Some((
             RuntimeWatchdogSubsystem::RouteCandidate,
             RuntimeWatchdogSeverity::Degraded,
             RuntimeWatchdogReason::CapabilityMismatch,

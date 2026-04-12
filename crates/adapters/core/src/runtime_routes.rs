@@ -778,6 +778,9 @@ fn format_candidate_admission_reason(reason: &CandidateAdmissionReason) -> Strin
         CandidateAdmissionReason::ProviderContextOverflowRisk => {
             "context overflow risk".to_string()
         }
+        CandidateAdmissionReason::CalibrationSuppressedRoute => {
+            "calibration suppressed route".to_string()
+        }
     }
 }
 
@@ -1302,6 +1305,7 @@ mod tests {
         let calibration = RuntimeCalibrationRecord {
             decision_kind: RuntimeCalibrationDecisionKind::ToolChoice,
             decision_signature: "tool:message_send".into(),
+            suppression_key: None,
             confidence_basis_points: 9_000,
             outcome: RuntimeCalibrationOutcome::Failed,
             comparison: RuntimeCalibrationComparison::OverconfidentFailure,
@@ -1422,6 +1426,7 @@ mod tests {
             calibrations: vec![RuntimeCalibrationRecord {
                 decision_kind: RuntimeCalibrationDecisionKind::RouteChoice,
                 decision_signature: "route:openrouter:qwen/qwen3.6-plus".into(),
+                suppression_key: None,
                 confidence_basis_points: 9_000,
                 outcome: RuntimeCalibrationOutcome::Failed,
                 comparison: RuntimeCalibrationComparison::OverconfidentFailure,

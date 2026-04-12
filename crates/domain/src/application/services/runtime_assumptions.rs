@@ -486,7 +486,8 @@ fn route_assumption_kind_for_reason(reason: &CandidateAdmissionReason) -> Runtim
         | CandidateAdmissionReason::CapabilityMetadataUnknown(_)
         | CandidateAdmissionReason::CapabilityMetadataStale(_)
         | CandidateAdmissionReason::CapabilityMetadataLowConfidence(_)
-        | CandidateAdmissionReason::SpecializedLaneMismatch(_) => {
+        | CandidateAdmissionReason::SpecializedLaneMismatch(_)
+        | CandidateAdmissionReason::CalibrationSuppressedRoute => {
             RuntimeAssumptionKind::RouteCapability
         }
     }
@@ -534,7 +535,8 @@ fn replacement_path_for_reason(
         }
         CandidateAdmissionReason::RequiresLane(_)
         | CandidateAdmissionReason::MissingFeature(_)
-        | CandidateAdmissionReason::SpecializedLaneMismatch(_) => {
+        | CandidateAdmissionReason::SpecializedLaneMismatch(_)
+        | CandidateAdmissionReason::CalibrationSuppressedRoute => {
             RuntimeAssumptionReplacementPath::SwitchRoute
         }
     }
