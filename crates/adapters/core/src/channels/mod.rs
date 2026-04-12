@@ -1301,7 +1301,7 @@ impl RuntimeCommandHost for ChannelRuntimeCommandHost<'_> {
         let provider = request.provider.unwrap_or_else(|| self.fallback_provider());
         let model = request
             .model
-            .ok_or_else(|| anyhow::anyhow!("model route mutation request missing model"))?;
+            .ok_or_else(|| anyhow::anyhow!("runtime route mutation request missing model"))?;
         let mut route = get_route_selection(self.ctx, self.conversation_key);
         route.provider = provider.clone();
         route.model = model;

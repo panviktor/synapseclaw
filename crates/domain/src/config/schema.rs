@@ -73,7 +73,7 @@ pub struct Config {
     /// Default provider ID or alias (e.g. `"openrouter"`, `"ollama"`, `"anthropic"`). Default: `"openrouter"`.
     #[serde(alias = "model_provider")]
     pub default_provider: Option<String>,
-    /// Default model routed through the selected provider (e.g. `"anthropic/claude-sonnet-4-6"`).
+    /// Default model routed through the selected provider (e.g. `"provider/model-id"`).
     #[serde(alias = "model")]
     pub default_model: Option<String>,
     /// Model used for session summarization (cheaper than primary). Falls back to `default_model`.
@@ -88,12 +88,12 @@ pub struct Config {
     pub compression_overrides: Vec<ContextCompressionRouteOverrideConfig>,
     /// Explicit summary model configuration with its own provider.
     /// When set, overrides `summary_model` string. Allows using a different provider
-    /// (e.g. Anthropic Haiku) for summaries while keeping a different default provider.
+    /// for summaries while keeping a different default provider.
     ///
     /// ```toml
     /// [summary]
-    /// provider = "anthropic"
-    /// model = "claude-haiku-4-5-20251001"
+    /// provider = "summary-provider"
+    /// model = "summary-model-id"
     /// temperature = 0.3
     /// ```
     #[serde(default)]
@@ -178,9 +178,9 @@ pub struct Config {
     #[serde(default)]
     pub skills: SkillsConfig,
 
-    /// Model routing rules — route `hint:<name>` to specific provider+model combos.
+    /// Catalog route aliases — route `hint:<name>` to specific provider+model combos.
     #[serde(default)]
-    pub model_routes: Vec<ModelRouteConfig>,
+    pub route_aliases: Vec<ModelRouteConfig>,
 
     /// Capability-aware model lanes — ordered candidates per runtime lane.
     ///
@@ -441,7 +441,7 @@ pub struct ModelProviderConfig {
     /// Azure OpenAI resource name (e.g. "my-resource" in https://my-resource.openai.azure.com).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub azure_openai_resource: Option<String>,
-    /// Azure OpenAI deployment name (e.g. "gpt-4o").
+    /// Azure OpenAI deployment name (e.g. "chat-deployment").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub azure_openai_deployment: Option<String>,
     /// Azure OpenAI API version (defaults to "2024-08-01-preview").
@@ -1741,7 +1741,7 @@ pub struct AgentsIpcConfig {
     ///
     /// ```toml
     /// [agents_ipc.workload_profiles.research]
-    /// model = "claude-sonnet-4-6"
+    /// model = "provider/model-id"
     /// allowed_tools = ["web_search", "web_fetch", "memory_read"]
     /// ```
     #[serde(default)]
@@ -4031,7 +4031,7 @@ pub struct ReliabilityConfig {
     #[serde(default)]
     pub api_keys: Vec<String>,
     /// Per-model fallback chains. When a model fails, try these alternatives in order.
-    /// Example: `{ "claude-opus-4-20250514" = ["claude-sonnet-4-20250514", "gpt-4o"] }`
+    /// Example: `{ "primary-model-id" = ["fallback-model-id", "second-fallback-model-id"] }`
     #[serde(default)]
     pub model_fallbacks: std::collections::HashMap<String, Vec<String>>,
     /// Initial backoff for channel/daemon restarts.
@@ -4131,15 +4131,15 @@ impl Default for SchedulerConfig {
 /// Explicit summary model configuration (`[summary]` section).
 ///
 /// When `provider` is set, the summary path creates its own provider instance
-/// instead of reusing the default. This allows e.g. Anthropic Haiku for summaries
+/// instead of reusing the default. This allows using a cheaper/smaller route for summaries
 /// while the default provider is DashScope.
 ///
 /// ```toml
 /// [summary]
-/// provider = "anthropic"
-/// model = "claude-haiku-4-5-20251001"
+/// provider = "summary-provider"
+/// model = "summary-model-id"
 /// temperature = 0.3
-/// api_key_env = "ANTHROPIC_API_KEY"
+/// api_key_env = "SUMMARY_PROVIDER_API_KEY"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SummaryConfig {
@@ -4290,22 +4290,22 @@ pub struct ModelLaneConfig {
     pub candidates: Vec<ModelLaneCandidateConfig>,
 }
 
-/// Legacy catalog alias from a task hint to a specific provider + model.
+/// Catalog alias from a task hint to a specific provider + model.
 ///
 /// ```toml
-/// [[model_routes]]
+/// [[route_aliases]]
 /// hint = "reasoning"
 /// provider = "example-provider"
 /// model = "example-reasoning-model"
 ///
-/// [[model_routes]]
+/// [[route_aliases]]
 /// hint = "fast"
 /// provider = "example-provider"
 /// model = "example-fast-model"
 /// ```
 ///
 /// Runtime routing should prefer `[[model_lanes]]`; this shape remains for
-/// catalog aliases and legacy config/API surfaces.
+/// explicit catalog aliases and provider-router dispatch compatibility.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct ModelRouteConfig {
     /// Alias name, such as a capability selector or operator-defined shortcut.
@@ -6346,7 +6346,7 @@ impl Default for Config {
             scheduler: SchedulerConfig::default(),
             agent: AgentConfig::default(),
             skills: SkillsConfig::default(),
-            model_routes: Vec::new(),
+            route_aliases: Vec::new(),
             model_lanes: Vec::new(),
             model_preset: None,
             embedding_routes: Vec::new(),

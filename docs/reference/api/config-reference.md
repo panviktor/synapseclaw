@@ -31,7 +31,7 @@ Schema export command:
 | Key | Default | Notes |
 |---|---|---|
 | `default_provider` | `openrouter` | provider ID or alias |
-| `default_model` | `anthropic/claude-sonnet-4-6` | model routed through selected provider |
+| `default_model` | preset/catalog-dependent | model routed through selected provider |
 | `default_temperature` | `0.7` | model temperature |
 
 ## Model Presets And Local Catalog
@@ -46,7 +46,7 @@ Relevant keys:
 |---|---|
 | `model_preset` | selects a built-in preset seed |
 | `model_lanes` | explicit lane-aware overrides (`reasoning`, `cheap_reasoning`, `embedding`, later multimodal lanes) |
-| `model_routes` | legacy hint-based route mapping |
+| `route_aliases` | optional user-defined provider-router shortcuts; capability lanes remain the primary runtime routing surface |
 
 Operational notes:
 
@@ -56,7 +56,7 @@ Operational notes:
 - Provider model cache metadata wins first; bundled/local catalog profiles are
   fallback metadata for context windows, max output, and feature coverage when
   the live cache is missing.
-- User `[[model_routes]]` entries win over bundled route aliases. Bundled
+- User `[[route_aliases]]` entries win over bundled route aliases. Bundled
   aliases are only a fallback so shortcuts such as `cheap`, `qwen36`,
   `gemma31b`, and `gemma26b` work in fresh configs without changing the default
   provider/model.
@@ -236,7 +236,7 @@ Notes:
 ```toml
 [agents.researcher]
 provider = "openrouter"
-model = "anthropic/claude-sonnet-4-6"
+model = "provider/model-id"
 system_prompt = "You are a research assistant."
 max_depth = 2
 agentic = true
@@ -244,8 +244,8 @@ allowed_tools = ["web_search", "http_request", "file_read"]
 max_iterations = 8
 
 [agents.coder]
-provider = "ollama"
-model = "qwen2.5-coder:32b"
+provider = "local"
+model = "local-coder-model"
 temperature = 0.2
 ```
 
@@ -447,13 +447,13 @@ Notes:
 
 - Memory context injection ignores legacy `assistant_resp*` auto-save keys to prevent old model-authored summaries from being treated as facts.
 
-## `[[model_routes]]` and `[[embedding_routes]]`
+## `[[route_aliases]]` and `[[embedding_routes]]`
 
 Use route hints so integrations can keep stable names while model IDs evolve.
 If a hint is not present in `config.toml`, SynapseClaw falls back to the bundled
-model catalog aliases. User-defined `[[model_routes]]` always take precedence.
+model catalog aliases. User-defined `[[route_aliases]]` always take precedence.
 
-### `[[model_routes]]`
+### `[[route_aliases]]`
 
 | Key | Default | Purpose |
 |---|---|---|
@@ -476,7 +476,7 @@ model catalog aliases. User-defined `[[model_routes]]` always take precedence.
 [memory]
 embedding_model = "hint:semantic"
 
-[[model_routes]]
+[[route_aliases]]
 hint = "reasoning"
 provider = "openrouter"
 model = "provider/model-id"
@@ -501,13 +501,13 @@ Natural-language config path:
 
 Example requests:
 
-- `Set conversation to provider kimi, model moonshot-v1-8k.`
-- `Set coding to provider openai, model gpt-5.3-codex, and auto-route when message contains code blocks.`
-- `Create a coder sub-agent using openai/gpt-5.3-codex with tools file_read,file_write,shell.`
+- `Set conversation to provider example-provider, model provider/model-id.`
+- `Set coding to provider example-provider, model code-model-id, and auto-route when message contains code blocks.`
+- `Create a coder sub-agent using example-provider/code-model-id with tools file_read,file_write,shell.`
 
 ## `[query_classification]`
 
-Automatic model hint routing — maps user messages to `[[model_routes]]` hints based on content patterns.
+Automatic model hint routing maps user messages to lane or route-alias hints based on content patterns.
 
 | Key | Default | Purpose |
 |---|---|---|
@@ -518,7 +518,7 @@ Each rule in `rules`:
 
 | Key | Default | Purpose |
 |---|---|---|
-| `hint` | _required_ | Must match a `[[model_routes]]` hint value |
+| `hint` | _required_ | Must match an effective capability-lane hint or a `[[route_aliases]]` hint value |
 | `keywords` | `[]` | Case-insensitive substring matches |
 | `patterns` | `[]` | Case-sensitive literal matches (for code fences, keywords like `"fn "`) |
 | `min_length` | unset | Only match if message length ≥ N chars |

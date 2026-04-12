@@ -35,7 +35,7 @@ struct ModelCatalogData {
     profiles: Vec<ModelProfileCatalogEntry>,
     #[serde(default)]
     embedding_profiles: Vec<EmbeddingProfileCatalogEntry>,
-    #[serde(default, alias = "model_routes")]
+    #[serde(default)]
     route_aliases: Vec<ModelRouteConfig>,
     #[serde(default)]
     request_policies: Vec<ModelRequestPolicyCatalogEntry>,
@@ -590,11 +590,11 @@ fn embedding_profile_catalog_key_matches(
         && left.dimensions == right.dimensions
 }
 
-pub fn model_route_aliases() -> Vec<ModelRouteConfig> {
+pub fn route_aliases() -> Vec<ModelRouteConfig> {
     active_model_catalog().data.route_aliases.clone()
 }
 
-pub fn model_route_alias(value: &str) -> Option<ModelRouteConfig> {
+pub fn route_alias(value: &str) -> Option<ModelRouteConfig> {
     let value = value.trim().trim_matches('`');
     if value.is_empty() {
         return None;
@@ -720,17 +720,17 @@ mod tests {
             Some(CatalogModelProfileSource::BundledCatalog)
         );
 
-        let aliases = model_route_aliases();
+        let aliases = route_aliases();
         assert!(aliases.iter().any(|route| route.hint == "gemma31b"));
         assert!(aliases.iter().any(|route| route.hint == "gemma26b"));
         assert!(aliases.iter().any(|route| route.hint == "grok420"));
-        let alias = model_route_alias("gemma31b").expect("alias should exist");
+        let alias = route_alias("gemma31b").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "google/gemma-4-31b-it");
-        let alias = model_route_alias("grok-4.20").expect("alias should exist");
+        let alias = route_alias("grok-4.20").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "x-ai/grok-4.20");
-        let alias = model_route_alias("qwen36").expect("alias should exist");
+        let alias = route_alias("qwen36").expect("alias should exist");
         assert_eq!(alias.provider, "openrouter");
         assert_eq!(alias.model, "qwen/qwen3.6-plus");
     }

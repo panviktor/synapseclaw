@@ -319,13 +319,11 @@ pub enum CommandEffect {
 /// provider validation to the adapter (requires infrastructure).
 pub fn command_effect(command: &RuntimeCommand, config: &Config) -> CommandEffect {
     command_effect_with_alias_resolver(command, config, |value| {
-        crate::config::model_catalog::model_route_alias(value).map(|route| {
-            ResolvedModelCommandRoute {
-                provider: route.provider,
-                model: route.model,
-                lane: route.capability,
-                candidate_index: None,
-            }
+        crate::config::model_catalog::route_alias(value).map(|route| ResolvedModelCommandRoute {
+            provider: route.provider,
+            model: route.model,
+            lane: route.capability,
+            candidate_index: None,
         })
     })
 }
@@ -379,13 +377,11 @@ pub fn resolve_model_command_route(
     config: &Config,
 ) -> Option<ResolvedModelCommandRoute> {
     resolve_model_command_route_with_alias_resolver(selector, config, |value| {
-        crate::config::model_catalog::model_route_alias(value).map(|route| {
-            ResolvedModelCommandRoute {
-                provider: route.provider,
-                model: route.model,
-                lane: route.capability,
-                candidate_index: None,
-            }
+        crate::config::model_catalog::route_alias(value).map(|route| ResolvedModelCommandRoute {
+            provider: route.provider,
+            model: route.model,
+            lane: route.capability,
+            candidate_index: None,
         })
     })
 }

@@ -511,16 +511,16 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
         }
     }
 
-    // Model routes validation
-    for route in &config.model_routes {
+    // Route aliases validation
+    for route in &config.route_aliases {
         if route.hint.is_empty() {
-            items.push(DiagItem::warn(cat, "model route with empty hint"));
+            items.push(DiagItem::warn(cat, "route alias with empty hint"));
         }
         if let Some(reason) = provider_validation_error(&route.provider) {
             items.push(DiagItem::warn(
                 cat,
                 format!(
-                    "model route \"{}\" uses invalid provider \"{}\": {}",
+                    "route alias \"{}\" uses invalid provider \"{}\": {}",
                     route.hint, route.provider, reason
                 ),
             ));
@@ -528,7 +528,7 @@ fn check_config_semantics(config: &Config, items: &mut Vec<DiagItem>) {
         if route.model.is_empty() {
             items.push(DiagItem::warn(
                 cat,
-                format!("model route \"{}\" has empty model", route.hint),
+                format!("route alias \"{}\" has empty model", route.hint),
             ));
         }
     }
@@ -1159,9 +1159,9 @@ mod tests {
     }
 
     #[test]
-    fn config_validation_warns_empty_model_route() {
+    fn config_validation_warns_empty_route_alias() {
         let mut config = Config::default();
-        config.model_routes = vec![synapse_domain::config::schema::ModelRouteConfig {
+        config.route_aliases = vec![synapse_domain::config::schema::ModelRouteConfig {
             hint: "fast".into(),
             provider: "groq".into(),
             model: String::new(),
@@ -1171,7 +1171,9 @@ mod tests {
         }];
         let mut items = Vec::new();
         check_config_semantics(&config, &mut items);
-        let route_item = items.iter().find(|i| i.message.contains("empty model"));
+        let route_item = items
+            .iter()
+            .find(|i| i.message.contains("route alias") && i.message.contains("empty model"));
         assert!(route_item.is_some());
         assert_eq!(route_item.unwrap().severity, Severity::Warn);
     }

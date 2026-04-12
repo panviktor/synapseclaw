@@ -53,32 +53,32 @@ Our best move is:
 - Runtime model switching now follows the same typed selector path in web and
   channel: effective capability lanes first, catalog aliases second, then an
   explicit unresolved model selector.
-- Legacy `model_routes` / `embedding_routes` are no longer lane-resolution
+- Legacy route aliases / `embedding_routes` are no longer lane-resolution
   fallbacks for `resolve_lane_candidates`, summary routing, query-classifier
   overrides, or `/model` command effects.
 - Matched lane candidates preserve `lane + candidate_index` through the shared
   runtime-command adapter contract, which keeps route state aligned with the
   candidate-profile registry instead of only storing provider/model strings.
 - `/model` help now renders effective capability lanes and catalog aliases
-  instead of promoting configured `model_routes` as a first-class runtime
+  instead of promoting configured route aliases as a first-class runtime
   surface.
 - `model_routing_config` no longer creates or removes editable
-  `model_routes`; scenario upserts now write the selected capability lane's
+  editable route-table entries; scenario upserts now write the selected capability lane's
   ordered candidate list and classification rules resolve through the shared
   lane/catalog selector path.
 - Live web/Agent query classification now follows the same lane/catalog
-  selector resolver instead of maintaining an Agent-local `model_routes`
+  selector resolver instead of maintaining an Agent-local route-alias
   hint/model map.
 - Live Agent and CLI provider-router alias tables are now derived from the
   shared effective-lane/catalog helper instead of passing configured
-  `model_routes` directly into the router.
+  route-table directly into the router.
 - Provider-router aliases now include typed `provider:model` keys for every
   lane candidate, preventing selector/router drift for non-primary candidates.
-- Channel inbound/use-case route snapshots no longer carry `model_routes`
+- Channel inbound/use-case route snapshots no longer carry the legacy route table
   through turn execution; they now pass lane/preset state only.
-- Remaining audit target: old config/API surfaces still expose `model_routes`
-  as compatibility/catalog-alias data; future cleanup should either rename that
-  data shape to catalog aliases or fully retire it.
+- Config/API/catalog surfaces now expose user-defined catalog shortcuts as
+  `route_aliases`, with no old Rust route-table field or catalog compatibility
+  alias left in the runtime code path.
 
 ---
 

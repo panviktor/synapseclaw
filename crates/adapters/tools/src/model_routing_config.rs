@@ -457,7 +457,7 @@ impl ModelRoutingConfigTool {
             .map(Self::lane_name)
             .collect();
         let mut catalog_aliases: Vec<String> =
-            synapse_domain::config::model_catalog::model_route_aliases()
+            synapse_domain::config::model_catalog::route_aliases()
                 .into_iter()
                 .map(|alias| alias.hint)
                 .collect();

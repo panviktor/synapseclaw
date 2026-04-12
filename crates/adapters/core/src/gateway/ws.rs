@@ -1377,7 +1377,7 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
         let model = request
             .model
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("model route mutation request missing model"))?;
+            .ok_or_else(|| anyhow::anyhow!("runtime route mutation request missing model"))?;
         let catalog = WorkspaceModelProfileCatalog::from_config(self.config);
         let route_profile = synapse_domain::application::services::model_lane_resolution::resolve_route_selection_profile(
             self.config,

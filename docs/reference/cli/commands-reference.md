@@ -138,7 +138,7 @@ model lists, route aliases, provider:model profiles, or default pricing without
 changing repository files. Profile entries can provide context windows, max
 output, and feature coverage for admission/routing when the live provider cache
 has not been refreshed yet. Route aliases are fallback shortcuts for `/model`;
-user `[[model_routes]]` entries still win when both define the same hint.
+user `[[route_aliases]]` entries still win when both define the same hint.
 
 ### `doctor`
 

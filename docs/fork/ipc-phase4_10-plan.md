@@ -1112,7 +1112,7 @@ Expected outcome:
     entered through the automatic context path
   - low-information detection now catches repeated semantic shingles, not only
     exact token chants or contiguous repeated phrases
-  - summary route resolution no longer consumes legacy `model_routes` cheap
+  - summary route resolution no longer consumes the legacy route-table cheap
     hints; the compactor lane must come from explicit/effective capability
     lanes or explicit summary config, keeping cheap-model condensation on the
     same routing language as the main runtime
@@ -1259,8 +1259,8 @@ Expected outcome:
   - `model_routing_config` preset operations now participate in typed routing facts
   - `model_routing_config` scenario upsert/remove now manages explicit
     capability-lane candidate lists plus classification rules instead of
-    writing legacy `model_routes`
-  - `resolve_lane_candidates` no longer treats legacy `model_routes` or
+    writing the legacy route-alias table
+  - `resolve_lane_candidates` no longer treats the legacy route-alias table or
     `embedding_routes` as capability-lane fallbacks; fallback to the default
     reasoning route now requires both configured provider and configured model,
     with no provider string invented in code
@@ -1268,23 +1268,27 @@ Expected outcome:
     effective capability lanes first and catalog aliases second; matched lane
     candidates preserve `lane + candidate_index` through the shared
     runtime-command adapter contract
-  - `/model` help no longer renders configured `model_routes` as a first-class
+  - `/model` help no longer renders configured route aliases as a first-class
     routing surface; it shows effective capability lanes plus catalog aliases
     so operator UX matches the runtime selector path
   - query-classifier route overrides now reuse the same lane/catalog selector
-    resolver instead of scanning `model_routes` by hint
+    resolver instead of scanning the old route-table by hint
   - live web/Agent query classification now uses that same lane/catalog selector
     resolver and its provider router is seeded from effective lanes plus catalog
-    aliases, not from configured legacy `model_routes`
+    aliases, not from the configured legacy route-table
   - the effective-lane/catalog provider-router alias table is now a shared
     domain helper consumed by live Agent and CLI runtime, avoiding a second
-    legacy `model_routes` route table in adapter code
+    legacy route table in adapter code
   - provider-router aliases include typed `provider:model` keys for explicit
     non-primary lane candidates, so selector resolution and router dispatch do
     not diverge on fallback candidates
-  - channel inbound/use-case runtime snapshots no longer carry `model_routes`
+  - channel inbound/use-case runtime snapshots no longer carry the legacy route table
     through the turn path; they pass only model lanes/preset into shared route
     resolution
+  - config/API/catalog surfaces now expose user-defined provider-router
+    shortcuts as `route_aliases`; the old Rust route-table field and catalog
+    compatibility alias were removed rather than kept as
+    a second public routing language
   - remaining work:
     - historical note: earlier remaining items about image/audio/video/music
       first-class turn routing are now mostly owned by Slice 14 and the shared
@@ -1297,9 +1301,6 @@ Expected outcome:
     - route state stores lane/candidate identity, and route-switch UX now renders lane
       for lane-aware switches; downstream runtime surfaces should keep moving toward
       lane/candidate-first explanations
-    - old config/API surfaces still expose `model_routes` as compatibility or
-      catalog-alias data; remove or rename that surface in a dedicated cleanup
-      when the gateway/UI contract is ready to change
     - keep auditing that new routing decisions enter through domain/profile
       services rather than brand-string heuristics
 

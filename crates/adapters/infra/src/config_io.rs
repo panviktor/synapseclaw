@@ -1102,16 +1102,16 @@ impl ConfigIO for Config {
             anyhow::bail!("scheduler.max_tasks must be greater than 0");
         }
 
-        // Model routes
-        for (i, route) in self.model_routes.iter().enumerate() {
+        // Route aliases
+        for (i, route) in self.route_aliases.iter().enumerate() {
             if route.hint.trim().is_empty() {
-                anyhow::bail!("model_routes[{i}].hint must not be empty");
+                anyhow::bail!("route_aliases[{i}].hint must not be empty");
             }
             if route.provider.trim().is_empty() {
-                anyhow::bail!("model_routes[{i}].provider must not be empty");
+                anyhow::bail!("route_aliases[{i}].provider must not be empty");
             }
             if route.model.trim().is_empty() {
-                anyhow::bail!("model_routes[{i}].model must not be empty");
+                anyhow::bail!("route_aliases[{i}].model must not be empty");
             }
         }
 

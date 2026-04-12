@@ -1638,7 +1638,7 @@ pub fn create_resilient_provider_with_options(
     Ok(Box::new(reliable))
 }
 
-/// Create a RouterProvider if model routes are configured, otherwise return a
+/// Create a RouterProvider if route aliases are configured, otherwise return a
 /// standard resilient provider. The router wraps individual providers per route,
 /// each with its own retry/fallback chain.
 pub fn create_routed_provider(
@@ -1646,7 +1646,7 @@ pub fn create_routed_provider(
     api_key: Option<&str>,
     api_url: Option<&str>,
     reliability: &synapse_domain::config::schema::ReliabilityConfig,
-    model_routes: &[synapse_domain::config::schema::ModelRouteConfig],
+    route_aliases: &[synapse_domain::config::schema::ModelRouteConfig],
     default_model: &str,
 ) -> anyhow::Result<Box<dyn Provider>> {
     create_routed_provider_with_options(
@@ -1654,7 +1654,7 @@ pub fn create_routed_provider(
         api_key,
         api_url,
         reliability,
-        model_routes,
+        route_aliases,
         default_model,
         &ProviderRuntimeOptions::default(),
     )
@@ -1666,11 +1666,11 @@ pub fn create_routed_provider_with_options(
     api_key: Option<&str>,
     api_url: Option<&str>,
     reliability: &synapse_domain::config::schema::ReliabilityConfig,
-    model_routes: &[synapse_domain::config::schema::ModelRouteConfig],
+    route_aliases: &[synapse_domain::config::schema::ModelRouteConfig],
     default_model: &str,
     options: &ProviderRuntimeOptions,
 ) -> anyhow::Result<Box<dyn Provider>> {
-    if model_routes.is_empty() {
+    if route_aliases.is_empty() {
         return create_resilient_provider_with_options(
             primary_name,
             api_key,
@@ -1682,7 +1682,7 @@ pub fn create_routed_provider_with_options(
 
     // Collect unique provider names needed
     let mut needed: Vec<String> = vec![primary_name.to_string()];
-    for route in model_routes {
+    for route in route_aliases {
         if !needed.iter().any(|n| n == &route.provider) {
             needed.push(route.provider.clone());
         }
@@ -1691,7 +1691,7 @@ pub fn create_routed_provider_with_options(
     // Create each provider (with its own resilience wrapper)
     let mut providers: Vec<(String, Box<dyn Provider>)> = Vec::new();
     for name in &needed {
-        let routed_credential = model_routes
+        let routed_credential = route_aliases
             .iter()
             .find(|r| &r.provider == name)
             .and_then(|r| {
@@ -1726,7 +1726,7 @@ pub fn create_routed_provider_with_options(
     }
 
     // Build route table
-    let routes: Vec<(String, router::Route)> = model_routes
+    let routes: Vec<(String, router::Route)> = route_aliases
         .iter()
         .map(|r| {
             (

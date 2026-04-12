@@ -457,7 +457,7 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
         }
     }
 
-    let catalog_aliases = synapse_domain::config::model_catalog::model_route_aliases();
+    let catalog_aliases = synapse_domain::config::model_catalog::route_aliases();
     if !catalog_aliases.is_empty() {
         response.push_str("\nCatalog model aliases:\n");
         for route in catalog_aliases.iter().take(12) {

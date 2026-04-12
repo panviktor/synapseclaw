@@ -2,12 +2,12 @@ use std::collections::HashSet;
 
 use crate::config::model_catalog::{
     apply_default_api_key, known_model_presets as catalog_known_model_presets,
-    model_route_aliases as catalog_model_route_aliases,
     normalize_model_preset_id as catalog_normalize_model_preset_id,
     preset_description as catalog_preset_description, preset_extra_lanes,
     preset_reasoning_seed as catalog_preset_reasoning_seed, preset_seed_multimodal_from_reasoning,
     preset_title as catalog_preset_title,
-    recommended_preset_for_provider as catalog_recommended_preset_for_provider, KnownModelPreset,
+    recommended_preset_for_provider as catalog_recommended_preset_for_provider,
+    route_aliases as catalog_route_aliases, KnownModelPreset,
 };
 use crate::config::schema::{
     CapabilityLane, Config, ModelCandidateProfileConfig, ModelFeature, ModelLaneCandidateConfig,
@@ -94,7 +94,7 @@ pub fn provider_router_routes(config: &Config) -> Vec<ModelRouteConfig> {
         }
     }
 
-    for alias in catalog_model_route_aliases() {
+    for alias in catalog_route_aliases() {
         push_provider_router_route(&mut routes, &mut seen_hints, alias);
     }
 
