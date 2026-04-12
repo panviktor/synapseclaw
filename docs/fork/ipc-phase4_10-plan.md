@@ -705,6 +705,10 @@ Expected outcome:
       through shared provider runtime options from `model_providers` or env,
       and the provider factory fails loud instead of inventing `my-resource`
       or a stale model deployment default
+    - gateway, channel startup, tool delegation setup, and daemon memory
+      consolidation now build provider runtime options through the same helper,
+      so provider profile fields and request controls do not drift by
+      lifecycle path
   - Slice 13 initial pressure snapshot:
     - `ProviderContextBudgetInput` now tracks artifact-level breakdown for:
       - bootstrap

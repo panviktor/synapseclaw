@@ -470,11 +470,12 @@ pub async fn run(
             String,
         )>;
         let mem: std::sync::Arc<dyn synapse_memory::UnifiedMemoryPort> =
-            match synapse_providers::create_resilient_provider(
+            match synapse_providers::create_resilient_provider_with_options(
                 default_provider.as_str(),
                 config.api_key.as_deref(),
                 config.api_url.as_deref(),
                 &config.reliability,
+                &synapse_providers::provider_runtime_options_from_config(&config),
             ) {
                 Ok(p) => {
                     let prov_arc: std::sync::Arc<dyn synapse_providers::traits::Provider> =
