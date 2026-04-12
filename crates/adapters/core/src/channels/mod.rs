@@ -291,31 +291,35 @@ fn parse_runtime_command(
     )
 }
 
-fn resolved_default_provider(config: &Config) -> String {
+fn resolved_default_provider(config: &Config) -> Result<String> {
     config
         .default_provider
         .clone()
-        .unwrap_or_else(|| "openrouter".to_string())
+        .or_else(|| synapse_domain::config::model_catalog::default_provider().map(str::to_string))
+        .context("no default provider configured and model catalog has no default preset")
 }
 
-fn resolved_default_model(config: &Config) -> String {
-    let provider = resolved_default_provider(config);
-    config.default_model.clone().unwrap_or_else(|| {
-        synapse_domain::config::model_catalog::provider_default_model(provider.as_str())
-            .unwrap_or("default")
-            .to_string()
-    })
+fn resolved_default_model(config: &Config) -> Result<String> {
+    let provider = resolved_default_provider(config)?;
+    config
+        .default_model
+        .clone()
+        .or_else(|| {
+            synapse_domain::config::model_catalog::provider_default_model(provider.as_str())
+                .map(str::to_string)
+        })
+        .with_context(|| format!("no default model configured for provider '{provider}'"))
 }
 
-fn runtime_defaults_from_config(config: &Config) -> ChannelRuntimeDefaults {
-    ChannelRuntimeDefaults {
-        default_provider: resolved_default_provider(config),
-        model: resolved_default_model(config),
+fn runtime_defaults_from_config(config: &Config) -> Result<ChannelRuntimeDefaults> {
+    Ok(ChannelRuntimeDefaults {
+        default_provider: resolved_default_provider(config)?,
+        model: resolved_default_model(config)?,
         temperature: config.default_temperature,
         api_key: config.api_key.clone(),
         api_url: config.api_url.clone(),
         reliability: config.reliability.clone(),
-    }
+    })
 }
 
 fn runtime_config_path(ctx: &ChannelRuntimeContext) -> Option<PathBuf> {
@@ -407,7 +411,7 @@ async fn load_runtime_defaults_from_config_file(path: &Path) -> Result<ChannelRu
     }
 
     parsed.apply_env_overrides();
-    Ok(runtime_defaults_from_config(&parsed))
+    runtime_defaults_from_config(&parsed)
 }
 
 fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection {
@@ -2325,7 +2329,7 @@ pub async fn start_channels(
         )
     };
 
-    let provider_name = resolved_default_provider(&config);
+    let provider_name = resolved_default_provider(&config)?;
     let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
         auth_profile_override: None,
         provider_api_url: config.api_url.clone(),
@@ -2363,7 +2367,7 @@ pub async fn start_channels(
         store.insert(
             config.config_path.clone(),
             RuntimeConfigState {
-                defaults: runtime_defaults_from_config(&config),
+                defaults: runtime_defaults_from_config(&config)?,
                 last_applied_stamp: initial_stamp,
             },
         );
@@ -2378,7 +2382,7 @@ pub async fn start_channels(
         &config.autonomy,
         &config.workspace_dir,
     ));
-    let model = resolved_default_model(&config);
+    let model = resolved_default_model(&config)?;
     let temperature = config.default_temperature;
     let resolved_agent_id = crate::agent::resolve_agent_id(&config);
     let mem: Arc<dyn UnifiedMemoryPort> = match shared_memory {

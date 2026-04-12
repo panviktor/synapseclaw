@@ -1258,15 +1258,22 @@ impl Agent {
             bootstrap::ensure_core_blocks_seeded(memory.as_ref(), &resolved_agent_id, &files).await;
         }
 
-        let provider_name = config.default_provider.as_deref().unwrap_or("openrouter");
+        let provider_name = config
+            .default_provider
+            .clone()
+            .or_else(|| {
+                synapse_domain::config::model_catalog::default_provider().map(str::to_string)
+            })
+            .context("no default provider configured and model catalog has no default preset")?;
+        let provider_name = provider_name.as_str();
 
         let model_name = config
             .default_model
             .as_deref()
-            .unwrap_or_else(|| {
+            .or_else(|| {
                 synapse_domain::config::model_catalog::provider_default_model(provider_name)
-                    .unwrap_or("default")
             })
+            .with_context(|| format!("no default model configured for provider '{provider_name}'"))?
             .to_string();
 
         let provider_runtime_options =
@@ -3016,16 +3023,17 @@ pub async fn run_with_memory(
 
     let provider_name = effective_config
         .default_provider
-        .as_deref()
-        .unwrap_or("openrouter")
+        .clone()
+        .or_else(|| synapse_domain::config::model_catalog::default_provider().map(str::to_string))
+        .context("no default provider configured and model catalog has no default preset")?
         .to_string();
     let model_name = effective_config
         .default_model
         .as_deref()
-        .unwrap_or_else(|| {
+        .or_else(|| {
             synapse_domain::config::model_catalog::provider_default_model(provider_name.as_str())
-                .unwrap_or("default")
         })
+        .with_context(|| format!("no default model configured for provider '{provider_name}'"))?
         .to_string();
 
     agent.observer.record_event(&ObserverEvent::AgentStart {

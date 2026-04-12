@@ -7,6 +7,7 @@ use directories::UserDirs;
 #[allow(unused_imports)]
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use synapse_domain::config::model_catalog;
 use synapse_domain::config::provider_aliases::{is_glm_alias, is_zai_alias};
 use synapse_domain::config::schema::*;
 use synapse_security::DomainMatcher;
@@ -1425,7 +1426,12 @@ impl ConfigIO for Config {
             let should_apply_legacy_provider = self
                 .default_provider
                 .as_deref()
-                .is_none_or(|configured| configured.trim().eq_ignore_ascii_case("openrouter"));
+                .map(str::trim)
+                .filter(|configured| !configured.is_empty())
+                .is_none_or(|configured| {
+                    model_catalog::default_provider()
+                        .is_some_and(|default| configured.eq_ignore_ascii_case(default))
+                });
             if should_apply_legacy_provider && !provider.is_empty() {
                 self.default_provider = Some(provider);
             }

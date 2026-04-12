@@ -26,6 +26,8 @@ pub struct CuratedModelDefinition {
 #[derive(Debug, Clone, Deserialize)]
 struct ModelCatalogData {
     #[serde(default)]
+    default_preset: Option<String>,
+    #[serde(default)]
     presets: Vec<ModelPresetCatalogEntry>,
     #[serde(default)]
     providers: Vec<ProviderModelCatalogEntry>,
@@ -208,6 +210,10 @@ fn merge_catalog_data(
 ) -> ModelCatalogData {
     let mut merged = base.clone();
 
+    if override_data.default_preset.is_some() {
+        merged.default_preset = override_data.default_preset;
+    }
+
     for preset in override_data.presets {
         if let Some(existing) = merged.presets.iter_mut().find(|item| item.id == preset.id) {
             *existing = preset;
@@ -313,6 +319,42 @@ pub fn runtime_model_catalog_override_active() -> bool {
 
 pub fn known_model_presets() -> &'static [KnownModelPreset] {
     active_model_catalog().presets_view.as_slice()
+}
+
+fn default_preset_entry(catalog: &ParsedModelCatalog) -> Option<&ModelPresetCatalogEntry> {
+    catalog
+        .data
+        .default_preset
+        .as_deref()
+        .and_then(|id| {
+            let id = id.trim();
+            (!id.is_empty()).then_some(id)
+        })
+        .and_then(|id| {
+            catalog
+                .data
+                .presets
+                .iter()
+                .find(|preset| preset.id.eq_ignore_ascii_case(id))
+        })
+        .or_else(|| catalog.data.presets.first())
+}
+
+pub fn default_model_preset_id() -> Option<&'static str> {
+    default_preset_entry(active_model_catalog()).map(|preset| preset.id.as_str())
+}
+
+pub fn default_reasoning_seed() -> Option<(&'static str, &'static str)> {
+    default_preset_entry(active_model_catalog()).map(|preset| {
+        (
+            preset.default_provider.as_str(),
+            preset.default_model.as_str(),
+        )
+    })
+}
+
+pub fn default_provider() -> Option<&'static str> {
+    default_reasoning_seed().map(|(provider, _)| provider)
 }
 
 pub fn preset_title(preset_id: &str) -> Option<&'static str> {
@@ -637,6 +679,16 @@ mod tests {
     }
 
     #[test]
+    fn default_route_comes_from_catalog_default_preset() {
+        assert_eq!(default_model_preset_id(), Some("chatgpt"));
+        assert_eq!(default_reasoning_seed(), preset_reasoning_seed("chatgpt"));
+        assert_eq!(
+            default_provider(),
+            preset_reasoning_seed("chatgpt").map(|(provider, _)| provider)
+        );
+    }
+
+    #[test]
     fn preset_aliases_come_from_catalog_data() {
         assert_eq!(normalize_model_preset_id("codex"), Some("chatgpt"));
         assert_eq!(
@@ -782,6 +834,7 @@ mod tests {
     fn override_catalog_can_replace_provider_defaults() {
         let override_data = parse_model_catalog_data(
             r#"{
+              "default_preset": "openrouter",
               "providers": [
                 {
                   "provider": "openai-codex",
@@ -831,6 +884,7 @@ mod tests {
         .expect("override should parse");
 
         let merged = merge_catalog_data(&bundled_model_catalog().data, override_data);
+        assert_eq!(merged.default_preset.as_deref(), Some("openrouter"));
         let openai = merged
             .providers
             .iter()

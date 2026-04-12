@@ -30,7 +30,7 @@ Schema export command:
 
 | Key | Default | Notes |
 |---|---|---|
-| `default_provider` | `openrouter` | provider ID or alias |
+| `default_provider` | catalog `default_preset` | provider ID or alias |
 | `default_model` | preset/catalog-dependent | model routed through selected provider |
 | `default_temperature` | `0.7` | model temperature |
 
@@ -107,12 +107,12 @@ runtime_trace_max_entries = 200
 Provider selection can also be controlled by environment variables. Precedence is:
 
 1. `SYNAPSECLAW_PROVIDER` (explicit override, always wins when non-empty)
-2. `PROVIDER` (legacy fallback, only applied when config provider is unset or still `openrouter`)
+2. `PROVIDER` (legacy fallback, only applied when config provider is unset or still the catalog default provider)
 3. `default_provider` in `config.toml`
 
 Operational note for container users:
 
-- If your `config.toml` sets an explicit custom provider like `custom:https://.../v1`, a default `PROVIDER=openrouter` from Docker/container env will no longer replace it.
+- If your `config.toml` sets an explicit custom provider like `custom:https://.../v1`, a default `PROVIDER=...` from Docker/container env will no longer replace it.
 - Use `SYNAPSECLAW_PROVIDER` when you intentionally want runtime env to override a non-default configured provider.
 
 ## `[agent]`

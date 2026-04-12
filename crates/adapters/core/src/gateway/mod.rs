@@ -494,9 +494,14 @@ pub async fn run_gateway(
     let actual_port = listener.local_addr()?.port();
     let display_addr = format!("{host}:{actual_port}");
 
+    let default_provider = config
+        .default_provider
+        .clone()
+        .or_else(|| synapse_domain::config::model_catalog::default_provider().map(str::to_string))
+        .context("no default provider configured and model catalog has no default preset")?;
     let provider: Arc<dyn Provider> =
         Arc::from(synapse_providers::create_resilient_provider_with_options(
-            config.default_provider.as_deref().unwrap_or("openrouter"),
+            default_provider.as_str(),
             config.api_key.as_deref(),
             config.api_url.as_deref(),
             &config.reliability,
@@ -513,13 +518,16 @@ pub async fn run_gateway(
                 prompt_caching: config.agent.prompt_caching,
             },
         )?);
-    let model = config.default_model.clone().unwrap_or_else(|| {
-        synapse_domain::config::model_catalog::provider_default_model(
-            config.default_provider.as_deref().unwrap_or("openrouter"),
-        )
-        .unwrap_or("default")
-        .to_string()
-    });
+    let model = config
+        .default_model
+        .clone()
+        .or_else(|| {
+            synapse_domain::config::model_catalog::provider_default_model(default_provider.as_str())
+                .map(str::to_string)
+        })
+        .with_context(|| {
+            format!("no default model configured for provider '{default_provider}'")
+        })?;
     let summary_model = config.summary_model.clone();
     let temperature = config.default_temperature;
     let resolved_agent_id = crate::agent::resolve_agent_id(&config);

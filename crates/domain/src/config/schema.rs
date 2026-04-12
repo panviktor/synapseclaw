@@ -70,7 +70,8 @@ pub struct Config {
     /// (e.g. "/v2/generate" instead of the default "/v1/chat/completions").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_path: Option<String>,
-    /// Default provider ID or alias (e.g. `"openrouter"`, `"ollama"`, `"anthropic"`). Default: `"openrouter"`.
+    /// Default provider ID or alias (e.g. `"openrouter"`, `"ollama"`, `"anthropic"`).
+    /// The runtime default is resolved from the model catalog's `default_preset`.
     #[serde(alias = "model_provider")]
     pub default_provider: Option<String>,
     /// Default model routed through the selected provider (e.g. `"provider/model-id"`).
@@ -6322,9 +6323,10 @@ impl Default for Config {
             api_key: None,
             api_url: None,
             api_path: None,
-            default_provider: Some("openrouter".to_string()),
-            default_model: super::model_catalog::provider_default_model("openrouter")
-                .map(str::to_string),
+            default_provider: super::model_catalog::default_reasoning_seed()
+                .map(|(provider, _)| provider.to_string()),
+            default_model: super::model_catalog::default_reasoning_seed()
+                .map(|(_, model)| model.to_string()),
             summary_model: None,
             compression: ContextCompressionConfig::default(),
             compression_overrides: Vec::new(),

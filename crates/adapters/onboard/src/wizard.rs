@@ -11,6 +11,7 @@ use synapse_domain::application::services::model_preset_resolution::{
     preset_title, recommended_model_preset_for_provider,
 };
 use synapse_domain::config::model_catalog::{
+    default_provider as bundled_default_provider,
     provider_curated_models as bundled_provider_curated_models,
     provider_default_model as bundled_provider_default_model,
 };
@@ -482,10 +483,15 @@ async fn run_quick_setup_with_home(
         .await
         .context("Failed to create workspace directory")?;
 
-    let provider_name = provider.unwrap_or("openrouter").to_string();
+    let provider_name = provider
+        .map(str::to_string)
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .context("model catalog has no default provider")?
+        .to_string();
     let model = model_override
         .map(str::to_string)
-        .unwrap_or_else(|| default_model_for_provider(&provider_name));
+        .map(Ok)
+        .unwrap_or_else(|| default_model_for_provider(&provider_name))?;
     let memory_backend_name = memory_backend.unwrap_or("surrealdb").to_string();
 
     // Create memory config based on backend choice
@@ -719,15 +725,15 @@ fn allows_unauthenticated_model_fetch(provider_name: &str) -> bool {
     )
 }
 
-fn default_model_for_provider(provider: &str) -> String {
-    bundled_provider_default_model(canonical_provider_name(provider))
-        .unwrap_or("default")
-        .to_string()
+fn default_model_for_provider(provider: &str) -> Result<String> {
+    let canonical = canonical_provider_name(provider);
+    bundled_provider_default_model(canonical)
+        .map(str::to_string)
+        .with_context(|| format!("model catalog has no default model for provider '{canonical}'"))
 }
 
 fn curated_models_for_provider(provider_name: &str) -> Vec<(String, String)> {
-    bundled_provider_curated_models(canonical_provider_name(provider_name))
-        .unwrap_or_else(|| vec![("default".to_string(), "Default model".to_string())])
+    bundled_provider_curated_models(canonical_provider_name(provider_name)).unwrap_or_default()
 }
 
 fn supports_live_model_fetch(provider_name: &str) -> bool {
@@ -1656,8 +1662,10 @@ pub async fn run_models_refresh(
     force: bool,
 ) -> Result<()> {
     let provider_name = provider_override
-        .or(config.default_provider.as_deref())
-        .unwrap_or("openrouter")
+        .map(str::to_string)
+        .or_else(|| config.default_provider.clone())
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .context("model catalog has no default provider")?
         .trim()
         .to_string();
 
@@ -1758,12 +1766,14 @@ pub async fn run_models_refresh(
 
 pub async fn run_models_list(config: &Config, provider_override: Option<&str>) -> Result<()> {
     let provider_name = provider_override
-        .or(config.default_provider.as_deref())
-        .unwrap_or("openrouter");
+        .map(str::to_string)
+        .or_else(|| config.default_provider.clone())
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .context("model catalog has no default provider")?;
 
     let cached = load_any_cached_models_for_provider(
         &config.workspace_dir,
-        provider_name,
+        &provider_name,
         config.api_url.as_deref(),
     )
     .await?;
@@ -1814,11 +1824,15 @@ pub async fn run_models_set(config: &Config, model: &str) -> Result<()> {
 }
 
 pub async fn run_models_status(config: &Config) -> Result<()> {
-    let provider = config.default_provider.as_deref().unwrap_or("openrouter");
+    let provider = config
+        .default_provider
+        .clone()
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .context("model catalog has no default provider")?;
     let model = config.default_model.as_deref().unwrap_or("(not set)");
 
     println!();
-    println!("  Provider:  {}", style(provider).cyan());
+    println!("  Provider:  {}", style(provider.as_str()).cyan());
     println!("  Model:     {}", style(model).cyan());
     println!(
         "  Temp:      {}",
@@ -1827,7 +1841,7 @@ pub async fn run_models_status(config: &Config) -> Result<()> {
 
     match load_any_cached_models_for_provider(
         &config.workspace_dir,
-        provider,
+        &provider,
         config.api_url.as_deref(),
     )
     .await?
@@ -2202,8 +2216,11 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
 
         let model: String = Input::new()
             .with_prompt("  Model name (enter any provider model id)")
-            .default("default".into())
             .interact_text()?;
+        let model = model.trim().to_string();
+        if model.is_empty() {
+            anyhow::bail!("Custom provider requires an explicit model id.");
+        }
 
         let provider_name = format!("custom:{base_url}");
 
@@ -2761,7 +2778,7 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
 
     if model_options.is_empty() {
         model_options.push((
-            default_model_for_provider(provider_name_ref),
+            default_model_for_provider(provider_name_ref)?,
             "Provider default model".to_string(),
         ));
     }
@@ -2786,7 +2803,7 @@ async fn setup_provider(workspace_dir: &Path) -> Result<(String, String, String,
     let model = if selected_model == CUSTOM_MODEL_SENTINEL {
         Input::new()
             .with_prompt("  Enter custom model ID")
-            .default(default_model_for_provider(provider_name_ref))
+            .default(default_model_for_provider(provider_name_ref)?)
             .interact_text()?
     } else {
         selected_model
@@ -5398,7 +5415,11 @@ fn print_summary(config: &Config) {
     println!(
         "    {} Provider:      {}",
         style("🤖").cyan(),
-        config.default_provider.as_deref().unwrap_or("openrouter")
+        config
+            .default_provider
+            .clone()
+            .or_else(|| bundled_default_provider().map(str::to_string))
+            .unwrap_or_else(|| "(not set)".to_string())
     );
     println!(
         "    {} Model:         {}",
@@ -5492,8 +5513,12 @@ fn print_summary(config: &Config) {
 
     let mut step = 1u8;
 
-    let provider = config.default_provider.as_deref().unwrap_or("openrouter");
-    if config.api_key.is_none() && !provider_supports_keyless_local_usage(provider) {
+    let provider = config
+        .default_provider
+        .clone()
+        .or_else(|| bundled_default_provider().map(str::to_string))
+        .unwrap_or_else(|| "(not set)".to_string());
+    if config.api_key.is_none() && !provider_supports_keyless_local_usage(&provider) {
         if provider == "openai-codex" {
             println!(
                 "    {} Authenticate OpenAI Codex:",
@@ -5520,7 +5545,7 @@ fn print_summary(config: &Config) {
                 .yellow()
             );
         } else {
-            let env_var = provider_env_var(provider);
+            let env_var = provider_env_var(&provider);
             println!(
                 "    {} Set your API key:",
                 style(format!("{step}.")).cyan().bold()
@@ -5728,7 +5753,7 @@ mod tests {
         .await
         .unwrap();
 
-        let expected = default_model_for_provider("anthropic");
+        let expected = default_model_for_provider("anthropic").unwrap();
         assert_eq!(config.default_provider.as_deref(), Some("anthropic"));
         assert_eq!(config.default_model.as_deref(), Some(expected.as_str()));
     }
@@ -6299,7 +6324,7 @@ mod tests {
         let canonical = canonical_provider_name(provider_name);
         let expected = bundled_provider_default_model(canonical)
             .unwrap_or_else(|| panic!("missing bundled default model for {canonical}"));
-        assert_eq!(default_model_for_provider(provider_name), expected);
+        assert_eq!(default_model_for_provider(provider_name).unwrap(), expected);
         assert!(
             curated_model_ids(provider_name).contains(&expected.to_string()),
             "curated models for {provider_name} should include catalog default {expected}"

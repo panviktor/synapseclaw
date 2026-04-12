@@ -1285,13 +1285,16 @@ Expected outcome:
   - channel inbound/use-case runtime snapshots no longer carry the legacy route table
     through the turn path; they pass only model lanes/preset into shared route
     resolution
-  - config/API/catalog surfaces now expose user-defined provider-router
-    shortcuts as `route_aliases`; the old Rust route-table field and catalog
-    compatibility alias were removed rather than kept as
-    a second public routing language
-  - remaining work:
-    - historical note: earlier remaining items about image/audio/video/music
-      first-class turn routing are now mostly owned by Slice 14 and the shared
+    - config/API/catalog surfaces now expose user-defined provider-router
+      shortcuts as `route_aliases`; the old Rust route-table field and catalog
+      compatibility alias were removed rather than kept as
+      a second public routing language
+    - default provider/model selection now resolves from catalog-owned
+      `default_preset` instead of Rust fallback strings; runtime paths fail loud
+      when neither config nor catalog can supply a provider/model
+    - remaining work:
+      - historical note: earlier remaining items about image/audio/video/music
+        first-class turn routing are now mostly owned by Slice 14 and the shared
       marker/admission path, not by a separate Slice 10 routing fork
     - provider capability metadata is still narrower than the eventual lane matrix
     - known request-policy cases for fixed temperature and reasoning effort

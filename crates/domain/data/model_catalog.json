@@ -1,4 +1,5 @@
 {
+  "default_preset": "chatgpt",
   "presets": [
     {
       "id": "chatgpt",
