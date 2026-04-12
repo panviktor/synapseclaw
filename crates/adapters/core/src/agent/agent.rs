@@ -54,6 +54,9 @@ use synapse_domain::application::services::runtime_calibration::{
 use synapse_domain::application::services::runtime_trace_janitor::{
     run_runtime_trace_janitor, RuntimeTraceJanitorInput,
 };
+use synapse_domain::application::services::runtime_watchdog::{
+    build_runtime_watchdog_digest, format_runtime_watchdog_context, RuntimeWatchdogInput,
+};
 use synapse_domain::application::services::scoped_instruction_resolution::{
     adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
     format_scoped_instruction_block,
@@ -2384,6 +2387,18 @@ impl Agent {
                 &self.recent_runtime_assumptions,
                 &observed_assumptions,
             );
+            let context_cache_stats =
+                self.history_compaction_cache_stats_for_compression(&effective_compression);
+            let runtime_watchdog_digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
+                last_admission: self.recent_turn_admissions.last(),
+                recent_admissions: &self.recent_turn_admissions,
+                last_tool_repair: self.last_turn_tool_repair.as_ref(),
+                recent_tool_repairs: &self.recent_turn_tool_repairs,
+                context_cache: Some(&context_cache_stats),
+                assumptions: &self.recent_runtime_assumptions,
+                subsystem_observations: &[],
+                now_unix: observed_at_unix,
+            });
             let system_breakdown = system_message_breakdown(&self.history)
                 .into_iter()
                 .map(|(name, chars)| format!("{name}={chars}"))
@@ -2518,6 +2533,9 @@ impl Agent {
                 );
             }
             let mut messages = snapshot.messages;
+            if let Some(block) = format_runtime_watchdog_context(&runtime_watchdog_digest) {
+                messages.push(ChatMessage::system(block));
+            }
 
             // Inject enrichment prefix on the last user message for the provider
             // call — not persisted in history.

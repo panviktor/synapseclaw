@@ -218,6 +218,25 @@ pub fn runtime_watchdog_action_name(action: RuntimeWatchdogAction) -> &'static s
     }
 }
 
+pub fn format_runtime_watchdog_context(digest: &RuntimeWatchdogDigest) -> Option<String> {
+    if !digest.has_alerts() {
+        return None;
+    }
+
+    let mut lines = vec!["[runtime-watchdog]".to_string()];
+    for alert in &digest.alerts {
+        lines.push(format!(
+            "- severity={} subsystem={} reason={} action={} observed_at_unix={}",
+            runtime_watchdog_severity_name(alert.severity),
+            runtime_watchdog_subsystem_name(alert.subsystem),
+            runtime_watchdog_reason_name(alert.reason),
+            runtime_watchdog_action_name(alert.recommended_action),
+            alert.observed_at_unix
+        ));
+    }
+    Some(format!("{}\n", lines.join("\n")))
+}
+
 fn push_admission_alerts(alerts: &mut Vec<RuntimeWatchdogAlert>, admission: &RouteAdmissionState) {
     match admission.snapshot.pressure_state {
         ContextPressureState::Critical => push_alert(
@@ -663,5 +682,32 @@ mod tests {
             digest.alerts.first().map(|alert| alert.recommended_action),
             Some(RuntimeWatchdogAction::RefreshCapabilityMetadata)
         );
+    }
+
+    #[test]
+    fn formats_bounded_runtime_watchdog_context_only_when_alerts_exist() {
+        let empty = RuntimeWatchdogDigest {
+            generated_at_unix: 200,
+            alerts: Vec::new(),
+        };
+        assert!(format_runtime_watchdog_context(&empty).is_none());
+
+        let digest = RuntimeWatchdogDigest {
+            generated_at_unix: 200,
+            alerts: vec![RuntimeWatchdogAlert {
+                subsystem: RuntimeWatchdogSubsystem::ContextBudget,
+                severity: RuntimeWatchdogSeverity::Critical,
+                reason: RuntimeWatchdogReason::ContextOverflow,
+                recommended_action: RuntimeWatchdogAction::StartFreshHandoff,
+                observed_at_unix: 123,
+            }],
+        };
+
+        let block = format_runtime_watchdog_context(&digest).unwrap();
+        assert!(block.contains("[runtime-watchdog]"));
+        assert!(block.contains(
+            "severity=critical subsystem=context_budget reason=context_overflow action=start_fresh_handoff"
+        ));
+        assert!(block.ends_with('\n'));
     }
 }

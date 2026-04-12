@@ -1975,12 +1975,15 @@ Expected outcome:
     - domain and adapter tests cover context overflow, challenged assumptions,
       repeated tool failures, metadata refresh guidance, and shared provider
       help rendering
+    - watchdog digest formatting now has a shared domain-owned
+      `[runtime-watchdog]` context block that renders only when alerts exist
+    - live web/agent and channel execution both inject that bounded block before
+      provider/runtime execution, using the same typed digest rather than
+      adapter-specific prompt prose
   - still open:
     - no autonomous background polling loop is wired yet
     - live memory/embedding/channel health observations are not injected into
       the digest outside explicit callers yet
-    - bounded runtime-context injection is not enabled yet; current exposure is
-      operator/runtime help only
 - expected outcome:
   - better self-diagnosis without prompt bloat
   - earlier detection of degraded subsystems

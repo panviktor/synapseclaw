@@ -22,6 +22,9 @@ use crate::application::services::runtime_assumptions::{
     RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
+use crate::application::services::runtime_watchdog::{
+    build_runtime_watchdog_digest, format_runtime_watchdog_context, RuntimeWatchdogInput,
+};
 use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::application::services::turn_markup::{
     contains_image_attachment_marker, strip_image_attachment_markers,
@@ -814,8 +817,6 @@ async fn execute_agent_turn(
         route.lane = Some(route_override.lane);
         route.candidate_index = route_override.candidate_index;
     }
-    route.last_tool_repair = None;
-    route.recent_tool_repairs.clear();
     let observed_at_unix = chrono::Utc::now().timestamp();
     let admission_state = RouteAdmissionState {
         observed_at_unix,
@@ -830,6 +831,18 @@ async fn execute_agent_turn(
             observed_at_unix,
         );
     route.last_admission = Some(admission_state);
+    let runtime_watchdog_digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
+        last_admission: route.last_admission.as_ref(),
+        recent_admissions: &route.recent_admissions,
+        last_tool_repair: route.last_tool_repair.as_ref(),
+        recent_tool_repairs: &route.recent_tool_repairs,
+        context_cache: route.context_cache.as_ref(),
+        assumptions: &route.assumptions,
+        subsystem_observations: &[],
+        now_unix: observed_at_unix,
+    });
+    route.last_tool_repair = None;
+    route.recent_tool_repairs.clear();
     ports.routes.set_route(conversation_key, route.clone());
 
     if admission_decision.snapshot.action
@@ -857,6 +870,9 @@ async fn execute_agent_turn(
             provider_history_compacted,
             "Compacted channel session before agent execution"
         );
+    }
+    if let Some(block) = format_runtime_watchdog_context(&runtime_watchdog_digest) {
+        history.push(ChatMessage::system(block));
     }
 
     // ── Set current conversation context for tools that need "here" ──
