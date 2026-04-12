@@ -1268,6 +1268,7 @@ fn apply_resolution_plan(
             recalled_entries: &ctx.recalled_entries,
             session_matches: &ctx.session_matches,
             run_recipes: &ctx.run_recipes,
+            recent_tool_repairs,
         });
 }
 
@@ -2473,6 +2474,9 @@ mod tests {
                 current_defaults: vec!["project_alias=Borealis".into()],
                 anchors: vec!["memory=early anchor".into()],
                 unresolved_questions: Vec::new(),
+                recent_repairs: vec![
+                    "tool_repair=message_send:reported_failure->adjust_arguments_or_target".into(),
+                ],
                 assumptions: Vec::new(),
             }),
             ..Default::default()
@@ -2480,6 +2484,7 @@ mod tests {
 
         let fmt = format_turn_context(&ctx, &PromptBudget::default());
         assert!(fmt.resolution_system.contains("[session-handoff]"));
+        assert!(fmt.resolution_system.contains("recent_repairs:"));
         assert!(fmt.resolution_system.contains("reason: context_overflow"));
         assert!(fmt
             .resolution_system

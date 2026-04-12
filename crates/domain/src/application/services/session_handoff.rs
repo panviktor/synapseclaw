@@ -7,6 +7,9 @@ use crate::application::services::{
 };
 use crate::domain::conversation_target::ConversationDeliveryTarget;
 use crate::domain::memory::MemoryEntry;
+use crate::domain::tool_repair::{
+    tool_failure_kind_name, tool_repair_action_name, ToolRepairAction, ToolRepairTrace,
+};
 use crate::domain::turn_admission::{
     admission_repair_hint_label, AdmissionRepairHint, CandidateAdmissionReason,
 };
@@ -16,6 +19,7 @@ use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
 const MAX_DEFAULTS: usize = 6;
 const MAX_ANCHORS: usize = 4;
 const MAX_UNRESOLVED: usize = 3;
+const MAX_REPAIRS: usize = 3;
 const MAX_ITEM_CHARS: usize = 180;
 const MAX_TASK_CHARS: usize = 240;
 
@@ -44,6 +48,8 @@ pub struct SessionHandoffPacket {
     #[serde(default)]
     pub unresolved_questions: Vec<String>,
     #[serde(default)]
+    pub recent_repairs: Vec<String>,
+    #[serde(default)]
     pub assumptions: Vec<RuntimeAssumption>,
 }
 
@@ -56,6 +62,7 @@ pub struct SessionHandoffInput<'a> {
     pub recalled_entries: &'a [MemoryEntry],
     pub session_matches: &'a [SessionSearchMatch],
     pub run_recipes: &'a [RunRecipeSearchMatch],
+    pub recent_tool_repairs: &'a [ToolRepairTrace],
 }
 
 pub fn build_session_handoff_packet(
@@ -81,6 +88,9 @@ pub fn build_session_handoff_packet(
         .unwrap_or_default();
     dedup_and_truncate(&mut unresolved_questions, MAX_UNRESOLVED);
 
+    let mut recent_repairs = collect_recent_repairs(input.recent_tool_repairs);
+    dedup_and_truncate(&mut recent_repairs, MAX_REPAIRS);
+
     let assumptions = runtime_assumptions::build_runtime_assumptions(
         runtime_assumptions::RuntimeAssumptionInput {
             user_message: input.user_message,
@@ -99,6 +109,7 @@ pub fn build_session_handoff_packet(
         current_defaults,
         anchors,
         unresolved_questions,
+        recent_repairs,
         assumptions,
     })
 }
@@ -121,6 +132,7 @@ pub fn format_session_handoff_packet(packet: &SessionHandoffPacket) -> String {
         "unresolved_questions",
         &packet.unresolved_questions,
     );
+    append_list(&mut lines, "recent_repairs", &packet.recent_repairs);
     append_list(
         &mut lines,
         "assumptions",
@@ -162,6 +174,7 @@ pub fn bound_session_handoff_packet(mut packet: SessionHandoffPacket) -> Session
     dedup_and_truncate(&mut packet.current_defaults, MAX_DEFAULTS);
     dedup_and_truncate(&mut packet.anchors, MAX_ANCHORS);
     dedup_and_truncate(&mut packet.unresolved_questions, MAX_UNRESOLVED);
+    dedup_and_truncate(&mut packet.recent_repairs, MAX_REPAIRS);
     packet.assumptions = runtime_assumptions::bound_runtime_assumptions(packet.assumptions);
     packet
 }
@@ -343,6 +356,38 @@ fn collect_context_anchors(
     anchors
 }
 
+fn collect_recent_repairs(repairs: &[ToolRepairTrace]) -> Vec<String> {
+    let mut items = Vec::new();
+    for repair in repairs.iter().rev() {
+        let mut item = format!(
+            "tool_repair={}:{}->{}",
+            repair.tool_name,
+            tool_failure_kind_name(repair.failure_kind),
+            format_tool_repair_action(repair.suggested_action)
+        );
+        if let Some(detail) = repair.detail.as_deref() {
+            if let Some(detail) = bounded_non_empty(detail, MAX_ITEM_CHARS) {
+                item.push_str(" detail=");
+                item.push_str(&detail);
+            }
+        }
+        items.push(item);
+        if items.len() >= MAX_REPAIRS {
+            break;
+        }
+    }
+    items
+}
+
+fn format_tool_repair_action(action: ToolRepairAction) -> String {
+    match action {
+        ToolRepairAction::SwitchRouteLane(lane) => {
+            format!("{}:{}", tool_repair_action_name(action), lane.as_str())
+        }
+        _ => tool_repair_action_name(action).to_string(),
+    }
+}
+
 fn format_delivery_target(target: &ConversationDeliveryTarget) -> String {
     match target {
         ConversationDeliveryTarget::CurrentConversation => "current_conversation".to_string(),
@@ -436,6 +481,7 @@ mod tests {
     use crate::application::services::turn_interpretation::TurnInterpretation;
     use crate::config::schema::CapabilityLane;
     use crate::domain::memory::{MemoryCategory, MemoryEntry};
+    use crate::domain::tool_repair::{ToolFailureKind, ToolRepairAction, ToolRepairTrace};
     use crate::domain::user_profile::UserProfile;
 
     #[test]
@@ -465,6 +511,13 @@ mod tests {
             }],
             session_matches: &[],
             run_recipes: &[],
+            recent_tool_repairs: &[ToolRepairTrace {
+                observed_at_unix: 1_744_243_100,
+                tool_name: "message_send".into(),
+                failure_kind: ToolFailureKind::ReportedFailure,
+                suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
+                detail: Some("missing delivery target".into()),
+            }],
         })
         .expect("packet");
 
@@ -479,6 +532,11 @@ mod tests {
             .anchors
             .iter()
             .any(|anchor| anchor.contains("freedom and responsibility")));
+        assert!(packet
+            .recent_repairs
+            .iter()
+            .any(|repair| repair
+                == "tool_repair=message_send:reported_failure->adjust_arguments_or_target detail=missing delivery target"));
         assert!(packet.assumptions.iter().any(|assumption| assumption.kind
             == runtime_assumptions::RuntimeAssumptionKind::ProfileFact
             && assumption.value == "workspace_anchor=Borealis"));
@@ -495,6 +553,9 @@ mod tests {
             current_defaults: vec!["project_alias=Borealis".into()],
             anchors: vec!["memory=Use structured markers for media routing".into()],
             unresolved_questions: vec!["which target lane".into()],
+            recent_repairs: vec![
+                "tool_repair=message_send:reported_failure->adjust_arguments_or_target".into(),
+            ],
             assumptions: vec![runtime_assumptions::RuntimeAssumption {
                 kind: runtime_assumptions::RuntimeAssumptionKind::ProfileFact,
                 source: runtime_assumptions::RuntimeAssumptionSource::UserProfile,
@@ -511,6 +572,8 @@ mod tests {
         assert!(formatted.contains("[session-handoff]"));
         assert!(formatted.contains("reason: route_switch"));
         assert!(formatted.contains("recommended_action: switch_lane:image_generation"));
+        assert!(formatted.contains("recent_repairs:"));
+        assert!(formatted.contains("tool_repair=message_send"));
         assert!(formatted.contains("assumptions:"));
         assert!(formatted.contains("kind=profile_fact"));
         assert!(formatted.contains("value=project_alias=Borealis"));
@@ -524,7 +587,8 @@ mod tests {
             "active_task": "x".repeat(400),
             "current_defaults": ["project_alias=Borealis", "project_alias=Borealis"],
             "anchors": ["a", "b", "c", "d", "e"],
-            "unresolved_questions": ["q1", "q2", "q3", "q4"]
+            "unresolved_questions": ["q1", "q2", "q3", "q4"],
+            "recent_repairs": ["r1", "r1", "r2", "r3", "r4"]
         });
 
         let packet = parse_session_handoff_packet_value(&value)
@@ -536,6 +600,7 @@ mod tests {
         assert_eq!(packet.current_defaults, vec!["project_alias=Borealis"]);
         assert_eq!(packet.anchors.len(), MAX_ANCHORS);
         assert_eq!(packet.unresolved_questions.len(), MAX_UNRESOLVED);
+        assert_eq!(packet.recent_repairs, vec!["r1", "r2", "r3"]);
     }
 
     #[test]

@@ -607,6 +607,7 @@ mod tests {
                 current_defaults: vec!["a".repeat(400)],
                 anchors: Vec::new(),
                 unresolved_questions: Vec::new(),
+                recent_repairs: Vec::new(),
                 assumptions: Vec::new(),
             },
         };
@@ -662,6 +663,7 @@ mod tests {
                 current_defaults: Vec::new(),
                 anchors: Vec::new(),
                 unresolved_questions: Vec::new(),
+                recent_repairs: Vec::new(),
                 assumptions: Vec::new(),
             },
         };

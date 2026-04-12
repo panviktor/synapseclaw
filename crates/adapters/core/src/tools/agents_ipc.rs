@@ -1074,6 +1074,7 @@ impl Tool for AgentsSpawnTool {
                         "current_defaults": {"type": "array", "items": {"type": "string"}},
                         "anchors": {"type": "array", "items": {"type": "string"}},
                         "unresolved_questions": {"type": "array", "items": {"type": "string"}},
+                        "recent_repairs": {"type": "array", "items": {"type": "string"}},
                         "assumptions": {
                             "type": "array",
                             "items": {
@@ -1608,12 +1609,16 @@ mod tests {
             current_defaults: Vec::new(),
             anchors: vec!["memory=late anchor".into()],
             unresolved_questions: Vec::new(),
+            recent_repairs: vec![
+                "tool_repair=message_send:reported_failure->adjust_arguments_or_target".into(),
+            ],
             assumptions: Vec::new(),
         };
 
         let rendered = build_spawn_prompt_body("finish task", Some(&packet));
 
         assert!(rendered.starts_with("[session-handoff]"));
+        assert!(rendered.contains("recent_repairs:"));
         assert!(rendered.contains("[/session-handoff]\n[Task]\nfinish task"));
     }
 

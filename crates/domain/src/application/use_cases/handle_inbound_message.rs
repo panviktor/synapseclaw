@@ -858,6 +858,12 @@ async fn execute_agent_turn(
         &runtime_watchdog_digest.alerts,
         observed_at_unix,
     );
+    let mut handoff_tool_repairs = route.recent_tool_repairs.clone();
+    if let Some(last_tool_repair) = route.last_tool_repair.clone() {
+        if !handoff_tool_repairs.contains(&last_tool_repair) {
+            handoff_tool_repairs.push(last_tool_repair);
+        }
+    }
     route.last_tool_repair = None;
     route.recent_tool_repairs.clear();
 
@@ -872,6 +878,7 @@ async fn execute_agent_turn(
             recalled_entries: &[],
             session_matches: &[],
             run_recipes: &[],
+            recent_tool_repairs: &handoff_tool_repairs,
         });
         if let Some(packet) = handoff_packet.as_ref() {
             route.handoff_artifacts =

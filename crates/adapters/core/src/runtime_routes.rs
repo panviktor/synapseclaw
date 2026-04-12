@@ -1449,6 +1449,7 @@ mod tests {
                     current_defaults: Vec::new(),
                     anchors: Vec::new(),
                     unresolved_questions: Vec::new(),
+                    recent_repairs: Vec::new(),
                     assumptions: Vec::new(),
                 },
             }],

@@ -1700,8 +1700,13 @@ Expected outcome:
     - route-admission context now consumes the bounded recent-admission ledger,
       not only the last admission state; web and channel use the same helper to
       surface distinct recent reasons plus the latest recommended repair action
+    - structured session handoff packets now carry bounded `recent_repairs`
+      derived from typed `ToolRepairTrace` entries, and both live web/agent and
+      channel blocked-turn paths feed that ledger into the same handoff schema
+    - helper-agent handoff schemas for `delegate` and `agents_spawn` now accept
+      the same bounded `recent_repairs` field, so tool self-repair state can
+      survive typed handoff without free-form prompt archaeology
   - remaining:
-    - broaden repair-ledger consumers beyond current route/help/operator surfaces
     - keep auditing provider-specific opaque error strings that do not expose a
       typed status/source error yet
 - expected outcome:

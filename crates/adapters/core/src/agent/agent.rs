@@ -2562,6 +2562,12 @@ impl Agent {
             }
 
             if admission_decision.snapshot.action == TurnAdmissionAction::Block {
+                let mut handoff_tool_repairs = self.recent_turn_tool_repairs.clone();
+                if let Some(last_tool_repair) = self.last_turn_tool_repair.clone() {
+                    if !handoff_tool_repairs.contains(&last_tool_repair) {
+                        handoff_tool_repairs.push(last_tool_repair);
+                    }
+                }
                 let handoff_packet =
                     synapse_domain::application::services::session_handoff::build_session_handoff_packet(
                         synapse_domain::application::services::session_handoff::SessionHandoffInput {
@@ -2572,6 +2578,7 @@ impl Agent {
                             recalled_entries: &turn_ctx.recalled_entries,
                             session_matches: &turn_ctx.session_matches,
                             run_recipes: &turn_ctx.run_recipes,
+                            recent_tool_repairs: &handoff_tool_repairs,
                         },
                     );
                 let handoff_packet_text = handoff_packet
