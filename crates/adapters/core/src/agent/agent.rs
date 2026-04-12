@@ -46,6 +46,10 @@ use synapse_domain::application::services::runtime_assumptions::{
     RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
+use synapse_domain::application::services::runtime_calibration::{
+    append_runtime_calibration_observation, RuntimeCalibrationDecisionKind,
+    RuntimeCalibrationObservation, RuntimeCalibrationOutcome, RuntimeCalibrationRecord,
+};
 use synapse_domain::application::services::runtime_trace_janitor::{
     run_runtime_trace_janitor, RuntimeTraceJanitorInput,
 };
@@ -55,7 +59,7 @@ use synapse_domain::application::services::scoped_instruction_resolution::{
 };
 use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_domain::application::services::turn_admission::{
-    assess_turn_admission, TurnAdmissionInput,
+    assess_turn_admission, CandidateAdmissionDecision, TurnAdmissionInput,
 };
 use synapse_domain::application::services::turn_context::{
     self as tc, ContinuationPolicy, PromptBudget,
@@ -64,7 +68,7 @@ use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
 use synapse_domain::config::schema::{CapabilityLane, Config, ContextCompressionConfig};
 use synapse_domain::domain::tool_fact::TypedToolFact;
-use synapse_domain::domain::tool_repair::ToolRepairTrace;
+use synapse_domain::domain::tool_repair::{tool_failure_kind_name, ToolRepairTrace};
 use synapse_domain::domain::turn_admission::{
     context_pressure_state_name, turn_admission_action_name, turn_intent_name, TurnAdmissionAction,
 };
@@ -172,6 +176,47 @@ fn provider_context_budget_input_from_stats_for_profile(
     provider_context_budget_input_from_stats(stats).with_target_model_profile(profile)
 }
 
+fn route_calibration_signature(
+    provider: &str,
+    model: &str,
+    decision: &CandidateAdmissionDecision,
+) -> String {
+    format!(
+        "provider={provider},model={model},action={},pressure={}",
+        turn_admission_action_name(decision.snapshot.action),
+        context_pressure_state_name(decision.snapshot.pressure_state)
+    )
+}
+
+fn route_calibration_confidence(decision: &CandidateAdmissionDecision) -> u16 {
+    match decision.snapshot.action {
+        TurnAdmissionAction::Proceed if decision.reasons.is_empty() => 9_000,
+        TurnAdmissionAction::Proceed => 8_000,
+        TurnAdmissionAction::Compact => 6_500,
+        TurnAdmissionAction::Reroute => 6_000,
+        TurnAdmissionAction::Block => 4_500,
+    }
+}
+
+fn tool_calibration_signature(result: &ToolExecutionResult) -> String {
+    match result.repair_trace.as_ref() {
+        Some(trace) => format!(
+            "tool={},failure={}",
+            result.name,
+            tool_failure_kind_name(trace.failure_kind)
+        ),
+        None => format!("tool={}", result.name),
+    }
+}
+
+fn tool_calibration_confidence(result: &ToolExecutionResult) -> u16 {
+    if result.success {
+        7_500
+    } else {
+        8_000
+    }
+}
+
 fn history_compaction_cache_key(
     transcript: &str,
     policy: &HistoryCompressionPolicy,
@@ -256,6 +301,8 @@ pub struct Agent {
     recent_turn_admissions: Vec<RouteAdmissionState>,
     /// Bounded session/runtime assumption ledger for this live agent.
     recent_runtime_assumptions: Vec<RuntimeAssumption>,
+    /// Bounded session/runtime calibration ledger for this live agent.
+    recent_runtime_calibrations: Vec<RuntimeCalibrationRecord>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
@@ -701,6 +748,7 @@ impl AgentBuilder {
             recent_turn_tool_repairs: Vec::new(),
             recent_turn_admissions: Vec::new(),
             recent_runtime_assumptions: Vec::new(),
+            recent_runtime_calibrations: Vec::new(),
             allowed_tools: allowed,
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
@@ -872,10 +920,15 @@ impl Agent {
         &self.recent_runtime_assumptions
     }
 
+    pub fn recent_runtime_calibrations(&self) -> &[RuntimeCalibrationRecord] {
+        &self.recent_runtime_calibrations
+    }
+
     fn run_runtime_trace_janitor(&mut self, now_unix: i64) {
         let cleaned = run_runtime_trace_janitor(RuntimeTraceJanitorInput {
             tool_repairs: &self.recent_turn_tool_repairs,
             assumptions: &self.recent_runtime_assumptions,
+            calibration_records: &self.recent_runtime_calibrations,
             now_unix,
             ..Default::default()
         });
@@ -883,12 +936,64 @@ impl Agent {
         let promotion_candidates = cleaned.report.promotion_candidates.len();
         self.recent_turn_tool_repairs = cleaned.tool_repairs;
         self.recent_runtime_assumptions = cleaned.assumptions;
+        self.recent_runtime_calibrations = cleaned.calibration_records;
         if removed_total > 0 || promotion_candidates > 0 {
             tracing::debug!(
                 removed_total,
                 promotion_candidates,
                 "Runtime trace janitor cleaned session ledgers"
             );
+        }
+    }
+
+    fn record_runtime_calibration_observation(
+        &mut self,
+        observation: RuntimeCalibrationObservation,
+    ) {
+        let ledger = append_runtime_calibration_observation(
+            &self.recent_runtime_calibrations,
+            observation,
+            chrono::Utc::now().timestamp(),
+        );
+        self.recent_runtime_calibrations = ledger.records;
+    }
+
+    fn record_route_calibration(
+        &mut self,
+        decision: &CandidateAdmissionDecision,
+        outcome: RuntimeCalibrationOutcome,
+        observed_at_unix: i64,
+        effective_model: &str,
+    ) {
+        if decision.snapshot.action == TurnAdmissionAction::Block {
+            return;
+        }
+        self.record_runtime_calibration_observation(RuntimeCalibrationObservation {
+            decision_kind: RuntimeCalibrationDecisionKind::RouteChoice,
+            decision_signature: route_calibration_signature(
+                &self.provider_name,
+                effective_model,
+                decision,
+            ),
+            confidence_basis_points: route_calibration_confidence(decision),
+            outcome,
+            observed_at_unix,
+        });
+    }
+
+    fn record_tool_calibrations(&mut self, results: &[ToolExecutionResult], observed_at_unix: i64) {
+        for result in results {
+            self.record_runtime_calibration_observation(RuntimeCalibrationObservation {
+                decision_kind: RuntimeCalibrationDecisionKind::ToolChoice,
+                decision_signature: tool_calibration_signature(result),
+                confidence_basis_points: tool_calibration_confidence(result),
+                outcome: if result.success {
+                    RuntimeCalibrationOutcome::Succeeded
+                } else {
+                    RuntimeCalibrationOutcome::Failed
+                },
+                observed_at_unix,
+            });
         }
     }
 
@@ -983,6 +1088,7 @@ impl Agent {
         rebuilt.recent_turn_tool_repairs.clear();
         rebuilt.recent_turn_admissions.clear();
         rebuilt.recent_runtime_assumptions.clear();
+        rebuilt.recent_runtime_calibrations.clear();
         rebuilt.active_lane = route_lane;
         rebuilt.active_candidate_index = route_candidate_index;
         rebuilt.dialogue_state_store = dialogue_state_store;
@@ -2518,7 +2624,15 @@ impl Agent {
                 )
                 .await
             {
-                Ok(resp) => resp,
+                Ok(resp) => {
+                    self.record_route_calibration(
+                        &admission_decision,
+                        RuntimeCalibrationOutcome::Succeeded,
+                        chrono::Utc::now().timestamp(),
+                        &effective_model,
+                    );
+                    resp
+                }
                 Err(err) => {
                     if let Some(observation) = classify_context_limit_error(&err) {
                         self.recent_runtime_assumptions = challenge_runtime_assumption_ledger(
@@ -2553,6 +2667,12 @@ impl Agent {
                             }
                         }
                     }
+                    self.record_route_calibration(
+                        &admission_decision,
+                        RuntimeCalibrationOutcome::Failed,
+                        chrono::Utc::now().timestamp(),
+                        &effective_model,
+                    );
                     return Err(err);
                 }
             };
@@ -2688,6 +2808,7 @@ impl Agent {
             let results = self
                 .execute_tools_with_cache(&calls, &mut executed_call_cache)
                 .await;
+            self.record_tool_calibrations(&results, chrono::Utc::now().timestamp());
             tool_facts_this_turn.extend(
                 results
                     .iter()

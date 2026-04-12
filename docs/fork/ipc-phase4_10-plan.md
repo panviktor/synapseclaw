@@ -2008,9 +2008,13 @@ Expected outcome:
       be kept as positive evidence
     - calibration history is TTL-bounded, count-bounded, and deduped by
       decision kind/signature/comparison
+    - live `Agent` sessions now keep an ephemeral calibration ledger, cleaned by
+      the runtime trace janitor
+    - provider route-call success/failure and tool-call success/failure now emit
+      typed calibration observations without promoting them into durable memory
   - still open:
-    - live route/tool/retrieval/delivery call sites do not emit calibration
-      observations yet
+    - live retrieval/delivery-specific call sites do not emit dedicated
+      calibration observations yet
     - calibration records are not yet consumed by route/tool suppression policy
       or exposed in operator help
 - expected outcome:
