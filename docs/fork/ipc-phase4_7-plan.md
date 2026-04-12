@@ -21,9 +21,9 @@ Typical examples:
 
 | User asks | Current weak behavior | Desired behavior |
 |-----------|------------------------|------------------|
-| "What's the weather?" | asks which city | uses `weather_city` or recent focus |
-| "Translate to my language" | asks which language | uses `language_preference` |
-| "Remind me tomorrow" | asks which timezone | uses `local_timezone` |
+| "What's the weather?" | asks which city | uses a dynamic profile fact or recent focus |
+| "Translate to my language" | asks which language | uses a dynamic profile fact |
+| "Remind me tomorrow" | asks which timezone | uses a dynamic profile fact |
 | "What did we discuss last week?" | recall may miss | routes to session search / recap |
 | "Do it like last time" | weak or inconsistent | uses prior successful run / skill / session recap |
 
@@ -159,8 +159,8 @@ Add a first-class dynamic user profile layer for stable defaults and preferences
 ### Dynamic facts
 
 The profile stores arbitrary facts as a normalized key/value map. Runtime
-services may agree on narrow conventions such as `delivery_target_preference` or
-`weather_city`, but the domain model must not encode a fixed profile schema.
+services may agree on narrow typed conventions where a feature needs one, but
+the domain model must not encode a fixed profile schema.
 
 ### Design
 
@@ -189,9 +189,9 @@ pub trait UserProfileStorePort {
 
 ### Acceptance criteria
 
-1. "Translate to my language" resolves through `language_preference` without asking.
-2. "Remind me tomorrow" resolves through `timezone` without asking.
-3. "What's the weather?" can use a dynamic weather-city fact when no stronger signal exists.
+1. "Translate to my language" resolves through a dynamic profile fact without asking.
+2. "Remind me tomorrow" resolves through a dynamic profile fact without asking.
+3. "What's the weather?" can use a dynamic profile fact when no stronger signal exists.
 
 ---
 

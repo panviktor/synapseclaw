@@ -483,9 +483,8 @@ profile.
   - explicit user corrections/preferences
   - operator edits
   - future structured parsers
-- keep profile facts dynamic; resolver-owned conventions such as
-  `delivery_target_preference`, `language_preference`, or `weather_city` are data
-  keys, not Rust fields
+- keep profile facts dynamic; resolver-owned conventions are data keys, not
+  Rust fields
 
 ### Constraint
 

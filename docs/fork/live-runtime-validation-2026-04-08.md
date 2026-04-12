@@ -30,7 +30,7 @@ Notes:
 ### 3. City Preference To Weather In New Session
 Status: fail
 Notes:
-- The harmless weather-city preference-setting turn (`weather_city = Berlin`) originally crashed the main daemon because core-memory trimming sliced UTF-8 by byte index in `surrealdb_adapter.rs`.
+- The harmless dynamic weather-location preference-setting turn originally crashed the main daemon because core-memory trimming sliced UTF-8 by byte index in `surrealdb_adapter.rs`.
 - That crash was fixed locally during validation, but the retry still did not complete the turn in time.
 - The gateway persisted the user turn, then spent tens of seconds in `hybrid_search` and repeated `embed_document` work without ever persisting an assistant reply before the harness timed out.
 - This is a completion-path/runtime issue, not a weather-specific logic failure.
@@ -157,8 +157,8 @@ Notes:
   - `登录回调循环`
   were stored and recalled correctly.
 - The UTF-8 trimming crash in Surreal core-memory append path is fixed; no new boundary issues were observed.
-- A durable weather-city preference update completed successfully:
-  - `weather_city = Tokyo (東京)`
+- A durable weather-location preference update completed successfully:
+  - dynamic profile fact for `Tokyo (東京)`
 - Remaining bug:
   - a fresh weather/time turn still picked `Berlin` instead of `Tokyo`, even though a direct follow-up recall question correctly answered `Tokyo`.
   - This is no longer a prompt-replay bug; it is now a planner/runtime preference-application bug.
@@ -197,7 +197,7 @@ Notes:
 ### 13. Dynamic Weather-City Retest
 Status: pass with fetch-policy caveat
 Notes:
-- Setting `weather_city = Tokyo (東京)` completed successfully through `user_profile`.
+- Setting a dynamic weather-location fact for `Tokyo (東京)` completed successfully through `user_profile`.
 - The follow-up weather/time turn resolved `Tokyo`, not `Berlin`.
 - The turn fetched local time via `shell` and eventually returned:
   - `Tokyo: ☁️ +16°C`
@@ -235,7 +235,7 @@ Notes:
 - Main-route tool smoke passed cleanly:
   - `gpt-5.4` used the shell tool and returned `STRICT_OK`
 - Cheap-route profile mutation was mixed:
-  - `user_profile({"action":"upsert","facts":{"weather_city":"Tokyo"}})` executed successfully
+  - `user_profile({"action":"upsert","facts":{...}})` executed successfully for the dynamic weather-location fact
   - one upstream OpenRouter response-body decode error interrupted the same turn before final assistant text
   - the follow-up recall turn still answered `Tokyo`
 - Interpretation:
@@ -343,7 +343,7 @@ Notes:
   - no `MEMORY.md`
   reads were observed in the clean `Atlas` / `Borealis` / `青龙` working-chain scenarios.
 - Typed defaults are now materially better in live use:
-  - `weather_city = Tokyo` is applied correctly
+  - the dynamic weather-location fact for `Tokyo` is applied correctly
   - configured Matrix delivery targets resolve cleanly
   - runtime `/model` switching works without losing session continuity
 - The cheap route (`qwen/qwen3.6-plus`) is now viable for the default regression lane:
@@ -406,8 +406,8 @@ Notes:
   - `function.name`
   - `function.arguments`
 - After that fix, a cheap-lane preference turn completed successfully:
-  - `weather_city = Tokyo`
-  - `response_style = brief / bullets`
+  - dynamic weather-location fact for `Tokyo`
+  - dynamic response-format fact for brief / bullets
   - `ops -> Matrix`, `marketing -> Draft/Delegate`
 - The follow-up weather turn again resolved `Tokyo` correctly.
 

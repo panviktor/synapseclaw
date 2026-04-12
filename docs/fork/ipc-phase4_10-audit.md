@@ -415,7 +415,7 @@ than to raw eager Markdown replay.
 ### D. Typed fact resolvers
 
 Resolve before the model improvises:
-- weather city
+- dynamic weather-location fact
 - delivery target preference
 - workspace/resource anchor
 - likely channel or route
