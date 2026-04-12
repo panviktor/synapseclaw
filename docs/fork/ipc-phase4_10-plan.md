@@ -1729,6 +1729,9 @@ Expected outcome:
       attempt classification object for rate-limit / non-retryable /
       context-window decisions instead of duplicating string/error handling
       branches across chat variants
+    - context-window fail-fast decisions are now carried on that attempt
+      classification object and rendered through a shared adapter helper across
+      all reliable-provider chat variants
   - remaining:
     - keep auditing provider-specific opaque error strings that do not expose a
       typed status/source error yet

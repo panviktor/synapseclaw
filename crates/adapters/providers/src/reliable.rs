@@ -180,11 +180,13 @@ struct ProviderAttemptErrorClass {
     non_retryable_rate_limit: bool,
     non_retryable: bool,
     rate_limited: bool,
+    context_window_exceeded: bool,
     failure_reason: &'static str,
     error_detail: String,
 }
 
 fn classify_provider_attempt_error(err: &anyhow::Error) -> ProviderAttemptErrorClass {
+    let context_window_exceeded = is_context_window_exceeded(err);
     let non_retryable_rate_limit = is_non_retryable_rate_limit(err);
     let non_retryable = is_non_retryable(err) || non_retryable_rate_limit;
     let rate_limited = is_rate_limited(err);
@@ -192,9 +194,23 @@ fn classify_provider_attempt_error(err: &anyhow::Error) -> ProviderAttemptErrorC
         non_retryable_rate_limit,
         non_retryable,
         rate_limited,
+        context_window_exceeded,
         failure_reason: failure_reason(rate_limited, non_retryable),
         error_detail: compact_error_detail(err),
     }
+}
+
+fn bail_if_context_window_exceeded(
+    error_class: &ProviderAttemptErrorClass,
+    failures: &[String],
+) -> anyhow::Result<()> {
+    if error_class.context_window_exceeded {
+        anyhow::bail!(
+            "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
+            failures.join("\n")
+        );
+    }
+    Ok(())
 }
 
 fn compact_error_detail(err: &anyhow::Error) -> String {
@@ -380,12 +396,7 @@ impl Provider for ReliableProvider {
                                     "Non-retryable error, moving on"
                                 );
 
-                                if is_context_window_exceeded(&e) {
-                                    anyhow::bail!(
-                                        "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
-                                        failures.join("\n")
-                                    );
-                                }
+                                bail_if_context_window_exceeded(&error_class, &failures)?;
 
                                 break;
                             }
@@ -494,12 +505,7 @@ impl Provider for ReliableProvider {
                                     "Non-retryable error, moving on"
                                 );
 
-                                if is_context_window_exceeded(&e) {
-                                    anyhow::bail!(
-                                        "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
-                                        failures.join("\n")
-                                    );
-                                }
+                                bail_if_context_window_exceeded(&error_class, &failures)?;
 
                                 break;
                             }
@@ -614,12 +620,7 @@ impl Provider for ReliableProvider {
                                     "Non-retryable error, moving on"
                                 );
 
-                                if is_context_window_exceeded(&e) {
-                                    anyhow::bail!(
-                                        "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
-                                        failures.join("\n")
-                                    );
-                                }
+                                bail_if_context_window_exceeded(&error_class, &failures)?;
 
                                 break;
                             }
@@ -735,12 +736,7 @@ impl Provider for ReliableProvider {
                                     "Non-retryable error, moving on"
                                 );
 
-                                if is_context_window_exceeded(&e) {
-                                    anyhow::bail!(
-                                        "Request exceeds model context window; retries and fallbacks were skipped. Attempts:\n{}",
-                                        failures.join("\n")
-                                    );
-                                }
+                                bail_if_context_window_exceeded(&error_class, &failures)?;
 
                                 break;
                             }
@@ -1447,8 +1443,22 @@ mod tests {
         assert!(class.rate_limited);
         assert!(class.non_retryable_rate_limit);
         assert!(class.non_retryable);
+        assert!(!class.context_window_exceeded);
         assert_eq!(class.failure_reason, "rate_limited_non_retryable");
         assert!(class.error_detail.contains("insufficient balance"));
+    }
+
+    #[test]
+    fn provider_attempt_error_class_preserves_context_window_decision() {
+        let err = anyhow::anyhow!(
+            "OpenAI Codex stream error: Your input exceeds the context window of this model."
+        );
+
+        let class = classify_provider_attempt_error(&err);
+
+        assert!(class.context_window_exceeded);
+        assert!(class.non_retryable);
+        assert_eq!(class.failure_reason, "non_retryable");
     }
 
     #[test]
