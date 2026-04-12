@@ -1583,16 +1583,21 @@ Expected outcome:
       instead of the conversation/session key as fake `message_id`
     - `AgentRuntimePort` now returns typed `AgentRuntimeErrorKind`
       (`timeout`, `context_limit_exceeded`, `capability_mismatch`,
-      `auth_failure`, `runtime_failure`) so the channel use-case no longer
-      parses provider/runtime error strings directly for timeout or
-      context-overflow recovery
+      `auth_failure`, `policy_blocked`, `missing_resource`,
+      `schema_mismatch`, `runtime_failure`) so the channel use-case no longer
+      parses provider/runtime error strings directly for recoverable runtime
+      classes
+    - channel runtime error classification now uses typed IO / JSON / reqwest
+      signals for resource, policy, schema, timeout, auth, and context-limit
+      failures; resource/policy runtime errors also feed the bounded runtime
+      assumption challenge path instead of only being opaque failures
     - route-admission context now consumes the bounded recent-admission ledger,
       not only the last admission state; web and channel use the same helper to
       surface distinct recent reasons plus the latest recommended repair action
   - remaining:
     - broaden repair-ledger consumers beyond current route/help/operator surfaces
-    - extend typed failure reasons further without falling back to string parsing
-      in core/runtime
+    - keep auditing provider-specific opaque error strings that do not expose a
+      typed status/source error yet
 - expected outcome:
   - fewer opaque failures
   - fewer repeated bad tool attempts

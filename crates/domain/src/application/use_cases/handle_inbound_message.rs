@@ -1248,7 +1248,21 @@ fn agent_runtime_error_assumption_challenge(
             invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
             replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
         }),
-        AgentRuntimeErrorKind::Timeout | AgentRuntimeErrorKind::RuntimeFailure => None,
+        AgentRuntimeErrorKind::MissingResource => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::WorkspaceAnchor,
+            value: "missing_resource",
+            invalidation: RuntimeAssumptionInvalidation::UserContradiction,
+            replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
+        }),
+        AgentRuntimeErrorKind::PolicyBlocked => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::RouteCapability,
+            value: "policy_blocked",
+            invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+            replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
+        }),
+        AgentRuntimeErrorKind::Timeout
+        | AgentRuntimeErrorKind::SchemaMismatch
+        | AgentRuntimeErrorKind::RuntimeFailure => None,
     }
 }
 
@@ -1989,6 +2003,27 @@ mod tests {
             }
             other => panic!("expected Response, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn runtime_error_challenges_cover_typed_resource_and_policy_failures() {
+        let missing =
+            agent_runtime_error_assumption_challenge(&AgentRuntimeErrorKind::MissingResource)
+                .expect("missing resource should challenge workspace assumptions");
+        assert_eq!(missing.kind, RuntimeAssumptionKind::WorkspaceAnchor);
+        assert_eq!(
+            missing.replacement_path,
+            RuntimeAssumptionReplacementPath::AskUserClarification
+        );
+
+        let blocked =
+            agent_runtime_error_assumption_challenge(&AgentRuntimeErrorKind::PolicyBlocked)
+                .expect("policy block should challenge route capability assumptions");
+        assert_eq!(blocked.kind, RuntimeAssumptionKind::RouteCapability);
+        assert_eq!(
+            blocked.invalidation,
+            RuntimeAssumptionInvalidation::RouteAdmissionFailure
+        );
     }
 
     #[test]

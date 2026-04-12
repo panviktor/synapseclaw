@@ -37,6 +37,9 @@ pub enum AgentRuntimeErrorKind {
     ContextLimitExceeded,
     CapabilityMismatch,
     AuthFailure,
+    PolicyBlocked,
+    MissingResource,
+    SchemaMismatch,
     RuntimeFailure,
 }
 
@@ -68,6 +71,9 @@ impl std::fmt::Display for AgentRuntimeError {
                     AgentRuntimeErrorKind::ContextLimitExceeded => "context_limit_exceeded",
                     AgentRuntimeErrorKind::CapabilityMismatch => "capability_mismatch",
                     AgentRuntimeErrorKind::AuthFailure => "auth_failure",
+                    AgentRuntimeErrorKind::PolicyBlocked => "policy_blocked",
+                    AgentRuntimeErrorKind::MissingResource => "missing_resource",
+                    AgentRuntimeErrorKind::SchemaMismatch => "schema_mismatch",
                     AgentRuntimeErrorKind::RuntimeFailure => "runtime_failure",
                 },
                 self.detail
