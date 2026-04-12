@@ -1710,6 +1710,10 @@ Expected outcome:
     - current-session relevance scoring uses corpus-weighted query terms from
       the active session history; it does not carry a built-in
       language-specific token blacklist or phrase-specific anchor rules
+    - low-information repetition detection now also checks repeated segment
+      overlap and low incremental-information windows, so reordered paraphrase
+      loops can be suppressed without phrase lists or language-specific
+      stopword rules
     - focused cheap-route long-dialogue semantic regression passed after the
       selector fix:
       - session: `phase410-long-semantic-focused-1775951001`
@@ -1720,8 +1724,6 @@ Expected outcome:
       - compaction rows: 0 because the live route stayed inside its effective
         context budget
   - remaining:
-    - strengthen repetition-aware policy beyond the current lexical first pass
-      for broader low-information paraphrase loops
     - continue auditing retrieval ranking for concept-heavy sessions after real
       compaction, because the passing focused run did not need a compaction row
     - keep generic world-knowledge relationships and generic consolidation

@@ -1,6 +1,6 @@
 //! Utility functions and types shared across the codebase.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Truncate a string to at most `max_chars` characters, appending "..." if truncated.
 ///
@@ -83,11 +83,15 @@ pub fn is_low_information_repetition(content: &str) -> bool {
     let repetitive_token_pattern = has_repeated_token_pattern(&tokens, 2, 8, 3);
     let repetitive_semantic_shingles =
         repeated_shingle_ratio(&tokens, 2) >= 0.45 || repeated_shingle_ratio(&tokens, 3) >= 0.35;
+    let repetitive_segments = has_repetitive_segment_overlap(normalized);
+    let low_incremental_information = has_low_incremental_information_windows(&tokens);
 
     repetitive_lines
         || repetitive_token_pattern
         || (unique_ratio < 0.35 && max_token_ratio >= 0.24)
         || (unique_ratio < 0.62 && repetitive_semantic_shingles)
+        || (unique_ratio < 0.68 && repetitive_segments)
+        || (unique_ratio < 0.55 && low_incremental_information)
 }
 
 fn has_repeated_token_pattern(
@@ -153,6 +157,81 @@ fn repeated_shingle_ratio(tokens: &[String], width: usize) -> f32 {
         .filter(|count| *count > 1)
         .sum::<usize>();
     repeated as f32 / total as f32
+}
+
+fn has_repetitive_segment_overlap(content: &str) -> bool {
+    let segments = content
+        .split(|c: char| matches!(c, '.' | '!' | '?' | ';' | '\n'))
+        .map(|segment| {
+            segment
+                .split_whitespace()
+                .filter_map(normalize_repetition_token)
+                .collect::<Vec<_>>()
+        })
+        .filter(|segment| segment.len() >= 4)
+        .collect::<Vec<_>>();
+    if segments.len() < 4 {
+        return false;
+    }
+
+    let similar_segments = segments
+        .iter()
+        .enumerate()
+        .filter(|(left_idx, left)| {
+            segments.iter().enumerate().any(|(right_idx, right)| {
+                left_idx != &right_idx && token_set_jaccard(left, right) >= 0.50
+            })
+        })
+        .count();
+
+    similar_segments as f32 / segments.len() as f32 >= 0.75
+}
+
+fn token_set_jaccard(left: &[String], right: &[String]) -> f32 {
+    let left = left.iter().map(String::as_str).collect::<HashSet<_>>();
+    let right = right.iter().map(String::as_str).collect::<HashSet<_>>();
+    if left.len().min(right.len()) < 4 {
+        return 0.0;
+    }
+    let intersection = left.intersection(&right).count();
+    let union = left.union(&right).count();
+    if union == 0 {
+        0.0
+    } else {
+        intersection as f32 / union as f32
+    }
+}
+
+fn has_low_incremental_information_windows(tokens: &[String]) -> bool {
+    const WINDOW: usize = 8;
+    if tokens.len() < WINDOW * 4 {
+        return false;
+    }
+
+    let mut seen = HashSet::<&str>::new();
+    let mut low_gain_windows = 0usize;
+    let mut measured_windows = 0usize;
+    for (idx, window) in tokens.chunks(WINDOW).enumerate() {
+        if window.len() < WINDOW {
+            continue;
+        }
+        let new_count = window
+            .iter()
+            .filter(|token| !seen.contains(token.as_str()))
+            .count();
+        for token in window {
+            seen.insert(token.as_str());
+        }
+        if idx == 0 {
+            continue;
+        }
+        measured_windows += 1;
+        if new_count as f32 / window.len() as f32 <= 0.25 {
+            low_gain_windows += 1;
+        }
+    }
+
+    measured_windows >= 3 && low_gain_windows as f32 / measured_windows as f32 >= 0.75
 }
 
 /// Utility enum for handling optional values with three states.
@@ -257,6 +336,12 @@ mod tests {
     #[test]
     fn low_information_repetition_detects_semantic_shingle_loop() {
         let text = "meaning comes from choice and purpose comes from choice because meaning grows from choice and purpose grows from choice because meaning comes from choice";
+        assert!(is_low_information_repetition(text));
+    }
+
+    #[test]
+    fn low_information_repetition_detects_reordered_segment_loop() {
+        let text = "meaning grows through care and responsibility. responsibility and care keep giving meaning. care and responsibility return to meaning. meaning keeps circling around responsibility and care.";
         assert!(is_low_information_repetition(text));
     }
 
