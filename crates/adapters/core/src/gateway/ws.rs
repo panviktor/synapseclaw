@@ -1230,12 +1230,14 @@ async fn handle_runtime_command_if_needed(
     let config_snapshot = state.config.lock().clone();
     let effect = synapse_domain::application::services::inbound_message_service::command_effect(
         &command,
-        &config_snapshot.model_routes,
+        &config_snapshot,
     );
-    let default_provider = config_snapshot
-        .default_provider
-        .clone()
-        .unwrap_or_else(|| "openrouter".to_string());
+    let default_provider = config_snapshot.default_provider.clone().unwrap_or_else(|| {
+        current_web_route_selection(state, session_key)
+            .ok()
+            .map(|route| route.provider)
+            .unwrap_or_default()
+    });
     let adapter_contract = WebRuntimeAdapterContract;
     let mut command_host = WebRuntimeCommandHost {
         state,

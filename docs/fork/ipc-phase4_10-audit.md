@@ -48,6 +48,24 @@ Our best move is:
 4. load project instructions progressively by scope
 5. expose context size and contributors like a first-class runtime surface
 
+## 2026-04-12 Follow-Up
+
+- Runtime model switching now follows the same typed selector path in web and
+  channel: effective capability lanes first, catalog aliases second, then an
+  explicit unresolved model selector.
+- Legacy `model_routes` / `embedding_routes` are no longer lane-resolution
+  fallbacks for `resolve_lane_candidates`, summary routing, query-classifier
+  overrides, or `/model` command effects.
+- Matched lane candidates preserve `lane + candidate_index` through the shared
+  runtime-command adapter contract, which keeps route state aligned with the
+  candidate-profile registry instead of only storing provider/model strings.
+- `/model` help now renders effective capability lanes and catalog aliases
+  instead of promoting configured `model_routes` as a first-class runtime
+  surface.
+- Remaining audit target: old config/API/tooling surfaces still expose
+  `model_routes` as editable compatibility data; future cleanup should either
+  rename that data shape to catalog aliases or fully retire it.
+
 ---
 
 ## Product Patterns

@@ -3433,16 +3433,19 @@ mod tests {
         );
         ctx.default_provider = Arc::new("openrouter".to_string());
         ctx.model = Arc::new("large-model".to_string());
-        ctx.model_routes = Arc::new(vec![synapse_domain::config::schema::ModelRouteConfig {
-            hint: "tiny".to_string(),
-            capability: None,
-            provider: "openrouter".to_string(),
-            model: "tiny-model".to_string(),
-            api_key: None,
-            profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
-                context_window_tokens: Some(1_000),
-                ..Default::default()
-            },
+        ctx.model_lanes = Arc::new(vec![synapse_domain::config::schema::ModelLaneConfig {
+            lane: synapse_domain::config::schema::CapabilityLane::Reasoning,
+            candidates: vec![synapse_domain::config::schema::ModelLaneCandidateConfig {
+                provider: "openrouter".to_string(),
+                model: "tiny-model".to_string(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
+                    context_window_tokens: Some(1_000),
+                    ..Default::default()
+                },
+            }],
         }]);
         ctx.conversation_histories.lock().unwrap().insert(
             "sender".to_string(),
@@ -3453,7 +3456,8 @@ mod tests {
             &synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchModel {
                 model: "tiny-model".to_string(),
                 inferred_provider: Some("openrouter".to_string()),
-                lane: None,
+                lane: Some(synapse_domain::config::schema::CapabilityLane::Reasoning),
+                candidate_index: Some(0),
                 compacted: false,
             },
             &ctx,
@@ -3473,16 +3477,19 @@ mod tests {
         );
         ctx.default_provider = Arc::new("openrouter".to_string());
         ctx.model = Arc::new("large-model".to_string());
-        ctx.model_routes = Arc::new(vec![synapse_domain::config::schema::ModelRouteConfig {
-            hint: "compact".to_string(),
-            capability: None,
-            provider: "openrouter".to_string(),
-            model: "compact-model".to_string(),
-            api_key: None,
-            profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
-                context_window_tokens: Some(8_000),
-                ..Default::default()
-            },
+        ctx.model_lanes = Arc::new(vec![synapse_domain::config::schema::ModelLaneConfig {
+            lane: synapse_domain::config::schema::CapabilityLane::Reasoning,
+            candidates: vec![synapse_domain::config::schema::ModelLaneCandidateConfig {
+                provider: "openrouter".to_string(),
+                model: "compact-model".to_string(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: synapse_domain::config::schema::ModelCandidateProfileConfig {
+                    context_window_tokens: Some(8_000),
+                    ..Default::default()
+                },
+            }],
         }]);
         ctx.conversation_histories.lock().unwrap().insert(
             "sender".to_string(),
@@ -3495,7 +3502,8 @@ mod tests {
             &synapse_domain::application::services::inbound_message_service::CommandEffect::SwitchModel {
                 model: "compact-model".to_string(),
                 inferred_provider: Some("openrouter".to_string()),
-                lane: None,
+                lane: Some(synapse_domain::config::schema::CapabilityLane::Reasoning),
+                candidate_index: Some(0),
                 compacted: false,
             },
             &ctx,
@@ -3508,7 +3516,7 @@ mod tests {
             synapse_domain::application::services::runtime_command_presentation::format_switch_model_success(
                 "compact-model",
                 "openrouter",
-                None,
+                Some(synapse_domain::config::schema::CapabilityLane::Reasoning),
                 true,
                 &synapse_domain::application::services::runtime_command_presentation::RuntimeCommandPresentationOptions::new("openrouter"),
             )
@@ -3522,6 +3530,11 @@ mod tests {
             .expect("route set");
         assert_eq!(route.provider, "openrouter");
         assert_eq!(route.model, "compact-model");
+        assert_eq!(
+            route.lane,
+            Some(synapse_domain::config::schema::CapabilityLane::Reasoning)
+        );
+        assert_eq!(route.candidate_index, Some(0));
         assert_eq!(
             ctx.conversation_histories
                 .lock()

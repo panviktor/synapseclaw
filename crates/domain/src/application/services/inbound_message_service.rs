@@ -10,8 +10,9 @@
 //! - message classification (command vs regular message)
 //! - route selection management (provider/model overrides per sender)
 
+use crate::application::services::model_preset_resolution::resolve_effective_model_lanes;
 use crate::application::services::route_switch_preflight::RouteSwitchPreflight;
-use crate::config::schema::{CapabilityLane, ModelRouteConfig};
+use crate::config::schema::{CapabilityLane, Config};
 use crate::domain::channel::{ChannelCapability, InboundEnvelope};
 
 // ── Runtime commands ─────────────────────────────────────────────
@@ -291,10 +292,12 @@ pub enum CommandEffect {
     /// Switch to a specific model, optionally with inferred provider from routes.
     SwitchModel {
         model: String,
-        /// If a model_route matched, the coupled provider.
+        /// If a lane or catalog alias matched, the coupled provider.
         inferred_provider: Option<String>,
-        /// If a model_route matched a capability lane, preserve it in route state.
+        /// If a lane or catalog alias matched a capability lane, preserve it in route state.
         lane: Option<CapabilityLane>,
+        /// Ordered lane candidate index when the selector matched a lane candidate.
+        candidate_index: Option<usize>,
         /// Whether provider-facing context was compacted before the switch.
         compacted: bool,
     },
@@ -312,11 +315,25 @@ pub enum CommandEffect {
 
 /// Determine the effect of a runtime command.
 ///
-/// Resolves model routes (model name → provider) but leaves
+/// Resolves lane/catalog routes (model selector → provider) but leaves
 /// provider validation to the adapter (requires infrastructure).
-pub fn command_effect(
+pub fn command_effect(command: &RuntimeCommand, config: &Config) -> CommandEffect {
+    command_effect_with_alias_resolver(command, config, |value| {
+        crate::config::model_catalog::model_route_alias(value).map(|route| {
+            ResolvedModelCommandRoute {
+                provider: route.provider,
+                model: route.model,
+                lane: route.capability,
+                candidate_index: None,
+            }
+        })
+    })
+}
+
+fn command_effect_with_alias_resolver(
     command: &RuntimeCommand,
-    model_routes: &[ModelRouteConfig],
+    config: &Config,
+    alias_resolver: impl Fn(&str) -> Option<ResolvedModelCommandRoute>,
 ) -> CommandEffect {
     match command {
         RuntimeCommand::ShowProviders => CommandEffect::ShowProviders,
@@ -325,27 +342,22 @@ pub fn command_effect(
         },
         RuntimeCommand::ShowModel => CommandEffect::ShowModel,
         RuntimeCommand::SetModel(raw) => {
-            let model = raw.trim().trim_matches('`').to_string();
-            // Look up in model_routes by model name or hint
-            let matched = model_routes
-                .iter()
-                .find(|route| {
-                    route.model.eq_ignore_ascii_case(&model)
-                        || route.hint.eq_ignore_ascii_case(&model)
-                })
-                .cloned()
-                .or_else(|| crate::config::model_catalog::model_route_alias(&model));
+            let model = normalize_model_selector(raw);
+            let matched =
+                resolve_model_command_route_with_alias_resolver(&model, config, alias_resolver);
             match matched {
                 Some(route) => CommandEffect::SwitchModel {
                     model: route.model,
                     inferred_provider: Some(route.provider),
-                    lane: route.capability,
+                    lane: route.lane,
+                    candidate_index: route.candidate_index,
                     compacted: false,
                 },
                 None => CommandEffect::SwitchModel {
                     model,
                     inferred_provider: None,
                     lane: None,
+                    candidate_index: None,
                     compacted: false,
                 },
             }
@@ -354,11 +366,111 @@ pub fn command_effect(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModelCommandRoute {
+    pub provider: String,
+    pub model: String,
+    pub lane: Option<CapabilityLane>,
+    pub candidate_index: Option<usize>,
+}
+
+pub fn resolve_model_command_route(
+    selector: &str,
+    config: &Config,
+) -> Option<ResolvedModelCommandRoute> {
+    resolve_model_command_route_with_alias_resolver(selector, config, |value| {
+        crate::config::model_catalog::model_route_alias(value).map(|route| {
+            ResolvedModelCommandRoute {
+                provider: route.provider,
+                model: route.model,
+                lane: route.capability,
+                candidate_index: None,
+            }
+        })
+    })
+}
+
+fn resolve_model_command_route_with_alias_resolver(
+    selector: &str,
+    config: &Config,
+    alias_resolver: impl Fn(&str) -> Option<ResolvedModelCommandRoute>,
+) -> Option<ResolvedModelCommandRoute> {
+    let selector = normalize_model_selector(selector);
+    if selector.is_empty() {
+        return None;
+    }
+
+    let effective_lanes = resolve_effective_model_lanes(config);
+    if let Ok(requested_lane) = selector.parse::<CapabilityLane>() {
+        if let Some((lane, candidate)) = effective_lanes
+            .iter()
+            .find(|lane| lane.lane == requested_lane)
+            .and_then(|lane| {
+                lane.candidates
+                    .first()
+                    .map(|candidate| (lane.lane, candidate))
+            })
+        {
+            return Some(ResolvedModelCommandRoute {
+                provider: candidate.provider.clone(),
+                model: candidate.model.clone(),
+                lane: Some(lane),
+                candidate_index: Some(0),
+            });
+        }
+    }
+
+    for lane in &effective_lanes {
+        if let Some((index, candidate)) = lane
+            .candidates
+            .iter()
+            .enumerate()
+            .find(|(_, candidate)| model_selector_matches_candidate(&selector, candidate))
+        {
+            return Some(ResolvedModelCommandRoute {
+                provider: candidate.provider.clone(),
+                model: candidate.model.clone(),
+                lane: Some(lane.lane),
+                candidate_index: Some(index),
+            });
+        }
+    }
+
+    alias_resolver(&selector)
+}
+
+fn model_selector_matches_candidate(
+    selector: &str,
+    candidate: &crate::config::schema::ModelLaneCandidateConfig,
+) -> bool {
+    candidate.model.eq_ignore_ascii_case(selector)
+        || provider_model_selector(candidate.provider.as_str(), candidate.model.as_str())
+            .eq_ignore_ascii_case(selector)
+}
+
+fn provider_model_selector(provider: &str, model: &str) -> String {
+    format!("{}:{}", provider.trim(), model.trim())
+}
+
+fn normalize_model_selector(value: &str) -> String {
+    value.trim().trim_matches('`').to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::ModelCandidateProfileConfig;
+    use crate::config::schema::{
+        ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
+    };
     use crate::domain::channel::SourceKind;
+
+    const TEST_PROVIDER: &str = "test-provider";
+    const TEST_MAIN_MODEL: &str = "test-main-model";
+    const TEST_VISION_PROVIDER: &str = "test-vision-provider";
+    const TEST_VISION_MODEL: &str = "test-vision-model";
+    const TEST_ALIAS: &str = "test-alias";
+    const TEST_ALIAS_PROVIDER: &str = "test-alias-provider";
+    const TEST_ALIAS_MODEL: &str = "test-alias-model";
 
     fn caps_with_runtime() -> Vec<ChannelCapability> {
         vec![
@@ -381,8 +493,11 @@ mod tests {
 
     #[test]
     fn parse_models_set_provider() {
-        let cmd = parse_runtime_command("/models anthropic", &caps_with_runtime());
-        assert_eq!(cmd, Some(RuntimeCommand::SetProvider("anthropic".into())));
+        let cmd = parse_runtime_command("/models test-provider", &caps_with_runtime());
+        assert_eq!(
+            cmd,
+            Some(RuntimeCommand::SetProvider("test-provider".into()))
+        );
     }
 
     #[test]
@@ -393,11 +508,8 @@ mod tests {
 
     #[test]
     fn parse_model_set() {
-        let cmd = parse_runtime_command("/model claude-sonnet-4-5", &caps_with_runtime());
-        assert_eq!(
-            cmd,
-            Some(RuntimeCommand::SetModel("claude-sonnet-4-5".into()))
-        );
+        let cmd = parse_runtime_command("/model test-model", &caps_with_runtime());
+        assert_eq!(cmd, Some(RuntimeCommand::SetModel("test-model".into())));
     }
 
     #[test]
@@ -658,43 +770,63 @@ mod tests {
 
     // ── command effect tests ─────────────────────────────────────
 
-    fn test_routes() -> Vec<ModelRouteConfig> {
-        vec![
-            ModelRouteConfig {
-                hint: "opus".into(),
-                capability: None,
-                provider: "anthropic".into(),
-                model: "claude-sonnet-4-5".into(),
-                api_key: None,
-                profile: ModelCandidateProfileConfig::default(),
+    fn command_test_config() -> Config {
+        let mut config = Config::default();
+        config.model_lanes = vec![
+            ModelLaneConfig {
+                lane: CapabilityLane::Reasoning,
+                candidates: vec![ModelLaneCandidateConfig {
+                    provider: TEST_PROVIDER.into(),
+                    model: TEST_MAIN_MODEL.into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: ModelCandidateProfileConfig::default(),
+                }],
             },
-            ModelRouteConfig {
-                hint: "gpt4".into(),
-                capability: None,
-                provider: "openai".into(),
-                model: "gpt-5.4".into(),
-                api_key: None,
-                profile: ModelCandidateProfileConfig::default(),
+            ModelLaneConfig {
+                lane: CapabilityLane::MultimodalUnderstanding,
+                candidates: vec![ModelLaneCandidateConfig {
+                    provider: TEST_VISION_PROVIDER.into(),
+                    model: TEST_VISION_MODEL.into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: ModelCandidateProfileConfig::default(),
+                }],
             },
-        ]
+        ];
+        config
+    }
+
+    fn test_alias_resolver(value: &str) -> Option<ResolvedModelCommandRoute> {
+        value
+            .eq_ignore_ascii_case(TEST_ALIAS)
+            .then(|| ResolvedModelCommandRoute {
+                provider: TEST_ALIAS_PROVIDER.into(),
+                model: TEST_ALIAS_MODEL.into(),
+                lane: Some(CapabilityLane::CheapReasoning),
+                candidate_index: None,
+            })
+    }
+
+    fn command_effect_for_test(command: &RuntimeCommand) -> CommandEffect {
+        command_effect_with_alias_resolver(command, &command_test_config(), test_alias_resolver)
     }
 
     #[test]
     fn effect_show_providers() {
         let cmd = RuntimeCommand::ShowProviders;
-        assert_eq!(
-            command_effect(&cmd, &test_routes()),
-            CommandEffect::ShowProviders
-        );
+        assert_eq!(command_effect_for_test(&cmd), CommandEffect::ShowProviders);
     }
 
     #[test]
     fn effect_switch_provider() {
-        let cmd = RuntimeCommand::SetProvider("anthropic".into());
+        let cmd = RuntimeCommand::SetProvider(TEST_PROVIDER.into());
         assert_eq!(
-            command_effect(&cmd, &test_routes()),
+            command_effect_for_test(&cmd),
             CommandEffect::SwitchProvider {
-                provider: "anthropic".into()
+                provider: TEST_PROVIDER.into()
             }
         );
     }
@@ -702,21 +834,19 @@ mod tests {
     #[test]
     fn effect_show_model() {
         let cmd = RuntimeCommand::ShowModel;
-        assert_eq!(
-            command_effect(&cmd, &test_routes()),
-            CommandEffect::ShowModel
-        );
+        assert_eq!(command_effect_for_test(&cmd), CommandEffect::ShowModel);
     }
 
     #[test]
-    fn effect_switch_model_by_hint() {
-        let cmd = RuntimeCommand::SetModel("opus".into());
+    fn effect_switch_model_by_lane_selector() {
+        let cmd = RuntimeCommand::SetModel("reasoning".into());
         assert_eq!(
-            command_effect(&cmd, &test_routes()),
+            command_effect_for_test(&cmd),
             CommandEffect::SwitchModel {
-                model: "claude-sonnet-4-5".into(),
-                inferred_provider: Some("anthropic".into()),
-                lane: None,
+                model: TEST_MAIN_MODEL.into(),
+                inferred_provider: Some(TEST_PROVIDER.into()),
+                lane: Some(CapabilityLane::Reasoning),
+                candidate_index: Some(0),
                 compacted: false,
             }
         );
@@ -724,13 +854,14 @@ mod tests {
 
     #[test]
     fn effect_switch_model_by_name() {
-        let cmd = RuntimeCommand::SetModel("gpt-5.4".into());
+        let cmd = RuntimeCommand::SetModel(TEST_MAIN_MODEL.into());
         assert_eq!(
-            command_effect(&cmd, &test_routes()),
+            command_effect_for_test(&cmd),
             CommandEffect::SwitchModel {
-                model: "gpt-5.4".into(),
-                inferred_provider: Some("openai".into()),
-                lane: None,
+                model: TEST_MAIN_MODEL.into(),
+                inferred_provider: Some(TEST_PROVIDER.into()),
+                lane: Some(CapabilityLane::Reasoning),
+                candidate_index: Some(0),
                 compacted: false,
             }
         );
@@ -740,70 +871,57 @@ mod tests {
     fn effect_switch_model_unknown() {
         let cmd = RuntimeCommand::SetModel("custom-model".into());
         assert_eq!(
-            command_effect(&cmd, &test_routes()),
+            command_effect_for_test(&cmd),
             CommandEffect::SwitchModel {
                 model: "custom-model".into(),
                 inferred_provider: None,
                 lane: None,
+                candidate_index: None,
                 compacted: false,
             }
         );
     }
 
     #[test]
-    fn effect_switch_model_by_catalog_alias_when_config_route_missing() {
-        let cmd = RuntimeCommand::SetModel("gemma31b".into());
+    fn effect_switch_model_by_catalog_alias_when_lane_missing() {
+        let cmd = RuntimeCommand::SetModel(TEST_ALIAS.into());
         assert_eq!(
-            command_effect(&cmd, &[]),
+            command_effect_for_test(&cmd),
             CommandEffect::SwitchModel {
-                model: "google/gemma-4-31b-it".into(),
-                inferred_provider: Some("openrouter".into()),
-                lane: None,
+                model: TEST_ALIAS_MODEL.into(),
+                inferred_provider: Some(TEST_ALIAS_PROVIDER.into()),
+                lane: Some(CapabilityLane::CheapReasoning),
+                candidate_index: None,
                 compacted: false,
             }
         );
     }
 
     #[test]
-    fn effect_prefers_config_route_over_catalog_alias() {
-        let cmd = RuntimeCommand::SetModel("gemma31b".into());
-        let routes = vec![ModelRouteConfig {
-            hint: "gemma31b".into(),
-            capability: None,
-            provider: "custom-provider".into(),
-            model: "custom-gemma".into(),
-            api_key: None,
-            profile: ModelCandidateProfileConfig::default(),
-        }];
+    fn effect_prefers_lane_candidate_over_catalog_alias() {
+        let cmd = RuntimeCommand::SetModel(TEST_MAIN_MODEL.into());
         assert_eq!(
-            command_effect(&cmd, &routes),
+            command_effect_for_test(&cmd),
             CommandEffect::SwitchModel {
-                model: "custom-gemma".into(),
-                inferred_provider: Some("custom-provider".into()),
-                lane: None,
+                model: TEST_MAIN_MODEL.into(),
+                inferred_provider: Some(TEST_PROVIDER.into()),
+                lane: Some(CapabilityLane::Reasoning),
+                candidate_index: Some(0),
                 compacted: false,
             }
         );
     }
 
     #[test]
-    fn effect_switch_model_preserves_route_lane() {
-        let cmd = RuntimeCommand::SetModel("vision".into());
-        let routes = vec![ModelRouteConfig {
-            hint: "vision".into(),
-            capability: Some(CapabilityLane::MultimodalUnderstanding),
-            provider: "openrouter".into(),
-            model: "vision-model".into(),
-            api_key: None,
-            profile: ModelCandidateProfileConfig::default(),
-        }];
-
+    fn effect_switch_model_preserves_lane_candidate() {
+        let cmd = RuntimeCommand::SetModel("multimodal_understanding".into());
         assert_eq!(
-            command_effect(&cmd, &routes),
+            command_effect_for_test(&cmd),
             CommandEffect::SwitchModel {
-                model: "vision-model".into(),
-                inferred_provider: Some("openrouter".into()),
+                model: TEST_VISION_MODEL.into(),
+                inferred_provider: Some(TEST_VISION_PROVIDER.into()),
                 lane: Some(CapabilityLane::MultimodalUnderstanding),
+                candidate_index: Some(0),
                 compacted: false,
             }
         );
@@ -812,10 +930,7 @@ mod tests {
     #[test]
     fn effect_new_session() {
         let cmd = RuntimeCommand::NewSession;
-        assert_eq!(
-            command_effect(&cmd, &test_routes()),
-            CommandEffect::ClearSession
-        );
+        assert_eq!(command_effect_for_test(&cmd), CommandEffect::ClearSession);
     }
 
     #[test]

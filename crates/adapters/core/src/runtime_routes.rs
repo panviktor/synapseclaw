@@ -293,7 +293,6 @@ impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
 
 pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Config) -> String {
     let workspace_dir = config.workspace_dir.as_path();
-    let model_routes = &config.model_routes;
     let mut response = String::new();
     let _ = writeln!(
         response,
@@ -458,25 +457,7 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
         }
     }
 
-    if !model_routes.is_empty() {
-        response.push_str("\nConfigured model routes:\n");
-        for route in model_routes {
-            let _ = writeln!(
-                response,
-                "  `{}` → {} ({})",
-                route.hint, route.model, route.provider
-            );
-        }
-    }
-
-    let catalog_aliases = synapse_domain::config::model_catalog::model_route_aliases()
-        .into_iter()
-        .filter(|alias| {
-            !model_routes
-                .iter()
-                .any(|route| route.hint.eq_ignore_ascii_case(alias.hint.as_str()))
-        })
-        .collect::<Vec<_>>();
+    let catalog_aliases = synapse_domain::config::model_catalog::model_route_aliases();
     if !catalog_aliases.is_empty() {
         response.push_str("\nCatalog model aliases:\n");
         for route in catalog_aliases.iter().take(12) {
@@ -1060,7 +1041,6 @@ mod tests {
     };
     use synapse_domain::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
-        ModelRouteConfig,
     };
     use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairAction, ToolRepairTrace};
     use synapse_domain::domain::turn_admission::{
@@ -1137,24 +1117,27 @@ mod tests {
     }
 
     #[test]
-    fn models_help_includes_configured_routes() {
+    fn models_help_includes_effective_lanes_and_catalog_aliases() {
         let workspace = tempfile::tempdir().unwrap();
         let mut config = Config::default();
         config.workspace_dir = workspace.path().to_path_buf();
-        config.model_routes = vec![ModelRouteConfig {
-            hint: "cheap".into(),
-            provider: "openrouter".into(),
-            model: "qwen/qwen3.6-plus".into(),
-            api_key: None,
-            capability: None,
-            profile: Default::default(),
+        config.model_lanes = vec![ModelLaneConfig {
+            lane: CapabilityLane::CheapReasoning,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: "test-provider".into(),
+                model: "test-model".into(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: Default::default(),
+            }],
         }];
         let response = build_models_help_response(
             &RouteSelection {
-                provider: "openrouter".into(),
-                model: "qwen/qwen3.6-plus".into(),
-                lane: None,
-                candidate_index: None,
+                provider: "test-provider".into(),
+                model: "test-model".into(),
+                lane: Some(CapabilityLane::CheapReasoning),
+                candidate_index: Some(0),
                 last_admission: None,
                 recent_admissions: Vec::new(),
                 last_tool_repair: None,
@@ -1167,7 +1150,7 @@ mod tests {
             },
             &config,
         );
-        assert!(response.contains("`cheap` → qwen/qwen3.6-plus (openrouter)"));
+        assert!(response.contains("`cheap_reasoning` → test-model (test-provider)"));
         assert!(response.contains("Profile sources:"));
         assert!(response.contains("Current route limits:"));
         assert!(response.contains("Catalog model aliases:"));

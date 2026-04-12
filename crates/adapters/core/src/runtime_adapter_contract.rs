@@ -109,6 +109,11 @@ impl RuntimeRouteMutationRequest {
             ..Self::default()
         }
     }
+
+    fn with_candidate_index(mut self, candidate_index: Option<usize>) -> Self {
+        self.candidate_index = candidate_index;
+        self
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +211,7 @@ where
             model,
             inferred_provider,
             lane,
+            candidate_index,
             compacted,
         } => {
             let provider = inferred_provider
@@ -221,7 +227,8 @@ where
                 ));
             }
             let request =
-                RuntimeRouteMutationRequest::model(provider.clone(), model.clone(), *lane);
+                RuntimeRouteMutationRequest::model(provider.clone(), model.clone(), *lane)
+                    .with_candidate_index(*candidate_index);
             match host.switch_model(request, *compacted).await {
                 Ok(RuntimeModelSwitchOutcome::Applied {
                     provider,
@@ -415,6 +422,7 @@ mod tests {
                 model: "vision-model".into(),
                 inferred_provider: Some("openrouter".into()),
                 lane: Some(CapabilityLane::MultimodalUnderstanding),
+                candidate_index: None,
                 compacted: false,
             },
             CommandEffect::SwitchModelBlocked {

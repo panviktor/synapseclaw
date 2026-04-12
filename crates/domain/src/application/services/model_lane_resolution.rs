@@ -1,9 +1,6 @@
 use crate::application::services::model_capability_support::profile_supports_lane_confidently;
 use crate::application::services::model_preset_resolution::resolve_effective_model_lanes;
-use crate::config::schema::{
-    CapabilityLane, Config, EmbeddingRouteConfig, ModelCandidateProfileConfig, ModelFeature,
-    ModelRouteConfig,
-};
+use crate::config::schema::{CapabilityLane, Config, ModelCandidateProfileConfig, ModelFeature};
 use crate::ports::model_profile_catalog::{
     CatalogModelProfile, CatalogModelProfileSource, ModelProfileCatalogPort,
 };
@@ -14,8 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum ModelLaneResolutionSource {
     ExplicitLaneConfig,
     ImplicitReasoningLane,
-    LegacyModelRoute,
-    LegacyEmbeddingRoute,
     DefaultRoute,
 }
 
@@ -23,8 +18,6 @@ pub fn model_lane_resolution_source_name(source: ModelLaneResolutionSource) -> &
     match source {
         ModelLaneResolutionSource::ExplicitLaneConfig => "explicit_lane_config",
         ModelLaneResolutionSource::ImplicitReasoningLane => "implicit_reasoning_lane",
-        ModelLaneResolutionSource::LegacyModelRoute => "legacy_model_route",
-        ModelLaneResolutionSource::LegacyEmbeddingRoute => "legacy_embedding_route",
         ModelLaneResolutionSource::DefaultRoute => "default_route",
     }
 }
@@ -189,45 +182,7 @@ pub fn resolve_lane_candidates(
         }
     }
 
-    let legacy_model_routes = config
-        .model_routes
-        .iter()
-        .filter(|route| route.capability == Some(lane) || legacy_route_matches_lane(route, lane))
-        .map(|route| {
-            resolve_candidate(
-                ModelLaneResolutionSource::LegacyModelRoute,
-                route.provider.as_str(),
-                route.model.as_str(),
-                route.api_key.clone(),
-                None,
-                None,
-                &route.profile,
-                catalog,
-            )
-        });
-
-    let legacy_embedding_routes = config
-        .embedding_routes
-        .iter()
-        .filter(|route| {
-            route.capability == Some(lane) || legacy_embedding_route_matches_lane(route, lane)
-        })
-        .map(|route| {
-            resolve_candidate(
-                ModelLaneResolutionSource::LegacyEmbeddingRoute,
-                route.provider.as_str(),
-                route.model.as_str(),
-                route.api_key.clone(),
-                None,
-                route.dimensions,
-                &route.profile,
-                catalog,
-            )
-        });
-
-    let mut resolved = legacy_model_routes
-        .chain(legacy_embedding_routes)
-        .collect::<Vec<_>>();
+    let mut resolved = Vec::new();
 
     if resolved.is_empty() && lane_allows_implicit_reasoning_candidates(lane) {
         resolved = resolve_lane_candidates(config, CapabilityLane::Reasoning, catalog)
@@ -241,11 +196,14 @@ pub fn resolve_lane_candidates(
     }
 
     if resolved.is_empty() && lane == CapabilityLane::Reasoning {
-        if let Some(default_model) = config.default_model.clone() {
+        if let (Some(default_provider), Some(default_model)) = (
+            config.default_provider.as_deref(),
+            config.default_model.as_deref(),
+        ) {
             resolved.push(resolve_candidate(
                 ModelLaneResolutionSource::DefaultRoute,
-                config.default_provider.as_deref().unwrap_or("openrouter"),
-                &default_model,
+                default_provider,
+                default_model,
                 config.api_key.clone(),
                 None,
                 None,
@@ -289,30 +247,18 @@ pub fn resolve_route_selection_profile(
         }
     }
 
-    if let Some(route_match) = config
-        .model_routes
-        .iter()
-        .find(|candidate| candidate.provider == route.provider && candidate.model == route.model)
-    {
-        return resolve_candidate_profile(
-            route_match.provider.as_str(),
-            route_match.model.as_str(),
-            &route_match.profile,
-            catalog,
-        );
-    }
-
-    if let Some(route_match) = config
-        .embedding_routes
-        .iter()
-        .find(|candidate| candidate.provider == route.provider && candidate.model == route.model)
-    {
-        return resolve_candidate_profile(
-            route_match.provider.as_str(),
-            route_match.model.as_str(),
-            &route_match.profile,
-            catalog,
-        );
+    let effective_lanes = resolve_effective_model_lanes(config);
+    for lane in effective_lanes {
+        if let Some(candidate) = lane.candidates.iter().find(|candidate| {
+            candidate.provider == route.provider && candidate.model == route.model
+        }) {
+            return resolve_candidate_profile(
+                candidate.provider.as_str(),
+                candidate.model.as_str(),
+                &candidate.profile,
+                catalog,
+            );
+        }
     }
 
     resolve_candidate_profile(
@@ -487,22 +433,6 @@ fn current_unix_time() -> Option<u64> {
         .map(|duration| duration.as_secs())
 }
 
-fn legacy_route_matches_lane(route: &ModelRouteConfig, lane: CapabilityLane) -> bool {
-    matches!(
-        (lane, route.hint.as_str()),
-        (CapabilityLane::CheapReasoning, "cheap")
-            | (CapabilityLane::Reasoning, "reasoning")
-            | (CapabilityLane::Reasoning, "main")
-    )
-}
-
-fn legacy_embedding_route_matches_lane(route: &EmbeddingRouteConfig, lane: CapabilityLane) -> bool {
-    matches!(
-        (lane, route.hint.as_str()),
-        (CapabilityLane::Embedding, "semantic")
-    )
-}
-
 fn lane_allows_implicit_reasoning_candidates(lane: CapabilityLane) -> bool {
     matches!(
         lane,
@@ -522,11 +452,16 @@ mod tests {
         ModelLaneConfig, SummaryConfig,
     };
 
+    const TEST_PROVIDER: &str = "test-provider";
+    const TEST_MODEL: &str = "test/reasoning-plus";
+    const TEST_DEFAULT_PROVIDER: &str = "test-default-provider";
+    const TEST_DEFAULT_MODEL: &str = "test-default-model";
+
     struct StubCatalog;
 
     impl ModelProfileCatalogPort for StubCatalog {
         fn lookup_model_profile(&self, provider: &str, model: &str) -> Option<CatalogModelProfile> {
-            if provider == "openrouter" && model == "qwen/qwen3.6-plus" {
+            if provider == TEST_PROVIDER && model == TEST_MODEL {
                 return Some(CatalogModelProfile {
                     context_window_tokens: Some(200_000),
                     max_output_tokens: Some(32_000),
@@ -541,28 +476,20 @@ mod tests {
 
     fn base_config() -> Config {
         let mut config = Config::default();
-        config.default_provider = Some("openai-codex".into());
-        config.default_model = Some("gpt-5.4".into());
+        config.default_provider = Some(TEST_DEFAULT_PROVIDER.into());
+        config.default_model = Some(TEST_DEFAULT_MODEL.into());
         config.summary = SummaryConfig::default();
         config
     }
 
     #[test]
-    fn explicit_lane_candidates_win_over_legacy_routes() {
+    fn explicit_lane_candidates_drive_capability_lanes() {
         let mut config = base_config();
-        config.model_routes.push(ModelRouteConfig {
-            hint: "cheap".into(),
-            capability: Some(CapabilityLane::CheapReasoning),
-            provider: "openrouter".into(),
-            model: "legacy-qwen".into(),
-            api_key: None,
-            profile: ModelCandidateProfileConfig::default(),
-        });
         config.model_lanes.push(ModelLaneConfig {
             lane: CapabilityLane::CheapReasoning,
             candidates: vec![ModelLaneCandidateConfig {
-                provider: "openrouter".into(),
-                model: "qwen/qwen3.6-plus".into(),
+                provider: TEST_PROVIDER.into(),
+                model: TEST_MODEL.into(),
                 api_key: None,
                 api_key_env: None,
                 dimensions: None,
@@ -589,12 +516,8 @@ mod tests {
             features: vec![ModelFeature::Vision],
         };
 
-        let resolved = resolve_candidate_profile(
-            "openrouter",
-            "qwen/qwen3.6-plus",
-            &manual,
-            Some(&StubCatalog),
-        );
+        let resolved =
+            resolve_candidate_profile(TEST_PROVIDER, TEST_MODEL, &manual, Some(&StubCatalog));
 
         assert_eq!(resolved.context_window_tokens, Some(64_000));
         assert_eq!(resolved.max_output_tokens, Some(32_000));
@@ -619,8 +542,8 @@ mod tests {
         let resolved = resolve_lane_candidates(&config, CapabilityLane::Reasoning, None);
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].source, ModelLaneResolutionSource::DefaultRoute);
-        assert_eq!(resolved[0].provider, "openai-codex");
-        assert_eq!(resolved[0].model, "gpt-5.4");
+        assert_eq!(resolved[0].provider, TEST_DEFAULT_PROVIDER);
+        assert_eq!(resolved[0].model, TEST_DEFAULT_MODEL);
     }
 
     #[test]
@@ -629,8 +552,8 @@ mod tests {
         config.model_lanes.push(ModelLaneConfig {
             lane: CapabilityLane::CheapReasoning,
             candidates: vec![ModelLaneCandidateConfig {
-                provider: "openrouter".into(),
-                model: "qwen/qwen3.6-plus".into(),
+                provider: TEST_PROVIDER.into(),
+                model: TEST_MODEL.into(),
                 api_key: None,
                 api_key_env: None,
                 dimensions: None,
@@ -639,8 +562,8 @@ mod tests {
         });
 
         let route = RouteSelection {
-            provider: "openrouter".into(),
-            model: "qwen/qwen3.6-plus".into(),
+            provider: TEST_PROVIDER.into(),
+            model: TEST_MODEL.into(),
             lane: Some(CapabilityLane::CheapReasoning),
             candidate_index: Some(0),
             last_admission: None,
@@ -711,7 +634,7 @@ mod tests {
         config.model_lanes.push(ModelLaneConfig {
             lane: CapabilityLane::Reasoning,
             candidates: vec![ModelLaneCandidateConfig {
-                provider: "openrouter".into(),
+                provider: TEST_PROVIDER.into(),
                 model: "universal-model".into(),
                 api_key: None,
                 api_key_env: None,
@@ -736,7 +659,7 @@ mod tests {
             resolved[0].source,
             ModelLaneResolutionSource::ImplicitReasoningLane
         );
-        assert_eq!(resolved[0].provider, "openrouter");
+        assert_eq!(resolved[0].provider, TEST_PROVIDER);
         assert_eq!(resolved[0].model, "universal-model");
     }
 
@@ -746,7 +669,7 @@ mod tests {
         config.model_lanes.push(ModelLaneConfig {
             lane: CapabilityLane::Reasoning,
             candidates: vec![ModelLaneCandidateConfig {
-                provider: "openrouter".into(),
+                provider: TEST_PROVIDER.into(),
                 model: "plain-model".into(),
                 api_key: None,
                 api_key_env: None,

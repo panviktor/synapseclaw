@@ -1096,7 +1096,8 @@ Expected outcome:
 - current status:
   - agent history compaction, web session summarization, and channel summaries now resolve
     their summarizer lane through one domain service
-  - precedence is explicit `[summary]` config -> `summary_model` -> `cheap` route -> current route
+  - precedence is explicit `[summary]` config -> `summary_model` ->
+    `cheap_reasoning` capability lane -> current route
   - live daemon validation confirmed compaction on a long cheap-route dialogue
     (`history_len_before=54`, `history_len_after=25`)
   - procedural skill count stayed flat during the pure semantic run (`list_skills = 61`)
@@ -1111,6 +1112,10 @@ Expected outcome:
     entered through the automatic context path
   - low-information detection now catches repeated semantic shingles, not only
     exact token chants or contiguous repeated phrases
+  - summary route resolution no longer consumes legacy `model_routes` cheap
+    hints; the compactor lane must come from explicit/effective capability
+    lanes or explicit summary config, keeping cheap-model condensation on the
+    same routing language as the main runtime
 - remaining quality tail after the hardening:
   - recall ranking is better, but still needs live long-dialogue validation on
     concept-heavy semantic sessions after the hybrid-rerank follow-through
@@ -1250,6 +1255,19 @@ Expected outcome:
   - provider router now rejects unknown `hint:*` model selectors before
     dispatch instead of executing them on the default provider
   - `model_routing_config` preset operations now participate in typed routing facts
+  - `resolve_lane_candidates` no longer treats legacy `model_routes` or
+    `embedding_routes` as capability-lane fallbacks; fallback to the default
+    reasoning route now requires both configured provider and configured model,
+    with no provider string invented in code
+  - channel and web `/model` command effects now resolve selectors through
+    effective capability lanes first and catalog aliases second; matched lane
+    candidates preserve `lane + candidate_index` through the shared
+    runtime-command adapter contract
+  - `/model` help no longer renders configured `model_routes` as a first-class
+    routing surface; it shows effective capability lanes plus catalog aliases
+    so operator UX matches the runtime selector path
+  - query-classifier route overrides now reuse the same lane/catalog selector
+    resolver instead of scanning `model_routes` by hint
   - remaining work:
     - historical note: earlier remaining items about image/audio/video/music
       first-class turn routing are now mostly owned by Slice 14 and the shared

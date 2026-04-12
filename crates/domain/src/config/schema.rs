@@ -185,8 +185,8 @@ pub struct Config {
     /// Capability-aware model lanes — ordered candidates per runtime lane.
     ///
     /// Candidate `0` is the default for the lane; later entries act as
-    /// fallbacks or manual runtime alternatives. This complements the legacy
-    /// `model_routes` table and is the preferred long-term routing surface.
+    /// fallbacks or manual runtime alternatives. This is the primary runtime
+    /// routing surface.
     #[serde(default)]
     pub model_lanes: Vec<ModelLaneConfig>,
 
@@ -4188,6 +4188,17 @@ pub enum CapabilityLane {
 }
 
 impl CapabilityLane {
+    pub const ALL: [CapabilityLane; 8] = [
+        CapabilityLane::Reasoning,
+        CapabilityLane::CheapReasoning,
+        CapabilityLane::Embedding,
+        CapabilityLane::ImageGeneration,
+        CapabilityLane::AudioGeneration,
+        CapabilityLane::VideoGeneration,
+        CapabilityLane::MusicGeneration,
+        CapabilityLane::MultimodalUnderstanding,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             CapabilityLane::Reasoning => "reasoning",
@@ -4199,6 +4210,18 @@ impl CapabilityLane {
             CapabilityLane::MusicGeneration => "music_generation",
             CapabilityLane::MultimodalUnderstanding => "multimodal_understanding",
         }
+    }
+}
+
+impl std::str::FromStr for CapabilityLane {
+    type Err = ();
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let normalized = value.trim().trim_matches('`').replace('-', "_");
+        CapabilityLane::ALL
+            .into_iter()
+            .find(|lane| lane.as_str().eq_ignore_ascii_case(&normalized))
+            .ok_or(())
     }
 }
 

@@ -56,6 +56,7 @@ pub fn format_common_command_effect(
             model,
             inferred_provider,
             lane,
+            candidate_index: _,
             compacted,
         } => Some(format_switch_model_success(
             model,

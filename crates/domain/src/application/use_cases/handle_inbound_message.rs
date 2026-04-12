@@ -188,7 +188,8 @@ pub async fn handle(
 
     match classification {
         MessageClassification::Command(cmd) => {
-            let effect = inbound_message_service::command_effect(&cmd, &config.model_routes);
+            let routing_config = build_model_routing_config(config);
+            let effect = inbound_message_service::command_effect(&cmd, &routing_config);
 
             // Apply state changes
             match &effect {
@@ -251,14 +252,13 @@ async fn handle_regular_message(
 
     // ── 3. Resolve route (with query classification override) ─────
     let mut route = ports.routes.get_route(conversation_key);
+    let routing_config = build_model_routing_config(config);
 
     // #4: Query classification override
     if config.query_classifier.is_some() {
         if let Some(hint) = config.query_classifier.as_ref().and_then(|f| f(content)) {
-            if let Some(route_match) = config
-                .model_routes
-                .iter()
-                .find(|route| route.hint.eq_ignore_ascii_case(&hint))
+            if let Some(route_match) =
+                inbound_message_service::resolve_model_command_route(&hint, &routing_config)
             {
                 tracing::info!(
                     target: "query_classification",
@@ -269,14 +269,13 @@ async fn handle_regular_message(
                 );
                 route.provider = route_match.provider.clone();
                 route.model = route_match.model.clone();
-                route.lane = route_match.capability;
-                route.candidate_index = None;
+                route.lane = route_match.lane;
+                route.candidate_index = route_match.candidate_index;
                 route.clear_runtime_diagnostics();
             }
         }
     }
 
-    let routing_config = build_model_routing_config(config);
     let current_route_profile =
         crate::application::services::model_lane_resolution::resolve_route_selection_profile(
             &routing_config,
@@ -1318,7 +1317,9 @@ fn channel_user_profile_key(envelope: &InboundEnvelope) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::schema::{ModelCandidateProfileConfig, ModelRouteConfig};
+    use crate::config::schema::{
+        ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
+    };
     use crate::domain::channel::SourceKind;
     use crate::ports::hooks::NoOpHooks;
     use crate::ports::route_selection::RouteSelection;
@@ -1722,22 +1723,24 @@ mod tests {
     }
 
     fn config_with_route_window(
-        hint: &str,
         provider: &str,
         model: &str,
         context_window_tokens: usize,
     ) -> InboundMessageConfig {
         let mut config = test_config();
-        config.model_routes = vec![ModelRouteConfig {
-            hint: hint.to_string(),
-            capability: None,
-            provider: provider.to_string(),
-            model: model.to_string(),
-            api_key: None,
-            profile: ModelCandidateProfileConfig {
-                context_window_tokens: Some(context_window_tokens),
-                ..Default::default()
-            },
+        config.model_lanes = vec![ModelLaneConfig {
+            lane: crate::config::schema::CapabilityLane::Reasoning,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: provider.to_string(),
+                model: model.to_string(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: ModelCandidateProfileConfig {
+                    context_window_tokens: Some(context_window_tokens),
+                    ..Default::default()
+                },
+            }],
         }];
         config
     }
@@ -1926,7 +1929,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_model_switch_waits_for_adapter_preflight() {
-        let env = test_envelope("/model tiny");
+        let env = test_envelope("/model tiny-model");
         let caps = vec![
             ChannelCapability::SendText,
             ChannelCapability::RuntimeCommands,
@@ -1935,7 +1938,7 @@ mod tests {
         history.append_turn("telegram_user1", ChatMessage::user("x".repeat(20_000)));
         let routes = Arc::new(RecordingRoutes::new("openrouter", "large-model"));
         let ports = test_ports_with_state(history, routes.clone(), "");
-        let config = config_with_route_window("tiny", "openrouter", "tiny-model", 1_000);
+        let config = config_with_route_window("openrouter", "tiny-model", 1_000);
 
         let result = handle(&env, &caps, &config, &ports).await.unwrap();
 
@@ -1946,13 +1949,15 @@ mod tests {
                         model,
                         inferred_provider,
                         lane,
+                        candidate_index,
                         compacted,
                     },
                 ..
             } => {
                 assert_eq!(model, "tiny-model");
                 assert_eq!(inferred_provider, Some("openrouter".to_string()));
-                assert_eq!(lane, None);
+                assert_eq!(lane, Some(crate::config::schema::CapabilityLane::Reasoning));
+                assert_eq!(candidate_index, Some(0));
                 assert!(!compacted);
             }
             other => panic!("expected model switch command, got {other:?}"),
@@ -1963,7 +1968,7 @@ mod tests {
 
     #[tokio::test]
     async fn channel_model_switch_defers_safe_downshift_mutation_to_adapter() {
-        let env = test_envelope("/model compact");
+        let env = test_envelope("/model compact-model");
         let caps = vec![
             ChannelCapability::SendText,
             ChannelCapability::RuntimeCommands,
@@ -1977,7 +1982,7 @@ mod tests {
         }
         let routes = Arc::new(RecordingRoutes::new("openrouter", "large-model"));
         let ports = test_ports_with_state(history.clone(), routes.clone(), "");
-        let config = config_with_route_window("compact", "openrouter", "compact-model", 8_000);
+        let config = config_with_route_window("openrouter", "compact-model", 8_000);
 
         let result = handle(&env, &caps, &config, &ports).await.unwrap();
 

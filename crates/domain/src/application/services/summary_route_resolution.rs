@@ -33,7 +33,6 @@ pub struct SummaryRouteResolution {
 pub fn resolve_summary_route(config: &Config, current_model: &str) -> SummaryRouteResolution {
     let summary = &config.summary;
     let summary_model = config.summary_model.as_deref();
-    let model_routes = &config.model_routes;
     let explicit_summary_config =
         summary.provider.is_some() || summary.model.is_some() || summary.api_key_env.is_some();
 
@@ -75,17 +74,6 @@ pub fn resolve_summary_route(config: &Config, current_model: &str) -> SummaryRou
         };
     }
 
-    if let Some(route) = model_routes.iter().find(|route| route.hint == "cheap") {
-        return SummaryRouteResolution {
-            source: SummaryRouteSource::CheapRoute,
-            provider: Some(route.provider.clone()),
-            model: route.model.clone(),
-            temperature: summary.temperature,
-            api_key: route.api_key.clone(),
-            api_key_env: None,
-        };
-    }
-
     SummaryRouteResolution {
         source: SummaryRouteSource::CurrentRoute,
         provider: None,
@@ -101,103 +89,117 @@ mod tests {
     use super::*;
     use crate::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
-        ModelRouteConfig, SummaryConfig,
+        SummaryConfig,
     };
 
-    fn cheap_route() -> ModelRouteConfig {
-        ModelRouteConfig {
-            hint: "cheap".into(),
-            capability: Some(CapabilityLane::CheapReasoning),
-            provider: "openrouter".into(),
-            model: "qwen/qwen3.6-plus".into(),
-            api_key: Some("test-key".into()),
-            profile: ModelCandidateProfileConfig::default(),
+    const TEST_SUMMARY_PROVIDER: &str = "test-summary-provider";
+    const TEST_SUMMARY_MODEL: &str = "test-summary-model";
+    const TEST_CURRENT_MODEL: &str = "test-current-model";
+    const TEST_EXPLICIT_PROVIDER: &str = "test-explicit-provider";
+    const TEST_EXPLICIT_MODEL: &str = "test-explicit-model";
+
+    fn summary_lane_fixture() -> ModelLaneConfig {
+        ModelLaneConfig {
+            lane: CapabilityLane::CheapReasoning,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: TEST_SUMMARY_PROVIDER.into(),
+                model: TEST_SUMMARY_MODEL.into(),
+                api_key: Some("test-key".into()),
+                api_key_env: None,
+                dimensions: None,
+                profile: ModelCandidateProfileConfig::default(),
+            }],
         }
     }
 
     fn base_config() -> Config {
         let mut config = Config::default();
-        config.default_model = Some("gpt-5.4".into());
+        config.default_model = Some(TEST_CURRENT_MODEL.into());
         config
     }
 
     #[test]
-    fn explicit_summary_config_wins_over_cheap_route() {
+    fn explicit_summary_config_wins_over_cheap_lane() {
         let summary = SummaryConfig {
-            provider: Some("anthropic".into()),
-            model: Some("claude-haiku".into()),
+            provider: Some(TEST_EXPLICIT_PROVIDER.into()),
+            model: Some(TEST_EXPLICIT_MODEL.into()),
             temperature: 0.2,
-            api_key_env: Some("ANTHROPIC_API_KEY".into()),
+            api_key_env: Some("TEST_SUMMARY_API_KEY".into()),
         };
 
         let mut config = base_config();
         config.summary = summary;
-        config.model_routes = vec![cheap_route()];
+        config.model_lanes = vec![summary_lane_fixture()];
 
-        let resolved = resolve_summary_route(&config, "gpt-5.4");
+        let resolved = resolve_summary_route(&config, TEST_CURRENT_MODEL);
 
         assert_eq!(resolved.source, SummaryRouteSource::ExplicitSummaryConfig);
-        assert_eq!(resolved.provider.as_deref(), Some("anthropic"));
-        assert_eq!(resolved.model, "claude-haiku");
+        assert_eq!(resolved.provider.as_deref(), Some(TEST_EXPLICIT_PROVIDER));
+        assert_eq!(resolved.model, TEST_EXPLICIT_MODEL);
         assert_eq!(resolved.temperature, 0.2);
-        assert_eq!(resolved.api_key_env.as_deref(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(
+            resolved.api_key_env.as_deref(),
+            Some("TEST_SUMMARY_API_KEY")
+        );
     }
 
     #[test]
-    fn summary_model_wins_over_cheap_route() {
+    fn summary_model_wins_over_cheap_lane() {
         let mut config = base_config();
-        config.summary_model = Some("gpt-5.4-mini".into());
-        config.model_routes = vec![cheap_route()];
-        let resolved = resolve_summary_route(&config, "gpt-5.4");
+        config.summary_model = Some("explicit-summary-model".into());
+        config.model_lanes = vec![summary_lane_fixture()];
+        let resolved = resolve_summary_route(&config, TEST_CURRENT_MODEL);
 
         assert_eq!(resolved.source, SummaryRouteSource::ExplicitSummaryModel);
         assert_eq!(resolved.provider, None);
-        assert_eq!(resolved.model, "gpt-5.4-mini");
+        assert_eq!(resolved.model, "explicit-summary-model");
     }
 
     #[test]
-    fn cheap_route_becomes_default_summary_lane() {
+    fn cheap_lane_becomes_default_summary_lane() {
         let mut config = base_config();
-        config.model_routes = vec![cheap_route()];
-        let resolved = resolve_summary_route(&config, "gpt-5.4");
+        config.model_lanes = vec![summary_lane_fixture()];
+        let resolved = resolve_summary_route(&config, TEST_CURRENT_MODEL);
 
         assert_eq!(resolved.source, SummaryRouteSource::CheapRoute);
-        assert_eq!(resolved.provider.as_deref(), Some("openrouter"));
-        assert_eq!(resolved.model, "qwen/qwen3.6-plus");
+        assert_eq!(resolved.provider.as_deref(), Some(TEST_SUMMARY_PROVIDER));
+        assert_eq!(resolved.model, TEST_SUMMARY_MODEL);
         assert_eq!(resolved.api_key.as_deref(), Some("test-key"));
     }
 
     #[test]
     fn current_route_is_final_fallback() {
         let config = base_config();
-        let resolved = resolve_summary_route(&config, "gpt-5.4");
+        let resolved = resolve_summary_route(&config, TEST_CURRENT_MODEL);
 
         assert_eq!(resolved.source, SummaryRouteSource::CurrentRoute);
         assert_eq!(resolved.provider, None);
-        assert_eq!(resolved.model, "gpt-5.4");
+        assert_eq!(resolved.model, TEST_CURRENT_MODEL);
     }
 
     #[test]
-    fn capability_lane_candidates_beat_legacy_cheap_route() {
+    fn capability_lane_candidate_provides_summary_route() {
         let mut config = base_config();
-        config.model_routes = vec![cheap_route()];
         config.model_lanes = vec![ModelLaneConfig {
             lane: CapabilityLane::CheapReasoning,
             candidates: vec![ModelLaneCandidateConfig {
-                provider: "anthropic".into(),
-                model: "claude-haiku".into(),
+                provider: TEST_EXPLICIT_PROVIDER.into(),
+                model: TEST_EXPLICIT_MODEL.into(),
                 api_key: None,
-                api_key_env: Some("ANTHROPIC_API_KEY".into()),
+                api_key_env: Some("TEST_SUMMARY_API_KEY".into()),
                 dimensions: None,
                 profile: ModelCandidateProfileConfig::default(),
             }],
         }];
 
-        let resolved = resolve_summary_route(&config, "gpt-5.4");
+        let resolved = resolve_summary_route(&config, TEST_CURRENT_MODEL);
 
         assert_eq!(resolved.source, SummaryRouteSource::CheapRoute);
-        assert_eq!(resolved.provider.as_deref(), Some("anthropic"));
-        assert_eq!(resolved.model, "claude-haiku");
-        assert_eq!(resolved.api_key_env.as_deref(), Some("ANTHROPIC_API_KEY"));
+        assert_eq!(resolved.provider.as_deref(), Some(TEST_EXPLICIT_PROVIDER));
+        assert_eq!(resolved.model, TEST_EXPLICIT_MODEL);
+        assert_eq!(
+            resolved.api_key_env.as_deref(),
+            Some("TEST_SUMMARY_API_KEY")
+        );
     }
 }
