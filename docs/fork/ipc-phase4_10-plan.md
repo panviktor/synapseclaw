@@ -990,6 +990,10 @@ Expected outcome:
 - wire `message_send` to prefer recent delivery target, then user-profile fact
 - current status:
   - dynamic user profiles remain arbitrary key/value facts, not fixed Rust fields
+  - onboarding workspace scaffold now uses arbitrary `user_facts` instead of
+    fixed `timezone` / `response_style` fields, and the generated notes point
+    durable profile updates at `user_profile` rather than legacy core-memory
+    prose
   - the one delivery-default profile convention is centralized as a domain-owned
     key constant and consumed by typed default/assumption/handoff logic
   - public `user_profile` tool schema examples no longer advertise weather/time

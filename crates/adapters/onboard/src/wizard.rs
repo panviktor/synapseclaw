@@ -26,6 +26,7 @@ use synapse_domain::config::schema::{
     DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig, NextcloudTalkConfig, QQConfig,
     SignalConfig, StreamMode, WhatsAppConfig,
 };
+use synapse_domain::domain::user_profile::normalize_fact_key;
 use synapse_infra::config_io::ConfigIO;
 use synapse_providers::{
     canonical_china_provider_name, is_glm_alias, is_glm_cn_alias, is_minimax_alias,
@@ -42,9 +43,8 @@ use tokio::fs;
 #[derive(Debug, Clone, Default)]
 pub struct ProjectContext {
     pub user_name: String,
-    pub timezone: String,
     pub agent_name: String,
-    pub response_style: String,
+    pub user_facts: BTreeMap<String, String>,
 }
 
 // ── Banner ───────────────────────────────────────────────────────
@@ -576,11 +576,8 @@ async fn run_quick_setup_with_home(
     // Scaffold minimal workspace files
     let default_ctx = ProjectContext {
         user_name: std::env::var("USER").unwrap_or_else(|_| "User".into()),
-        timezone: "UTC".into(),
         agent_name: "SynapseClaw".into(),
-        response_style:
-            "Be warm, natural, and clear. Use occasional relevant emojis (1-2 max) and avoid robotic phrasing."
-                .into(),
+        ..Default::default()
     };
     scaffold_workspace(&workspace_dir, &default_ctx).await?;
 
@@ -3069,6 +3066,7 @@ fn setup_tool_mode() -> Result<(ComposioConfig, SecretsConfig)> {
 fn setup_project_context() -> Result<ProjectContext> {
     print_bullet("Let's personalize your agent. You can always update these later.");
     print_bullet("Press Enter to accept defaults.");
+    print_bullet("User facts are arbitrary key=value pairs; no fixed profile schema is assumed.");
     println!();
 
     let user_name: String = Input::new()
@@ -3076,90 +3074,74 @@ fn setup_project_context() -> Result<ProjectContext> {
         .default("User".into())
         .interact_text()?;
 
-    let tz_options = vec![
-        "US/Eastern (EST/EDT)",
-        "US/Central (CST/CDT)",
-        "US/Mountain (MST/MDT)",
-        "US/Pacific (PST/PDT)",
-        "Europe/London (GMT/BST)",
-        "Europe/Berlin (CET/CEST)",
-        "Asia/Tokyo (JST)",
-        "UTC",
-        "Other (type manually)",
-    ];
-
-    let tz_idx = Select::new()
-        .with_prompt("  Your timezone")
-        .items(&tz_options)
-        .default(0)
-        .interact()?;
-
-    let timezone = if tz_idx == tz_options.len() - 1 {
-        Input::new()
-            .with_prompt("  Enter timezone (e.g. America/New_York)")
-            .default("UTC".into())
-            .interact_text()?
-    } else {
-        // Extract the short label before the parenthetical
-        tz_options[tz_idx]
-            .split('(')
-            .next()
-            .unwrap_or("UTC")
-            .trim()
-            .to_string()
-    };
-
     let agent_name: String = Input::new()
         .with_prompt("  Agent name")
         .default("SynapseClaw".into())
         .interact_text()?;
 
-    let style_options = vec![
-        "Direct & concise — skip pleasantries, get to the point",
-        "Friendly & casual — warm, human, and helpful",
-        "Professional & polished — calm, confident, and clear",
-        "Expressive & playful — more personality + natural emojis",
-        "Technical & detailed — thorough explanations, code-first",
-        "Balanced — adapt to the situation",
-        "Custom — write your own style guide",
-    ];
-
-    let style_idx = Select::new()
-        .with_prompt("  Response style")
-        .items(&style_options)
-        .default(1)
-        .interact()?;
-
-    let response_style = match style_idx {
-        0 => "Be direct and concise. Skip pleasantries. Get to the point.".to_string(),
-        1 => "Be friendly, human, and conversational. Show warmth and empathy while staying efficient. Use natural contractions.".to_string(),
-        2 => "Be professional and polished. Stay calm, structured, and respectful. Use occasional tone-setting emojis only when appropriate.".to_string(),
-        3 => "Be expressive and playful when appropriate. Use relevant emojis naturally (0-2 max), and keep serious topics emoji-light.".to_string(),
-        4 => "Be technical and detailed. Thorough explanations, code-first.".to_string(),
-        5 => "Adapt to the situation. Default to warm and clear communication; be concise when needed, thorough when it matters.".to_string(),
-        _ => Input::new()
-            .with_prompt("  Custom response style")
-            .default(
-                "Be warm, natural, and clear. Use occasional relevant emojis (1-2 max) and avoid robotic phrasing.".into(),
-            )
-            .interact_text()?,
-    };
+    let user_facts_input: String = Input::new()
+        .with_prompt("  Initial user facts (optional key=value, comma-separated)")
+        .allow_empty(true)
+        .interact_text()?;
+    let user_facts = parse_project_context_facts(&user_facts_input);
 
     println!(
-        "  {} Context: {} | {} | {} | {}",
+        "  {} Context: {} | {} | {} user facts",
         style("✓").green().bold(),
         style(&user_name).green(),
-        style(&timezone).green(),
         style(&agent_name).green(),
-        style(&response_style).green().dim()
+        style(user_facts.len()).green()
     );
 
     Ok(ProjectContext {
         user_name,
-        timezone,
         agent_name,
-        response_style,
+        user_facts,
     })
+}
+
+fn parse_project_context_facts(input: &str) -> BTreeMap<String, String> {
+    input
+        .split([',', ';'])
+        .filter_map(parse_project_context_fact)
+        .collect()
+}
+
+fn parse_project_context_fact(raw: &str) -> Option<(String, String)> {
+    let (key, value) = raw.split_once('=')?;
+    let key = normalize_fact_key(key)?;
+    let value = sanitize_markdown_line(value);
+    if value.is_empty() {
+        return None;
+    }
+    Some((key, value))
+}
+
+fn sanitize_markdown_line(value: &str) -> String {
+    value.replace(['\r', '\n'], " ").trim().to_string()
+}
+
+fn format_project_context_facts(facts: &BTreeMap<String, String>) -> String {
+    if facts.is_empty() {
+        return "- (Add durable user facts here as `key: value`; keys are arbitrary.)".to_string();
+    }
+
+    facts
+        .iter()
+        .map(|(key, value)| format!("- {key}: {}", sanitize_markdown_line(value)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_bootstrap_profile_context(facts: &BTreeMap<String, String>) -> String {
+    if facts.is_empty() {
+        return "Initial profile facts are empty. Learn durable facts through `user_profile` when the user states them.".to_string();
+    }
+
+    format!(
+        "Initial profile facts:\n{}",
+        format_project_context_facts(facts)
+    )
 }
 
 // ── Step 6: Memory Configuration ───────────────────────────────
@@ -5122,16 +5104,8 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
     } else {
         &ctx.user_name
     };
-    let tz = if ctx.timezone.is_empty() {
-        "UTC"
-    } else {
-        &ctx.timezone
-    };
-    let response_style = if ctx.response_style.is_empty() {
-        "Be warm, natural, and clear. Use occasional relevant emojis (1-2 max) and avoid robotic phrasing."
-    } else {
-        &ctx.response_style
-    };
+    let user_fact_lines = format_project_context_facts(&ctx.user_facts);
+    let bootstrap_profile_context = format_bootstrap_profile_context(&ctx.user_facts);
 
     let identity = format!(
         "# IDENTITY.md — Who Am I?\n\n\
@@ -5153,15 +5127,16 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          Don't ask permission. Just do it.\n\n\
          ## Memory System\n\n\
          You wake up fresh each session. Persistent continuity comes from the memory system:\n\n\
-         - **Core memory:** `core_memory_update`\n\
+         - **Durable user facts:** `user_profile` arbitrary key/value facts\n\
          - **Stored memory:** `memory_store` + `memory_recall`\n\
-         - **Daily notes:** `memory/YYYY-MM-DD.md` — raw logs when explicitly needed\n\n\
+         - **Daily notes:** `memory/YYYY-MM-DD.md` — on-demand raw logs when explicitly needed\n\n\
          Capture what matters. Decisions, context, things to remember.\n\
          Skip secrets unless asked to keep them.\n\n\
          ### Write It Down — No Mental Notes!\n\
          - Memory is limited — if you want to remember something, WRITE IT TO THE MEMORY SYSTEM\n\
          - \"Mental notes\" don't survive session restarts. Stored memory does.\n\
-         - When someone says \"remember this\" -> use `core_memory_update`, `memory_store`, or daily notes\n\
+         - When someone states a durable preference/default -> use `user_profile` with dynamic fact keys\n\
+         - When someone says \"remember this\" -> use `user_profile` for profile facts, or `memory_store` / daily notes for broader memory\n\
          - When you learn a lesson -> update AGENTS.md, TOOLS.md, or the relevant skill\n\n\
          ## Safety\n\n\
          - Don't exfiltrate private data. Ever.\n\
@@ -5221,7 +5196,8 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - NEVER mention OpenAI, Anthropic, DeepSeek, Google by name\n\
          - Always introduce yourself as {agent} if asked\n\n\
          ## Communication\n\n\
-         {response_style}\n\n\
+         Use the system prompt, runtime context, and dynamic user profile facts for communication preferences.\n\
+         Do not assume fixed profile fields like timezone, locale, city, or style unless they are present as facts.\n\n\
          - Sound like a real person, not a support script.\n\
          - Mirror the user's energy: calm when serious, upbeat when casual.\n\
          - Use emojis naturally (0-2 max when they help tone, not every sentence).\n\
@@ -5245,12 +5221,11 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          *{agent} reads this file every session to understand you.*\n\n\
          ## About You\n\
          - **Name:** {user}\n\
-         - **Timezone:** {tz}\n\
-         - **Languages:** English\n\n\
-         ## Response Style\n\
-         - {response_style}\n\n\
+         \n\
+         ## Profile Facts\n\
+         {user_fact_lines}\n\n\
          ## Preferences\n\
-         - (Add your preferences here — e.g. I work with Rust and TypeScript)\n\n\
+         - Add preferences as arbitrary profile facts; do not rely on a fixed schema.\n\n\
          ## Work Context\n\
          - (Add your work context here — e.g. building a SaaS product)\n\n\
          ---\n\
@@ -5280,6 +5255,9 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
          - **memory_store** — Save to memory\n\
            - Use when: preserving durable preferences, decisions, or key context.\n\
            - Don't use when: info is transient, noisy, or sensitive without explicit need.\n\
+         - **user_profile** — Save durable user facts as arbitrary key/value data\n\
+           - Use when: the user states a durable preference, default, identity fact, or correction.\n\
+           - Don't use when: the fact is transient, inferred from weak evidence, or would require a fixed schema.\n\
          - **memory_recall** — Search memory\n\
            - Use when: you need prior decisions, user preferences, or historical context.\n\
            - Don't use when: the answer is already in current files/conversation.\n\
@@ -5292,8 +5270,8 @@ async fn scaffold_workspace(workspace_dir: &Path, ctx: &ProjectContext) -> Resul
     let bootstrap = format!(
         "# BOOTSTRAP.md — Hello, World\n\n\
          *You just woke up. Time to figure out who you are.*\n\n\
-         Your human's name is **{user}** (timezone: {tz}).\n\
-         They prefer: {response_style}\n\n\
+         Your human's name is **{user}**.\n\
+         {bootstrap_profile_context}\n\n\
          ## First Conversation\n\n\
          Don't interrogate. Don't be robotic. Just... talk.\n\
          Introduce yourself as {agent} and get to know each other.\n\n\
@@ -5626,9 +5604,8 @@ mod tests {
     fn project_context_default_is_empty() {
         let ctx = ProjectContext::default();
         assert!(ctx.user_name.is_empty());
-        assert!(ctx.timezone.is_empty());
         assert!(ctx.agent_name.is_empty());
-        assert!(ctx.response_style.is_empty());
+        assert!(ctx.user_facts.is_empty());
     }
 
     #[test]
@@ -5890,10 +5867,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scaffold_bakes_timezone_into_files() {
+    async fn scaffold_bakes_dynamic_user_facts_into_files() {
         let tmp = TempDir::new().unwrap();
         let ctx = ProjectContext {
-            timezone: "US/Pacific".into(),
+            user_facts: BTreeMap::from([
+                ("local_timezone".into(), "US/Pacific".into()),
+                ("response_locale".into(), "ru".into()),
+            ]),
             ..Default::default()
         };
         scaffold_workspace(tmp.path(), &ctx).await.unwrap();
@@ -5901,18 +5881,16 @@ mod tests {
         let user_md = tokio::fs::read_to_string(tmp.path().join("USER.md"))
             .await
             .unwrap();
-        assert!(
-            user_md.contains("**Timezone:** US/Pacific"),
-            "USER.md should contain timezone"
-        );
+        assert!(user_md.contains("- local_timezone: US/Pacific"));
+        assert!(user_md.contains("- response_locale: ru"));
+        assert!(!user_md.contains("**Timezone:**"));
 
         let bootstrap = tokio::fs::read_to_string(tmp.path().join("BOOTSTRAP.md"))
             .await
             .unwrap();
-        assert!(
-            bootstrap.contains("US/Pacific"),
-            "BOOTSTRAP.md should contain timezone"
-        );
+        assert!(bootstrap.contains("Initial profile facts:"));
+        assert!(bootstrap.contains("- local_timezone: US/Pacific"));
+        assert!(bootstrap.contains("- response_locale: ru"));
     }
 
     #[tokio::test]
@@ -5966,10 +5944,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scaffold_bakes_response_style() {
+    async fn scaffold_keeps_communication_preferences_schema_free() {
         let tmp = TempDir::new().unwrap();
         let ctx = ProjectContext {
-            response_style: "Be technical and detailed.".into(),
+            user_facts: BTreeMap::from([(
+                "communication_guidance".into(),
+                "Be technical and detailed.".into(),
+            )]),
             ..Default::default()
         };
         scaffold_workspace(tmp.path(), &ctx).await.unwrap();
@@ -5977,26 +5958,18 @@ mod tests {
         let soul = tokio::fs::read_to_string(tmp.path().join("SOUL.md"))
             .await
             .unwrap();
-        assert!(
-            soul.contains("Be technical and detailed."),
-            "SOUL.md should contain response style"
-        );
+        assert!(soul.contains("dynamic user profile facts"));
+        assert!(!soul.contains("Be technical and detailed."));
 
         let user_md = tokio::fs::read_to_string(tmp.path().join("USER.md"))
             .await
             .unwrap();
-        assert!(
-            user_md.contains("Be technical and detailed."),
-            "USER.md should contain response style"
-        );
+        assert!(user_md.contains("- communication_guidance: Be technical and detailed."));
 
         let bootstrap = tokio::fs::read_to_string(tmp.path().join("BOOTSTRAP.md"))
             .await
             .unwrap();
-        assert!(
-            bootstrap.contains("Be technical and detailed."),
-            "BOOTSTRAP.md should contain response style"
-        );
+        assert!(bootstrap.contains("- communication_guidance: Be technical and detailed."));
     }
 
     // ── scaffold_workspace: defaults when context is empty ──────
@@ -6023,16 +5996,16 @@ mod tests {
             "should default user name to User"
         );
         assert!(
-            user_md.contains("**Timezone:** UTC"),
-            "should default timezone to UTC"
+            user_md.contains("keys are arbitrary"),
+            "should default profile facts to schema-free placeholder"
         );
 
         let soul = tokio::fs::read_to_string(tmp.path().join("SOUL.md"))
             .await
             .unwrap();
         assert!(
-            soul.contains("Be warm, natural, and clear."),
-            "should default response style"
+            soul.contains("Do not assume fixed profile fields"),
+            "should avoid fixed profile schema defaults"
         );
     }
 
@@ -6170,6 +6143,7 @@ mod tests {
             "file_read",
             "file_write",
             "memory_store",
+            "user_profile",
             "memory_recall",
             "memory_forget",
         ] {
@@ -6215,8 +6189,7 @@ mod tests {
         let ctx = ProjectContext {
             user_name: "José María".into(),
             agent_name: "SynapseClaw-v2".into(),
-            timezone: "Europe/Madrid".into(),
-            response_style: "Be direct.".into(),
+            user_facts: BTreeMap::from([("local_timezone".into(), "Europe/Madrid".into())]),
         };
         scaffold_workspace(tmp.path(), &ctx).await.unwrap();
 
@@ -6238,11 +6211,14 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let ctx = ProjectContext {
             user_name: "Argenis".into(),
-            timezone: "US/Eastern".into(),
             agent_name: "Claw".into(),
-            response_style:
-                "Be friendly, human, and conversational. Show warmth and empathy while staying efficient. Use natural contractions."
-                    .into(),
+            user_facts: BTreeMap::from([
+                ("local_timezone".into(), "US/Eastern".into()),
+                (
+                    "communication_guidance".into(),
+                    "Be friendly, human, and conversational.".into(),
+                ),
+            ]),
         };
         scaffold_workspace(tmp.path(), &ctx).await.unwrap();
 
@@ -6256,14 +6232,17 @@ mod tests {
             .await
             .unwrap();
         assert!(soul.contains("You are **Claw**"));
-        assert!(soul.contains("Be friendly, human, and conversational"));
+        assert!(soul.contains("dynamic user profile facts"));
 
         let user_md = tokio::fs::read_to_string(tmp.path().join("USER.md"))
             .await
             .unwrap();
         assert!(user_md.contains("**Name:** Argenis"));
-        assert!(user_md.contains("**Timezone:** US/Eastern"));
-        assert!(user_md.contains("Be friendly, human, and conversational"));
+        assert!(user_md.contains("- local_timezone: US/Eastern"));
+        assert!(
+            user_md.contains("- communication_guidance: Be friendly, human, and conversational.")
+        );
+        assert!(!user_md.contains("**Timezone:**"));
 
         let agents = tokio::fs::read_to_string(tmp.path().join("AGENTS.md"))
             .await
@@ -6274,7 +6253,7 @@ mod tests {
             .await
             .unwrap();
         assert!(bootstrap.contains("**Argenis**"));
-        assert!(bootstrap.contains("US/Eastern"));
+        assert!(bootstrap.contains("- local_timezone: US/Eastern"));
         assert!(bootstrap.contains("Introduce yourself as Claw"));
 
         let heartbeat = tokio::fs::read_to_string(tmp.path().join("HEARTBEAT.md"))
@@ -6285,58 +6264,53 @@ mod tests {
 
     // ── model helper coverage ───────────────────────────────────
 
+    fn curated_model_ids(provider_name: &str) -> Vec<String> {
+        curated_models_for_provider(provider_name)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    fn assert_catalog_default_is_curated(provider_name: &str) {
+        let canonical = canonical_provider_name(provider_name);
+        let expected = bundled_provider_default_model(canonical)
+            .unwrap_or_else(|| panic!("missing bundled default model for {canonical}"));
+        assert_eq!(default_model_for_provider(provider_name), expected);
+        assert!(
+            curated_model_ids(provider_name).contains(&expected.to_string()),
+            "curated models for {provider_name} should include catalog default {expected}"
+        );
+    }
+
     #[test]
-    fn default_model_for_provider_uses_latest_defaults() {
-        assert_eq!(
-            default_model_for_provider("openrouter"),
-            "anthropic/claude-sonnet-4-6"
-        );
-        assert_eq!(default_model_for_provider("openai"), "gpt-5.4");
-        assert_eq!(default_model_for_provider("openai-codex"), "gpt-5.4");
-        assert_eq!(default_model_for_provider("anthropic"), "claude-sonnet-4-6");
-        assert_eq!(default_model_for_provider("qwen"), "qwen3.6-plus");
-        assert_eq!(default_model_for_provider("qwen-intl"), "qwen3.6-plus");
-        assert_eq!(default_model_for_provider("qwen-code"), "qwen3-coder-next");
-        assert_eq!(default_model_for_provider("glm-cn"), "glm-5.1");
-        assert_eq!(default_model_for_provider("minimax-cn"), "MiniMax-M2.5");
-        assert_eq!(default_model_for_provider("zai-cn"), "glm-5.1");
-        assert_eq!(default_model_for_provider("gemini"), "gemini-3.1-pro");
-        assert_eq!(default_model_for_provider("google"), "gemini-3.1-pro");
-        assert_eq!(default_model_for_provider("kimi-code"), "kimi-k2.5");
-        assert_eq!(
-            default_model_for_provider("bedrock"),
-            "anthropic.claude-sonnet-4-6-v1:0"
-        );
-        assert_eq!(
-            default_model_for_provider("google-gemini"),
-            "gemini-3.1-pro"
-        );
-        assert_eq!(default_model_for_provider("venice"), "glm-5.1");
-        assert_eq!(default_model_for_provider("moonshot"), "kimi-k2.5");
-        assert_eq!(
-            default_model_for_provider("nvidia"),
-            "nvidia/nemotron-3-ultra"
-        );
-        assert_eq!(
-            default_model_for_provider("nvidia-nim"),
-            "nvidia/nemotron-3-ultra"
-        );
-        assert_eq!(
-            default_model_for_provider("llamacpp"),
-            "bartowski/Llama-4-Maverick-GGUF"
-        );
-        assert_eq!(
-            default_model_for_provider("sglang"),
-            "meta-llama/Llama-4-Scout"
-        );
-        assert_eq!(
-            default_model_for_provider("vllm"),
-            "meta-llama/Llama-4-Scout"
-        );
-        assert_eq!(
-            default_model_for_provider("astrai"),
-            "anthropic/claude-sonnet-4-6"
-        );
+    fn default_model_for_provider_uses_catalog_defaults() {
+        for provider in [
+            "openrouter",
+            "openai",
+            "openai-codex",
+            "anthropic",
+            "qwen",
+            "qwen-intl",
+            "qwen-code",
+            "glm-cn",
+            "minimax-cn",
+            "zai-cn",
+            "gemini",
+            "google",
+            "kimi-code",
+            "bedrock",
+            "google-gemini",
+            "venice",
+            "moonshot",
+            "nvidia",
+            "nvidia-nim",
+            "llamacpp",
+            "sglang",
+            "vllm",
+            "astrai",
+        ] {
+            assert_catalog_default_is_curated(provider);
+        }
     }
 
     #[test]
@@ -6363,75 +6337,34 @@ mod tests {
     }
 
     #[test]
-    fn curated_models_for_openai_include_latest_choices() {
-        let ids: Vec<String> = curated_models_for_provider("openai")
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-
-        assert!(ids.contains(&"gpt-5.2".to_string()));
-        assert!(ids.contains(&"gpt-5-mini".to_string()));
+    fn curated_models_for_known_providers_include_catalog_defaults() {
+        for provider in [
+            "openai",
+            "glm",
+            "openai-codex",
+            "openrouter",
+            "bedrock",
+            "moonshot",
+            "kimi-code",
+            "qwen-code",
+            "nvidia",
+        ] {
+            assert_catalog_default_is_curated(provider);
+        }
     }
 
     #[test]
     fn curated_models_for_glm_removes_deprecated_flash_plus_aliases() {
-        let ids: Vec<String> = curated_models_for_provider("glm")
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
+        let ids = curated_model_ids("glm");
 
-        assert!(ids.contains(&"glm-5".to_string()));
-        assert!(ids.contains(&"glm-4.7".to_string()));
-        assert!(ids.contains(&"glm-4.5-air".to_string()));
         assert!(!ids.contains(&"glm-4-plus".to_string()));
         assert!(!ids.contains(&"glm-4-flash".to_string()));
     }
 
     #[test]
-    fn curated_models_for_openai_codex_include_codex_family() {
-        let ids: Vec<String> = curated_models_for_provider("openai-codex")
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-
-        assert!(ids.contains(&"gpt-5.4".to_string()));
-        assert!(ids.contains(&"gpt-5.4-mini".to_string()));
-        assert!(ids.contains(&"gpt-5.3-codex".to_string()));
-        assert!(ids.contains(&"gpt-5.2-codex".to_string()));
-    }
-
-    #[test]
-    fn curated_models_for_openrouter_use_valid_anthropic_id() {
-        let ids: Vec<String> = curated_models_for_provider("openrouter")
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-
-        assert!(ids.contains(&"anthropic/claude-sonnet-4-6".to_string()));
-    }
-
-    #[test]
-    fn curated_models_for_bedrock_include_verified_model_ids() {
-        let ids: Vec<String> = curated_models_for_provider("bedrock")
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-
-        assert!(ids.contains(&"anthropic.claude-sonnet-4-6".to_string()));
-        assert!(ids.contains(&"anthropic.claude-opus-4-6-v1".to_string()));
-        assert!(ids.contains(&"anthropic.claude-haiku-4-5-20251001-v1:0".to_string()));
-        assert!(ids.contains(&"anthropic.claude-sonnet-4-5-20250929-v1:0".to_string()));
-    }
-
-    #[test]
     fn curated_models_for_moonshot_drop_deprecated_aliases() {
-        let ids: Vec<String> = curated_models_for_provider("moonshot")
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
+        let ids = curated_model_ids("moonshot");
 
-        assert!(ids.contains(&"kimi-k2.5".to_string()));
-        assert!(ids.contains(&"kimi-k2-thinking".to_string()));
         assert!(!ids.contains(&"kimi-latest".to_string()));
         assert!(!ids.contains(&"kimi-thinking-preview".to_string()));
     }
@@ -6451,29 +6384,6 @@ mod tests {
         assert!(allows_unauthenticated_model_fetch("vllm"));
         assert!(!allows_unauthenticated_model_fetch("openai"));
         assert!(!allows_unauthenticated_model_fetch("deepseek"));
-    }
-
-    #[test]
-    fn curated_models_for_kimi_code_include_official_agent_model() {
-        let ids: Vec<String> = curated_models_for_provider("kimi-code")
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-
-        assert!(ids.contains(&"kimi-for-coding".to_string()));
-        assert!(ids.contains(&"kimi-k2.5".to_string()));
-    }
-
-    #[test]
-    fn curated_models_for_qwen_code_include_coding_plan_models() {
-        let ids: Vec<String> = curated_models_for_provider("qwen-code")
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-
-        assert!(ids.contains(&"qwen3-coder-plus".to_string()));
-        assert!(ids.contains(&"qwen3.5-plus".to_string()));
-        assert!(ids.contains(&"qwen3-max-2026-01-23".to_string()));
     }
 
     #[test]
@@ -6550,18 +6460,6 @@ mod tests {
             curated_models_for_provider("bedrock"),
             curated_models_for_provider("aws-bedrock")
         );
-    }
-
-    #[test]
-    fn curated_models_for_nvidia_include_nim_catalog_entries() {
-        let ids: Vec<String> = curated_models_for_provider("nvidia")
-            .into_iter()
-            .map(|(id, _)| id)
-            .collect();
-
-        assert!(ids.contains(&"meta/llama-3.3-70b-instruct".to_string()));
-        assert!(ids.contains(&"deepseek-ai/deepseek-v3.2".to_string()));
-        assert!(ids.contains(&"nvidia/llama-3.3-nemotron-super-49b-v1.5".to_string()));
     }
 
     #[test]
