@@ -64,12 +64,26 @@ pub fn provider_router_routes(config: &Config) -> Vec<ModelRouteConfig> {
     let mut seen_hints = HashSet::new();
 
     for lane in resolve_effective_model_lanes(config) {
-        if let Some(candidate) = lane.candidates.first() {
+        for (index, candidate) in lane.candidates.iter().enumerate() {
+            if index == 0 {
+                push_provider_router_route(
+                    &mut routes,
+                    &mut seen_hints,
+                    ModelRouteConfig {
+                        hint: lane.lane.as_str().to_string(),
+                        capability: Some(lane.lane),
+                        provider: candidate.provider.clone(),
+                        model: candidate.model.clone(),
+                        api_key: candidate.api_key.clone(),
+                        profile: candidate.profile.clone(),
+                    },
+                );
+            }
             push_provider_router_route(
                 &mut routes,
                 &mut seen_hints,
                 ModelRouteConfig {
-                    hint: lane.lane.as_str().to_string(),
+                    hint: provider_model_selector(&candidate.provider, &candidate.model),
                     capability: Some(lane.lane),
                     provider: candidate.provider.clone(),
                     model: candidate.model.clone(),
@@ -97,6 +111,10 @@ fn push_provider_router_route(
         return;
     }
     routes.push(route);
+}
+
+fn provider_model_selector(provider: &str, model: &str) -> String {
+    format!("{}:{}", provider.trim(), model.trim())
 }
 
 fn build_preset_model_lanes(config: &Config, preset: &str) -> Option<Vec<ModelLaneConfig>> {
@@ -214,6 +232,9 @@ mod tests {
         assert_eq!(cheap.provider, "test-provider");
         assert_eq!(cheap.model, "test-cheap-model");
         assert_eq!(cheap.capability, Some(CapabilityLane::CheapReasoning));
+        assert!(routes
+            .iter()
+            .any(|route| route.hint == "test-provider:test-cheap-model"));
         assert!(routes.iter().any(|route| route.hint == "qwen36"));
     }
 

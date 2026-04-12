@@ -1279,6 +1279,9 @@ Expected outcome:
   - the effective-lane/catalog provider-router alias table is now a shared
     domain helper consumed by live Agent and CLI runtime, avoiding a second
     legacy `model_routes` route table in adapter code
+  - provider-router aliases include typed `provider:model` keys for explicit
+    non-primary lane candidates, so selector resolution and router dispatch do
+    not diverge on fallback candidates
   - channel inbound/use-case runtime snapshots no longer carry `model_routes`
     through the turn path; they pass only model lanes/preset into shared route
     resolution

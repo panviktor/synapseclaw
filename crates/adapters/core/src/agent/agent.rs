@@ -2018,6 +2018,15 @@ impl Agent {
                     &routing_config,
                 )
             {
+                let provider_model_argument = if route.provider == self.provider_name {
+                    route.model.clone()
+                } else if route.candidate_index == Some(0) {
+                    route.lane
+                        .map(|lane| format!("hint:{}", lane.as_str()))
+                        .unwrap_or_else(|| format!("hint:{}", decision.hint))
+                } else {
+                    format!("hint:{}:{}", route.provider, route.model)
+                };
                 tracing::info!(
                     target: "query_classification",
                     hint = decision.hint.as_str(),
@@ -2035,7 +2044,7 @@ impl Agent {
                 return AgentModelSelection {
                     provider: route.provider,
                     actual_model: route.model,
-                    provider_model_argument: format!("hint:{}", decision.hint),
+                    provider_model_argument,
                     lane: route.lane,
                     candidate_index: route.candidate_index,
                     hint: Some(decision.hint),
