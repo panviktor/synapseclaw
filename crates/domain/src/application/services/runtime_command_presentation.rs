@@ -113,16 +113,20 @@ pub fn format_switch_model_success(
         return "Model ID cannot be empty. Use `/model <model-id>`.".to_string();
     }
 
-    let lane_note = format_lane_note(lane, options);
-    if compacted {
-        format!(
-            "Model switched to `{model}` (provider: `{provider}`).{lane_note} Context compacted before switching."
-        )
+    let context_note = if compacted {
+        "Context compacted before switching."
     } else {
-        format!(
-            "Model switched to `{model}` (provider: `{provider}`).{lane_note} Context preserved."
-        )
+        "Context preserved."
+    };
+
+    if let Some(lane) = visible_lane(lane, options) {
+        return format!(
+            "Lane `{}` switched to `{provider}:{model}`. {context_note}",
+            lane.as_str()
+        );
     }
+
+    format!("Model switched to `{model}` (provider: `{provider}`). {context_note}")
 }
 
 pub fn format_switch_model_blocked(
@@ -133,15 +137,22 @@ pub fn format_switch_model_blocked(
     compacted: bool,
     options: &RuntimeCommandPresentationOptions,
 ) -> String {
-    let lane_note = format_lane_note(lane, options);
     let budget_note = format_context_budget_note(preflight, options.context_budget);
     let compacted_note = if compacted {
         " Compaction ran first, but the context is still too large."
     } else {
         ""
     };
+
+    if let Some(lane) = visible_lane(lane, options) {
+        return format!(
+            "Lane `{}` route switch to `{provider}:{model}` blocked. {budget_note}{compacted_note}",
+            lane.as_str()
+        );
+    }
+
     format!(
-        "Model switch to `{model}` (provider: `{provider}`) blocked.{lane_note} {budget_note}{compacted_note}"
+        "Model switch to `{model}` (provider: `{provider}`) blocked. {budget_note}{compacted_note}"
     )
 }
 
@@ -149,16 +160,15 @@ pub fn format_clear_session_response() -> String {
     "Conversation history cleared. Starting fresh.".to_string()
 }
 
-fn format_lane_note(
+fn visible_lane(
     lane: Option<CapabilityLane>,
     options: &RuntimeCommandPresentationOptions,
-) -> String {
+) -> Option<CapabilityLane> {
     if !options.show_lane {
-        return String::new();
+        return None;
     }
 
-    lane.map(|lane| format!(" Lane: `{}`.", lane.as_str()))
-        .unwrap_or_default()
+    lane
 }
 
 fn format_context_budget_note(
@@ -204,8 +214,15 @@ mod tests {
             &options,
         );
 
-        assert!(response.contains("Lane: `multimodal_understanding`"));
+        assert!(response
+            .starts_with("Lane `multimodal_understanding` switched to `openrouter:vision-model`."));
         assert!(response.contains("Context compacted before switching"));
+        assert!(
+            response.find("Lane `").expect("lane first")
+                < response
+                    .find("openrouter:vision-model")
+                    .expect("route target")
+        );
     }
 
     #[test]
@@ -228,7 +245,8 @@ mod tests {
             &options,
         );
 
-        assert!(response.contains("Lane: `reasoning`"));
+        assert!(response
+            .starts_with("Lane `reasoning` route switch to `openrouter:tiny-model` blocked."));
         assert!(response.contains("safe context budget is ~3000 tokens"));
         assert!(response.contains("Target window: ~4000 tokens"));
         assert!(response.contains("Reserved output: ~1000 tokens"));

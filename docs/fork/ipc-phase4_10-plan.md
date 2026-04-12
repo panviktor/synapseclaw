@@ -1589,10 +1589,14 @@ Expected outcome:
       explicitly advertises the corresponding `ModelFeature`; universal
       models can therefore supply image/audio/video/music lanes without
       natural-language phrase detection or Rust model-id match arms
+    - shared runtime command presentation now renders lane-aware model switch
+      outcomes as `lane -> provider:model`; web and channel receive the same
+      lane-first success/block text through the common runtime adapter contract
   - remaining:
     - modality inference remains conservative and marker-based; richer intent recognition
       should come later through typed interpretation or an explicit classifier, not keyword lists
-    - more route/runtime UX should render lane identity first and `provider/model` second
+    - keep auditing route/runtime UX beyond model-switch outcomes for lane-first
+      wording where the runtime already has a typed lane decision
     - status note: do not reintroduce keyword phrase lists for media detection;
       until typed interpretation exists, structured markers are the accepted
       deterministic interface.
