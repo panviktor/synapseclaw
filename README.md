@@ -42,7 +42,7 @@ The project started as a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zer
 
 - **Multi-agent IPC broker** — trust-aware inter-agent messaging with directional ACLs, quarantine, ephemeral agent spawning, and delivery controls.
 - **Web operator dashboard** — fleet topology, agent workbench, chat sessions, activity feed, cron management — all from one frontend shell.
-- **Hexagonal core** (`fork_core`) — pure business logic as a workspace crate with 0 upstream dependencies, 10 use cases, 180 tests. Ports & adapters architecture.
+- **Hexagonal core** (`synapse_domain`) — pure business logic as a workspace crate with 0 upstream dependencies, 10 use cases, 180+ tests. Ports & adapters architecture.
 - **Trait-driven pluggability** — providers, channels, tools, memory, observers, and runtime adapters are all swappable via traits.
 - **Channel support** — Telegram, Discord, Slack, Matrix (E2EE), Mattermost, web chat, and more.
 - **Security hardening** — Ed25519 identity, PromptGuard integration, execution profiles, tool allowlists, workspace scoping.
@@ -51,19 +51,26 @@ The project started as a fork of [ZeroClaw](https://github.com/zeroclaw-labs/zer
 ### Architecture overview
 
 ```
-fork_core (workspace crate)    fork_adapters (main crate)      Infrastructure
-├── domain/                    ├── channels/registry           ├── gateway/ (HTTP + WS)
-│   ├── channel, conversation  ├── ipc/bus, quarantine          ├── cron/scheduler
-│   ├── ipc, memory, approval  ├── memory/                     ├── security/
-│   ├── run, spawn, config     ├── runtime/agent, hooks        ├── channels/ (transport)
-│   └── message                ├── storage/conversation, run   └── tools/ (execution)
-├── ports/ (12 traits)         └── inbound/
-├── application/services/ (6)
-└── application/use_cases/ (10)
+crates/domain/                   crates/adapters/                Infrastructure
+synapse_domain (24K LOC)         composition root (55K LOC)      ├── gateway/ (HTTP + WS)
+├── domain/                      ├── core/ (synapse_adapters)    ├── cron/scheduler
+│   ├── channel, conversation    ├── channels/ (34K)             ├── security/
+│   ├── ipc, memory, approval    ├── tools/ (37K)                ├── channels/ (transport)
+│   ├── run, spawn, config       ├── security/ (10K)             └── tools/ (execution)
+│   └── message                  ├── memory/ (8K)
+├── ports/ (12 traits)           ├── providers/ (20K)
+├── application/services/ (6)    ├── observability/ (5K)
+└── application/use_cases/ (10)  ├── cron-store/ (3K)
+                                 ├── mcp/ (3K)
+                                 ├── infra/ (5K)
+                                 └── onboard/ (7K)
 ```
+
+**Dependency rules** — domain depends on nothing; adapters depend on domain; the binary composes everything.
 
 For the full architecture plans, phase history, and roadmap: [`docs/fork/README.md`](docs/fork/README.md).
 For the latest updates: [`docs/fork/news.md`](docs/fork/news.md).
+For known documentation discrepancies: [`docs/fork/doc-discrepancies.md`](docs/fork/doc-discrepancies.md).
 
 ## Prerequisites
 

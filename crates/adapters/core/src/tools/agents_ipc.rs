@@ -8,6 +8,9 @@ use async_trait::async_trait;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::application::services::session_handoff::{
+    format_session_handoff_packet, parse_session_handoff_packet_value, SessionHandoffPacket,
+};
 use uuid;
 
 /// Resolve the ~/.synapseclaw directory for persisting sender_seq.
@@ -1056,6 +1059,40 @@ impl Tool for AgentsSpawnTool {
                 "workload": {
                     "type": "string",
                     "description": "Workload profile name (optional). Can only narrow the tool set, not widen."
+                },
+                "handoff_packet": {
+                    "type": "object",
+                    "description": "Optional structured session handoff packet. Use only the shared session_handoff schema.",
+                    "additionalProperties": false,
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "enum": ["context_overflow", "route_switch", "compaction", "capability_repair", "session_resume"]
+                        },
+                        "recommended_action": {"type": "string"},
+                        "active_task": {"type": "string"},
+                        "current_defaults": {"type": "array", "items": {"type": "string"}},
+                        "anchors": {"type": "array", "items": {"type": "string"}},
+                        "unresolved_questions": {"type": "array", "items": {"type": "string"}},
+                        "assumptions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "kind": {"type": "string", "enum": ["active_task", "current_conversation", "delivery_target", "profile_fact", "route_capability", "context_window", "workspace_anchor"]},
+                                    "source": {"type": "string", "enum": ["configured_runtime", "current_conversation", "dialogue_state", "route_admission", "user_message", "user_profile"]},
+                                    "freshness": {"type": "string", "enum": ["current_turn", "session_recent", "challenged"]},
+                                    "confidence_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
+                                    "value": {"type": "string"},
+                                    "invalidation": {"type": "string", "enum": ["conversation_changed", "context_overflow", "delivery_failure", "profile_update", "route_admission_failure", "user_contradiction"]},
+                                    "replacement_path": {"type": "string", "enum": ["ask_user_clarification", "compact_session", "refresh_capability_metadata", "switch_route", "update_profile", "use_current_conversation"]}
+                                },
+                                "required": ["kind", "source", "freshness", "confidence_basis_points", "value", "invalidation", "replacement_path"]
+                            }
+                        }
+                    },
+                    "required": ["reason"]
                 }
             },
             "required": ["prompt"]
@@ -1083,6 +1120,12 @@ impl Tool for AgentsSpawnTool {
         let wait = args["wait"].as_bool().unwrap_or(false);
         let timeout = args["timeout"].as_u64().unwrap_or(300).clamp(10, 3600) as u32;
         let workload = args["workload"].as_str().map(String::from);
+        let handoff_packet = args
+            .get("handoff_packet")
+            .map(parse_session_handoff_packet_value)
+            .transpose()?
+            .flatten();
+        let spawn_body = build_spawn_prompt_body(prompt, handoff_packet.as_ref());
 
         // Trust propagation: child >= parent
         let child_level = requested_level
@@ -1108,7 +1151,7 @@ impl Tool for AgentsSpawnTool {
             return self
                 .spawn_broker_backed(
                     client.as_ref(),
-                    prompt,
+                    &spawn_body,
                     name,
                     model,
                     child_level,
@@ -1131,8 +1174,20 @@ impl Tool for AgentsSpawnTool {
                 ),
             });
         }
-        self.spawn_legacy(prompt, name, model, child_level).await
+        self.spawn_legacy(&spawn_body, name, model, child_level)
+            .await
     }
+}
+
+fn build_spawn_prompt_body(prompt: &str, handoff_packet: Option<&SessionHandoffPacket>) -> String {
+    let Some(packet) = handoff_packet else {
+        return prompt.to_string();
+    };
+
+    format!(
+        "{}\n[Task]\n{prompt}",
+        format_session_handoff_packet(packet).trim_end()
+    )
 }
 
 impl AgentsSpawnTool {
@@ -1541,6 +1596,25 @@ mod tests {
         assert!(props.contains_key("wait"));
         assert!(props.contains_key("timeout"));
         assert!(props.contains_key("workload"));
+        assert!(props.contains_key("handoff_packet"));
+    }
+
+    #[test]
+    fn agents_spawn_prompt_body_includes_structured_handoff_before_task() {
+        let packet = synapse_domain::application::services::session_handoff::SessionHandoffPacket {
+            reason: synapse_domain::application::services::session_handoff::SessionHandoffReason::RouteSwitch,
+            recommended_action: Some("switch_lane:reasoning".into()),
+            active_task: Some("continue on smaller route".into()),
+            current_defaults: Vec::new(),
+            anchors: vec!["memory=late anchor".into()],
+            unresolved_questions: Vec::new(),
+            assumptions: Vec::new(),
+        };
+
+        let rendered = build_spawn_prompt_body("finish task", Some(&packet));
+
+        assert!(rendered.starts_with("[session-handoff]"));
+        assert!(rendered.contains("[/session-handoff]\n[Task]\nfinish task"));
     }
 
     #[test]

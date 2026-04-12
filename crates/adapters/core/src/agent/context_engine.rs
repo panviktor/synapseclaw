@@ -11,6 +11,9 @@ const COMPACT_TOOL_RESULT_MAX_CHARS: usize = 320;
 const PROVIDER_ASSISTANT_TEXT_MAX_CHARS: usize = 1_200;
 const PROVIDER_TOOL_CALL_ARGS_MAX_CHARS: usize = 900;
 const PROVIDER_TOOL_RESULT_MAX_CHARS: usize = 1_200;
+const PROVIDER_CONTEXT_RELEVANT_TAIL_MIN_MESSAGES: usize = 2;
+const PROVIDER_CONTEXT_PROTECT_FIRST_CHAT_MESSAGES: usize = 2;
+const PROVIDER_CONTEXT_QUERY_MIN_TERM_CHARS: usize = 4;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderPromptSnapshot {
@@ -92,8 +95,13 @@ pub(crate) fn build_provider_prompt_snapshot(
         _ => None,
     });
 
-    let context_start = recent_chat_context.len().saturating_sub(recent_chat_limit);
-    let mut prior_chat_context = recent_chat_context[context_start..].to_vec();
+    let current_user_query = latest_user_index.and_then(|index| match history.get(index) {
+        Some(ConversationMessage::Chat(chat)) if chat.role == "user" => Some(chat.content.as_str()),
+        _ => None,
+    });
+
+    let mut prior_chat_context =
+        select_prior_chat_context(&recent_chat_context, recent_chat_limit, current_user_query);
     if let Some(summary) = latest_compaction_summary {
         let already_present = prior_chat_context.iter().any(|message| {
             matches!(
@@ -137,6 +145,240 @@ pub(crate) fn build_provider_prompt_snapshot(
     );
 
     ProviderPromptSnapshot { messages, stats }
+}
+
+fn select_prior_chat_context(
+    recent_chat_context: &[ConversationMessage],
+    recent_chat_limit: usize,
+    current_user_query: Option<&str>,
+) -> Vec<ConversationMessage> {
+    if recent_chat_limit == 0 || recent_chat_context.is_empty() {
+        return Vec::new();
+    }
+    if recent_chat_context.len() <= recent_chat_limit {
+        return recent_chat_context.to_vec();
+    }
+
+    let mut selected = std::collections::BTreeSet::<usize>::new();
+    let query_terms = current_user_query
+        .map(|query| weighted_query_terms(query, recent_chat_context))
+        .unwrap_or_default();
+    let tail_min = PROVIDER_CONTEXT_RELEVANT_TAIL_MIN_MESSAGES.min(recent_chat_limit);
+    let relevance_budget = recent_chat_limit.saturating_sub(tail_min);
+
+    if !query_terms.is_empty() && relevance_budget > 0 {
+        for candidate in relevant_prior_turn_pairs(recent_chat_context, &query_terms) {
+            if !try_add_index_group(&mut selected, &candidate.indices, relevance_budget) {
+                continue;
+            }
+            if selected.len() >= relevance_budget {
+                break;
+            }
+        }
+    }
+
+    let head_budget = recent_chat_limit.saturating_sub(tail_min);
+    for idx in 0..recent_chat_context
+        .len()
+        .min(PROVIDER_CONTEXT_PROTECT_FIRST_CHAT_MESSAGES)
+    {
+        if selected.len() >= head_budget {
+            break;
+        }
+        selected.insert(idx);
+    }
+
+    let tail_start = recent_chat_context.len().saturating_sub(tail_min);
+    for idx in tail_start..recent_chat_context.len() {
+        if selected.len() >= recent_chat_limit {
+            break;
+        }
+        selected.insert(idx);
+    }
+
+    if selected.len() < recent_chat_limit {
+        for idx in (0..recent_chat_context.len()).rev() {
+            if selected.len() >= recent_chat_limit {
+                break;
+            }
+            selected.insert(idx);
+        }
+    }
+
+    selected
+        .into_iter()
+        .filter_map(|idx| recent_chat_context.get(idx).cloned())
+        .collect()
+}
+
+#[derive(Debug)]
+struct RelevantPriorTurnPair {
+    score: usize,
+    first_index: usize,
+    indices: Vec<usize>,
+}
+
+fn relevant_prior_turn_pairs(
+    recent_chat_context: &[ConversationMessage],
+    query_terms: &std::collections::BTreeMap<String, usize>,
+) -> Vec<RelevantPriorTurnPair> {
+    let mut candidates = Vec::new();
+    let mut idx = 0usize;
+
+    while idx < recent_chat_context.len() {
+        let mut indices = vec![idx];
+        if is_chat_role(&recent_chat_context[idx], "user")
+            && idx + 1 < recent_chat_context.len()
+            && is_chat_role(&recent_chat_context[idx + 1], "assistant")
+        {
+            indices.push(idx + 1);
+        }
+
+        let score = indices
+            .iter()
+            .filter_map(|index| {
+                let message = recent_chat_context.get(*index)?;
+                let role_weight = if is_chat_role(message, "user") { 2 } else { 1 };
+                let content = chat_content(message)?;
+                Some(query_overlap_score(content, query_terms) * role_weight)
+            })
+            .sum();
+        if score > 0 {
+            candidates.push(RelevantPriorTurnPair {
+                score,
+                first_index: idx,
+                indices,
+            });
+        }
+
+        idx += if is_chat_role(&recent_chat_context[idx], "user")
+            && idx + 1 < recent_chat_context.len()
+            && is_chat_role(&recent_chat_context[idx + 1], "assistant")
+        {
+            2
+        } else {
+            1
+        };
+    }
+
+    candidates.sort_by(|left, right| {
+        right
+            .score
+            .cmp(&left.score)
+            .then_with(|| left.first_index.cmp(&right.first_index))
+    });
+    candidates
+}
+
+fn try_add_index_group(
+    selected: &mut std::collections::BTreeSet<usize>,
+    indices: &[usize],
+    limit: usize,
+) -> bool {
+    let missing = indices
+        .iter()
+        .filter(|index| !selected.contains(index))
+        .count();
+    if selected.len().saturating_add(missing) > limit {
+        return false;
+    }
+    selected.extend(indices.iter().copied());
+    true
+}
+
+fn is_chat_role(message: &ConversationMessage, role: &str) -> bool {
+    matches!(message, ConversationMessage::Chat(chat) if chat.role == role)
+}
+
+fn chat_content(message: &ConversationMessage) -> Option<&str> {
+    match message {
+        ConversationMessage::Chat(chat) => Some(chat.content.as_str()),
+        _ => None,
+    }
+}
+
+fn query_overlap_score(
+    content: &str,
+    query_terms: &std::collections::BTreeMap<String, usize>,
+) -> usize {
+    let content_terms = lexical_term_set(content);
+    query_terms
+        .iter()
+        .filter_map(|(term, weight)| content_terms.contains(term).then_some(*weight))
+        .sum()
+}
+
+fn weighted_query_terms(
+    query: &str,
+    recent_chat_context: &[ConversationMessage],
+) -> std::collections::BTreeMap<String, usize> {
+    let query_terms = lexical_term_set(query);
+    if query_terms.is_empty() {
+        return std::collections::BTreeMap::new();
+    }
+
+    let frequencies = term_document_frequencies(recent_chat_context);
+    let document_count = recent_chat_context
+        .iter()
+        .filter(|message| chat_content(message).is_some())
+        .count()
+        .max(1);
+
+    query_terms
+        .into_iter()
+        .filter_map(|term| {
+            let frequency = frequencies.get(&term).copied().unwrap_or(0);
+            (frequency > 0).then(|| {
+                (
+                    term,
+                    inverse_document_frequency_weight(document_count, frequency),
+                )
+            })
+        })
+        .collect()
+}
+
+fn term_document_frequencies(
+    recent_chat_context: &[ConversationMessage],
+) -> std::collections::BTreeMap<String, usize> {
+    let mut frequencies = std::collections::BTreeMap::<String, usize>::new();
+    for content in recent_chat_context.iter().filter_map(chat_content) {
+        for term in lexical_term_set(content) {
+            *frequencies.entry(term).or_default() += 1;
+        }
+    }
+    frequencies
+}
+
+fn inverse_document_frequency_weight(document_count: usize, frequency: usize) -> usize {
+    document_count
+        .saturating_mul(2)
+        .saturating_div(frequency.max(1))
+        .max(1)
+}
+
+fn lexical_term_set(text: &str) -> std::collections::BTreeSet<String> {
+    let mut terms = std::collections::BTreeSet::new();
+    let mut current = String::new();
+
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            current.extend(ch.to_lowercase());
+        } else if is_relevant_query_term(&current) {
+            terms.insert(std::mem::take(&mut current));
+        } else {
+            current.clear();
+        }
+    }
+    if is_relevant_query_term(&current) {
+        terms.insert(current);
+    }
+
+    terms
+}
+
+fn is_relevant_query_term(term: &str) -> bool {
+    term.chars().count() >= PROVIDER_CONTEXT_QUERY_MIN_TERM_CHARS
 }
 
 fn prune_system_messages_for_pressure(
@@ -713,13 +955,68 @@ mod tests {
     }
 
     #[test]
+    fn provider_snapshot_preserves_relevant_current_session_anchor_pairs() {
+        let mut history = vec![
+            ConversationMessage::Chat(ChatMessage::system("bootstrap")),
+            ConversationMessage::Chat(ChatMessage::user(
+                "Early anchor: meaning needs both freedom and responsibility.",
+            )),
+            ConversationMessage::Chat(ChatMessage::assistant(
+                "The early anchor is freedom plus responsibility.",
+            )),
+        ];
+
+        for idx in 2..12 {
+            history.push(ConversationMessage::Chat(ChatMessage::user(format!(
+                "Philosophy turn {idx}: continue the ordinary reflection."
+            ))));
+            history.push(ConversationMessage::Chat(ChatMessage::assistant(format!(
+                "Reflection filler {idx}: this comes from that thread, but it is generic."
+            ))));
+        }
+
+        history.push(ConversationMessage::Chat(ChatMessage::user(
+            "Late anchor: joy is not proof of truth, but it can be evidence of alignment.",
+        )));
+        history.push(ConversationMessage::Chat(ChatMessage::assistant(
+            "The late anchor is joy as evidence of alignment.",
+        )));
+        history.push(ConversationMessage::Chat(ChatMessage::user(
+            "Philosophy turn 20: continue with the clay metaphor.",
+        )));
+        history.push(ConversationMessage::Chat(ChatMessage::assistant(
+            "The clay metaphor is only the newest tail turn.",
+        )));
+        history.push(ConversationMessage::Chat(ChatMessage::user(
+            "Compare the early anchor and the late anchor from this long dialogue.",
+        )));
+
+        let snapshot = build_provider_prompt_snapshot(&NativeToolDispatcher, &history, 6, None);
+        let rendered = snapshot
+            .messages
+            .iter()
+            .map(|msg| msg.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(rendered.contains("freedom"));
+        assert!(rendered.contains("responsibility"));
+        assert!(rendered.contains("joy"));
+        assert!(rendered.contains("alignment"));
+        assert!(rendered.contains("clay metaphor"));
+        assert!(rendered.contains("Compare the early anchor"));
+        assert!(!rendered.contains("Reflection filler 8."));
+        assert_eq!(snapshot.stats.prior_chat_messages, 6);
+    }
+
+    #[test]
     fn pressure_pruning_drops_scoped_context_and_compacts_runtime_interpretation() {
         let scoped = format!("[scoped-context]\n{}\n", "scoped rules\n".repeat(260));
         let runtime = format!(
             concat!(
                 "[runtime-interpretation]\n",
                 "[user-profile]\n",
-                "- preferred_language: ru\n\n",
+                "- response_locale: ru\n\n",
                 "[working-state]\n",
                 "{}\n\n",
                 "[bounded-interpretation]\n",
@@ -757,7 +1054,7 @@ mod tests {
             concat!(
                 "[runtime-interpretation]\n",
                 "[user-profile]\n",
-                "- preferred_language: ru\n\n",
+                "- response_locale: ru\n\n",
                 "[working-state]\n",
                 "{}\n\n",
                 "[bounded-interpretation]\n",

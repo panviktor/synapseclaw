@@ -12,8 +12,8 @@ const BOOTSTRAP_LABELS: &[(&str, &str)] = &[("user_knowledge", "USER.md"), ("per
 /// Default placeholder when no workspace file exists.
 const USER_KNOWLEDGE_PLACEHOLDER: &str =
     "No user information recorded yet. The agent should learn and store \
-     user preferences, location, timezone, language, and communication style \
-     here via core_memory_update as they become known.";
+     durable user facts as arbitrary memory/profile facts as they become known; \
+     do not assume a fixed user-profile field schema.";
 
 /// Ensure critical core blocks are seeded from workspace files.
 ///

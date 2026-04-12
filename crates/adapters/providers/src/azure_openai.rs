@@ -48,10 +48,10 @@ struct ResponseMessage {
 }
 
 impl ResponseMessage {
-    fn effective_content(&self) -> String {
+    fn effective_content(&self) -> Option<String> {
         match &self.content {
-            Some(c) if !c.is_empty() => c.clone(),
-            _ => self.reasoning_content.clone().unwrap_or_default(),
+            Some(c) if !c.is_empty() => Some(c.clone()),
+            _ => None,
         }
     }
 }
@@ -156,7 +156,7 @@ impl NativeResponseMessage {
     fn effective_content(&self) -> Option<String> {
         match &self.content {
             Some(c) if !c.is_empty() => Some(c.clone()),
-            _ => self.reasoning_content.clone(),
+            _ => None,
         }
     }
 }
@@ -279,26 +279,46 @@ impl AzureOpenAiProvider {
             .collect()
     }
 
-    fn parse_native_response(message: NativeResponseMessage) -> ProviderChatResponse {
+    fn parse_native_response(
+        message: NativeResponseMessage,
+    ) -> anyhow::Result<ProviderChatResponse> {
         let text = message.effective_content();
         let reasoning_content = message.reasoning_content.clone();
         let tool_calls = message
             .tool_calls
             .unwrap_or_default()
             .into_iter()
-            .map(|tc| ProviderToolCall {
-                id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                name: tc.function.name,
-                arguments: tc.function.arguments,
+            .map(|tc| {
+                let id = tc.id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
+                    anyhow::anyhow!("Azure OpenAI native tool call missing call id")
+                })?;
+                Ok(ProviderToolCall {
+                    id,
+                    name: tc.function.name,
+                    arguments: tc.function.arguments,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
-        ProviderChatResponse {
+        Ok(ProviderChatResponse {
             text,
             tool_calls,
             usage: None,
             reasoning_content,
+        })
+    }
+
+    fn validate_visible_response(response: &ProviderChatResponse) -> anyhow::Result<()> {
+        if response
+            .text
+            .as_deref()
+            .is_some_and(|text| !text.is_empty())
+            || !response.tool_calls.is_empty()
+        {
+            return Ok(());
         }
+
+        anyhow::bail!("Azure OpenAI returned no visible content or tool calls")
     }
 
     fn http_client(&self) -> Client {
@@ -392,7 +412,7 @@ impl Provider for AzureOpenAiProvider {
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.effective_content())
+            .and_then(|c| c.message.effective_content())
             .ok_or_else(|| anyhow::anyhow!("No response from Azure OpenAI"))
     }
 
@@ -440,8 +460,9 @@ impl Provider for AzureOpenAiProvider {
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from Azure OpenAI"))?;
-        let mut result = Self::parse_native_response(message);
+        let mut result = Self::parse_native_response(message)?;
         result.usage = usage;
+        Self::validate_visible_response(&result)?;
         Ok(result)
     }
 
@@ -501,8 +522,9 @@ impl Provider for AzureOpenAiProvider {
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from Azure OpenAI"))?;
-        let mut result = Self::parse_native_response(message);
+        let mut result = Self::parse_native_response(message)?;
         result.usage = usage;
+        Self::validate_visible_response(&result)?;
         Ok(result)
     }
 
@@ -636,7 +658,10 @@ mod tests {
         let json = r#"{"choices":[{"message":{"content":"Hi!"}}]}"#;
         let resp: ChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices.len(), 1);
-        assert_eq!(resp.choices[0].message.effective_content(), "Hi!");
+        assert_eq!(
+            resp.choices[0].message.effective_content(),
+            Some("Hi!".to_string())
+        );
     }
 
     #[test]
@@ -651,7 +676,17 @@ mod tests {
         let json = r#"{"choices":[{"message":{"content":"A"}},{"message":{"content":"B"}}]}"#;
         let resp: ChatResponse = serde_json::from_str(json).unwrap();
         assert_eq!(resp.choices.len(), 2);
-        assert_eq!(resp.choices[0].message.effective_content(), "A");
+        assert_eq!(
+            resp.choices[0].message.effective_content(),
+            Some("A".to_string())
+        );
+    }
+
+    #[test]
+    fn response_reasoning_only_is_not_visible_content() {
+        let json = r#"{"choices":[{"message":{"content":"","reasoning_content":"internal"}}]}"#;
+        let resp: ChatResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.choices[0].message.effective_content(), None);
     }
 
     #[test]
@@ -666,7 +701,7 @@ mod tests {
         }}],"usage":{"prompt_tokens":50,"completion_tokens":25}}"#;
         let resp: NativeChatResponse = serde_json::from_str(json).unwrap();
         let message = resp.choices.into_iter().next().unwrap().message;
-        let parsed = AzureOpenAiProvider::parse_native_response(message);
+        let parsed = AzureOpenAiProvider::parse_native_response(message).unwrap();
         assert_eq!(parsed.text.as_deref(), Some("Let me check"));
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].id, "call_abc123");
@@ -675,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_response_without_id_generates_uuid() {
+    fn tool_call_response_without_id_is_rejected() {
         let json = r#"{"choices":[{"message":{
             "content":null,
             "tool_calls":[{
@@ -684,9 +719,8 @@ mod tests {
         }}]}"#;
         let resp: NativeChatResponse = serde_json::from_str(json).unwrap();
         let message = resp.choices.into_iter().next().unwrap().message;
-        let parsed = AzureOpenAiProvider::parse_native_response(message);
-        assert_eq!(parsed.tool_calls.len(), 1);
-        assert!(!parsed.tool_calls[0].id.is_empty());
+        let error = AzureOpenAiProvider::parse_native_response(message).unwrap_err();
+        assert!(error.to_string().contains("missing call id"));
     }
 
     #[tokio::test]

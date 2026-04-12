@@ -65,7 +65,7 @@ pub fn build_scoped_instruction_plan(
                         | ResourceKind::Directory
                         | ResourceKind::ConfigFile
                         | ResourceKind::GitRepository
-                ) && looks_like_scope_path(&resource.locator)
+                ) && is_scope_locator(&resource.locator)
                 {
                     hints.push(ScopedInstructionHint {
                         path: resource.locator.clone(),
@@ -77,7 +77,7 @@ pub fn build_scoped_instruction_plan(
             if let Some(search) = state.recent_search.as_ref() {
                 if matches!(search.domain, SearchDomain::Workspace) {
                     if let Some(locator) = search.primary_locator.as_ref() {
-                        if looks_like_scope_path(locator) {
+                        if is_scope_locator(locator) {
                             hints.push(ScopedInstructionHint {
                                 path: locator.clone(),
                                 source: ScopedInstructionHintSource::RecentSearch,
@@ -89,7 +89,7 @@ pub fn build_scoped_instruction_plan(
 
             if let Some(workspace) = state.recent_workspace.as_ref() {
                 if let Some(name) = workspace.name.as_ref() {
-                    if looks_like_scope_path(name) {
+                    if is_scope_locator(name) {
                         hints.push(ScopedInstructionHint {
                             path: name.clone(),
                             source: ScopedInstructionHintSource::RecentWorkspace,
@@ -152,7 +152,11 @@ pub fn format_scoped_instruction_block(snippets: &[ScopedInstructionSnippet]) ->
         return None;
     }
 
-    let mut lines = vec!["[scoped-context]".to_string()];
+    let mut lines = vec![
+        "[scoped-context]".to_string(),
+        "- active_for_this_turn: true".to_string(),
+        "- use_before_workspace_or_bootstrap_lookup: true".to_string(),
+    ];
     for snippet in snippets {
         lines.push(format!(
             "- scope: {} | source: {}{}",
@@ -180,7 +184,7 @@ fn extract_user_message_path_hints(user_message: &str) -> Vec<String> {
         if is_media_control_path_token(cleaned) {
             continue;
         }
-        if looks_like_scope_path(cleaned) && seen.insert(cleaned.to_string()) {
+        if is_scope_locator(cleaned) && seen.insert(cleaned.to_string()) {
             hints.push(cleaned.to_string());
         }
     }
@@ -197,7 +201,7 @@ fn trim_path_token(token: &str) -> &str {
     })
 }
 
-fn looks_like_scope_path(value: &str) -> bool {
+fn is_scope_locator(value: &str) -> bool {
     if value.is_empty()
         || value.starts_with("http://")
         || value.starts_with("https://")
@@ -394,6 +398,8 @@ mod tests {
         .expect("block");
 
         assert!(block.starts_with("[scoped-context]"));
+        assert!(block.contains("- active_for_this_turn: true"));
+        assert!(block.contains("- use_before_workspace_or_bootstrap_lookup: true"));
         assert!(block.contains("cache: hit"));
         assert!(block.contains("Prefer small patches."));
     }

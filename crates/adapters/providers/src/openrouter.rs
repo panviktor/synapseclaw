@@ -370,25 +370,32 @@ impl OpenRouterProvider {
         MessageContent::Parts(parts)
     }
 
-    fn parse_native_response(message: NativeResponseMessage) -> ProviderChatResponse {
+    fn parse_native_response(
+        message: NativeResponseMessage,
+    ) -> anyhow::Result<ProviderChatResponse> {
         let reasoning_content = message.reasoning_content.or(message.reasoning);
         let tool_calls = message
             .tool_calls
             .unwrap_or_default()
             .into_iter()
-            .map(|tc| ProviderToolCall {
-                id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                name: tc.function.name,
-                arguments: tc.function.arguments,
+            .map(|tc| {
+                let id = tc.id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
+                    anyhow::anyhow!("OpenRouter native tool call missing call id")
+                })?;
+                Ok(ProviderToolCall {
+                    id,
+                    name: tc.function.name,
+                    arguments: tc.function.arguments,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
-        ProviderChatResponse {
+        Ok(ProviderChatResponse {
             text: message.content,
             tool_calls,
             usage: None,
             reasoning_content,
-        }
+        })
     }
 
     fn http_client(&self) -> Client {
@@ -611,7 +618,7 @@ impl Provider for OpenRouterProvider {
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))?;
-        let mut result = Self::parse_native_response(message);
+        let mut result = Self::parse_native_response(message)?;
         result.usage = usage;
         Ok(result)
     }
@@ -705,7 +712,7 @@ impl Provider for OpenRouterProvider {
             .next()
             .map(|c| c.message)
             .ok_or_else(|| anyhow::anyhow!("No response from OpenRouter"))?;
-        let mut result = Self::parse_native_response(message);
+        let mut result = Self::parse_native_response(message)?;
         result.usage = usage;
         Ok(result)
     }
@@ -998,7 +1005,7 @@ mod tests {
             }]),
         };
 
-        let response = OpenRouterProvider::parse_native_response(message);
+        let response = OpenRouterProvider::parse_native_response(message).unwrap();
 
         assert_eq!(response.text.as_deref(), Some("Here you go."));
         assert_eq!(response.tool_calls.len(), 1);
@@ -1152,7 +1159,7 @@ mod tests {
                 },
             }]),
         };
-        let parsed = OpenRouterProvider::parse_native_response(message);
+        let parsed = OpenRouterProvider::parse_native_response(message).unwrap();
         assert_eq!(parsed.reasoning_content.as_deref(), Some("thinking step"));
         assert_eq!(parsed.tool_calls.len(), 1);
     }
@@ -1166,7 +1173,7 @@ mod tests {
             tool_calls: None,
         };
 
-        let parsed = OpenRouterProvider::parse_native_response(message);
+        let parsed = OpenRouterProvider::parse_native_response(message).unwrap();
 
         assert_eq!(
             parsed.reasoning_content.as_deref(),
@@ -1182,7 +1189,7 @@ mod tests {
             reasoning: None,
             tool_calls: None,
         };
-        let parsed = OpenRouterProvider::parse_native_response(message);
+        let parsed = OpenRouterProvider::parse_native_response(message).unwrap();
         assert!(parsed.reasoning_content.is_none());
     }
 

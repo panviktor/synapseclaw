@@ -225,8 +225,8 @@ Embeddings should decide:
 Embeddings should not decide:
 
 - current delivery target
-- timezone
-- preferred language
+- local timezone fact
+- language preference fact
 - whether the user explicitly corrected a fact
 
 Those should be typed or inferred through bounded contracts.
@@ -306,7 +306,7 @@ The default priority order should be:
 2. **explicit current-turn user correction or instruction**
 3. **scoped manual skill**
 4. **scoped imported skill**
-5. **hard user profile defaults** for fields like language / timezone / default city / delivery target
+5. **durable user-profile facts** for keys like language preference / local timezone / weather city / delivery target preference
 6. **learned skill**
 7. **recipe**
 8. **precedent**
@@ -376,12 +376,12 @@ runtime evidence
 
 Stable defaults and durable preferences:
 
-- preferred language
-- timezone
-- default city
-- communication style
-- known environments
-- default delivery target
+- language preference
+- local timezone
+- weather city
+- response style
+- deployment environments
+- delivery target preference
 
 Promotion rule:
 

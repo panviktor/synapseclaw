@@ -2,6 +2,10 @@
 //!
 //! Manages per-sender runtime route overrides for channel sessions.
 
+use crate::application::services::runtime_assumptions::RuntimeAssumption;
+use crate::application::services::runtime_calibration::RuntimeCalibrationRecord;
+use crate::application::services::runtime_trace_janitor::RuntimeHandoffArtifact;
+use crate::application::services::runtime_watchdog::RuntimeWatchdogAlert;
 use crate::config::schema::{CapabilityLane, ContextCompressionConfig};
 use crate::domain::tool_repair::ToolRepairTrace;
 use crate::domain::turn_admission::{
@@ -82,6 +86,14 @@ pub struct RouteSelection {
     pub recent_tool_repairs: Vec<ToolRepairTrace>,
     /// Current context/compaction cache stats, when a runtime cache service is attached.
     pub context_cache: Option<ContextCacheStats>,
+    /// Bounded session/runtime assumption ledger for this route.
+    pub assumptions: Vec<RuntimeAssumption>,
+    /// Bounded session/runtime calibration ledger for this route.
+    pub calibrations: Vec<RuntimeCalibrationRecord>,
+    /// Bounded session/runtime watchdog alerts for this route.
+    pub watchdog_alerts: Vec<RuntimeWatchdogAlert>,
+    /// Bounded short-lived handoff artifacts for this route.
+    pub handoff_artifacts: Vec<RuntimeHandoffArtifact>,
 }
 
 impl RouteSelection {
@@ -91,6 +103,10 @@ impl RouteSelection {
         self.last_tool_repair = None;
         self.recent_tool_repairs.clear();
         self.context_cache = None;
+        self.assumptions.clear();
+        self.calibrations.clear();
+        self.watchdog_alerts.clear();
+        self.handoff_artifacts.clear();
     }
 }
 

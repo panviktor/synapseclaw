@@ -17,8 +17,7 @@ use reqwest::{
 use serde::{Deserialize, Serialize};
 
 /// A provider that speaks the OpenAI-compatible chat completions API.
-/// Used by: Venice, Vercel AI Gateway, Cloudflare AI Gateway, Moonshot,
-/// Synthetic, `OpenCode` Zen, `OpenCode` Go, `Z.AI`, `GLM`, `MiniMax`, Bedrock, Qianfan, Groq, Mistral, `xAI`, etc.
+/// Used by provider adapters that expose the standard chat-completions shape.
 #[allow(clippy::struct_excessive_bools)]
 pub struct OpenAiCompatibleProvider {
     pub(crate) name: String,
@@ -26,16 +25,15 @@ pub struct OpenAiCompatibleProvider {
     pub(crate) credential: Option<String>,
     pub(crate) auth_header: AuthStyle,
     supports_vision: bool,
-    /// When false, do not fall back to /v1/responses on chat completions 404.
-    /// GLM/Zhipu does not support the responses API.
-    supports_responses_fallback: bool,
+    /// When false, do not retry via /v1/responses on chat completions 404.
+    supports_responses_retry: bool,
     user_agent: Option<String>,
     /// When true, collect all `system` messages and prepend their content
     /// to the first `user` message, then drop the system messages.
-    /// Required for providers that reject `role: system` (e.g. MiniMax).
+    /// Required for providers that reject `role: system`.
     merge_system_into_user: bool,
     /// Whether this provider supports OpenAI-style native tool calling.
-    /// When false, tools are injected into the system prompt as text.
+    /// When false, tool calls are rejected instead of translated into prompt text.
     native_tool_calling: bool,
     /// HTTP request timeout in seconds for LLM API calls. Default: 120.
     timeout_secs: u64,
@@ -90,9 +88,9 @@ impl OpenAiCompatibleProvider {
         )
     }
 
-    /// Same as `new` but skips the /v1/responses fallback on 404.
-    /// Use for providers (e.g. GLM) that only support chat completions.
-    pub fn new_no_responses_fallback(
+    /// Same as `new` but skips the /v1/responses retry on 404.
+    /// Use for providers that only support chat completions.
+    pub fn new_without_responses_retry(
         name: &str,
         base_url: &str,
         credential: Option<&str>,
@@ -146,7 +144,7 @@ impl OpenAiCompatibleProvider {
         )
     }
 
-    /// For providers that do not support `role: system` (e.g. MiniMax).
+    /// For providers that do not support `role: system`.
     /// System prompt content is prepended to the first user message instead.
     pub fn new_merge_system_into_user(
         name: &str,
@@ -165,7 +163,7 @@ impl OpenAiCompatibleProvider {
         credential: Option<&str>,
         auth_style: AuthStyle,
         supports_vision: bool,
-        supports_responses_fallback: bool,
+        supports_responses_retry: bool,
         user_agent: Option<&str>,
         merge_system_into_user: bool,
     ) -> Self {
@@ -175,7 +173,7 @@ impl OpenAiCompatibleProvider {
             credential: credential.map(ToString::to_string),
             auth_header: auth_style,
             supports_vision,
-            supports_responses_fallback,
+            supports_responses_retry,
             user_agent: user_agent.map(ToString::to_string),
             merge_system_into_user,
             native_tool_calling: !merge_system_into_user,
@@ -216,7 +214,7 @@ impl OpenAiCompatibleProvider {
 
     /// Collect all `system` role messages, concatenate their content,
     /// and prepend to the first `user` message. Drop all system messages.
-    /// Used for providers (e.g. MiniMax) that reject `role: system`.
+    /// Used for providers that reject `role: system`.
     fn flatten_system_messages(messages: &[ChatMessage]) -> Vec<ChatMessage> {
         let system_content: String = messages
             .iter()
@@ -443,8 +441,6 @@ struct Choice {
 }
 
 /// Remove `<think>...</think>` blocks from model output.
-/// Some reasoning models (e.g. MiniMax) embed their chain-of-thought inline
-/// in the `content` field rather than a separate `reasoning_content` field.
 /// The resulting `<think>` tags must be stripped before returning to the user.
 fn strip_think_tags(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
@@ -470,8 +466,8 @@ fn strip_think_tags(s: &str) -> String {
 struct ResponseMessage {
     #[serde(default)]
     content: Option<String>,
-    /// Reasoning/thinking models (e.g. Qwen3, GLM-4) may return their output
-    /// in `reasoning_content` instead of `content`. Used as automatic fallback.
+    /// Provider reasoning content is captured for diagnostics/history only and
+    /// must not be surfaced as assistant-visible text.
     #[serde(default)]
     reasoning_content: Option<String>,
     #[serde(default)]
@@ -479,27 +475,10 @@ struct ResponseMessage {
 }
 
 impl ResponseMessage {
-    /// Extract text content, falling back to `reasoning_content` when `content`
-    /// is missing or empty. Reasoning/thinking models (Qwen3, GLM-4, etc.)
-    /// often return their output solely in `reasoning_content`.
-    /// Strips `<think>...</think>` blocks that some models (e.g. MiniMax) embed
-    /// inline in `content` instead of using a separate field.
-    fn effective_content(&self) -> String {
-        if let Some(content) = self.content.as_ref().filter(|c| !c.is_empty()) {
-            let stripped = strip_think_tags(content);
-            if !stripped.is_empty() {
-                return stripped;
-            }
-        }
-
-        self.reasoning_content
-            .as_ref()
-            .map(|c| strip_think_tags(c))
-            .filter(|c| !c.is_empty())
-            .unwrap_or_default()
-    }
-
-    fn effective_content_optional(&self) -> Option<String> {
+    /// Extract assistant-visible text from `content` and strip `<think>` blocks.
+    /// `reasoning_content` is never used as visible text in the generic
+    /// OpenAI-compatible adapter.
+    fn effective_content(&self) -> Option<String> {
         if let Some(content) = self.content.as_ref().filter(|c| !c.is_empty()) {
             let stripped = strip_think_tags(content);
             if !stripped.is_empty() {
@@ -507,10 +486,11 @@ impl ResponseMessage {
             }
         }
 
-        self.reasoning_content
-            .as_ref()
-            .map(|c| strip_think_tags(c))
-            .filter(|c| !c.is_empty())
+        None
+    }
+
+    fn effective_content_optional(&self) -> Option<String> {
+        self.effective_content()
     }
 }
 
@@ -523,50 +503,25 @@ struct ToolCall {
     kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     function: Option<Function>,
-
-    // Compatibility: Some providers (e.g., older GLM) may use 'name' directly
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    arguments: Option<String>,
-
-    // Compatibility: DeepSeek sometimes wraps arguments differently
-    #[serde(
-        rename = "parameters",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
-    parameters: Option<serde_json::Value>,
 }
 
 impl ToolCall {
-    /// Extract function name with fallback logic for various provider formats
+    /// Extract the standard OpenAI-compatible function name.
     fn function_name(&self) -> Option<String> {
-        // Standard OpenAI format: tool_calls[].function.name
         if let Some(ref func) = self.function {
             if let Some(ref name) = func.name {
                 return Some(name.clone());
             }
         }
-        // Fallback: direct name field
-        self.name.clone()
+        None
     }
 
-    /// Extract arguments with fallback logic and type conversion
+    /// Extract standard OpenAI-compatible function arguments.
     fn function_arguments(&self) -> Option<String> {
-        // Standard OpenAI format: tool_calls[].function.arguments (string)
         if let Some(ref func) = self.function {
             if let Some(ref args) = func.arguments {
                 return Some(args.clone());
             }
-        }
-        // Fallback: direct arguments field
-        if let Some(ref args) = self.arguments {
-            return Some(args.clone());
-        }
-        // Compatibility: Some providers return parameters as object instead of string
-        if let Some(ref params) = self.parameters {
-            return serde_json::to_string(params).ok();
         }
         None
     }
@@ -704,9 +659,10 @@ struct StreamChoice {
 struct StreamDelta {
     #[serde(default)]
     content: Option<String>,
-    /// Reasoning/thinking models may stream output via `reasoning_content`.
+    /// Provider reasoning content is not assistant-visible stream text.
     #[serde(default)]
-    reasoning_content: Option<String>,
+    #[serde(rename = "reasoning_content")]
+    _reasoning_content: Option<String>,
 }
 
 /// Parse SSE (Server-Sent Events) stream from OpenAI-compatible providers.
@@ -737,10 +693,6 @@ fn parse_sse_line(line: &str) -> StreamResult<Option<String>> {
                 if !content.is_empty() {
                     return Ok(Some(content.clone()));
                 }
-            }
-            // Fallback to reasoning_content for thinking models
-            if let Some(reasoning) = &choice.delta.reasoning_content {
-                return Ok(Some(reasoning.clone()));
             }
         }
     }
@@ -889,14 +841,6 @@ fn extract_responses_text(response: ResponsesResponse) -> Option<String> {
         }
     }
 
-    for item in &response.output {
-        for content in &item.content {
-            if let Some(text) = first_nonempty(content.text.as_deref()) {
-                return Some(text);
-            }
-        }
-    }
-
     None
 }
 
@@ -950,7 +894,7 @@ impl OpenAiCompatibleProvider {
         let (instructions, input) = build_responses_prompt(messages);
         if input.is_empty() {
             anyhow::bail!(
-                "{} Responses API fallback requires at least one non-system message",
+                "{} Responses API retry requires at least one non-system message",
                 self.name
             );
         }
@@ -1057,9 +1001,6 @@ impl OpenAiCompatibleProvider {
                                             name: Some(tc.name),
                                             arguments: Some(tc.arguments),
                                         }),
-                                        name: None,
-                                        arguments: None,
-                                        parameters: None,
                                     })
                                     .collect::<Vec<_>>();
 
@@ -1122,68 +1063,45 @@ impl OpenAiCompatibleProvider {
             .collect()
     }
 
-    fn with_prompt_guided_tool_instructions(
-        messages: &[ChatMessage],
-        tools: Option<&[crate::traits::ToolSpec]>,
-    ) -> Vec<ChatMessage> {
-        let Some(tools) = tools else {
-            return messages.to_vec();
-        };
-
-        if tools.is_empty() {
-            return messages.to_vec();
-        }
-
-        let instructions = crate::traits::build_tool_instructions_text(tools);
-        let mut modified_messages = messages.to_vec();
-
-        if let Some(system_message) = modified_messages.iter_mut().find(|m| m.role == "system") {
-            if !system_message.content.is_empty() {
-                system_message.content.push_str("\n\n");
-            }
-            system_message.content.push_str(&instructions);
-        } else {
-            modified_messages.insert(0, ChatMessage::system(instructions));
-        }
-
-        modified_messages
-    }
-
-    fn parse_native_response(message: ResponseMessage) -> ProviderChatResponse {
+    fn parse_native_response(message: ResponseMessage) -> anyhow::Result<ProviderChatResponse> {
         let text = message.effective_content_optional();
         let reasoning_content = message.reasoning_content.clone();
         let tool_calls = message
             .tool_calls
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|tc| {
-                let name = tc.function_name()?;
+            .map(|tc| {
+                let id = tc
+                    .id
+                    .clone()
+                    .filter(|id| !id.trim().is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("OpenAI-compatible native tool call missing call id")
+                    })?;
+                let name = tc.function_name().ok_or_else(|| {
+                    anyhow::anyhow!("OpenAI-compatible native tool call missing function name")
+                })?;
                 let arguments = tc.function_arguments().unwrap_or_else(|| "{}".to_string());
-                let normalized_arguments =
-                    if serde_json::from_str::<serde_json::Value>(&arguments).is_ok() {
-                        arguments
-                    } else {
-                        tracing::warn!(
-                            function = %name,
-                            arguments = %arguments,
-                            "Invalid JSON in native tool-call arguments, using empty object"
-                        );
-                        "{}".to_string()
-                    };
-                Some(ProviderToolCall {
-                    id: tc.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                if serde_json::from_str::<serde_json::Value>(&arguments).is_err() {
+                    anyhow::bail!(
+                        "OpenAI-compatible native tool call '{}' had invalid JSON arguments",
+                        name
+                    );
+                }
+                Ok(ProviderToolCall {
+                    id,
                     name,
-                    arguments: normalized_arguments,
+                    arguments,
                 })
             })
-            .collect::<Vec<_>>();
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
-        ProviderChatResponse {
+        Ok(ProviderChatResponse {
             text,
             tool_calls,
             usage: None,
             reasoning_content,
-        }
+        })
     }
 
     fn is_native_tool_schema_unsupported(status: reqwest::StatusCode, error: &str) -> bool {
@@ -1270,15 +1188,15 @@ impl Provider for OpenAiCompatibleProvider {
 
         let url = self.chat_completions_url();
 
-        let mut fallback_messages = Vec::new();
+        let mut responses_messages = Vec::new();
         if let Some(system_prompt) = system_prompt {
-            fallback_messages.push(ChatMessage::system(system_prompt));
+            responses_messages.push(ChatMessage::system(system_prompt));
         }
-        fallback_messages.push(ChatMessage::user(message));
-        let fallback_messages = if self.merge_system_into_user {
-            Self::flatten_system_messages(&fallback_messages)
+        responses_messages.push(ChatMessage::user(message));
+        let responses_messages = if self.merge_system_into_user {
+            Self::flatten_system_messages(&responses_messages)
         } else {
-            fallback_messages
+            responses_messages
         };
 
         let response = match self
@@ -1288,14 +1206,14 @@ impl Provider for OpenAiCompatibleProvider {
         {
             Ok(response) => response,
             Err(chat_error) => {
-                if self.supports_responses_fallback {
+                if self.supports_responses_retry {
                     let sanitized = super::sanitize_api_error(&chat_error.to_string());
                     return self
-                        .chat_via_responses(credential, &fallback_messages, model)
+                        .chat_via_responses(credential, &responses_messages, model)
                         .await
                         .map_err(|responses_err| {
                             anyhow::anyhow!(
-                                "{} chat completions transport error: {sanitized} (responses fallback failed: {responses_err})",
+                                "{} chat completions transport error: {sanitized} (responses retry failed: {responses_err})",
                                 self.name
                             )
                         });
@@ -1310,13 +1228,13 @@ impl Provider for OpenAiCompatibleProvider {
             let error = response.text().await?;
             let sanitized = super::sanitize_api_error(&error);
 
-            if status == reqwest::StatusCode::NOT_FOUND && self.supports_responses_fallback {
+            if status == reqwest::StatusCode::NOT_FOUND && self.supports_responses_retry {
                 return self
-                    .chat_via_responses(credential, &fallback_messages, model)
+                    .chat_via_responses(credential, &responses_messages, model)
                     .await
                     .map_err(|responses_err| {
                         anyhow::anyhow!(
-                            "{} API error ({status}): {sanitized} (chat completions unavailable; responses fallback failed: {responses_err})",
+                            "{} API error ({status}): {sanitized} (chat completions unavailable; responses retry failed: {responses_err})",
                             self.name
                         )
                     });
@@ -1333,21 +1251,22 @@ impl Provider for OpenAiCompatibleProvider {
             .into_iter()
             .next()
             .map(|c| {
-                // If tool_calls are present, serialize the full message as JSON
-                // so parse_tool_calls can handle the OpenAI-style format
-                if c.message.tool_calls.is_some()
-                    && c.message
-                        .tool_calls
-                        .as_ref()
-                        .map_or(false, |t| !t.is_empty())
+                if c.message
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|tool_calls| !tool_calls.is_empty())
                 {
-                    serde_json::to_string(&c.message)
-                        .unwrap_or_else(|_| c.message.effective_content())
+                    Err(anyhow::anyhow!(
+                        "{} returned native tool calls on text-only chat path",
+                        self.name
+                    ))
                 } else {
-                    // No tool calls, return content (with reasoning_content fallback)
-                    c.message.effective_content()
+                    c.message.effective_content().ok_or_else(|| {
+                        anyhow::anyhow!("{} returned empty assistant content", self.name)
+                    })
                 }
             })
+            .transpose()?
             .ok_or_else(|| anyhow::anyhow!("No response from {}", self.name))
     }
 
@@ -1399,14 +1318,14 @@ impl Provider for OpenAiCompatibleProvider {
         {
             Ok(response) => response,
             Err(chat_error) => {
-                if self.supports_responses_fallback {
+                if self.supports_responses_retry {
                     let sanitized = super::sanitize_api_error(&chat_error.to_string());
                     return self
                         .chat_via_responses(credential, &effective_messages, model)
                         .await
                         .map_err(|responses_err| {
                             anyhow::anyhow!(
-                                "{} chat completions transport error: {sanitized} (responses fallback failed: {responses_err})",
+                                "{} chat completions transport error: {sanitized} (responses retry failed: {responses_err})",
                                 self.name
                             )
                         });
@@ -1420,13 +1339,13 @@ impl Provider for OpenAiCompatibleProvider {
             let status = response.status();
 
             // Mirror chat_with_system: 404 may mean this provider uses the Responses API
-            if status == reqwest::StatusCode::NOT_FOUND && self.supports_responses_fallback {
+            if status == reqwest::StatusCode::NOT_FOUND && self.supports_responses_retry {
                 return self
                     .chat_via_responses(credential, &effective_messages, model)
                     .await
                     .map_err(|responses_err| {
                         anyhow::anyhow!(
-                            "{} API error (chat completions unavailable; responses fallback failed: {responses_err})",
+                            "{} API error (chat completions unavailable; responses retry failed: {responses_err})",
                             self.name
                         )
                     });
@@ -1443,21 +1362,22 @@ impl Provider for OpenAiCompatibleProvider {
             .into_iter()
             .next()
             .map(|c| {
-                // If tool_calls are present, serialize the full message as JSON
-                // so parse_tool_calls can handle the OpenAI-style format
-                if c.message.tool_calls.is_some()
-                    && c.message
-                        .tool_calls
-                        .as_ref()
-                        .map_or(false, |t| !t.is_empty())
+                if c.message
+                    .tool_calls
+                    .as_ref()
+                    .is_some_and(|tool_calls| !tool_calls.is_empty())
                 {
-                    serde_json::to_string(&c.message)
-                        .unwrap_or_else(|_| c.message.effective_content())
+                    Err(anyhow::anyhow!(
+                        "{} returned native tool calls on text-only chat history path",
+                        self.name
+                    ))
                 } else {
-                    // No tool calls, return content (with reasoning_content fallback)
-                    c.message.effective_content()
+                    c.message.effective_content().ok_or_else(|| {
+                        anyhow::anyhow!("{} returned empty assistant content", self.name)
+                    })
                 }
             })
+            .transpose()?
             .ok_or_else(|| anyhow::anyhow!("No response from {}", self.name))
     }
 
@@ -1468,6 +1388,13 @@ impl Provider for OpenAiCompatibleProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ProviderChatResponse> {
+        if !tools.is_empty() && !self.native_tool_calling {
+            anyhow::bail!(
+                "{} does not advertise native tool calling; refusing prompt-guided tool fallback",
+                self.name
+            );
+        }
+
         let credential = self.credential.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "{} API key not set. Run `synapseclaw onboard` or set the appropriate env var.",
@@ -1511,26 +1438,13 @@ impl Provider for OpenAiCompatibleProvider {
         };
 
         let url = self.chat_completions_url();
-        let response = match self
+        let response = self
             .apply_auth_header(self.http_client().post(&url).json(&request), credential)
             .send()
             .await
-        {
-            Ok(response) => response,
-            Err(error) => {
-                tracing::warn!(
-                    "{} native tool call transport failed: {error}; falling back to history path",
-                    self.name
-                );
-                let text = self.chat_with_history(messages, model, temperature).await?;
-                return Ok(ProviderChatResponse {
-                    text: Some(text),
-                    tool_calls: vec![],
-                    usage: None,
-                    reasoning_content: None,
-                });
-            }
-        };
+            .map_err(|error| {
+                anyhow::anyhow!("{} native tool call transport failed: {error}", self.name)
+            })?;
 
         if !response.status().is_success() {
             return Err(super::api_error(&self.name, response).await);
@@ -1556,17 +1470,31 @@ impl Provider for OpenAiCompatibleProvider {
             .tool_calls
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|tc| {
-                let function = tc.function?;
-                let name = function.name?;
+            .map(|tc| {
+                let id = tc.id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
+                    anyhow::anyhow!("{} native tool call missing call id", self.name)
+                })?;
+                let function = tc.function.ok_or_else(|| {
+                    anyhow::anyhow!("{} native tool call missing function payload", self.name)
+                })?;
+                let name = function.name.ok_or_else(|| {
+                    anyhow::anyhow!("{} native tool call missing function name", self.name)
+                })?;
                 let arguments = function.arguments.unwrap_or_else(|| "{}".to_string());
-                Some(ProviderToolCall {
-                    id: uuid::Uuid::new_v4().to_string(),
+                if serde_json::from_str::<serde_json::Value>(&arguments).is_err() {
+                    anyhow::bail!(
+                        "{} native tool call '{}' had invalid JSON arguments",
+                        self.name,
+                        name
+                    );
+                }
+                Ok(ProviderToolCall {
+                    id,
                     name,
                     arguments,
                 })
             })
-            .collect::<Vec<_>>();
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         Ok(ProviderChatResponse {
             text,
@@ -1588,6 +1516,14 @@ impl Provider for OpenAiCompatibleProvider {
                 self.name
             )
         })?;
+
+        let tool_request = request.tools.is_some_and(|tools| !tools.is_empty());
+        if tool_request && !self.native_tool_calling {
+            anyhow::bail!(
+                "{} does not advertise native tool calling; refusing prompt-guided tool fallback",
+                self.name
+            );
+        }
 
         let tools = Self::convert_tool_specs(request.tools);
         let effective_messages = if self.merge_system_into_user {
@@ -1619,7 +1555,7 @@ impl Provider for OpenAiCompatibleProvider {
         {
             Ok(response) => response,
             Err(chat_error) => {
-                if self.supports_responses_fallback {
+                if self.supports_responses_retry && !tool_request {
                     let sanitized = super::sanitize_api_error(&chat_error.to_string());
                     return self
                         .chat_via_responses(credential, &effective_messages, model)
@@ -1632,7 +1568,7 @@ impl Provider for OpenAiCompatibleProvider {
                         })
                         .map_err(|responses_err| {
                             anyhow::anyhow!(
-                                "{} native chat transport error: {sanitized} (responses fallback failed: {responses_err})",
+                                "{} native chat transport error: {sanitized} (responses retry failed: {responses_err})",
                                 self.name
                             )
                         });
@@ -1647,21 +1583,17 @@ impl Provider for OpenAiCompatibleProvider {
             let error = response.text().await?;
             let sanitized = super::sanitize_api_error(&error);
 
-            if Self::is_native_tool_schema_unsupported(status, &sanitized) {
-                let fallback_messages =
-                    Self::with_prompt_guided_tool_instructions(request.messages, request.tools);
-                let text = self
-                    .chat_with_history(&fallback_messages, model, temperature)
-                    .await?;
-                return Ok(ProviderChatResponse {
-                    text: Some(text),
-                    tool_calls: vec![],
-                    usage: None,
-                    reasoning_content: None,
-                });
+            if tool_request && Self::is_native_tool_schema_unsupported(status, &sanitized) {
+                anyhow::bail!(
+                    "{} rejected native tool schema ({status}); refusing prompt-guided tool fallback: {sanitized}",
+                    self.name
+                );
             }
 
-            if status == reqwest::StatusCode::NOT_FOUND && self.supports_responses_fallback {
+            if status == reqwest::StatusCode::NOT_FOUND
+                && self.supports_responses_retry
+                && !tool_request
+            {
                 return self
                     .chat_via_responses(credential, &effective_messages, model)
                     .await
@@ -1673,7 +1605,7 @@ impl Provider for OpenAiCompatibleProvider {
                     })
                     .map_err(|responses_err| {
                         anyhow::anyhow!(
-                            "{} API error ({status}): {sanitized} (chat completions unavailable; responses fallback failed: {responses_err})",
+                            "{} API error ({status}): {sanitized} (chat completions unavailable; responses retry failed: {responses_err})",
                             self.name
                         )
                     });
@@ -1695,7 +1627,7 @@ impl Provider for OpenAiCompatibleProvider {
             .map(|choice| choice.message)
             .ok_or_else(|| anyhow::anyhow!("No response from {}", self.name))?;
 
-        let mut result = Self::parse_native_response(message);
+        let mut result = Self::parse_native_response(message)?;
         result.usage = usage;
         Ok(result)
     }
@@ -2011,13 +1943,10 @@ mod tests {
     }
 
     #[test]
-    fn responses_extracts_any_text_as_fallback() {
-        let json = r#"{"output":[{"content":[{"type":"message","text":"Fallback text"}]}]}"#;
+    fn responses_ignores_non_output_text_parts() {
+        let json = r#"{"output":[{"content":[{"type":"message","text":"message text"}]}]}"#;
         let response: ResponsesResponse = serde_json::from_str(json).unwrap();
-        assert_eq!(
-            extract_responses_text(response).as_deref(),
-            Some("Fallback text")
-        );
+        assert_eq!(extract_responses_text(response), None);
     }
 
     #[test]
@@ -2083,7 +2012,7 @@ mod tests {
         let err = provider
             .chat_via_responses("test-key", &[ChatMessage::system("policy")], "gpt-test")
             .await
-            .expect_err("system-only fallback payload should fail");
+            .expect_err("system-only Responses payload should fail");
 
         assert!(err
             .to_string()
@@ -2091,32 +2020,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_function_name_falls_back_to_top_level_name() {
-        let call: ToolCall = serde_json::from_value(serde_json::json!({
-            "name": "memory_recall",
-            "arguments": "{\"query\":\"latest roadmap\"}"
-        }))
-        .unwrap();
-
-        assert_eq!(call.function_name().as_deref(), Some("memory_recall"));
-    }
-
-    #[test]
-    fn tool_call_function_arguments_falls_back_to_parameters_object() {
-        let call: ToolCall = serde_json::from_value(serde_json::json!({
-            "name": "shell",
-            "parameters": {"command": "pwd"}
-        }))
-        .unwrap();
-
-        assert_eq!(
-            call.function_arguments().as_deref(),
-            Some("{\"command\":\"pwd\"}")
-        );
-    }
-
-    #[test]
-    fn tool_call_function_arguments_prefers_nested_function_field() {
+    fn tool_call_function_arguments_uses_nested_function_field_only() {
         let call: ToolCall = serde_json::from_value(serde_json::json!({
             "name": "ignored_name",
             "arguments": "{\"query\":\"ignored\"}",
@@ -2132,6 +2036,19 @@ mod tests {
             call.function_arguments().as_deref(),
             Some("{\"query\":\"preferred\"}")
         );
+    }
+
+    #[test]
+    fn tool_call_top_level_dialect_fields_are_ignored() {
+        let call: ToolCall = serde_json::from_value(serde_json::json!({
+            "name": "memory_recall",
+            "arguments": "{\"query\":\"latest roadmap\"}",
+            "parameters": {"command": "pwd"}
+        }))
+        .unwrap();
+
+        assert!(call.function_name().is_none());
+        assert!(call.function_arguments().is_none());
     }
 
     // ----------------------------------------------------------
@@ -2346,14 +2263,11 @@ mod tests {
                     name: Some("shell".to_string()),
                     arguments: Some(r#"{"command":"pwd"}"#.to_string()),
                 }),
-                name: None,
-                arguments: None,
-                parameters: None,
             }]),
             reasoning_content: None,
         };
 
-        let parsed = OpenAiCompatibleProvider::parse_native_response(message);
+        let parsed = OpenAiCompatibleProvider::parse_native_response(message).unwrap();
         assert_eq!(parsed.tool_calls.len(), 1);
         assert_eq!(parsed.tool_calls[0].id, "call_123");
         assert_eq!(parsed.tool_calls[0].name, "shell");
@@ -2456,30 +2370,6 @@ mod tests {
     }
 
     #[test]
-    fn prompt_guided_tool_fallback_injects_system_instruction() {
-        let input = vec![ChatMessage::user("check status")];
-        let tools = vec![crate::traits::ToolSpec {
-            name: "shell_exec".to_string(),
-            description: "Execute shell command".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": { "type": "string" }
-                },
-                "required": ["command"]
-            }),
-            runtime_role: None,
-        }];
-
-        let output =
-            OpenAiCompatibleProvider::with_prompt_guided_tool_instructions(&input, Some(&tools));
-        assert!(!output.is_empty());
-        assert_eq!(output[0].role, "system");
-        assert!(output[0].content.contains("Available Tools"));
-        assert!(output[0].content.contains("shell_exec"));
-    }
-
-    #[test]
     fn reasoning_effort_only_applies_to_gpt5_and_codex_models() {
         let provider = make_provider("test", "https://example.com", None)
             .with_reasoning_effort(Some("high".to_string()));
@@ -2539,9 +2429,65 @@ mod tests {
         let caps = <OpenAiCompatibleProvider as Provider>::capabilities(&p);
         assert!(
             !caps.native_tool_calling,
-            "MiniMax should use prompt-guided tool calling, not native"
+            "MiniMax should reject tool calls until a native adapter is wired"
         );
         assert!(!caps.vision);
+    }
+
+    #[tokio::test]
+    async fn native_disabled_provider_rejects_structured_chat_tools() {
+        let p = OpenAiCompatibleProvider::new_merge_system_into_user(
+            "MiniMax",
+            "https://api.minimax.chat/v1",
+            Some("k"),
+            AuthStyle::Bearer,
+        );
+        let tools = vec![crate::traits::ToolSpec {
+            name: "shell_exec".to_string(),
+            description: "Execute shell command".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+            runtime_role: None,
+        }];
+
+        let err = p
+            .chat(
+                ProviderChatRequest {
+                    messages: &[ChatMessage::user("check status")],
+                    tools: Some(&tools),
+                },
+                "MiniMax-M2.5",
+                0.2,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("refusing prompt-guided"));
+    }
+
+    #[tokio::test]
+    async fn native_disabled_provider_rejects_chat_with_tools() {
+        let p = OpenAiCompatibleProvider::new_merge_system_into_user(
+            "MiniMax",
+            "https://api.minimax.chat/v1",
+            Some("k"),
+            AuthStyle::Bearer,
+        );
+        let tools = vec![serde_json::json!({
+            "type": "function",
+            "function": {"name": "shell_exec", "parameters": {"type": "object"}}
+        })];
+
+        let err = p
+            .chat_with_tools(
+                &[ChatMessage::user("check status")],
+                &tools,
+                "MiniMax-M2.5",
+                0.2,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("refusing prompt-guided"));
     }
 
     #[test]
@@ -2576,9 +2522,9 @@ mod tests {
     }
 
     #[test]
-    fn no_responses_fallback_constructor_keeps_native_tool_calling_enabled() {
-        let p = OpenAiCompatibleProvider::new_no_responses_fallback(
-            "FallbackProvider",
+    fn without_responses_retry_constructor_keeps_native_tool_calling_enabled() {
+        let p = OpenAiCompatibleProvider::new_without_responses_retry(
+            "ChatCompletionsOnlyProvider",
             "https://example.com",
             Some("k"),
             AuthStyle::Bearer,
@@ -2844,35 +2790,32 @@ mod tests {
     }
 
     // ----------------------------------------------------------
-    // Reasoning model fallback tests (reasoning_content)
+    // Reasoning content visibility tests
     // ----------------------------------------------------------
 
     #[test]
-    fn reasoning_content_fallback_when_content_empty() {
-        // Reasoning models (Qwen3, GLM-4) return content: "" with reasoning_content populated
+    fn reasoning_content_not_used_when_content_empty() {
         let json = r#"{"choices":[{"message":{"content":"","reasoning_content":"Thinking output here"}}]}"#;
         let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         let msg = &resp.choices[0].message;
-        assert_eq!(msg.effective_content(), "Thinking output here");
+        assert_eq!(msg.effective_content(), None);
     }
 
     #[test]
-    fn reasoning_content_fallback_when_content_null() {
-        // Some models may return content: null with reasoning_content
+    fn reasoning_content_not_used_when_content_null() {
         let json =
-            r#"{"choices":[{"message":{"content":null,"reasoning_content":"Fallback text"}}]}"#;
+            r#"{"choices":[{"message":{"content":null,"reasoning_content":"Reasoning text"}}]}"#;
         let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         let msg = &resp.choices[0].message;
-        assert_eq!(msg.effective_content(), "Fallback text");
+        assert_eq!(msg.effective_content(), None);
     }
 
     #[test]
-    fn reasoning_content_fallback_when_content_missing() {
-        // content field absent entirely, reasoning_content present
+    fn reasoning_content_not_used_when_content_missing() {
         let json = r#"{"choices":[{"message":{"reasoning_content":"Only reasoning"}}]}"#;
         let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         let msg = &resp.choices[0].message;
-        assert_eq!(msg.effective_content(), "Only reasoning");
+        assert_eq!(msg.effective_content(), None);
     }
 
     #[test]
@@ -2881,28 +2824,24 @@ mod tests {
         let json = r#"{"choices":[{"message":{"content":"Normal response","reasoning_content":"Should be ignored"}}]}"#;
         let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         let msg = &resp.choices[0].message;
-        assert_eq!(msg.effective_content(), "Normal response");
+        assert_eq!(msg.effective_content().as_deref(), Some("Normal response"));
     }
 
     #[test]
-    fn reasoning_content_used_when_content_only_think_tags() {
-        let json = r#"{"choices":[{"message":{"content":"<think>secret</think>","reasoning_content":"Fallback text"}}]}"#;
+    fn reasoning_content_not_used_when_content_only_think_tags() {
+        let json = r#"{"choices":[{"message":{"content":"<think>secret</think>","reasoning_content":"Reasoning text"}}]}"#;
         let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         let msg = &resp.choices[0].message;
-        assert_eq!(msg.effective_content(), "Fallback text");
-        assert_eq!(
-            msg.effective_content_optional().as_deref(),
-            Some("Fallback text")
-        );
+        assert_eq!(msg.effective_content(), None);
+        assert_eq!(msg.effective_content_optional(), None);
     }
 
     #[test]
-    fn reasoning_content_both_absent_returns_empty() {
-        // Neither content nor reasoning_content - returns empty string
+    fn reasoning_content_both_absent_returns_none() {
         let json = r#"{"choices":[{"message":{}}]}"#;
         let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         let msg = &resp.choices[0].message;
-        assert_eq!(msg.effective_content(), "");
+        assert_eq!(msg.effective_content(), None);
     }
 
     #[test]
@@ -2912,11 +2851,14 @@ mod tests {
         let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
         let msg = &resp.choices[0].message;
         assert!(msg.reasoning_content.is_none());
-        assert_eq!(msg.effective_content(), "Hello from Venice!");
+        assert_eq!(
+            msg.effective_content().as_deref(),
+            Some("Hello from Venice!")
+        );
     }
 
     // ----------------------------------------------------------
-    // SSE streaming reasoning_content fallback tests
+    // SSE streaming reasoning_content visibility tests
     // ----------------------------------------------------------
 
     #[test]
@@ -2927,10 +2869,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_sse_line_with_reasoning_content() {
+    fn parse_sse_line_ignores_reasoning_content() {
         let line = r#"data: {"choices":[{"delta":{"reasoning_content":"thinking..."}}]}"#;
         let result = parse_sse_line(line).unwrap();
-        assert_eq!(result, Some("thinking...".to_string()));
+        assert_eq!(result, None);
     }
 
     #[test]
@@ -2941,11 +2883,11 @@ mod tests {
     }
 
     #[test]
-    fn parse_sse_line_with_empty_content_falls_back_to_reasoning_content() {
+    fn parse_sse_line_with_empty_content_ignores_reasoning_content() {
         let line =
             r#"data: {"choices":[{"delta":{"content":"","reasoning_content":"thinking..."}}]}"#;
         let result = parse_sse_line(line).unwrap();
-        assert_eq!(result, Some("thinking...".to_string()));
+        assert_eq!(result, None);
     }
 
     #[test]
@@ -2990,13 +2932,10 @@ mod tests {
                     name: Some("shell".to_string()),
                     arguments: Some(r#"{"cmd":"ls"}"#.to_string()),
                 }),
-                name: None,
-                arguments: None,
-                parameters: None,
             }]),
         };
 
-        let parsed = OpenAiCompatibleProvider::parse_native_response(message);
+        let parsed = OpenAiCompatibleProvider::parse_native_response(message).unwrap();
         assert_eq!(parsed.reasoning_content.as_deref(), Some("thinking step"));
         assert_eq!(parsed.text.as_deref(), Some("answer"));
         assert_eq!(parsed.tool_calls.len(), 1);
@@ -3010,7 +2949,7 @@ mod tests {
             tool_calls: None,
         };
 
-        let parsed = OpenAiCompatibleProvider::parse_native_response(message);
+        let parsed = OpenAiCompatibleProvider::parse_native_response(message).unwrap();
         assert!(parsed.reasoning_content.is_none());
         assert_eq!(parsed.text.as_deref(), Some("hello"));
     }
@@ -3160,8 +3099,8 @@ mod tests {
 
     #[test]
     fn tool_call_none_fields_omitted_from_json() {
-        // Ensures providers like Mistral that reject extra fields (e.g. "name": null)
-        // don't receive them when the ToolCall compat fields are None.
+        // Ensures providers like Mistral that reject extra top-level tool-call
+        // fields don't receive legacy dialect fields from the generic adapter.
         let tc = ToolCall {
             id: Some("call_1".to_string()),
             kind: Some("function".to_string()),
@@ -3169,9 +3108,6 @@ mod tests {
                 name: Some("shell".to_string()),
                 arguments: Some("{\"command\":\"ls\"}".to_string()),
             }),
-            name: None,
-            arguments: None,
-            parameters: None,
         };
         let json = serde_json::to_value(&tc).unwrap();
         assert!(!json.as_object().unwrap().contains_key("name"));
@@ -3181,26 +3117,5 @@ mod tests {
         assert!(json.as_object().unwrap().contains_key("id"));
         assert!(json.as_object().unwrap().contains_key("type"));
         assert!(json.as_object().unwrap().contains_key("function"));
-    }
-
-    #[test]
-    fn tool_call_with_compat_fields_serializes_them() {
-        // When compat fields are Some, they should appear in the output.
-        let tc = ToolCall {
-            id: None,
-            kind: None,
-            function: None,
-            name: Some("shell".to_string()),
-            arguments: Some("{\"command\":\"ls\"}".to_string()),
-            parameters: None,
-        };
-        let json = serde_json::to_value(&tc).unwrap();
-        assert_eq!(json["name"], "shell");
-        assert_eq!(json["arguments"], "{\"command\":\"ls\"}");
-        // None fields should be omitted
-        assert!(!json.as_object().unwrap().contains_key("id"));
-        assert!(!json.as_object().unwrap().contains_key("type"));
-        assert!(!json.as_object().unwrap().contains_key("function"));
-        assert!(!json.as_object().unwrap().contains_key("parameters"));
     }
 }

@@ -259,41 +259,37 @@ pub fn all_tools_with_runtime(
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("standing_orders.json");
-        match synapse_infra::standing_order_store::FileStandingOrderStore::new(&store_path) {
-            Ok(store) => Arc::new(store),
-            Err(error) => {
-                tracing::warn!(
-                    path = %store_path.display(),
-                    %error,
-                    "Failed to initialize persistent standing order store, falling back to memory"
-                );
-                Arc::new(
-                    synapse_domain::ports::standing_order_store::InMemoryStandingOrderStore::new(),
-                )
-            }
-        }
+        Arc::new(
+            synapse_infra::standing_order_store::FileStandingOrderStore::new(&store_path)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to initialize persistent standing order store at {}: {error}",
+                        store_path.display()
+                    )
+                }),
+        )
     };
     let user_profile_store: Arc<
         dyn synapse_domain::ports::user_profile_store::UserProfileStorePort,
     > = if let Some(store) = user_profile_store {
         store
+    } else if let Some(db) = cron_db.as_ref() {
+        Arc::new(synapse_memory::SurrealUserProfileStore::new(Arc::clone(db)))
     } else {
         let store_path = config
             .config_path
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
             .join("user_profiles.json");
-        match synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path) {
-            Ok(store) => Arc::new(store),
-            Err(error) => {
-                tracing::warn!(
-                    path = %store_path.display(),
-                    %error,
-                    "Failed to initialize persistent user profile store, falling back to memory"
-                );
-                Arc::new(synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new())
-            }
-        }
+        Arc::new(
+            synapse_infra::user_profile_store::FileUserProfileStore::new(&store_path)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "failed to initialize persistent user profile store at {}: {error}",
+                        store_path.display()
+                    )
+                }),
+        )
     };
     let run_recipe_store: Arc<dyn synapse_domain::ports::run_recipe_store::RunRecipeStorePort> =
         if let Some(store) = run_recipe_store {
@@ -304,17 +300,15 @@ pub fn all_tools_with_runtime(
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("run_recipes.json");
-            match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path) {
-                Ok(store) => Arc::new(store),
-                Err(error) => {
-                    tracing::warn!(
-                        path = %store_path.display(),
-                        %error,
-                        "Failed to initialize persistent run recipe store, falling back to memory"
-                    );
-                    Arc::new(synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new())
-                }
-            }
+            Arc::new(
+                synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "failed to initialize persistent run recipe store at {}: {error}",
+                            store_path.display()
+                        )
+                    }),
+            )
         };
 
     let has_shell_access = runtime.has_shell_access();

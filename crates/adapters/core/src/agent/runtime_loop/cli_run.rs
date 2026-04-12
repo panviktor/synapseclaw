@@ -394,11 +394,12 @@ pub async fn run_with_shared_memory(
         bootstrap_max_chars,
         native_tools,
         config.skills.prompt_injection_mode,
-    );
-
-    // Append structured tool-use instructions with schemas (only for non-native providers)
-    if !native_tools {
-        system_prompt.push_str(&build_tool_instructions(&tools_registry));
+    )?;
+    if !native_tools && !tools_registry.is_empty() {
+        anyhow::bail!(
+            "provider {} does not support native tool calling; prompt-guided tool fallback has been removed",
+            provider_name
+        );
     }
 
     // Append deferred MCP tool names so the LLM knows what is available
@@ -891,9 +892,12 @@ pub async fn process_message(
         bootstrap_max_chars,
         native_tools,
         config.skills.prompt_injection_mode,
-    );
-    if !native_tools {
-        system_prompt.push_str(&build_tool_instructions(&tools_registry));
+    )?;
+    if !native_tools && !tools_registry.is_empty() {
+        anyhow::bail!(
+            "provider {} does not support native tool calling; prompt-guided tool fallback has been removed",
+            provider_name
+        );
     }
     if !deferred_section.is_empty() {
         system_prompt.push('\n');

@@ -474,6 +474,65 @@
       "features": ["tool_calling"]
     }
   ],
+  "embedding_profiles": [
+    {
+      "provider": "openai",
+      "model": "text-embedding-3-small",
+      "dimensions": 1536,
+      "distance_metric": "cosine",
+      "normalize_output": true,
+      "supports_multilingual": true,
+      "supports_code": true,
+      "recommended_chunk_chars": 1200,
+      "recommended_top_k": 10
+    },
+    {
+      "provider": "openrouter",
+      "model": "openai/text-embedding-3-small",
+      "dimensions": 1536,
+      "distance_metric": "cosine",
+      "normalize_output": true,
+      "supports_multilingual": true,
+      "supports_code": true,
+      "recommended_chunk_chars": 1200,
+      "recommended_top_k": 10
+    },
+    {
+      "provider": "openrouter",
+      "model": "qwen/qwen3-embedding-8b",
+      "dimensions": 4096,
+      "distance_metric": "cosine",
+      "normalize_output": true,
+      "supports_multilingual": true,
+      "supports_code": true,
+      "recommended_chunk_chars": 1200,
+      "recommended_top_k": 10
+    },
+    {
+      "provider": "openrouter",
+      "model": "qwen/qwen3-embedding-4b",
+      "dimensions": 2560,
+      "distance_metric": "cosine",
+      "normalize_output": true,
+      "supports_multilingual": true,
+      "supports_code": true,
+      "recommended_chunk_chars": 1200,
+      "recommended_top_k": 10
+    },
+    {
+      "provider": "llama.cpp",
+      "model": "multilingual-e5-small",
+      "dimensions": 384,
+      "distance_metric": "cosine",
+      "normalize_output": true,
+      "query_prefix": "query: ",
+      "document_prefix": "passage: ",
+      "supports_multilingual": true,
+      "supports_code": false,
+      "recommended_chunk_chars": 900,
+      "recommended_top_k": 10
+    }
+  ],
   "route_aliases": [
     {
       "hint": "cheap",

@@ -75,7 +75,8 @@ struct ResponseMessage {
     content: String,
     #[serde(default)]
     tool_calls: Vec<OllamaToolCall>,
-    /// Some models return a "thinking" field with internal reasoning
+    /// Some models return a `thinking` field with internal reasoning. It is
+    /// deliberately not surfaced as assistant-visible text.
     #[serde(default)]
     thinking: Option<String>,
 }
@@ -196,7 +197,7 @@ impl OllamaProvider {
     /// Remove `<think>...</think>` blocks from model output.
     /// Qwen and other reasoning models may embed chain-of-thought inline
     /// in the `content` field using `<think>` tags.  These must be stripped
-    /// before returning text to the user or parsing for tool calls.
+    /// before returning text to the user.
     fn strip_think_tags(s: &str) -> String {
         let mut result = String::with_capacity(s.len());
         let mut rest = s;
@@ -217,55 +218,16 @@ impl OllamaProvider {
         result.trim().to_string()
     }
 
-    /// Derive the effective text content from a response, stripping `<think>` tags
-    /// and falling back to the `thinking` field when `content` is empty after
-    /// stripping.  This ensures that tool-call XML tags embedded alongside (or
-    /// after) thinking blocks are preserved for downstream parsing.
-    fn effective_content(content: &str, thinking: Option<&str>) -> Option<String> {
-        // First try the content field with think tags stripped.
+    /// Derive assistant-visible text from `content`, stripping `<think>` tags.
+    /// The separate `thinking` field is internal reasoning and must not be used
+    /// as a visible answer.
+    fn effective_content(content: &str) -> Option<String> {
         let stripped = Self::strip_think_tags(content);
         if !stripped.trim().is_empty() {
             return Some(stripped);
         }
 
-        // Content was empty or only thinking — check the thinking field.
-        // Some models (Qwen) put the full output including tool-call XML in
-        // the thinking field when `think: true` is set.
-        if let Some(thinking) = thinking.map(str::trim).filter(|t| !t.is_empty()) {
-            let stripped_thinking = Self::strip_think_tags(thinking);
-            if !stripped_thinking.trim().is_empty() {
-                tracing::debug!(
-                    "Ollama: using thinking field as effective content ({} chars)",
-                    stripped_thinking.len()
-                );
-                return Some(stripped_thinking);
-            }
-        }
-
         None
-    }
-
-    fn fallback_text_for_empty_content(model: &str, thinking: Option<&str>) -> String {
-        if let Some(thinking) = thinking.map(str::trim).filter(|value| !value.is_empty()) {
-            let thinking_log_excerpt: String = thinking.chars().take(100).collect();
-            let thinking_reply_excerpt: String = thinking.chars().take(200).collect();
-            tracing::warn!(
-                "Ollama returned empty content with only thinking for model '{}': '{}'. Model may have stopped prematurely.",
-                model,
-                thinking_log_excerpt
-            );
-            return format!(
-                "I was thinking about this: {}... but I didn't complete my response. Could you try asking again?",
-                thinking_reply_excerpt
-            );
-        }
-
-        tracing::warn!(
-            "Ollama returned empty or whitespace content with no tool calls for model '{}'",
-            model
-        );
-        "I couldn't get a complete response from Ollama. Please try again or switch to a different model."
-            .to_string()
     }
 
     fn build_chat_request(
@@ -554,39 +516,6 @@ impl OllamaProvider {
         }
     }
 
-    /// Convert Ollama tool calls to the JSON format expected by the runtime-loop parser.
-    ///
-    /// Handles quirky model behavior where tool calls are wrapped:
-    /// - `{"name": "tool_call", "arguments": {"name": "shell", "arguments": {...}}}`
-    /// - `{"name": "tool.shell", "arguments": {...}}`
-    fn format_tool_calls_for_loop(&self, tool_calls: &[OllamaToolCall]) -> String {
-        let formatted_calls: Vec<serde_json::Value> = tool_calls
-            .iter()
-            .map(|tc| {
-                let (tool_name, tool_args) = self.extract_tool_name_and_args(tc);
-
-                // Arguments must be a JSON string for parse_tool_calls compatibility
-                let args_str =
-                    serde_json::to_string(&tool_args).unwrap_or_else(|_| "{}".to_string());
-
-                serde_json::json!({
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": args_str
-                    }
-                })
-            })
-            .collect();
-
-        serde_json::json!({
-            "content": "",
-            "tool_calls": formatted_calls
-        })
-        .to_string()
-    }
-
     /// Extract the actual tool name and arguments from potentially nested structures
     fn extract_tool_name_and_args(&self, tc: &OllamaToolCall) -> (String, serde_json::Value) {
         let name = &tc.function.name;
@@ -670,27 +599,21 @@ impl Provider for OllamaProvider {
             .send_request(messages, &normalized_model, temperature, should_auth, None)
             .await?;
 
-        // If model returned tool calls, format them for the runtime-loop parser.
         if !response.message.tool_calls.is_empty() {
-            tracing::debug!(
-                "Ollama returned {} tool call(s), formatting for loop parser",
-                response.message.tool_calls.len()
+            anyhow::bail!(
+                "Ollama returned native tool calls on text-only chat path; use chat_with_tools"
             );
-            return Ok(self.format_tool_calls_for_loop(&response.message.tool_calls));
         }
 
-        // Plain text response — strip <think> tags and fall back to thinking field.
-        if let Some(content) = Self::effective_content(
-            &response.message.content,
-            response.message.thinking.as_deref(),
-        ) {
+        // Plain text response — strip <think> tags, never expose `thinking`.
+        if let Some(content) = Self::effective_content(&response.message.content) {
             return Ok(content);
         }
 
-        Ok(Self::fallback_text_for_empty_content(
-            &normalized_model,
-            response.message.thinking.as_deref(),
-        ))
+        anyhow::bail!(
+            "Ollama returned empty assistant content for model '{}'",
+            normalized_model
+        )
     }
 
     async fn chat_with_history(
@@ -713,27 +636,21 @@ impl Provider for OllamaProvider {
             )
             .await?;
 
-        // If model returned tool calls, format them for the runtime-loop parser.
         if !response.message.tool_calls.is_empty() {
-            tracing::debug!(
-                "Ollama returned {} tool call(s), formatting for loop parser",
-                response.message.tool_calls.len()
+            anyhow::bail!(
+                "Ollama returned native tool calls on text-only chat history path; use chat_with_tools"
             );
-            return Ok(self.format_tool_calls_for_loop(&response.message.tool_calls));
         }
 
-        // Plain text response — strip <think> tags and fall back to thinking field.
-        if let Some(content) = Self::effective_content(
-            &response.message.content,
-            response.message.thinking.as_deref(),
-        ) {
+        // Plain text response — strip <think> tags, never expose `thinking`.
+        if let Some(content) = Self::effective_content(&response.message.content) {
             return Ok(content);
         }
 
-        Ok(Self::fallback_text_for_empty_content(
-            &normalized_model,
-            response.message.thinking.as_deref(),
-        ))
+        anyhow::bail!(
+            "Ollama returned empty assistant content for model '{}'",
+            normalized_model
+        )
     }
 
     async fn chat_with_tools(
@@ -778,18 +695,22 @@ impl Provider for OllamaProvider {
                 .tool_calls
                 .iter()
                 .map(|tc| {
+                    let id = tc
+                        .id
+                        .clone()
+                        .filter(|id| !id.trim().is_empty())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Ollama native tool call missing call id")
+                        })?;
                     let (name, args) = self.extract_tool_name_and_args(tc);
-                    ToolCall {
-                        id: tc
-                            .id
-                            .clone()
-                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                    Ok(ToolCall {
+                        id,
                         name,
                         arguments: serde_json::to_string(&args)
                             .unwrap_or_else(|_| "{}".to_string()),
-                    }
+                    })
                 })
-                .collect();
+                .collect::<anyhow::Result<Vec<_>>>()?;
             let text = Self::normalize_response_text(response.message.content);
             return Ok(ChatResponse {
                 text,
@@ -799,22 +720,13 @@ impl Provider for OllamaProvider {
             });
         }
 
-        // No native tool calls — use the effective content (content with
-        // `<think>` tags stripped, falling back to thinking field).
-        // The runtime-loop parser will extract any XML-style tool calls from
-        // the text, so preserve `<tool_call>` tags here.
-        let effective = Self::effective_content(
-            &response.message.content,
-            response.message.thinking.as_deref(),
-        );
-        let text = if let Some(content) = effective {
-            content
-        } else {
-            Self::fallback_text_for_empty_content(
-                &normalized_model,
-                response.message.thinking.as_deref(),
+        // No native tool calls — use visible content only.
+        let text = Self::effective_content(&response.message.content).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Ollama returned empty assistant content for model '{}'",
+                normalized_model
             )
-        };
+        })?;
         Ok(ChatResponse {
             text: Some(text),
             tool_calls: vec![],
@@ -858,7 +770,7 @@ impl Provider for OllamaProvider {
             }
         }
 
-        // No tools — fall back to plain text chat.
+        // No tools — use the plain text chat path.
         let text = self
             .chat_with_history(request.messages, model, temperature)
             .await?;
@@ -1044,12 +956,6 @@ mod tests {
     }
 
     #[test]
-    fn fallback_text_for_empty_content_without_thinking_is_generic() {
-        let text = OllamaProvider::fallback_text_for_empty_content("qwen3-coder", None);
-        assert!(text.contains("couldn't get a complete response from Ollama"));
-    }
-
-    #[test]
     fn response_with_missing_content_defaults_to_empty() {
         let json = r#"{"message":{"role":"assistant"}}"#;
         let resp: ApiChatResponse = serde_json::from_str(json).unwrap();
@@ -1119,30 +1025,6 @@ mod tests {
         let (name, args) = provider.extract_tool_name_and_args(&tc);
         assert_eq!(name, "file_read");
         assert_eq!(args.get("path").unwrap(), "/tmp/test");
-    }
-
-    #[test]
-    fn format_tool_calls_produces_valid_json() {
-        let provider = OllamaProvider::new(None, None);
-        let tool_calls = vec![OllamaToolCall {
-            id: Some("call_abc".into()),
-            function: OllamaFunction {
-                name: "shell".into(),
-                arguments: serde_json::json!({"command": "date"}),
-            },
-        }];
-
-        let formatted = provider.format_tool_calls_for_loop(&tool_calls);
-        let parsed: serde_json::Value = serde_json::from_str(&formatted).unwrap();
-
-        assert!(parsed.get("tool_calls").is_some());
-        let calls = parsed.get("tool_calls").unwrap().as_array().unwrap();
-        assert_eq!(calls.len(), 1);
-
-        let func = calls[0].get("function").unwrap();
-        assert_eq!(func.get("name").unwrap(), "shell");
-        // arguments should be a string (JSON-encoded)
-        assert!(func.get("arguments").unwrap().is_string());
     }
 
     #[test]
@@ -1284,85 +1166,44 @@ mod tests {
 
     #[test]
     fn effective_content_strips_think_and_returns_rest() {
-        let result = OllamaProvider::effective_content(
-            "<think>reasoning</think>\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>",
-            None,
-        );
+        let result = OllamaProvider::effective_content("<think>reasoning</think>\nVisible answer.");
         assert!(result.is_some());
         let text = result.unwrap();
-        assert!(text.contains("<tool_call>"));
+        assert_eq!(text, "Visible answer.");
         assert!(!text.contains("<think>"));
     }
 
     #[test]
-    fn effective_content_falls_back_to_thinking_field() {
-        let result = OllamaProvider::effective_content(
-            "",
-            Some(
-                "<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"date\"}}</tool_call>",
-            ),
-        );
-        assert!(result.is_some());
-        assert!(result.unwrap().contains("<tool_call>"));
+    fn effective_content_ignores_thinking_field() {
+        let result = OllamaProvider::effective_content("");
+        assert!(result.is_none());
     }
 
     #[test]
     fn effective_content_returns_none_when_both_empty() {
-        assert!(OllamaProvider::effective_content("", None).is_none());
-        assert!(OllamaProvider::effective_content("", Some("")).is_none());
-        assert!(OllamaProvider::effective_content(
-            "<think>only thinking</think>",
-            Some("<think>also only thinking</think>")
-        )
-        .is_none());
+        assert!(OllamaProvider::effective_content("").is_none());
+        assert!(OllamaProvider::effective_content("<think>only thinking</think>").is_none());
     }
 
     #[test]
     fn effective_content_prefers_content_over_thinking() {
-        let result = OllamaProvider::effective_content("content text", Some("thinking text"));
+        let result = OllamaProvider::effective_content("content text");
         assert_eq!(result, Some("content text".to_string()));
     }
 
     #[test]
-    fn effective_content_uses_thinking_when_content_is_think_only() {
-        let result = OllamaProvider::effective_content(
-            "<think>just reasoning</think>",
-            Some("actual useful text from thinking field"),
-        );
-        assert_eq!(
-            result,
-            Some("actual useful text from thinking field".to_string())
-        );
+    fn effective_content_rejects_think_only_content() {
+        let result = OllamaProvider::effective_content("<think>just reasoning</think>");
+        assert!(result.is_none());
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // Qwen tool-call regression scenario tests
-    // ═══════════════════════════════════════════════════════════════════════
-
     #[test]
-    fn qwen_think_with_tool_call_in_content_preserved() {
-        // Qwen produces <think> tags followed by <tool_call> in content,
-        // with no structured tool_calls. The <tool_call> tags must survive
-        // for downstream parse_tool_calls to extract them.
-        let content = "<think>I should list files</think>\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}\n</tool_call>";
-        let result = OllamaProvider::effective_content(content, None);
+    fn effective_content_strips_think_and_preserves_visible_content() {
+        let content = "<think>I should reason privately</think>\nVisible answer.";
+        let result = OllamaProvider::effective_content(content);
         assert!(result.is_some());
         let text = result.unwrap();
-        assert!(text.contains("<tool_call>"));
-        assert!(text.contains("shell"));
+        assert_eq!(text, "Visible answer.");
         assert!(!text.contains("<think>"));
-    }
-
-    #[test]
-    fn qwen_thinking_field_with_tool_call_xml_extracted() {
-        // When think=true, Ollama separates thinking, but Qwen may put tool
-        // call XML in the thinking field with empty content.
-        let content = "";
-        let thinking = "I need to check the date\n<tool_call>\n{\"name\":\"shell\",\"arguments\":{\"command\":\"date\"}}\n</tool_call>";
-        let result = OllamaProvider::effective_content(content, Some(thinking));
-        assert!(result.is_some());
-        let text = result.unwrap();
-        assert!(text.contains("<tool_call>"));
-        assert!(text.contains("date"));
     }
 }

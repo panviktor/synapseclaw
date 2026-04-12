@@ -14,14 +14,14 @@ pub trait TurnDefaultsContextPort: Send + Sync {
 
 pub struct InMemoryTurnDefaultsContext {
     by_task: parking_lot::RwLock<HashMap<tokio::task::Id, ResolvedTurnDefaults>>,
-    fallback: parking_lot::RwLock<Option<ResolvedTurnDefaults>>,
+    sync_slot: parking_lot::RwLock<Option<ResolvedTurnDefaults>>,
 }
 
 impl InMemoryTurnDefaultsContext {
     pub fn new() -> Self {
         Self {
             by_task: parking_lot::RwLock::new(HashMap::new()),
-            fallback: parking_lot::RwLock::new(None),
+            sync_slot: parking_lot::RwLock::new(None),
         }
     }
 }
@@ -39,7 +39,7 @@ impl TurnDefaultsContextPort for InMemoryTurnDefaultsContext {
                 return Some(defaults.clone());
             }
         }
-        self.fallback.read().clone()
+        self.sync_slot.read().clone()
     }
 
     fn set_current(&self, defaults: Option<ResolvedTurnDefaults>) {
@@ -53,7 +53,7 @@ impl TurnDefaultsContextPort for InMemoryTurnDefaultsContext {
             return;
         }
 
-        *self.fallback.write() = defaults;
+        *self.sync_slot.write() = defaults;
     }
 }
 
@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_defaults_work_outside_tokio() {
+    fn sync_defaults_work_outside_tokio() {
         let port = InMemoryTurnDefaultsContext::new();
         port.set_current(Some(make_defaults("sync")));
         let recipient = port

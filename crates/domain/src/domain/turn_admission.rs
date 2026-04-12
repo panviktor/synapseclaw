@@ -53,6 +53,7 @@ pub enum CandidateAdmissionReason {
     ProviderContextWarning,
     ProviderContextCritical,
     ProviderContextOverflowRisk,
+    CalibrationSuppressedRoute,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +135,9 @@ pub fn candidate_admission_reason_label(reason: &CandidateAdmissionReason) -> St
         CandidateAdmissionReason::ProviderContextCritical => "context_critical".to_string(),
         CandidateAdmissionReason::ProviderContextOverflowRisk => {
             "context_overflow_risk".to_string()
+        }
+        CandidateAdmissionReason::CalibrationSuppressedRoute => {
+            "calibration_suppressed_route".to_string()
         }
     }
 }

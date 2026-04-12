@@ -6,6 +6,9 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
+use synapse_domain::application::services::session_handoff::{
+    format_session_handoff_packet, parse_session_handoff_packet_value, SessionHandoffPacket,
+};
 use synapse_domain::config::schema::DelegateAgentConfig;
 use synapse_domain::domain::config::ToolOperation;
 use synapse_domain::domain::security_policy::SecurityPolicy;
@@ -163,6 +166,40 @@ impl Tool for DelegateTool {
                 "context": {
                     "type": "string",
                     "description": "Optional context to prepend (e.g. relevant code, prior findings)"
+                },
+                "handoff_packet": {
+                    "type": "object",
+                    "description": "Optional structured session handoff packet. Use only the shared session_handoff schema.",
+                    "additionalProperties": false,
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "enum": ["context_overflow", "route_switch", "compaction", "capability_repair", "session_resume"]
+                        },
+                        "recommended_action": {"type": "string"},
+                        "active_task": {"type": "string"},
+                        "current_defaults": {"type": "array", "items": {"type": "string"}},
+                        "anchors": {"type": "array", "items": {"type": "string"}},
+                        "unresolved_questions": {"type": "array", "items": {"type": "string"}},
+                        "assumptions": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "kind": {"type": "string", "enum": ["active_task", "current_conversation", "delivery_target", "profile_fact", "route_capability", "context_window", "workspace_anchor"]},
+                                    "source": {"type": "string", "enum": ["configured_runtime", "current_conversation", "dialogue_state", "route_admission", "user_message", "user_profile"]},
+                                    "freshness": {"type": "string", "enum": ["current_turn", "session_recent", "challenged"]},
+                                    "confidence_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
+                                    "value": {"type": "string"},
+                                    "invalidation": {"type": "string", "enum": ["conversation_changed", "context_overflow", "delivery_failure", "profile_update", "route_admission_failure", "user_contradiction"]},
+                                    "replacement_path": {"type": "string", "enum": ["ask_user_clarification", "compact_session", "refresh_capability_metadata", "switch_route", "update_profile", "use_current_conversation"]}
+                                },
+                                "required": ["kind", "source", "freshness", "confidence_basis_points", "value", "invalidation", "replacement_path"]
+                            }
+                        }
+                    },
+                    "required": ["reason"]
                 }
             },
             "required": ["agent", "prompt"]
@@ -203,6 +240,11 @@ impl Tool for DelegateTool {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .unwrap_or("");
+        let handoff_packet = args
+            .get("handoff_packet")
+            .map(parse_session_handoff_packet_value)
+            .transpose()?
+            .flatten();
 
         // Look up agent config
         let agent_config = match self.agents.get(agent_name) {
@@ -277,11 +319,7 @@ impl Tool for DelegateTool {
         };
 
         // Build the message
-        let full_prompt = if context.is_empty() {
-            prompt.to_string()
-        } else {
-            format!("[Context]\n{context}\n\n[Task]\n{prompt}")
-        };
+        let full_prompt = build_delegate_prompt(prompt, context, handoff_packet.as_ref());
 
         let temperature = agent_config.temperature.unwrap_or(0.7);
 
@@ -465,6 +503,26 @@ impl DelegateTool {
     }
 }
 
+fn build_delegate_prompt(
+    prompt: &str,
+    context: &str,
+    handoff_packet: Option<&SessionHandoffPacket>,
+) -> String {
+    if context.is_empty() && handoff_packet.is_none() {
+        return prompt.to_string();
+    }
+
+    let mut sections = Vec::new();
+    if let Some(packet) = handoff_packet {
+        sections.push(format_session_handoff_packet(packet).trim_end().to_string());
+    }
+    if !context.is_empty() {
+        sections.push(format!("[Context]\n{context}"));
+    }
+    sections.push(format!("[Task]\n{prompt}"));
+    sections.join("\n\n")
+}
+
 struct ToolArcRef {
     inner: Arc<dyn Tool>,
 }
@@ -523,7 +581,7 @@ mod tests {
     use anyhow::anyhow;
     use synapse_domain::domain::config::AutonomyLevel;
     use synapse_domain::domain::security_policy::SecurityPolicy;
-    use synapse_providers::{ChatRequest, ChatResponse, ToolCall};
+    use synapse_providers::{traits::ProviderCapabilities, ChatRequest, ChatResponse, ToolCall};
 
     fn test_security() -> Arc<SecurityPolicy> {
         Arc::new(SecurityPolicy::default())
@@ -603,6 +661,13 @@ mod tests {
 
     #[async_trait]
     impl Provider for OneToolThenFinalProvider {
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                native_tool_calling: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,
@@ -646,6 +711,13 @@ mod tests {
 
     #[async_trait]
     impl Provider for InfiniteToolCallProvider {
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                native_tool_calling: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,
@@ -679,6 +751,13 @@ mod tests {
 
     #[async_trait]
     impl Provider for FailingProvider {
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                native_tool_calling: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,
@@ -721,6 +800,7 @@ mod tests {
         assert!(schema["properties"]["agent"].is_object());
         assert!(schema["properties"]["prompt"].is_object());
         assert!(schema["properties"]["context"].is_object());
+        assert!(schema["properties"]["handoff_packet"].is_object());
         let required = schema["required"].as_array().unwrap();
         assert!(required.contains(&json!("agent")));
         assert!(required.contains(&json!("prompt")));
@@ -733,6 +813,25 @@ mod tests {
     fn description_not_empty() {
         let tool = DelegateTool::new(sample_agents(), None, test_security());
         assert!(!tool.description().is_empty());
+    }
+
+    #[test]
+    fn delegate_prompt_includes_structured_handoff_before_context_and_task() {
+        let packet = synapse_domain::application::services::session_handoff::SessionHandoffPacket {
+            reason: synapse_domain::application::services::session_handoff::SessionHandoffReason::ContextOverflow,
+            recommended_action: Some("start_fresh_handoff".into()),
+            active_task: Some("continue after downgrade".into()),
+            current_defaults: vec!["project_alias=Borealis".into()],
+            anchors: vec!["memory=early anchor".into()],
+            unresolved_questions: Vec::new(),
+            assumptions: Vec::new(),
+        };
+
+        let rendered = build_delegate_prompt("finish task", "local context", Some(&packet));
+
+        assert!(rendered.starts_with("[session-handoff]"));
+        assert!(rendered.contains("[/session-handoff]\n\n[Context]\nlocal context"));
+        assert!(rendered.contains("[Task]\nfinish task"));
     }
 
     #[test]
@@ -1156,6 +1255,13 @@ mod tests {
 
     #[async_trait]
     impl Provider for McpToolThenFinalProvider {
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                native_tool_calling: true,
+                ..ProviderCapabilities::default()
+            }
+        }
+
         async fn chat_with_system(
             &self,
             _system_prompt: Option<&str>,

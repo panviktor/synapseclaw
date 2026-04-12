@@ -606,17 +606,15 @@ pub async fn run_gateway(
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("run_recipes.json");
-            match synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path) {
-                Ok(store) => Arc::new(store),
-                Err(error) => {
-                    tracing::warn!(
-                        path = %store_path.display(),
-                        %error,
-                        "Failed to initialize persistent run recipe store, falling back to memory"
-                    );
-                    Arc::new(synapse_domain::ports::run_recipe_store::InMemoryRunRecipeStore::new())
-                }
-            }
+            Arc::new(
+                synapse_infra::run_recipe_store::FileRunRecipeStore::new(&store_path)
+                    .with_context(|| {
+                        format!(
+                            "failed to initialize persistent run recipe store at {}",
+                            store_path.display()
+                        )
+                    })?,
+            )
         };
     // Extract webhook secret for authentication
     let webhook_secret_hash: Option<Arc<str>> =
@@ -972,25 +970,23 @@ pub async fn run_gateway(
             ),
         ),
         run_recipe_store,
-        user_profile_store: {
+        user_profile_store: if let Some(db) = shared_surreal.as_ref() {
+            Arc::new(synapse_memory::SurrealUserProfileStore::new(Arc::clone(db)))
+        } else {
             let profile_path = config
                 .config_path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("user_profiles.json");
-            match synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path) {
-                Ok(store) => Arc::new(store),
-                Err(error) => {
-                    tracing::warn!(
-                        path = %profile_path.display(),
-                        %error,
-                        "Failed to initialize persistent user profile store, falling back to memory"
-                    );
-                    Arc::new(
-                        synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
-                    )
-                }
-            }
+            Arc::new(
+                synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path)
+                    .with_context(|| {
+                        format!(
+                            "failed to initialize persistent user profile store at {}",
+                            profile_path.display()
+                        )
+                    })?,
+            )
         },
         conversation_context: shared_conversation_context,
         user_profile_context: shared_user_profile_context,
@@ -2527,7 +2523,7 @@ async fn run_gateway_chat_simple(state: &AppState, message: &str) -> anyhow::Res
             Some(&config_guard.identity),
             None, // bootstrap_max_chars - use default
         )
-    };
+    }?;
 
     let mut messages = Vec::with_capacity(1 + user_messages.len());
     messages.push(ChatMessage::system(system_prompt));

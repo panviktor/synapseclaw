@@ -89,6 +89,7 @@ impl UserProfileStorePort for FileUserProfileStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn persists_profiles_across_reopen() {
@@ -97,21 +98,19 @@ mod tests {
 
         let store = FileUserProfileStore::new(&path).unwrap();
         store
-            .upsert(
-                "matrix:alice",
-                UserProfile {
-                    timezone: Some("Europe/Berlin".into()),
-                    ..Default::default()
-                },
-            )
+            .upsert("matrix:alice", {
+                let mut profile = UserProfile::default();
+                profile.set("project_alias", json!("Borealis"));
+                profile
+            })
             .unwrap();
 
         let reopened = FileUserProfileStore::new(&path).unwrap();
         assert_eq!(
             reopened
                 .load("matrix:alice")
-                .and_then(|profile| profile.timezone),
-            Some("Europe/Berlin".into())
+                .and_then(|profile| profile.get_text("project_alias")),
+            Some("Borealis".into())
         );
     }
 }

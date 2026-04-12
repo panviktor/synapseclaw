@@ -1209,8 +1209,7 @@ impl Channel for MatrixChannel {
     }
 
     async fn send(&self, message: &SendMessage) -> anyhow::Result<()> {
-        let raw_content = crate::strip_tool_call_tags(&message.content);
-        let (after_reactions, reaction_markers) = parse_matrix_reaction_markers(&raw_content);
+        let (after_reactions, reaction_markers) = parse_matrix_reaction_markers(&message.content);
         let (after_locations, location_markers) = parse_matrix_location_markers(&after_reactions);
         let (cleaned_content, parsed_attachments) =
             parse_matrix_attachment_markers(&after_locations);
@@ -1377,7 +1376,7 @@ impl Channel for MatrixChannel {
             && location_markers.is_empty()
         {
             // No markers were found — send original content as text.
-            room.send(send_text(&raw_content)).await?;
+            room.send(send_text(&message.content)).await?;
         }
 
         Ok(())

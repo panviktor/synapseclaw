@@ -5,6 +5,7 @@
 //! prompt to provider calls.
 
 use crate::skills::{self, Skill};
+use anyhow::{Context, Result};
 use std::fmt::Write;
 use std::path::Path;
 use synapse_domain::config::schema::{IdentityConfig, SkillsPromptInjectionMode};
@@ -29,7 +30,7 @@ pub fn build_system_prompt(
     skills: &[Skill],
     identity_config: Option<&IdentityConfig>,
     bootstrap_max_chars: Option<usize>,
-) -> String {
+) -> Result<String> {
     build_system_prompt_with_mode(
         workspace_dir,
         model_name,
@@ -49,7 +50,7 @@ pub fn build_channel_system_prompt(
     skills: &[Skill],
     identity_config: Option<&IdentityConfig>,
     bootstrap_max_chars: Option<usize>,
-) -> String {
+) -> Result<String> {
     build_system_prompt_with_surface(
         workspace_dir,
         model_name,
@@ -72,7 +73,7 @@ pub fn build_system_prompt_with_mode(
     bootstrap_max_chars: Option<usize>,
     native_tools: bool,
     skills_prompt_mode: SkillsPromptInjectionMode,
-) -> String {
+) -> Result<String> {
     build_system_prompt_with_surface(
         workspace_dir,
         model_name,
@@ -95,7 +96,7 @@ pub fn build_channel_system_prompt_with_mode(
     bootstrap_max_chars: Option<usize>,
     native_tools: bool,
     skills_prompt_mode: SkillsPromptInjectionMode,
-) -> String {
+) -> Result<String> {
     build_system_prompt_with_surface(
         workspace_dir,
         model_name,
@@ -119,7 +120,7 @@ pub fn build_system_prompt_with_surface(
     native_tools: bool,
     skills_prompt_mode: SkillsPromptInjectionMode,
     surface: RuntimePromptSurface,
-) -> String {
+) -> Result<String> {
     let mut prompt = String::with_capacity(8192);
 
     prompt.push_str(
@@ -149,11 +150,10 @@ pub fn build_system_prompt_with_surface(
                 let _ = writeln!(prompt, "Registered tool names: {names}\n");
             }
         } else {
-            prompt.push_str("You have access to the following tools:\n\n");
-            for (name, desc) in tools {
-                let _ = writeln!(prompt, "- **{name}**: {desc}");
-            }
-            prompt.push('\n');
+            prompt.push_str(
+                "No provider-native tool interface is registered for this route.\n\
+                 Do not invent ad hoc tool-call syntax or describe unavailable tool execution.\n\n",
+            );
         }
     }
 
@@ -167,9 +167,9 @@ pub fn build_system_prompt_with_surface(
     } else {
         prompt.push_str(
             "## Your Task\n\n\
-             When the user sends a message, ACT on it. Use the tools to fulfill their request.\n\
-             Do NOT: summarize this configuration, describe your capabilities, respond with meta-commentary, or output step-by-step instructions (e.g. \"1. First... 2. Next...\").\n\
-             Instead: emit actual <tool_call> tags when you need to act. Just do what they ask.\n\n",
+             When the user sends a message, respond naturally from available conversation context.\n\
+             Do NOT: summarize this configuration, describe your capabilities, respond with meta-commentary, invent tool-call formats, or output step-by-step instructions (e.g. \"1. First... 2. Next...\").\n\
+             If the request requires unavailable tool execution, say what is blocked instead of pretending to act.\n\n",
         );
     }
 
@@ -203,7 +203,7 @@ pub fn build_system_prompt_with_surface(
         workspace_dir,
         identity_config,
         bootstrap_max_chars.unwrap_or(BOOTSTRAP_MAX_CHARS),
-    );
+    )?;
 
     let now = chrono::Local::now();
     let _ = writeln!(
@@ -233,10 +233,10 @@ pub fn build_system_prompt_with_surface(
     }
 
     if prompt.is_empty() {
-        "You are SynapseClaw, a fast and efficient AI assistant built in Rust. Be helpful, concise, and direct."
-            .to_string()
+        Ok("You are SynapseClaw, a fast and efficient AI assistant built in Rust. Be helpful, concise, and direct."
+            .to_string())
     } else {
-        prompt
+        Ok(prompt)
     }
 }
 
@@ -245,31 +245,26 @@ fn append_identity_context(
     workspace_dir: &Path,
     identity_config: Option<&IdentityConfig>,
     max_chars: usize,
-) {
+) -> Result<()> {
     if let Some(config) = identity_config {
         if identity::is_aieos_configured(config) {
-            match identity::load_aieos_identity(config, workspace_dir) {
-                Ok(Some(aieos_identity)) => {
-                    let aieos_prompt = identity::aieos_to_system_prompt(&aieos_identity);
-                    if !aieos_prompt.is_empty() {
-                        prompt.push_str(&aieos_prompt);
-                        prompt.push_str("\n\n");
-                    }
-                }
-                Ok(None) => load_openclaw_bootstrap_files(prompt, workspace_dir, max_chars),
-                Err(error) => {
-                    eprintln!(
-                        "Warning: Failed to load AIEOS identity: {error}. Using OpenClaw format."
-                    );
-                    load_openclaw_bootstrap_files(prompt, workspace_dir, max_chars);
-                }
+            let aieos_identity = identity::load_aieos_identity(config, workspace_dir)
+                .context("failed to load configured AIEOS identity")?
+                .ok_or_else(|| anyhow::anyhow!("configured AIEOS identity was not loaded"))?;
+            let aieos_prompt = identity::aieos_to_system_prompt(&aieos_identity);
+            if aieos_prompt.trim().is_empty() {
+                anyhow::bail!("configured AIEOS identity rendered an empty prompt");
             }
+            prompt.push_str(&aieos_prompt);
+            prompt.push_str("\n\n");
+            return Ok(());
         } else {
             load_openclaw_bootstrap_files(prompt, workspace_dir, max_chars);
         }
     } else {
         load_openclaw_bootstrap_files(prompt, workspace_dir, max_chars);
     }
+    Ok(())
 }
 
 fn load_openclaw_bootstrap_files(
@@ -323,8 +318,12 @@ fn inject_workspace_file(
                 prompt.push_str("\n\n");
             }
         }
-        Err(_) => {
-            let _ = writeln!(prompt, "### {filename}\n\n[File not found: {filename}]\n");
+        Err(error) => {
+            tracing::debug!(
+                path = %path.display(),
+                error = %error,
+                "workspace prompt file not injected"
+            );
         }
     }
 }

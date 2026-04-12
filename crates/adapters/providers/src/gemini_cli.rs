@@ -218,6 +218,10 @@ impl Provider for GeminiCliProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
+        if request.tools.is_some_and(|tools| !tools.is_empty()) {
+            anyhow::bail!("Gemini CLI provider does not support native tool calls");
+        }
+
         let text = self
             .chat_with_history(request.messages, model, temperature)
             .await?;

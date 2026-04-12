@@ -2,7 +2,7 @@
 
 This page is the primary entry point for the documentation system.
 
-Last refreshed: **April 3, 2026**.
+Last refreshed: **April 12, 2026**.
 
 English is currently the only maintained docs hub. Selected Vietnamese compatibility pages are tracked in [i18n/README.md](i18n/README.md).
 
@@ -22,7 +22,9 @@ English is currently the only maintained docs hub. Selected Vietnamese compatibi
 | Operate runtime (day-2 runbook) | [operations-runbook.md](ops/operations-runbook.md) |
 | Troubleshoot install/runtime/channel issues | [troubleshooting.md](ops/troubleshooting.md) |
 | Run Matrix encrypted-room setup and diagnostics | [matrix-e2ee-guide.md](security/matrix-e2ee-guide.md) |
+| See latest release notes and updates | [news.md](fork/news.md) |
 | Understand fork architecture, IPC plans, and deltas | [fork/README.md](fork/README.md) |
+| Check known documentation discrepancies | [doc-discrepancies.md](fork/doc-discrepancies.md) |
 | Browse docs by category | [SUMMARY.md](SUMMARY.md) |
 | See project PR/issue docs snapshot | [project-triage-snapshot-2026-02-18.md](maintainers/project-triage-snapshot-2026-02-18.md) |
 

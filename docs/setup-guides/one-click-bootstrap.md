@@ -2,7 +2,7 @@
 
 This page defines the fastest supported path to install and initialize SynapseClaw.
 
-Last verified: **February 20, 2026**.
+Last verified: **April 12, 2026**.
 
 ## Option 0: Homebrew (macOS/Linuxbrew)
 

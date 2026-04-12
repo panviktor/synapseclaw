@@ -22,14 +22,14 @@ pub trait ConversationContextPort: Send + Sync {
 /// In-memory implementation with task-local scoping for concurrent turns.
 pub struct InMemoryConversationContext {
     by_task: parking_lot::RwLock<HashMap<tokio::task::Id, CurrentConversationContext>>,
-    fallback: parking_lot::RwLock<Option<CurrentConversationContext>>,
+    sync_slot: parking_lot::RwLock<Option<CurrentConversationContext>>,
 }
 
 impl InMemoryConversationContext {
     pub fn new() -> Self {
         Self {
             by_task: parking_lot::RwLock::new(HashMap::new()),
-            fallback: parking_lot::RwLock::new(None),
+            sync_slot: parking_lot::RwLock::new(None),
         }
     }
 }
@@ -47,7 +47,7 @@ impl ConversationContextPort for InMemoryConversationContext {
                 return Some(ctx.clone());
             }
         }
-        self.fallback.read().clone()
+        self.sync_slot.read().clone()
     }
 
     fn set_current(&self, ctx: Option<CurrentConversationContext>) {
@@ -61,7 +61,7 @@ impl ConversationContextPort for InMemoryConversationContext {
             return;
         }
 
-        *self.fallback.write() = ctx;
+        *self.sync_slot.write() = ctx;
     }
 }
 
@@ -106,7 +106,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_context_works_outside_tokio() {
+    fn sync_context_works_outside_tokio() {
         let port = InMemoryConversationContext::new();
         port.set_current(Some(make_ctx("sync")));
         assert_eq!(

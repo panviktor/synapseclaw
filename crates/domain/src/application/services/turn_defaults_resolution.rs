@@ -5,6 +5,7 @@ use crate::domain::conversation_target::ConversationDeliveryTarget;
 use crate::domain::turn_defaults::{
     ResolvedDeliveryTarget, ResolvedTurnDefaults, TurnDefaultSource,
 };
+use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
 
 pub fn resolve_turn_defaults(
     interpretation: Option<&TurnInterpretation>,
@@ -37,7 +38,7 @@ pub fn resolve_turn_defaults(
     if let Some(target) = interpretation
         .user_profile
         .as_ref()
-        .and_then(|profile| profile.default_delivery_target.clone())
+        .and_then(|profile| profile.get_delivery_target(DELIVERY_TARGET_PREFERENCE_KEY))
     {
         return ResolvedTurnDefaults {
             delivery_target: Some(ResolvedDeliveryTarget {
@@ -68,17 +69,22 @@ mod tests {
     };
     use crate::domain::conversation_target::ConversationDeliveryTarget;
     use crate::domain::user_profile::UserProfile;
+    use serde_json::json;
 
     #[test]
-    fn prefers_dialogue_state_target_over_profile_default() {
+    fn prefers_dialogue_state_target_over_user_profile_target() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_delivery_target: Some(ConversationDeliveryTarget::Explicit {
-                    channel: "matrix".into(),
-                    recipient: "!profile:example.com".into(),
-                    thread_ref: None,
-                }),
-                ..UserProfile::default()
+            user_profile: Some({
+                let mut profile = UserProfile::default();
+                profile.set(
+                    DELIVERY_TARGET_PREFERENCE_KEY,
+                    json!(ConversationDeliveryTarget::Explicit {
+                        channel: "matrix".into(),
+                        recipient: "!profile:example.com".into(),
+                        thread_ref: None,
+                    }),
+                );
+                profile
             }),
             dialogue_state: Some(DialogueStateSnapshot {
                 focus_entities: Vec::new(),
@@ -110,15 +116,19 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_profile_default_when_dialogue_state_missing() {
+    fn falls_back_to_user_profile_target_when_dialogue_state_missing() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_delivery_target: Some(ConversationDeliveryTarget::Explicit {
-                    channel: "matrix".into(),
-                    recipient: "!profile:example.com".into(),
-                    thread_ref: None,
-                }),
-                ..UserProfile::default()
+            user_profile: Some({
+                let mut profile = UserProfile::default();
+                profile.set(
+                    DELIVERY_TARGET_PREFERENCE_KEY,
+                    json!(ConversationDeliveryTarget::Explicit {
+                        channel: "matrix".into(),
+                        recipient: "!profile:example.com".into(),
+                        thread_ref: None,
+                    }),
+                );
+                profile
             }),
             ..TurnInterpretation::default()
         };

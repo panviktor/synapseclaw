@@ -2,7 +2,7 @@
 
 This runbook is for operators who maintain availability, security posture, and incident response.
 
-Last verified: **February 18, 2026**.
+Last verified: **April 12, 2026**.
 
 ## Scope
 

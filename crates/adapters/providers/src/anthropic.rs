@@ -490,7 +490,7 @@ impl AnthropicProvider {
             .ok_or_else(|| anyhow::anyhow!("No response from Anthropic"))
     }
 
-    fn parse_native_response(response: NativeChatResponse) -> ProviderChatResponse {
+    fn parse_native_response(response: NativeChatResponse) -> anyhow::Result<ProviderChatResponse> {
         let mut text_parts = Vec::new();
         let mut tool_calls = Vec::new();
 
@@ -510,15 +510,20 @@ impl AnthropicProvider {
                     }
                 }
                 "tool_use" => {
-                    let name = block.name.unwrap_or_default();
-                    if name.is_empty() {
-                        continue;
-                    }
+                    let id = block.id.filter(|id| !id.trim().is_empty()).ok_or_else(|| {
+                        anyhow::anyhow!("Anthropic native tool call missing call id")
+                    })?;
+                    let name = block
+                        .name
+                        .filter(|name| !name.trim().is_empty())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Anthropic native tool call missing name")
+                        })?;
                     let arguments = block
                         .input
                         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
                     tool_calls.push(ProviderToolCall {
-                        id: block.id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                        id,
                         name,
                         arguments: arguments.to_string(),
                     });
@@ -527,7 +532,7 @@ impl AnthropicProvider {
             }
         }
 
-        ProviderChatResponse {
+        Ok(ProviderChatResponse {
             text: if text_parts.is_empty() {
                 None
             } else {
@@ -536,7 +541,7 @@ impl AnthropicProvider {
             tool_calls,
             usage,
             reasoning_content: None,
-        }
+        })
     }
 
     fn http_client(&self) -> Client {
@@ -635,7 +640,7 @@ impl Provider for AnthropicProvider {
         }
 
         let native_response: NativeChatResponse = response.json().await?;
-        Ok(Self::parse_native_response(native_response))
+        Self::parse_native_response(native_response)
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
@@ -1492,7 +1497,7 @@ mod tests {
             "usage": {"input_tokens": 300, "output_tokens": 75}
         }"#;
         let resp: NativeChatResponse = serde_json::from_str(json).unwrap();
-        let result = AnthropicProvider::parse_native_response(resp);
+        let result = AnthropicProvider::parse_native_response(resp).unwrap();
         let usage = result.usage.unwrap();
         assert_eq!(usage.input_tokens, Some(300));
         assert_eq!(usage.output_tokens, Some(75));
@@ -1502,7 +1507,7 @@ mod tests {
     fn native_response_parses_without_usage() {
         let json = r#"{"content": [{"type": "text", "text": "Hello"}]}"#;
         let resp: NativeChatResponse = serde_json::from_str(json).unwrap();
-        let result = AnthropicProvider::parse_native_response(resp);
+        let result = AnthropicProvider::parse_native_response(resp).unwrap();
         assert!(result.usage.is_none());
     }
 

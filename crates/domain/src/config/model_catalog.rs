@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::config::schema::{
     ModelFeature, ModelLaneCandidateConfig, ModelLaneConfig, ModelPricing, ModelRouteConfig,
 };
+use crate::domain::memory::{EmbeddingDistanceMetric, EmbeddingProfile};
 use crate::ports::model_profile_catalog::{CatalogModelProfile, CatalogModelProfileSource};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,8 @@ struct ModelCatalogData {
     pricing: Vec<ModelPricingCatalogEntry>,
     #[serde(default, alias = "model_profiles")]
     profiles: Vec<ModelProfileCatalogEntry>,
+    #[serde(default)]
+    embedding_profiles: Vec<EmbeddingProfileCatalogEntry>,
     #[serde(default, alias = "model_routes")]
     route_aliases: Vec<ModelRouteConfig>,
 }
@@ -76,6 +79,23 @@ struct ModelProfileCatalogEntry {
     max_output_tokens: Option<usize>,
     #[serde(default)]
     features: Vec<ModelFeature>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct EmbeddingProfileCatalogEntry {
+    provider: String,
+    model: String,
+    dimensions: usize,
+    distance_metric: EmbeddingDistanceMetric,
+    normalize_output: bool,
+    #[serde(default)]
+    query_prefix: Option<String>,
+    #[serde(default)]
+    document_prefix: Option<String>,
+    supports_multilingual: bool,
+    supports_code: bool,
+    recommended_chunk_chars: usize,
+    recommended_top_k: usize,
 }
 
 #[derive(Debug)]
@@ -174,6 +194,18 @@ fn merge_catalog_data(
             *existing = profile;
         } else {
             merged.profiles.push(profile);
+        }
+    }
+
+    for profile in override_data.embedding_profiles {
+        if let Some(existing) = merged
+            .embedding_profiles
+            .iter_mut()
+            .find(|item| embedding_profile_catalog_key_matches(item, &profile))
+        {
+            *existing = profile;
+        } else {
+            merged.embedding_profiles.push(profile);
         }
     }
 
@@ -352,6 +384,81 @@ pub fn model_profile(provider: &str, model: &str) -> Option<CatalogModelProfile>
         })
 }
 
+pub fn embedding_profile(
+    provider: &str,
+    model: &str,
+    dimensions: usize,
+) -> Option<EmbeddingProfile> {
+    let provider = provider.trim();
+    let model = model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+    let provider_family = embedding_provider_family(provider);
+
+    active_model_catalog()
+        .data
+        .embedding_profiles
+        .iter()
+        .find(|entry| {
+            embedding_profile_matches(entry, provider, provider_family, model, dimensions)
+        })
+        .map(|entry| {
+            embedding_profile_from_catalog_entry(entry, provider_family, model, dimensions)
+        })
+}
+
+fn embedding_provider_family(provider: &str) -> &str {
+    match provider.split(':').next().unwrap_or(provider) {
+        "custom" => "custom",
+        other => other,
+    }
+}
+
+fn embedding_profile_matches(
+    entry: &EmbeddingProfileCatalogEntry,
+    provider: &str,
+    provider_family: &str,
+    model: &str,
+    dimensions: usize,
+) -> bool {
+    (entry.provider.eq_ignore_ascii_case(provider)
+        || entry.provider.eq_ignore_ascii_case(provider_family))
+        && entry.model.eq_ignore_ascii_case(model)
+        && entry.dimensions == dimensions
+}
+
+fn embedding_profile_from_catalog_entry(
+    entry: &EmbeddingProfileCatalogEntry,
+    provider_family: &str,
+    model: &str,
+    dimensions: usize,
+) -> EmbeddingProfile {
+    EmbeddingProfile {
+        profile_id: format!("{provider_family}:{model}:{dimensions}"),
+        provider_family: provider_family.to_string(),
+        model_id: model.to_string(),
+        dimensions,
+        distance_metric: entry.distance_metric.clone(),
+        normalize_output: entry.normalize_output,
+        query_prefix: entry.query_prefix.clone(),
+        document_prefix: entry.document_prefix.clone(),
+        supports_multilingual: entry.supports_multilingual,
+        supports_code: entry.supports_code,
+        recommended_chunk_chars: entry.recommended_chunk_chars,
+        recommended_top_k: entry.recommended_top_k,
+    }
+}
+
+fn embedding_profile_catalog_key_matches(
+    left: &EmbeddingProfileCatalogEntry,
+    right: &EmbeddingProfileCatalogEntry,
+) -> bool {
+    left.provider.eq_ignore_ascii_case(&right.provider)
+        && left.model.eq_ignore_ascii_case(&right.model)
+        && left.dimensions == right.dimensions
+}
+
 pub fn model_route_aliases() -> Vec<ModelRouteConfig> {
     active_model_catalog().data.route_aliases.clone()
 }
@@ -488,6 +595,27 @@ mod tests {
     }
 
     #[test]
+    fn catalog_exposes_embedding_calibration_profiles() {
+        let profile = embedding_profile("openrouter", "qwen/qwen3-embedding-8b", 4096)
+            .expect("embedding profile should exist");
+        assert_eq!(profile.provider_family, "openrouter");
+        assert_eq!(profile.dimensions, 4096);
+        assert_eq!(profile.distance_metric, EmbeddingDistanceMetric::Cosine);
+        assert!(profile.normalize_output);
+        assert!(profile.supports_multilingual);
+        assert!(profile.supports_code);
+        assert_eq!(profile.recommended_chunk_chars, 1200);
+        assert_eq!(profile.recommended_top_k, 10);
+
+        let profile = embedding_profile("llama.cpp", "multilingual-e5-small", 384)
+            .expect("e5 profile should exist");
+        assert_eq!(profile.query_prefix.as_deref(), Some("query: "));
+        assert_eq!(profile.document_prefix.as_deref(), Some("passage: "));
+
+        assert!(embedding_profile("openrouter", "qwen/qwen3-embedding-8b", 1536).is_none());
+    }
+
+    #[test]
     fn provider_defaults_come_from_catalog_data() {
         assert_eq!(provider_default_model("openai-codex"), Some("gpt-5.4"));
         assert_eq!(provider_default_model("ollama"), Some("llama4-scout"));
@@ -528,6 +656,19 @@ mod tests {
                   "features": ["tool_calling"]
                 }
               ],
+              "embedding_profiles": [
+                {
+                  "provider": "openrouter",
+                  "model": "qwen/qwen3-embedding-8b",
+                  "dimensions": 4096,
+                  "distance_metric": "cosine",
+                  "normalize_output": true,
+                  "supports_multilingual": false,
+                  "supports_code": false,
+                  "recommended_chunk_chars": 900,
+                  "recommended_top_k": 6
+                }
+              ],
               "route_aliases": [
                 {
                   "hint": "gemma31b",
@@ -556,6 +697,15 @@ mod tests {
             .expect("profile should merge by provider/model key");
         assert_eq!(gemma.context_window_tokens, Some(128_000));
         assert_eq!(gemma.features, vec![ModelFeature::ToolCalling]);
+        let embedding = merged
+            .embedding_profiles
+            .iter()
+            .find(|profile| {
+                profile.provider == "openrouter" && profile.model == "qwen/qwen3-embedding-8b"
+            })
+            .expect("embedding profile should merge by provider/model/dimensions key");
+        assert_eq!(embedding.recommended_top_k, 6);
+        assert!(!embedding.supports_multilingual);
         let alias = merged
             .route_aliases
             .iter()

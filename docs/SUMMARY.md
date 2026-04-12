@@ -2,7 +2,7 @@
 
 This file is the canonical table of contents for the documentation system.
 
-Last refreshed: **April 3, 2026**.
+Last refreshed: **April 12, 2026**.
 
 ## Language Entry
 
@@ -70,6 +70,8 @@ Last refreshed: **April 3, 2026**.
 ### 7) Fork Architecture & IPC
 
 - [fork/README.md](fork/README.md)
+- [fork/news.md](fork/news.md)
+- [fork/doc-discrepancies.md](fork/doc-discrepancies.md)
 - [delta-registry.md](fork/delta-registry.md)
 - [ipc-plan.md](fork/ipc-plan.md)
 - [ipc-quickstart.md](fork/ipc-quickstart.md)

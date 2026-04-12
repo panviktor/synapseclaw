@@ -4,6 +4,7 @@
 //! should reuse one application-level search implementation instead of
 //! duplicating ad-hoc scoring logic.
 
+use crate::application::services::epistemic_state;
 use crate::application::services::memory_quality_governor;
 use crate::domain::conversation::{ConversationEvent, ConversationKind, EventType};
 use crate::domain::memory::{
@@ -624,10 +625,8 @@ pub async fn search_turn_hybrid(
     let result = memory.hybrid_search(&query).await?;
     let mut matched = HybridTurnSearchMatch::default();
 
+    let mut recall_candidates = Vec::new();
     for scored in result.episodes {
-        if matched.recalled_entries.len() >= options.recall_max_entries {
-            break;
-        }
         let mut entry = scored.entry;
         if session_id.is_some_and(|sid| entry.session_id.as_deref() != Some(sid)) {
             continue;
@@ -645,8 +644,17 @@ pub async fn search_turn_hybrid(
             continue;
         }
         entry.score = Some(scored.score as f64);
-        matched.recalled_entries.push(entry);
+        recall_candidates.push(MemorySearchMatch { entry });
     }
+    matched.recalled_entries = rerank_memory_matches(
+        query_text,
+        session_id,
+        recall_candidates,
+        options.recall_max_entries,
+    )
+    .into_iter()
+    .map(|match_| match_.entry)
+    .collect();
 
     let mut skills = result.skills;
     skills.retain(skill_is_runtime_active);
@@ -763,6 +771,8 @@ fn adjusted_memory_match_score(
     let lexical_bonus = lexical_anchor_bonus(entry, keywords);
     score += lexical_bonus;
     score += memory_quality_governor::retrieval_noise_score_delta(&entry.category, lexical_bonus);
+    score += memory_quality_governor::retrieval_content_noise_score_delta(&entry.content);
+    score += epistemic_state::memory_epistemic_retrieval_score_delta(entry);
     score
 }
 
@@ -1561,6 +1571,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hybrid_turn_search_reranks_memory_through_quality_governor() {
+        let memory = StubMemory {
+            hybrid: HybridSearchResult {
+                episodes: vec![
+                    SearchResult {
+                        entry: MemoryEntry {
+                            id: "daily-1".into(),
+                            key: "daily-reflection".into(),
+                            content: "miscellaneous daily recap from a different reflective branch"
+                                .into(),
+                            category: MemoryCategory::Daily,
+                            timestamp: String::new(),
+                            session_id: Some("s1".into()),
+                            score: None,
+                        },
+                        score: 0.98,
+                        source: SearchSource::Hybrid,
+                    },
+                    SearchResult {
+                        entry: MemoryEntry {
+                            id: "precedent-1".into(),
+                            key: "old-precedent".into(),
+                            content: "generic precedent from another task".into(),
+                            category: MemoryCategory::Custom("precedent".into()),
+                            timestamp: String::new(),
+                            session_id: Some("s1".into()),
+                            score: None,
+                        },
+                        score: 0.99,
+                        source: SearchSource::Hybrid,
+                    },
+                    SearchResult {
+                        entry: MemoryEntry {
+                            id: "conv-1".into(),
+                            key: "early-anchor".into(),
+                            content: "early anchor: responsibility, relationships, and work".into(),
+                            category: MemoryCategory::Conversation,
+                            timestamp: String::new(),
+                            session_id: Some("s1".into()),
+                            score: None,
+                        },
+                        score: 0.76,
+                        source: SearchSource::Hybrid,
+                    },
+                ],
+                entities: vec![],
+                facts: vec![],
+                skills: vec![],
+                reflections: vec![],
+            },
+            ..Default::default()
+        };
+
+        let hits = search_turn_hybrid(
+            &memory,
+            "responsibility relationships work",
+            "agent",
+            Some("s1"),
+            &HybridTurnSearchOptions {
+                recall_max_entries: 3,
+                recall_min_relevance: 0.4,
+                skills_max_count: 0,
+                skills_total_max_chars: 0,
+                entities_max_count: 0,
+                entities_total_max_chars: 0,
+                query_limit: 8,
+            },
+        )
+        .await
+        .unwrap();
+
+        let keys = hits
+            .recalled_entries
+            .into_iter()
+            .map(|entry| entry.key)
+            .collect::<Vec<_>>();
+        assert_eq!(keys[0], "early-anchor");
+    }
+
+    #[tokio::test]
     async fn hybrid_turn_search_prefers_manual_active_skills_and_skips_candidates() {
         let memory = StubMemory {
             hybrid: HybridSearchResult {
@@ -1885,6 +1975,79 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(keys, vec!["atlas-anchor", "daily-note", "old-procedure"]);
+    }
+
+    #[test]
+    fn rerank_memory_matches_penalizes_needs_verification_memory() {
+        let hits = vec![
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "weak-1".into(),
+                    key: "weak-anchor".into(),
+                    content: "project Atlas branch candidate".into(),
+                    category: MemoryCategory::Core,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.64),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "known-1".into(),
+                    key: "known-anchor".into(),
+                    content: "project Atlas branch confirmed".into(),
+                    category: MemoryCategory::Core,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.65),
+                },
+            },
+        ];
+
+        let reranked = rerank_memory_matches("project Atlas branch", Some("session-1"), hits, 2);
+        let keys = reranked
+            .into_iter()
+            .map(|hit| hit.entry.key)
+            .collect::<Vec<_>>();
+
+        assert_eq!(keys, vec!["known-anchor", "weak-anchor"]);
+    }
+
+    #[test]
+    fn rerank_memory_matches_penalizes_low_information_semantic_loops() {
+        let hits = vec![
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "loop-1".into(),
+                    key: "loop-note".into(),
+                    content: "meaning comes from choice and purpose comes from choice because meaning grows from choice and purpose grows from choice because meaning comes from choice".into(),
+                    category: MemoryCategory::Conversation,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.96),
+                },
+            },
+            MemorySearchMatch {
+                entry: MemoryEntry {
+                    id: "anchor-1".into(),
+                    key: "early-anchor".into(),
+                    content: "early anchor: responsibility, relationships, and work".into(),
+                    category: MemoryCategory::Conversation,
+                    timestamp: String::new(),
+                    session_id: Some("session-1".into()),
+                    score: Some(0.74),
+                },
+            },
+        ];
+
+        let reranked = rerank_memory_matches(
+            "responsibility relationships work",
+            Some("session-1"),
+            hits,
+            2,
+        );
+
+        assert_eq!(reranked[0].entry.key, "early-anchor");
     }
 
     #[test]

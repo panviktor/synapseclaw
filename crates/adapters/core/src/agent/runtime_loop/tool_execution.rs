@@ -529,7 +529,16 @@ pub(crate) async fn run_tool_call_loop(
                 }
             }
         }
-        let use_native_tools = provider.supports_native_tools() && !tool_specs.is_empty();
+        if !tool_specs.is_empty() && !provider.supports_native_tools() {
+            return Err(ProviderCapabilityError {
+                provider: provider_name.to_string(),
+                capability: "native_tool_calling".to_string(),
+                message: "tool-capable turns require native tool calling; prompt-guided tool fallback has been removed"
+                    .to_string(),
+            }
+            .into());
+        }
+        let use_native_tools = !tool_specs.is_empty();
 
         let image_marker_count = multimodal::count_image_markers(history);
         for issue in route_capabilities.assess_provider_call(image_marker_count) {
@@ -613,7 +622,7 @@ pub(crate) async fn run_tool_call_loop(
             chat_future.await
         };
 
-        let (response_text, parsed_text, tool_calls, assistant_history_content, native_tool_calls) =
+        let (response_text, tool_calls, assistant_history_content, native_tool_calls) =
             match chat_result {
                 Ok(resp) => {
                     let (resp_input_tokens, resp_output_tokens) = resp
@@ -633,21 +642,7 @@ pub(crate) async fn run_tool_call_loop(
                     });
 
                     let response_text = resp.text_or_empty().to_string();
-                    // First try native structured tool calls (OpenAI-format).
-                    // Fall back to text-based parsing (XML tags, markdown blocks,
-                    // GLM format) only if the provider returned no native calls —
-                    // this ensures we support both native and prompt-guided models.
-                    let mut calls = parse_structured_tool_calls(&resp.tool_calls);
-                    let mut parsed_text = String::new();
-
-                    if calls.is_empty() {
-                        let (fallback_text, fallback_calls) =
-                            parse_canonical_tool_calls(&response_text);
-                        if !fallback_text.is_empty() {
-                            parsed_text = fallback_text;
-                        }
-                        calls = fallback_calls;
-                    }
+                    let calls = parse_structured_tool_calls(&resp.tool_calls)?;
 
                     if let Some(parse_issue) = detect_tool_call_parse_issue(&response_text, &calls)
                     {
@@ -692,16 +687,7 @@ pub(crate) async fn run_tool_call_loop(
                     // follow-up messages can reference the exact call id.
                     let reasoning_content = resp.reasoning_content.clone();
                     let assistant_history_content = if resp.tool_calls.is_empty() {
-                        if use_native_tools {
-                            build_native_assistant_history_from_parsed_calls(
-                                &response_text,
-                                &calls,
-                                reasoning_content.as_deref(),
-                            )
-                            .unwrap_or_else(|| response_text.clone())
-                        } else {
-                            response_text.clone()
-                        }
+                        response_text.clone()
                     } else {
                         build_native_assistant_history(
                             &response_text,
@@ -713,7 +699,6 @@ pub(crate) async fn run_tool_call_loop(
                     let native_calls = resp.tool_calls;
                     (
                         response_text,
-                        parsed_text,
                         calls,
                         assistant_history_content,
                         native_calls,
@@ -747,9 +732,11 @@ pub(crate) async fn run_tool_call_loop(
                 }
             };
 
-        let display_text =
-            resolve_display_text(&response_text, &parsed_text, !tool_calls.is_empty());
-        let display_text = strip_tool_result_blocks(&display_text);
+        let display_text = if tool_calls.is_empty() {
+            response_text.clone()
+        } else {
+            String::new()
+        };
 
         // ── Progress: LLM responded ─────────────────────────────
         if let Some(ref tx) = on_delta {
@@ -842,7 +829,6 @@ pub(crate) async fn run_tool_call_loop(
         );
         total_tool_calls += tool_calls.len();
 
-        let mut tool_results = String::new();
         let mut individual_results: Vec<(Option<String>, String)> = Vec::new();
         let mut ordered_results: Vec<Option<(String, Option<String>, ToolExecutionOutcome)>> =
             (0..tool_calls.len()).map(|_| None).collect();
@@ -1178,47 +1164,25 @@ pub(crate) async fn run_tool_call_loop(
             ordered_results[*idx] = Some((call.name.clone(), call.tool_call_id.clone(), outcome));
         }
 
-        for (tool_name, tool_call_id, outcome) in ordered_results.into_iter().flatten() {
+        for (_tool_name, tool_call_id, outcome) in ordered_results.into_iter().flatten() {
             individual_results.push((tool_call_id, outcome.output.clone()));
-            let _ = writeln!(
-                tool_results,
-                "<tool_result name=\"{}\">\n{}\n</tool_result>",
-                tool_name, outcome.output
-            );
         }
 
-        // Add assistant message with tool calls + tool results to history.
-        // Native mode: use JSON-structured messages so convert_messages() can
-        // reconstruct proper OpenAI-format tool_calls and tool result messages.
-        // Prompt mode: use XML-based text format as before.
+        // Add assistant message with native tool calls + tool results to history.
         history.push(ChatMessage::assistant(assistant_history_content));
-        if native_tool_calls.is_empty() {
-            let all_results_have_ids = use_native_tools
-                && !individual_results.is_empty()
-                && individual_results
-                    .iter()
-                    .all(|(tool_call_id, _)| tool_call_id.is_some());
-            if all_results_have_ids {
-                for (tool_call_id, result) in &individual_results {
-                    let tool_msg = serde_json::json!({
-                        "tool_call_id": tool_call_id,
-                        "content": result,
-                    });
-                    history.push(ChatMessage::tool(tool_msg.to_string()));
-                }
-            } else {
-                history.push(ChatMessage::user(format!("[Tool results]\n{tool_results}")));
-            }
-        } else {
-            for (native_call, (_, result)) in
-                native_tool_calls.iter().zip(individual_results.iter())
-            {
-                let tool_msg = serde_json::json!({
-                    "tool_call_id": native_call.id,
-                    "content": result,
-                });
-                history.push(ChatMessage::tool(tool_msg.to_string()));
-            }
+        if native_tool_calls.len() != individual_results.len() {
+            anyhow::bail!(
+                "native tool-call/result count mismatch: {} calls, {} results",
+                native_tool_calls.len(),
+                individual_results.len()
+            );
+        }
+        for (native_call, (_, result)) in native_tool_calls.iter().zip(individual_results.iter()) {
+            let tool_msg = serde_json::json!({
+                "tool_call_id": native_call.id,
+                "content": result,
+            });
+            history.push(ChatMessage::tool(tool_msg.to_string()));
         }
 
         match loop_action {

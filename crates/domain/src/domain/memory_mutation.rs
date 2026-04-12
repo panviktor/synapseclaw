@@ -40,6 +40,8 @@ pub struct MutationCandidate {
     pub confidence: f32,
     /// Where this candidate came from.
     pub source: MutationSource,
+    /// Explicit memory-quality class used by the governor before durable writes.
+    pub write_class: Option<MutationWriteClass>,
 }
 
 /// Origin of a mutation candidate.
@@ -53,6 +55,18 @@ pub enum MutationSource {
     ToolOutput,
     /// Reflection/skill learning produced this.
     Reflection,
+}
+
+/// Durable write class for memory-quality governance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationWriteClass {
+    Preference,
+    TaskState,
+    FactAnchor,
+    Recipe,
+    FailurePattern,
+    EphemeralRepairTrace,
+    GenericDialogue,
 }
 
 // ── Decision ─────────────────────────────────────────────────────

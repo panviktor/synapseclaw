@@ -7,7 +7,7 @@
 use crate::application::services::learning_candidate_service::LearningCandidate;
 use crate::application::services::learning_quality_service::LearningCandidateAssessment;
 use crate::domain::run_recipe::RunRecipe;
-use crate::domain::tool_fact::{ProfileOperation, UserProfileField};
+use crate::domain::tool_fact::ProfileOperation;
 use crate::domain::user_profile::UserProfile;
 
 pub fn strengthen_learning_assessments(
@@ -44,11 +44,7 @@ fn strengthen_profile_assessment(
         return assessment;
     };
 
-    if let UserProfileField::KnownEnvironments = candidate.field {
-        return strengthen_known_environments_assessment(assessment, candidate, profile);
-    }
-
-    let current_value = current_profile_value(profile, &candidate.field);
+    let current_value = profile.get_text(&candidate.key);
     let is_reinforcement = match (
         &candidate.operation,
         current_value.as_deref(),
@@ -78,34 +74,6 @@ fn strengthen_profile_assessment(
         assessment.confidence = assessment.confidence.max(0.98);
         assessment.accepted = true;
         assessment.reason = "explicit_profile_correction";
-    }
-
-    assessment
-}
-
-fn strengthen_known_environments_assessment(
-    mut assessment: LearningCandidateAssessment,
-    candidate: &crate::application::services::learning_candidate_service::UserProfileLearningCandidate,
-    profile: &UserProfile,
-) -> LearningCandidateAssessment {
-    match (&candidate.operation, candidate.value.as_deref()) {
-        (ProfileOperation::Set, Some(next)) => {
-            if profile
-                .known_environments
-                .iter()
-                .any(|existing| value_matches(existing, next))
-            {
-                assessment.confidence = assessment.confidence.max(0.99);
-                assessment.accepted = true;
-                assessment.reason = "reinforced_profile_fact";
-            }
-        }
-        (ProfileOperation::Clear, _) if !profile.known_environments.is_empty() => {
-            assessment.confidence = assessment.confidence.max(0.98);
-            assessment.accepted = true;
-            assessment.reason = "explicit_profile_correction";
-        }
-        _ => {}
     }
 
     assessment
@@ -146,17 +114,6 @@ fn recipe_repetition_bonus(success_count: u32) -> f32 {
     }
 }
 
-fn current_profile_value(profile: &UserProfile, field: &UserProfileField) -> Option<String> {
-    match field {
-        UserProfileField::PreferredLanguage => profile.preferred_language.clone(),
-        UserProfileField::Timezone => profile.timezone.clone(),
-        UserProfileField::DefaultCity => profile.default_city.clone(),
-        UserProfileField::CommunicationStyle => profile.communication_style.clone(),
-        UserProfileField::KnownEnvironments => None,
-        UserProfileField::DefaultDeliveryTarget => None,
-    }
-}
-
 fn value_matches(current: &str, next: &str) -> bool {
     current.trim().eq_ignore_ascii_case(next.trim())
 }
@@ -167,15 +124,16 @@ mod tests {
     use crate::application::services::learning_candidate_service::{
         RunRecipeLearningCandidate, UserProfileLearningCandidate,
     };
+    use serde_json::json;
 
     #[test]
     fn strengthens_matching_profile_fact_as_reinforcement() {
         let strengthened = strengthen_learning_assessments(
             &[LearningCandidateAssessment {
                 candidate: LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                    field: UserProfileField::Timezone,
+                    key: "project_alias".into(),
                     operation: ProfileOperation::Set,
-                    value: Some("Europe/Berlin".into()),
+                    value: Some("Borealis".into()),
                 }),
                 confidence: 0.96,
                 accepted: true,
@@ -183,8 +141,7 @@ mod tests {
                 reason: "explicit_profile_fact",
             }],
             Some(&UserProfile {
-                timezone: Some("Europe/Berlin".into()),
-                ..Default::default()
+                facts: [("project_alias".into(), json!("Borealis"))].into(),
             }),
             &[],
         );
@@ -198,9 +155,9 @@ mod tests {
         let strengthened = strengthen_learning_assessments(
             &[LearningCandidateAssessment {
                 candidate: LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                    field: UserProfileField::Timezone,
+                    key: "project_alias".into(),
                     operation: ProfileOperation::Set,
-                    value: Some("Europe/Paris".into()),
+                    value: Some("Atlas".into()),
                 }),
                 confidence: 0.96,
                 accepted: true,
@@ -208,8 +165,7 @@ mod tests {
                 reason: "explicit_profile_fact",
             }],
             Some(&UserProfile {
-                timezone: Some("Europe/Berlin".into()),
-                ..Default::default()
+                facts: [("project_alias".into(), json!("Borealis"))].into(),
             }),
             &[],
         );
@@ -251,11 +207,11 @@ mod tests {
     }
 
     #[test]
-    fn additive_known_environment_is_not_treated_as_correction() {
+    fn new_profile_fact_is_not_treated_as_correction() {
         let strengthened = strengthen_learning_assessments(
             &[LearningCandidateAssessment {
                 candidate: LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                    field: UserProfileField::KnownEnvironments,
+                    key: "release_tracks".into(),
                     operation: ProfileOperation::Set,
                     value: Some("staging".into()),
                 }),
@@ -265,12 +221,11 @@ mod tests {
                 reason: "explicit_profile_fact",
             }],
             Some(&UserProfile {
-                known_environments: vec!["prod".into()],
-                ..Default::default()
+                facts: [("release_tracks".into(), json!("prod"))].into(),
             }),
             &[],
         );
 
-        assert_eq!(strengthened[0].reason, "explicit_profile_fact");
+        assert_eq!(strengthened[0].reason, "explicit_profile_correction");
     }
 }

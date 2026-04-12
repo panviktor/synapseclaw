@@ -83,11 +83,12 @@ mod tests {
     #[test]
     fn builds_guidance_from_candidates() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                preferred_language: Some("ru".into()),
-                timezone: Some("Europe/Berlin".into()),
-                default_city: Some("Berlin".into()),
-                ..Default::default()
+            user_profile: Some({
+                let mut profile = UserProfile::default();
+                profile.set("response_locale", serde_json::json!("ru"));
+                profile.set("project_alias", serde_json::json!("Borealis"));
+                profile.set("workspace_anchor", serde_json::json!("Borealis"));
+                profile
             }),
             dialogue_state: Some(DialogueStateSnapshot {
                 focus_entities: vec![],

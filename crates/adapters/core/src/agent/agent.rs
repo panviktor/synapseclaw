@@ -4,7 +4,7 @@ use crate::agent::context_engine::{
     ProviderPromptSnapshot,
 };
 use crate::agent::dispatcher::{
-    NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult, XmlToolDispatcher,
+    NativeToolDispatcher, ParsedToolCall, ToolDispatcher, ToolExecutionResult,
 };
 use crate::agent::execute_one_tool;
 use crate::agent::prompt::{PromptContext, SystemPromptBuilder};
@@ -12,7 +12,7 @@ use crate::agent::tool_repair_classification::classify_tool_execution_error;
 use crate::agent::turn_context_fmt;
 use crate::runtime;
 use crate::tools::{self, Tool, ToolSpec};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::sync::Arc;
@@ -37,8 +37,31 @@ use synapse_domain::application::services::provider_context_budget::{
 use synapse_domain::application::services::provider_native_context_policy::{
     resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
 };
+use synapse_domain::application::services::route_admission_history::{
+    latest_route_admission_repair, recent_route_admission_reasons,
+};
 use synapse_domain::application::services::route_switch_preflight::{
     assess_route_switch_preflight_for_budget, RouteSwitchPreflightResolution,
+};
+use synapse_domain::application::services::runtime_assumptions::{
+    apply_tool_repair_assumption_challenges, build_runtime_assumptions,
+    challenge_runtime_assumption_ledger, merge_runtime_assumption_ledger, RuntimeAssumption,
+    RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
+    RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
+};
+use synapse_domain::application::services::runtime_calibration::{
+    append_runtime_calibration_observation, append_tool_fact_calibration_observations,
+    RuntimeCalibrationDecisionKind, RuntimeCalibrationObservation, RuntimeCalibrationOutcome,
+    RuntimeCalibrationRecord, RuntimeCalibrationSuppressionKey,
+};
+use synapse_domain::application::services::runtime_trace_janitor::{
+    append_runtime_handoff_packet, append_runtime_watchdog_alerts, run_runtime_trace_janitor,
+    RuntimeHandoffArtifact, RuntimeTraceJanitorInput,
+};
+use synapse_domain::application::services::runtime_watchdog::{
+    build_runtime_subsystem_observations, build_runtime_watchdog_digest,
+    format_runtime_watchdog_context, RuntimeSubsystemObservationInput, RuntimeWatchdogAlert,
+    RuntimeWatchdogInput,
 };
 use synapse_domain::application::services::scoped_instruction_resolution::{
     adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
@@ -46,7 +69,7 @@ use synapse_domain::application::services::scoped_instruction_resolution::{
 };
 use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_domain::application::services::turn_admission::{
-    assess_turn_admission, TurnAdmissionInput,
+    assess_turn_admission, CandidateAdmissionDecision, TurnAdmissionInput,
 };
 use synapse_domain::application::services::turn_context::{
     self as tc, ContinuationPolicy, PromptBudget,
@@ -55,7 +78,7 @@ use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
 use synapse_domain::config::schema::{CapabilityLane, Config, ContextCompressionConfig};
 use synapse_domain::domain::tool_fact::TypedToolFact;
-use synapse_domain::domain::tool_repair::ToolRepairTrace;
+use synapse_domain::domain::tool_repair::{tool_failure_kind_name, ToolRepairTrace};
 use synapse_domain::domain::turn_admission::{
     context_pressure_state_name, turn_admission_action_name, turn_intent_name, TurnAdmissionAction,
 };
@@ -78,6 +101,7 @@ use synapse_domain::ports::user_profile_context::{
 use synapse_domain::ports::user_profile_store::UserProfileStorePort;
 use synapse_memory::{self, MemoryCategory, UnifiedMemoryPort};
 use synapse_observability::{self, Observer, ObserverEvent};
+use synapse_providers::error_classification::classify_context_limit_error;
 use synapse_providers::{
     self, ChatMessage, ChatRequest, ConversationMessage, Provider, ProviderCapabilityError,
 };
@@ -162,6 +186,47 @@ fn provider_context_budget_input_from_stats_for_profile(
     provider_context_budget_input_from_stats(stats).with_target_model_profile(profile)
 }
 
+fn route_calibration_signature(
+    provider: &str,
+    model: &str,
+    decision: &CandidateAdmissionDecision,
+) -> String {
+    format!(
+        "provider={provider},model={model},action={},pressure={}",
+        turn_admission_action_name(decision.snapshot.action),
+        context_pressure_state_name(decision.snapshot.pressure_state)
+    )
+}
+
+fn route_calibration_confidence(decision: &CandidateAdmissionDecision) -> u16 {
+    match decision.snapshot.action {
+        TurnAdmissionAction::Proceed if decision.reasons.is_empty() => 9_000,
+        TurnAdmissionAction::Proceed => 8_000,
+        TurnAdmissionAction::Compact => 6_500,
+        TurnAdmissionAction::Reroute => 6_000,
+        TurnAdmissionAction::Block => 4_500,
+    }
+}
+
+fn tool_calibration_signature(result: &ToolExecutionResult) -> String {
+    match result.repair_trace.as_ref() {
+        Some(trace) => format!(
+            "tool={},failure={}",
+            result.name,
+            tool_failure_kind_name(trace.failure_kind)
+        ),
+        None => format!("tool={}", result.name),
+    }
+}
+
+fn tool_calibration_confidence(result: &ToolExecutionResult) -> u16 {
+    if result.success {
+        7_500
+    } else {
+        8_000
+    }
+}
+
 fn history_compaction_cache_key(
     transcript: &str,
     policy: &HistoryCompressionPolicy,
@@ -244,6 +309,14 @@ pub struct Agent {
     recent_turn_tool_repairs: Vec<ToolRepairTrace>,
     /// Bounded recent structured route-admission states for this session.
     recent_turn_admissions: Vec<RouteAdmissionState>,
+    /// Bounded session/runtime assumption ledger for this live agent.
+    recent_runtime_assumptions: Vec<RuntimeAssumption>,
+    /// Bounded session/runtime calibration ledger for this live agent.
+    recent_runtime_calibrations: Vec<RuntimeCalibrationRecord>,
+    /// Bounded session/runtime watchdog alerts for this live agent.
+    recent_runtime_watchdog_alerts: Vec<RuntimeWatchdogAlert>,
+    /// Bounded short-lived handoff artifacts for this live agent.
+    recent_runtime_handoff_artifacts: Vec<RuntimeHandoffArtifact>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
@@ -688,6 +761,10 @@ impl AgentBuilder {
             last_turn_tool_repair: None,
             recent_turn_tool_repairs: Vec::new(),
             recent_turn_admissions: Vec::new(),
+            recent_runtime_assumptions: Vec::new(),
+            recent_runtime_calibrations: Vec::new(),
+            recent_runtime_watchdog_alerts: Vec::new(),
+            recent_runtime_handoff_artifacts: Vec::new(),
             allowed_tools: allowed,
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
@@ -855,6 +932,115 @@ impl Agent {
         &self.recent_turn_admissions
     }
 
+    pub fn recent_runtime_assumptions(&self) -> &[RuntimeAssumption] {
+        &self.recent_runtime_assumptions
+    }
+
+    pub fn recent_runtime_calibrations(&self) -> &[RuntimeCalibrationRecord] {
+        &self.recent_runtime_calibrations
+    }
+
+    pub fn recent_runtime_watchdog_alerts(&self) -> &[RuntimeWatchdogAlert] {
+        &self.recent_runtime_watchdog_alerts
+    }
+
+    pub fn recent_runtime_handoff_artifacts(&self) -> &[RuntimeHandoffArtifact] {
+        &self.recent_runtime_handoff_artifacts
+    }
+
+    fn run_runtime_trace_janitor(&mut self, now_unix: i64) {
+        let cleaned = run_runtime_trace_janitor(RuntimeTraceJanitorInput {
+            tool_repairs: &self.recent_turn_tool_repairs,
+            assumptions: &self.recent_runtime_assumptions,
+            watchdog_alerts: &self.recent_runtime_watchdog_alerts,
+            calibration_records: &self.recent_runtime_calibrations,
+            handoff_artifacts: &self.recent_runtime_handoff_artifacts,
+            now_unix,
+        });
+        let removed_total = cleaned.report.removed_total();
+        let promotion_candidates = cleaned.report.promotion_candidates.len();
+        self.recent_turn_tool_repairs = cleaned.tool_repairs;
+        self.recent_runtime_assumptions = cleaned.assumptions;
+        self.recent_runtime_watchdog_alerts = cleaned.watchdog_alerts;
+        self.recent_runtime_calibrations = cleaned.calibration_records;
+        self.recent_runtime_handoff_artifacts = cleaned.handoff_artifacts;
+        if removed_total > 0 || promotion_candidates > 0 {
+            tracing::debug!(
+                removed_total,
+                promotion_candidates,
+                "Runtime trace janitor cleaned session ledgers"
+            );
+        }
+    }
+
+    fn record_runtime_calibration_observation(
+        &mut self,
+        observation: RuntimeCalibrationObservation,
+    ) {
+        let ledger = append_runtime_calibration_observation(
+            &self.recent_runtime_calibrations,
+            observation,
+            chrono::Utc::now().timestamp(),
+        );
+        self.recent_runtime_calibrations = ledger.records;
+    }
+
+    fn record_route_calibration(
+        &mut self,
+        decision: &CandidateAdmissionDecision,
+        outcome: RuntimeCalibrationOutcome,
+        observed_at_unix: i64,
+        effective_model: &str,
+    ) {
+        if decision.snapshot.action == TurnAdmissionAction::Block {
+            return;
+        }
+        self.record_runtime_calibration_observation(RuntimeCalibrationObservation {
+            decision_kind: RuntimeCalibrationDecisionKind::RouteChoice,
+            decision_signature: route_calibration_signature(
+                &self.provider_name,
+                effective_model,
+                decision,
+            ),
+            suppression_key: Some(RuntimeCalibrationSuppressionKey::Route {
+                provider: self.provider_name.clone(),
+                model: effective_model.to_string(),
+            }),
+            confidence_basis_points: route_calibration_confidence(decision),
+            outcome,
+            observed_at_unix,
+        });
+    }
+
+    fn record_tool_calibrations(&mut self, results: &[ToolExecutionResult], observed_at_unix: i64) {
+        for result in results {
+            self.record_runtime_calibration_observation(RuntimeCalibrationObservation {
+                decision_kind: RuntimeCalibrationDecisionKind::ToolChoice,
+                decision_signature: tool_calibration_signature(result),
+                suppression_key: Some(RuntimeCalibrationSuppressionKey::Tool {
+                    tool_name: result.name.clone(),
+                }),
+                confidence_basis_points: tool_calibration_confidence(result),
+                outcome: if result.success {
+                    RuntimeCalibrationOutcome::Succeeded
+                } else {
+                    RuntimeCalibrationOutcome::Failed
+                },
+                observed_at_unix,
+            });
+        }
+        let tool_facts = results
+            .iter()
+            .flat_map(|result| result.tool_facts.iter().cloned())
+            .collect::<Vec<_>>();
+        let ledger = append_tool_fact_calibration_observations(
+            &self.recent_runtime_calibrations,
+            &tool_facts,
+            observed_at_unix,
+        );
+        self.recent_runtime_calibrations = ledger.records;
+    }
+
     pub fn user_profile_key(&self) -> Option<&str> {
         self.user_profile_key.as_deref()
     }
@@ -945,6 +1131,10 @@ impl Agent {
         rebuilt.last_turn_tool_repair = None;
         rebuilt.recent_turn_tool_repairs.clear();
         rebuilt.recent_turn_admissions.clear();
+        rebuilt.recent_runtime_assumptions.clear();
+        rebuilt.recent_runtime_calibrations.clear();
+        rebuilt.recent_runtime_watchdog_alerts.clear();
+        rebuilt.recent_runtime_handoff_artifacts.clear();
         rebuilt.active_lane = route_lane;
         rebuilt.active_candidate_index = route_candidate_index;
         rebuilt.dialogue_state_store = dialogue_state_store;
@@ -1021,25 +1211,22 @@ impl Agent {
             runtime_ports.user_profile_store.clone()
         {
             store
+        } else if let Some(db) = surreal_handle.as_ref() {
+            Arc::new(synapse_memory::SurrealUserProfileStore::new(Arc::clone(db)))
         } else {
             let profile_path = config
                 .config_path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("user_profiles.json");
-            match synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path) {
-                Ok(store) => Arc::new(store),
-                Err(error) => {
-                    tracing::warn!(
-                        path = %profile_path.display(),
-                        %error,
-                        "Failed to initialize persistent user profile store, falling back to memory"
-                    );
-                    Arc::new(
-                        synapse_domain::ports::user_profile_store::InMemoryUserProfileStore::new(),
+            let store = synapse_infra::user_profile_store::FileUserProfileStore::new(&profile_path)
+                .with_context(|| {
+                    format!(
+                        "failed to initialize persistent user profile store at {}",
+                        profile_path.display()
                     )
-                }
-            }
+                })?;
+            Arc::new(store)
         };
         let user_profile_context: Arc<dyn UserProfileContextPort> = runtime_ports
             .user_profile_context
@@ -1139,10 +1326,17 @@ impl Agent {
 
         let dispatcher_choice = config.agent.tool_dispatcher.as_str();
         let tool_dispatcher: Box<dyn ToolDispatcher> = match dispatcher_choice {
-            "native" => Box::new(NativeToolDispatcher),
-            "xml" => Box::new(XmlToolDispatcher),
-            _ if provider.supports_native_tools() => Box::new(NativeToolDispatcher),
-            _ => Box::new(XmlToolDispatcher),
+            "auto" | "native" | "" => Box::new(NativeToolDispatcher),
+            "xml" => {
+                anyhow::bail!(
+                    "agent.tool_dispatcher=xml has been removed; configure a provider with native tool calling"
+                )
+            }
+            other => {
+                anyhow::bail!(
+                    "unsupported agent.tool_dispatcher={other}; supported values are auto and native"
+                )
+            }
         };
 
         let route_model_by_hint: HashMap<String, String> = config
@@ -1610,23 +1804,20 @@ impl Agent {
                 Err(error) => {
                     tracing::warn!(
                         %error,
-                        "Live agent history compaction summary failed; using transcript fallback"
+                        "Live agent history compaction summary failed; skipping compaction"
                     );
-                    String::new()
+                    return false;
                 }
             }
         };
-        let summary = if summary_raw.is_empty() {
-            synapse_domain::domain::util::truncate_with_ellipsis(
-                &transcript,
-                policy.max_summary_chars,
-            )
-        } else {
-            synapse_domain::domain::util::truncate_with_ellipsis(
-                &summary_raw,
-                policy.max_summary_chars,
-            )
-        };
+        if summary_raw.trim().is_empty() {
+            tracing::warn!("Live agent history compaction summary was empty; skipping compaction");
+            return false;
+        }
+        let summary = synapse_domain::domain::util::truncate_with_ellipsis(
+            &summary_raw,
+            policy.max_summary_chars,
+        );
         self.history.splice(
             original_start..original_end,
             std::iter::once(ConversationMessage::Chat(ChatMessage::assistant(format!(
@@ -1663,7 +1854,6 @@ impl Agent {
     }
 
     fn build_system_prompt(&self) -> Result<String> {
-        let instructions = self.tool_dispatcher.prompt_instructions(&self.tools);
         let ctx = PromptContext {
             workspace_dir: &self.workspace_dir,
             model_name: &self.model_name,
@@ -1671,7 +1861,7 @@ impl Agent {
             skills: &self.skills,
             skills_prompt_mode: self.skills_prompt_mode,
             identity_config: Some(&self.identity_config),
-            dispatcher_instructions: &instructions,
+            dispatcher_instructions: "",
             tool_specs_are_out_of_band: self.tool_dispatcher.should_send_tool_specs(),
         };
         let (prompt, section_stats) = self.prompt_builder.build_with_stats(&ctx)?;
@@ -1893,6 +2083,7 @@ impl Agent {
         self.last_turn_usage = None;
         self.last_turn_tool_facts.clear();
         self.last_turn_tool_repair = None;
+        self.run_runtime_trace_janitor(chrono::Utc::now().timestamp());
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -1985,15 +2176,18 @@ impl Agent {
         } else {
             None
         };
-        let recent_admission_reasons = self
-            .recent_turn_admissions
-            .last()
-            .map(|admission| admission.reasons.as_slice())
-            .unwrap_or(&[]);
-        let recent_admission_repair = self
-            .recent_turn_admissions
-            .last()
-            .and_then(|admission| admission.recommended_action);
+        let recent_admission_reasons = recent_route_admission_reasons(&self.recent_turn_admissions);
+        let recent_admission_repair = latest_route_admission_repair(&self.recent_turn_admissions);
+        let observed_assumptions = build_runtime_assumptions(RuntimeAssumptionInput {
+            user_message,
+            interpretation: turn_interpretation.as_ref(),
+            recent_admission_repair,
+            recent_admission_reasons: &recent_admission_reasons,
+        });
+        self.recent_runtime_assumptions = merge_runtime_assumption_ledger(
+            &self.recent_runtime_assumptions,
+            &observed_assumptions,
+        );
         let turn_ctx = tc::assemble_turn_context(
             self.memory.as_ref(),
             self.run_recipe_store.as_ref().map(|store| store.as_ref()),
@@ -2003,7 +2197,7 @@ impl Agent {
             self.memory_session_id.as_deref(),
             turn_interpretation.as_ref(),
             &self.recent_turn_tool_repairs,
-            recent_admission_reasons,
+            &recent_admission_reasons,
             recent_admission_repair,
             &self.prompt_budget,
             continuation,
@@ -2148,6 +2342,7 @@ impl Agent {
                 turn_ctx.execution_guidance.as_ref(),
                 &resolved_turn_defaults,
                 user_message,
+                &self.recent_runtime_calibrations,
             );
         let mut tool_facts_this_turn = Vec::new();
         let mut last_tool_repair_this_turn = None::<ToolRepairTrace>;
@@ -2182,6 +2377,7 @@ impl Agent {
                 current_profile: &effective_model_profile,
                 provider_capabilities: &provider_capabilities,
                 provider_context: provider_context_input,
+                calibration_records: &self.recent_runtime_calibrations,
                 catalog: None,
             });
             let observed_at_unix = chrono::Utc::now().timestamp();
@@ -2197,6 +2393,42 @@ impl Agent {
                     Some(admission_state),
                     observed_at_unix,
                 );
+            let observed_assumptions = build_runtime_assumptions(RuntimeAssumptionInput {
+                user_message,
+                interpretation: turn_interpretation.as_ref(),
+                recent_admission_repair: admission_decision.recommended_action,
+                recent_admission_reasons: &admission_decision.reasons,
+            });
+            self.recent_runtime_assumptions = merge_runtime_assumption_ledger(
+                &self.recent_runtime_assumptions,
+                &observed_assumptions,
+            );
+            let context_cache_stats =
+                self.history_compaction_cache_stats_for_compression(&effective_compression);
+            let memory_backend_healthy = self.memory.health_check().await;
+            let embedding_profile = self.memory.embedding_profile();
+            let subsystem_observations =
+                build_runtime_subsystem_observations(RuntimeSubsystemObservationInput {
+                    memory_backend_healthy: Some(memory_backend_healthy),
+                    embedding_profile: Some(&embedding_profile),
+                    now_unix: observed_at_unix,
+                    ..Default::default()
+                });
+            let runtime_watchdog_digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
+                last_admission: self.recent_turn_admissions.last(),
+                recent_admissions: &self.recent_turn_admissions,
+                last_tool_repair: self.last_turn_tool_repair.as_ref(),
+                recent_tool_repairs: &self.recent_turn_tool_repairs,
+                context_cache: Some(&context_cache_stats),
+                assumptions: &self.recent_runtime_assumptions,
+                subsystem_observations: &subsystem_observations,
+                now_unix: observed_at_unix,
+            });
+            self.recent_runtime_watchdog_alerts = append_runtime_watchdog_alerts(
+                &self.recent_runtime_watchdog_alerts,
+                &runtime_watchdog_digest.alerts,
+                observed_at_unix,
+            );
             let system_breakdown = system_message_breakdown(&self.history)
                 .into_iter()
                 .map(|(name, chars)| format!("{name}={chars}"))
@@ -2303,15 +2535,44 @@ impl Agent {
             }
 
             if admission_decision.snapshot.action == TurnAdmissionAction::Block {
+                let handoff_packet =
+                    synapse_domain::application::services::session_handoff::build_session_handoff_packet(
+                        synapse_domain::application::services::session_handoff::SessionHandoffInput {
+                            user_message,
+                            interpretation: turn_interpretation.as_ref(),
+                            recent_admission_repair: admission_decision.recommended_action,
+                            recent_admission_reasons: &admission_decision.reasons,
+                            recalled_entries: &turn_ctx.recalled_entries,
+                            session_matches: &turn_ctx.session_matches,
+                            run_recipes: &turn_ctx.run_recipes,
+                        },
+                    );
+                let handoff_packet_text = handoff_packet
+                    .as_ref()
+                    .map(|packet| {
+                        self.recent_runtime_handoff_artifacts = append_runtime_handoff_packet(
+                            &self.recent_runtime_handoff_artifacts,
+                            packet,
+                            observed_at_unix,
+                        );
+                        synapse_domain::application::services::session_handoff::format_session_handoff_packet(
+                            packet,
+                        )
+                    })
+                    .unwrap_or_default();
                 anyhow::bail!(
-                    "turn admission blocked provider call intent={} pressure={} provider={} model={}",
+                    "turn admission blocked provider call intent={} pressure={} provider={} model={}\n{}",
                     turn_intent_name(admission_decision.snapshot.intent),
                     context_pressure_state_name(admission_decision.snapshot.pressure_state),
                     self.provider_name,
-                    effective_model
+                    effective_model,
+                    handoff_packet_text
                 );
             }
             let mut messages = snapshot.messages;
+            if let Some(block) = format_runtime_watchdog_context(&runtime_watchdog_digest) {
+                messages.push(ChatMessage::system(block));
+            }
 
             // Inject enrichment prefix on the last user message for the provider
             // call — not persisted in history.
@@ -2401,6 +2662,15 @@ impl Agent {
             {
                 match issue {
                     ProviderCallCapabilityIssue::MissingVisionInput { image_marker_count } => {
+                        self.recent_runtime_assumptions = challenge_runtime_assumption_ledger(
+                            &self.recent_runtime_assumptions,
+                            RuntimeAssumptionChallenge {
+                                kind: RuntimeAssumptionKind::RouteCapability,
+                                value: "missing_vision_input",
+                                invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+                                replacement_path: RuntimeAssumptionReplacementPath::SwitchRoute,
+                            },
+                        );
                         return Err(ProviderCapabilityError {
                             provider: self.provider_name.clone(),
                             capability: "vision".to_string(),
@@ -2429,8 +2699,57 @@ impl Agent {
                 )
                 .await
             {
-                Ok(resp) => resp,
-                Err(err) => return Err(err),
+                Ok(resp) => {
+                    self.record_route_calibration(
+                        &admission_decision,
+                        RuntimeCalibrationOutcome::Succeeded,
+                        chrono::Utc::now().timestamp(),
+                        &effective_model,
+                    );
+                    resp
+                }
+                Err(err) => {
+                    if let Some(observation) = classify_context_limit_error(&err) {
+                        self.recent_runtime_assumptions = challenge_runtime_assumption_ledger(
+                            &self.recent_runtime_assumptions,
+                            RuntimeAssumptionChallenge {
+                                kind: RuntimeAssumptionKind::ContextWindow,
+                                value: "context_limit_exceeded",
+                                invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+                                replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+                            },
+                        );
+                        if observation.observed_context_window_tokens.is_some() {
+                            let profile_catalog =
+                                crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
+                                    self.workspace_dir.clone(),
+                                    Some(&self.provider_name),
+                                    self.provider_api_url.as_deref(),
+                                );
+                            if let Err(record_error) = profile_catalog
+                                .record_context_limit_observation(
+                                    &self.provider_name,
+                                    &effective_model,
+                                    observation,
+                                )
+                            {
+                                tracing::debug!(
+                                    provider = self.provider_name,
+                                    model = effective_model,
+                                    error = %record_error,
+                                    "Failed to record context-limit model profile observation"
+                                );
+                            }
+                        }
+                    }
+                    self.record_route_calibration(
+                        &admission_decision,
+                        RuntimeCalibrationOutcome::Failed,
+                        chrono::Utc::now().timestamp(),
+                        &effective_model,
+                    );
+                    return Err(err);
+                }
             };
 
             // Accumulate token usage from provider response
@@ -2448,7 +2767,7 @@ impl Agent {
                     Some(prev.output_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0));
             }
 
-            let (text, parsed_calls) = self.tool_dispatcher.parse_response(&response);
+            let (text, parsed_calls) = self.tool_dispatcher.parse_response(&response)?;
             let calls = self
                 .deduplicate_turn_calls(parsed_calls)
                 .into_iter()
@@ -2537,6 +2856,11 @@ impl Agent {
                         &tool_repairs_this_turn,
                         chrono::Utc::now().timestamp(),
                     );
+                self.recent_runtime_assumptions = apply_tool_repair_assumption_challenges(
+                    &self.recent_runtime_assumptions,
+                    &tool_repairs_this_turn,
+                );
+                self.run_runtime_trace_janitor(chrono::Utc::now().timestamp());
 
                 return Ok(final_text);
             }
@@ -2559,6 +2883,7 @@ impl Agent {
             let results = self
                 .execute_tools_with_cache(&calls, &mut executed_call_cache)
                 .await;
+            self.record_tool_calibrations(&results, chrono::Utc::now().timestamp());
             tool_facts_this_turn.extend(
                 results
                     .iter()
@@ -2576,7 +2901,7 @@ impl Agent {
                     .iter()
                     .filter_map(|result| result.repair_trace.clone()),
             );
-            let formatted = self.tool_dispatcher.format_results(&results);
+            let formatted = self.tool_dispatcher.format_results(&results)?;
             self.history.push(formatted);
             self.trim_history();
         }
@@ -2880,7 +3205,7 @@ mod tests {
             .tools(vec![Box::new(MockTool)])
             .memory(mem)
             .observer(observer)
-            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
             .workspace_dir(std::path::PathBuf::from("/tmp"))
             .build()
             .expect("agent builder should succeed with valid config");
@@ -2907,7 +3232,7 @@ mod tests {
             .tools(vec![Box::new(MockTool)])
             .memory(mem)
             .observer(observer)
-            .tool_dispatcher(Box::new(XmlToolDispatcher))
+            .tool_dispatcher(Box::new(NativeToolDispatcher))
             .workspace_dir(std::path::PathBuf::from("/tmp"))
             .current_model_profile(ResolvedModelProfile {
                 features: vec![ModelFeature::Vision],

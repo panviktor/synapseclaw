@@ -19,9 +19,12 @@ use synapse_domain::config::schema::{
 use synapse_domain::ports::agent_runtime::{
     AgentRuntimeError, AgentRuntimeErrorKind, AgentRuntimePort, AgentTurnResult,
 };
-use synapse_domain::ports::model_profile_catalog::ModelProfileCatalogPort;
+use synapse_domain::ports::model_profile_catalog::{
+    ContextLimitProfileObservation, ModelProfileCatalogPort,
+};
 use synapse_domain::ports::provider::ProviderCapabilities;
 use synapse_infra::approval::ApprovalManager;
+use synapse_providers::error_classification::classify_context_limit_error;
 use synapse_providers::{ChatMessage, Provider, ProviderCapabilityError, ProviderRuntimeOptions};
 use synapse_security::scrub_credentials;
 
@@ -160,7 +163,9 @@ impl AgentRuntimePort for ChannelAgentRuntime {
         // Apply timeout if configured
         let loop_result = if budget_secs > 0 {
             match tokio::time::timeout(std::time::Duration::from_secs(budget_secs), fut).await {
-                Ok(result) => result.map_err(classify_agent_runtime_error),
+                Ok(result) => result.map_err(|error| {
+                    self.classify_agent_runtime_error_for_route(error, provider_name, model)
+                }),
                 Err(_) => {
                     return Err(AgentRuntimeError::new(
                         AgentRuntimeErrorKind::Timeout,
@@ -169,7 +174,9 @@ impl AgentRuntimePort for ChannelAgentRuntime {
                 }
             }
         } else {
-            fut.await.map_err(classify_agent_runtime_error)
+            fut.await.map_err(|error| {
+                self.classify_agent_runtime_error_for_route(error, provider_name, model)
+            })
         };
         let loop_result = loop_result?;
 
@@ -226,6 +233,46 @@ impl ChannelAgentRuntime {
     fn route_profile_for(&self, provider_name: &str, model: &str) -> ResolvedModelProfile {
         resolve_catalog_route_profile(self.model_profile_catalog.as_deref(), provider_name, model)
     }
+
+    fn classify_agent_runtime_error_for_route(
+        &self,
+        err: anyhow::Error,
+        provider_name: &str,
+        model: &str,
+    ) -> AgentRuntimeError {
+        if let Some(observation) = classify_context_limit_error(&err) {
+            record_context_limit_observation(
+                self.model_profile_catalog.as_deref(),
+                provider_name,
+                model,
+                observation,
+            );
+        }
+        classify_agent_runtime_error(err)
+    }
+}
+
+fn record_context_limit_observation(
+    catalog: Option<&dyn ModelProfileCatalogPort>,
+    provider_name: &str,
+    model: &str,
+    observation: ContextLimitProfileObservation,
+) {
+    let Some(catalog) = catalog else {
+        return;
+    };
+    if observation.observed_context_window_tokens.is_none() {
+        return;
+    }
+    if let Err(error) = catalog.record_context_limit_observation(provider_name, model, observation)
+    {
+        tracing::debug!(
+            provider = provider_name,
+            model,
+            error = %error,
+            "Failed to record context-limit model profile observation"
+        );
+    }
 }
 
 fn catalog_supports_multimodal_input(
@@ -266,11 +313,44 @@ fn classify_agent_runtime_error(err: anyhow::Error) -> AgentRuntimeError {
         );
     }
 
+    if let Some(io_error) = err.downcast_ref::<std::io::Error>() {
+        let detail = scrub_credentials(&err.to_string());
+        return match io_error.kind() {
+            std::io::ErrorKind::PermissionDenied => {
+                AgentRuntimeError::new(AgentRuntimeErrorKind::PolicyBlocked, detail)
+            }
+            std::io::ErrorKind::NotFound => {
+                AgentRuntimeError::new(AgentRuntimeErrorKind::MissingResource, detail)
+            }
+            std::io::ErrorKind::TimedOut => {
+                AgentRuntimeError::new(AgentRuntimeErrorKind::Timeout, detail)
+            }
+            _ => AgentRuntimeError::new(AgentRuntimeErrorKind::RuntimeFailure, detail),
+        };
+    }
+
+    if err.downcast_ref::<serde_json::Error>().is_some() {
+        return AgentRuntimeError::new(
+            AgentRuntimeErrorKind::SchemaMismatch,
+            scrub_credentials(&err.to_string()),
+        );
+    }
+
     if let Some(reqwest_err) = err.downcast_ref::<reqwest::Error>() {
+        if reqwest_err.is_timeout() {
+            return AgentRuntimeError::new(
+                AgentRuntimeErrorKind::Timeout,
+                scrub_credentials(&err.to_string()),
+            );
+        }
         if let Some(status) = reqwest_err.status() {
             return match status.as_u16() {
                 401 | 403 => AgentRuntimeError::new(
                     AgentRuntimeErrorKind::AuthFailure,
+                    scrub_credentials(&err.to_string()),
+                ),
+                404 => AgentRuntimeError::new(
+                    AgentRuntimeErrorKind::MissingResource,
                     scrub_credentials(&err.to_string()),
                 ),
                 413 => AgentRuntimeError::new(
@@ -286,18 +366,7 @@ fn classify_agent_runtime_error(err: anyhow::Error) -> AgentRuntimeError {
     }
 
     let detail = scrub_credentials(&err.to_string());
-    let lower = detail.to_lowercase();
-    let context_hints = [
-        "exceeds the context window",
-        "context window of this model",
-        "maximum context length",
-        "context length exceeded",
-        "too many tokens",
-        "token limit exceeded",
-        "prompt is too long",
-        "input is too long",
-    ];
-    if context_hints.iter().any(|hint| lower.contains(hint)) {
+    if classify_context_limit_error(&err).is_some() {
         return AgentRuntimeError::new(AgentRuntimeErrorKind::ContextLimitExceeded, detail);
     }
 
@@ -371,5 +440,30 @@ mod tests {
         assert!(!catalog_supports_multimodal_input(
             None, "provider", "model"
         ));
+    }
+
+    #[test]
+    fn runtime_error_classifier_uses_typed_io_kinds() {
+        let missing = classify_agent_runtime_error(anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "missing workspace file",
+        )));
+        assert_eq!(missing.kind, AgentRuntimeErrorKind::MissingResource);
+
+        let denied = classify_agent_runtime_error(anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "policy denied",
+        )));
+        assert_eq!(denied.kind, AgentRuntimeErrorKind::PolicyBlocked);
+    }
+
+    #[test]
+    fn runtime_error_classifier_maps_json_decode_to_schema_mismatch() {
+        let error =
+            serde_json::from_str::<serde_json::Value>("{").expect_err("malformed JSON should fail");
+
+        let classified = classify_agent_runtime_error(anyhow::Error::new(error));
+
+        assert_eq!(classified.kind, AgentRuntimeErrorKind::SchemaMismatch);
     }
 }

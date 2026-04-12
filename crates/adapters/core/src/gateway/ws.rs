@@ -946,7 +946,7 @@ async fn handle_chat_send_rpc(
 
     // Phase 4.0 Slice 3: run lifecycle via conversation_service
     let run_id = if let Some(store) = state.run_store.as_ref() {
-        match synapse_domain::application::use_cases::start_conversation_run::create_and_track_run(
+        synapse_domain::application::use_cases::start_conversation_run::create_and_track_run(
             state
                 .conversation_store
                 .as_deref()
@@ -955,13 +955,7 @@ async fn handle_chat_send_rpc(
             &session_key,
         )
         .await
-        {
-            Ok(id) => id,
-            Err(e) => {
-                tracing::warn!("run_store: failed to create run: {e}");
-                uuid::Uuid::new_v4().to_string()
-            }
-        }
+        .map_err(|e| anyhow::anyhow!("run_store: failed to create run: {e}"))?
     } else {
         uuid::Uuid::new_v4().to_string()
     };
@@ -1309,6 +1303,10 @@ fn current_web_route_selection(
             session.agent.active_lane(),
             None,
         )),
+        assumptions: session.agent.recent_runtime_assumptions().to_vec(),
+        calibrations: session.agent.recent_runtime_calibrations().to_vec(),
+        watchdog_alerts: session.agent.recent_runtime_watchdog_alerts().to_vec(),
+        handoff_artifacts: session.agent.recent_runtime_handoff_artifacts().to_vec(),
     })
 }
 
@@ -1391,6 +1389,10 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             Some(&catalog),
         );

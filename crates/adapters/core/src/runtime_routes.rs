@@ -11,6 +11,22 @@ use synapse_domain::application::services::model_preset_resolution::preset_title
 use synapse_domain::application::services::provider_native_context_policy::{
     resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
 };
+use synapse_domain::application::services::runtime_assumptions::{
+    format_runtime_assumption, RuntimeAssumption,
+};
+use synapse_domain::application::services::runtime_calibration::{
+    runtime_calibration_action_name, runtime_calibration_comparison_name,
+    runtime_calibration_decision_kind_name, RuntimeCalibrationRecord,
+};
+use synapse_domain::application::services::runtime_trace_janitor::{
+    append_runtime_watchdog_alerts, RuntimeHandoffArtifact,
+};
+use synapse_domain::application::services::runtime_watchdog::{
+    build_runtime_watchdog_digest, runtime_watchdog_action_name, runtime_watchdog_reason_name,
+    runtime_watchdog_severity_name, runtime_watchdog_subsystem_name, RuntimeWatchdogAlert,
+    RuntimeWatchdogDigest, RuntimeWatchdogInput,
+};
+use synapse_domain::application::services::session_handoff::session_handoff_reason_name;
 use synapse_domain::config::schema::{CapabilityLane, Config, ModelFeature};
 use synapse_domain::domain::tool_repair::{
     tool_failure_kind_name, tool_repair_action_name, ToolRepairAction, ToolRepairTrace,
@@ -20,7 +36,8 @@ use synapse_domain::domain::turn_admission::{
     turn_intent_name, AdmissionRepairHint, CandidateAdmissionReason,
 };
 use synapse_domain::ports::model_profile_catalog::{
-    CatalogModelProfile, CatalogModelProfileSource, ModelProfileCatalogPort,
+    CatalogModelProfile, CatalogModelProfileSource, ContextLimitProfileObservation,
+    ModelProfileCatalogPort,
 };
 use synapse_domain::ports::route_selection::{RouteAdmissionState, RouteSelection};
 
@@ -45,12 +62,12 @@ pub(crate) fn resolve_provider_alias(name: &str) -> Option<String> {
         .map(|provider| provider.name.to_string())
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct ModelCacheState {
     entries: Vec<ModelCacheEntry>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct ModelCacheEntry {
     provider: String,
     #[serde(default)]
@@ -62,7 +79,7 @@ struct ModelCacheEntry {
     profiles: Vec<ModelProfileCacheEntry>,
 }
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
 struct ModelProfileCacheEntry {
     model: String,
     #[serde(default)]
@@ -71,6 +88,8 @@ struct ModelProfileCacheEntry {
     max_output_tokens: Option<usize>,
     #[serde(default)]
     features: Vec<ModelFeature>,
+    #[serde(default)]
+    observed_at_unix: Option<u64>,
 }
 
 pub(crate) struct WorkspaceModelProfileCatalog {
@@ -150,6 +169,89 @@ impl WorkspaceModelProfileCatalog {
         }
         candidates
     }
+
+    pub(crate) fn record_context_limit_observation(
+        &self,
+        provider: &str,
+        model: &str,
+        observation: ContextLimitProfileObservation,
+    ) -> anyhow::Result<()> {
+        let Some(observed_window) = observation
+            .observed_context_window_tokens
+            .filter(|tokens| *tokens > 0)
+        else {
+            return Ok(());
+        };
+        if observation
+            .requested_context_tokens
+            .is_some_and(|requested| requested <= observed_window)
+        {
+            return Ok(());
+        }
+
+        let endpoint = self.endpoint_for_provider(provider).map(str::to_string);
+        let candidates = self.provider_lookup_candidates(provider);
+        let cache_path = model_cache_path(self.workspace_dir.as_path());
+        let mut state = load_model_cache_state_for_update(cache_path.as_path())?;
+        let target_provider =
+            select_observation_cache_provider(&state, candidates.as_slice(), endpoint.as_deref());
+        let now = current_unix_secs();
+
+        let entry_index = if let Some(index) = state.entries.iter().position(|entry| {
+            model_cache_entry_matches(entry, target_provider.as_str(), endpoint.as_deref())
+        }) {
+            index
+        } else {
+            state.entries.push(ModelCacheEntry {
+                provider: target_provider.clone(),
+                endpoint: endpoint.clone(),
+                fetched_at_unix: now,
+                models: Vec::new(),
+                profiles: Vec::new(),
+            });
+            state.entries.len() - 1
+        };
+
+        let entry = &mut state.entries[entry_index];
+        let mut changed = false;
+        if !entry
+            .models
+            .iter()
+            .any(|cached_model| cached_model.eq_ignore_ascii_case(model))
+        {
+            entry.models.push(model.to_string());
+            changed = true;
+        }
+
+        if let Some(profile) = entry
+            .profiles
+            .iter_mut()
+            .find(|profile| profile.model.eq_ignore_ascii_case(model))
+        {
+            if profile
+                .context_window_tokens
+                .is_none_or(|existing| observed_window <= existing)
+            {
+                profile.context_window_tokens = Some(observed_window);
+                profile.observed_at_unix = Some(now);
+                changed = true;
+            }
+        } else {
+            entry.profiles.push(ModelProfileCacheEntry {
+                model: model.to_string(),
+                context_window_tokens: Some(observed_window),
+                max_output_tokens: None,
+                features: Vec::new(),
+                observed_at_unix: Some(now),
+            });
+            changed = true;
+        }
+
+        if changed {
+            save_model_cache_state(cache_path.as_path(), &state)?;
+        }
+        Ok(())
+    }
 }
 
 impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
@@ -173,6 +275,20 @@ impl ModelProfileCatalogPort for WorkspaceModelProfileCatalog {
             })
             .or_else(|| synapse_domain::config::model_catalog::model_profile(provider, model))
     }
+
+    fn record_context_limit_observation(
+        &self,
+        provider: &str,
+        model: &str,
+        observation: ContextLimitProfileObservation,
+    ) -> anyhow::Result<()> {
+        WorkspaceModelProfileCatalog::record_context_limit_observation(
+            self,
+            provider,
+            model,
+            observation,
+        )
+    }
 }
 
 pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Config) -> String {
@@ -184,61 +300,7 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
         "Current provider: `{}`\nCurrent model: `{}`",
         current.provider, current.model
     );
-    if let Some(admission) = current.last_admission.as_ref() {
-        let _ = writeln!(
-            response,
-            "Last admission: `{}` / `{}` / `{}`",
-            turn_intent_name(admission.snapshot.intent),
-            context_pressure_state_name(admission.snapshot.pressure_state),
-            turn_admission_action_name(admission.snapshot.action),
-        );
-        if !admission.reasons.is_empty() {
-            let _ = writeln!(
-                response,
-                "Last admission reasons: {}",
-                admission
-                    .reasons
-                    .iter()
-                    .map(format_candidate_admission_reason)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        if let Some(repair) = admission.recommended_action {
-            let _ = writeln!(
-                response,
-                "Suggested next action: {}",
-                format_admission_repair_hint(repair)
-            );
-        }
-    }
-    if !current.recent_admissions.is_empty() {
-        let _ = writeln!(
-            response,
-            "Recent admissions retained: {}",
-            current.recent_admissions.len()
-        );
-        write_recent_admissions(&mut response, &current.recent_admissions);
-    }
-    if let Some(repair) = current.last_tool_repair.as_ref() {
-        let _ = writeln!(
-            response,
-            "Last tool repair: {} / {}",
-            tool_failure_kind_name(repair.failure_kind),
-            format_tool_repair_action(repair)
-        );
-        if let Some(detail) = repair.detail.as_deref() {
-            let _ = writeln!(response, "Last tool repair detail: {}", detail);
-        }
-    }
-    if !current.recent_tool_repairs.is_empty() {
-        let _ = writeln!(
-            response,
-            "Recent tool repairs retained: {}",
-            current.recent_tool_repairs.len()
-        );
-        write_recent_tool_repairs(&mut response, &current.recent_tool_repairs);
-    }
+    write_route_runtime_diagnostics(&mut response, current);
     if let Some(lane) = current.lane {
         let _ = writeln!(
             response,
@@ -463,61 +525,7 @@ pub(crate) fn build_providers_help_response(current: &RouteSelection) -> String 
         "Current provider: `{}`\nCurrent model: `{}`",
         current.provider, current.model
     );
-    if let Some(admission) = current.last_admission.as_ref() {
-        let _ = writeln!(
-            response,
-            "Last admission: `{}` / `{}` / `{}`",
-            turn_intent_name(admission.snapshot.intent),
-            context_pressure_state_name(admission.snapshot.pressure_state),
-            turn_admission_action_name(admission.snapshot.action),
-        );
-        if !admission.reasons.is_empty() {
-            let _ = writeln!(
-                response,
-                "Last admission reasons: {}",
-                admission
-                    .reasons
-                    .iter()
-                    .map(format_candidate_admission_reason)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
-        if let Some(repair) = admission.recommended_action {
-            let _ = writeln!(
-                response,
-                "Suggested next action: {}",
-                format_admission_repair_hint(repair)
-            );
-        }
-    }
-    if !current.recent_admissions.is_empty() {
-        let _ = writeln!(
-            response,
-            "Recent admissions retained: {}",
-            current.recent_admissions.len()
-        );
-        write_recent_admissions(&mut response, &current.recent_admissions);
-    }
-    if let Some(repair) = current.last_tool_repair.as_ref() {
-        let _ = writeln!(
-            response,
-            "Last tool repair: {} / {}",
-            tool_failure_kind_name(repair.failure_kind),
-            format_tool_repair_action(repair)
-        );
-        if let Some(detail) = repair.detail.as_deref() {
-            let _ = writeln!(response, "Last tool repair detail: {}", detail);
-        }
-    }
-    if !current.recent_tool_repairs.is_empty() {
-        let _ = writeln!(
-            response,
-            "Recent tool repairs retained: {}",
-            current.recent_tool_repairs.len()
-        );
-        write_recent_tool_repairs(&mut response, &current.recent_tool_repairs);
-    }
+    write_route_runtime_diagnostics(&mut response, current);
     response.push_str("\nSwitch provider with `/models <provider>`.\n");
     response.push_str("Switch model with `/model <model-id>`.\n\n");
     response.push_str("Available providers:\n");
@@ -567,6 +575,56 @@ fn normalize_cache_endpoint(endpoint: &str) -> String {
     endpoint.trim().trim_end_matches('/').to_string()
 }
 
+fn model_cache_path(workspace_dir: &Path) -> PathBuf {
+    workspace_dir.join("state").join(MODEL_CACHE_FILE)
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
+fn load_model_cache_state_for_update(cache_path: &Path) -> anyhow::Result<ModelCacheState> {
+    if !cache_path.exists() {
+        return Ok(ModelCacheState::default());
+    }
+    let raw = std::fs::read_to_string(cache_path)
+        .map_err(|error| anyhow::anyhow!("failed to read model cache: {error}"))?;
+    serde_json::from_str::<ModelCacheState>(&raw)
+        .map_err(|error| anyhow::anyhow!("failed to parse model cache: {error}"))
+}
+
+fn save_model_cache_state(cache_path: &Path, state: &ModelCacheState) -> anyhow::Result<()> {
+    if let Some(parent) = cache_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| anyhow::anyhow!("failed to create model cache directory: {error}"))?;
+    }
+    let json = serde_json::to_vec_pretty(state)
+        .map_err(|error| anyhow::anyhow!("failed to serialize model cache: {error}"))?;
+    std::fs::write(cache_path, json)
+        .map_err(|error| anyhow::anyhow!("failed to write model cache: {error}"))
+}
+
+fn select_observation_cache_provider(
+    state: &ModelCacheState,
+    candidates: &[&str],
+    endpoint: Option<&str>,
+) -> String {
+    candidates
+        .iter()
+        .find(|candidate| {
+            state
+                .entries
+                .iter()
+                .any(|entry| model_cache_entry_matches(entry, candidate, endpoint))
+        })
+        .or_else(|| candidates.last())
+        .copied()
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 fn format_candidate_admission_reason(reason: &CandidateAdmissionReason) -> String {
     match reason {
         CandidateAdmissionReason::RequiresLane(lane) => {
@@ -599,6 +657,9 @@ fn format_candidate_admission_reason(reason: &CandidateAdmissionReason) -> Strin
         CandidateAdmissionReason::ProviderContextCritical => "context critical".to_string(),
         CandidateAdmissionReason::ProviderContextOverflowRisk => {
             "context overflow risk".to_string()
+        }
+        CandidateAdmissionReason::CalibrationSuppressedRoute => {
+            "calibration suppressed route".to_string()
         }
     }
 }
@@ -633,6 +694,94 @@ fn format_tool_repair_action(trace: &ToolRepairTrace) -> String {
             capability_lane_name(lane)
         ),
         _ => tool_repair_action_name(trace.suggested_action).to_string(),
+    }
+}
+
+fn write_route_runtime_diagnostics(response: &mut String, current: &RouteSelection) {
+    write_route_admission_diagnostics(response, current);
+    write_tool_repair_diagnostics(response, current);
+    write_runtime_assumptions(response, &current.assumptions);
+    write_runtime_calibrations(response, &current.calibrations);
+    write_runtime_handoff_artifacts(response, &current.handoff_artifacts);
+    write_runtime_watchdog_digest(response, current);
+}
+
+fn write_route_admission_diagnostics(response: &mut String, current: &RouteSelection) {
+    if let Some(admission) = current.last_admission.as_ref() {
+        let _ = writeln!(
+            response,
+            "Last admission: `{}` / `{}` / `{}`",
+            turn_intent_name(admission.snapshot.intent),
+            context_pressure_state_name(admission.snapshot.pressure_state),
+            turn_admission_action_name(admission.snapshot.action),
+        );
+        if !admission.reasons.is_empty() {
+            let _ = writeln!(
+                response,
+                "Last admission reasons: {}",
+                admission
+                    .reasons
+                    .iter()
+                    .map(format_candidate_admission_reason)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if let Some(repair) = admission.recommended_action {
+            let _ = writeln!(
+                response,
+                "Suggested next action: {}",
+                format_admission_repair_hint(repair)
+            );
+        }
+    }
+    if !current.recent_admissions.is_empty() {
+        let _ = writeln!(
+            response,
+            "Recent admissions retained: {}",
+            current.recent_admissions.len()
+        );
+        write_recent_admissions(response, &current.recent_admissions);
+    }
+}
+
+fn write_tool_repair_diagnostics(response: &mut String, current: &RouteSelection) {
+    if let Some(repair) = current.last_tool_repair.as_ref() {
+        let _ = writeln!(
+            response,
+            "Last tool repair: {} / {}",
+            tool_failure_kind_name(repair.failure_kind),
+            format_tool_repair_action(repair)
+        );
+        if let Some(detail) = repair.detail.as_deref() {
+            let _ = writeln!(response, "Last tool repair detail: {}", detail);
+        }
+    }
+    if !current.recent_tool_repairs.is_empty() {
+        let _ = writeln!(
+            response,
+            "Recent tool repairs retained: {}",
+            current.recent_tool_repairs.len()
+        );
+        write_recent_tool_repairs(response, &current.recent_tool_repairs);
+    }
+}
+
+fn write_runtime_assumptions(response: &mut String, assumptions: &[RuntimeAssumption]) {
+    if assumptions.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        response,
+        "Runtime assumptions retained: {}",
+        assumptions.len()
+    );
+    for assumption in assumptions.iter().rev().take(3) {
+        let _ = writeln!(
+            response,
+            "Runtime assumption: {}",
+            format_runtime_assumption(assumption)
+        );
     }
 }
 
@@ -680,6 +829,111 @@ fn write_recent_admissions(response: &mut String, recent_admissions: &[RouteAdmi
             );
         }
     }
+}
+
+fn write_runtime_calibrations(response: &mut String, calibrations: &[RuntimeCalibrationRecord]) {
+    if calibrations.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        response,
+        "Runtime calibrations retained: {}",
+        calibrations.len()
+    );
+    for record in calibrations.iter().take(3) {
+        let _ = writeln!(
+            response,
+            "Runtime calibration: {} / {} / confidence={} / action={}",
+            runtime_calibration_decision_kind_name(record.decision_kind),
+            runtime_calibration_comparison_name(record.comparison),
+            record.confidence_basis_points,
+            runtime_calibration_action_name(record.recommended_action),
+        );
+    }
+}
+
+fn write_runtime_handoff_artifacts(response: &mut String, artifacts: &[RuntimeHandoffArtifact]) {
+    if artifacts.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        response,
+        "Runtime handoff artifacts retained: {}",
+        artifacts.len()
+    );
+    for artifact in artifacts.iter().take(2) {
+        let packet = &artifact.packet;
+        let _ = writeln!(
+            response,
+            "Runtime handoff: {}{}",
+            session_handoff_reason_name(packet.reason),
+            packet
+                .recommended_action
+                .as_deref()
+                .map(|action| format!(" / action={action}"))
+                .unwrap_or_default(),
+        );
+        if let Some(task) = packet.active_task.as_deref() {
+            let _ = writeln!(response, "Runtime handoff task: {task}");
+        }
+    }
+}
+
+fn write_runtime_watchdog_digest(response: &mut String, current: &RouteSelection) {
+    let now_unix = current_unix_seconds();
+    let digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
+        last_admission: current.last_admission.as_ref(),
+        recent_admissions: &current.recent_admissions,
+        last_tool_repair: current.last_tool_repair.as_ref(),
+        recent_tool_repairs: &current.recent_tool_repairs,
+        context_cache: current.context_cache.as_ref(),
+        assumptions: &current.assumptions,
+        subsystem_observations: &[],
+        now_unix,
+    });
+    let alerts = append_runtime_watchdog_alerts(&current.watchdog_alerts, &digest.alerts, now_unix);
+    let digest = RuntimeWatchdogDigest {
+        generated_at_unix: digest.generated_at_unix,
+        alerts,
+    };
+    if !digest.has_alerts() {
+        return;
+    }
+
+    let degraded = digest
+        .degraded_subsystems()
+        .into_iter()
+        .map(runtime_watchdog_subsystem_name)
+        .collect::<Vec<_>>();
+    let _ = writeln!(response, "Runtime watchdog alerts: {}", digest.alerts.len());
+    if !degraded.is_empty() {
+        let _ = writeln!(
+            response,
+            "Runtime watchdog degraded: {}",
+            degraded.join(", ")
+        );
+    }
+    for alert in digest.alerts.iter().take(3) {
+        write_runtime_watchdog_alert(response, alert);
+    }
+}
+
+fn write_runtime_watchdog_alert(response: &mut String, alert: &RuntimeWatchdogAlert) {
+    let _ = writeln!(
+        response,
+        "Runtime watchdog: {} / {} / {} / action={}",
+        runtime_watchdog_severity_name(alert.severity),
+        runtime_watchdog_subsystem_name(alert.subsystem),
+        runtime_watchdog_reason_name(alert.reason),
+        runtime_watchdog_action_name(alert.recommended_action)
+    );
+}
+
+fn current_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 fn capability_lane_name(lane: CapabilityLane) -> &'static str {
@@ -762,7 +1016,7 @@ fn load_cached_model_profile(
         max_output_tokens: profile.max_output_tokens,
         features: profile.features,
         source: Some(CatalogModelProfileSource::CachedProviderCatalog),
-        observed_at_unix: Some(entry.fetched_at_unix),
+        observed_at_unix: profile.observed_at_unix.or(Some(entry.fetched_at_unix)),
     })
 }
 
@@ -789,6 +1043,21 @@ mod tests {
     use synapse_domain::application::services::model_lane_resolution::{
         ResolvedModelProfile, ResolvedModelProfileSource,
     };
+    use synapse_domain::application::services::runtime_assumptions::{
+        RuntimeAssumption, RuntimeAssumptionFreshness, RuntimeAssumptionInvalidation,
+        RuntimeAssumptionKind, RuntimeAssumptionReplacementPath, RuntimeAssumptionSource,
+    };
+    use synapse_domain::application::services::runtime_calibration::{
+        RuntimeCalibrationAction, RuntimeCalibrationComparison, RuntimeCalibrationDecisionKind,
+        RuntimeCalibrationOutcome,
+    };
+    use synapse_domain::application::services::runtime_watchdog::{
+        RuntimeWatchdogAction, RuntimeWatchdogReason, RuntimeWatchdogSeverity,
+        RuntimeWatchdogSubsystem,
+    };
+    use synapse_domain::application::services::session_handoff::{
+        SessionHandoffPacket, SessionHandoffReason,
+    };
     use synapse_domain::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
         ModelRouteConfig,
@@ -812,6 +1081,10 @@ mod tests {
             last_tool_repair: None,
             recent_tool_repairs: Vec::new(),
             context_cache: None,
+            assumptions: Vec::new(),
+            calibrations: Vec::new(),
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
         });
         assert!(response.contains("Current provider: `openai-codex`"));
         assert!(response.contains("Switch provider with `/models <provider>`"));
@@ -887,6 +1160,10 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -931,6 +1208,10 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -975,6 +1256,10 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -984,6 +1269,91 @@ mod tests {
         assert!(response
             .contains("Recent admission reasons: requires image_generation, window near limit"));
         assert!(response.contains("Recent admission suggested action: compact_session"));
+    }
+
+    #[test]
+    fn models_help_includes_runtime_assumption_ledger() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workspace_dir = workspace.path().to_path_buf();
+
+        let response = build_models_help_response(
+            &RouteSelection {
+                provider: "openrouter".into(),
+                model: "qwen/qwen3.6-plus".into(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: None,
+                assumptions: vec![RuntimeAssumption {
+                    kind: RuntimeAssumptionKind::ContextWindow,
+                    source: RuntimeAssumptionSource::RouteAdmission,
+                    freshness: RuntimeAssumptionFreshness::Challenged,
+                    confidence_basis_points: 3_500,
+                    value: "context_limit_exceeded".into(),
+                    invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+                    replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+                }],
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
+            },
+            &config,
+        );
+
+        assert!(response.contains("Runtime assumptions retained: 1"));
+        assert!(response.contains("kind=context_window"));
+        assert!(response.contains("freshness=challenged"));
+        assert!(response.contains("replacement_path=compact_session"));
+        assert!(response.contains("Runtime watchdog alerts: 1"));
+        assert!(response.contains(
+            "Runtime watchdog: caution / context_budget / challenged_assumption / action=compact_context"
+        ));
+    }
+
+    #[test]
+    fn models_help_includes_runtime_calibration_ledger() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workspace_dir = workspace.path().to_path_buf();
+
+        let calibration = RuntimeCalibrationRecord {
+            decision_kind: RuntimeCalibrationDecisionKind::ToolChoice,
+            decision_signature: "tool:message_send".into(),
+            suppression_key: None,
+            confidence_basis_points: 9_000,
+            outcome: RuntimeCalibrationOutcome::Failed,
+            comparison: RuntimeCalibrationComparison::OverconfidentFailure,
+            recommended_action: RuntimeCalibrationAction::SuppressChoice,
+            observed_at_unix: 1_744_243_250,
+        };
+
+        let response = build_models_help_response(
+            &RouteSelection {
+                provider: "openrouter".into(),
+                model: "qwen/qwen3.6-plus".into(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: vec![calibration],
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
+            },
+            &config,
+        );
+
+        assert!(response.contains("Runtime calibrations retained: 1"));
+        assert!(response.contains(
+            "Runtime calibration: tool_choice / overconfident_failure / confidence=9000 / action=suppress_choice"
+        ));
     }
 
     #[test]
@@ -1015,6 +1385,10 @@ mod tests {
                     detail: Some("missing delivery target".into()),
                 }],
                 context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1028,6 +1402,146 @@ mod tests {
             "Recent tool repair: message_send / reported_failure / adjust_arguments_or_target"
         ));
         assert!(response.contains("Recent tool repair detail: missing delivery target"));
+    }
+
+    #[test]
+    fn providers_help_uses_shared_runtime_watchdog_digest() {
+        let observed_at_unix = current_unix_seconds();
+        let response = build_providers_help_response(&RouteSelection {
+            provider: "openrouter".into(),
+            model: "qwen/qwen3.6-plus".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: Some(ToolRepairTrace {
+                observed_at_unix,
+                tool_name: "message_send".into(),
+                failure_kind: ToolFailureKind::ReportedFailure,
+                suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
+                detail: Some("missing delivery target".into()),
+            }),
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: Vec::new(),
+            calibrations: Vec::new(),
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
+        });
+
+        assert!(response.contains("Runtime watchdog alerts: 1"));
+        assert!(response.contains(
+            "Runtime watchdog: caution / tool_execution / tool_failure / action=repair_tool_request"
+        ));
+    }
+
+    #[test]
+    fn providers_help_includes_retained_runtime_trace_artifacts() {
+        let observed_at_unix = current_unix_seconds();
+        let response = build_providers_help_response(&RouteSelection {
+            provider: "openrouter".into(),
+            model: "qwen/qwen3.6-plus".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: None,
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: Vec::new(),
+            calibrations: Vec::new(),
+            watchdog_alerts: vec![RuntimeWatchdogAlert {
+                subsystem: RuntimeWatchdogSubsystem::MemoryBackend,
+                severity: RuntimeWatchdogSeverity::Degraded,
+                reason: RuntimeWatchdogReason::SubsystemDegraded,
+                recommended_action: RuntimeWatchdogAction::CheckMemoryBackend,
+                observed_at_unix,
+            }],
+            handoff_artifacts: vec![RuntimeHandoffArtifact {
+                observed_at_unix,
+                packet: SessionHandoffPacket {
+                    reason: SessionHandoffReason::ContextOverflow,
+                    recommended_action: Some("start_fresh_handoff".into()),
+                    active_task: Some("continue after compact handoff".into()),
+                    current_defaults: Vec::new(),
+                    anchors: Vec::new(),
+                    unresolved_questions: Vec::new(),
+                    assumptions: Vec::new(),
+                },
+            }],
+        });
+
+        assert!(response.contains("Runtime handoff artifacts retained: 1"));
+        assert!(response.contains("Runtime handoff: context_overflow / action=start_fresh_handoff"));
+        assert!(response.contains("Runtime watchdog degraded: memory_backend"));
+        assert!(response.contains(
+            "Runtime watchdog: degraded / memory_backend / subsystem_degraded / action=check_memory_backend"
+        ));
+    }
+
+    #[test]
+    fn providers_help_includes_runtime_calibration_ledger() {
+        let response = build_providers_help_response(&RouteSelection {
+            provider: "openrouter".into(),
+            model: "qwen/qwen3.6-plus".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: None,
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: Vec::new(),
+            calibrations: vec![RuntimeCalibrationRecord {
+                decision_kind: RuntimeCalibrationDecisionKind::RouteChoice,
+                decision_signature: "route:openrouter:qwen/qwen3.6-plus".into(),
+                suppression_key: None,
+                confidence_basis_points: 9_000,
+                outcome: RuntimeCalibrationOutcome::Failed,
+                comparison: RuntimeCalibrationComparison::OverconfidentFailure,
+                recommended_action: RuntimeCalibrationAction::SuppressChoice,
+                observed_at_unix: 1_744_243_260,
+            }],
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
+        });
+
+        assert!(response.contains("Runtime calibrations retained: 1"));
+        assert!(response.contains(
+            "Runtime calibration: route_choice / overconfident_failure / confidence=9000 / action=suppress_choice"
+        ));
+    }
+
+    #[test]
+    fn providers_help_includes_runtime_assumption_ledger() {
+        let response = build_providers_help_response(&RouteSelection {
+            provider: "openrouter".into(),
+            model: "qwen/qwen3.6-plus".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: None,
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: vec![RuntimeAssumption {
+                kind: RuntimeAssumptionKind::ContextWindow,
+                source: RuntimeAssumptionSource::RouteAdmission,
+                freshness: RuntimeAssumptionFreshness::Challenged,
+                confidence_basis_points: 3_500,
+                value: "context_limit_exceeded".into(),
+                invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+                replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+            }],
+            calibrations: Vec::new(),
+            watchdog_alerts: Vec::new(),
+            handoff_artifacts: Vec::new(),
+        });
+
+        assert!(response.contains("Runtime assumptions retained: 1"));
+        assert!(response.contains("kind=context_window"));
+        assert!(response.contains("replacement_path=compact_session"));
+        assert!(response.contains("Runtime watchdog alerts: 1"));
     }
 
     #[test]
@@ -1067,6 +1581,10 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1123,6 +1641,10 @@ mod tests {
                     max_source_chars: 60_000,
                     max_summary_chars: 12_000,
                 }),
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             },
             &config,
         );
@@ -1274,5 +1796,99 @@ mod tests {
             Some(CatalogModelProfileSource::CachedProviderCatalog)
         );
         assert_eq!(profile.observed_at_unix, Some(300));
+    }
+
+    #[test]
+    fn workspace_profile_catalog_records_lower_context_limit_observation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let cache_dir = workspace.path().join("state");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+        std::fs::write(
+            cache_dir.join(MODEL_CACHE_FILE),
+            r#"{
+              "entries": [
+                {
+                  "provider": "openrouter",
+                  "endpoint": "https://openrouter.ai/api/v1",
+                  "fetched_at_unix": 100,
+                  "models": ["x-ai/grok-4.20"],
+                  "profiles": [
+                    {
+                      "model": "x-ai/grok-4.20",
+                      "context_window_tokens": 2000000,
+                      "max_output_tokens": 128000,
+                      "features": []
+                    }
+                  ]
+                }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let catalog = WorkspaceModelProfileCatalog::with_provider_endpoint(
+            workspace.path(),
+            Some("openrouter"),
+            Some("https://openrouter.ai/api/v1/"),
+        );
+
+        catalog
+            .record_context_limit_observation(
+                "openrouter",
+                "x-ai/grok-4.20",
+                ContextLimitProfileObservation {
+                    observed_context_window_tokens: Some(128_000),
+                    requested_context_tokens: Some(140_000),
+                },
+            )
+            .unwrap();
+
+        let profile = catalog
+            .lookup_model_profile("openrouter", "x-ai/grok-4.20")
+            .expect("observed profile should resolve");
+
+        assert_eq!(profile.context_window_tokens, Some(128_000));
+        assert_eq!(profile.max_output_tokens, Some(128_000));
+        assert!(profile.observed_at_unix.is_some_and(|value| value >= 100));
+    }
+
+    #[test]
+    fn workspace_profile_catalog_does_not_raise_context_limit_observation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let catalog = WorkspaceModelProfileCatalog::with_provider_endpoint(
+            workspace.path(),
+            Some("openai"),
+            Some("https://api.deepseek.com/v1/"),
+        );
+
+        catalog
+            .record_context_limit_observation(
+                "openai",
+                "deepseek-chat",
+                ContextLimitProfileObservation {
+                    observed_context_window_tokens: Some(64_000),
+                    requested_context_tokens: Some(70_000),
+                },
+            )
+            .unwrap();
+        catalog
+            .record_context_limit_observation(
+                "openai",
+                "deepseek-chat",
+                ContextLimitProfileObservation {
+                    observed_context_window_tokens: Some(128_000),
+                    requested_context_tokens: Some(140_000),
+                },
+            )
+            .unwrap();
+
+        let profile = catalog
+            .lookup_model_profile("openai", "deepseek-chat")
+            .expect("endpoint-inferred observation should resolve");
+
+        assert_eq!(profile.context_window_tokens, Some(64_000));
+        assert_eq!(
+            profile.source,
+            Some(CatalogModelProfileSource::CachedProviderCatalog)
+        );
     }
 }

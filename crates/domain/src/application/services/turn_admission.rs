@@ -14,6 +14,9 @@ use crate::application::services::provider_context_budget::{
 use crate::application::services::route_switch_preflight::{
     assess_route_switch_preflight_for_budget, RouteSwitchStatus,
 };
+use crate::application::services::runtime_calibration::{
+    should_suppress_route_choice, RuntimeCalibrationRecord,
+};
 use crate::application::services::turn_model_routing::{
     infer_turn_capability_requirement, TurnCapabilityRequirement, TurnRouteOverride,
 };
@@ -48,6 +51,7 @@ pub struct TurnAdmissionInput<'a> {
     pub current_profile: &'a ResolvedModelProfile,
     pub provider_capabilities: &'a ProviderCapabilities,
     pub provider_context: ProviderContextBudgetInput,
+    pub calibration_records: &'a [RuntimeCalibrationRecord],
     pub catalog: Option<&'a dyn ModelProfileCatalogPort>,
 }
 
@@ -89,6 +93,7 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
                     required_lane,
                     input.current_provider,
                     input.current_model,
+                    input.calibration_records,
                     input.catalog,
                 );
             }
@@ -111,6 +116,7 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
                         CapabilityLane::Reasoning,
                         input.current_provider,
                         input.current_model,
+                        input.calibration_records,
                         input.catalog,
                     )
                 });
@@ -134,6 +140,30 @@ pub fn assess_turn_admission(input: TurnAdmissionInput<'_>) -> CandidateAdmissio
                     config,
                     input.current_provider,
                     input.current_model,
+                    input.calibration_records,
+                    input.catalog,
+                )
+            });
+        }
+    }
+
+    if should_suppress_route_choice(
+        input.calibration_records,
+        input.current_provider,
+        input.current_model,
+    ) {
+        reasons.push(CandidateAdmissionReason::CalibrationSuppressedRoute);
+        if let Some(config) = input.config {
+            let lane = required_lane
+                .or(input.current_lane)
+                .unwrap_or(CapabilityLane::Reasoning);
+            route_override = route_override.or_else(|| {
+                resolve_required_lane_override(
+                    config,
+                    lane,
+                    input.current_provider,
+                    input.current_model,
+                    input.calibration_records,
                     input.catalog,
                 )
             });
@@ -446,16 +476,24 @@ fn resolve_required_lane_override(
     lane: CapabilityLane,
     current_provider: &str,
     current_model: &str,
+    calibration_records: &[RuntimeCalibrationRecord],
     catalog: Option<&dyn ModelProfileCatalogPort>,
 ) -> Option<TurnRouteOverride> {
     let candidates = resolve_lane_candidates(config, lane, catalog);
-    select_override_candidate(lane, &candidates, current_provider, current_model)
+    select_override_candidate(
+        lane,
+        &candidates,
+        current_provider,
+        current_model,
+        calibration_records,
+    )
 }
 
 fn resolve_tool_capable_reasoning_override(
     config: &Config,
     current_provider: &str,
     current_model: &str,
+    calibration_records: &[RuntimeCalibrationRecord],
     catalog: Option<&dyn ModelProfileCatalogPort>,
 ) -> Option<TurnRouteOverride> {
     let candidates = resolve_lane_candidates(config, CapabilityLane::Reasoning, catalog);
@@ -464,6 +502,11 @@ fn resolve_tool_capable_reasoning_override(
         .enumerate()
         .find(|(_, candidate)| {
             (candidate.provider != current_provider || candidate.model != current_model)
+                && !should_suppress_route_choice(
+                    calibration_records,
+                    &candidate.provider,
+                    &candidate.model,
+                )
                 && candidate
                     .profile
                     .features
@@ -482,12 +525,18 @@ fn select_override_candidate(
     candidates: &[ResolvedModelCandidate],
     current_provider: &str,
     current_model: &str,
+    calibration_records: &[RuntimeCalibrationRecord],
 ) -> Option<TurnRouteOverride> {
     candidates
         .iter()
         .enumerate()
         .find(|(_, candidate)| {
             (candidate.provider != current_provider || candidate.model != current_model)
+                && !should_suppress_route_choice(
+                    calibration_records,
+                    &candidate.provider,
+                    &candidate.model,
+                )
                 && profile_supports_lane_confidently(&candidate.profile, lane)
         })
         .map(|(index, candidate)| TurnRouteOverride {
@@ -502,6 +551,10 @@ fn select_override_candidate(
 mod tests {
     use super::*;
     use crate::application::services::model_lane_resolution::ResolvedModelProfileSource;
+    use crate::application::services::runtime_calibration::{
+        RuntimeCalibrationAction, RuntimeCalibrationComparison, RuntimeCalibrationDecisionKind,
+        RuntimeCalibrationOutcome, RuntimeCalibrationRecord, RuntimeCalibrationSuppressionKey,
+    };
     use crate::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
     };
@@ -514,6 +567,22 @@ mod tests {
             description: "send".into(),
             parameters: serde_json::json!({"type": "object"}),
             runtime_role: Some(ToolRuntimeRole::DirectDelivery),
+        }
+    }
+
+    fn suppressed_route(provider: &str, model: &str) -> RuntimeCalibrationRecord {
+        RuntimeCalibrationRecord {
+            decision_kind: RuntimeCalibrationDecisionKind::RouteChoice,
+            decision_signature: format!("route:{provider}:{model}"),
+            suppression_key: Some(RuntimeCalibrationSuppressionKey::Route {
+                provider: provider.into(),
+                model: model.into(),
+            }),
+            confidence_basis_points: 9_000,
+            outcome: RuntimeCalibrationOutcome::Failed,
+            comparison: RuntimeCalibrationComparison::OverconfidentFailure,
+            recommended_action: RuntimeCalibrationAction::SuppressChoice,
+            observed_at_unix: 100,
         }
     }
 
@@ -552,6 +621,7 @@ mod tests {
                 current_turn_messages: 1,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -596,6 +666,7 @@ mod tests {
                 current_turn_messages: 1,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -634,6 +705,7 @@ mod tests {
                 current_turn_messages: 1,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -674,6 +746,7 @@ mod tests {
                 current_turn_chars: 500,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -729,6 +802,7 @@ mod tests {
                 current_turn_messages: 1,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -737,6 +811,76 @@ mod tests {
             decision.route_override.expect("override").lane,
             CapabilityLane::Reasoning
         );
+    }
+
+    #[test]
+    fn calibration_suppressed_current_route_reroutes_to_unsuppressed_candidate() {
+        let mut config = Config::default();
+        config.model_lanes.push(ModelLaneConfig {
+            lane: CapabilityLane::Reasoning,
+            candidates: vec![
+                ModelLaneCandidateConfig {
+                    provider: "openrouter".into(),
+                    model: "current".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: ModelCandidateProfileConfig {
+                        context_window_tokens: Some(128_000),
+                        max_output_tokens: None,
+                        features: vec![ModelFeature::ToolCalling],
+                    },
+                },
+                ModelLaneCandidateConfig {
+                    provider: "openrouter".into(),
+                    model: "fallback".into(),
+                    api_key: None,
+                    api_key_env: None,
+                    dimensions: None,
+                    profile: ModelCandidateProfileConfig {
+                        context_window_tokens: Some(128_000),
+                        max_output_tokens: None,
+                        features: vec![ModelFeature::ToolCalling],
+                    },
+                },
+            ],
+        });
+        let calibrations = vec![suppressed_route("openrouter", "current")];
+
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: Some(&config),
+            user_message: "Explain this briefly",
+            execution_guidance: None,
+            tool_specs: &[],
+            current_provider: "openrouter",
+            current_model: "current",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                context_window_tokens: Some(128_000),
+                context_window_source: ResolvedModelProfileSource::ManualConfig,
+                features: vec![ModelFeature::ToolCalling],
+                ..Default::default()
+            },
+            provider_capabilities: &ProviderCapabilities {
+                native_tool_calling: true,
+                vision: false,
+                prompt_caching: false,
+            },
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_000,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &calibrations,
+            catalog: None,
+        });
+
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Reroute);
+        assert!(decision
+            .reasons
+            .contains(&CandidateAdmissionReason::CalibrationSuppressedRoute));
+        assert_eq!(decision.route_override.expect("override").model, "fallback");
     }
 
     #[test]
@@ -768,6 +912,7 @@ mod tests {
                 current_turn_messages: 1,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -797,6 +942,7 @@ mod tests {
                 current_turn_messages: 1,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -836,6 +982,7 @@ mod tests {
                 current_turn_messages: 1,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -891,6 +1038,7 @@ mod tests {
                 current_turn_messages: 1,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -947,6 +1095,7 @@ mod tests {
                 current_turn_messages: 1,
                 ..Default::default()
             },
+            calibration_records: &[],
             catalog: None,
         });
 
@@ -959,5 +1108,119 @@ mod tests {
             decision.route_override.expect("override").lane,
             CapabilityLane::MusicGeneration
         );
+    }
+
+    #[test]
+    fn audio_generation_turn_requires_audio_lane() {
+        let mut config = Config::default();
+        config.model_lanes.push(ModelLaneConfig {
+            lane: CapabilityLane::AudioGeneration,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: "openrouter".into(),
+                model: "audio-model".into(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: ModelCandidateProfileConfig {
+                    context_window_tokens: Some(128_000),
+                    max_output_tokens: None,
+                    features: vec![ModelFeature::AudioGeneration],
+                },
+            }],
+        });
+
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: Some(&config),
+            user_message: "[GENERATE:AUDIO] short narration",
+            execution_guidance: None,
+            tool_specs: &[],
+            current_provider: "openrouter",
+            current_model: "qwen/qwen3.6-plus",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile::default(),
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_000,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(
+            decision.snapshot.intent,
+            TurnIntentCategory::AudioGeneration
+        );
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Reroute);
+        assert_eq!(
+            decision.route_override.expect("override").lane,
+            CapabilityLane::AudioGeneration
+        );
+    }
+
+    #[test]
+    fn universal_reasoning_candidate_can_admit_video_generation() {
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "[GENERATE:VIDEO] launch teaser",
+            execution_guidance: None,
+            tool_specs: &[],
+            current_provider: "openrouter",
+            current_model: "universal-media-model",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                context_window_tokens: Some(256_000),
+                context_window_source: ResolvedModelProfileSource::ManualConfig,
+                features: vec![
+                    ModelFeature::ToolCalling,
+                    ModelFeature::ImageGeneration,
+                    ModelFeature::AudioGeneration,
+                    ModelFeature::VideoGeneration,
+                    ModelFeature::MusicGeneration,
+                ],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..ResolvedModelProfile::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_000,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(
+            decision.snapshot.intent,
+            TurnIntentCategory::VideoGeneration
+        );
+        assert_eq!(
+            decision.required_lane,
+            Some(CapabilityLane::VideoGeneration)
+        );
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Proceed);
+        assert!(decision.route_override.is_none());
+        assert!(decision
+            .reasons
+            .contains(&CandidateAdmissionReason::RequiresLane(
+                CapabilityLane::VideoGeneration
+            )));
+        assert!(!decision.reasons.iter().any(|reason| matches!(
+            reason,
+            CandidateAdmissionReason::MissingFeature(ModelFeature::VideoGeneration)
+                | CandidateAdmissionReason::CapabilityMetadataUnknown(
+                    CapabilityLane::VideoGeneration
+                )
+                | CandidateAdmissionReason::CapabilityMetadataStale(
+                    CapabilityLane::VideoGeneration
+                )
+                | CandidateAdmissionReason::CapabilityMetadataLowConfidence(
+                    CapabilityLane::VideoGeneration
+                )
+        )));
     }
 }

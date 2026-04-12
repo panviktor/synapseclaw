@@ -149,7 +149,7 @@ mod tests {
     use crate::domain::dialogue_state::FocusEntity;
     use crate::domain::tool_fact::{
         DeliveryFact, DeliveryTargetKind, FocusFact, OutcomeStatus, ProfileOperation, SearchDomain,
-        SearchFact, ToolFactPayload, TypedToolFact, UserProfileFact, UserProfileField,
+        SearchFact, ToolFactPayload, TypedToolFact, UserProfileFact,
     };
 
     #[test]
@@ -169,9 +169,9 @@ mod tests {
             TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    field: UserProfileField::Timezone,
+                    key: "project_alias".into(),
                     operation: ProfileOperation::Set,
-                    value: Some("Europe/Berlin".into()),
+                    value: Some("Borealis".into()),
                 }),
             },
             TypedToolFact::outcome("message_send", OutcomeStatus::ReportedFailure, Some(125)),

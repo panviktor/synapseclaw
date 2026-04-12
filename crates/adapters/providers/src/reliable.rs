@@ -2,6 +2,7 @@ use super::traits::{
     ChatMessage, ChatRequest, ChatResponse, StreamChunk, StreamOptions, StreamResult,
 };
 use super::Provider;
+use crate::error_classification::is_context_window_exceeded;
 use async_trait::async_trait;
 use futures_util::{stream, StreamExt};
 use std::collections::HashMap;
@@ -69,22 +70,6 @@ pub fn is_non_retryable(err: &anyhow::Error) -> bool {
             || msg_lower.contains("unsupported")
             || msg_lower.contains("does not exist")
             || msg_lower.contains("invalid"))
-}
-
-fn is_context_window_exceeded(err: &anyhow::Error) -> bool {
-    let lower = err.to_string().to_lowercase();
-    let hints = [
-        "exceeds the context window",
-        "context window of this model",
-        "maximum context length",
-        "context length exceeded",
-        "too many tokens",
-        "token limit exceeded",
-        "prompt is too long",
-        "input is too long",
-    ];
-
-    hints.iter().any(|hint| lower.contains(hint))
 }
 
 /// Check if an error is a rate-limit (429) error.
@@ -669,9 +654,23 @@ impl Provider for ReliableProvider {
     ) -> anyhow::Result<ChatResponse> {
         let models = self.model_chain(model);
         let mut failures = Vec::new();
+        let requires_native_tools = request.tools.is_some_and(|tools| !tools.is_empty());
 
         for current_model in &models {
             for (provider_name, provider) in &self.providers {
+                if requires_native_tools && !provider.supports_native_tools() {
+                    push_failure(
+                        &mut failures,
+                        provider_name,
+                        current_model,
+                        1,
+                        1,
+                        "unsupported",
+                        "provider does not advertise native tool calling",
+                    );
+                    continue;
+                }
+
                 let mut backoff_ms = self.base_backoff_ms;
 
                 for attempt in 0..=self.max_retries {

@@ -37,8 +37,8 @@ SynapseClaw has the right architecture (Letta-style core memory blocks) but the 
 | User says | Agent should know | Source |
 |-----------|-------------------|--------|
 | "What's the weather?" | City from user_knowledge | Core block |
-| "Translate to my language" | Preferred language | Core block |
-| "Remind me tomorrow" | Timezone | Core block |
+| "Translate to my language" | Language preference | Core block |
+| "Remind me tomorrow" | Local timezone | Core block |
 | "Send it here" | Current room/thread | Conversation target (Slice 1) |
 | "And the second one?" | Previous comparison set | Dialogue state (Slice 6) |
 | "What did we discuss last week?" | Session history | session_search (Slice 2) |
@@ -62,7 +62,7 @@ SynapseClaw has the right architecture (Letta-style core memory blocks) but the 
 
 **Core blocks**:
 - `persona` — agent identity, behavioral guidelines
-- `human` — user name, preferences, city, timezone, communication style
+- `human` — user name, preferences, city, timezone, response style
 - Each block has label, content, and **character limit** (prevents bloat)
 - Agent autonomously writes to blocks when learning new facts
 - Read-only blocks possible for policies/config
@@ -81,7 +81,7 @@ SynapseClaw has the right architecture (Letta-style core memory blocks) but the 
 | `USER.md` | 1,375 chars | Session start (frozen snapshot) | Yes, via `memory` tool |
 | Session DB | Unlimited | On-demand via `session_search` | No |
 
-**USER.md** contains: name, role, timezone, communication preferences, pet peeves, technical level.
+**USER.md** contains: name, role, timezone, response preferences, pet peeves, technical level.
 **MEMORY.md** contains: environment facts, project conventions, discovered workarounds.
 
 Both injected into system prompt at session start as frozen snapshot. Changes persist to disk but only appear at **next** session start (preserves LLM prefix caching).
@@ -181,7 +181,7 @@ Per turn:
 **Must happen before anything else.** Without populated core blocks, all slices underperform.
 
 1. On agent startup: read SOUL.md/USER.md from workspace
-2. Extract key facts: name, location, timezone, language, preferences
+2. Extract key facts: name, location, local timezone, language preference, preferences
 3. Write to `core_memory.user_knowledge` via `update_core_block()`
 4. Idempotent: skip if block already has content
 5. Consolidation bridge: when AUDN extracts user-facing facts → append to `user_knowledge`
@@ -251,7 +251,7 @@ On every agent start, check if `user_knowledge` is empty. If so, populate from f
 
 ### 5. Consolidation→core is selective (Hermes curation pattern)
 
-Not every fact goes to core blocks. Only high-confidence user-facing facts: name, location, timezone, language, stated preferences, explicit instructions. Everything else stays in episodic/archival.
+Not every fact goes to core blocks. Only high-confidence user-facing facts: name, location, local timezone, language preference, stated preferences, explicit instructions. Everything else stays in episodic/archival.
 
 ---
 

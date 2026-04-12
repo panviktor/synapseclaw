@@ -34,7 +34,7 @@ That shows up in three different failure modes:
 
 3. **model-driven default resolution where deterministic runtime should win**
    examples:
-   - implicit weather/time city
+   - implicit profile-backed location/timezone hints
    - implicit delivery target for “send it there”
    - project/workspace context carry-over
 
@@ -117,7 +117,7 @@ What to preserve and adapt:
 
 - use provider-native continuation where it is real and measurable
 - avoid assuming one provider-specific flow for everyone else
-- keep a provider-agnostic compact replay fallback
+- keep a provider-agnostic compact replay path
 
 References:
 
@@ -329,8 +329,9 @@ The model should not “decide” defaults that the runtime already knows.
 
 Examples:
 
-- weather/time without city -> `user_profile.default_city`
-- “send it there” -> `default_delivery_target` or `recent_delivery_target`
+- weather/time without explicit location -> arbitrary dynamic profile fact,
+  with the key treated as user data rather than a fixed runtime schema field
+- “send it there” -> dynamic `delivery_target_preference` fact or `recent_delivery_target`
 - “switch back there” -> dialogue-state workspace anchor
 
 These should be resolved structurally before the model improvises.
@@ -366,7 +367,7 @@ That means:
 
 - adapter-level capability advertisement
 - runtime selection based on capability, not prompt text
-- compact replay remains the universal fallback
+- compact replay remains the universal provider-independent path
 
 For OpenAI-family providers, that points directly at Responses-style chaining via
 `previous_response_id`.
@@ -377,9 +378,8 @@ The shared runtime must not accumulate vendor-specific tool dialects.
 
 Canonical rule:
 
-- native structured tool calls when the provider supports them
-- otherwise one fallback envelope only:
-  - `<tool_call>{ "name": "...", "arguments": { ... } }</tool_call>`
+- shared runtime executes native structured tool calls only
+- if a provider emits a text envelope, only its adapter may normalize or reject it
 
 Everything else is non-canonical:
 
@@ -468,7 +468,7 @@ Move defaults out of prompt prose and into runtime routing.
 
 Scope:
 
-- weather/time city default
+- profile-backed location/timezone default
 - implicit delivery target
 - workspace/resource “there” resolution
 - stronger integration with `resolution_router`
@@ -518,7 +518,7 @@ Scope:
 
 - provider capability for native continuation / server-side state
 - use on supported providers
-- preserve generic compact replay fallback for others
+- preserve generic compact replay path for others
 
 Expected outcome:
 
@@ -540,6 +540,21 @@ Expected outcome:
     - which landed base it upgrades
     - which weak heuristic or threshold it replaces
     - which new invariant becomes enforceable after the upgrade
+- status audit correction (2026-04-12):
+  - `landed` below means a usable base layer exists, not that every slice is
+    phase-close complete.
+  - Slices 1-5 and 9 are treated as closed at code level.
+  - Slice 8 is code-closed but still live-unvalidated on an official/key-based
+    Responses continuation endpoint.
+  - Slices 6, 7, 10, 11, 12, 13, 14, 15, 16, and 18 remain partial or have
+    explicit follow-through tails listed in their slice sections.
+  - Slice 17 is code-landed except live large-window -> small-window route
+    downgrade validation.
+  - Slices 19-23 now have usable typed base layers; each still has explicit
+    follow-through tails listed in its slice section.
+  - Slices 24-26 are treated as code-closed extraction/parity hardening, with
+    future summary/run-lifecycle unification intentionally left outside their
+    current scope.
 
 - landed:
   - Slice 1: provider-facing context accounting and observability
@@ -550,13 +565,44 @@ Expected outcome:
   - Slice 6: cheap-model condensation lane for history and summaries
   - Slice 7: progressive scoped instruction loading for nearest-scope project context
   - Slice 9: strict canonical tool protocol in shared runtime paths
-    - follow-through: shared text fallback now rejects bare OpenAI-shaped /
-      canonical `tool_calls` JSON unless it is inside the canonical
-      `<tool_call>...</tool_call>` envelope; provider-native JSON must arrive
-      through structured provider response fields or be normalized in the
-      provider adapter
+    - follow-through: shared text fallback was removed; provider-native JSON
+      must arrive through structured provider response fields or be normalized
+      in the provider adapter
     - native structured tool-call ids are still preserved through the shared
       runtime loop
+    - follow-through: provider trait defaults and CLI/Gemini providers now
+      reject non-empty tool sets when they do not implement native tool calls,
+      instead of silently injecting prompt-guided tool text or ignoring tools
+    - follow-through: generic OpenAI-compatible provider no longer retries a
+      native tool request through a text/history path, and no longer accepts
+      top-level `name` / `arguments` / `parameters` tool-call dialect fields;
+      those formats must be handled by an explicit provider adapter if needed
+    - follow-through: shared XML/text tool dispatcher, XML parser tests, and
+      unreachable `[Tool results]` history fallback were removed; runtime loop,
+      CLI, and channels now require native tool calls for tool-capable turns
+    - follow-through: OpenAI-compatible and Ollama text-only chat paths now
+      reject unexpected native tool calls instead of serializing them back into
+      JSON text for a shared parser
+    - follow-through: generic OpenAI-compatible, OpenAI, Azure OpenAI, Gemini,
+      and Ollama adapters no longer surface `reasoning_content` / `thinking`
+      as visible assistant text; they keep reasoning separate or fail on empty
+      visible content, so provider dialect quirks do not become shared-runtime
+      answer fallbacks
+    - follow-through: channel-level XML tool-call tag stripping and shared
+      runtime `<tool_result>` / `<think>` visible-output scrubbing were removed;
+      raw tool/reasoning artifacts must be handled at the concrete provider
+      adapter boundary or surface as defects, not be hidden by web/channel/core
+      presentation code
+    - follow-through: provider adapters no longer synthesize missing native
+      `tool_call.id` values with UUIDs; missing ids are treated as provider
+      schema defects so the assistant tool-call / role=`tool` result link stays
+      explicit and auditable
+    - follow-through: web run creation no longer falls through to a synthetic
+      UUID when the configured `run_store` fails; persistence failures now
+      surface instead of producing an unaudited run id
+    - follow-through: configured AIEOS identity now fails loud when the JSON
+      source is missing, invalid, or renders empty instead of silently mixing in
+      OpenClaw `IDENTITY.md`
   - Slice 10 groundwork:
     - lane candidate schema and manual profile metadata
     - preset expansion (`chatgpt`, `claude`, `openrouter`, `gemini`, `local`)
@@ -589,6 +635,10 @@ Expected outcome:
     - `/model` help now resolves effective lanes through the same runtime
       lane resolver, so implicit reasoning fallbacks are visible instead of
       only explicit config lanes
+    - status note: this is not a full Slice 10 close; remaining Slice 10 work
+      is now mostly registry/profile clean-up, adapter-heuristic shrinkage, and
+      keeping lane/candidate-first explanations consistent as Slice 14/18
+      continue hardening.
 - code-closed / live-unvalidated:
   - Slice 8:
     - adapter-local provider-native continuation scaffolding exists for `openai-codex`
@@ -640,6 +690,10 @@ Expected outcome:
     - runtime feature coverage now filters capabilities through the same
       confidence/freshness policy, so stale low-confidence catalog entries are
       not shown as usable modalities in `/model` diagnostics
+    - embedding retrieval calibration now resolves from `model_catalog.json`
+      `embedding_profiles` instead of adapter-side model-family substring
+      inference; unknown embedding models disable embeddings until a catalog
+      profile is supplied, rather than receiving a silent generic profile
   - Slice 13 initial pressure snapshot:
     - `ProviderContextBudgetInput` now tracks artifact-level breakdown for:
       - bootstrap
@@ -715,6 +769,9 @@ Expected outcome:
       scoped per workspace agent and keyed by source transcript, compression
       policy, and trusted context window digest; repeated compaction of the same
       source no longer re-burns the summary lane
+    - live agent history compaction now skips compaction when the summary lane
+      fails or returns an empty summary, instead of injecting a raw transcript
+      truncation as a hidden fallback artifact
     - condensed artifact cache is now persistent under the workspace state dir,
       TTL-bounded by default to 2 days, and LRU-capped by config; this makes
       restart/fleet behavior closer to Hermes-style prompt caching while staying
@@ -763,6 +820,12 @@ Expected outcome:
     - `memory_recall` is now a `historical_lookup` tool, not a memory mutation
       tool, so direct resolved-state turns do not keep it in the mutation-safe
       tool subset
+    - central AUDN-lite mutation evaluation now calls the same governor before
+      durable writes, with explicit write classes and typed consolidation
+      `memory_update` parsing
+    - status note: this is still partial, but the bypass audit is now narrowed
+      to broader semantic/paraphrase loop detection, adapter-only graph
+      extraction tails, and future write classes.
   - Phase-close validation harness:
     - added `dev/gateway-chat-harness/scripts/phase4_10_live_pack.sh`
     - base pack covers `cheap`, `deepseek`, and `gpt-5.4` route smoke:
@@ -869,6 +932,9 @@ Expected outcome:
     - `/providers` and `/model` help rendering now flows through typed
       `RouteSelection` / config snapshots instead of adapter-owned pre-rendered
       strings
+    - `/providers` and `/model` now share the same adapter-core runtime
+      diagnostic writer for admission, tool repair, runtime assumptions,
+      calibrations, handoff artifacts, and watchdog blocks
     - provider/model route mutations now flow through typed request/outcome
       structures, including model-switch blocked outcomes, so web and channel
       can keep lifecycle differences without forking semantics
@@ -914,6 +980,8 @@ Expected outcome:
 - next:
   - Slice 12 follow-through:
     - widen provenance beyond cached provider catalogs as more profile data moves into catalogs
+    - continue moving non-routing profile classes through the external catalog
+      instead of adapter-local model-name inference
     - keep auditing new tool-capability decisions so they enter through the
       shared domain capability service rather than web/channel-specific guards
   - Slice 13 follow-through:
@@ -938,6 +1006,18 @@ Expected outcome:
     - pure-dialogue graph hygiene
     - better cheap-lane use of already-loaded scoped context on ambiguous prompts
   - provider-native continuation on an endpoint that actually advertises / accepts it
+  - Slice 16 follow-through:
+    - remaining policy-bypass audit is now narrowed after central mutation
+      governance and graph-extraction hygiene landed; keep watching future
+      write classes and adapter paths that introduce new durable-write sources
+    - strengthen low-information paraphrase loop detection beyond lexical
+      repetition gates
+    - re-run the expensive long-dialogue semantic check only at slice-close
+      points
+  - Slice 17:
+    - bounded structured handoff packets landed for route/admission pressure
+      surfaces; cross-channel transition and delegation now have a shared packet
+      shape to reuse instead of new prose-only summaries
 
 ### Slice 1
 
@@ -949,13 +1029,27 @@ Expected outcome:
 
 - resolve implicit delivery target from typed turn state instead of prompt prose
 - expose per-turn defaults through a scoped runtime context port
-- wire `message_send` to prefer recent delivery target, then profile default
+- wire `message_send` to prefer recent delivery target, then user-profile fact
+- current status:
+  - dynamic user profiles remain arbitrary key/value facts, not fixed Rust fields
+  - onboarding workspace scaffold now uses arbitrary `user_facts` instead of
+    fixed `timezone` / `response_style` fields, and the generated notes point
+    durable profile updates at `user_profile` rather than legacy core-memory
+    prose
+  - the one delivery-default profile convention is centralized as a domain-owned
+    key constant and consumed by typed default/assumption/handoff logic
+  - public `user_profile` tool schema examples no longer advertise weather/time
+    facts as a built-in profile schema
+  - persistent user-profile store initialization now fails explicitly instead
+    of silently degrading to memory-only storage
+  - executable-code fixtures no longer use legacy city/locale profile keys;
+    profile tests use arbitrary dynamic facts
 
 ### Slice 3
 
 - implement non-mutating structured recall for:
   - direct working-chain recap
-  - direct default-city recap
+  - direct weather-city fact recap
   - direct current-conversation / recent-target recap
 - narrow tool exposure to zero when typed runtime state is already sufficient
 
@@ -1001,8 +1095,16 @@ Expected outcome:
   - late-anchor compare turn now completes after a single `memory_recall`
   - repeated `memory_recall` churn no longer reproduced in the same scenario
   - provider-facing context stayed bounded with `prior_chat_messages = 6`
+- 2026-04-12 follow-through:
+  - turn-context hybrid recall now passes candidate entries through the same
+    governor-backed memory reranker as `memory_recall`, so daily/precedent noise
+    and low-information loops are not ranked differently only because recall
+    entered through the automatic context path
+  - low-information detection now catches repeated semantic shingles, not only
+    exact token chants or contiguous repeated phrases
 - remaining quality tail after the hardening:
-  - recall ranking is better, but still not ideal on concept-heavy semantic sessions
+  - recall ranking is better, but still needs live long-dialogue validation on
+    concept-heavy semantic sessions after the hybrid-rerank follow-through
   - pure-dialogue extraction is quieter, but anchor-like conceptual turns can still emit
     concept entities/relationships that may be too generic
 
@@ -1022,15 +1124,19 @@ Expected outcome:
     - `SUBTREE_SCOPE_CONFIRMED`
   - media/vision turns now suppress stale inferred scoped context and keep explicit
     user path hints as the only way to force scoped project instructions into that turn
-  - cheap route can still underuse already-loaded scoped context on weaker or more ambiguous prompts
-    even though the scoped block is present in provider context
+  - scoped-context blocks now carry explicit bounded metadata
+    (`active_for_this_turn`, `use_before_workspace_or_bootstrap_lookup`) so cheap
+    routes have a clearer typed instruction to consume already-loaded scoped
+    context before generic workspace/bootstrap discovery
+  - cheap route behavior still needs live validation on weaker or more ambiguous
+    prompts after the scoped-context block hardening
 
 ### Slice 8
 
 - add provider-native continuation support where it genuinely helps
 - preserve hexagonal boundaries:
   - provider-native continuation state must live in the provider adapter
-  - shared runtime stays on one canonical tool protocol and compact replay fallback
+  - shared runtime stays on one canonical tool protocol and compact replay path
 - current status:
   - adapter-local response-id tracking and delta-input assembly were implemented in
     `openai_codex`
@@ -1053,8 +1159,8 @@ Expected outcome:
 ### Slice 9
 
 - enforce a strict canonical tool protocol in shared runtime paths:
-  - native structured tool calls
-  - one fallback `<tool_call>{json}</tool_call>` envelope
+  - native structured tool calls only
+  - no shared text-envelope fallback
 - move any provider-specific dialect handling to adapter-local code only if it
   is ever still needed
 - explicitly keep OpenAI/Codex-specific recovery in the provider adapter rather
@@ -1130,19 +1236,23 @@ Expected outcome:
     instead of operating on a metadata-blind synthetic route view
   - route state now stores `provider + model + lane + candidate_index` for future
     continuity-aware lane routing
-  - provider+model vision checks now have a catalog-backed fallback when a
+  - provider+model vision checks now have a catalog-backed resolution path when a
     non-default provider instance has not been warmed yet
+  - provider router now rejects unknown `hint:*` model selectors before
+    dispatch instead of executing them on the default provider
   - `model_routing_config` preset operations now participate in typed routing facts
   - remaining work:
-  - auto-selection for image / audio generation turns still needs a first-class lane chooser
-  - provider capability metadata is still narrower than the eventual lane matrix
-  - a few provider-local model-family heuristics still remain adapter-side
-    (for example reasoning-effort clamps and embedding-family inference)
-  - route state stores lane/candidate identity, and route-switch UX now renders lane
-    for lane-aware switches; downstream runtime surfaces should keep moving toward
-    lane/candidate-first explanations
-  - modality routing still has only one live consumer (`multimodal_understanding`);
-    image/audio generation lanes are not first-class yet
+    - historical note: earlier remaining items about image/audio/video/music
+      first-class turn routing are now mostly owned by Slice 14 and the shared
+      marker/admission path, not by a separate Slice 10 routing fork
+    - provider capability metadata is still narrower than the eventual lane matrix
+    - a few provider-local model-family heuristics still remain adapter-side
+      (for example reasoning-effort clamps)
+    - route state stores lane/candidate identity, and route-switch UX now renders lane
+      for lane-aware switches; downstream runtime surfaces should keep moving toward
+      lane/candidate-first explanations
+    - keep auditing that new routing decisions enter through domain/profile
+      services rather than brand-string heuristics
 
 ### Slice 11
 
@@ -1192,9 +1302,12 @@ Expected outcome:
     - agent pre-provider compaction when admission marks the turn as `critical`
     - channel admission preflight with reroute/block before provider invocation
     - route state includes the latest admission snapshot
+    - direct media-generation admission is marker/capability based for
+      image/audio/video/music, including universal reasoning candidates that
+      explicitly advertise generation features; this remains structural and
+      does not use natural-language phrase lists
   - remaining:
     - widen intent consumers past the current multimodal + specialized-lane protection
-    - add direct image/audio/video generation admission paths
   - continue making runtime UX surfaces display admission state explicitly beyond
     `/model` help and lane-aware switch responses
     - settle whether admission snapshots should remain ephemeral or be persisted
@@ -1221,7 +1334,7 @@ Expected outcome:
   - local user `model_catalog.json` override
   - cached live provider catalog
   - built-in bundled catalog
-  - adapter-local fallback defaults
+  - adapter-local explicit unsupported/disabled states
 - treat `provider + model + runtime profile` as the profile identity:
   - same model family through OpenRouter/native/direct provider is not assumed
     to have the same context window, max output, or capabilities
@@ -1233,7 +1346,6 @@ Expected outcome:
   - optional notes about tool-calling / continuation / prompt-caching support
 - reduce adapter-side model-family heuristics over time:
   - reasoning-effort clamp rules
-  - embedding-family inference
   - modality capability guesses
 - preserve hexagonal boundaries:
   - domain resolves the effective model profile
@@ -1424,6 +1536,9 @@ Expected outcome:
     - modality inference remains conservative and marker-based; richer intent recognition
       should come later through typed interpretation or an explicit classifier, not keyword lists
     - more route/runtime UX should render lane identity first and `provider/model` second
+    - status note: do not reintroduce keyword phrase lists for media detection;
+      until typed interpretation exists, structured markers are the accepted
+      deterministic interface.
 
 ### Slice 15
 
@@ -1520,15 +1635,21 @@ Expected outcome:
       instead of the conversation/session key as fake `message_id`
     - `AgentRuntimePort` now returns typed `AgentRuntimeErrorKind`
       (`timeout`, `context_limit_exceeded`, `capability_mismatch`,
-      `auth_failure`, `runtime_failure`) so the channel use-case no longer
-      parses provider/runtime error strings directly for timeout or
-      context-overflow recovery
+      `auth_failure`, `policy_blocked`, `missing_resource`,
+      `schema_mismatch`, `runtime_failure`) so the channel use-case no longer
+      parses provider/runtime error strings directly for recoverable runtime
+      classes
+    - channel runtime error classification now uses typed IO / JSON / reqwest
+      signals for resource, policy, schema, timeout, auth, and context-limit
+      failures; resource/policy runtime errors also feed the bounded runtime
+      assumption challenge path instead of only being opaque failures
+    - route-admission context now consumes the bounded recent-admission ledger,
+      not only the last admission state; web and channel use the same helper to
+      surface distinct recent reasons plus the latest recommended repair action
   - remaining:
     - broaden repair-ledger consumers beyond current route/help/operator surfaces
-    - extend typed failure reasons further without falling back to string parsing
-      in core/runtime
-    - decide whether recent route-admission hints should remain “last distinct
-      outcome only” or become a tiny bounded ledger parallel to tool repairs
+    - keep auditing provider-specific opaque error strings that do not expose a
+      typed status/source error yet
 - expected outcome:
   - fewer opaque failures
   - fewer repeated bad tool attempts
@@ -1603,15 +1724,68 @@ Expected outcome:
     - the governor now has a first repetition-aware gate:
       long low-information repetition is skipped for raw autosave and
       background consolidation unless stronger typed evidence already exists
-    - generic plural role-pair relationships such as model-invented social-role
-      world knowledge are rejected by the relationship governor at normal
-      confidence, so examples like `Children learn_from Parents` do not enter
-      the graph as durable facts
+    - model-invented generic world-knowledge relationships are now blocked
+      primarily by the durable typed consolidation gate before graph extraction,
+      rather than by language-specific role-name or suffix filters
+    - standalone generic concept entities now require an accepted relationship
+      endpoint before they can be stored, so pure dialogue does not create loose
+      abstract graph nodes without a useful anchor
+    - low-confidence relationships between generic concept endpoints are
+      rejected by the same domain governor, then applied by the adapter
+      extractor before graph writes
+    - mutation writes now carry an explicit durable write class
+      (`preference`, `task_state`, `fact_anchor`, `recipe`, `failure_pattern`,
+      `ephemeral_repair_trace`, `generic_dialogue`) instead of relying only on
+      source/category inference
+    - the AUDN-lite mutation service now calls the memory-quality governor
+      before recall/add/update/delete, so consolidation, explicit learning,
+      precedent writes, and failure-pattern writes share the same durable-write
+      stop-line
+    - consolidation now asks the compacting model for a typed
+      `memory_update` object; old string-shaped compact outputs still parse
+      for history safety, but are classified as `generic_dialogue` and rejected
+      before durable memory mutation
+    - malformed consolidation responses no longer create raw-turn daily memory
+      entries; they are logged as invalid consolidation output and skipped
+    - generic dialogue and ephemeral repair traces are rejected before durable
+      memory mutation, while specific project/runtime task-state updates remain
+      writable
+    - graph extraction now requires a durable typed consolidation update
+      (`preference`, `task_state`, or `fact_anchor`) before it runs; ordinary
+      dialogue, `generic_dialogue`, `null`, and legacy string-shaped updates do
+      not enter the entity/relationship graph path
+    - generic concept hygiene now relies on extractor type and relationship
+      endpoint/confidence gates rather than language-specific role-name,
+      suffix, or phrase filters
+    - provider-facing current-session context now uses a bounded
+      relevant/head/tail selector instead of tail-only chat replay, so explicit
+      early and late anchors from the active long dialogue can survive when the
+      persistent session search intentionally excludes the current session
+    - current-session relevance scoring uses corpus-weighted query terms from
+      the active session history; it does not carry a built-in
+      language-specific token blacklist or phrase-specific anchor rules
+    - low-information repetition detection now also checks repeated segment
+      overlap and low incremental-information windows, so reordered paraphrase
+      loops can be suppressed without phrase lists or language-specific
+      stopword rules
+    - graph extraction now rejects all concept-to-concept relationships at the
+      domain governor layer, so high-confidence generic world-knowledge edges
+      cannot bypass memory hygiene just because the extractor sounded certain
+    - focused cheap-route long-dialogue semantic regression passed after the
+      selector fix:
+      - session: `phase410-long-semantic-focused-1775951001`
+      - report: `/tmp/synapseclaw-long-semantic-1775951001`
+      - retained anchors: `freedom`, `responsibility`, `joy`, `alignment`
+      - provider context rows: 21
+      - embedding rows: 55
+      - compaction rows: 0 because the live route stayed inside its effective
+        context budget
   - remaining:
-    - extend the governor beyond current raw write paths into more bounded
-      autosave/consolidation policy where it makes sense
-    - strengthen repetition-aware policy beyond the current lexical first pass
-      for broader low-information paraphrase loops
+    - continue auditing retrieval ranking for concept-heavy sessions after real
+      compaction, because the passing focused run did not need a compaction row
+    - keep generic world-knowledge relationships and generic consolidation
+      `memory_update` outputs as regression cases for memory hygiene, alongside
+      pure-dialogue graph extraction bypasses
 - expected outcome:
   - better retrieval quality
   - less memory pollution
@@ -1636,6 +1810,24 @@ Expected outcome:
   - relevant recent failures or cautions
 - use this as the preferred bridge when a route switch or context budget does
   not allow continuing with the full active context
+- current status:
+  - landed first pass:
+    - shared domain `session_handoff` service builds a bounded packet from typed
+      turn interpretation, admission repair hints, recalled anchors, session
+      matches, and run recipes
+    - `turn_context` includes the formatted packet in the shared provider-facing
+      resolution context, so web/channel call paths can consume the same shape
+      instead of diverging prompt prose
+    - blocked admission responses now surface the same handoff packet for
+      domain use-case and live-agent paths
+    - helper-agent delegation now accepts an optional strict `handoff_packet`
+      object and prepends the bounded shared packet before `[Context]` / `[Task]`
+    - `agents_spawn` now accepts the same optional strict `handoff_packet`
+      object and prepends it before the spawned agent task in both legacy and
+      broker-backed modes
+  - remaining:
+    - add live route-downgrade validation with large-window -> small-window
+      model switches after the long-dialogue semantic pack is green
 - expected outcome:
   - safer cross-model and cross-channel continuity
   - less reliance on free-form summaries
@@ -1682,11 +1874,27 @@ Expected outcome:
       onboarding cache operations all consume the same endpoint-aware cache key
     - cached profile metadata from one endpoint no longer leaks into the same
       provider/model when another endpoint is configured
+    - generic OpenAI-compatible `/models` refresh now persists common
+      provider-exposed context-window and max-output metadata when endpoints
+      expose fields such as `context_length`, `max_context_length`,
+      `max_model_len`, `max_input_tokens`, `max_output_tokens`, or
+      `max_completion_tokens`
+    - provider context-window error classification is now centralized in the
+      provider adapter layer and reused by reliable-provider retry/fallback
+      suppression plus the channel runtime `AgentRuntimeErrorKind` mapping
+    - failed-turn context-limit observations now flow through a typed domain
+      port into the endpoint-aware model cache when the provider error exposes
+      a trustworthy lower context window; the cache repair only lowers or fills
+      unknown context windows, never raises them
+    - web `Agent` and channel `AgentRuntimePort` now record those observations
+      through the same `WorkspaceModelProfileCatalog` cache path
   - still open after Hermes source audit:
     - no models.dev-style provider-aware registry source yet
-    - no adapter-local context-limit-error parser that feeds typed profile/cache
-      updates yet
     - no explicit probe-down tier strategy for unknown/local endpoints yet
+  - status note:
+    - treat Slice 18 as partial: catalog/cache/refresh/endpoint-aware lookup are
+      landed, but external registry ingestion and explicit unknown-endpoint
+      probe-down strategy are not complete.
 - Hermes-derived model-window resolver follow-through:
   - keep explicit user override first
   - completed: persistent live model cache lookup is now endpoint-aware, so the
@@ -1696,8 +1904,11 @@ Expected outcome:
     `max_input_tokens`, or `max_output_tokens`
   - completed: infer provider identity from catalog-owned base URLs when a
     custom endpoint is configured, so provider-aware metadata can still be used
-  - parse context-limit errors only in adapter-local code and convert them into
-    typed profile/cache updates or route repair hints
+  - completed: parse context-limit errors only in adapter-local provider code
+    and convert them into typed runtime route-repair hints
+  - completed: persist failed-turn context-limit observations as typed
+    endpoint-aware profile/cache updates when a trustworthy lower window can be
+    inferred
   - keep broad hardcoded family fallbacks out of core Rust; if unavoidable,
     they belong in local/bundled catalog data with provenance and freshness
   - consider a probe-down tier strategy only as an explicit adapter fallback
@@ -1714,7 +1925,7 @@ Expected outcome:
   - makes runtime assumptions explicit instead of leaving them implicit in prompt prose
 - add a first-class assumption tracker for active runtime hypotheses such as:
   - resolved delivery target
-  - active default city / timezone
+  - active weather-city / local-timezone facts
   - currently trusted credential or auth profile
   - expected tool capability / route capability
   - assumed current task / branch / workspace anchor
@@ -1730,6 +1941,26 @@ Expected outcome:
 - keep assumptions bounded and mostly ephemeral:
   - scoped to active sessions/routes unless promoted by a separate policy
   - aggressively evicted when stale or contradicted
+- current status:
+  - landed:
+    - `runtime_assumptions` domain service models bounded typed runtime
+      assumptions with kind/source/freshness/confidence/invalidation/replacement
+      path
+    - assumptions are derived from structured turn interpretation and recent
+      route admission/repair state, not prompt phrase matching
+    - `SessionHandoffPacket` carries bounded assumptions so route switches,
+      compaction, and fresh handoff surfaces can preserve current hypotheses
+      explicitly
+    - helper-agent handoff schemas accept the same strict assumption objects
+    - bounded session/runtime assumption ledger now merges observed assumptions
+      and downgrades challenged assumption kinds after runtime/provider/tool
+      failures
+    - channel runtime persists the assumption ledger on `RouteSelection`; web
+      runtime keeps the same ledger on the live `Agent` and exposes it through
+      route inspection
+  - still open:
+    - promotion from ephemeral assumptions into durable memory remains
+      intentionally blocked until a separate policy gate exists
 - expected outcome:
   - less hidden guesswork
   - cleaner failure diagnosis
@@ -1755,6 +1986,33 @@ Expected outcome:
 - require freshness/confidence/source on epistemic entries
 - let admission, retrieval, and self-repair consume epistemic state directly
   instead of treating all recalled facts as equally trustworthy
+- current status:
+  - landed:
+    - `epistemic_state` domain service defines a typed bounded state model for
+      runtime assumptions, model-profile facts, and memory entries
+    - model-profile context-window facts now map source/freshness/confidence
+      into `known`/`inferred`/`stale`/`needs_verification`/`unknown`
+    - memory recall lines surface `state/source/confidence` metadata next to
+      anchors so provider-facing recall is no longer undifferentiated memory
+    - retrieval reranking and resolution-plan evidence consume epistemic
+      memory state, so weak/needs-verification memory is penalized before it
+      can outrank stronger anchors
+    - session handoff `current_defaults` now includes runtime-default
+      epistemic metadata (`state/source/confidence`) for profile/configured/
+      dialogue-derived defaults, so route switches do not carry those facts as
+      undifferentiated strings
+    - execution-guidance repair hints now attach repair-trace epistemic metadata
+      (`state/source/confidence`) to recent tool-failure hints, so the model
+      sees whether a suggested repair is known, inferred, or needs verification
+    - domain tests cover stale model-profile facts and low-confidence memory
+      requiring verification, plus epistemic rerank and resolution-score
+      adjustment
+  - still open:
+    - self-repair still needs deeper policy integration with epistemic state;
+      current coverage is bounded to runtime assumptions and execution-guidance
+      repair hints
+    - external recency-sensitive facts are not fully projected through the same
+      epistemic surface yet
 - expected outcome:
   - fewer overconfident wrong decisions
   - better contradiction handling
@@ -1781,6 +2039,31 @@ Expected outcome:
 - keep watchdog state ephemeral and separate from durable memory
 - expose the digest in operator/runtime inspection and as bounded runtime context
   only when relevant
+- current status:
+  - landed:
+    - `runtime_watchdog` domain service builds a bounded typed digest from
+      route admissions, tool repair traces, challenged runtime assumptions,
+      context-cache pressure, and generic subsystem observations
+    - watchdog alerts carry typed subsystem/severity/reason/recommended action
+      and dedupe/truncate before leaving the domain service
+    - `/model` and `/providers` runtime help both use the same adapter-core
+      watchdog renderer, so web/channel command surfaces do not fork the logic
+    - domain and adapter tests cover context overflow, challenged assumptions,
+      repeated tool failures, metadata refresh guidance, and shared provider
+      help rendering
+    - watchdog digest formatting now has a shared domain-owned
+      `[runtime-watchdog]` context block that renders only when alerts exist
+    - live web/agent and channel execution both inject that bounded block before
+      provider/runtime execution, using the same typed digest rather than
+      adapter-specific prompt prose
+    - live web/agent and channel execution now feed memory-backend health,
+      configured embedding-profile degradation, and channel-registry availability
+      through the same typed subsystem observation helper before building the
+      watchdog digest
+  - still open:
+    - no autonomous background polling loop is wired yet
+    - channel observations are still availability-level rather than a full
+      independent `Channel::health_check` polling loop
 - expected outcome:
   - better self-diagnosis without prompt bloat
   - earlier detection of degraded subsystems
@@ -1804,6 +2087,30 @@ Expected outcome:
   - suppress repeated bad choices
   - improve future repair suggestions
   - surface low-confidence paths before they fail noisily
+- current status:
+  - landed:
+    - `runtime_calibration` domain service records compact typed route/tool/
+      retrieval/delivery outcome comparisons
+    - high-confidence failures become `overconfident_failure` records with a
+      suppress-choice recommendation
+    - low-confidence successes become `underconfident_success` records that can
+      be kept as positive evidence
+    - calibration history is TTL-bounded, count-bounded, and deduped by
+      decision kind/signature/comparison
+    - live `Agent` sessions now keep an ephemeral calibration ledger, cleaned by
+      the runtime trace janitor
+    - provider route-call success/failure and tool-call success/failure now emit
+      typed calibration observations without promoting them into durable memory
+    - `/model` and `/providers` now expose the compact calibration ledger through
+      the shared runtime route help path
+    - route/tool suppression now consumes typed calibration suppression keys:
+      - route admission can reroute away from a recently overconfident failing
+        route when a safe same-lane alternative exists
+      - tool narrowing can hide a recently overconfident failing tool when a
+        same-role alternative exists
+    - typed `Search` and `Delivery` tool facts now emit dedicated
+      retrieval/delivery calibration observations in both live Agent and
+      channel route state
 - expected outcome:
   - more calibrated runtime decisions
   - better post-failure learning without turning every turn into a reflection step
@@ -1825,6 +2132,31 @@ Expected outcome:
   - bounded-count eviction
   - compacting repeated failure classes
   - promotion only through explicit policy gates
+- current status:
+  - landed:
+    - `runtime_trace_janitor` domain service cleans short-lived tool-repair,
+      watchdog, calibration, and session-handoff artifacts with TTL/dedupe/count
+      bounds
+    - runtime assumptions are re-bounded through the existing typed assumption
+      ledger, without inventing schema-specific user fields
+    - repeated tool-failure classes, challenged assumptions, critical watchdog
+      alerts, and overconfident calibration failures become typed promotion
+      candidates behind explicit gates only
+    - `Agent::turn` invokes the janitor through the shared runtime path, so web
+      and channel sessions do not fork cleanup behavior
+    - channel route state now runs the same lazy janitor for tool-repair,
+      assumption, and calibration ledgers before admission/suppression decisions
+    - live web `Agent` state and channel `RouteSelection` now both own bounded
+      watchdog-alert and handoff-artifact histories, and both feed those
+      histories through the same runtime trace janitor
+    - blocked admission handoff packets are retained as short-lived typed
+      artifacts instead of being only formatted into the immediate response
+    - `/model` and `/providers` diagnostics now surface retained handoff
+      artifacts and merge retained watchdog alerts through janitor semantics
+  - still open:
+    - there is no independent timer thread yet; cleanup is lazy per turn
+    - watchdog/handoff cleanup now has web/channel storage owners, but still
+      runs lazily rather than through an autonomous background polling loop
 - expected outcome:
   - bounded metacognitive state
   - less self-generated noise
@@ -1845,6 +2177,9 @@ Expected outcome:
   - `execute_runtime_command_effect` owns common alias canonicalization,
     command-effect execution, switch success/failure/block rendering, and
     provider/model help rendering from typed snapshots
+  - adapter-core owns the shared provider/model runtime diagnostic writer, so
+    admission, repair, assumption, calibration, handoff, and watchdog help
+    blocks cannot drift between `/model` and `/providers`
   - adapters own only lifecycle-specific effects: provider initialization,
     live-agent route mutation, inbound-session route state, and transport clear
     semantics
@@ -1906,8 +2241,8 @@ Expected outcome:
      transport needs it
   8. leave summary/run-lifecycle unification as a typed service follow-up
      unless it can be done without crossing store/lifecycle boundaries
-  9. add tests/guards that prove extraction preserves prompt, sanitizer, and
-     history hygiene behavior
+  9. add tests/guards that prove extraction preserves prompt and provider-history
+     hygiene behavior without reintroducing shared XML/tag sanitizers
 - invariant:
   - `channels/mod.rs` must not be the home for shared runtime prompt or tool
     artifact semantics
@@ -1915,14 +2250,18 @@ Expected outcome:
 - implementation status:
   - runtime system prompt/bootstrap lives in adapter-core runtime prompt module,
     with channel re-exports kept only for backward-compatible call sites
-  - tool artifact cleanup and provider-history hygiene live outside
-    `channels/mod.rs`
+  - provider-history hygiene lives outside `channels/mod.rs`; presentation
+    adapters no longer strip raw XML tool artifacts
   - tool notification event interpretation and observer forwarding are shared;
     web/channel retain only transport-specific JSON/text sinks
   - channel health supervision helpers live outside `channels/mod.rs`
   - summary/run-lifecycle unification is intentionally left as a typed service
     follow-up because the current web and channel stores/lifecycles are not the
     same boundary
+  - status note:
+    - Slice 24-26 are code-closed for the current extraction/parity target.
+    - Any future web/channel run-lifecycle unification should be planned as a
+      separate typed service slice, not reopened as hidden Slice 26 scope creep.
 - expected outcome:
   - less channel-monolith drift
   - clearer adapter-core seams for prompt assembly and response cleanup
@@ -1944,7 +2283,8 @@ Expected outcome:
 - `Atlas` / `Borealis` working-chain isolation
 - recency override (`hotfix-17` -> `hotfix-18`)
 - Matrix target resolution without workspace archaeology
-- weather/time using the correct profile default city
+- weather/time using the correct user-profile location/timezone fact without a
+  fixed key schema
 
 ### Language checks
 
@@ -2155,16 +2495,21 @@ Expected outcome:
   - late points from the final quarter are also answerable
   - the provider-facing context stays within budget after compaction rather
     than growing linearly with turn count
-- current empirical status after Slice 7 close validation:
+- current empirical status after Slice 16/17 close validation:
   - mechanics: pass
     - long cheap-route dialogue stayed alive through 20 turns
-    - provider-facing history stayed compact after compaction
-    - procedural skill count stayed flat during the run
-  - semantic retention: partial
-    - the late anchor was retained
-    - the final recall/compression turns substituted the original early anchor
-      with a later generational anchor
-    - treat this as a ranking / memory-quality tail, not a compaction-lane failure
+    - provider-facing history stayed compact through bounded current-session
+      relevant/head/tail selection
+    - procedural skill promotion did not appear in the transcript
+  - semantic retention: pass on focused cheap-route live run
+    - report: `/tmp/synapseclaw-long-semantic-1775951001`
+    - final answer retained both the early anchor (`freedom` +
+      `responsibility`) and late anchor (`joy` + `alignment`)
+    - provider context rows: 21
+    - embedding rows: 55
+    - compaction rows: 0 because the selected live route stayed within budget
+    - treat the remaining risk as a real-compaction / route-downgrade ranking
+      validation item, not a known failure of the long-dialogue selector
 - verify memory / embedding behavior:
   - episodic or semantic recall anchors may be created
   - stable user-preference learning is acceptable if the user actually states

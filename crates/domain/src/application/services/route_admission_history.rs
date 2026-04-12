@@ -1,3 +1,4 @@
+use crate::domain::turn_admission::{AdmissionRepairHint, CandidateAdmissionReason};
 use crate::ports::route_selection::RouteAdmissionState;
 
 pub const ROUTE_ADMISSION_TRACE_TTL_SECS: i64 = 48 * 60 * 60;
@@ -32,6 +33,32 @@ pub fn append_route_admission_state(
     }
 
     bounded
+}
+
+pub fn recent_route_admission_reasons(
+    history: &[RouteAdmissionState],
+) -> Vec<CandidateAdmissionReason> {
+    let mut reasons = Vec::new();
+    for state in history.iter().rev() {
+        for reason in &state.reasons {
+            if !reasons.contains(reason) {
+                reasons.push(reason.clone());
+            }
+            if reasons.len() >= MAX_ROUTE_ADMISSION_HISTORY {
+                return reasons;
+            }
+        }
+    }
+    reasons
+}
+
+pub fn latest_route_admission_repair(
+    history: &[RouteAdmissionState],
+) -> Option<AdmissionRepairHint> {
+    history
+        .iter()
+        .rev()
+        .find_map(|state| state.recommended_action)
 }
 
 fn same_admission_signature(left: &RouteAdmissionState, right: &RouteAdmissionState) -> bool {
@@ -101,5 +128,28 @@ mod tests {
         );
         assert_eq!(capped.len(), MAX_ROUTE_ADMISSION_HISTORY);
         assert_eq!(capped.last().expect("last").observed_at_unix, 500);
+    }
+
+    #[test]
+    fn exposes_recent_distinct_reasons_and_latest_repair_for_runtime_context() {
+        let history = vec![
+            state(100, CandidateAdmissionReason::ProviderContextWarning),
+            state(200, CandidateAdmissionReason::ProviderContextCritical),
+            state(300, CandidateAdmissionReason::ProviderContextWarning),
+        ];
+
+        let reasons = recent_route_admission_reasons(&history);
+
+        assert_eq!(
+            reasons,
+            vec![
+                CandidateAdmissionReason::ProviderContextWarning,
+                CandidateAdmissionReason::ProviderContextCritical
+            ]
+        );
+        assert_eq!(
+            latest_route_admission_repair(&history),
+            Some(AdmissionRepairHint::CompactSession)
+        );
     }
 }

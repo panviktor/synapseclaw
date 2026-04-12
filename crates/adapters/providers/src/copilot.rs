@@ -366,14 +366,20 @@ impl CopilotProvider {
             .tool_calls
             .unwrap_or_default()
             .into_iter()
-            .map(|tool_call| ProviderToolCall {
-                id: tool_call
+            .map(|tool_call| {
+                let id = tool_call
                     .id
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                name: tool_call.function.name,
-                arguments: tool_call.function.arguments,
+                    .filter(|id| !id.trim().is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("GitHub Copilot native tool call missing call id")
+                    })?;
+                Ok(ProviderToolCall {
+                    id,
+                    name: tool_call.function.name,
+                    arguments: tool_call.function.arguments,
+                })
             })
-            .collect();
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         Ok(ProviderChatResponse {
             text: choice.message.content,

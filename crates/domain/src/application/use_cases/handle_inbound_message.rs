@@ -16,11 +16,29 @@ use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
 use crate::application::services::provider_context_budget::provider_context_input_for_history;
+use crate::application::services::runtime_assumptions::{
+    apply_tool_repair_assumption_challenges, build_runtime_assumptions,
+    challenge_runtime_assumption_ledger, merge_runtime_assumption_ledger,
+    RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
+    RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
+};
+use crate::application::services::runtime_trace_janitor::{
+    append_runtime_handoff_packet, append_runtime_watchdog_alerts,
+};
+use crate::application::services::runtime_watchdog::{
+    build_runtime_subsystem_observations, build_runtime_watchdog_digest,
+    format_runtime_watchdog_context, RuntimeSubsystemObservationInput, RuntimeWatchdogInput,
+};
+use crate::application::services::session_handoff::{
+    build_session_handoff_packet, format_session_handoff_packet, SessionHandoffInput,
+    SessionHandoffPacket,
+};
+use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::application::services::turn_markup::{
     contains_image_attachment_marker, strip_image_attachment_markers,
 };
 use crate::config::schema::ModelRouteConfig;
-use crate::domain::channel::{ChannelCapability, InboundEnvelope};
+use crate::domain::channel::{ChannelCapability, InboundEnvelope, SourceKind};
 use crate::domain::message::ChatMessage;
 use crate::ports::agent_runtime::{AgentRuntimeErrorKind, AgentRuntimePort};
 use crate::ports::channel_output::ChannelOutputPort;
@@ -451,6 +469,14 @@ async fn handle_regular_message(
             // #8: Memory context enrichment via unified assembler
             if let Some(ref mem) = ports.memory {
                 use crate::application::services::turn_context as tc;
+                let recent_admission_reasons =
+                    crate::application::services::route_admission_history::recent_route_admission_reasons(
+                        &route.recent_admissions,
+                    );
+                let recent_admission_repair =
+                    crate::application::services::route_admission_history::latest_route_admission_repair(
+                        &route.recent_admissions,
+                    );
                 let turn_ctx = tc::assemble_turn_context(
                     mem.as_ref(),
                     ports.run_recipe_store.as_ref().map(|store| store.as_ref()),
@@ -463,15 +489,8 @@ async fn handle_regular_message(
                     Some(&conv_key),
                     interpretation.as_ref(),
                     &route.recent_tool_repairs,
-                    route
-                        .last_admission
-                        .as_ref()
-                        .map(|admission| admission.reasons.as_slice())
-                        .unwrap_or(&[]),
-                    route
-                        .last_admission
-                        .as_ref()
-                        .and_then(|admission| admission.recommended_action),
+                    &recent_admission_reasons,
+                    recent_admission_repair,
                     &config.prompt_budget,
                     None, // first turn → full context
                 )
@@ -507,6 +526,7 @@ async fn handle_regular_message(
                         config,
                         ports,
                         resolved_turn_defaults.clone(),
+                        interpretation.clone(),
                         route.clone(),
                         history,
                     )
@@ -519,6 +539,14 @@ async fn handle_regular_message(
             if let Some(ref mem) = ports.memory {
                 use crate::application::services::turn_context as tc;
                 let continuation = config.continuation_policy.clone();
+                let recent_admission_reasons =
+                    crate::application::services::route_admission_history::recent_route_admission_reasons(
+                        &route.recent_admissions,
+                    );
+                let recent_admission_repair =
+                    crate::application::services::route_admission_history::latest_route_admission_repair(
+                        &route.recent_admissions,
+                    );
                 let turn_ctx = tc::assemble_turn_context(
                     mem.as_ref(),
                     ports.run_recipe_store.as_ref().map(|store| store.as_ref()),
@@ -531,15 +559,8 @@ async fn handle_regular_message(
                     Some(conversation_key),
                     interpretation.as_ref(),
                     &route.recent_tool_repairs,
-                    route
-                        .last_admission
-                        .as_ref()
-                        .map(|admission| admission.reasons.as_slice())
-                        .unwrap_or(&[]),
-                    route
-                        .last_admission
-                        .as_ref()
-                        .and_then(|admission| admission.recommended_action),
+                    &recent_admission_reasons,
+                    recent_admission_repair,
                     &config.prompt_budget,
                     Some(&continuation),
                 )
@@ -568,6 +589,7 @@ async fn handle_regular_message(
                         config,
                         ports,
                         resolved_turn_defaults.clone(),
+                        interpretation.clone(),
                         route.clone(),
                         history,
                     )
@@ -592,6 +614,7 @@ async fn handle_regular_message(
         config,
         ports,
         resolved_turn_defaults,
+        interpretation,
         route,
         history,
     )
@@ -610,56 +633,62 @@ fn build_model_routing_config(config: &InboundMessageConfig) -> crate::config::s
 
 fn format_blocked_turn_admission_response(
     decision: &crate::application::services::turn_admission::CandidateAdmissionDecision,
+    handoff_packet: Option<&SessionHandoffPacket>,
 ) -> String {
     use crate::domain::turn_admission::{
         AdmissionRepairHint, CandidateAdmissionReason, ContextPressureState, TurnIntentCategory,
     };
 
-    if let Some(AdmissionRepairHint::RefreshCapabilityMetadata(lane)) = decision.recommended_action
+    let base = if let Some(AdmissionRepairHint::RefreshCapabilityMetadata(lane)) =
+        decision.recommended_action
     {
-        return format!(
+        format!(
             "Capability metadata for `{}` is stale or low-confidence on the current route. Refresh model profiles or switch to a compatible lane and try again.",
             blocked_lane_name(lane)
-        );
-    }
-
-    match (decision.snapshot.intent, decision.snapshot.pressure_state) {
-        (_, ContextPressureState::OverflowRisk) => {
-            match decision.recommended_action {
+        )
+    } else {
+        match (decision.snapshot.intent, decision.snapshot.pressure_state) {
+            (_, ContextPressureState::OverflowRisk) => match decision.recommended_action {
                 Some(AdmissionRepairHint::StartFreshHandoff) => {
                     "This turn is too large for the current route's safe context budget. Start a fresh handoff or switch to a larger-context model.".into()
                 }
                 _ => {
                     "This turn is too large for the current route's safe context budget. Compact the session first or switch to a larger-context model.".into()
                 }
+            },
+            (TurnIntentCategory::MultimodalUnderstanding, _) => {
+                "The current route cannot handle image-aware input. Switch to a multimodal route and try again.".into()
             }
+            (TurnIntentCategory::ImageGeneration, _) => {
+                "The current route cannot generate images. Switch to an image-generation lane and try again.".into()
+            }
+            (TurnIntentCategory::AudioGeneration, _) => {
+                "The current route cannot generate audio. Switch to an audio-capable lane and try again.".into()
+            }
+            (TurnIntentCategory::VideoGeneration, _) => {
+                "The current route cannot generate video. Switch to a video-capable lane and try again.".into()
+            }
+            (TurnIntentCategory::MusicGeneration, _) => {
+                "The current route cannot generate music. Switch to a music-capable lane and try again.".into()
+            }
+            (_, _) if decision.reasons.iter().any(|reason| {
+                matches!(
+                    reason,
+                    CandidateAdmissionReason::CapabilityMetadataUnknown(_)
+                        | CandidateAdmissionReason::CapabilityMetadataLowConfidence(_)
+                        | CandidateAdmissionReason::CapabilityMetadataStale(_)
+                )
+            }) => {
+                "The current route has incomplete capability metadata for this turn. Refresh model profiles or switch to a compatible lane and try again.".into()
+            }
+            _ => "The current route cannot safely execute this turn. Switch to a compatible lane or start a fresh handoff.".into(),
         }
-        (TurnIntentCategory::MultimodalUnderstanding, _) => {
-            "The current route cannot handle image-aware input. Switch to a multimodal route and try again.".into()
-        }
-        (TurnIntentCategory::ImageGeneration, _) => {
-            "The current route cannot generate images. Switch to an image-generation lane and try again.".into()
-        }
-        (TurnIntentCategory::AudioGeneration, _) => {
-            "The current route cannot generate audio. Switch to an audio-capable lane and try again.".into()
-        }
-        (TurnIntentCategory::VideoGeneration, _) => {
-            "The current route cannot generate video. Switch to a video-capable lane and try again.".into()
-        }
-        (TurnIntentCategory::MusicGeneration, _) => {
-            "The current route cannot generate music. Switch to a music-capable lane and try again.".into()
-        }
-        (_, _) if decision.reasons.iter().any(|reason| {
-            matches!(
-                reason,
-                CandidateAdmissionReason::CapabilityMetadataUnknown(_)
-                    | CandidateAdmissionReason::CapabilityMetadataLowConfidence(_)
-                    | CandidateAdmissionReason::CapabilityMetadataStale(_)
-            )
-        }) => {
-            "The current route has incomplete capability metadata for this turn. Refresh model profiles or switch to a compatible lane and try again.".into()
-        }
-        _ => "The current route cannot safely execute this turn. Switch to a compatible lane or start a fresh handoff.".into(),
+    };
+
+    if let Some(packet) = handoff_packet {
+        format!("{base}\n\n{}", format_session_handoff_packet(packet))
+    } else {
+        base
     }
 }
 
@@ -676,9 +705,29 @@ async fn execute_agent_turn(
     config: &InboundMessageConfig,
     ports: &InboundMessagePorts,
     resolved_turn_defaults: crate::domain::turn_defaults::ResolvedTurnDefaults,
+    interpretation: Option<TurnInterpretation>,
     mut route: crate::ports::route_selection::RouteSelection,
     mut history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
+    let janitor_now_unix = chrono::Utc::now().timestamp();
+    let cleaned_route_traces =
+        crate::application::services::runtime_trace_janitor::run_runtime_trace_janitor(
+            crate::application::services::runtime_trace_janitor::RuntimeTraceJanitorInput {
+                tool_repairs: &route.recent_tool_repairs,
+                assumptions: &route.assumptions,
+                watchdog_alerts: &route.watchdog_alerts,
+                calibration_records: &route.calibrations,
+                handoff_artifacts: &route.handoff_artifacts,
+                now_unix: janitor_now_unix,
+            },
+        );
+    route.recent_tool_repairs = cleaned_route_traces.tool_repairs;
+    route.last_tool_repair = route.recent_tool_repairs.last().cloned();
+    route.assumptions = cleaned_route_traces.assumptions;
+    route.calibrations = cleaned_route_traces.calibration_records;
+    route.watchdog_alerts = cleaned_route_traces.watchdog_alerts;
+    route.handoff_artifacts = cleaned_route_traces.handoff_artifacts;
+
     struct ConversationContextGuard {
         port: Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
     }
@@ -732,9 +781,17 @@ async fn execute_agent_turn(
             provider_capabilities: &route_capabilities,
             provider_context: provider_context_input_for_history(&history)
                 .with_target_model_profile(&route_profile),
+            calibration_records: &route.calibrations,
             catalog: ports.model_profile_catalog.as_deref(),
         },
     );
+    let observed_assumptions = build_runtime_assumptions(RuntimeAssumptionInput {
+        user_message: content,
+        interpretation: interpretation.as_ref(),
+        recent_admission_repair: admission_decision.recommended_action,
+        recent_admission_reasons: &admission_decision.reasons,
+    });
+    route.assumptions = merge_runtime_assumption_ledger(&route.assumptions, &observed_assumptions);
 
     tracing::info!(
         target: "turn_admission",
@@ -758,8 +815,6 @@ async fn execute_agent_turn(
         route.lane = Some(route_override.lane);
         route.candidate_index = route_override.candidate_index;
     }
-    route.last_tool_repair = None;
-    route.recent_tool_repairs.clear();
     let observed_at_unix = chrono::Utc::now().timestamp();
     let admission_state = RouteAdmissionState {
         observed_at_unix,
@@ -774,18 +829,70 @@ async fn execute_agent_turn(
             observed_at_unix,
         );
     route.last_admission = Some(admission_state);
-    ports.routes.set_route(conversation_key, route.clone());
+    let memory_backend_healthy = if let Some(memory) = ports.memory.as_ref() {
+        Some(memory.health_check().await)
+    } else {
+        None
+    };
+    let embedding_profile = ports
+        .memory
+        .as_ref()
+        .map(|memory| memory.embedding_profile());
+    let channel_available = matches!(envelope.source_kind, SourceKind::Channel)
+        .then(|| ports.channel_registry.has_channel(&envelope.source_adapter));
+    let subsystem_observations =
+        build_runtime_subsystem_observations(RuntimeSubsystemObservationInput {
+            memory_backend_healthy,
+            embedding_profile: embedding_profile.as_ref(),
+            channel_available,
+            now_unix: observed_at_unix,
+        });
+    let runtime_watchdog_digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
+        last_admission: route.last_admission.as_ref(),
+        recent_admissions: &route.recent_admissions,
+        last_tool_repair: route.last_tool_repair.as_ref(),
+        recent_tool_repairs: &route.recent_tool_repairs,
+        context_cache: route.context_cache.as_ref(),
+        assumptions: &route.assumptions,
+        subsystem_observations: &subsystem_observations,
+        now_unix: observed_at_unix,
+    });
+    route.watchdog_alerts = append_runtime_watchdog_alerts(
+        &route.watchdog_alerts,
+        &runtime_watchdog_digest.alerts,
+        observed_at_unix,
+    );
+    route.last_tool_repair = None;
+    route.recent_tool_repairs.clear();
 
     if admission_decision.snapshot.action
         == crate::domain::turn_admission::TurnAdmissionAction::Block
     {
+        let handoff_packet = build_session_handoff_packet(SessionHandoffInput {
+            user_message: content,
+            interpretation: interpretation.as_ref(),
+            recent_admission_repair: admission_decision.recommended_action,
+            recent_admission_reasons: &admission_decision.reasons,
+            recalled_entries: &[],
+            session_matches: &[],
+            run_recipes: &[],
+        });
+        if let Some(packet) = handoff_packet.as_ref() {
+            route.handoff_artifacts =
+                append_runtime_handoff_packet(&route.handoff_artifacts, packet, observed_at_unix);
+        }
+        ports.routes.set_route(conversation_key, route.clone());
         return Ok(HandleResult::Response {
             conversation_key: conversation_key.to_string(),
-            response_text: format_blocked_turn_admission_response(&admission_decision),
+            response_text: format_blocked_turn_admission_response(
+                &admission_decision,
+                handoff_packet.as_ref(),
+            ),
             tool_summary: String::new(),
             tools_used: false,
         });
     }
+    ports.routes.set_route(conversation_key, route.clone());
 
     if admission_decision.requires_compaction {
         let stored_compacted = ports
@@ -801,6 +908,9 @@ async fn execute_agent_turn(
             provider_history_compacted,
             "Compacted channel session before agent execution"
         );
+    }
+    if let Some(block) = format_runtime_watchdog_context(&runtime_watchdog_digest) {
+        history.push(ChatMessage::system(block));
     }
 
     // ── Set current conversation context for tools that need "here" ──
@@ -993,6 +1103,17 @@ async fn execute_agent_turn(
                     &turn_result.tool_repairs,
                     chrono::Utc::now().timestamp(),
                 );
+            route.assumptions = apply_tool_repair_assumption_challenges(
+                &route.assumptions,
+                &turn_result.tool_repairs,
+            );
+            route.calibrations =
+                crate::application::services::runtime_calibration::append_tool_fact_calibration_observations(
+                    &route.calibrations,
+                    &turn_result.tool_facts,
+                    chrono::Utc::now().timestamp(),
+                )
+                .records;
             ports.routes.set_route(conversation_key, route);
 
             if let Some(ref store) = ports.dialogue_state_store {
@@ -1057,6 +1178,11 @@ async fn execute_agent_turn(
             })
         }
         Err(e) => {
+            if let Some(challenge) = agent_runtime_error_assumption_challenge(&e.kind) {
+                route.assumptions =
+                    challenge_runtime_assumption_ledger(&route.assumptions, challenge);
+                ports.routes.set_route(conversation_key, route.clone());
+            }
             // Cancel draft if active
             if let Some((_, Some(ref draft_id))) = draft_state {
                 let _ = ports
@@ -1135,6 +1261,46 @@ async fn execute_agent_turn(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+fn agent_runtime_error_assumption_challenge(
+    kind: &AgentRuntimeErrorKind,
+) -> Option<RuntimeAssumptionChallenge<'static>> {
+    match kind {
+        AgentRuntimeErrorKind::ContextLimitExceeded => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::ContextWindow,
+            value: "context_limit_exceeded",
+            invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+            replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+        }),
+        AgentRuntimeErrorKind::CapabilityMismatch => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::RouteCapability,
+            value: "capability_mismatch",
+            invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+            replacement_path: RuntimeAssumptionReplacementPath::SwitchRoute,
+        }),
+        AgentRuntimeErrorKind::AuthFailure => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::RouteCapability,
+            value: "auth_failure",
+            invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+            replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
+        }),
+        AgentRuntimeErrorKind::MissingResource => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::WorkspaceAnchor,
+            value: "missing_resource",
+            invalidation: RuntimeAssumptionInvalidation::UserContradiction,
+            replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
+        }),
+        AgentRuntimeErrorKind::PolicyBlocked => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::RouteCapability,
+            value: "policy_blocked",
+            invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+            replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
+        }),
+        AgentRuntimeErrorKind::Timeout
+        | AgentRuntimeErrorKind::SchemaMismatch
+        | AgentRuntimeErrorKind::RuntimeFailure => None,
+    }
+}
 
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -1237,6 +1403,10 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             }
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}
@@ -1279,6 +1449,10 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: Vec::new(),
+                watchdog_alerts: Vec::new(),
+                handoff_artifacts: Vec::new(),
             }
         }
     }
@@ -1872,6 +2046,27 @@ mod tests {
     }
 
     #[test]
+    fn runtime_error_challenges_cover_typed_resource_and_policy_failures() {
+        let missing =
+            agent_runtime_error_assumption_challenge(&AgentRuntimeErrorKind::MissingResource)
+                .expect("missing resource should challenge workspace assumptions");
+        assert_eq!(missing.kind, RuntimeAssumptionKind::WorkspaceAnchor);
+        assert_eq!(
+            missing.replacement_path,
+            RuntimeAssumptionReplacementPath::AskUserClarification
+        );
+
+        let blocked =
+            agent_runtime_error_assumption_challenge(&AgentRuntimeErrorKind::PolicyBlocked)
+                .expect("policy block should challenge route capability assumptions");
+        assert_eq!(blocked.kind, RuntimeAssumptionKind::RouteCapability);
+        assert_eq!(
+            blocked.invalidation,
+            RuntimeAssumptionInvalidation::RouteAdmissionFailure
+        );
+    }
+
+    #[test]
     fn strip_image_markers_removes_blocks() {
         let text = "Hello [IMAGE:abc123] world";
         assert_eq!(strip_image_attachment_markers(text), "Hello  world");
@@ -1918,6 +2113,7 @@ mod tests {
                 condensation_plan: None,
                 requires_compaction: false,
             },
+            None,
         );
 
         assert!(response.contains("image_generation"));
@@ -1945,6 +2141,7 @@ mod tests {
                 condensation_plan: None,
                 requires_compaction: false,
             },
+            None,
         );
 
         assert!(response.contains("safe context budget"));

@@ -1,4 +1,5 @@
 use crate::config::schema::ModelFeature;
+use anyhow::Result;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogModelProfileSource {
@@ -27,6 +28,13 @@ pub struct CatalogModelProfile {
     pub observed_at_unix: Option<u64>,
 }
 
+/// Typed profile observation derived from a provider context-limit failure.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ContextLimitProfileObservation {
+    pub observed_context_window_tokens: Option<usize>,
+    pub requested_context_tokens: Option<usize>,
+}
+
 /// Port for best-effort provider:model profile lookup.
 ///
 /// Adapters can implement this using cached provider catalogs, live model
@@ -34,4 +42,13 @@ pub struct CatalogModelProfile {
 /// where the metadata came from.
 pub trait ModelProfileCatalogPort: Send + Sync {
     fn lookup_model_profile(&self, provider: &str, model: &str) -> Option<CatalogModelProfile>;
+
+    fn record_context_limit_observation(
+        &self,
+        _provider: &str,
+        _model: &str,
+        _observation: ContextLimitProfileObservation,
+    ) -> Result<()> {
+        Ok(())
+    }
 }

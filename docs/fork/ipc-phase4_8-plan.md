@@ -175,9 +175,9 @@ Those are typed runtime facts.
 
 The runtime should not ask the model to guess:
 
-- preferred language
-- timezone
-- default city
+- language preference
+- local timezone
+- weather city
 - current delivery target
 - focus item in a comparison set
 
@@ -313,7 +313,7 @@ If none of these gates fire, the system should stay on the cheap path:
 explicit user input
 -> current conversation context
 -> dialogue state / working state
--> structured user profile
+-> dynamic user profile
 -> session / precedent / recipe search
 -> long-term semantic memory
 -> narrow clarification
@@ -332,7 +332,7 @@ Hard runtime truth:
 - current conversation target
 - thread target
 - actor identity key
-- structured user profile
+- dynamic user profile
 - active standing orders
 
 ### Layer 2 — Working State
@@ -472,23 +472,19 @@ memory recall, and historical recap.
 
 ### Goal
 
-Finish the move from soft `user_knowledge` text to a typed user profile.
+Finish the move from soft `user_knowledge` text to a first-class dynamic user
+profile.
 
 ### Work
 
-- persist `UserProfile` as first-class runtime data
+- persist `UserProfile` as first-class runtime data with schemaless `facts`
 - add controlled sync into human-readable projections/core blocks
 - define capture/update paths:
   - explicit user corrections/preferences
   - operator edits
   - future structured parsers
-- add explicit fields:
-  - `preferred_language`
-  - `timezone`
-  - `default_city`
-  - `communication_style`
-  - `known_environments`
-  - `default_delivery_target`
+- keep profile facts dynamic; resolver-owned conventions are data keys, not
+  Rust fields
 
 ### Constraint
 
@@ -870,7 +866,7 @@ Recommended order:
 
 1. freeze legacy heuristics
 2. local-first embedding backbone
-3. structured user profile
+3. dynamic user profile
 4. typed dialogue state updates
 5. bounded turn interpretation
 6. unified resolution router

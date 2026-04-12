@@ -30,7 +30,7 @@ Notes:
 ### 3. City Preference To Weather In New Session
 Status: fail
 Notes:
-- The harmless preference-setting turn (`default city = Berlin`) originally crashed the main daemon because core-memory trimming sliced UTF-8 by byte index in `surrealdb_adapter.rs`.
+- The harmless dynamic weather-location preference-setting turn originally crashed the main daemon because core-memory trimming sliced UTF-8 by byte index in `surrealdb_adapter.rs`.
 - That crash was fixed locally during validation, but the retry still did not complete the turn in time.
 - The gateway persisted the user turn, then spent tens of seconds in `hybrid_search` and repeated `embed_document` work without ever persisting an assistant reply before the harness timed out.
 - This is a completion-path/runtime issue, not a weather-specific logic failure.
@@ -108,7 +108,7 @@ Applied during the same validation pass:
 - moved `chat.send` success bookkeeping off the synchronous WebSocket completion path
 - deduplicated live/persisted tool events by structural signature
 - hardened first-batch tool facts without semantic string heuristics
-- fixed `user_profile` to accept `clear_fields: null`
+- fixed `user_profile` empty-clear handling; current contract uses dynamic `clear_keys`
 - restored user-systemd bus environment in `shell` subprocesses after `env_clear()`
 
 ### 6. Topic Isolation Retest
@@ -122,8 +122,8 @@ Notes:
 Status: pass
 Notes:
 - The setup turn now completes successfully instead of timing out.
-- The earlier `user_profile` failure on `clear_fields = null` is gone.
-- The follow-up weather turn returns the correct default city (`Berlin`) with no duplicate tool events.
+- The earlier `user_profile` empty-clear failure is gone; current contract uses dynamic `clear_keys`.
+- The follow-up weather turn returns the correct weather-city fact (`Berlin`) with no duplicate tool events.
 - Remaining quality issue from that older pass: the planner still bootstrapped through workspace docs before acting.
 
 ### 8. Service Check Retest
@@ -157,8 +157,8 @@ Notes:
   - `登录回调循环`
   were stored and recalled correctly.
 - The UTF-8 trimming crash in Surreal core-memory append path is fixed; no new boundary issues were observed.
-- A new durable preference update also completed successfully:
-  - `default_city = Tokyo (東京)`
+- A durable weather-location preference update completed successfully:
+  - dynamic profile fact for `Tokyo (東京)`
 - Remaining bug:
   - a fresh weather/time turn still picked `Berlin` instead of `Tokyo`, even though a direct follow-up recall question correctly answered `Tokyo`.
   - This is no longer a prompt-replay bug; it is now a planner/runtime preference-application bug.
@@ -194,10 +194,10 @@ Notes:
 - The next turn returned exactly `CORE_OK`.
 - Dialog continuity survived the model switch with no visible context loss.
 
-### 13. Typed Default City Retest
+### 13. Dynamic Weather-City Retest
 Status: pass with fetch-policy caveat
 Notes:
-- Setting `default_city = Tokyo (東京)` completed successfully through `user_profile`.
+- Setting a dynamic weather-location fact for `Tokyo (東京)` completed successfully through `user_profile`.
 - The follow-up weather/time turn resolved `Tokyo`, not `Berlin`.
 - The turn fetched local time via `shell` and eventually returned:
   - `Tokyo: ☁️ +16°C`
@@ -235,7 +235,7 @@ Notes:
 - Main-route tool smoke passed cleanly:
   - `gpt-5.4` used the shell tool and returned `STRICT_OK`
 - Cheap-route profile mutation was mixed:
-  - `user_profile({"action":"upsert","default_city":"Tokyo"})` executed successfully
+  - `user_profile({"action":"upsert","facts":{...}})` executed successfully for the dynamic weather-location fact
   - one upstream OpenRouter response-body decode error interrupted the same turn before final assistant text
   - the follow-up recall turn still answered `Tokyo`
 - Interpretation:
@@ -343,7 +343,7 @@ Notes:
   - no `MEMORY.md`
   reads were observed in the clean `Atlas` / `Borealis` / `青龙` working-chain scenarios.
 - Typed defaults are now materially better in live use:
-  - `default_city = Tokyo` is applied correctly
+  - the dynamic weather-location fact for `Tokyo` is applied correctly
   - configured Matrix delivery targets resolve cleanly
   - runtime `/model` switching works without losing session continuity
 - The cheap route (`qwen/qwen3.6-plus`) is now viable for the default regression lane:
@@ -406,8 +406,8 @@ Notes:
   - `function.name`
   - `function.arguments`
 - After that fix, a cheap-lane preference turn completed successfully:
-  - `default_city = Tokyo`
-  - `communication_style = brief / bullets`
+  - dynamic weather-location fact for `Tokyo`
+  - dynamic response-format fact for brief / bullets
   - `ops -> Matrix`, `marketing -> Draft/Delegate`
 - The follow-up weather turn again resolved `Tokyo` correctly.
 

@@ -806,7 +806,7 @@ pub fn aieos_to_system_prompt(identity: &AieosIdentity) -> String {
 
     // ── Linguistics Section ────────────────────────────────────────
     if let Some(ref ling) = identity.linguistics {
-        prompt.push_str("## Communication Style\n\n");
+        prompt.push_str("## Response Style\n\n");
 
         if let Some(ref style) = ling.style {
             let _ = writeln!(prompt, "**Style:** {}", style);
@@ -976,9 +976,11 @@ pub fn aieos_to_system_prompt(identity: &AieosIdentity) -> String {
 
 /// Check if AIEOS identity is configured and should be used.
 ///
-/// Returns true if format is "aieos" and either aieos_path or aieos_inline is set.
+/// Returns true when the identity dialect is explicitly set to AIEOS. Missing
+/// AIEOS source is a configuration error handled by `load_aieos_identity`, not
+/// a signal to fall back to another dialect.
 pub fn is_aieos_configured(config: &IdentityConfig) -> bool {
-    config.format == "aieos" && (config.aieos_path.is_some() || config.aieos_inline.is_some())
+    config.format == "aieos"
 }
 
 #[cfg(test)]
@@ -1162,7 +1164,7 @@ mod tests {
         assert!(prompt.contains("- creativity: 0.95"));
         assert!(prompt.contains("- Be helpful"));
 
-        assert!(prompt.contains("## Communication Style"));
+        assert!(prompt.contains("## Response Style"));
         assert!(prompt.contains("**Style:** concise"));
         assert!(prompt.contains("**Formality Level:** casual"));
         assert!(prompt.contains("- \"Let's go!\""));
@@ -1265,13 +1267,13 @@ mod tests {
     }
 
     #[test]
-    fn is_aieos_configured_false_no_config() {
+    fn is_aieos_configured_true_without_source() {
         let config = IdentityConfig {
             format: "aieos".into(),
             aieos_path: None,
             aieos_inline: None,
         };
-        assert!(!is_aieos_configured(&config));
+        assert!(is_aieos_configured(&config));
     }
 
     #[test]

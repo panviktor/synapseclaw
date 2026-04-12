@@ -88,7 +88,7 @@ impl MessageSendTool {
                             DeliveryTargetKind::Explicit(resolved.target.clone())
                         }
                         TurnDefaultSource::UserProfile => {
-                            DeliveryTargetKind::ProfileDefault(resolved.target.clone())
+                            DeliveryTargetKind::UserProfile(resolved.target.clone())
                         }
                         TurnDefaultSource::ConfiguredChannel => {
                             DeliveryTargetKind::ConfiguredDefault(resolved.target.clone())
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uses_profile_default_when_target_omitted() {
+    async fn uses_user_profile_target_when_target_omitted() {
         let context = Arc::new(TestContext::default());
         let turn_defaults = Arc::new(InMemoryTurnDefaultsContext::new());
         turn_defaults.set_current(Some(ResolvedTurnDefaults {
@@ -351,7 +351,7 @@ mod tests {
         match &execution.facts[0].payload {
             ToolFactPayload::Delivery(DeliveryFact {
                 target:
-                    DeliveryTargetKind::ProfileDefault(ConversationDeliveryTarget::Explicit {
+                    DeliveryTargetKind::UserProfile(ConversationDeliveryTarget::Explicit {
                         recipient,
                         ..
                     }),
@@ -362,7 +362,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uses_recent_delivery_target_before_profile_default() {
+    async fn uses_recent_delivery_target_before_user_profile_target() {
         let context = Arc::new(TestContext::default());
         let turn_defaults = Arc::new(InMemoryTurnDefaultsContext::new());
         turn_defaults.set_current(Some(ResolvedTurnDefaults {

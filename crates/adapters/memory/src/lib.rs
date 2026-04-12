@@ -11,10 +11,12 @@ pub mod chunker;
 pub mod embeddings;
 pub mod response_cache;
 pub mod surrealdb_adapter;
+pub mod user_profile_store;
 pub mod vector;
 
 pub use response_cache::ResponseCache;
 pub use surrealdb_adapter::SurrealMemoryAdapter;
+pub use user_profile_store::SurrealUserProfileStore;
 // NoopUnifiedMemory is defined below and re-exported here for convenience.
 
 // Re-export domain types for convenience.
@@ -78,7 +80,7 @@ pub async fn create_memory(
         );
     }
 
-    // Create embedding provider
+    // Create embedding provider.
     let embedder = create_embedding_provider(config, api_key);
 
     // SurrealDB data directory: workspace_dir/memory/brain.surreal
@@ -101,7 +103,7 @@ pub async fn create_memory(
             })
         }
         Err(e) => {
-            tracing::error!("SurrealDB init failed: {e}, falling back to noop");
+            tracing::error!("SurrealDB init failed: {e}; memory backend disabled");
             let noop = Arc::new(NoopUnifiedMemory);
             Ok(MemoryBackend {
                 memory: noop.clone(),
@@ -125,17 +127,36 @@ fn create_embedding_provider(
     }
 
     let provider_name = config.embedding_provider.as_str();
-    let profile = embeddings::build_embedding_profile(
+    let Some(profile) = embeddings::resolve_embedding_profile(
         provider_name,
         &config.embedding_model,
         config.embedding_dimensions,
-    );
+    ) else {
+        tracing::warn!(
+            provider = %config.embedding_provider,
+            model = %config.embedding_model,
+            dimensions = config.embedding_dimensions,
+            "Embedding profile is not catalogued; embeddings disabled. Add an embedding_profiles entry to model_catalog.json."
+        );
+        return Arc::new(embeddings::NoopEmbedding);
+    };
 
     // llama.cpp: no API key needed
     if provider_name == "llama.cpp" || provider_name.starts_with("llama.cpp:") {
-        let url = provider_name
-            .strip_prefix("llama.cpp:")
-            .unwrap_or("http://127.0.0.1:8081");
+        let url = if provider_name == "llama.cpp" {
+            "http://127.0.0.1:8081"
+        } else {
+            match provider_name
+                .strip_prefix("llama.cpp:")
+                .filter(|url| !url.is_empty())
+            {
+                Some(url) => url,
+                None => {
+                    tracing::warn!("Empty llama.cpp embedding URL; embeddings disabled");
+                    return Arc::new(embeddings::NoopEmbedding);
+                }
+            }
+        };
         let inner = Box::new(embeddings::LlamaCppEmbedding::new(
             url,
             &config.embedding_model,
@@ -155,9 +176,23 @@ fn create_embedding_provider(
 
     if let Some(key) = resolved_key {
         let base_url = if provider_name.starts_with("custom:") {
-            provider_name.trim_start_matches("custom:").to_string()
+            let base_url = provider_name.trim_start_matches("custom:");
+            if base_url.is_empty() {
+                tracing::warn!("Empty custom embedding base URL; embeddings disabled");
+                return Arc::new(embeddings::NoopEmbedding);
+            }
+            base_url.to_string()
         } else {
-            embeddings::default_base_url_for_provider(provider_name)
+            match embeddings::default_base_url_for_provider(provider_name) {
+                Some(base_url) => base_url,
+                None => {
+                    tracing::warn!(
+                        provider = %config.embedding_provider,
+                        "Embedding provider has no known base URL; embeddings disabled"
+                    );
+                    return Arc::new(embeddings::NoopEmbedding);
+                }
+            }
         };
 
         let inner = Box::new(embeddings::OpenAiEmbedding::new(
@@ -173,8 +208,8 @@ fn create_embedding_provider(
         ))
     } else {
         tracing::warn!(
-            "No API key for embedding provider '{}', using noop embeddings",
-            config.embedding_provider
+            provider = %config.embedding_provider,
+            "No API key for embedding provider; embeddings disabled"
         );
         Arc::new(embeddings::NoopEmbedding)
     }

@@ -2,17 +2,22 @@
 //!
 //! This is not a phrase engine. It turns structured interpretation and
 //! resolution output into narrow execution policy so the runtime can avoid
-//! unnecessary archaeology when a direct structured default is already enough.
+//! unnecessary archaeology when a direct structured runtime fact is already enough.
 
 use crate::application::services::resolution_router::{ResolutionPlan, ResolutionSource};
 use crate::application::services::turn_interpretation::{
     ReferenceCandidateKind, ReferenceSource, TurnInterpretation,
+};
+use crate::application::services::{
+    epistemic_state,
+    epistemic_state::{EpistemicEntry, EpistemicSource, EpistemicState},
 };
 use crate::domain::tool_repair::{ToolFailureKind, ToolRepairAction, ToolRepairTrace};
 use crate::domain::turn_admission::{
     admission_repair_hint_label, candidate_admission_reason_label, AdmissionRepairHint,
     CandidateAdmissionReason,
 };
+use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
 
 const MAX_EXECUTION_FAILURE_HINTS: usize = 3;
 const MAX_EXECUTION_ADMISSION_REASONS: usize = 3;
@@ -21,7 +26,7 @@ const MAX_EXECUTION_ADMISSION_REASONS: usize = 3;
 pub enum ExecutionCapability {
     ConversationReply,
     Delivery,
-    ProfileDefaults,
+    ProfileFacts,
     DirectReferenceAction,
 }
 
@@ -67,37 +72,28 @@ pub fn build_execution_guidance(
             && interpretation.current_conversation.is_some();
 
     let delivery_ready = match resolved_from {
-        Some(ResolutionSource::DialogueState) => interpretation.reference_candidates.iter().any(
-            |candidate| {
+        Some(ResolutionSource::DialogueState) => {
+            interpretation.reference_candidates.iter().any(|candidate| {
                 candidate.source == ReferenceSource::DialogueState
                     && matches!(candidate.kind, ReferenceCandidateKind::DeliveryTarget)
-            },
-        ),
-        Some(ResolutionSource::UserProfile) => interpretation.reference_candidates.iter().any(
-            |candidate| {
+            })
+        }
+        Some(ResolutionSource::UserProfile) => {
+            interpretation.reference_candidates.iter().any(|candidate| {
                 candidate.source == ReferenceSource::UserProfile
                     && matches!(
-                        candidate.kind,
-                        ReferenceCandidateKind::Profile(
-                            crate::application::services::turn_interpretation::ProfileReferenceKind::DeliveryTarget
-                        )
+                        &candidate.kind,
+                        ReferenceCandidateKind::Profile { key } if key == DELIVERY_TARGET_PREFERENCE_KEY
                     )
-            },
-        ),
+            })
+        }
         _ => false,
     };
 
-    let profile_defaults_ready = matches!(resolved_from, Some(ResolutionSource::UserProfile))
+    let profile_facts_ready = matches!(resolved_from, Some(ResolutionSource::UserProfile))
         && interpretation.reference_candidates.iter().any(|candidate| {
             candidate.source == ReferenceSource::UserProfile
-                && matches!(
-                    candidate.kind,
-                    ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::Language
-                            | crate::application::services::turn_interpretation::ProfileReferenceKind::Timezone
-                            | crate::application::services::turn_interpretation::ProfileReferenceKind::City
-                    )
-                )
+                && matches!(candidate.kind, ReferenceCandidateKind::Profile { .. })
         });
 
     let direct_reference_ready = matches!(resolved_from, Some(ResolutionSource::DialogueState))
@@ -137,8 +133,8 @@ pub fn build_execution_guidance(
     );
     push_capability(
         &mut preferred_capabilities,
-        profile_defaults_ready,
-        ExecutionCapability::ProfileDefaults,
+        profile_facts_ready,
+        ExecutionCapability::ProfileFacts,
     );
     push_capability(
         &mut preferred_capabilities,
@@ -159,7 +155,7 @@ pub fn build_execution_guidance(
 
     let avoid_historical_lookup = prefer_answer_from_resolved_state
         || (direct_resolution_ready
-            && (delivery_ready || profile_defaults_ready || direct_reference_ready));
+            && (delivery_ready || profile_facts_ready || direct_reference_ready));
 
     let guidance = ExecutionGuidance {
         resolved_from,
@@ -263,9 +259,9 @@ pub fn format_execution_guidance(guidance: &ExecutionGuidance) -> Option<String>
     if guidance.direct_resolution_ready
         && guidance
             .preferred_capabilities
-            .contains(&ExecutionCapability::ProfileDefaults)
+            .contains(&ExecutionCapability::ProfileFacts)
     {
-        lines.push("- apply_profile_defaults_before_lookup: true".to_string());
+        lines.push("- apply_profile_facts_before_lookup: true".to_string());
     }
     if guidance.avoid_session_history_lookup {
         lines.push("- avoid_session_history_lookup: true".to_string());
@@ -309,7 +305,7 @@ fn capability_name(capability: ExecutionCapability) -> &'static str {
     match capability {
         ExecutionCapability::ConversationReply => "conversation_reply",
         ExecutionCapability::Delivery => "delivery",
-        ExecutionCapability::ProfileDefaults => "profile_defaults",
+        ExecutionCapability::ProfileFacts => "profile_facts",
         ExecutionCapability::DirectReferenceAction => "direct_reference_action",
     }
 }
@@ -371,12 +367,43 @@ fn bounded_admission_reasons(
 }
 
 fn format_failure_hint(hint: &ExecutionFailureHint) -> String {
+    let epistemic = epistemic_entry_for_failure_hint(hint);
     format!(
-        "{}:{}->{}",
+        "{}:{}->{} [{}]",
         hint.tool_name,
         failure_kind_name(hint.failure_kind),
-        repair_action_name(hint.suggested_action)
+        repair_action_name(hint.suggested_action),
+        epistemic_state::format_epistemic_entry(&epistemic)
     )
+}
+
+fn epistemic_entry_for_failure_hint(hint: &ExecutionFailureHint) -> EpistemicEntry {
+    let (state, confidence_basis_points) = match hint.failure_kind {
+        ToolFailureKind::UnknownTool | ToolFailureKind::DuplicateInvocation => {
+            (EpistemicState::Known, 9_000)
+        }
+        ToolFailureKind::Timeout | ToolFailureKind::RuntimeError => {
+            (EpistemicState::Inferred, 6_000)
+        }
+        ToolFailureKind::PolicyBlocked
+        | ToolFailureKind::AuthFailure
+        | ToolFailureKind::CapabilityMismatch
+        | ToolFailureKind::MissingResource
+        | ToolFailureKind::SchemaMismatch
+        | ToolFailureKind::ContextLimitExceeded
+        | ToolFailureKind::ReportedFailure => (EpistemicState::NeedsVerification, 7_000),
+    };
+
+    EpistemicEntry {
+        subject: format!(
+            "tool:{}:{}",
+            hint.tool_name,
+            failure_kind_name(hint.failure_kind)
+        ),
+        state,
+        source: EpistemicSource::RepairTrace,
+        confidence_basis_points,
+    }
 }
 
 fn failure_kind_name(kind: ToolFailureKind) -> &'static str {
@@ -452,33 +479,32 @@ mod tests {
     }
 
     #[test]
-    fn profile_default_turn_avoids_historical_lookup_without_string_rules() {
+    fn profile_fact_turn_avoids_historical_lookup_without_string_rules() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_city: Some("Tokyo".into()),
-                timezone: Some("Asia/Tokyo".into()),
-                preferred_language: Some("ja".into()),
-                ..UserProfile::default()
-            }),
+            user_profile: Some(profile_with_facts(&[
+                ("workspace_anchor", serde_json::json!("Borealis")),
+                ("project_alias", serde_json::json!("Borealis")),
+                ("response_locale", serde_json::json!("ja")),
+            ])),
             reference_candidates: vec![
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::City,
-                    ),
-                    value: "Tokyo".into(),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "workspace_anchor".into(),
+                    },
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::Timezone,
-                    ),
-                    value: "Asia/Tokyo".into(),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "project_alias".into(),
+                    },
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::Language,
-                    ),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "response_locale".into(),
+                    },
                     value: "ja".into(),
                     source: ReferenceSource::UserProfile,
                 },
@@ -497,17 +523,17 @@ mod tests {
         assert!(guidance.direct_resolution_ready);
         assert!(guidance
             .preferred_capabilities
-            .contains(&ExecutionCapability::ProfileDefaults));
+            .contains(&ExecutionCapability::ProfileFacts));
         assert!(guidance.avoid_run_recipe_lookup);
     }
 
     #[test]
     fn ambiguous_turn_does_not_claim_direct_resolution_ready() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_city: Some("Berlin".into()),
-                ..UserProfile::default()
-            }),
+            user_profile: Some(profile_with_facts(&[(
+                "workspace_anchor",
+                serde_json::json!("Borealis"),
+            )])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "matrix".into(),
                 has_thread: false,
@@ -537,31 +563,30 @@ mod tests {
     }
 
     #[test]
-    fn current_conversation_does_not_trigger_profile_default_narrowing_by_itself() {
+    fn current_conversation_does_not_trigger_profile_fact_narrowing_by_itself() {
         let interpretation = TurnInterpretation {
-            user_profile: Some(UserProfile {
-                default_city: Some("Tokyo".into()),
-                timezone: Some("Asia/Tokyo".into()),
-                preferred_language: Some("ja".into()),
-                ..UserProfile::default()
-            }),
+            user_profile: Some(profile_with_facts(&[
+                ("workspace_anchor", serde_json::json!("Borealis")),
+                ("project_alias", serde_json::json!("Borealis")),
+                ("response_locale", serde_json::json!("ja")),
+            ])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "web".into(),
                 has_thread: false,
             }),
             reference_candidates: vec![
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::City,
-                    ),
-                    value: "Tokyo".into(),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "workspace_anchor".into(),
+                    },
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 crate::application::services::turn_interpretation::ReferenceCandidate {
-                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile(
-                        crate::application::services::turn_interpretation::ProfileReferenceKind::Timezone,
-                    ),
-                    value: "Asia/Tokyo".into(),
+                    kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
+                        key: "project_alias".into(),
+                    },
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
             ],
@@ -646,6 +671,14 @@ mod tests {
         assert!(block.contains("avoid_workspace_discovery: true"));
     }
 
+    fn profile_with_facts(facts: &[(&str, serde_json::Value)]) -> UserProfile {
+        let mut profile = UserProfile::default();
+        for (key, value) in facts {
+            profile.set(*key, value.clone());
+        }
+        profile
+    }
+
     #[test]
     fn formats_recent_failure_hints_when_present() {
         let block = format_execution_guidance(&ExecutionGuidance {
@@ -668,7 +701,7 @@ mod tests {
 
         assert!(block.contains("avoid_immediate_retry_of_recent_failures: true"));
         assert!(block.contains(
-            "recent_failure_hints: message_send:schema_mismatch->adjust_arguments_or_target"
+            "recent_failure_hints: message_send:schema_mismatch->adjust_arguments_or_target [state=needs_verification source=repair_trace confidence=7000]"
         ));
     }
 

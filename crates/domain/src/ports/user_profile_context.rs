@@ -17,14 +17,14 @@ pub trait UserProfileContextPort: Send + Sync {
 /// In-memory implementation with task-local scoping for concurrent turns.
 pub struct InMemoryUserProfileContext {
     by_task: parking_lot::RwLock<HashMap<tokio::task::Id, String>>,
-    fallback: parking_lot::RwLock<Option<String>>,
+    sync_slot: parking_lot::RwLock<Option<String>>,
 }
 
 impl InMemoryUserProfileContext {
     pub fn new() -> Self {
         Self {
             by_task: parking_lot::RwLock::new(HashMap::new()),
-            fallback: parking_lot::RwLock::new(None),
+            sync_slot: parking_lot::RwLock::new(None),
         }
     }
 }
@@ -42,7 +42,7 @@ impl UserProfileContextPort for InMemoryUserProfileContext {
                 return Some(key.clone());
             }
         }
-        self.fallback.read().clone()
+        self.sync_slot.read().clone()
     }
 
     fn set_current_key(&self, key: Option<String>) {
@@ -56,7 +56,7 @@ impl UserProfileContextPort for InMemoryUserProfileContext {
             return;
         }
 
-        *self.fallback.write() = key;
+        *self.sync_slot.write() = key;
     }
 }
 
@@ -94,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    fn fallback_key_works_outside_tokio() {
+    fn sync_key_works_outside_tokio() {
         let port = InMemoryUserProfileContext::new();
         port.set_current_key(Some("web:abc".into()));
         assert_eq!(port.get_current_key().as_deref(), Some("web:abc"));

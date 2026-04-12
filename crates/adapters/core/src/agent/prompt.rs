@@ -1,6 +1,6 @@
 use crate::skills::Skill;
 use crate::tools::Tool;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Local;
 use std::fmt::Write;
 use std::path::Path;
@@ -146,30 +146,32 @@ impl PromptSection for IdentitySection {
 
     fn build(&self, ctx: &PromptContext<'_>) -> Result<String> {
         let mut prompt = String::from("## Project Context\n\n");
-        let mut has_aieos = false;
+        let mut uses_aieos_identity = false;
         if let Some(config) = ctx.identity_config {
             if identity::is_aieos_configured(config) {
-                if let Ok(Some(aieos)) = identity::load_aieos_identity(config, ctx.workspace_dir) {
-                    let rendered = identity::aieos_to_system_prompt(&aieos);
-                    if !rendered.is_empty() {
-                        prompt.push_str(&rendered);
-                        prompt.push_str("\n\n");
-                        has_aieos = true;
-                    }
+                let aieos = identity::load_aieos_identity(config, ctx.workspace_dir)
+                    .context("failed to load configured AIEOS identity")?
+                    .ok_or_else(|| anyhow::anyhow!("configured AIEOS identity was not loaded"))?;
+                let rendered = identity::aieos_to_system_prompt(&aieos);
+                if rendered.trim().is_empty() {
+                    anyhow::bail!("configured AIEOS identity rendered an empty prompt");
                 }
+                prompt.push_str(&rendered);
+                prompt.push_str("\n\n");
+                uses_aieos_identity = true;
             }
         }
 
-        if !has_aieos {
+        if !uses_aieos_identity {
             prompt.push_str(
                 "Structured core memory and turn context carry persona, user preferences, and task state.\n\
                  Only static identity metadata is injected below.\n\
                  Do NOT use `file_read` or `file_edit` on workspace bootstrap docs unless the user explicitly asks to inspect or edit them.\n\
                  For durable preferences, task state, and long-term memory, prefer `core_memory_update`, `memory_store`, `memory_recall`, and `user_profile`.\n\n",
             );
-        }
-        for file in ["IDENTITY.md"] {
-            inject_workspace_file(&mut prompt, ctx.workspace_dir, file);
+            for file in ["IDENTITY.md"] {
+                inject_workspace_file(&mut prompt, ctx.workspace_dir, file);
+            }
         }
 
         Ok(prompt)
@@ -305,11 +307,7 @@ fn canonical_tool_language_contract(tools: &[Box<dyn Tool>]) -> String {
             .to_string(),
     );
     lines.push(
-        "- When acting, emit a real tool call with one JSON object of arguments. Do not describe the tool call in markdown or code fences."
-            .to_string(),
-    );
-    lines.push(
-        "- The only non-native fallback syntax is exactly `<tool_call>{\"name\":\"...\",\"arguments\":{...}}</tool_call>`. Any other tool syntax is invalid and ignored."
+        "- When acting, emit a provider-native tool call with one JSON object of arguments. Do not describe the tool call in markdown, code fences, XML tags, or plain text."
             .to_string(),
     );
     if has_tool("core_memory_update") {
@@ -320,7 +318,7 @@ fn canonical_tool_language_contract(tools: &[Box<dyn Tool>]) -> String {
     }
     if has_tool("user_profile") {
         lines.push(
-            "- `user_profile` uses canonical top-level fields: `{ \"action\": \"get|upsert|clear|delete\", \"default_city\": \"...\", \"preferred_language\": \"...\", \"timezone\": \"...\", \"communication_style\": \"...\" }`."
+            "- `user_profile` stores dynamic facts: `{ \"action\": \"get|upsert|clear|delete\", \"facts\": { \"any_key\": \"value\" }, \"clear_keys\": [\"any_key\"] }`. Do not invent a fixed profile schema."
                 .to_string(),
         );
     }
@@ -361,8 +359,12 @@ fn inject_workspace_file(prompt: &mut String, workspace_dir: &Path, filename: &s
                 prompt.push_str("\n\n");
             }
         }
-        Err(_) => {
-            let _ = writeln!(prompt, "### {filename}\n\n[File not found: {filename}]\n");
+        Err(error) => {
+            tracing::debug!(
+                path = %path.display(),
+                error = %error,
+                "workspace prompt file not injected"
+            );
         }
     }
 }
@@ -402,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_section_with_aieos_includes_workspace_files() {
+    fn identity_section_with_aieos_does_not_fallback_to_workspace_files() {
         let workspace =
             std::env::temp_dir().join(format!("synapseclaw_prompt_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&workspace).unwrap();
@@ -438,8 +440,8 @@ mod tests {
             "AIEOS identity should be present in prompt"
         );
         assert!(
-            output.contains("IDENTITY_MD_LOADED"),
-            "IDENTITY.md content should be present even when AIEOS is configured"
+            !output.contains("IDENTITY_MD_LOADED"),
+            "IDENTITY.md content must not be mixed into configured AIEOS identity"
         );
 
         let _ = std::fs::remove_dir_all(workspace);
