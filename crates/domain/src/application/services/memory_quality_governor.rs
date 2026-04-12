@@ -442,6 +442,19 @@ mod tests {
     }
 
     #[test]
+    fn rejects_generic_children_parent_relationship_when_marked_as_concepts() {
+        let entity_types = HashMap::from([
+            ("children".to_string(), "concept".to_string()),
+            ("parents".to_string(), "concept".to_string()),
+        ]);
+
+        assert_eq!(
+            assess_extracted_relationship("Children", "learn_from", "Parents", 0.99, &entity_types),
+            RelationshipStorageVerdict::Reject(RelationshipRejectReason::AbstractConceptPair)
+        );
+    }
+
+    #[test]
     fn accepts_concrete_relationship() {
         let entity_types = HashMap::from([
             ("victor".to_string(), "person".to_string()),

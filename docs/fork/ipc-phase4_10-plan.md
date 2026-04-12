@@ -1830,6 +1830,10 @@ Expected outcome:
     - graph extraction now rejects all concept-to-concept relationships at the
       domain governor layer, so high-confidence generic world-knowledge edges
       cannot bypass memory hygiene just because the extractor sounded certain
+    - explicit domain + extractor regressions cover the previously observed
+      `Children learn_from Parents` graph-noise shape through the generic
+      concept-to-concept stop-line, without adding phrase-specific runtime
+      filters
     - focused cheap-route long-dialogue semantic regression passed after the
       selector fix:
       - session: `phase410-long-semantic-focused-1775951001`

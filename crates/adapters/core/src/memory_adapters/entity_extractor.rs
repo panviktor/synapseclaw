@@ -387,6 +387,22 @@ mod tests {
     }
 
     #[test]
+    fn generic_children_parent_relationship_is_not_stored_when_marked_as_concepts() {
+        let entity_types = std::collections::HashMap::from([
+            ("children".to_string(), "concept".to_string()),
+            ("parents".to_string(), "concept".to_string()),
+        ]);
+        let rel = ExtractedRelationship {
+            subject: "Children".into(),
+            predicate: "learn_from".into(),
+            object: "Parents".into(),
+            confidence: 1.0,
+        };
+
+        assert!(!should_store_relationship(&rel, &entity_types));
+    }
+
+    #[test]
     fn concrete_relationships_still_pass_filter() {
         let entity_types = std::collections::HashMap::from([
             ("victor".to_string(), "person".to_string()),
