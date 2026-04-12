@@ -487,6 +487,7 @@ mod tests {
             recent_tool_repairs: Vec::new(),
             context_cache: None,
             assumptions: Vec::new(),
+            calibrations: Vec::new(),
         }
     }
 

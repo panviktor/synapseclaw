@@ -425,6 +425,7 @@ fn default_route_selection(ctx: &ChannelRuntimeContext) -> ChannelRouteSelection
         recent_tool_repairs: Vec::new(),
         context_cache: None,
         assumptions: Vec::new(),
+        calibrations: Vec::new(),
     }
 }
 
@@ -3343,6 +3344,7 @@ mod tests {
             recent_tool_repairs: Vec::new(),
             context_cache: None,
             assumptions: Vec::new(),
+            calibrations: Vec::new(),
         };
         let effective_compression =
             synapse_domain::application::services::history_compaction::resolve_context_compression_config_for_route(
@@ -3514,6 +3516,7 @@ mod tests {
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
                 assumptions: Vec::new(),
+                calibrations: Vec::new(),
             },
         );
 

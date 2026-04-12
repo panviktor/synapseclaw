@@ -12,6 +12,10 @@ use synapse_domain::application::services::provider_native_context_policy::{
     resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
 };
 use synapse_domain::application::services::runtime_assumptions::format_runtime_assumption;
+use synapse_domain::application::services::runtime_calibration::{
+    runtime_calibration_action_name, runtime_calibration_comparison_name,
+    runtime_calibration_decision_kind_name, RuntimeCalibrationRecord,
+};
 use synapse_domain::application::services::runtime_watchdog::{
     build_runtime_watchdog_digest, runtime_watchdog_action_name, runtime_watchdog_reason_name,
     runtime_watchdog_severity_name, runtime_watchdog_subsystem_name, RuntimeWatchdogAlert,
@@ -359,6 +363,7 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
             );
         }
     }
+    write_runtime_calibrations(&mut response, &current.calibrations);
     write_runtime_watchdog_digest(&mut response, current);
     if let Some(lane) = current.lane {
         let _ = writeln!(
@@ -639,6 +644,7 @@ pub(crate) fn build_providers_help_response(current: &RouteSelection) -> String 
         );
         write_recent_tool_repairs(&mut response, &current.recent_tool_repairs);
     }
+    write_runtime_calibrations(&mut response, &current.calibrations);
     write_runtime_watchdog_digest(&mut response, current);
     response.push_str("\nSwitch provider with `/models <provider>`.\n");
     response.push_str("Switch model with `/model <model-id>`.\n\n");
@@ -854,6 +860,27 @@ fn write_recent_admissions(response: &mut String, recent_admissions: &[RouteAdmi
     }
 }
 
+fn write_runtime_calibrations(response: &mut String, calibrations: &[RuntimeCalibrationRecord]) {
+    if calibrations.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        response,
+        "Runtime calibrations retained: {}",
+        calibrations.len()
+    );
+    for record in calibrations.iter().take(3) {
+        let _ = writeln!(
+            response,
+            "Runtime calibration: {} / {} / confidence={} / action={}",
+            runtime_calibration_decision_kind_name(record.decision_kind),
+            runtime_calibration_comparison_name(record.comparison),
+            record.confidence_basis_points,
+            runtime_calibration_action_name(record.recommended_action),
+        );
+    }
+}
+
 fn write_runtime_watchdog_digest(response: &mut String, current: &RouteSelection) {
     let digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
         last_admission: current.last_admission.as_ref(),
@@ -1016,6 +1043,10 @@ mod tests {
         RuntimeAssumption, RuntimeAssumptionFreshness, RuntimeAssumptionInvalidation,
         RuntimeAssumptionKind, RuntimeAssumptionReplacementPath, RuntimeAssumptionSource,
     };
+    use synapse_domain::application::services::runtime_calibration::{
+        RuntimeCalibrationAction, RuntimeCalibrationComparison, RuntimeCalibrationDecisionKind,
+        RuntimeCalibrationOutcome,
+    };
     use synapse_domain::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
         ModelRouteConfig,
@@ -1040,6 +1071,7 @@ mod tests {
             recent_tool_repairs: Vec::new(),
             context_cache: None,
             assumptions: Vec::new(),
+            calibrations: Vec::new(),
         });
         assert!(response.contains("Current provider: `openai-codex`"));
         assert!(response.contains("Switch provider with `/models <provider>`"));
@@ -1116,6 +1148,7 @@ mod tests {
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
                 assumptions: Vec::new(),
+                calibrations: Vec::new(),
             },
             &config,
         );
@@ -1161,6 +1194,7 @@ mod tests {
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
                 assumptions: Vec::new(),
+                calibrations: Vec::new(),
             },
             &config,
         );
@@ -1206,6 +1240,7 @@ mod tests {
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
                 assumptions: Vec::new(),
+                calibrations: Vec::new(),
             },
             &config,
         );
@@ -1243,6 +1278,7 @@ mod tests {
                     invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
                     replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
                 }],
+                calibrations: Vec::new(),
             },
             &config,
         );
@@ -1254,6 +1290,45 @@ mod tests {
         assert!(response.contains("Runtime watchdog alerts: 1"));
         assert!(response.contains(
             "Runtime watchdog: caution / context_budget / challenged_assumption / action=compact_context"
+        ));
+    }
+
+    #[test]
+    fn models_help_includes_runtime_calibration_ledger() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workspace_dir = workspace.path().to_path_buf();
+
+        let calibration = RuntimeCalibrationRecord {
+            decision_kind: RuntimeCalibrationDecisionKind::ToolChoice,
+            decision_signature: "tool:message_send".into(),
+            confidence_basis_points: 9_000,
+            outcome: RuntimeCalibrationOutcome::Failed,
+            comparison: RuntimeCalibrationComparison::OverconfidentFailure,
+            recommended_action: RuntimeCalibrationAction::SuppressChoice,
+            observed_at_unix: 1_744_243_250,
+        };
+
+        let response = build_models_help_response(
+            &RouteSelection {
+                provider: "openrouter".into(),
+                model: "qwen/qwen3.6-plus".into(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: None,
+                assumptions: Vec::new(),
+                calibrations: vec![calibration],
+            },
+            &config,
+        );
+
+        assert!(response.contains("Runtime calibrations retained: 1"));
+        assert!(response.contains(
+            "Runtime calibration: tool_choice / overconfident_failure / confidence=9000 / action=suppress_choice"
         ));
     }
 
@@ -1287,6 +1362,7 @@ mod tests {
                 }],
                 context_cache: None,
                 assumptions: Vec::new(),
+                calibrations: Vec::new(),
             },
             &config,
         );
@@ -1321,11 +1397,42 @@ mod tests {
             recent_tool_repairs: Vec::new(),
             context_cache: None,
             assumptions: Vec::new(),
+            calibrations: Vec::new(),
         });
 
         assert!(response.contains("Runtime watchdog alerts: 1"));
         assert!(response.contains(
             "Runtime watchdog: caution / tool_execution / tool_failure / action=repair_tool_request"
+        ));
+    }
+
+    #[test]
+    fn providers_help_includes_runtime_calibration_ledger() {
+        let response = build_providers_help_response(&RouteSelection {
+            provider: "openrouter".into(),
+            model: "qwen/qwen3.6-plus".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: None,
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: Vec::new(),
+            calibrations: vec![RuntimeCalibrationRecord {
+                decision_kind: RuntimeCalibrationDecisionKind::RouteChoice,
+                decision_signature: "route:openrouter:qwen/qwen3.6-plus".into(),
+                confidence_basis_points: 9_000,
+                outcome: RuntimeCalibrationOutcome::Failed,
+                comparison: RuntimeCalibrationComparison::OverconfidentFailure,
+                recommended_action: RuntimeCalibrationAction::SuppressChoice,
+                observed_at_unix: 1_744_243_260,
+            }],
+        });
+
+        assert!(response.contains("Runtime calibrations retained: 1"));
+        assert!(response.contains(
+            "Runtime calibration: route_choice / overconfident_failure / confidence=9000 / action=suppress_choice"
         ));
     }
 
@@ -1367,6 +1474,7 @@ mod tests {
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
                 assumptions: Vec::new(),
+                calibrations: Vec::new(),
             },
             &config,
         );
@@ -1424,6 +1532,7 @@ mod tests {
                     max_summary_chars: 12_000,
                 }),
                 assumptions: Vec::new(),
+                calibrations: Vec::new(),
             },
             &config,
         );

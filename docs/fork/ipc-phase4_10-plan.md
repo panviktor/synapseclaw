@@ -2012,11 +2012,12 @@ Expected outcome:
       the runtime trace janitor
     - provider route-call success/failure and tool-call success/failure now emit
       typed calibration observations without promoting them into durable memory
+    - `/model` and `/providers` now expose the compact calibration ledger through
+      the shared runtime route help path
   - still open:
     - live retrieval/delivery-specific call sites do not emit dedicated
       calibration observations yet
     - calibration records are not yet consumed by route/tool suppression policy
-      or exposed in operator help
 - expected outcome:
   - more calibrated runtime decisions
   - better post-failure learning without turning every turn into a reflection step

@@ -649,6 +649,7 @@ mod tests {
             recent_tool_repairs: Vec::new(),
             context_cache: None,
             assumptions: Vec::new(),
+            calibrations: Vec::new(),
         };
 
         let resolved = resolve_route_selection_profile(&config, &route, Some(&StubCatalog));

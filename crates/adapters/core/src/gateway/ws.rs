@@ -1310,6 +1310,7 @@ fn current_web_route_selection(
             None,
         )),
         assumptions: session.agent.recent_runtime_assumptions().to_vec(),
+        calibrations: session.agent.recent_runtime_calibrations().to_vec(),
     })
 }
 
@@ -1393,6 +1394,7 @@ impl RuntimeCommandHost for WebRuntimeCommandHost<'_> {
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
                 assumptions: Vec::new(),
+                calibrations: Vec::new(),
             },
             Some(&catalog),
         );
