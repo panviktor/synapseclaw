@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use std::collections::HashMap;
-use synapse_domain::domain::memory::{EmbeddingDistanceMetric, EmbeddingProfile};
+use synapse_domain::domain::memory::EmbeddingProfile;
 
 /// Trait for embedding providers — convert text to vectors
 #[async_trait]
@@ -49,7 +49,7 @@ pub trait EmbeddingProvider: Send + Sync {
     }
 }
 
-// ── Noop provider (keyword-only fallback) ────────────────────
+// ── Disabled provider ────────────────────────────────────────
 
 pub struct NoopEmbedding;
 
@@ -73,11 +73,11 @@ impl EmbeddingProvider for NoopEmbedding {
 }
 
 /// Default base URL for known embedding providers.
-pub fn default_base_url_for_provider(provider: &str) -> String {
+pub fn default_base_url_for_provider(provider: &str) -> Option<String> {
     match provider.to_lowercase().as_str() {
-        "openai" => "https://api.openai.com/v1".to_string(),
-        "openrouter" => "https://openrouter.ai/api/v1".to_string(),
-        _ => "https://api.openai.com/v1".to_string(),
+        "openai" => Some("https://api.openai.com/v1".to_string()),
+        "openrouter" => Some("https://openrouter.ai/api/v1".to_string()),
+        _ => None,
     }
 }
 
@@ -328,39 +328,12 @@ impl EmbeddingProvider for CachedEmbeddingProvider {
     }
 }
 
-pub fn build_embedding_profile(provider: &str, model: &str, dims: usize) -> EmbeddingProfile {
-    let provider_family = match provider.split(':').next().unwrap_or(provider) {
-        "custom" => "custom",
-        other => other,
-    }
-    .to_string();
-    let model_lower = model.to_ascii_lowercase();
-    let uses_e5_prefix = model_lower.contains("e5");
-    let supports_multilingual = model_lower.contains("multilingual")
-        || model_lower.contains("qwen")
-        || model_lower.contains("m3")
-        || model_lower.contains("gte")
-        || model_lower.contains("text-embedding-3")
-        || model_lower.contains("pplx-embed");
-    let supports_code = model_lower.contains("code")
-        || model_lower.contains("qwen")
-        || model_lower.contains("text-embedding-3")
-        || model_lower.contains("pplx-embed");
-
-    EmbeddingProfile {
-        profile_id: format!("{provider_family}:{model}:{dims}"),
-        provider_family,
-        model_id: model.to_string(),
-        dimensions: dims,
-        distance_metric: EmbeddingDistanceMetric::Cosine,
-        normalize_output: dims > 0,
-        query_prefix: uses_e5_prefix.then(|| "query: ".to_string()),
-        document_prefix: uses_e5_prefix.then(|| "passage: ".to_string()),
-        supports_multilingual,
-        supports_code,
-        recommended_chunk_chars: if supports_code { 1200 } else { 900 },
-        recommended_top_k: if supports_multilingual { 10 } else { 8 },
-    }
+pub fn resolve_embedding_profile(
+    provider: &str,
+    model: &str,
+    dims: usize,
+) -> Option<EmbeddingProfile> {
+    synapse_domain::config::model_catalog::embedding_profile(provider, model, dims)
 }
 
 fn prepare_embedding_text(text: &str, prefix: Option<&str>) -> String {
@@ -395,10 +368,14 @@ pub fn create_embedding_provider(
     model: &str,
     dims: usize,
 ) -> Box<dyn EmbeddingProvider> {
-    let profile = build_embedding_profile(provider, model, dims);
+    let Some(profile) = resolve_embedding_profile(provider, model, dims) else {
+        return Box::new(NoopEmbedding);
+    };
     match provider {
         "openai" => {
-            let key = api_key.unwrap_or("");
+            let Some(key) = api_key else {
+                return Box::new(NoopEmbedding);
+            };
             Box::new(OpenAiEmbedding::new(
                 "https://api.openai.com",
                 key,
@@ -408,7 +385,9 @@ pub fn create_embedding_provider(
             ))
         }
         "openrouter" => {
-            let key = api_key.unwrap_or("");
+            let Some(key) = api_key else {
+                return Box::new(NoopEmbedding);
+            };
             Box::new(OpenAiEmbedding::new(
                 "https://openrouter.ai/api/v1",
                 key,
@@ -419,14 +398,26 @@ pub fn create_embedding_provider(
         }
         // Local llama.cpp server: "llama.cpp" or "llama.cpp:http://host:port"
         name if name == "llama.cpp" || name.starts_with("llama.cpp:") => {
-            let url = name
-                .strip_prefix("llama.cpp:")
-                .unwrap_or("http://127.0.0.1:8081");
+            let url = if name == "llama.cpp" {
+                "http://127.0.0.1:8081"
+            } else {
+                match name
+                    .strip_prefix("llama.cpp:")
+                    .filter(|url| !url.is_empty())
+                {
+                    Some(url) => url,
+                    None => return Box::new(NoopEmbedding),
+                }
+            };
             Box::new(LlamaCppEmbedding::new(url, model, dims, profile))
         }
         name if name.starts_with("custom:") => {
-            let base_url = name.strip_prefix("custom:").unwrap_or("");
-            let key = api_key.unwrap_or("");
+            let Some(base_url) = name.strip_prefix("custom:").filter(|url| !url.is_empty()) else {
+                return Box::new(NoopEmbedding);
+            };
+            let Some(key) = api_key else {
+                return Box::new(NoopEmbedding);
+            };
             Box::new(OpenAiEmbedding::new(base_url, key, model, dims, profile))
         }
         _ => Box::new(NoopEmbedding),
@@ -436,6 +427,24 @@ pub fn create_embedding_provider(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::domain::memory::EmbeddingDistanceMetric;
+
+    fn test_profile(provider_family: &str, model: &str, dims: usize) -> EmbeddingProfile {
+        EmbeddingProfile {
+            profile_id: format!("{provider_family}:{model}:{dims}"),
+            provider_family: provider_family.to_string(),
+            model_id: model.to_string(),
+            dimensions: dims,
+            distance_metric: EmbeddingDistanceMetric::Cosine,
+            normalize_output: dims > 0,
+            query_prefix: None,
+            document_prefix: None,
+            supports_multilingual: false,
+            supports_code: false,
+            recommended_chunk_chars: 900,
+            recommended_top_k: 8,
+        }
+    }
 
     #[test]
     fn noop_name() {
@@ -478,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn cached_provider_returns_same_result() {
-        // Use a noop provider wrapped in cache — noop returns empty,
+        // Use a disabled provider wrapped in cache — noop returns empty,
         // so we just check no panics and correct structure.
         let inner = Box::new(NoopEmbedding);
         let cached = CachedEmbeddingProvider::new(inner, 100);
@@ -491,9 +500,9 @@ mod tests {
 
     #[test]
     fn factory_llamacpp_default_url() {
-        let p = create_embedding_provider("llama.cpp", None, "nomic-embed-text", 768);
+        let p = create_embedding_provider("llama.cpp", None, "multilingual-e5-small", 384);
         assert_eq!(p.name(), "llama.cpp");
-        assert_eq!(p.dimensions(), 768);
+        assert_eq!(p.dimensions(), 384);
     }
 
     #[test]
@@ -501,18 +510,18 @@ mod tests {
         let p = create_embedding_provider(
             "llama.cpp:http://10.0.0.5:9090",
             None,
-            "nomic-embed-text",
-            768,
+            "multilingual-e5-small",
+            384,
         );
         assert_eq!(p.name(), "llama.cpp");
-        assert_eq!(p.dimensions(), 768);
+        assert_eq!(p.dimensions(), 384);
     }
 
     #[test]
-    fn factory_custom_url() {
+    fn factory_custom_url_without_catalog_profile_is_disabled() {
         let p = create_embedding_provider("custom:http://localhost:1234", None, "model", 768);
-        assert_eq!(p.name(), "openai"); // uses OpenAiEmbedding internally
-        assert_eq!(p.dimensions(), 768);
+        assert_eq!(p.name(), "none");
+        assert_eq!(p.dimensions(), 0);
     }
 
     // ── Edge cases ───────────────────────────────────────────────
@@ -553,16 +562,15 @@ mod tests {
 
     #[test]
     fn factory_custom_empty_url() {
-        // "custom:" with no URL — should still construct without panic
         let p = create_embedding_provider("custom:", None, "model", 768);
-        assert_eq!(p.name(), "openai");
+        assert_eq!(p.name(), "none");
     }
 
     #[test]
     fn factory_openai_no_api_key() {
         let p = create_embedding_provider("openai", None, "text-embedding-3-small", 1536);
-        assert_eq!(p.name(), "openai");
-        assert_eq!(p.dimensions(), 1536);
+        assert_eq!(p.name(), "none");
+        assert_eq!(p.dimensions(), 0);
     }
 
     #[test]
@@ -572,7 +580,7 @@ mod tests {
             "key",
             "model",
             1536,
-            build_embedding_profile("openai", "model", 1536),
+            test_profile("openai", "model", 1536),
         );
         assert_eq!(p.base_url, "https://api.openai.com");
     }
@@ -584,7 +592,7 @@ mod tests {
             "k",
             "m",
             384,
-            build_embedding_profile("openai", "m", 384),
+            test_profile("openai", "m", 384),
         );
         assert_eq!(p.dimensions(), 384);
     }
@@ -596,7 +604,8 @@ mod tests {
             "key",
             "openai/text-embedding-3-small",
             1536,
-            build_embedding_profile("openrouter", "openai/text-embedding-3-small", 1536),
+            resolve_embedding_profile("openrouter", "openai/text-embedding-3-small", 1536)
+                .expect("catalog profile"),
         );
         assert_eq!(
             p.embeddings_url(),
@@ -611,7 +620,7 @@ mod tests {
             "key",
             "model",
             1536,
-            build_embedding_profile("openai", "model", 1536),
+            test_profile("openai", "model", 1536),
         );
         assert_eq!(p.embeddings_url(), "https://api.openai.com/v1/embeddings");
     }
@@ -623,7 +632,7 @@ mod tests {
             "key",
             "model",
             1536,
-            build_embedding_profile("openai", "model", 1536),
+            test_profile("openai", "model", 1536),
         );
         assert_eq!(p.embeddings_url(), "https://api.example.com/v1/embeddings");
     }
@@ -635,7 +644,7 @@ mod tests {
             "key",
             "model",
             1536,
-            build_embedding_profile("custom", "model", 1536),
+            test_profile("custom", "model", 1536),
         );
         assert_eq!(
             p.embeddings_url(),
@@ -650,7 +659,7 @@ mod tests {
             "key",
             "model",
             1536,
-            build_embedding_profile("custom", "model", 1536),
+            test_profile("custom", "model", 1536),
         );
         assert_eq!(
             p.embeddings_url(),
@@ -659,19 +668,28 @@ mod tests {
     }
 
     #[test]
-    fn profile_builder_adds_e5_prefixes() {
-        let profile = build_embedding_profile("llama.cpp", "multilingual-e5-small", 384);
+    fn profile_builder_uses_catalog_for_e5_prefixes() {
+        let profile = resolve_embedding_profile("llama.cpp", "multilingual-e5-small", 384)
+            .expect("catalog profile");
         assert_eq!(profile.query_prefix.as_deref(), Some("query: "));
         assert_eq!(profile.document_prefix.as_deref(), Some("passage: "));
         assert!(profile.normalize_output);
     }
 
     #[test]
-    fn profile_builder_marks_qwen_as_multilingual_and_code_capable() {
-        let profile = build_embedding_profile("openrouter", "qwen/qwen3-embedding-4b", 2560);
+    fn profile_builder_uses_catalog_for_qwen_embedding_calibration() {
+        let profile = resolve_embedding_profile("openrouter", "qwen/qwen3-embedding-4b", 2560)
+            .expect("catalog profile");
         assert_eq!(profile.provider_family, "openrouter");
         assert!(profile.supports_multilingual);
         assert!(profile.supports_code);
         assert_eq!(profile.recommended_top_k, 10);
+    }
+
+    #[test]
+    fn profile_builder_does_not_infer_capabilities_from_model_substrings() {
+        assert!(
+            resolve_embedding_profile("openrouter", "qwen-like-unknown-embedding", 2560).is_none()
+        );
     }
 }

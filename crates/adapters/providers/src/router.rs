@@ -73,20 +73,15 @@ impl RouterProvider {
     ///
     /// If the model starts with "hint:", look up the hint in the route table.
     /// Otherwise, use the default provider with the given model name.
-    /// Resolve a model parameter to a (provider_index, actual_model) pair.
-    fn resolve(&self, model: &str) -> (usize, String) {
+    fn resolve(&self, model: &str) -> anyhow::Result<(usize, String)> {
         if let Some(hint) = model.strip_prefix("hint:") {
             if let Some((idx, resolved_model)) = self.routes.get(hint) {
-                return (*idx, resolved_model.clone());
+                return Ok((*idx, resolved_model.clone()));
             }
-            tracing::warn!(
-                hint = hint,
-                "Unknown route hint, falling back to default provider"
-            );
+            anyhow::bail!("Unknown route hint: {hint}");
         }
 
-        // Not a hint or hint not found — use default provider with the model as-is
-        (self.default_index, model.to_string())
+        Ok((self.default_index, model.to_string()))
     }
 }
 
@@ -99,7 +94,7 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let (provider_idx, resolved_model) = self.resolve(model);
+        let (provider_idx, resolved_model) = self.resolve(model)?;
 
         let (provider_name, provider) = &self.providers[provider_idx];
         tracing::info!(
@@ -119,7 +114,7 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<String> {
-        let (provider_idx, resolved_model) = self.resolve(model);
+        let (provider_idx, resolved_model) = self.resolve(model)?;
         let (_, provider) = &self.providers[provider_idx];
         provider
             .chat_with_history(messages, &resolved_model, temperature)
@@ -132,7 +127,7 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let (provider_idx, resolved_model) = self.resolve(model);
+        let (provider_idx, resolved_model) = self.resolve(model)?;
         let (_, provider) = &self.providers[provider_idx];
         provider.chat(request, &resolved_model, temperature).await
     }
@@ -144,7 +139,7 @@ impl Provider for RouterProvider {
         model: &str,
         temperature: f64,
     ) -> anyhow::Result<ChatResponse> {
-        let (provider_idx, resolved_model) = self.resolve(model);
+        let (provider_idx, resolved_model) = self.resolve(model)?;
         let (_, provider) = &self.providers[provider_idx];
         provider
             .chat_with_tools(messages, tools, &resolved_model, temperature)
@@ -308,20 +303,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_hint_falls_back_to_default() {
+    async fn unknown_hint_is_rejected_instead_of_using_default_provider() {
         let (router, mocks) = make_router(
             vec![("default", "default-response"), ("other", "other-response")],
             vec![],
         );
 
-        let result = router
+        let error = router
             .simple_chat("hello", "hint:nonexistent", 0.5)
             .await
-            .unwrap();
-        assert_eq!(result, "default-response");
-        assert_eq!(mocks[0].call_count(), 1);
-        // Falls back to default with the hint as model name
-        assert_eq!(mocks[0].last_model(), "hint:nonexistent");
+            .expect_err("unknown hint should fail before provider dispatch");
+        assert!(error.to_string().contains("Unknown route hint"));
+        assert_eq!(mocks[0].call_count(), 0);
+        assert_eq!(mocks[1].call_count(), 0);
     }
 
     #[tokio::test]
@@ -347,7 +341,7 @@ mod tests {
     fn resolve_preserves_model_for_non_hints() {
         let (router, _) = make_router(vec![("default", "ok")], vec![]);
 
-        let (idx, model) = router.resolve("gpt-4o");
+        let (idx, model) = router.resolve("gpt-4o").expect("regular model id");
         assert_eq!(idx, 0);
         assert_eq!(model, "gpt-4o");
     }
@@ -359,7 +353,7 @@ mod tests {
             vec![("reasoning", "smart", "claude-opus")],
         );
 
-        let (idx, model) = router.resolve("hint:reasoning");
+        let (idx, model) = router.resolve("hint:reasoning").expect("known route hint");
         assert_eq!(idx, 1);
         assert_eq!(model, "claude-opus");
     }

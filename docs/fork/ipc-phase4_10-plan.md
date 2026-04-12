@@ -660,6 +660,10 @@ Expected outcome:
     - runtime feature coverage now filters capabilities through the same
       confidence/freshness policy, so stale low-confidence catalog entries are
       not shown as usable modalities in `/model` diagnostics
+    - embedding retrieval calibration now resolves from `model_catalog.json`
+      `embedding_profiles` instead of adapter-side model-family substring
+      inference; unknown embedding models disable embeddings until a catalog
+      profile is supplied, rather than receiving a silent generic profile
   - Slice 13 initial pressure snapshot:
     - `ProviderContextBudgetInput` now tracks artifact-level breakdown for:
       - bootstrap
@@ -943,6 +947,8 @@ Expected outcome:
 - next:
   - Slice 12 follow-through:
     - widen provenance beyond cached provider catalogs as more profile data moves into catalogs
+    - continue moving non-routing profile classes through the external catalog
+      instead of adapter-local model-name inference
     - keep auditing new tool-capability decisions so they enter through the
       shared domain capability service rather than web/channel-specific guards
   - Slice 13 follow-through:
@@ -1195,8 +1201,10 @@ Expected outcome:
     instead of operating on a metadata-blind synthetic route view
   - route state now stores `provider + model + lane + candidate_index` for future
     continuity-aware lane routing
-  - provider+model vision checks now have a catalog-backed fallback when a
+  - provider+model vision checks now have a catalog-backed resolution path when a
     non-default provider instance has not been warmed yet
+  - provider router now rejects unknown `hint:*` model selectors before
+    dispatch instead of executing them on the default provider
   - `model_routing_config` preset operations now participate in typed routing facts
   - remaining work:
     - historical note: earlier remaining items about image/audio/video/music
@@ -1204,7 +1212,7 @@ Expected outcome:
       marker/admission path, not by a separate Slice 10 routing fork
     - provider capability metadata is still narrower than the eventual lane matrix
     - a few provider-local model-family heuristics still remain adapter-side
-      (for example reasoning-effort clamps and embedding-family inference)
+      (for example reasoning-effort clamps)
     - route state stores lane/candidate identity, and route-switch UX now renders lane
       for lane-aware switches; downstream runtime surfaces should keep moving toward
       lane/candidate-first explanations
@@ -1291,7 +1299,7 @@ Expected outcome:
   - local user `model_catalog.json` override
   - cached live provider catalog
   - built-in bundled catalog
-  - adapter-local fallback defaults
+  - adapter-local explicit unsupported/disabled states
 - treat `provider + model + runtime profile` as the profile identity:
   - same model family through OpenRouter/native/direct provider is not assumed
     to have the same context window, max output, or capabilities
@@ -1303,7 +1311,6 @@ Expected outcome:
   - optional notes about tool-calling / continuation / prompt-caching support
 - reduce adapter-side model-family heuristics over time:
   - reasoning-effort clamp rules
-  - embedding-family inference
   - modality capability guesses
 - preserve hexagonal boundaries:
   - domain resolves the effective model profile
