@@ -12,6 +12,11 @@ use synapse_domain::application::services::provider_native_context_policy::{
     resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
 };
 use synapse_domain::application::services::runtime_assumptions::format_runtime_assumption;
+use synapse_domain::application::services::runtime_watchdog::{
+    build_runtime_watchdog_digest, runtime_watchdog_action_name, runtime_watchdog_reason_name,
+    runtime_watchdog_severity_name, runtime_watchdog_subsystem_name, RuntimeWatchdogAlert,
+    RuntimeWatchdogInput,
+};
 use synapse_domain::config::schema::{CapabilityLane, Config, ModelFeature};
 use synapse_domain::domain::tool_repair::{
     tool_failure_kind_name, tool_repair_action_name, ToolRepairAction, ToolRepairTrace,
@@ -354,6 +359,7 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
             );
         }
     }
+    write_runtime_watchdog_digest(&mut response, current);
     if let Some(lane) = current.lane {
         let _ = writeln!(
             response,
@@ -633,6 +639,7 @@ pub(crate) fn build_providers_help_response(current: &RouteSelection) -> String 
         );
         write_recent_tool_repairs(&mut response, &current.recent_tool_repairs);
     }
+    write_runtime_watchdog_digest(&mut response, current);
     response.push_str("\nSwitch provider with `/models <provider>`.\n");
     response.push_str("Switch model with `/model <model-id>`.\n\n");
     response.push_str("Available providers:\n");
@@ -845,6 +852,57 @@ fn write_recent_admissions(response: &mut String, recent_admissions: &[RouteAdmi
             );
         }
     }
+}
+
+fn write_runtime_watchdog_digest(response: &mut String, current: &RouteSelection) {
+    let digest = build_runtime_watchdog_digest(RuntimeWatchdogInput {
+        last_admission: current.last_admission.as_ref(),
+        recent_admissions: &current.recent_admissions,
+        last_tool_repair: current.last_tool_repair.as_ref(),
+        recent_tool_repairs: &current.recent_tool_repairs,
+        context_cache: current.context_cache.as_ref(),
+        assumptions: &current.assumptions,
+        subsystem_observations: &[],
+        now_unix: current_unix_seconds(),
+    });
+    if !digest.has_alerts() {
+        return;
+    }
+
+    let degraded = digest
+        .degraded_subsystems()
+        .into_iter()
+        .map(runtime_watchdog_subsystem_name)
+        .collect::<Vec<_>>();
+    let _ = writeln!(response, "Runtime watchdog alerts: {}", digest.alerts.len());
+    if !degraded.is_empty() {
+        let _ = writeln!(
+            response,
+            "Runtime watchdog degraded: {}",
+            degraded.join(", ")
+        );
+    }
+    for alert in digest.alerts.iter().take(3) {
+        write_runtime_watchdog_alert(response, alert);
+    }
+}
+
+fn write_runtime_watchdog_alert(response: &mut String, alert: &RuntimeWatchdogAlert) {
+    let _ = writeln!(
+        response,
+        "Runtime watchdog: {} / {} / {} / action={}",
+        runtime_watchdog_severity_name(alert.severity),
+        runtime_watchdog_subsystem_name(alert.subsystem),
+        runtime_watchdog_reason_name(alert.reason),
+        runtime_watchdog_action_name(alert.recommended_action)
+    );
+}
+
+fn current_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 fn capability_lane_name(lane: CapabilityLane) -> &'static str {
@@ -1193,6 +1251,10 @@ mod tests {
         assert!(response.contains("kind=context_window"));
         assert!(response.contains("freshness=challenged"));
         assert!(response.contains("replacement_path=compact_session"));
+        assert!(response.contains("Runtime watchdog alerts: 1"));
+        assert!(response.contains(
+            "Runtime watchdog: caution / context_budget / challenged_assumption / action=compact_context"
+        ));
     }
 
     #[test]
@@ -1238,6 +1300,33 @@ mod tests {
             "Recent tool repair: message_send / reported_failure / adjust_arguments_or_target"
         ));
         assert!(response.contains("Recent tool repair detail: missing delivery target"));
+    }
+
+    #[test]
+    fn providers_help_uses_shared_runtime_watchdog_digest() {
+        let response = build_providers_help_response(&RouteSelection {
+            provider: "openrouter".into(),
+            model: "qwen/qwen3.6-plus".into(),
+            lane: None,
+            candidate_index: None,
+            last_admission: None,
+            recent_admissions: Vec::new(),
+            last_tool_repair: Some(ToolRepairTrace {
+                observed_at_unix: 1_744_243_200,
+                tool_name: "message_send".into(),
+                failure_kind: ToolFailureKind::ReportedFailure,
+                suggested_action: ToolRepairAction::AdjustArgumentsOrTarget,
+                detail: Some("missing delivery target".into()),
+            }),
+            recent_tool_repairs: Vec::new(),
+            context_cache: None,
+            assumptions: Vec::new(),
+        });
+
+        assert!(response.contains("Runtime watchdog alerts: 1"));
+        assert!(response.contains(
+            "Runtime watchdog: caution / tool_execution / tool_failure / action=repair_tool_request"
+        ));
     }
 
     #[test]

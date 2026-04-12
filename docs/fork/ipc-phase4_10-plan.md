@@ -1957,6 +1957,24 @@ Expected outcome:
 - keep watchdog state ephemeral and separate from durable memory
 - expose the digest in operator/runtime inspection and as bounded runtime context
   only when relevant
+- current status:
+  - landed:
+    - `runtime_watchdog` domain service builds a bounded typed digest from
+      route admissions, tool repair traces, challenged runtime assumptions,
+      context-cache pressure, and generic subsystem observations
+    - watchdog alerts carry typed subsystem/severity/reason/recommended action
+      and dedupe/truncate before leaving the domain service
+    - `/model` and `/providers` runtime help both use the same adapter-core
+      watchdog renderer, so web/channel command surfaces do not fork the logic
+    - domain and adapter tests cover context overflow, challenged assumptions,
+      repeated tool failures, metadata refresh guidance, and shared provider
+      help rendering
+  - still open:
+    - no autonomous background polling loop is wired yet
+    - live memory/embedding/channel health observations are not injected into
+      the digest outside explicit callers yet
+    - bounded runtime-context injection is not enabled yet; current exposure is
+      operator/runtime help only
 - expected outcome:
   - better self-diagnosis without prompt bloat
   - earlier detection of degraded subsystems
