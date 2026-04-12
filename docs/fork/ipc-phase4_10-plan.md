@@ -1743,6 +1743,10 @@ Expected outcome:
       (`native_tool_calling`, `vision_input`, or lane) instead of string
       capability names; tool self-repair maps those typed requirements to lane
       switches without lowercase/alias parsing in the governor path
+    - `AgentRuntimeErrorKind` and `ToolFailureKind` now project from one shared
+      adapter-core runtime error classifier, so typed IO/JSON/HTTP/provider
+      error handling does not drift between web/channel runtime recovery and
+      tool self-repair traces
   - remaining:
     - keep auditing provider-specific opaque error strings that do not expose a
       typed status/source error yet

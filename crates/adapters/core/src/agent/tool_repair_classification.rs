@@ -1,99 +1,72 @@
+use crate::runtime::runtime_error_classification::{classify_runtime_error, RuntimeErrorClassKind};
 use synapse_domain::application::services::tool_repair::{
     build_tool_repair_trace, build_tool_repair_trace_for_capability,
     build_tool_repair_trace_with_action,
 };
 use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairAction, ToolRepairTrace};
-use synapse_providers::ProviderCapabilityError;
-use synapse_security::scrub_credentials;
 
 pub(crate) fn classify_tool_execution_error(
     tool_name: &str,
     error: &anyhow::Error,
 ) -> ToolRepairTrace {
-    if let Some(capability_error) = error.downcast_ref::<ProviderCapabilityError>() {
+    let class = classify_runtime_error(error);
+    if let Some(capability_error) = class.capability_error {
         return build_tool_repair_trace_for_capability(
             tool_name,
             &capability_error.capability,
-            Some(&scrub_credentials(&capability_error.message)),
+            Some(&class.detail),
         );
     }
 
-    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
-        let detail = scrub_credentials(&error.to_string());
-        return match io_error.kind() {
-            std::io::ErrorKind::PermissionDenied => {
-                build_tool_repair_trace(tool_name, ToolFailureKind::PolicyBlocked, Some(&detail))
-            }
-            std::io::ErrorKind::NotFound => {
-                build_tool_repair_trace(tool_name, ToolFailureKind::MissingResource, Some(&detail))
-            }
-            std::io::ErrorKind::TimedOut => {
-                build_tool_repair_trace(tool_name, ToolFailureKind::Timeout, Some(&detail))
-            }
-            _ => build_tool_repair_trace(tool_name, ToolFailureKind::RuntimeError, Some(&detail)),
-        };
-    }
-
-    if error.downcast_ref::<serde_json::Error>().is_some() {
-        return build_tool_repair_trace(
+    match class.kind {
+        RuntimeErrorClassKind::CapabilityMismatch => build_tool_repair_trace(
+            tool_name,
+            ToolFailureKind::CapabilityMismatch,
+            Some(&class.detail),
+        ),
+        RuntimeErrorClassKind::AuthFailure => build_tool_repair_trace_with_action(
+            tool_name,
+            ToolFailureKind::AuthFailure,
+            ToolRepairAction::AuthenticateOrConfigureCredentials,
+            Some(&class.detail),
+        ),
+        RuntimeErrorClassKind::PolicyBlocked => build_tool_repair_trace(
+            tool_name,
+            ToolFailureKind::PolicyBlocked,
+            Some(&class.detail),
+        ),
+        RuntimeErrorClassKind::MissingResource => build_tool_repair_trace(
+            tool_name,
+            ToolFailureKind::MissingResource,
+            Some(&class.detail),
+        ),
+        RuntimeErrorClassKind::Timeout => {
+            build_tool_repair_trace(tool_name, ToolFailureKind::Timeout, Some(&class.detail))
+        }
+        RuntimeErrorClassKind::SchemaMismatch => build_tool_repair_trace(
             tool_name,
             ToolFailureKind::SchemaMismatch,
-            Some(&scrub_credentials(&error.to_string())),
-        );
+            Some(&class.detail),
+        ),
+        RuntimeErrorClassKind::ContextLimitExceeded => build_tool_repair_trace_with_action(
+            tool_name,
+            ToolFailureKind::ContextLimitExceeded,
+            ToolRepairAction::CompactSessionOrStartFreshHandoff,
+            Some(&class.detail),
+        ),
+        RuntimeErrorClassKind::RuntimeFailure => build_tool_repair_trace(
+            tool_name,
+            ToolFailureKind::RuntimeError,
+            Some(&class.detail),
+        ),
     }
-
-    if let Some(reqwest_error) = error.downcast_ref::<reqwest::Error>() {
-        if reqwest_error.is_timeout() {
-            return build_tool_repair_trace(
-                tool_name,
-                ToolFailureKind::Timeout,
-                Some(&scrub_credentials(&error.to_string())),
-            );
-        }
-        if let Some(status) = reqwest_error.status() {
-            let detail = scrub_credentials(&error.to_string());
-            match status.as_u16() {
-                401 | 403 => {
-                    return build_tool_repair_trace_with_action(
-                        tool_name,
-                        ToolFailureKind::AuthFailure,
-                        ToolRepairAction::AuthenticateOrConfigureCredentials,
-                        Some(&detail),
-                    );
-                }
-                413 => {
-                    return build_tool_repair_trace_with_action(
-                        tool_name,
-                        ToolFailureKind::ContextLimitExceeded,
-                        ToolRepairAction::CompactSessionOrStartFreshHandoff,
-                        Some(&detail),
-                    );
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let detail = scrub_credentials(&error.to_string());
-    let lower = detail.to_ascii_lowercase();
-    if lower.contains("missing field")
-        || lower.contains("unknown variant")
-        || lower.contains("invalid type")
-        || lower.contains("expected ")
-    {
-        return build_tool_repair_trace(tool_name, ToolFailureKind::SchemaMismatch, Some(&detail));
-    }
-    if lower.contains("timed out") || lower.contains("timeout") {
-        return build_tool_repair_trace(tool_name, ToolFailureKind::Timeout, Some(&detail));
-    }
-
-    build_tool_repair_trace(tool_name, ToolFailureKind::RuntimeError, Some(&detail))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use synapse_domain::ports::provider::ProviderCapabilityRequirement;
+    use synapse_providers::ProviderCapabilityError;
 
     #[test]
     fn capability_error_maps_to_lane_switch() {
