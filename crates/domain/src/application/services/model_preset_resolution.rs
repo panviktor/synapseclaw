@@ -1,5 +1,8 @@
+use std::collections::HashSet;
+
 use crate::config::model_catalog::{
     apply_default_api_key, known_model_presets as catalog_known_model_presets,
+    model_route_aliases as catalog_model_route_aliases,
     normalize_model_preset_id as catalog_normalize_model_preset_id,
     preset_description as catalog_preset_description, preset_extra_lanes,
     preset_reasoning_seed as catalog_preset_reasoning_seed, preset_seed_multimodal_from_reasoning,
@@ -8,7 +11,7 @@ use crate::config::model_catalog::{
 };
 use crate::config::schema::{
     CapabilityLane, Config, ModelCandidateProfileConfig, ModelFeature, ModelLaneCandidateConfig,
-    ModelLaneConfig,
+    ModelLaneConfig, ModelRouteConfig,
 };
 
 pub fn known_model_presets() -> &'static [KnownModelPreset] {
@@ -54,6 +57,46 @@ pub fn resolve_effective_model_lanes(config: &Config) -> Vec<ModelLaneConfig> {
     }
 
     lanes
+}
+
+pub fn provider_router_routes(config: &Config) -> Vec<ModelRouteConfig> {
+    let mut routes = Vec::new();
+    let mut seen_hints = HashSet::new();
+
+    for lane in resolve_effective_model_lanes(config) {
+        if let Some(candidate) = lane.candidates.first() {
+            push_provider_router_route(
+                &mut routes,
+                &mut seen_hints,
+                ModelRouteConfig {
+                    hint: lane.lane.as_str().to_string(),
+                    capability: Some(lane.lane),
+                    provider: candidate.provider.clone(),
+                    model: candidate.model.clone(),
+                    api_key: candidate.api_key.clone(),
+                    profile: candidate.profile.clone(),
+                },
+            );
+        }
+    }
+
+    for alias in catalog_model_route_aliases() {
+        push_provider_router_route(&mut routes, &mut seen_hints, alias);
+    }
+
+    routes
+}
+
+fn push_provider_router_route(
+    routes: &mut Vec<ModelRouteConfig>,
+    seen_hints: &mut HashSet<String>,
+    route: ModelRouteConfig,
+) {
+    let hint = route.hint.trim();
+    if hint.is_empty() || !seen_hints.insert(hint.to_ascii_lowercase()) {
+        return;
+    }
+    routes.push(route);
 }
 
 fn build_preset_model_lanes(config: &Config, preset: &str) -> Option<Vec<ModelLaneConfig>> {
@@ -145,6 +188,33 @@ mod tests {
         assert!(lanes
             .iter()
             .any(|lane| lane.lane == CapabilityLane::Embedding));
+    }
+
+    #[test]
+    fn provider_router_routes_follow_effective_lanes_and_catalog_aliases() {
+        let mut config = Config::default();
+        config.model_lanes = vec![ModelLaneConfig {
+            lane: CapabilityLane::CheapReasoning,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: "test-provider".into(),
+                model: "test-cheap-model".into(),
+                api_key: Some("test-key".into()),
+                api_key_env: None,
+                dimensions: None,
+                profile: ModelCandidateProfileConfig::default(),
+            }],
+        }];
+
+        let routes = provider_router_routes(&config);
+
+        let cheap = routes
+            .iter()
+            .find(|route| route.hint == "cheap_reasoning")
+            .expect("cheap lane route should exist");
+        assert_eq!(cheap.provider, "test-provider");
+        assert_eq!(cheap.model, "test-cheap-model");
+        assert_eq!(cheap.capability, Some(CapabilityLane::CheapReasoning));
+        assert!(routes.iter().any(|route| route.hint == "qwen36"));
     }
 
     #[test]

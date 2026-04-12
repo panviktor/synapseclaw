@@ -1276,6 +1276,9 @@ Expected outcome:
   - live web/Agent query classification now uses that same lane/catalog selector
     resolver and its provider router is seeded from effective lanes plus catalog
     aliases, not from configured legacy `model_routes`
+  - the effective-lane/catalog provider-router alias table is now a shared
+    domain helper consumed by live Agent and CLI runtime, avoiding a second
+    legacy `model_routes` route table in adapter code
   - remaining work:
     - historical note: earlier remaining items about image/audio/video/music
       first-class turn routing are now mostly owned by Slice 14 and the shared

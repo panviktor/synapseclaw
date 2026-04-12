@@ -27,7 +27,7 @@ use synapse_domain::application::services::model_capability_support::{
 #[cfg(test)]
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfile;
 use synapse_domain::application::services::model_lane_resolution::ResolvedModelProfileConfidence;
-use synapse_domain::application::services::model_preset_resolution::resolve_effective_model_lanes;
+use synapse_domain::application::services::model_preset_resolution::provider_router_routes;
 use synapse_domain::application::services::provider_context_budget::{
     assess_provider_context_budget, provider_context_artifact_name,
     provider_context_budget_tier_name, provider_context_condensation_mode_name,
@@ -77,9 +77,7 @@ use synapse_domain::application::services::turn_context::{
 };
 use synapse_domain::application::services::turn_interpretation;
 use synapse_domain::application::services::turn_model_routing::resolve_turn_route_override;
-use synapse_domain::config::schema::{
-    CapabilityLane, Config, ContextCompressionConfig, ModelRouteConfig,
-};
+use synapse_domain::config::schema::{CapabilityLane, Config, ContextCompressionConfig};
 use synapse_domain::domain::tool_fact::TypedToolFact;
 use synapse_domain::domain::tool_repair::{tool_failure_kind_name, ToolRepairTrace};
 use synapse_domain::domain::turn_admission::{
@@ -134,46 +132,6 @@ pub struct AgentRuntimePorts {
     pub channel_registry: Option<Arc<dyn ChannelRegistryPort>>,
     pub run_recipe_store: Option<Arc<dyn RunRecipeStorePort>>,
     pub history_compaction_cache: Option<Arc<dyn HistoryCompactionCachePort>>,
-}
-
-fn build_provider_router_routes(config: &Config) -> Vec<ModelRouteConfig> {
-    let mut routes = Vec::new();
-    let mut seen_hints = HashSet::new();
-
-    for lane in resolve_effective_model_lanes(config) {
-        if let Some(candidate) = lane.candidates.first() {
-            push_provider_router_route(
-                &mut routes,
-                &mut seen_hints,
-                ModelRouteConfig {
-                    hint: lane.lane.as_str().to_string(),
-                    capability: Some(lane.lane),
-                    provider: candidate.provider.clone(),
-                    model: candidate.model.clone(),
-                    api_key: candidate.api_key.clone(),
-                    profile: candidate.profile.clone(),
-                },
-            );
-        }
-    }
-
-    for alias in synapse_domain::config::model_catalog::model_route_aliases() {
-        push_provider_router_route(&mut routes, &mut seen_hints, alias);
-    }
-
-    routes
-}
-
-fn push_provider_router_route(
-    routes: &mut Vec<ModelRouteConfig>,
-    seen_hints: &mut HashSet<String>,
-    route: ModelRouteConfig,
-) {
-    let hint = route.hint.trim();
-    if hint.is_empty() || !seen_hints.insert(hint.to_ascii_lowercase()) {
-        return;
-    }
-    routes.push(route);
 }
 
 fn canonicalize_tool_args(value: &serde_json::Value) -> serde_json::Value {
@@ -1313,14 +1271,14 @@ impl Agent {
 
         let provider_runtime_options =
             synapse_providers::provider_runtime_options_from_config(config);
-        let provider_router_routes = build_provider_router_routes(config);
+        let router_routes = provider_router_routes(config);
 
         let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
             provider_name,
             config.api_key.as_deref(),
             config.api_url.as_deref(),
             &config.reliability,
-            &provider_router_routes,
+            &router_routes,
             &model_name,
             &provider_runtime_options,
         )?;
@@ -1333,7 +1291,7 @@ impl Agent {
                 config.api_key.as_deref(),
                 config.api_url.as_deref(),
                 &config.reliability,
-                &provider_router_routes,
+                &router_routes,
                 &model_name,
                 &provider_runtime_options,
             )?);

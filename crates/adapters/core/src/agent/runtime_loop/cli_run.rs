@@ -283,13 +283,17 @@ pub async fn run_with_shared_memory(
         });
 
     let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
+    let router_routes =
+        synapse_domain::application::services::model_preset_resolution::provider_router_routes(
+            &config,
+        );
 
     let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
         provider_name,
         config.api_key.as_deref(),
         config.api_url.as_deref(),
         &config.reliability,
-        &config.model_routes,
+        &router_routes,
         model_name,
         &provider_runtime_options,
     )?;
@@ -846,12 +850,16 @@ pub async fn process_message(
             .to_string()
     });
     let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
+    let router_routes =
+        synapse_domain::application::services::model_preset_resolution::provider_router_routes(
+            &config,
+        );
     let provider: Box<dyn Provider> = synapse_providers::create_routed_provider_with_options(
         provider_name,
         config.api_key.as_deref(),
         config.api_url.as_deref(),
         &config.reliability,
-        &config.model_routes,
+        &router_routes,
         &model_name,
         &provider_runtime_options,
     )?;

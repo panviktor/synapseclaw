@@ -69,6 +69,9 @@ Our best move is:
 - Live web/Agent query classification now follows the same lane/catalog
   selector resolver instead of maintaining an Agent-local `model_routes`
   hint/model map.
+- Live Agent and CLI provider-router alias tables are now derived from the
+  shared effective-lane/catalog helper instead of passing configured
+  `model_routes` directly into the router.
 - Remaining audit target: old config/API surfaces still expose `model_routes`
   as compatibility/catalog-alias data; future cleanup should either rename that
   data shape to catalog aliases or fully retire it.
