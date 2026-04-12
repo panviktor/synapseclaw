@@ -709,6 +709,9 @@ Expected outcome:
       consolidation now build provider runtime options through the same helper,
       so provider profile fields and request controls do not drift by
       lifecycle path
+    - model-routing config probes can now use the same provider runtime options
+      while still preserving explicit custom `api_url`, avoiding a split
+      between probe-time reachability checks and normal runtime provider setup
   - Slice 13 initial pressure snapshot:
     - `ProviderContextBudgetInput` now tracks artifact-level breakdown for:
       - bootstrap

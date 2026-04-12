@@ -666,10 +666,13 @@ impl ModelRoutingConfigTool {
             return Ok(());
         }
 
-        let provider = match synapse_providers::create_provider_with_url(
+        let provider_runtime_options =
+            synapse_providers::provider_runtime_options_from_config(&self.config);
+        let provider = match synapse_providers::create_provider_with_url_and_options(
             provider_name,
             api_key,
             self.config.api_url.as_deref(),
+            &provider_runtime_options,
         ) {
             Ok(p) => p,
             Err(_) => return Ok(()),
