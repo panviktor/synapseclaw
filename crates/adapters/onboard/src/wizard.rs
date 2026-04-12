@@ -404,12 +404,8 @@ fn apply_provider_update(
 // ── Quick setup (zero prompts) ───────────────────────────────────
 
 /// Non-interactive setup: generates a sensible default config instantly.
-/// Use `synapseclaw onboard` or `synapseclaw onboard --api-key sk-... --provider openrouter --memory sqlite|lucid`.
+/// Use `synapseclaw onboard` or `synapseclaw onboard --api-key sk-... --provider openrouter`.
 // Phase 4.3: SurrealDB is the only backend — no selection needed.
-fn backend_key_from_choice(_choice: usize) -> &'static str {
-    "surrealdb"
-}
-
 fn memory_config_defaults_for_backend(_backend: &str) -> MemoryConfig {
     MemoryConfig::default()
 }
@@ -1199,6 +1195,57 @@ fn ollama_uses_remote_endpoint(provider_api_url: Option<&str>) -> bool {
     !ollama_endpoint_is_local(&normalized)
 }
 
+fn provider_prefers_configured_models_endpoint(provider_name: &str) -> bool {
+    matches!(
+        canonical_provider_name(provider_name),
+        "openai"
+            | "openai-codex"
+            | "openrouter"
+            | "groq"
+            | "mistral"
+            | "deepseek"
+            | "xai"
+            | "together-ai"
+            | "fireworks"
+            | "novita"
+            | "cohere"
+            | "moonshot"
+            | "glm"
+            | "zai"
+            | "qwen"
+            | "venice"
+            | "astrai"
+            | "nvidia"
+            | "opencode-go"
+            | "llamacpp"
+            | "sglang"
+            | "vllm"
+            | "osaurus"
+    )
+}
+
+fn models_endpoint_from_api_base_url(raw_url: &str) -> Option<String> {
+    let normalized = raw_url.trim().trim_end_matches('/');
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.ends_with("/models") {
+        return Some(normalized.to_string());
+    }
+    if let Some(prefix) = normalized.strip_suffix("/chat/completions") {
+        return Some(format!("{prefix}/models"));
+    }
+
+    let has_api_path = reqwest::Url::parse(normalized)
+        .ok()
+        .is_some_and(|url| !url.path().trim_matches('/').is_empty());
+    if has_api_path {
+        Some(format!("{normalized}/models"))
+    } else {
+        Some(format!("{normalized}/v1/models"))
+    }
+}
+
 fn resolve_live_models_endpoint(
     provider_name: &str,
     provider_api_url: Option<&str>,
@@ -1214,32 +1261,9 @@ fn resolve_live_models_endpoint(
         return Some(format!("{normalized}/models"));
     }
 
-    if matches!(
-        canonical_provider_name(provider_name),
-        "llamacpp" | "sglang" | "vllm" | "osaurus"
-    ) {
-        if let Some(url) = provider_api_url
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            let normalized = url.trim_end_matches('/');
-            if normalized.ends_with("/models") {
-                return Some(normalized.to_string());
-            }
-            return Some(format!("{normalized}/models"));
-        }
-    }
-
-    if canonical_provider_name(provider_name) == "openai-codex" {
-        if let Some(url) = provider_api_url
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            let normalized = url.trim_end_matches('/');
-            if normalized.ends_with("/models") {
-                return Some(normalized.to_string());
-            }
-            return Some(format!("{normalized}/models"));
+    if provider_prefers_configured_models_endpoint(provider_name) {
+        if let Some(endpoint) = provider_api_url.and_then(models_endpoint_from_api_base_url) {
+            return Some(endpoint);
         }
     }
 
@@ -6548,9 +6572,28 @@ mod tests {
         );
         assert_eq!(
             resolve_live_models_endpoint("venice", Some("http://localhost:9999/v1")),
-            Some("https://api.venice.ai/api/v1/models".to_string())
+            Some("http://localhost:9999/v1/models".to_string())
         );
         assert_eq!(resolve_live_models_endpoint("unknown-provider", None), None);
+    }
+
+    #[test]
+    fn resolve_live_models_endpoint_honors_compatible_provider_api_url() {
+        assert_eq!(
+            resolve_live_models_endpoint("deepseek", Some("https://api.deepseek.com/v1")),
+            Some("https://api.deepseek.com/v1/models".to_string())
+        );
+        assert_eq!(
+            resolve_live_models_endpoint(
+                "openai",
+                Some("https://router.example.com/openai/chat/completions")
+            ),
+            Some("https://router.example.com/openai/models".to_string())
+        );
+        assert_eq!(
+            resolve_live_models_endpoint("openrouter", Some("https://router.example.com")),
+            Some("https://router.example.com/v1/models".to_string())
+        );
     }
 
     #[test]
@@ -7000,13 +7043,6 @@ mod tests {
     #[test]
     fn provider_env_var_unknown_falls_back() {
         assert_eq!(provider_env_var("some-new-provider"), "API_KEY");
-    }
-
-    #[test]
-    fn backend_key_from_choice_always_returns_surrealdb() {
-        // Phase 4.3: SurrealDB is the only backend
-        assert_eq!(backend_key_from_choice(0), "surrealdb");
-        assert_eq!(backend_key_from_choice(999), "surrealdb");
     }
 
     // Phase 4.3: old memory backend tests removed (sqlite/lucid/markdown/none gone)

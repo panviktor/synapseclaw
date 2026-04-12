@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use synapse_domain::config::model_catalog;
 
 pub struct OpenRouterProvider {
     credential: Option<String>,
@@ -181,15 +182,28 @@ impl OpenRouterProvider {
         }
     }
 
-    fn reasoning_options(&self) -> Option<OpenRouterReasoningOptions> {
-        match (self.reasoning_enabled, self.reasoning_effort.as_ref()) {
+    fn reasoning_options(&self, model: &str) -> Option<OpenRouterReasoningOptions> {
+        if self.reasoning_enabled == Some(false) {
+            return Some(OpenRouterReasoningOptions {
+                enabled: Some(false),
+                effort: None,
+            });
+        }
+
+        let policy = model_catalog::model_request_policy("openrouter", model)?;
+        let effort = self
+            .reasoning_effort
+            .as_deref()
+            .and_then(|requested| policy.resolve_reasoning_effort(requested));
+
+        match (self.reasoning_enabled, effort) {
             (Some(false), _) => Some(OpenRouterReasoningOptions {
                 enabled: Some(false),
                 effort: None,
             }),
             (Some(true), Some(effort)) => Some(OpenRouterReasoningOptions {
                 enabled: Some(true),
-                effort: Some(effort.clone()),
+                effort: Some(effort),
             }),
             (Some(true), None) => Some(OpenRouterReasoningOptions {
                 enabled: Some(true),
@@ -197,7 +211,7 @@ impl OpenRouterProvider {
             }),
             (None, Some(effort)) => Some(OpenRouterReasoningOptions {
                 enabled: None,
-                effort: Some(effort.clone()),
+                effort: Some(effort),
             }),
             (None, None) => None,
         }
@@ -492,7 +506,7 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages,
             temperature,
-            reasoning: self.reasoning_options(),
+            reasoning: self.reasoning_options(model),
         };
 
         let response = self
@@ -541,7 +555,7 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: api_messages,
             temperature,
-            reasoning: self.reasoning_options(),
+            reasoning: self.reasoning_options(model),
         };
 
         let response = self
@@ -586,7 +600,7 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: Self::convert_messages(request.messages),
             temperature,
-            reasoning: self.reasoning_options(),
+            reasoning: self.reasoning_options(model),
             tool_choice: tools.as_ref().map(|_| "auto".to_string()),
             tools,
         };
@@ -680,7 +694,7 @@ impl Provider for OpenRouterProvider {
             model: model.to_string(),
             messages: native_messages,
             temperature,
-            reasoning: self.reasoning_options(),
+            reasoning: self.reasoning_options(model),
             tool_choice: native_tools.as_ref().map(|_| "auto".to_string()),
             tools: native_tools,
         };
@@ -752,12 +766,13 @@ mod tests {
             OpenRouterProvider::new_with_reasoning(None, Some(true), Some("high".to_string()));
 
         assert_eq!(
-            provider.reasoning_options(),
+            provider.reasoning_options("x-ai/grok-4.20"),
             Some(OpenRouterReasoningOptions {
                 enabled: Some(true),
                 effort: Some("high".to_string()),
             })
         );
+        assert_eq!(provider.reasoning_options("unknown/no-policy"), None);
     }
 
     #[test]
@@ -766,7 +781,7 @@ mod tests {
             OpenRouterProvider::new_with_reasoning(None, Some(false), Some("high".to_string()));
 
         assert_eq!(
-            provider.reasoning_options(),
+            provider.reasoning_options("unknown/no-policy"),
             Some(OpenRouterReasoningOptions {
                 enabled: Some(false),
                 effort: None,

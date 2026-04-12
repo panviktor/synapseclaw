@@ -36,7 +36,6 @@ pub(crate) mod runtime_adapter_contract;
 pub(crate) mod runtime_history_hygiene;
 pub mod runtime_routes;
 pub mod runtime_system_prompt;
-pub(crate) mod runtime_tool_artifacts;
 pub(crate) mod runtime_tool_notifications;
 pub(crate) mod runtime_tool_observer;
 pub mod scoped_instruction_context;

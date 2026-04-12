@@ -3030,12 +3030,9 @@ pub async fn start_channels(
 mod tests {
     use super::*;
     use crate::channel_runtime_support::spawn_supervised_listener_with_health_interval;
-    use crate::runtime_history_hygiene::{
-        normalize_cached_channel_turns, proactive_trim_turns, strip_tool_result_content,
-    };
+    use crate::runtime_history_hygiene::{normalize_cached_channel_turns, proactive_trim_turns};
     use crate::runtime_system_prompt::BOOTSTRAP_MAX_CHARS;
-    use crate::runtime_tool_artifacts::strip_isolated_tool_json_artifacts;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Instant;
@@ -3154,26 +3151,6 @@ mod tests {
             MIN_CHANNEL_MESSAGE_TIMEOUT_SECS
         );
         assert_eq!(effective_channel_message_timeout_secs(300), 300);
-    }
-
-    #[test]
-    fn strip_tool_result_content_removes_blocks_and_header() {
-        let input = r#"[Tool results]
-<tool_result name="shell">Mon Feb 20</tool_result>
-<tool_result name="http_request">{"status":200}</tool_result>"#;
-        assert_eq!(strip_tool_result_content(input), "");
-
-        let mixed = "Some context\n<tool_result name=\"shell\">ok</tool_result>\nMore text";
-        let cleaned = strip_tool_result_content(mixed);
-        assert!(cleaned.contains("Some context"));
-        assert!(cleaned.contains("More text"));
-        assert!(!cleaned.contains("tool_result"));
-
-        assert_eq!(
-            strip_tool_result_content("no tool results here"),
-            "no tool results here"
-        );
-        assert_eq!(strip_tool_result_content(""), "");
     }
 
     #[test]
@@ -4691,42 +4668,6 @@ mod tests {
         let emitted = rx.try_recv().expect("observer should emit notify message");
         assert!(emitted.contains("`file_write`"));
         assert!(emitted.is_char_boundary(emitted.len()));
-    }
-
-    #[test]
-    fn strip_isolated_tool_json_artifacts_removes_tool_calls_and_results() {
-        let mut known_tools = HashSet::new();
-        known_tools.insert("schedule".to_string());
-
-        let input = r#"{"name":"schedule","arguments":{"action":"create","message":"test"}}
-{"name":"schedule","arguments":{"action":"cancel","task_id":"test"}}
-Let me create the reminder properly:
-{"name":"schedule","arguments":{"action":"create","message":"Go to sleep"}}
-{"result":{"task_id":"abc","status":"scheduled"}}
-Done reminder set for 1:38 AM."#;
-
-        let result = strip_isolated_tool_json_artifacts(input, &known_tools);
-        let normalized = result
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(
-            normalized,
-            "Let me create the reminder properly:\nDone reminder set for 1:38 AM."
-        );
-    }
-
-    #[test]
-    fn strip_isolated_tool_json_artifacts_preserves_non_tool_json() {
-        let mut known_tools = HashSet::new();
-        known_tools.insert("shell".to_string());
-
-        let input = r#"{"name":"profile","arguments":{"display_mode":"compact"}}
-This is an example JSON object for profile settings."#;
-
-        let result = strip_isolated_tool_json_artifacts(input, &known_tools);
-        assert_eq!(result, input);
     }
 
     // ── AIEOS Identity Tests (Issue #168) ─────────────────────────

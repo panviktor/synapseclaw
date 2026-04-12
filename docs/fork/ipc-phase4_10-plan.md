@@ -603,6 +603,10 @@ Expected outcome:
     - follow-through: configured AIEOS identity now fails loud when the JSON
       source is missing, invalid, or renders empty instead of silently mixing in
       OpenClaw `IDENTITY.md`
+    - follow-through: dead shared presentation/history cleanup helpers that
+      stripped XML/tool JSON artifacts were removed; shared runtime still flags
+      raw `<tool_call>` output as a defect, with only concrete provider adapters
+      allowed to normalize provider-specific raw envelopes.
   - Slice 10 groundwork:
     - lane candidate schema and manual profile metadata
     - preset expansion (`chatgpt`, `claude`, `openrouter`, `gemini`, `local`)
@@ -635,6 +639,9 @@ Expected outcome:
     - `/model` help now resolves effective lanes through the same runtime
       lane resolver, so implicit reasoning fallbacks are visible instead of
       only explicit config lanes
+    - provider request quirks such as fixed temperature and accepted reasoning
+      effort aliases now live in editable model-catalog request policies, not
+      adapter-local Rust match arms
     - status note: this is not a full Slice 10 close; remaining Slice 10 work
       is now mostly registry/profile clean-up, adapter-heuristic shrinkage, and
       keeping lane/candidate-first explanations consistent as Slice 14/18
@@ -991,9 +998,11 @@ Expected outcome:
       domain pressure service/port boundary is stable enough to avoid creating
       a parallel context subsystem
   - reasoning-control follow-through:
-    - promote provider reasoning controls from global runtime override to a
-      capability/lane policy once the model-profile registry exposes support
-      and provider cost tradeoffs consistently
+    - follow-up narrowed: provider request controls now resolve through
+      catalog-owned request policies for OpenAI-compatible, OpenAI Codex, and
+      OpenRouter paths instead of model-name prefix/match arms; remaining work
+      is a fuller lane/cost-aware decision model as provider metadata becomes
+      richer
     - add full `reasoning_details` preservation when the shared provider
       response/history model can carry provider-native reasoning blocks without
       leaking adapter-specific shapes into the core runtime
@@ -1246,8 +1255,10 @@ Expected outcome:
       first-class turn routing are now mostly owned by Slice 14 and the shared
       marker/admission path, not by a separate Slice 10 routing fork
     - provider capability metadata is still narrower than the eventual lane matrix
-    - a few provider-local model-family heuristics still remain adapter-side
-      (for example reasoning-effort clamps)
+    - known request-policy cases for fixed temperature and reasoning effort
+      aliases now resolve from `model_catalog.json`; keep auditing future
+      provider request quirks so they enter through catalog policy or
+      adapter-local wire normalization, not broad model-family match arms
     - route state stores lane/candidate identity, and route-switch UX now renders lane
       for lane-aware switches; downstream runtime surfaces should keep moving toward
       lane/candidate-first explanations
@@ -1888,13 +1899,20 @@ Expected outcome:
       unknown context windows, never raises them
     - web `Agent` and channel `AgentRuntimePort` now record those observations
       through the same `WorkspaceModelProfileCatalog` cache path
+    - `models refresh` now honors configured OpenAI-compatible `api_url`
+      endpoints when building `/models` requests, so native vs aggregator vs
+      local-compatible endpoints do not share stale default-provider discovery
+      assumptions
   - still open after Hermes source audit:
     - no models.dev-style provider-aware registry source yet
-    - no explicit probe-down tier strategy for unknown/local endpoints yet
+    - no active probe-down request ladder for unknown/local endpoints yet; the
+      current explicit strategy is endpoint-aware `/models` refresh first, then
+      typed context-limit observations from failed turns, then operator catalog
+      override for proactive routing
   - status note:
     - treat Slice 18 as partial: catalog/cache/refresh/endpoint-aware lookup are
-      landed, but external registry ingestion and explicit unknown-endpoint
-      probe-down strategy are not complete.
+      landed, but external registry ingestion and active unknown-endpoint
+      probe-down requests are not complete.
 - Hermes-derived model-window resolver follow-through:
   - keep explicit user override first
   - completed: persistent live model cache lookup is now endpoint-aware, so the
@@ -1909,6 +1927,9 @@ Expected outcome:
   - completed: persist failed-turn context-limit observations as typed
     endpoint-aware profile/cache updates when a trustworthy lower window can be
     inferred
+  - completed: configured OpenAI-compatible refresh endpoints are derived from
+    the effective `api_url` instead of silently using the built-in provider
+    default endpoint
   - keep broad hardcoded family fallbacks out of core Rust; if unavoidable,
     they belong in local/bundled catalog data with provenance and freshness
   - consider a probe-down tier strategy only as an explicit adapter fallback

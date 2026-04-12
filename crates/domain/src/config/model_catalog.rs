@@ -37,6 +37,8 @@ struct ModelCatalogData {
     embedding_profiles: Vec<EmbeddingProfileCatalogEntry>,
     #[serde(default, alias = "model_routes")]
     route_aliases: Vec<ModelRouteConfig>,
+    #[serde(default)]
+    request_policies: Vec<ModelRequestPolicyCatalogEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -79,6 +81,54 @@ struct ModelProfileCatalogEntry {
     max_output_tokens: Option<usize>,
     #[serde(default)]
     features: Vec<ModelFeature>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ModelRequestPolicyCatalogEntry {
+    provider: String,
+    model: String,
+    #[serde(default)]
+    fixed_temperature: Option<f64>,
+    #[serde(default)]
+    reasoning_efforts: Vec<String>,
+    #[serde(default)]
+    default_reasoning_effort: Option<String>,
+    #[serde(default)]
+    reasoning_effort_aliases: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelRequestPolicy {
+    pub fixed_temperature: Option<f64>,
+    pub reasoning_efforts: Vec<String>,
+    pub default_reasoning_effort: Option<String>,
+    pub reasoning_effort_aliases: HashMap<String, String>,
+}
+
+impl ModelRequestPolicy {
+    pub fn resolve_reasoning_effort(&self, requested: &str) -> Option<String> {
+        let requested = requested.trim().to_ascii_lowercase();
+        if requested.is_empty() {
+            return self.default_reasoning_effort.clone();
+        }
+
+        let resolved = self
+            .reasoning_effort_aliases
+            .get(&requested)
+            .cloned()
+            .unwrap_or(requested);
+
+        if self.reasoning_efforts.is_empty()
+            || self
+                .reasoning_efforts
+                .iter()
+                .any(|effort| effort.eq_ignore_ascii_case(&resolved))
+        {
+            return Some(resolved);
+        }
+
+        self.default_reasoning_effort.clone()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -218,6 +268,17 @@ fn merge_catalog_data(
             *existing = route;
         } else {
             merged.route_aliases.push(route);
+        }
+    }
+
+    for policy in override_data.request_policies {
+        if let Some(existing) = merged.request_policies.iter_mut().find(|item| {
+            item.provider.eq_ignore_ascii_case(&policy.provider)
+                && item.model.eq_ignore_ascii_case(&policy.model)
+        }) {
+            *existing = policy;
+        } else {
+            merged.request_policies.push(policy);
         }
     }
 
@@ -381,6 +442,32 @@ pub fn model_profile(provider: &str, model: &str) -> Option<CatalogModelProfile>
             features: entry.features.clone(),
             source: Some(CatalogModelProfileSource::BundledCatalog),
             observed_at_unix: None,
+        })
+}
+
+pub fn model_request_policy(provider: &str, model: &str) -> Option<ModelRequestPolicy> {
+    let provider = provider.trim();
+    let model = model.trim();
+    if provider.is_empty() || model.is_empty() {
+        return None;
+    }
+
+    let normalized_model = model.rsplit('/').next().unwrap_or(model);
+
+    active_model_catalog()
+        .data
+        .request_policies
+        .iter()
+        .find(|entry| {
+            entry.provider.eq_ignore_ascii_case(provider)
+                && (entry.model.eq_ignore_ascii_case(model)
+                    || entry.model.eq_ignore_ascii_case(normalized_model))
+        })
+        .map(|entry| ModelRequestPolicy {
+            fixed_temperature: entry.fixed_temperature,
+            reasoning_efforts: entry.reasoning_efforts.clone(),
+            default_reasoning_effort: entry.default_reasoning_effort.clone(),
+            reasoning_effort_aliases: entry.reasoning_effort_aliases.clone(),
         })
 }
 
@@ -675,6 +762,15 @@ mod tests {
                   "provider": "openrouter",
                   "model": "google/gemma-4-31b-preview"
                 }
+              ],
+              "request_policies": [
+                {
+                  "provider": "openai-codex",
+                  "model": "gpt-5.4",
+                  "default_reasoning_effort": "high",
+                  "reasoning_efforts": ["low", "medium", "high"],
+                  "reasoning_effort_aliases": { "minimal": "low", "xhigh": "high" }
+                }
               ]
             }"#,
         )
@@ -712,5 +808,35 @@ mod tests {
             .find(|route| route.hint == "gemma31b")
             .expect("route alias should merge by hint");
         assert_eq!(alias.model, "google/gemma-4-31b-preview");
+        let policy = merged
+            .request_policies
+            .iter()
+            .find(|policy| policy.provider == "openai-codex" && policy.model == "gpt-5.4")
+            .expect("request policy should merge by provider/model key");
+        assert_eq!(policy.default_reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn request_policy_resolves_temperature_and_reasoning_aliases() {
+        let policy =
+            model_request_policy("openai-codex", "gpt-5.4").expect("policy should resolve");
+        assert_eq!(
+            policy.resolve_reasoning_effort("xhigh"),
+            Some("high".into())
+        );
+        assert_eq!(
+            policy.resolve_reasoning_effort("minimal"),
+            Some("low".into())
+        );
+
+        let policy = model_request_policy("openai", "o3").expect("policy should resolve");
+        assert_eq!(policy.fixed_temperature, Some(1.0));
+
+        let policy =
+            model_request_policy("openrouter", "x-ai/grok-4.20").expect("policy should resolve");
+        assert_eq!(
+            policy.resolve_reasoning_effort("xhigh"),
+            Some("high".into())
+        );
     }
 }

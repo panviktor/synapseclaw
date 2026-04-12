@@ -330,6 +330,75 @@ Reference:
 
 ## Re-Audit Of SynapseClaw
 
+### 2026-04-12 Phase 4.10 Code Audit Update
+
+Current status:
+
+1. **Prompt/context architecture is materially stronger than the 2026-04-08 baseline**
+   - provider-facing history is separated from audit history in the active
+     runtime paths
+   - compaction preserves protected head/tail and avoids splitting
+     tool-call/tool-result groups
+   - provider usage tokens can feed the next compaction pressure decision
+   - condensed artifact cache is a shared persistent runtime service/port,
+     visible to both web and channel diagnostics
+
+2. **Shared runtime tool protocol is now strict**
+   - shared text/XML tool-call fallback and dead presentation scrubbers were
+     removed
+   - raw `<tool_call>` output is treated as a defect unless a concrete provider
+     adapter owns a narrowly-scoped normalization path
+   - GLM/minimax/perl/XML-style dialects are not common-runtime features
+
+3. **Model/provider request knowledge moved further out of Rust hot paths**
+   - fixed OpenAI temperature rules and reasoning-effort aliases now resolve
+     through `model_catalog.json` request policies
+   - OpenAI, OpenAI Codex, OpenRouter, and generic OpenAI-compatible request
+     controls no longer depend on broad model-family match arms
+   - configured OpenAI-compatible `/models` refresh endpoints now derive from
+     the effective `api_url`, so native/aggregator/local endpoints do not share
+     stale default-provider discovery assumptions
+
+4. **Hermes parity is closer on context safety**
+   - model context is treated as input plus reserved output
+   - compression threshold and hard ceiling scale by trusted window ratio
+   - large-window to small-window switches preflight against the target route
+   - web/channel model-switch and command semantics share the same runtime
+     command/effect/preflight surfaces where lifecycle allows
+
+5. **Memory hygiene is substantially better but still not fully done**
+   - old `Children learn_from Parents`-style generic graph pollution is blocked
+     through governor/extractor gates rather than phrase lists
+   - raw conversation autosave and consolidation now share one governor path
+   - remaining risk is concept-heavy long-dialogue ranking after real
+     compaction, not the already-fixed string-pattern examples
+
+Still open after this audit:
+
+1. **No pluggable `ContextEngine` interface yet**
+   - this is intentionally deferred until the current domain pressure
+     service/port boundary is stable enough to avoid a parallel context system
+
+2. **Provider-native continuation remains live-unvalidated**
+   - `openai-codex` scaffolding exists, but the deployed Codex backend rejected
+     `previous_response_id`; an official/custom key-based Responses endpoint
+     still needs validation
+
+3. **Slice 18 remains partial**
+   - endpoint-aware cache and `/models` refresh are in place
+   - no external models.dev-style registry source yet
+   - no active probe-down request ladder for unknown/local endpoints yet
+
+4. **Reasoning controls are policy-backed but not fully autonomous**
+   - request controls now resolve from catalog request policies
+   - fuller lane/cost-aware reasoning selection and provider-native
+     `reasoning_details` preservation remain future work
+
+5. **Long-dialogue quality still needs the expensive closeout run**
+   - focused cheap-route semantic run passed without procedural skill growth
+   - it did not produce a real compaction row, so compaction-plus-ranking still
+     needs validation at a slice-close point
+
 ### What is already moving in the right direction
 
 1. `MEMORY.md` is no longer part of runtime bootstrap or scaffolding.

@@ -584,5 +584,202 @@
       "provider": "openrouter",
       "model": "x-ai/grok-4.20"
     }
+  ],
+  "request_policies": [
+    {
+      "provider": "openai",
+      "model": "gpt-5",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-2025-08-07",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-mini",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-mini-2025-08-07",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-nano",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5-nano-2025-08-07",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.1-chat-latest",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.2-chat-latest",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.3-chat-latest",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "fixed_temperature": 1.0,
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-mini",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-5.4-pro",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o1",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o1-2024-12-17",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o3",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o3-2025-04-16",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o3-mini",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o3-mini-2025-01-31",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o4-mini",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai",
+      "model": "o4-mini-2025-04-16",
+      "fixed_temperature": 1.0
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.4",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.4-mini",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5-codex",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.3-codex",
+      "reasoning_efforts": ["low", "medium", "high", "xhigh"],
+      "default_reasoning_effort": "xhigh",
+      "reasoning_effort_aliases": {
+        "minimal": "low"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.2-codex",
+      "reasoning_efforts": ["low", "medium", "high", "xhigh"],
+      "default_reasoning_effort": "xhigh",
+      "reasoning_effort_aliases": {
+        "minimal": "low"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.1",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openai-codex",
+      "model": "gpt-5.1-codex-mini",
+      "reasoning_efforts": ["medium", "high"],
+      "default_reasoning_effort": "medium",
+      "reasoning_effort_aliases": {
+        "minimal": "medium",
+        "low": "medium",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openrouter",
+      "model": "x-ai/grok-4.20",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    },
+    {
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4",
+      "reasoning_efforts": ["low", "medium", "high"],
+      "default_reasoning_effort": "high",
+      "reasoning_effort_aliases": {
+        "minimal": "low",
+        "xhigh": "high"
+      }
+    }
   ]
 }
