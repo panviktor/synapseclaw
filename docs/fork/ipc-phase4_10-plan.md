@@ -1998,6 +1998,21 @@ Expected outcome:
   - suppress repeated bad choices
   - improve future repair suggestions
   - surface low-confidence paths before they fail noisily
+- current status:
+  - landed:
+    - `runtime_calibration` domain service records compact typed route/tool/
+      retrieval/delivery outcome comparisons
+    - high-confidence failures become `overconfident_failure` records with a
+      suppress-choice recommendation
+    - low-confidence successes become `underconfident_success` records that can
+      be kept as positive evidence
+    - calibration history is TTL-bounded, count-bounded, and deduped by
+      decision kind/signature/comparison
+  - still open:
+    - live route/tool/retrieval/delivery call sites do not emit calibration
+      observations yet
+    - calibration records are not yet consumed by route/tool suppression policy
+      or exposed in operator help
 - expected outcome:
   - more calibrated runtime decisions
   - better post-failure learning without turning every turn into a reflection step
