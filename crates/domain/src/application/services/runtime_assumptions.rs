@@ -1,5 +1,6 @@
 use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::domain::conversation_target::ConversationDeliveryTarget;
+use crate::domain::tool_repair::{ToolFailureKind, ToolRepairTrace};
 use crate::domain::turn_admission::{
     admission_repair_hint_label, candidate_admission_reason_label, AdmissionRepairHint,
     CandidateAdmissionReason,
@@ -7,6 +8,7 @@ use crate::domain::turn_admission::{
 
 const MAX_ASSUMPTIONS: usize = 8;
 const MAX_VALUE_CHARS: usize = 160;
+const CHALLENGED_CONFIDENCE_BASIS_POINTS: u16 = 3_500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +75,14 @@ pub struct RuntimeAssumption {
     pub replacement_path: RuntimeAssumptionReplacementPath,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeAssumptionChallenge<'a> {
+    pub kind: RuntimeAssumptionKind,
+    pub value: &'a str,
+    pub invalidation: RuntimeAssumptionInvalidation,
+    pub replacement_path: RuntimeAssumptionReplacementPath,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeAssumptionInput<'a> {
     pub user_message: &'a str,
@@ -109,6 +119,64 @@ pub fn build_runtime_assumptions(input: RuntimeAssumptionInput<'_>) -> Vec<Runti
         input.recent_admission_reasons,
     );
     bound_runtime_assumptions(assumptions)
+}
+
+pub fn merge_runtime_assumption_ledger(
+    existing: &[RuntimeAssumption],
+    observed: &[RuntimeAssumption],
+) -> Vec<RuntimeAssumption> {
+    let mut ledger = existing.to_vec();
+    for assumption in observed {
+        upsert_assumption(&mut ledger, assumption.clone());
+    }
+    bound_runtime_assumptions(ledger)
+}
+
+pub fn challenge_runtime_assumption_ledger(
+    existing: &[RuntimeAssumption],
+    challenge: RuntimeAssumptionChallenge<'_>,
+) -> Vec<RuntimeAssumption> {
+    let mut ledger = existing.to_vec();
+    let mut matched = false;
+    for assumption in ledger
+        .iter_mut()
+        .filter(|assumption| assumption.kind == challenge.kind)
+    {
+        assumption.freshness = RuntimeAssumptionFreshness::Challenged;
+        assumption.confidence_basis_points = assumption
+            .confidence_basis_points
+            .min(CHALLENGED_CONFIDENCE_BASIS_POINTS);
+        assumption.invalidation = challenge.invalidation;
+        assumption.replacement_path = challenge.replacement_path;
+        matched = true;
+    }
+    if !matched {
+        if let Some(value) = bounded_non_empty(challenge.value, MAX_VALUE_CHARS) {
+            ledger.push(RuntimeAssumption {
+                kind: challenge.kind,
+                source: RuntimeAssumptionSource::RouteAdmission,
+                freshness: RuntimeAssumptionFreshness::Challenged,
+                confidence_basis_points: CHALLENGED_CONFIDENCE_BASIS_POINTS,
+                value,
+                invalidation: challenge.invalidation,
+                replacement_path: challenge.replacement_path,
+            });
+        }
+    }
+    bound_runtime_assumptions(ledger)
+}
+
+pub fn apply_tool_repair_assumption_challenges(
+    assumptions: &[RuntimeAssumption],
+    tool_repairs: &[ToolRepairTrace],
+) -> Vec<RuntimeAssumption> {
+    let mut ledger = assumptions.to_vec();
+    for repair in tool_repairs {
+        if let Some(challenge) = tool_repair_assumption_challenge(repair) {
+            ledger = challenge_runtime_assumption_ledger(&ledger, challenge);
+        }
+    }
+    ledger
 }
 
 pub fn bound_runtime_assumptions(assumptions: Vec<RuntimeAssumption>) -> Vec<RuntimeAssumption> {
@@ -196,6 +264,50 @@ pub fn runtime_assumption_replacement_path_name(
         RuntimeAssumptionReplacementPath::SwitchRoute => "switch_route",
         RuntimeAssumptionReplacementPath::UpdateProfile => "update_profile",
         RuntimeAssumptionReplacementPath::UseCurrentConversation => "use_current_conversation",
+    }
+}
+
+fn tool_repair_assumption_challenge(
+    repair: &ToolRepairTrace,
+) -> Option<RuntimeAssumptionChallenge<'static>> {
+    match repair.failure_kind {
+        ToolFailureKind::ContextLimitExceeded => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::ContextWindow,
+            value: "tool_context_limit_exceeded",
+            invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+            replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+        }),
+        ToolFailureKind::AuthFailure => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::RouteCapability,
+            value: "tool_auth_failure",
+            invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+            replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
+        }),
+        ToolFailureKind::CapabilityMismatch | ToolFailureKind::UnknownTool => {
+            Some(RuntimeAssumptionChallenge {
+                kind: RuntimeAssumptionKind::RouteCapability,
+                value: "tool_capability_mismatch",
+                invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+                replacement_path: RuntimeAssumptionReplacementPath::SwitchRoute,
+            })
+        }
+        ToolFailureKind::MissingResource => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::WorkspaceAnchor,
+            value: "tool_missing_resource",
+            invalidation: RuntimeAssumptionInvalidation::UserContradiction,
+            replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
+        }),
+        ToolFailureKind::ReportedFailure => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::DeliveryTarget,
+            value: "tool_reported_failure",
+            invalidation: RuntimeAssumptionInvalidation::DeliveryFailure,
+            replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
+        }),
+        ToolFailureKind::PolicyBlocked
+        | ToolFailureKind::DuplicateInvocation
+        | ToolFailureKind::Timeout
+        | ToolFailureKind::SchemaMismatch
+        | ToolFailureKind::RuntimeError => None,
     }
 }
 
@@ -453,6 +565,18 @@ fn push_assumption(assumptions: &mut Vec<RuntimeAssumption>, assumption: Runtime
     assumptions.push(assumption);
 }
 
+fn upsert_assumption(assumptions: &mut Vec<RuntimeAssumption>, assumption: RuntimeAssumption) {
+    if let Some(existing) = assumptions.iter_mut().find(|existing| {
+        existing.kind == assumption.kind
+            && existing.source == assumption.source
+            && existing.value == assumption.value
+    }) {
+        *existing = assumption;
+    } else {
+        assumptions.push(assumption);
+    }
+}
+
 fn bounded_non_empty(value: &str, max_chars: usize) -> Option<String> {
     let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if collapsed.is_empty() {
@@ -534,5 +658,54 @@ mod tests {
         assert!(formatted.contains("kind=profile_fact"));
         assert!(formatted.contains("source=user_profile"));
         assert!(formatted.contains("replacement_path=update_profile"));
+    }
+
+    #[test]
+    fn ledger_challenges_matching_assumption_without_promoting_to_memory() {
+        let existing = vec![RuntimeAssumption {
+            kind: RuntimeAssumptionKind::ContextWindow,
+            source: RuntimeAssumptionSource::RouteAdmission,
+            freshness: RuntimeAssumptionFreshness::SessionRecent,
+            confidence_basis_points: 8_000,
+            value: "candidate_window_near_limit".into(),
+            invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+            replacement_path: RuntimeAssumptionReplacementPath::RefreshCapabilityMetadata,
+        }];
+
+        let ledger = challenge_runtime_assumption_ledger(
+            &existing,
+            RuntimeAssumptionChallenge {
+                kind: RuntimeAssumptionKind::ContextWindow,
+                value: "context_limit_exceeded",
+                invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+                replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+            },
+        );
+
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0].freshness, RuntimeAssumptionFreshness::Challenged);
+        assert_eq!(ledger[0].confidence_basis_points, 3_500);
+        assert_eq!(
+            ledger[0].replacement_path,
+            RuntimeAssumptionReplacementPath::CompactSession
+        );
+    }
+
+    #[test]
+    fn ledger_adds_challenged_assumption_when_no_match_exists() {
+        let ledger = challenge_runtime_assumption_ledger(
+            &[],
+            RuntimeAssumptionChallenge {
+                kind: RuntimeAssumptionKind::RouteCapability,
+                value: "capability_mismatch",
+                invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+                replacement_path: RuntimeAssumptionReplacementPath::SwitchRoute,
+            },
+        );
+
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0].kind, RuntimeAssumptionKind::RouteCapability);
+        assert_eq!(ledger[0].freshness, RuntimeAssumptionFreshness::Challenged);
+        assert_eq!(ledger[0].value, "capability_mismatch");
     }
 }

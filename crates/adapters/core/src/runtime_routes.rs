@@ -11,6 +11,7 @@ use synapse_domain::application::services::model_preset_resolution::preset_title
 use synapse_domain::application::services::provider_native_context_policy::{
     resolve_provider_native_context_policy, ProviderNativeContextPolicyInput,
 };
+use synapse_domain::application::services::runtime_assumptions::format_runtime_assumption;
 use synapse_domain::config::schema::{CapabilityLane, Config, ModelFeature};
 use synapse_domain::domain::tool_repair::{
     tool_failure_kind_name, tool_repair_action_name, ToolRepairAction, ToolRepairTrace,
@@ -338,6 +339,20 @@ pub(crate) fn build_models_help_response(current: &RouteSelection, config: &Conf
             current.recent_tool_repairs.len()
         );
         write_recent_tool_repairs(&mut response, &current.recent_tool_repairs);
+    }
+    if !current.assumptions.is_empty() {
+        let _ = writeln!(
+            response,
+            "Runtime assumptions retained: {}",
+            current.assumptions.len()
+        );
+        for assumption in current.assumptions.iter().rev().take(3) {
+            let _ = writeln!(
+                response,
+                "Runtime assumption: {}",
+                format_runtime_assumption(assumption)
+            );
+        }
     }
     if let Some(lane) = current.lane {
         let _ = writeln!(
@@ -939,6 +954,10 @@ mod tests {
     use synapse_domain::application::services::model_lane_resolution::{
         ResolvedModelProfile, ResolvedModelProfileSource,
     };
+    use synapse_domain::application::services::runtime_assumptions::{
+        RuntimeAssumption, RuntimeAssumptionFreshness, RuntimeAssumptionInvalidation,
+        RuntimeAssumptionKind, RuntimeAssumptionReplacementPath, RuntimeAssumptionSource,
+    };
     use synapse_domain::config::schema::{
         Config, ModelCandidateProfileConfig, ModelLaneCandidateConfig, ModelLaneConfig,
         ModelRouteConfig,
@@ -962,6 +981,7 @@ mod tests {
             last_tool_repair: None,
             recent_tool_repairs: Vec::new(),
             context_cache: None,
+            assumptions: Vec::new(),
         });
         assert!(response.contains("Current provider: `openai-codex`"));
         assert!(response.contains("Switch provider with `/models <provider>`"));
@@ -1037,6 +1057,7 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
             },
             &config,
         );
@@ -1081,6 +1102,7 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
             },
             &config,
         );
@@ -1125,6 +1147,7 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
             },
             &config,
         );
@@ -1134,6 +1157,42 @@ mod tests {
         assert!(response
             .contains("Recent admission reasons: requires image_generation, window near limit"));
         assert!(response.contains("Recent admission suggested action: compact_session"));
+    }
+
+    #[test]
+    fn models_help_includes_runtime_assumption_ledger() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workspace_dir = workspace.path().to_path_buf();
+
+        let response = build_models_help_response(
+            &RouteSelection {
+                provider: "openrouter".into(),
+                model: "qwen/qwen3.6-plus".into(),
+                lane: None,
+                candidate_index: None,
+                last_admission: None,
+                recent_admissions: Vec::new(),
+                last_tool_repair: None,
+                recent_tool_repairs: Vec::new(),
+                context_cache: None,
+                assumptions: vec![RuntimeAssumption {
+                    kind: RuntimeAssumptionKind::ContextWindow,
+                    source: RuntimeAssumptionSource::RouteAdmission,
+                    freshness: RuntimeAssumptionFreshness::Challenged,
+                    confidence_basis_points: 3_500,
+                    value: "context_limit_exceeded".into(),
+                    invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+                    replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+                }],
+            },
+            &config,
+        );
+
+        assert!(response.contains("Runtime assumptions retained: 1"));
+        assert!(response.contains("kind=context_window"));
+        assert!(response.contains("freshness=challenged"));
+        assert!(response.contains("replacement_path=compact_session"));
     }
 
     #[test]
@@ -1165,6 +1224,7 @@ mod tests {
                     detail: Some("missing delivery target".into()),
                 }],
                 context_cache: None,
+                assumptions: Vec::new(),
             },
             &config,
         );
@@ -1217,6 +1277,7 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
             },
             &config,
         );
@@ -1273,6 +1334,7 @@ mod tests {
                     max_source_chars: 60_000,
                     max_summary_chars: 12_000,
                 }),
+                assumptions: Vec::new(),
             },
             &config,
         );

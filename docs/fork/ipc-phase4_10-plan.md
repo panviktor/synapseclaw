@@ -1878,10 +1878,13 @@ Expected outcome:
       compaction, and fresh handoff surfaces can preserve current hypotheses
       explicitly
     - helper-agent handoff schemas accept the same strict assumption objects
+    - bounded session/runtime assumption ledger now merges observed assumptions
+      and downgrades challenged assumption kinds after runtime/provider/tool
+      failures
+    - channel runtime persists the assumption ledger on `RouteSelection`; web
+      runtime keeps the same ledger on the live `Agent` and exposes it through
+      route inspection
   - still open:
-    - no persistent/session ledger for assumption invalidation and downgrade yet
-    - self-repair can carry challenged assumptions, but does not yet mutate a
-      stored assumption set after failures
     - promotion from ephemeral assumptions into durable memory remains
       intentionally blocked until a separate policy gate exists
 - expected outcome:

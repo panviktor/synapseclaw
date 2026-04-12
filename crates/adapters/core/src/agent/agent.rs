@@ -40,6 +40,12 @@ use synapse_domain::application::services::provider_native_context_policy::{
 use synapse_domain::application::services::route_switch_preflight::{
     assess_route_switch_preflight_for_budget, RouteSwitchPreflightResolution,
 };
+use synapse_domain::application::services::runtime_assumptions::{
+    apply_tool_repair_assumption_challenges, build_runtime_assumptions,
+    challenge_runtime_assumption_ledger, merge_runtime_assumption_ledger, RuntimeAssumption,
+    RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
+    RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
+};
 use synapse_domain::application::services::scoped_instruction_resolution::{
     adjust_scoped_instruction_plan_for_context_pressure, build_scoped_instruction_plan,
     format_scoped_instruction_block,
@@ -245,6 +251,8 @@ pub struct Agent {
     recent_turn_tool_repairs: Vec<ToolRepairTrace>,
     /// Bounded recent structured route-admission states for this session.
     recent_turn_admissions: Vec<RouteAdmissionState>,
+    /// Bounded session/runtime assumption ledger for this live agent.
+    recent_runtime_assumptions: Vec<RuntimeAssumption>,
     allowed_tools: Option<Vec<String>>,
     response_cache: Option<Arc<synapse_memory::response_cache::ResponseCache>>,
     history_summary_generator: Option<Arc<dyn SummaryGeneratorPort>>,
@@ -689,6 +697,7 @@ impl AgentBuilder {
             last_turn_tool_repair: None,
             recent_turn_tool_repairs: Vec::new(),
             recent_turn_admissions: Vec::new(),
+            recent_runtime_assumptions: Vec::new(),
             allowed_tools: allowed,
             response_cache: self.response_cache,
             history_summary_generator: self.history_summary_generator,
@@ -856,6 +865,10 @@ impl Agent {
         &self.recent_turn_admissions
     }
 
+    pub fn recent_runtime_assumptions(&self) -> &[RuntimeAssumption] {
+        &self.recent_runtime_assumptions
+    }
+
     pub fn user_profile_key(&self) -> Option<&str> {
         self.user_profile_key.as_deref()
     }
@@ -946,6 +959,7 @@ impl Agent {
         rebuilt.last_turn_tool_repair = None;
         rebuilt.recent_turn_tool_repairs.clear();
         rebuilt.recent_turn_admissions.clear();
+        rebuilt.recent_runtime_assumptions.clear();
         rebuilt.active_lane = route_lane;
         rebuilt.active_candidate_index = route_candidate_index;
         rebuilt.dialogue_state_store = dialogue_state_store;
@@ -1997,6 +2011,16 @@ impl Agent {
             .recent_turn_admissions
             .last()
             .and_then(|admission| admission.recommended_action);
+        let observed_assumptions = build_runtime_assumptions(RuntimeAssumptionInput {
+            user_message,
+            interpretation: turn_interpretation.as_ref(),
+            recent_admission_repair,
+            recent_admission_reasons,
+        });
+        self.recent_runtime_assumptions = merge_runtime_assumption_ledger(
+            &self.recent_runtime_assumptions,
+            &observed_assumptions,
+        );
         let turn_ctx = tc::assemble_turn_context(
             self.memory.as_ref(),
             self.run_recipe_store.as_ref().map(|store| store.as_ref()),
@@ -2200,6 +2224,16 @@ impl Agent {
                     Some(admission_state),
                     observed_at_unix,
                 );
+            let observed_assumptions = build_runtime_assumptions(RuntimeAssumptionInput {
+                user_message,
+                interpretation: turn_interpretation.as_ref(),
+                recent_admission_repair: admission_decision.recommended_action,
+                recent_admission_reasons: &admission_decision.reasons,
+            });
+            self.recent_runtime_assumptions = merge_runtime_assumption_ledger(
+                &self.recent_runtime_assumptions,
+                &observed_assumptions,
+            );
             let system_breakdown = system_message_breakdown(&self.history)
                 .into_iter()
                 .map(|(name, chars)| format!("{name}={chars}"))
@@ -2423,6 +2457,15 @@ impl Agent {
             {
                 match issue {
                     ProviderCallCapabilityIssue::MissingVisionInput { image_marker_count } => {
+                        self.recent_runtime_assumptions = challenge_runtime_assumption_ledger(
+                            &self.recent_runtime_assumptions,
+                            RuntimeAssumptionChallenge {
+                                kind: RuntimeAssumptionKind::RouteCapability,
+                                value: "missing_vision_input",
+                                invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+                                replacement_path: RuntimeAssumptionReplacementPath::SwitchRoute,
+                            },
+                        );
                         return Err(ProviderCapabilityError {
                             provider: self.provider_name.clone(),
                             capability: "vision".to_string(),
@@ -2454,6 +2497,15 @@ impl Agent {
                 Ok(resp) => resp,
                 Err(err) => {
                     if let Some(observation) = classify_context_limit_error(&err) {
+                        self.recent_runtime_assumptions = challenge_runtime_assumption_ledger(
+                            &self.recent_runtime_assumptions,
+                            RuntimeAssumptionChallenge {
+                                kind: RuntimeAssumptionKind::ContextWindow,
+                                value: "context_limit_exceeded",
+                                invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+                                replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+                            },
+                        );
                         if observation.observed_context_window_tokens.is_some() {
                             let profile_catalog =
                                 crate::runtime_routes::WorkspaceModelProfileCatalog::with_provider_endpoint(
@@ -2585,6 +2637,10 @@ impl Agent {
                         &tool_repairs_this_turn,
                         chrono::Utc::now().timestamp(),
                     );
+                self.recent_runtime_assumptions = apply_tool_repair_assumption_challenges(
+                    &self.recent_runtime_assumptions,
+                    &tool_repairs_this_turn,
+                );
 
                 return Ok(final_text);
             }

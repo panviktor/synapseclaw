@@ -16,6 +16,13 @@ use crate::application::services::inbound_message_service::{
     self, CommandEffect, HistoryEnrichment, MessageClassification,
 };
 use crate::application::services::provider_context_budget::provider_context_input_for_history;
+use crate::application::services::runtime_assumptions::{
+    apply_tool_repair_assumption_challenges, build_runtime_assumptions,
+    challenge_runtime_assumption_ledger, merge_runtime_assumption_ledger,
+    RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
+    RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
+};
+use crate::application::services::turn_interpretation::TurnInterpretation;
 use crate::application::services::turn_markup::{
     contains_image_attachment_marker, strip_image_attachment_markers,
 };
@@ -507,6 +514,7 @@ async fn handle_regular_message(
                         config,
                         ports,
                         resolved_turn_defaults.clone(),
+                        interpretation.clone(),
                         route.clone(),
                         history,
                     )
@@ -568,6 +576,7 @@ async fn handle_regular_message(
                         config,
                         ports,
                         resolved_turn_defaults.clone(),
+                        interpretation.clone(),
                         route.clone(),
                         history,
                     )
@@ -592,6 +601,7 @@ async fn handle_regular_message(
         config,
         ports,
         resolved_turn_defaults,
+        interpretation,
         route,
         history,
     )
@@ -697,6 +707,7 @@ async fn execute_agent_turn(
     config: &InboundMessageConfig,
     ports: &InboundMessagePorts,
     resolved_turn_defaults: crate::domain::turn_defaults::ResolvedTurnDefaults,
+    interpretation: Option<TurnInterpretation>,
     mut route: crate::ports::route_selection::RouteSelection,
     mut history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
@@ -756,6 +767,13 @@ async fn execute_agent_turn(
             catalog: ports.model_profile_catalog.as_deref(),
         },
     );
+    let observed_assumptions = build_runtime_assumptions(RuntimeAssumptionInput {
+        user_message: content,
+        interpretation: interpretation.as_ref(),
+        recent_admission_repair: admission_decision.recommended_action,
+        recent_admission_reasons: &admission_decision.reasons,
+    });
+    route.assumptions = merge_runtime_assumption_ledger(&route.assumptions, &observed_assumptions);
 
     tracing::info!(
         target: "turn_admission",
@@ -1014,6 +1032,10 @@ async fn execute_agent_turn(
                     &turn_result.tool_repairs,
                     chrono::Utc::now().timestamp(),
                 );
+            route.assumptions = apply_tool_repair_assumption_challenges(
+                &route.assumptions,
+                &turn_result.tool_repairs,
+            );
             ports.routes.set_route(conversation_key, route);
 
             if let Some(ref store) = ports.dialogue_state_store {
@@ -1078,6 +1100,11 @@ async fn execute_agent_turn(
             })
         }
         Err(e) => {
+            if let Some(challenge) = agent_runtime_error_assumption_challenge(&e.kind) {
+                route.assumptions =
+                    challenge_runtime_assumption_ledger(&route.assumptions, challenge);
+                ports.routes.set_route(conversation_key, route.clone());
+            }
             // Cancel draft if active
             if let Some((_, Some(ref draft_id))) = draft_state {
                 let _ = ports
@@ -1156,6 +1183,32 @@ async fn execute_agent_turn(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+fn agent_runtime_error_assumption_challenge(
+    kind: &AgentRuntimeErrorKind,
+) -> Option<RuntimeAssumptionChallenge<'static>> {
+    match kind {
+        AgentRuntimeErrorKind::ContextLimitExceeded => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::ContextWindow,
+            value: "context_limit_exceeded",
+            invalidation: RuntimeAssumptionInvalidation::ContextOverflow,
+            replacement_path: RuntimeAssumptionReplacementPath::CompactSession,
+        }),
+        AgentRuntimeErrorKind::CapabilityMismatch => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::RouteCapability,
+            value: "capability_mismatch",
+            invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+            replacement_path: RuntimeAssumptionReplacementPath::SwitchRoute,
+        }),
+        AgentRuntimeErrorKind::AuthFailure => Some(RuntimeAssumptionChallenge {
+            kind: RuntimeAssumptionKind::RouteCapability,
+            value: "auth_failure",
+            invalidation: RuntimeAssumptionInvalidation::RouteAdmissionFailure,
+            replacement_path: RuntimeAssumptionReplacementPath::AskUserClarification,
+        }),
+        AgentRuntimeErrorKind::Timeout | AgentRuntimeErrorKind::RuntimeFailure => None,
+    }
+}
 
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
@@ -1258,6 +1311,7 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
             }
         }
         fn set_route(&self, _key: &str, _route: RouteSelection) {}
@@ -1300,6 +1354,7 @@ mod tests {
                 last_tool_repair: None,
                 recent_tool_repairs: Vec::new(),
                 context_cache: None,
+                assumptions: Vec::new(),
             }
         }
     }

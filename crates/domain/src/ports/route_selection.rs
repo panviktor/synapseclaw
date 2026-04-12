@@ -2,6 +2,7 @@
 //!
 //! Manages per-sender runtime route overrides for channel sessions.
 
+use crate::application::services::runtime_assumptions::RuntimeAssumption;
 use crate::config::schema::{CapabilityLane, ContextCompressionConfig};
 use crate::domain::tool_repair::ToolRepairTrace;
 use crate::domain::turn_admission::{
@@ -82,6 +83,8 @@ pub struct RouteSelection {
     pub recent_tool_repairs: Vec<ToolRepairTrace>,
     /// Current context/compaction cache stats, when a runtime cache service is attached.
     pub context_cache: Option<ContextCacheStats>,
+    /// Bounded session/runtime assumption ledger for this route.
+    pub assumptions: Vec<RuntimeAssumption>,
 }
 
 impl RouteSelection {
@@ -91,6 +94,7 @@ impl RouteSelection {
         self.last_tool_repair = None;
         self.recent_tool_repairs.clear();
         self.context_cache = None;
+        self.assumptions.clear();
     }
 }
 
