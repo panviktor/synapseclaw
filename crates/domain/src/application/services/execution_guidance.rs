@@ -447,28 +447,28 @@ mod tests {
     fn profile_fact_turn_avoids_historical_lookup_without_string_rules() {
         let interpretation = TurnInterpretation {
             user_profile: Some(profile_with_facts(&[
-                ("weather_city", serde_json::json!("Tokyo")),
-                ("local_timezone", serde_json::json!("Asia/Tokyo")),
-                ("language_preference", serde_json::json!("ja")),
+                ("workspace_anchor", serde_json::json!("Borealis")),
+                ("project_alias", serde_json::json!("Borealis")),
+                ("response_locale", serde_json::json!("ja")),
             ])),
             reference_candidates: vec![
                 crate::application::services::turn_interpretation::ReferenceCandidate {
                     kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
-                        key: "weather_city".into(),
+                        key: "workspace_anchor".into(),
                     },
-                    value: "Tokyo".into(),
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 crate::application::services::turn_interpretation::ReferenceCandidate {
                     kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
-                        key: "local_timezone".into(),
+                        key: "project_alias".into(),
                     },
-                    value: "Asia/Tokyo".into(),
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 crate::application::services::turn_interpretation::ReferenceCandidate {
                     kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
-                        key: "language_preference".into(),
+                        key: "response_locale".into(),
                     },
                     value: "ja".into(),
                     source: ReferenceSource::UserProfile,
@@ -496,8 +496,8 @@ mod tests {
     fn ambiguous_turn_does_not_claim_direct_resolution_ready() {
         let interpretation = TurnInterpretation {
             user_profile: Some(profile_with_facts(&[(
-                "weather_city",
-                serde_json::json!("Berlin"),
+                "workspace_anchor",
+                serde_json::json!("Borealis"),
             )])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "matrix".into(),
@@ -531,9 +531,9 @@ mod tests {
     fn current_conversation_does_not_trigger_profile_fact_narrowing_by_itself() {
         let interpretation = TurnInterpretation {
             user_profile: Some(profile_with_facts(&[
-                ("weather_city", serde_json::json!("Tokyo")),
-                ("local_timezone", serde_json::json!("Asia/Tokyo")),
-                ("language_preference", serde_json::json!("ja")),
+                ("workspace_anchor", serde_json::json!("Borealis")),
+                ("project_alias", serde_json::json!("Borealis")),
+                ("response_locale", serde_json::json!("ja")),
             ])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "web".into(),
@@ -542,16 +542,16 @@ mod tests {
             reference_candidates: vec![
                 crate::application::services::turn_interpretation::ReferenceCandidate {
                     kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
-                        key: "weather_city".into(),
+                        key: "workspace_anchor".into(),
                     },
-                    value: "Tokyo".into(),
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 crate::application::services::turn_interpretation::ReferenceCandidate {
                     kind: crate::application::services::turn_interpretation::ReferenceCandidateKind::Profile {
-                        key: "local_timezone".into(),
+                        key: "project_alias".into(),
                     },
-                    value: "Asia/Tokyo".into(),
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
             ],

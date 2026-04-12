@@ -299,8 +299,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
     vec![
         SelfLearningEvalScenario {
             id: "profile_only_update_stays_profile_only",
-            user_message: "Remember my timezone",
-            assistant_response: "Saved your timezone.",
+            user_message: "Remember my project alias",
+            assistant_response: "Saved your project alias.",
             current_profile: None,
             existing_precedents: Vec::new(),
             existing_failure_patterns: Vec::new(),
@@ -309,9 +309,9 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             tool_facts: vec![TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    key: "local_timezone".into(),
+                    key: "project_alias".into(),
                     operation: ProfileOperation::Set,
-                    value: Some("Europe/Berlin".into()),
+                    value: Some("Borealis".into()),
                 }),
             }],
         },
@@ -355,12 +355,12 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             ],
         },
         SelfLearningEvalScenario {
-            id: "deployment_environment_merges_with_existing_profile",
+            id: "release_tracks_merge_with_existing_profile",
             user_message: "Remember staging too",
             assistant_response: "Saved staging.",
             current_profile: Some({
                 let mut profile = UserProfile::default();
-                profile.set("deployment_environments", serde_json::json!("prod"));
+                profile.set("release_tracks", serde_json::json!("prod"));
                 profile
             }),
             existing_precedents: Vec::new(),
@@ -370,7 +370,7 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
             tool_facts: vec![TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    key: "deployment_environments".into(),
+                    key: "release_tracks".into(),
                     operation: ProfileOperation::Set,
                     value: Some("staging".into()),
                 }),
@@ -378,8 +378,8 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
         },
         SelfLearningEvalScenario {
             id: "conflicting_profile_updates_are_rejected",
-            user_message: "Remember both of these timezones",
-            assistant_response: "I captured conflicting timezone updates.",
+            user_message: "Remember both of these project aliases",
+            assistant_response: "I captured conflicting project alias updates.",
             current_profile: None,
             existing_precedents: Vec::new(),
             existing_failure_patterns: Vec::new(),
@@ -389,17 +389,17 @@ pub fn default_golden_scenarios() -> Vec<SelfLearningEvalScenario> {
                 TypedToolFact {
                     tool_id: "user_profile".into(),
                     payload: ToolFactPayload::UserProfile(UserProfileFact {
-                        key: "local_timezone".into(),
+                        key: "project_alias".into(),
                         operation: ProfileOperation::Set,
-                        value: Some("Europe/Berlin".into()),
+                        value: Some("Borealis".into()),
                     }),
                 },
                 TypedToolFact {
                     tool_id: "user_profile".into(),
                     payload: ToolFactPayload::UserProfile(UserProfileFact {
-                        key: "local_timezone".into(),
+                        key: "project_alias".into(),
                         operation: ProfileOperation::Set,
-                        value: Some("Europe/Paris".into()),
+                        value: Some("Atlas".into()),
                     }),
                 },
             ],
@@ -1437,13 +1437,13 @@ mod tests {
                 )
         }));
         assert!(matches!(
-            result.profile_patch.facts.get("local_timezone"),
+            result.profile_patch.facts.get("project_alias"),
             Some(user_profile_service::ProfileFactPatch::Set(_))
         ));
         assert!(result
             .profile_projection
             .as_deref()
-            .is_some_and(|projection| projection.contains("timezone: Europe/Berlin")));
+            .is_some_and(|projection| projection.contains("project_alias: Borealis")));
     }
 
     #[test]
@@ -1464,15 +1464,15 @@ mod tests {
     }
 
     #[test]
-    fn profile_patch_sets_deployment_environments_fact() {
+    fn profile_patch_sets_release_tracks_fact() {
         let scenario = default_golden_scenarios()
             .into_iter()
-            .find(|scenario| scenario.id == "deployment_environment_merges_with_existing_profile")
+            .find(|scenario| scenario.id == "release_tracks_merge_with_existing_profile")
             .unwrap();
 
         let result = evaluate_scenario(&scenario);
         let projection = result.profile_projection.unwrap();
-        assert!(projection.contains("deployment_environments: staging"));
+        assert!(projection.contains("release_tracks: staging"));
     }
 
     #[test]

@@ -177,9 +177,9 @@ mod tests {
         let assessments = assess_learning_candidates(
             &[LearningCandidate::UserProfile(
                 UserProfileLearningCandidate {
-                    key: "local_timezone".into(),
+                    key: "project_alias".into(),
                     operation: ProfileOperation::Set,
-                    value: Some("Europe/Berlin".into()),
+                    value: Some("Borealis".into()),
                 },
             )],
             &LearningEvidenceEnvelope::default(),

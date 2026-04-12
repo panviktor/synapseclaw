@@ -1012,8 +1012,8 @@ mod tests {
     async fn builds_profile_and_followup_candidates_without_phrase_router() {
         let memory = StubMemory;
         let mut profile = UserProfile::default();
-        profile.set("language_preference", serde_json::json!("ru"));
-        profile.set("weather_city", serde_json::json!("Berlin"));
+        profile.set("response_locale", serde_json::json!("ru"));
+        profile.set("workspace_anchor", serde_json::json!("Borealis"));
         let state = DialogueState {
             comparison_set: vec![
                 crate::domain::dialogue_state::FocusEntity {
@@ -1052,8 +1052,8 @@ mod tests {
     async fn formats_profile_and_structured_interpretation() {
         let memory = StubMemory;
         let mut profile = UserProfile::default();
-        profile.set("language_preference", serde_json::json!("ru"));
-        profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+        profile.set("response_locale", serde_json::json!("ru"));
+        profile.set("project_alias", serde_json::json!("Borealis"));
         let state = DialogueState {
             focus_entities: vec![crate::domain::dialogue_state::FocusEntity {
                 kind: "city".into(),
@@ -1084,7 +1084,7 @@ mod tests {
         let block = format_turn_interpretation(&interpretation).unwrap();
 
         assert!(block.contains("[runtime-interpretation]"));
-        assert!(block.contains("language_preference: ru"));
+        assert!(block.contains("response_locale: ru"));
         assert!(block.contains("adapter: matrix"));
         assert!(block.contains("focus_entities: city=Berlin"));
         assert!(block.contains("last_tool_subjects: weather_lookup"));
@@ -1327,11 +1327,11 @@ mod tests {
         let interpretation = TurnInterpretation {
             user_profile: Some({
                 let mut profile = UserProfile::default();
-                profile.set("language_preference", serde_json::json!("ru"));
-                profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
-                profile.set("weather_city", serde_json::json!("Berlin"));
-                profile.set("response_style", serde_json::json!("direct"));
-                profile.set("deployment_environments", serde_json::json!(["linux"]));
+                profile.set("response_locale", serde_json::json!("ru"));
+                profile.set("project_alias", serde_json::json!("Borealis"));
+                profile.set("workspace_anchor", serde_json::json!("Borealis"));
+                profile.set("tone_hint", serde_json::json!("direct"));
+                profile.set("release_tracks", serde_json::json!(["linux"]));
                 profile.set(
                     DELIVERY_TARGET_PREFERENCE_KEY,
                     serde_json::json!(ConversationDeliveryTarget::CurrentConversation),
@@ -1371,13 +1371,13 @@ mod tests {
 
         assert!(block.contains("[runtime-interpretation]"));
         assert!(block.contains("[user-profile]"));
-        assert!(block.contains("language_preference: ru"));
-        assert!(!block.contains("response_style"));
+        assert!(block.contains("response_locale: ru"));
+        assert!(!block.contains("tone_hint"));
         assert!(!block.contains("[current-conversation]"));
         assert!(!block.contains("[configured-runtime]"));
         assert!(!block.contains("[working-state]"));
         assert!(!block.contains("[bounded-interpretation]"));
-        assert!(block.contains("local_timezone: Europe/Berlin"));
-        assert!(!block.contains("weather_city"));
+        assert!(block.contains("project_alias: Borealis"));
+        assert!(!block.contains("workspace_anchor"));
     }
 }

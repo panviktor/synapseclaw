@@ -398,8 +398,8 @@ mod tests {
         let interpretation = TurnInterpretation {
             user_profile: Some({
                 let mut profile = UserProfile::default();
-                profile.set("weather_city", serde_json::json!("Berlin"));
-                profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+                profile.set("workspace_anchor", serde_json::json!("Borealis"));
+                profile.set("project_alias", serde_json::json!("Borealis"));
                 profile
             }),
             ..Default::default()
@@ -430,14 +430,14 @@ mod tests {
         );
         assert!(packet
             .current_defaults
-            .contains(&"weather_city=Berlin".into()));
+            .contains(&"workspace_anchor=Borealis".into()));
         assert!(packet
             .anchors
             .iter()
             .any(|anchor| anchor.contains("freedom and responsibility")));
         assert!(packet.assumptions.iter().any(|assumption| assumption.kind
             == runtime_assumptions::RuntimeAssumptionKind::ProfileFact
-            && assumption.value == "weather_city=Berlin"));
+            && assumption.value == "workspace_anchor=Borealis"));
     }
 
     #[test]
@@ -448,7 +448,7 @@ mod tests {
                 AdmissionRepairHint::SwitchToLane(CapabilityLane::ImageGeneration),
             )),
             active_task: Some("Generate an asset with a capable route".into()),
-            current_defaults: vec!["local_timezone=Europe/Berlin".into()],
+            current_defaults: vec!["project_alias=Borealis".into()],
             anchors: vec!["memory=Use structured markers for media routing".into()],
             unresolved_questions: vec!["which target lane".into()],
             assumptions: vec![runtime_assumptions::RuntimeAssumption {
@@ -456,7 +456,7 @@ mod tests {
                 source: runtime_assumptions::RuntimeAssumptionSource::UserProfile,
                 freshness: runtime_assumptions::RuntimeAssumptionFreshness::SessionRecent,
                 confidence_basis_points: 8_500,
-                value: "local_timezone=Europe/Berlin".into(),
+                value: "project_alias=Borealis".into(),
                 invalidation: runtime_assumptions::RuntimeAssumptionInvalidation::ProfileUpdate,
                 replacement_path:
                     runtime_assumptions::RuntimeAssumptionReplacementPath::UpdateProfile,
@@ -469,7 +469,7 @@ mod tests {
         assert!(formatted.contains("recommended_action: switch_lane:image_generation"));
         assert!(formatted.contains("assumptions:"));
         assert!(formatted.contains("kind=profile_fact"));
-        assert!(formatted.contains("value=local_timezone=Europe/Berlin"));
+        assert!(formatted.contains("value=project_alias=Borealis"));
         assert!(formatted.contains("[/session-handoff]"));
     }
 
@@ -478,7 +478,7 @@ mod tests {
         let value = serde_json::json!({
             "reason": "context_overflow",
             "active_task": "x".repeat(400),
-            "current_defaults": ["local_timezone=Europe/Berlin", "local_timezone=Europe/Berlin"],
+            "current_defaults": ["project_alias=Borealis", "project_alias=Borealis"],
             "anchors": ["a", "b", "c", "d", "e"],
             "unresolved_questions": ["q1", "q2", "q3", "q4"]
         });
@@ -489,10 +489,7 @@ mod tests {
 
         assert_eq!(packet.reason, SessionHandoffReason::ContextOverflow);
         assert!(packet.active_task.unwrap().chars().count() <= MAX_TASK_CHARS + 3);
-        assert_eq!(
-            packet.current_defaults,
-            vec!["local_timezone=Europe/Berlin"]
-        );
+        assert_eq!(packet.current_defaults, vec!["project_alias=Borealis"]);
         assert_eq!(packet.anchors.len(), MAX_ANCHORS);
         assert_eq!(packet.unresolved_questions.len(), MAX_UNRESOLVED);
     }

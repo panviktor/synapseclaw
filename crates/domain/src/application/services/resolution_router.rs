@@ -488,7 +488,7 @@ mod tests {
     fn ranks_sources_from_typed_evidence_without_fixed_order_branches() {
         let interpretation = TurnInterpretation {
             user_profile: Some(profile_with_facts(&[(
-                "language_preference",
+                "response_locale",
                 serde_json::json!("ru"),
             )])),
             current_conversation: Some(CurrentConversationSnapshot {
@@ -635,8 +635,8 @@ mod tests {
     fn current_conversation_outranks_profile_when_both_are_present() {
         let interpretation = TurnInterpretation {
             user_profile: Some(profile_with_facts(&[(
-                "weather_city",
-                serde_json::json!("Berlin"),
+                "workspace_anchor",
+                serde_json::json!("Borealis"),
             )])),
             current_conversation: Some(CurrentConversationSnapshot {
                 adapter: "matrix".into(),
@@ -645,9 +645,9 @@ mod tests {
             reference_candidates: vec![
                 ReferenceCandidate {
                     kind: ReferenceCandidateKind::Profile {
-                        key: "weather_city".into(),
+                        key: "workspace_anchor".into(),
                     },
-                    value: "Berlin".into(),
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 ReferenceCandidate {
@@ -674,8 +674,8 @@ mod tests {
     fn direct_dialogue_state_outranks_profile_facts() {
         let interpretation = TurnInterpretation {
             user_profile: Some(profile_with_facts(&[(
-                "weather_city",
-                serde_json::json!("Berlin"),
+                "workspace_anchor",
+                serde_json::json!("Borealis"),
             )])),
             dialogue_state: Some(DialogueStateSnapshot {
                 focus_entities: vec![],
@@ -698,9 +698,9 @@ mod tests {
             reference_candidates: vec![
                 ReferenceCandidate {
                     kind: ReferenceCandidateKind::Profile {
-                        key: "weather_city".into(),
+                        key: "workspace_anchor".into(),
                     },
-                    value: "Berlin".into(),
+                    value: "Borealis".into(),
                     source: ReferenceSource::UserProfile,
                 },
                 ReferenceCandidate {

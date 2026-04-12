@@ -608,8 +608,8 @@ mod tests {
         let interpretation = TurnInterpretation {
             user_profile: Some({
                 let mut profile = UserProfile::default();
-                profile.set("weather_city", serde_json::json!("Berlin"));
-                profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+                profile.set("workspace_anchor", serde_json::json!("Borealis"));
+                profile.set("project_alias", serde_json::json!("Borealis"));
                 profile
             }),
             current_conversation: Some(CurrentConversationSnapshot {
@@ -651,7 +651,7 @@ mod tests {
             source: RuntimeAssumptionSource::UserProfile,
             freshness: RuntimeAssumptionFreshness::SessionRecent,
             confidence_basis_points: 8_500,
-            value: "local_timezone=Europe/Berlin".into(),
+            value: "project_alias=Borealis".into(),
             invalidation: RuntimeAssumptionInvalidation::ProfileUpdate,
             replacement_path: RuntimeAssumptionReplacementPath::UpdateProfile,
         };

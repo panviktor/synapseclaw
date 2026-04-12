@@ -131,9 +131,9 @@ mod tests {
         let strengthened = strengthen_learning_assessments(
             &[LearningCandidateAssessment {
                 candidate: LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                    key: "local_timezone".into(),
+                    key: "project_alias".into(),
                     operation: ProfileOperation::Set,
-                    value: Some("Europe/Berlin".into()),
+                    value: Some("Borealis".into()),
                 }),
                 confidence: 0.96,
                 accepted: true,
@@ -141,7 +141,7 @@ mod tests {
                 reason: "explicit_profile_fact",
             }],
             Some(&UserProfile {
-                facts: [("local_timezone".into(), json!("Europe/Berlin"))].into(),
+                facts: [("project_alias".into(), json!("Borealis"))].into(),
             }),
             &[],
         );
@@ -155,9 +155,9 @@ mod tests {
         let strengthened = strengthen_learning_assessments(
             &[LearningCandidateAssessment {
                 candidate: LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                    key: "local_timezone".into(),
+                    key: "project_alias".into(),
                     operation: ProfileOperation::Set,
-                    value: Some("Europe/Paris".into()),
+                    value: Some("Atlas".into()),
                 }),
                 confidence: 0.96,
                 accepted: true,
@@ -165,7 +165,7 @@ mod tests {
                 reason: "explicit_profile_fact",
             }],
             Some(&UserProfile {
-                facts: [("local_timezone".into(), json!("Europe/Berlin"))].into(),
+                facts: [("project_alias".into(), json!("Borealis"))].into(),
             }),
             &[],
         );
@@ -211,7 +211,7 @@ mod tests {
         let strengthened = strengthen_learning_assessments(
             &[LearningCandidateAssessment {
                 candidate: LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                    key: "deployment_environments".into(),
+                    key: "release_tracks".into(),
                     operation: ProfileOperation::Set,
                     value: Some("staging".into()),
                 }),
@@ -221,7 +221,7 @@ mod tests {
                 reason: "explicit_profile_fact",
             }],
             Some(&UserProfile {
-                facts: [("deployment_environments".into(), json!("prod"))].into(),
+                facts: [("release_tracks".into(), json!("prod"))].into(),
             }),
             &[],
         );

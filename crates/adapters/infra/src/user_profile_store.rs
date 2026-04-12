@@ -100,7 +100,7 @@ mod tests {
         store
             .upsert("matrix:alice", {
                 let mut profile = UserProfile::default();
-                profile.set("local_timezone", json!("Europe/Berlin"));
+                profile.set("project_alias", json!("Borealis"));
                 profile
             })
             .unwrap();
@@ -109,8 +109,8 @@ mod tests {
         assert_eq!(
             reopened
                 .load("matrix:alice")
-                .and_then(|profile| profile.get_text("local_timezone")),
-            Some("Europe/Berlin".into())
+                .and_then(|profile| profile.get_text("project_alias")),
+            Some("Borealis".into())
         );
     }
 }

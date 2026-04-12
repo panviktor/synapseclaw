@@ -98,16 +98,8 @@ mod tests {
     #[test]
     fn rejects_conflicting_scalar_profile_updates() {
         let resolved = resolve_learning_conflicts(&[
-            assessment(
-                "local_timezone",
-                ProfileOperation::Set,
-                Some("Europe/Berlin"),
-            ),
-            assessment(
-                "local_timezone",
-                ProfileOperation::Set,
-                Some("Europe/Paris"),
-            ),
+            assessment("project_alias", ProfileOperation::Set, Some("Borealis")),
+            assessment("project_alias", ProfileOperation::Set, Some("Atlas")),
         ]);
 
         assert!(resolved.iter().all(|assessment| !assessment.accepted));
@@ -119,16 +111,8 @@ mod tests {
     #[test]
     fn keeps_reinforcing_identical_profile_updates() {
         let resolved = resolve_learning_conflicts(&[
-            assessment(
-                "deployment_environments",
-                ProfileOperation::Set,
-                Some("prod"),
-            ),
-            assessment(
-                "deployment_environments",
-                ProfileOperation::Set,
-                Some("prod"),
-            ),
+            assessment("release_tracks", ProfileOperation::Set, Some("prod")),
+            assessment("release_tracks", ProfileOperation::Set, Some("prod")),
         ]);
 
         assert!(resolved.iter().all(|assessment| assessment.accepted));
@@ -137,12 +121,8 @@ mod tests {
     #[test]
     fn rejects_profile_clear_plus_set() {
         let resolved = resolve_learning_conflicts(&[
-            assessment("deployment_environments", ProfileOperation::Clear, None),
-            assessment(
-                "deployment_environments",
-                ProfileOperation::Set,
-                Some("prod"),
-            ),
+            assessment("release_tracks", ProfileOperation::Clear, None),
+            assessment("release_tracks", ProfileOperation::Set, Some("prod")),
         ]);
 
         assert!(resolved.iter().all(|assessment| !assessment.accepted));

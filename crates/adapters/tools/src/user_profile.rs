@@ -366,8 +366,8 @@ mod tests {
             .execute(json!({
                 "action": "upsert",
                 "facts": {
-                    "language_preference": "ru",
-                    "weather_city": "Berlin"
+                    "response_locale": "ru",
+                    "workspace_anchor": "Borealis"
                 }
             }))
             .await
@@ -375,11 +375,11 @@ mod tests {
 
         assert!(result.success);
         let profile = store.load("web:abc").unwrap();
+        assert_eq!(profile.get_text("response_locale").as_deref(), Some("ru"));
         assert_eq!(
-            profile.get_text("language_preference").as_deref(),
-            Some("ru")
+            profile.get_text("workspace_anchor").as_deref(),
+            Some("Borealis")
         );
-        assert_eq!(profile.get_text("weather_city").as_deref(), Some("Berlin"));
     }
 
     #[tokio::test]

@@ -169,9 +169,9 @@ mod tests {
             TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    key: "local_timezone".into(),
+                    key: "project_alias".into(),
                     operation: ProfileOperation::Set,
-                    value: Some("Europe/Berlin".into()),
+                    value: Some("Borealis".into()),
                 }),
             },
             TypedToolFact::outcome("message_send", OutcomeStatus::ReportedFailure, Some(125)),

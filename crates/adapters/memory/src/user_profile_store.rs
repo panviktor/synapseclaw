@@ -190,11 +190,14 @@ mod tests {
 
         let store = SurrealUserProfileStore::new(Arc::new(db));
         let mut profile = UserProfile::default();
-        profile.set("weather_city", serde_json::json!("Berlin"));
+        profile.set("workspace_anchor", serde_json::json!("Borealis"));
         store.upsert("web:abc", profile).unwrap();
 
         let loaded = store.load("web:abc").unwrap();
-        assert_eq!(loaded.get_text("weather_city").as_deref(), Some("Berlin"));
+        assert_eq!(
+            loaded.get_text("workspace_anchor").as_deref(),
+            Some("Borealis")
+        );
         assert_eq!(store.list().len(), 1);
         assert!(store.remove("web:abc").unwrap());
         assert!(store.load("web:abc").is_none());

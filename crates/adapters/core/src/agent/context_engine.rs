@@ -1016,7 +1016,7 @@ mod tests {
             concat!(
                 "[runtime-interpretation]\n",
                 "[user-profile]\n",
-                "- language_preference: ru\n\n",
+                "- response_locale: ru\n\n",
                 "[working-state]\n",
                 "{}\n\n",
                 "[bounded-interpretation]\n",
@@ -1054,7 +1054,7 @@ mod tests {
             concat!(
                 "[runtime-interpretation]\n",
                 "[user-profile]\n",
-                "- language_preference: ru\n\n",
+                "- response_locale: ru\n\n",
                 "[working-state]\n",
                 "{}\n\n",
                 "[bounded-interpretation]\n",

@@ -103,11 +103,11 @@ pub async fn evaluate_scenario(
 pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
     vec![
         EverydayEvalScenario {
-            id: "weather_uses_profile_city",
-            user_message: "What's the weather?",
+            id: "uses_dynamic_profile_anchor",
+            user_message: "Use my saved workspace anchor.",
             profile: Some({
                 let mut profile = UserProfile::default();
-                profile.set("weather_city", serde_json::json!("Berlin"));
+                profile.set("workspace_anchor", serde_json::json!("Borealis"));
                 profile
             }),
             current_conversation: None,
@@ -123,11 +123,11 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
             entity_hits: 0,
         },
         EverydayEvalScenario {
-            id: "translate_uses_language_preference",
-            user_message: "Translate it to my language",
+            id: "uses_dynamic_response_locale",
+            user_message: "Apply my saved response locale.",
             profile: Some({
                 let mut profile = UserProfile::default();
-                profile.set("language_preference", serde_json::json!("ru"));
+                profile.set("response_locale", serde_json::json!("ru"));
                 profile
             }),
             current_conversation: None,
@@ -143,11 +143,11 @@ pub fn default_golden_scenarios() -> Vec<EverydayEvalScenario> {
             entity_hits: 1,
         },
         EverydayEvalScenario {
-            id: "reminder_uses_timezone",
-            user_message: "Remind me tomorrow",
+            id: "reminder_uses_dynamic_profile_default",
+            user_message: "Use my saved reminder context",
             profile: Some({
                 let mut profile = UserProfile::default();
-                profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+                profile.set("project_alias", serde_json::json!("Borealis"));
                 profile
             }),
             current_conversation: None,
@@ -743,11 +743,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn weather_city_scenario_prefers_profile_without_generic_clarify() {
+    async fn dynamic_profile_anchor_scenario_prefers_profile_without_generic_clarify() {
         let memory = StubMemory;
         let scenario = default_golden_scenarios()
             .into_iter()
-            .find(|scenario| scenario.id == "weather_uses_profile_city")
+            .find(|scenario| scenario.id == "uses_dynamic_profile_anchor")
             .unwrap();
 
         let result = evaluate_scenario(&memory, &scenario).await;
@@ -920,11 +920,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn translate_scenario_uses_language_default() {
+    async fn response_locale_scenario_uses_dynamic_profile_default() {
         let memory = StubMemory;
         let scenario = default_golden_scenarios()
             .into_iter()
-            .find(|scenario| scenario.id == "translate_uses_language_preference")
+            .find(|scenario| scenario.id == "uses_dynamic_response_locale")
             .unwrap();
 
         let result = evaluate_scenario(&memory, &scenario).await;

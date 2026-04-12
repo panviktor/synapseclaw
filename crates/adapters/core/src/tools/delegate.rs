@@ -800,7 +800,7 @@ mod tests {
             reason: synapse_domain::application::services::session_handoff::SessionHandoffReason::ContextOverflow,
             recommended_action: Some("start_fresh_handoff".into()),
             active_task: Some("continue after downgrade".into()),
-            current_defaults: vec!["local_timezone=Europe/Berlin".into()],
+            current_defaults: vec!["project_alias=Borealis".into()],
             anchors: vec!["memory=early anchor".into()],
             unresolved_questions: Vec::new(),
             assumptions: Vec::new(),

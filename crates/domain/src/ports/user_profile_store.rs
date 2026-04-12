@@ -66,15 +66,15 @@ mod tests {
         store
             .upsert("matrix:alice", {
                 let mut profile = UserProfile::default();
-                profile.set("local_timezone", json!("Europe/Berlin"));
+                profile.set("project_alias", json!("Borealis"));
                 profile
             })
             .unwrap();
         assert_eq!(
             store
                 .load("matrix:alice")
-                .and_then(|p| p.get_text("local_timezone")),
-            Some("Europe/Berlin".into())
+                .and_then(|p| p.get_text("project_alias")),
+            Some("Borealis".into())
         );
     }
 

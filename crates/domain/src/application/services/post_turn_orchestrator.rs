@@ -1078,15 +1078,15 @@ mod tests {
             &memory,
             PostTurnInput {
                 agent_id: "agent".into(),
-                user_message: "Remember my timezone".into(),
-                assistant_response: "Saved your timezone.".into(),
+                user_message: "Remember my project alias".into(),
+                assistant_response: "Saved your project alias.".into(),
                 tools_used: vec!["user_profile".into()],
                 tool_facts: vec![TypedToolFact {
                     tool_id: "user_profile".into(),
                     payload: ToolFactPayload::UserProfile(UserProfileFact {
-                        key: "local_timezone".into(),
+                        key: "project_alias".into(),
                         operation: ProfileOperation::Set,
-                        value: Some("Europe/Berlin".into()),
+                        value: Some("Borealis".into()),
                     }),
                 }],
                 run_recipe_store: None,
@@ -1102,8 +1102,8 @@ mod tests {
         assert_eq!(
             store
                 .load("web:test")
-                .and_then(|profile| profile.get_text("local_timezone")),
-            Some("Europe/Berlin".into())
+                .and_then(|profile| profile.get_text("project_alias")),
+            Some("Borealis".into())
         );
     }
 
@@ -1114,7 +1114,7 @@ mod tests {
         store
             .upsert("web:test", {
                 let mut profile = UserProfile::default();
-                profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+                profile.set("project_alias", serde_json::json!("Borealis"));
                 profile
             })
             .unwrap();
@@ -1123,15 +1123,15 @@ mod tests {
             &memory,
             PostTurnInput {
                 agent_id: "agent".into(),
-                user_message: "Remember my timezone".into(),
-                assistant_response: "Saved your timezone.".into(),
+                user_message: "Remember my project alias".into(),
+                assistant_response: "Saved your project alias.".into(),
                 tools_used: vec!["user_profile".into()],
                 tool_facts: vec![TypedToolFact {
                     tool_id: "user_profile".into(),
                     payload: ToolFactPayload::UserProfile(UserProfileFact {
-                        key: "local_timezone".into(),
+                        key: "project_alias".into(),
                         operation: ProfileOperation::Set,
-                        value: Some("Europe/Berlin".into()),
+                        value: Some("Borealis".into()),
                     }),
                 }],
                 run_recipe_store: None,
@@ -1155,24 +1155,24 @@ mod tests {
             &memory,
             PostTurnInput {
                 agent_id: "agent".into(),
-                user_message: "Remember both timezone options".into(),
-                assistant_response: "Captured conflicting timezone facts.".into(),
+                user_message: "Remember both project aliases".into(),
+                assistant_response: "Captured conflicting project aliases.".into(),
                 tools_used: vec!["user_profile".into()],
                 tool_facts: vec![
                     TypedToolFact {
                         tool_id: "user_profile".into(),
                         payload: ToolFactPayload::UserProfile(UserProfileFact {
-                            key: "local_timezone".into(),
+                            key: "project_alias".into(),
                             operation: ProfileOperation::Set,
-                            value: Some("Europe/Berlin".into()),
+                            value: Some("Borealis".into()),
                         }),
                     },
                     TypedToolFact {
                         tool_id: "user_profile".into(),
                         payload: ToolFactPayload::UserProfile(UserProfileFact {
-                            key: "local_timezone".into(),
+                            key: "project_alias".into(),
                             operation: ProfileOperation::Set,
-                            value: Some("Europe/Paris".into()),
+                            value: Some("Atlas".into()),
                         }),
                     },
                 ],

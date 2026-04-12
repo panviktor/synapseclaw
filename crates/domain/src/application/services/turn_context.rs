@@ -1621,21 +1621,21 @@ mod tests {
     async fn build_query_text_includes_typed_dialogue_state() {
         let state = DialogueState {
             focus_entities: vec![crate::domain::dialogue_state::FocusEntity {
-                kind: "city".into(),
-                name: "Berlin".into(),
+                kind: "project".into(),
+                name: "Borealis".into(),
                 metadata: None,
             }],
-            last_tool_subjects: vec!["weather_lookup".into()],
+            last_tool_subjects: vec!["workspace_lookup".into()],
             ..Default::default()
         };
         let interpretation =
             crate::application::services::turn_interpretation::build_turn_interpretation(
                 None,
-                "what's the weather?",
+                "what is the current workspace anchor?",
                 Some({
                     let mut profile = crate::domain::user_profile::UserProfile::default();
-                    profile.set("weather_city", serde_json::json!("Berlin"));
-                    profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
+                    profile.set("workspace_anchor", serde_json::json!("Borealis"));
+                    profile.set("project_alias", serde_json::json!("Borealis"));
                     profile
                 }),
                 None,
@@ -1644,11 +1644,14 @@ mod tests {
             )
             .await
             .unwrap();
-        let query = build_query_text("what's the weather?", Some(&interpretation));
-        assert!(query.contains("what's the weather?"));
-        assert!(query.contains("Profile fact weather_city: Berlin"));
-        assert!(query.contains("Focus: Berlin"));
-        assert!(query.contains("Recent tools: weather_lookup"));
+        let query = build_query_text(
+            "what is the current workspace anchor?",
+            Some(&interpretation),
+        );
+        assert!(query.contains("what is the current workspace anchor?"));
+        assert!(query.contains("Profile fact workspace_anchor: Borealis"));
+        assert!(query.contains("Focus: Borealis"));
+        assert!(query.contains("Recent tools: workspace_lookup"));
     }
 
     #[test]
@@ -1713,7 +1716,7 @@ mod tests {
             crate::application::services::turn_interpretation::TurnInterpretation {
                 user_profile: Some({
                     let mut profile = crate::domain::user_profile::UserProfile::default();
-                    profile.set("weather_city", serde_json::json!("Berlin"));
+                    profile.set("workspace_anchor", serde_json::json!("Borealis"));
                     profile
                 }),
                 dialogue_state: Some(
@@ -1807,8 +1810,8 @@ mod tests {
             crate::application::services::turn_interpretation::TurnInterpretation {
                 user_profile: Some({
                     let mut profile = crate::domain::user_profile::UserProfile::default();
-                    profile.set("weather_city", serde_json::json!("Tokyo"));
-                    profile.set("local_timezone", serde_json::json!("Asia/Tokyo"));
+                    profile.set("workspace_anchor", serde_json::json!("Borealis"));
+                    profile.set("project_alias", serde_json::json!("Borealis"));
                     profile
                 }),
                 clarification_candidates: vec![],
@@ -2467,7 +2470,7 @@ mod tests {
                 reason: session_handoff::SessionHandoffReason::ContextOverflow,
                 recommended_action: Some("start_fresh_handoff".into()),
                 active_task: Some("continue after route downgrade".into()),
-                current_defaults: vec!["local_timezone=Europe/Berlin".into()],
+                current_defaults: vec!["project_alias=Borealis".into()],
                 anchors: vec!["memory=early anchor".into()],
                 unresolved_questions: Vec::new(),
                 assumptions: Vec::new(),

@@ -445,9 +445,9 @@ mod tests {
             TypedToolFact {
                 tool_id: "user_profile".into(),
                 payload: ToolFactPayload::UserProfile(UserProfileFact {
-                    key: "local_timezone".into(),
+                    key: "project_alias".into(),
                     operation: ProfileOperation::Set,
-                    value: Some("Europe/Berlin".into()),
+                    value: Some("Borealis".into()),
                 }),
             },
             TypedToolFact {
@@ -475,7 +475,7 @@ mod tests {
         ];
         let evidence = build_learning_evidence(&tool_facts);
         let candidates = build_learning_candidates(
-            "send it there and remember my timezone",
+            "send it there and remember my project alias",
             "Sent successfully.",
             &tool_facts,
             &evidence,
@@ -487,7 +487,7 @@ mod tests {
                 key,
                 operation: ProfileOperation::Set,
                 value,
-            }) if key == "local_timezone" && value.as_deref() == Some("Europe/Berlin")
+            }) if key == "project_alias" && value.as_deref() == Some("Borealis")
         )));
         assert!(candidates
             .iter()
@@ -546,9 +546,9 @@ mod tests {
                 subjects: vec!["Berlin".into()],
             }),
             LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                key: "local_timezone".into(),
+                key: "project_alias".into(),
                 operation: ProfileOperation::Set,
-                value: Some("Europe/Berlin".into()),
+                value: Some("Borealis".into()),
             }),
         ];
 
@@ -620,27 +620,27 @@ mod tests {
     fn builds_safe_user_profile_patch_from_candidates() {
         let candidates = vec![
             LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                key: "local_timezone".into(),
+                key: "project_alias".into(),
                 operation: ProfileOperation::Set,
-                value: Some("Europe/Berlin".into()),
+                value: Some("Borealis".into()),
             }),
             LearningCandidate::UserProfile(UserProfileLearningCandidate {
-                key: "weather_city".into(),
+                key: "workspace_anchor".into(),
                 operation: ProfileOperation::Set,
-                value: Some("Berlin".into()),
+                value: Some("Borealis".into()),
             }),
         ];
 
         let patch = build_user_profile_patch(&candidates, None);
         assert!(matches!(
-            patch.facts.get("local_timezone"),
+            patch.facts.get("project_alias"),
             Some(crate::application::services::user_profile_service::ProfileFactPatch::Set(value))
-                if value == &serde_json::json!("Europe/Berlin")
+                if value == &serde_json::json!("Borealis")
         ));
         assert!(matches!(
-            patch.facts.get("weather_city"),
+            patch.facts.get("workspace_anchor"),
             Some(crate::application::services::user_profile_service::ProfileFactPatch::Set(value))
-                if value == &serde_json::json!("Berlin")
+                if value == &serde_json::json!("Borealis")
         ));
     }
 
@@ -649,15 +649,15 @@ mod tests {
         let tool_facts = vec![TypedToolFact {
             tool_id: "user_profile".into(),
             payload: ToolFactPayload::UserProfile(UserProfileFact {
-                key: "language_preference".into(),
+                key: "response_locale".into(),
                 operation: ProfileOperation::Set,
                 value: Some("ru".into()),
             }),
         }];
         let evidence = build_learning_evidence(&tool_facts);
         let candidates = build_learning_candidates(
-            "remember my language",
-            "Saved your language preference.",
+            "remember my response locale",
+            "Saved your response locale.",
             &tool_facts,
             &evidence,
         );
@@ -681,7 +681,7 @@ mod tests {
     fn profile_patch_sets_dynamic_fact() {
         let candidates = vec![LearningCandidate::UserProfile(
             UserProfileLearningCandidate {
-                key: "deployment_environments".into(),
+                key: "release_tracks".into(),
                 operation: ProfileOperation::Set,
                 value: Some("staging".into()),
             },
@@ -690,7 +690,7 @@ mod tests {
         let patch = build_user_profile_patch(&candidates, None);
 
         assert!(matches!(
-            patch.facts.get("deployment_environments"),
+            patch.facts.get("release_tracks"),
             Some(crate::application::services::user_profile_service::ProfileFactPatch::Set(value))
                 if value == &serde_json::json!("staging")
         ));

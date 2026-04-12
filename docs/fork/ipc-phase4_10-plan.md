@@ -34,7 +34,7 @@ That shows up in three different failure modes:
 
 3. **model-driven default resolution where deterministic runtime should win**
    examples:
-   - implicit weather/time city
+   - implicit profile-backed location/timezone hints
    - implicit delivery target for “send it there”
    - project/workspace context carry-over
 
@@ -329,7 +329,8 @@ The model should not “decide” defaults that the runtime already knows.
 
 Examples:
 
-- weather/time without explicit city -> dynamic profile fact such as `weather_city`
+- weather/time without explicit location -> arbitrary dynamic profile fact,
+  with the key treated as user data rather than a fixed runtime schema field
 - “send it there” -> dynamic `delivery_target_preference` fact or `recent_delivery_target`
 - “switch back there” -> dialogue-state workspace anchor
 
@@ -468,7 +469,7 @@ Move defaults out of prompt prose and into runtime routing.
 
 Scope:
 
-- weather/time city default
+- profile-backed location/timezone default
 - implicit delivery target
 - workspace/resource “there” resolution
 - stronger integration with `resolution_router`
@@ -993,6 +994,8 @@ Expected outcome:
     key constant and consumed by typed default/assumption/handoff logic
   - public `user_profile` tool schema examples no longer advertise weather/time
     facts as a built-in profile schema
+  - executable-code fixtures no longer use legacy city/locale profile keys;
+    profile tests use arbitrary dynamic facts
 
 ### Slice 3
 
@@ -2194,7 +2197,8 @@ Expected outcome:
 - `Atlas` / `Borealis` working-chain isolation
 - recency override (`hotfix-17` -> `hotfix-18`)
 - Matrix target resolution without workspace archaeology
-- weather/time using the correct user-profile weather-city fact
+- weather/time using the correct user-profile location/timezone fact without a
+  fixed key schema
 
 ### Language checks
 

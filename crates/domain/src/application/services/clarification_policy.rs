@@ -85,9 +85,9 @@ mod tests {
         let interpretation = TurnInterpretation {
             user_profile: Some({
                 let mut profile = UserProfile::default();
-                profile.set("language_preference", serde_json::json!("ru"));
-                profile.set("local_timezone", serde_json::json!("Europe/Berlin"));
-                profile.set("weather_city", serde_json::json!("Berlin"));
+                profile.set("response_locale", serde_json::json!("ru"));
+                profile.set("project_alias", serde_json::json!("Borealis"));
+                profile.set("workspace_anchor", serde_json::json!("Borealis"));
                 profile
             }),
             dialogue_state: Some(DialogueStateSnapshot {

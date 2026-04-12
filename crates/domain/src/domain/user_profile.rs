@@ -128,19 +128,22 @@ mod tests {
     #[test]
     fn populated_profile_is_not_empty() {
         let mut profile = UserProfile::default();
-        profile.set("language_preference", json!("ru"));
+        profile.set("response_locale", json!("ru"));
         assert!(!profile.is_empty());
     }
 
     #[test]
     fn facts_are_dynamic_and_normalized() {
         let mut profile = UserProfile::default();
-        profile.set("Weather City", json!(" Berlin "));
-        profile.set("deployment-environments", json!(["prod", "Prod", "", null]));
+        profile.set("Workspace Anchor", json!(" Borealis "));
+        profile.set("Release Tracks", json!(["prod", "Prod", "", null]));
 
-        assert_eq!(profile.get_text("weather_city").as_deref(), Some("Berlin"));
         assert_eq!(
-            profile.get_string_list("deployment_environments"),
+            profile.get_text("workspace_anchor").as_deref(),
+            Some("Borealis")
+        );
+        assert_eq!(
+            profile.get_string_list("release_tracks"),
             vec!["prod", "Prod"]
         );
     }

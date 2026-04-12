@@ -101,52 +101,49 @@ mod tests {
     #[test]
     fn patch_sets_and_clears_dynamic_facts() {
         let mut current = UserProfile::default();
-        current.set("language_preference", json!("en"));
-        current.set("local_timezone", json!("UTC"));
+        current.set("response_locale", json!("en"));
+        current.set("project_alias", json!("Atlas"));
 
         let mut patch = UserProfilePatch::default();
-        patch.set("language preference", json!(" ru "));
-        patch.clear("local_timezone");
-        patch.set("weather city", json!("Berlin"));
+        patch.set("response locale", json!(" ru "));
+        patch.clear("project_alias");
+        patch.set("workspace anchor", json!("Borealis"));
 
         let updated = apply_patch(Some(current), &patch).unwrap();
 
+        assert_eq!(updated.get_text("response_locale").as_deref(), Some("ru"));
+        assert!(updated.get("project_alias").is_none());
         assert_eq!(
-            updated.get_text("language_preference").as_deref(),
-            Some("ru")
+            updated.get_text("workspace_anchor").as_deref(),
+            Some("Borealis")
         );
-        assert!(updated.get("local_timezone").is_none());
-        assert_eq!(updated.get_text("weather_city").as_deref(), Some("Berlin"));
     }
 
     #[test]
     fn patch_normalizes_lists_and_drops_empty_profile() {
         let mut patch = UserProfilePatch::default();
-        patch.set(
-            "deployment_environments",
-            json!(["prod", "Prod", " staging ", ""]),
-        );
+        patch.set("release_tracks", json!(["prod", "Prod", " staging ", ""]));
 
         let updated = apply_patch(None, &patch).unwrap();
         assert_eq!(
-            updated.get_string_list("deployment_environments"),
+            updated.get_string_list("release_tracks"),
             vec!["prod", "Prod", "staging"]
         );
 
         let mut clear = UserProfilePatch::default();
-        clear.clear("deployment_environments");
+        clear.clear("release_tracks");
         assert!(apply_patch(Some(updated), &clear).is_none());
     }
 
     #[test]
     fn projection_formats_human_readable_block() {
         let mut profile = UserProfile::default();
-        profile.set("language_preference", json!("ru"));
-        profile.set("weather_city", json!("Berlin"));
+        profile.set("response_locale", json!("ru"));
+        profile.set("workspace_anchor", json!("Borealis"));
 
         let projection = format_profile_projection(&profile);
 
-        assert!(projection.contains("language_preference: ru"));
-        assert!(projection.contains("weather_city: Berlin"));
+        assert!(projection.contains("response_locale: ru"));
+        assert!(projection.contains("workspace_anchor: Borealis"));
     }
 }
