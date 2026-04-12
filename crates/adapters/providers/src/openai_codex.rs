@@ -2628,6 +2628,9 @@ data: [DONE]
             extra_headers: std::collections::HashMap::new(),
             api_path: None,
             prompt_caching: false,
+            azure_openai_resource: None,
+            azure_openai_deployment: None,
+            azure_openai_api_version: None,
         };
         let provider =
             OpenAiCodexProvider::new(&options, None).expect("provider should initialize");

@@ -701,6 +701,10 @@ Expected outcome:
       `embedding_profiles` instead of adapter-side model-family substring
       inference; unknown embedding models disable embeddings until a catalog
       profile is supplied, rather than receiving a silent generic profile
+    - Azure OpenAI resource/deployment/runtime API-version settings now flow
+      through shared provider runtime options from `model_providers` or env,
+      and the provider factory fails loud instead of inventing `my-resource`
+      or a stale model deployment default
   - Slice 13 initial pressure snapshot:
     - `ProviderContextBudgetInput` now tracks artifact-level breakdown for:
       - bootstrap

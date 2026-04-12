@@ -2330,18 +2330,7 @@ pub async fn start_channels(
     };
 
     let provider_name = resolved_default_provider(&config)?;
-    let provider_runtime_options = synapse_providers::ProviderRuntimeOptions {
-        auth_profile_override: None,
-        provider_api_url: config.api_url.clone(),
-        synapseclaw_dir: config.config_path.parent().map(std::path::PathBuf::from),
-        secrets_encrypt: config.secrets.encrypt,
-        reasoning_enabled: config.runtime.reasoning_enabled,
-        reasoning_effort: config.runtime.reasoning_effort.clone(),
-        provider_timeout_secs: Some(config.provider_timeout_secs),
-        extra_headers: config.extra_headers.clone(),
-        api_path: config.api_path.clone(),
-        prompt_caching: config.agent.prompt_caching,
-    };
+    let provider_runtime_options = synapse_providers::provider_runtime_options_from_config(&config);
     let provider: Arc<dyn Provider> = Arc::from(
         create_resilient_provider_nonblocking(
             &provider_name,
