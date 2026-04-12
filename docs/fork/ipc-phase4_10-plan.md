@@ -1947,12 +1947,16 @@ Expected outcome:
       epistemic metadata (`state/source/confidence`) for profile/configured/
       dialogue-derived defaults, so route switches do not carry those facts as
       undifferentiated strings
+    - execution-guidance repair hints now attach repair-trace epistemic metadata
+      (`state/source/confidence`) to recent tool-failure hints, so the model
+      sees whether a suggested repair is known, inferred, or needs verification
     - domain tests cover stale model-profile facts and low-confidence memory
       requiring verification, plus epistemic rerank and resolution-score
       adjustment
   - still open:
-    - self-repair does not yet consume epistemic state directly beyond the
-      runtime assumption ledger freshness/confidence fields
+    - self-repair still needs deeper policy integration with epistemic state;
+      current coverage is bounded to runtime assumptions and execution-guidance
+      repair hints
     - external recency-sensitive facts are not fully projected through the same
       epistemic surface yet
 - expected outcome:

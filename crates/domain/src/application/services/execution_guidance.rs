@@ -8,6 +8,10 @@ use crate::application::services::resolution_router::{ResolutionPlan, Resolution
 use crate::application::services::turn_interpretation::{
     ReferenceCandidateKind, ReferenceSource, TurnInterpretation,
 };
+use crate::application::services::{
+    epistemic_state,
+    epistemic_state::{EpistemicEntry, EpistemicSource, EpistemicState},
+};
 use crate::domain::tool_repair::{ToolFailureKind, ToolRepairAction, ToolRepairTrace};
 use crate::domain::turn_admission::{
     admission_repair_hint_label, candidate_admission_reason_label, AdmissionRepairHint,
@@ -363,12 +367,43 @@ fn bounded_admission_reasons(
 }
 
 fn format_failure_hint(hint: &ExecutionFailureHint) -> String {
+    let epistemic = epistemic_entry_for_failure_hint(hint);
     format!(
-        "{}:{}->{}",
+        "{}:{}->{} [{}]",
         hint.tool_name,
         failure_kind_name(hint.failure_kind),
-        repair_action_name(hint.suggested_action)
+        repair_action_name(hint.suggested_action),
+        epistemic_state::format_epistemic_entry(&epistemic)
     )
+}
+
+fn epistemic_entry_for_failure_hint(hint: &ExecutionFailureHint) -> EpistemicEntry {
+    let (state, confidence_basis_points) = match hint.failure_kind {
+        ToolFailureKind::UnknownTool | ToolFailureKind::DuplicateInvocation => {
+            (EpistemicState::Known, 9_000)
+        }
+        ToolFailureKind::Timeout | ToolFailureKind::RuntimeError => {
+            (EpistemicState::Inferred, 6_000)
+        }
+        ToolFailureKind::PolicyBlocked
+        | ToolFailureKind::AuthFailure
+        | ToolFailureKind::CapabilityMismatch
+        | ToolFailureKind::MissingResource
+        | ToolFailureKind::SchemaMismatch
+        | ToolFailureKind::ContextLimitExceeded
+        | ToolFailureKind::ReportedFailure => (EpistemicState::NeedsVerification, 7_000),
+    };
+
+    EpistemicEntry {
+        subject: format!(
+            "tool:{}:{}",
+            hint.tool_name,
+            failure_kind_name(hint.failure_kind)
+        ),
+        state,
+        source: EpistemicSource::RepairTrace,
+        confidence_basis_points,
+    }
 }
 
 fn failure_kind_name(kind: ToolFailureKind) -> &'static str {
@@ -666,7 +701,7 @@ mod tests {
 
         assert!(block.contains("avoid_immediate_retry_of_recent_failures: true"));
         assert!(block.contains(
-            "recent_failure_hints: message_send:schema_mismatch->adjust_arguments_or_target"
+            "recent_failure_hints: message_send:schema_mismatch->adjust_arguments_or_target [state=needs_verification source=repair_trace confidence=7000]"
         ));
     }
 

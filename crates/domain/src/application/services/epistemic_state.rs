@@ -31,6 +31,7 @@ pub enum EpistemicState {
 pub enum EpistemicSource {
     RuntimeAssumption,
     RuntimeDefault,
+    RepairTrace,
     ModelProfile,
     Memory,
 }
@@ -59,6 +60,7 @@ pub fn epistemic_source_name(source: EpistemicSource) -> &'static str {
     match source {
         EpistemicSource::RuntimeAssumption => "runtime_assumption",
         EpistemicSource::RuntimeDefault => "runtime_default",
+        EpistemicSource::RepairTrace => "repair_trace",
         EpistemicSource::ModelProfile => "model_profile",
         EpistemicSource::Memory => "memory",
     }
