@@ -2055,11 +2055,12 @@ Expected outcome:
       candidates behind explicit gates only
     - `Agent::turn` invokes the janitor through the shared runtime path, so web
       and channel sessions do not fork cleanup behavior
+    - channel route state now runs the same lazy janitor for tool-repair,
+      assumption, and calibration ledgers before admission/suppression decisions
   - still open:
     - there is no independent timer thread yet; cleanup is lazy per turn
-    - calibration/watchdog/handoff histories are cleaned when a caller provides
-      them, but only tool-repair and assumption ledgers are currently stored on
-      the live `Agent`
+    - watchdog/handoff histories are cleaned when a caller provides them, but
+      no independent storage owner is wired for them yet
 - expected outcome:
   - bounded metacognitive state
   - less self-generated noise

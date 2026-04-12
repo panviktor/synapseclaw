@@ -711,6 +711,22 @@ async fn execute_agent_turn(
     mut route: crate::ports::route_selection::RouteSelection,
     mut history: Vec<ChatMessage>,
 ) -> Result<HandleResult> {
+    let janitor_now_unix = chrono::Utc::now().timestamp();
+    let cleaned_route_traces =
+        crate::application::services::runtime_trace_janitor::run_runtime_trace_janitor(
+            crate::application::services::runtime_trace_janitor::RuntimeTraceJanitorInput {
+                tool_repairs: &route.recent_tool_repairs,
+                assumptions: &route.assumptions,
+                calibration_records: &route.calibrations,
+                now_unix: janitor_now_unix,
+                ..Default::default()
+            },
+        );
+    route.recent_tool_repairs = cleaned_route_traces.tool_repairs;
+    route.last_tool_repair = route.recent_tool_repairs.last().cloned();
+    route.assumptions = cleaned_route_traces.assumptions;
+    route.calibrations = cleaned_route_traces.calibration_records;
+
     struct ConversationContextGuard {
         port: Option<Arc<dyn crate::ports::conversation_context::ConversationContextPort>>,
     }
