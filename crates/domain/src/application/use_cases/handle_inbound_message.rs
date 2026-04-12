@@ -23,6 +23,9 @@ use crate::application::services::runtime_assumptions::{
     RuntimeAssumptionChallenge, RuntimeAssumptionInput, RuntimeAssumptionInvalidation,
     RuntimeAssumptionKind, RuntimeAssumptionReplacementPath,
 };
+use crate::application::services::runtime_error_presentation::{
+    format_context_limit_recovery_response, format_timeout_recovery_response,
+};
 use crate::application::services::runtime_trace_janitor::{
     append_runtime_handoff_packet, append_runtime_watchdog_alerts,
 };
@@ -1146,11 +1149,7 @@ async fn execute_agent_turn(
                         }
                     }
                 }
-                let msg = if compacted {
-                    "⚠️ Context window exceeded. I compacted history and preserved a summary. Please try again."
-                } else {
-                    "⚠️ Context window exceeded. Try `/new` to start a fresh conversation."
-                };
+                let msg = format_context_limit_recovery_response(compacted);
                 let _ = ports
                     .channel_output
                     .send_message(&envelope.reply_ref, msg, envelope.thread_ref.as_deref())
@@ -1167,7 +1166,7 @@ async fn execute_agent_turn(
             // ── #22: Timeout detection ───────────────────────────
             if matches!(e.kind, AgentRuntimeErrorKind::Timeout) {
                 ports.history.rollback_last_turn(conversation_key, content);
-                let msg = "⏱️ Request timed out. Try a simpler question or `/new`.";
+                let msg = format_timeout_recovery_response();
                 let _ = ports
                     .channel_output
                     .send_message(&envelope.reply_ref, msg, envelope.thread_ref.as_deref())

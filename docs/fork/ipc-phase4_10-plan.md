@@ -1734,6 +1734,11 @@ Expected outcome:
     - context-window fail-fast decisions are now carried on that attempt
       classification object and rendered through a shared adapter helper across
       all reliable-provider chat variants
+    - channel runtime and web WS now classify provider/runtime failures through
+      the same adapter-core `AgentRuntimeErrorKind` bridge; web context-limit
+      failures get the same typed recovery path and shared presentation with a
+      session-hygiene compaction attempt instead of only persisting a raw
+      sanitized provider error
   - remaining:
     - keep auditing provider-specific opaque error strings that do not expose a
       typed status/source error yet

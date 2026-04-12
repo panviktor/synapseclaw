@@ -12,6 +12,7 @@
 
 use super::chat_db::ChatMessageRow;
 use super::{AppState, ChatSession};
+use crate::runtime::runtime_error_classification::classify_agent_runtime_error;
 use crate::runtime_adapter_contract::{
     execute_runtime_command_effect, RuntimeCommandHost, RuntimeModelHelpSnapshot,
     RuntimeModelSwitchOutcome, RuntimeProviderSwitchOutcome, RuntimeRouteMutationRequest,
@@ -23,6 +24,7 @@ use crate::runtime_tool_observer::{RuntimeToolNotificationHandler, RuntimeToolNo
 use synapse_domain::application::services::route_switch_preflight::{
     RouteSwitchPreflight, RouteSwitchStatus,
 };
+use synapse_domain::application::services::runtime_error_presentation::format_context_limit_recovery_response;
 use synapse_domain::application::services::summary_route_resolution::resolve_summary_route;
 use synapse_domain::config::schema::CapabilityLane;
 use synapse_domain::domain::channel::ChannelCapability;
@@ -44,6 +46,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use synapse_domain::ports::agent_runtime::AgentRuntimeErrorKind;
 use synapse_domain::ports::route_selection::RouteSelection;
 
 /// The sub-protocol we support for the chat WebSocket.
@@ -1188,7 +1191,64 @@ async fn handle_chat_send_rpc(
                     "aborted": true,
                 }));
             }
-            let sanitized = synapse_providers::sanitize_api_error(&msg);
+            let runtime_error = classify_agent_runtime_error(e);
+            if matches!(
+                runtime_error.kind,
+                AgentRuntimeErrorKind::ContextLimitExceeded
+            ) {
+                let compacted = compact_web_session_after_context_limit(state, &session_key)
+                    .await
+                    .unwrap_or_else(|error| {
+                        tracing::debug!(
+                            session_key = %session_key,
+                            error = %error,
+                            "Web session context-limit recovery compaction failed"
+                        );
+                        false
+                    });
+                let recovery_message = format_context_limit_recovery_response(compacted);
+                persist_tool_events(state, &session_key, &tool_history).await;
+                persist_message(
+                    state,
+                    &session_key,
+                    "assistant",
+                    Some("assistant"),
+                    recovery_message,
+                    None,
+                    Some(&run_id),
+                )
+                .await;
+                if let (Some(cs), Some(rs)) =
+                    (state.conversation_store.as_ref(), state.run_store.as_ref())
+                {
+                    let _ =
+                        synapse_domain::application::use_cases::start_conversation_run::finalize_failure(
+                            rs.as_ref(),
+                            cs.as_ref(),
+                            &session_key,
+                            &run_id,
+                        )
+                        .await;
+                }
+                sync_memory_count(state, &session_key, 2);
+                emit_run_event(state, "session.run_finished", &session_key, &run_id);
+                let _ = out_tx.send(
+                    serde_json::json!({
+                        "type": "assistant",
+                        "session_key": session_key,
+                        "content": recovery_message,
+                        "timestamp": now_secs(),
+                    })
+                    .to_string(),
+                );
+                return Ok(serde_json::json!({
+                    "run_id": run_id,
+                    "runtime_error_kind": "context_limit_exceeded",
+                    "compacted": compacted,
+                }));
+            }
+
+            let sanitized = synapse_providers::sanitize_api_error(&runtime_error.to_string());
             persist_tool_events(state, &session_key, &tool_history).await;
             persist_message(state, &session_key, "error", None, &sanitized, None, None).await;
             // Phase 4.0 Slice 3: finalize failed
@@ -1651,6 +1711,44 @@ async fn run_agent_turn_with_abort(
     }
 
     result
+}
+
+async fn compact_web_session_after_context_limit(
+    state: &AppState,
+    session_key: &str,
+) -> anyhow::Result<bool> {
+    let config_snapshot = state.config.lock().clone();
+    let placeholder_agent = crate::agent::Agent::from_config_with_runtime_context(
+        &config_snapshot,
+        Some(state.mem.clone()),
+        web_runtime_ports(state),
+    )
+    .await?;
+
+    let mut agent = {
+        let mut sessions = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        let session = sessions
+            .get_mut(session_key)
+            .ok_or_else(|| anyhow::anyhow!("session not found"))?;
+        std::mem::replace(&mut session.agent, placeholder_agent)
+    };
+
+    let compacted = agent.compact_for_session_hygiene().await;
+
+    {
+        let mut sessions = state
+            .chat_sessions
+            .lock()
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        if let Some(session) = sessions.get_mut(session_key) {
+            session.agent = agent;
+        }
+    }
+
+    Ok(compacted)
 }
 
 // ── RPC: chat.abort ─────────────────────────────────────────────────────────

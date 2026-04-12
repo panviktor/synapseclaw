@@ -5,6 +5,7 @@ pub mod docker;
 pub mod history_compaction_cache;
 pub mod hooks_adapter;
 pub mod native;
+pub(crate) mod runtime_error_classification;
 
 use synapse_domain::config::schema::RuntimeConfig;
 pub use synapse_domain::ports::runtime::RuntimeAdapter;
