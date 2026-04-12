@@ -1109,4 +1109,118 @@ mod tests {
             CapabilityLane::MusicGeneration
         );
     }
+
+    #[test]
+    fn audio_generation_turn_requires_audio_lane() {
+        let mut config = Config::default();
+        config.model_lanes.push(ModelLaneConfig {
+            lane: CapabilityLane::AudioGeneration,
+            candidates: vec![ModelLaneCandidateConfig {
+                provider: "openrouter".into(),
+                model: "audio-model".into(),
+                api_key: None,
+                api_key_env: None,
+                dimensions: None,
+                profile: ModelCandidateProfileConfig {
+                    context_window_tokens: Some(128_000),
+                    max_output_tokens: None,
+                    features: vec![ModelFeature::AudioGeneration],
+                },
+            }],
+        });
+
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: Some(&config),
+            user_message: "[GENERATE:AUDIO] short narration",
+            execution_guidance: None,
+            tool_specs: &[],
+            current_provider: "openrouter",
+            current_model: "qwen/qwen3.6-plus",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile::default(),
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_000,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(
+            decision.snapshot.intent,
+            TurnIntentCategory::AudioGeneration
+        );
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Reroute);
+        assert_eq!(
+            decision.route_override.expect("override").lane,
+            CapabilityLane::AudioGeneration
+        );
+    }
+
+    #[test]
+    fn universal_reasoning_candidate_can_admit_video_generation() {
+        let decision = assess_turn_admission(TurnAdmissionInput {
+            config: None,
+            user_message: "[GENERATE:VIDEO] launch teaser",
+            execution_guidance: None,
+            tool_specs: &[],
+            current_provider: "openrouter",
+            current_model: "universal-media-model",
+            current_lane: Some(CapabilityLane::Reasoning),
+            current_profile: &ResolvedModelProfile {
+                context_window_tokens: Some(256_000),
+                context_window_source: ResolvedModelProfileSource::ManualConfig,
+                features: vec![
+                    ModelFeature::ToolCalling,
+                    ModelFeature::ImageGeneration,
+                    ModelFeature::AudioGeneration,
+                    ModelFeature::VideoGeneration,
+                    ModelFeature::MusicGeneration,
+                ],
+                features_source: ResolvedModelProfileSource::ManualConfig,
+                ..ResolvedModelProfile::default()
+            },
+            provider_capabilities: &ProviderCapabilities::default(),
+            provider_context: ProviderContextBudgetInput {
+                total_chars: 3_000,
+                prior_chat_messages: 0,
+                current_turn_messages: 1,
+                ..Default::default()
+            },
+            calibration_records: &[],
+            catalog: None,
+        });
+
+        assert_eq!(
+            decision.snapshot.intent,
+            TurnIntentCategory::VideoGeneration
+        );
+        assert_eq!(
+            decision.required_lane,
+            Some(CapabilityLane::VideoGeneration)
+        );
+        assert_eq!(decision.snapshot.action, TurnAdmissionAction::Proceed);
+        assert!(decision.route_override.is_none());
+        assert!(decision
+            .reasons
+            .contains(&CandidateAdmissionReason::RequiresLane(
+                CapabilityLane::VideoGeneration
+            )));
+        assert!(!decision.reasons.iter().any(|reason| matches!(
+            reason,
+            CandidateAdmissionReason::MissingFeature(ModelFeature::VideoGeneration)
+                | CandidateAdmissionReason::CapabilityMetadataUnknown(
+                    CapabilityLane::VideoGeneration
+                )
+                | CandidateAdmissionReason::CapabilityMetadataStale(
+                    CapabilityLane::VideoGeneration
+                )
+                | CandidateAdmissionReason::CapabilityMetadataLowConfidence(
+                    CapabilityLane::VideoGeneration
+                )
+        )));
+    }
 }

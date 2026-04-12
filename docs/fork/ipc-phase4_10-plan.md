@@ -1252,9 +1252,12 @@ Expected outcome:
     - agent pre-provider compaction when admission marks the turn as `critical`
     - channel admission preflight with reroute/block before provider invocation
     - route state includes the latest admission snapshot
+    - direct media-generation admission is marker/capability based for
+      image/audio/video/music, including universal reasoning candidates that
+      explicitly advertise generation features; this remains structural and
+      does not use natural-language phrase lists
   - remaining:
     - widen intent consumers past the current multimodal + specialized-lane protection
-    - add direct image/audio/video generation admission paths
   - continue making runtime UX surfaces display admission state explicitly beyond
     `/model` help and lane-aware switch responses
     - settle whether admission snapshots should remain ephemeral or be persisted
