@@ -1720,6 +1720,10 @@ Expected outcome:
     - helper-agent handoff schemas for `delegate` and `agents_spawn` now accept
       the same bounded `recent_repairs` field, so tool self-repair state can
       survive typed handoff without free-form prompt archaeology
+    - reliable-provider retry/fallback paths now share one adapter-local
+      attempt classification object for rate-limit / non-retryable /
+      context-window decisions instead of duplicating string/error handling
+      branches across chat variants
   - remaining:
     - keep auditing provider-specific opaque error strings that do not expose a
       typed status/source error yet
