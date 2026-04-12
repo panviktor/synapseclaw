@@ -88,6 +88,7 @@ use synapse_domain::ports::channel_registry::ChannelRegistryPort;
 use synapse_domain::ports::conversation_context::ConversationContextPort;
 use synapse_domain::ports::conversation_store::ConversationStorePort;
 use synapse_domain::ports::history_compaction_cache::HistoryCompactionCachePort;
+use synapse_domain::ports::provider::ProviderCapabilityRequirement;
 use synapse_domain::ports::route_selection::{ContextCacheStats, RouteAdmissionState};
 use synapse_domain::ports::run_recipe_store::RunRecipeStorePort;
 use synapse_domain::ports::scoped_instruction_context::{
@@ -2709,7 +2710,7 @@ impl Agent {
                         );
                         return Err(ProviderCapabilityError {
                             provider: effective_provider.clone(),
-                            capability: "vision".to_string(),
+                            capability: ProviderCapabilityRequirement::VisionInput,
                             message: format!(
                                 "received {image_marker_count} image marker(s), but this route does not support vision input"
                             ),

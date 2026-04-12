@@ -13,7 +13,7 @@ use synapse_domain::application::services::model_lane_resolution::ResolvedModelP
 use synapse_domain::application::services::tool_repair::build_tool_repair_trace;
 use synapse_domain::domain::tool_fact::{OutcomeStatus, TypedToolFact};
 use synapse_domain::domain::tool_repair::{ToolFailureKind, ToolRepairTrace};
-use synapse_domain::ports::provider::ProviderCapabilities;
+use synapse_domain::ports::provider::{ProviderCapabilities, ProviderCapabilityRequirement};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -532,7 +532,7 @@ pub(crate) async fn run_tool_call_loop(
         if !tool_specs.is_empty() && !provider.supports_native_tools() {
             return Err(ProviderCapabilityError {
                 provider: provider_name.to_string(),
-                capability: "native_tool_calling".to_string(),
+                capability: ProviderCapabilityRequirement::NativeToolCalling,
                 message: "tool-capable turns require native tool calling; prompt-guided tool fallback has been removed"
                     .to_string(),
             }
@@ -546,7 +546,7 @@ pub(crate) async fn run_tool_call_loop(
                 ProviderCallCapabilityIssue::MissingVisionInput { image_marker_count } => {
                     return Err(ProviderCapabilityError {
                         provider: provider_name.to_string(),
-                        capability: "vision".to_string(),
+                        capability: ProviderCapabilityRequirement::VisionInput,
                         message: format!(
                             "received {image_marker_count} image marker(s), but this route does not support vision input"
                         ),

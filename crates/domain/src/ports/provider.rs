@@ -5,6 +5,7 @@
 //! because its streaming methods depend on `reqwest` and `futures_util`,
 //! but all data types it operates on are domain-owned.
 
+use crate::config::schema::CapabilityLane;
 use crate::domain::message::ChatMessage;
 use crate::ports::tool::ToolSpec;
 use serde::{Deserialize, Serialize};
@@ -107,8 +108,35 @@ pub struct ProviderCapabilities {
 #[derive(Debug, Clone)]
 pub struct ProviderCapabilityError {
     pub provider: String,
-    pub capability: String,
+    pub capability: ProviderCapabilityRequirement,
     pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderCapabilityRequirement {
+    NativeToolCalling,
+    VisionInput,
+    Lane(CapabilityLane),
+}
+
+impl ProviderCapabilityRequirement {
+    pub fn repair_lane(&self) -> Option<CapabilityLane> {
+        match self {
+            Self::VisionInput => Some(CapabilityLane::MultimodalUnderstanding),
+            Self::Lane(lane) => Some(*lane),
+            Self::NativeToolCalling => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ProviderCapabilityRequirement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NativeToolCalling => write!(f, "native_tool_calling"),
+            Self::VisionInput => write!(f, "vision_input"),
+            Self::Lane(lane) => write!(f, "{}", lane.as_str()),
+        }
+    }
 }
 
 impl std::fmt::Display for ProviderCapabilityError {

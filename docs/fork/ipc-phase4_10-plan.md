@@ -1739,6 +1739,10 @@ Expected outcome:
       failures get the same typed recovery path and shared presentation with a
       session-hygiene compaction attempt instead of only persisting a raw
       sanitized provider error
+    - provider capability failures now carry typed capability requirements
+      (`native_tool_calling`, `vision_input`, or lane) instead of string
+      capability names; tool self-repair maps those typed requirements to lane
+      switches without lowercase/alias parsing in the governor path
   - remaining:
     - keep auditing provider-specific opaque error strings that do not expose a
       typed status/source error yet

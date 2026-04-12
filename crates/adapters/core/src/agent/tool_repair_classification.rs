@@ -93,12 +93,13 @@ pub(crate) fn classify_tool_execution_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synapse_domain::ports::provider::ProviderCapabilityRequirement;
 
     #[test]
     fn capability_error_maps_to_lane_switch() {
         let error = anyhow::Error::new(ProviderCapabilityError {
             provider: "openrouter".into(),
-            capability: "vision".into(),
+            capability: ProviderCapabilityRequirement::VisionInput,
             message: "provider does not support vision".into(),
         });
 
