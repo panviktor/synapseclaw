@@ -482,7 +482,7 @@ mod tests {
         CurrentConversationSnapshot, DialogueStateSnapshot, ReferenceCandidate,
         ReferenceCandidateKind, TurnInterpretation,
     };
-    use crate::domain::user_profile::UserProfile;
+    use crate::domain::user_profile::{UserProfile, DELIVERY_TARGET_PREFERENCE_KEY};
 
     #[test]
     fn ranks_sources_from_typed_evidence_without_fixed_order_branches() {
@@ -727,7 +727,7 @@ mod tests {
     fn configured_runtime_target_outranks_profile_and_conversation_defaults() {
         let interpretation = TurnInterpretation {
             user_profile: Some(profile_with_facts(&[(
-                "delivery_target_preference",
+                DELIVERY_TARGET_PREFERENCE_KEY,
                 serde_json::to_value(
                     crate::domain::conversation_target::ConversationDeliveryTarget::Explicit {
                         channel: "slack".into(),
@@ -751,7 +751,7 @@ mod tests {
             reference_candidates: vec![
                 ReferenceCandidate {
                     kind: ReferenceCandidateKind::Profile {
-                        key: "delivery_target_preference".into(),
+                        key: DELIVERY_TARGET_PREFERENCE_KEY.into(),
                     },
                     value: "explicit:slack:C123".into(),
                     source: ReferenceSource::UserProfile,

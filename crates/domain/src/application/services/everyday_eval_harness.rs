@@ -501,6 +501,7 @@ mod tests {
         MemoryQuery, Reflection, SearchResult, SessionId, Skill, SkillUpdate, TemporalFact,
         Visibility,
     };
+    use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
     use crate::ports::memory::{
         ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
         WorkingMemoryPort,
@@ -933,12 +934,12 @@ mod tests {
     #[tokio::test]
     async fn delivery_target_preference_scenario_can_be_represented() {
         let scenario = EverydayEvalScenario {
-            id: "delivery_target_preference",
+            id: DELIVERY_TARGET_PREFERENCE_KEY,
             user_message: "Send it to my usual chat",
             profile: Some({
                 let mut profile = UserProfile::default();
                 profile.set(
-                    "delivery_target_preference",
+                    DELIVERY_TARGET_PREFERENCE_KEY,
                     serde_json::json!(ConversationDeliveryTarget::CurrentConversation),
                 );
                 profile

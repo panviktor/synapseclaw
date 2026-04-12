@@ -1,7 +1,7 @@
 //! Dynamic user profile updates and projections.
 //!
 //! Profiles are arbitrary facts keyed by normalized strings. Runtime consumers
-//! may use conventions such as `delivery_target_preference`, but the service does
+//! may use runtime conventions, but the service does
 //! not expose fixed Rust fields.
 
 use crate::domain::user_profile::{normalize_fact_key, normalize_fact_value, UserProfile};

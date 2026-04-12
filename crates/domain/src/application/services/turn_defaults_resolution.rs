@@ -5,6 +5,7 @@ use crate::domain::conversation_target::ConversationDeliveryTarget;
 use crate::domain::turn_defaults::{
     ResolvedDeliveryTarget, ResolvedTurnDefaults, TurnDefaultSource,
 };
+use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
 
 pub fn resolve_turn_defaults(
     interpretation: Option<&TurnInterpretation>,
@@ -37,7 +38,7 @@ pub fn resolve_turn_defaults(
     if let Some(target) = interpretation
         .user_profile
         .as_ref()
-        .and_then(|profile| profile.get_delivery_target("delivery_target_preference"))
+        .and_then(|profile| profile.get_delivery_target(DELIVERY_TARGET_PREFERENCE_KEY))
     {
         return ResolvedTurnDefaults {
             delivery_target: Some(ResolvedDeliveryTarget {
@@ -76,7 +77,7 @@ mod tests {
             user_profile: Some({
                 let mut profile = UserProfile::default();
                 profile.set(
-                    "delivery_target_preference",
+                    DELIVERY_TARGET_PREFERENCE_KEY,
                     json!(ConversationDeliveryTarget::Explicit {
                         channel: "matrix".into(),
                         recipient: "!profile:example.com".into(),
@@ -120,7 +121,7 @@ mod tests {
             user_profile: Some({
                 let mut profile = UserProfile::default();
                 profile.set(
-                    "delivery_target_preference",
+                    DELIVERY_TARGET_PREFERENCE_KEY,
                     json!(ConversationDeliveryTarget::Explicit {
                         channel: "matrix".into(),
                         recipient: "!profile:example.com".into(),

@@ -793,6 +793,7 @@ mod tests {
         ResourceKind, ResourceOperation, ScheduleAction, ScheduleJobType, ScheduleKind,
         SearchDomain, WorkspaceAction,
     };
+    use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
     use crate::ports::memory::{
         ConsolidationPort, EpisodicMemoryPort, ReflectionPort, SemanticMemoryPort, SkillMemoryPort,
         WorkingMemoryPort,
@@ -1275,7 +1276,7 @@ mod tests {
             Some({
                 let mut profile = UserProfile::default();
                 profile.set(
-                    "delivery_target_preference",
+                    DELIVERY_TARGET_PREFERENCE_KEY,
                     serde_json::json!(ConversationDeliveryTarget::Explicit {
                         channel: "telegram".into(),
                         recipient: "@synapseclaw".into(),
@@ -1294,7 +1295,7 @@ mod tests {
         assert!(interpretation.reference_candidates.iter().any(|candidate| {
             matches!(
                 &candidate.kind,
-                ReferenceCandidateKind::Profile { key } if key == "delivery_target_preference"
+                ReferenceCandidateKind::Profile { key } if key == DELIVERY_TARGET_PREFERENCE_KEY
             ) && candidate.value == "explicit:telegram:@synapseclaw"
         }));
     }
@@ -1332,7 +1333,7 @@ mod tests {
                 profile.set("response_style", serde_json::json!("direct"));
                 profile.set("deployment_environments", serde_json::json!(["linux"]));
                 profile.set(
-                    "delivery_target_preference",
+                    DELIVERY_TARGET_PREFERENCE_KEY,
                     serde_json::json!(ConversationDeliveryTarget::CurrentConversation),
                 );
                 profile

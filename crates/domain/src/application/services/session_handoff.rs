@@ -6,6 +6,7 @@ use crate::domain::memory::MemoryEntry;
 use crate::domain::turn_admission::{
     admission_repair_hint_label, AdmissionRepairHint, CandidateAdmissionReason,
 };
+use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
 
 const MAX_DEFAULTS: usize = 6;
 const MAX_ANCHORS: usize = 4;
@@ -215,7 +216,7 @@ fn collect_current_defaults(interpretation: Option<&TurnInterpretation>) -> Vec<
             let value = profile.get_text(key).unwrap_or_else(|| value.to_string());
             defaults.push(format!("{key}={value}"));
         }
-        if let Some(target) = profile.get_delivery_target("delivery_target_preference") {
+        if let Some(target) = profile.get_delivery_target(DELIVERY_TARGET_PREFERENCE_KEY) {
             defaults.push(format!(
                 "profile_delivery_target={}",
                 format_delivery_target(&target)

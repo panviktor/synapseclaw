@@ -13,6 +13,7 @@ use crate::domain::turn_admission::{
     admission_repair_hint_label, candidate_admission_reason_label, AdmissionRepairHint,
     CandidateAdmissionReason,
 };
+use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
 
 const MAX_EXECUTION_FAILURE_HINTS: usize = 3;
 const MAX_EXECUTION_ADMISSION_REASONS: usize = 3;
@@ -78,7 +79,7 @@ pub fn build_execution_guidance(
                 candidate.source == ReferenceSource::UserProfile
                     && matches!(
                         &candidate.kind,
-                        ReferenceCandidateKind::Profile { key } if key == "delivery_target_preference"
+                        ReferenceCandidateKind::Profile { key } if key == DELIVERY_TARGET_PREFERENCE_KEY
                     )
             })
         }

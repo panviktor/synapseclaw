@@ -987,6 +987,12 @@ Expected outcome:
 - resolve implicit delivery target from typed turn state instead of prompt prose
 - expose per-turn defaults through a scoped runtime context port
 - wire `message_send` to prefer recent delivery target, then user-profile fact
+- current status:
+  - dynamic user profiles remain arbitrary key/value facts, not fixed Rust fields
+  - the one delivery-default profile convention is centralized as a domain-owned
+    key constant and consumed by typed default/assumption/handoff logic
+  - public `user_profile` tool schema examples no longer advertise weather/time
+    facts as a built-in profile schema
 
 ### Slice 3
 

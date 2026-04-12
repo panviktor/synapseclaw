@@ -106,7 +106,7 @@ impl Tool for UserProfileTool {
                 "facts": {
                     "type": "object",
                     "additionalProperties": true,
-                    "description": "Arbitrary profile facts to set. Example: {\"language_preference\":\"ru\", \"weather_city\":\"Berlin\"}. Structured values are allowed."
+                    "description": "Arbitrary profile facts to set. Example: {\"preferred_response_language\":\"ru\", \"project_alias\":\"Borealis\"}. Structured values are allowed."
                 },
                 "clear_keys": {
                     "type": "array",
@@ -331,6 +331,7 @@ mod tests {
     use synapse_domain::domain::conversation_target::{
         ConversationDeliveryTarget, CurrentConversationContext,
     };
+    use synapse_domain::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
     use synapse_domain::ports::conversation_context::ConversationContextPort;
     use synapse_domain::ports::user_profile_context::InMemoryUserProfileContext;
     use synapse_domain::ports::user_profile_store::InMemoryUserProfileStore;
@@ -405,12 +406,16 @@ mod tests {
             Some(profile_context),
         );
 
+        let mut facts = serde_json::Map::new();
+        facts.insert(
+            DELIVERY_TARGET_PREFERENCE_KEY.to_string(),
+            serde_json::to_value(target).unwrap(),
+        );
+
         let result = tool
             .execute(json!({
                 "action": "upsert",
-                "facts": {
-                    "delivery_target_preference": target
-                }
+                "facts": facts
             }))
             .await
             .unwrap();
@@ -419,7 +424,7 @@ mod tests {
         match store
             .load("web:abc")
             .unwrap()
-            .get_delivery_target("delivery_target_preference")
+            .get_delivery_target(DELIVERY_TARGET_PREFERENCE_KEY)
         {
             Some(ConversationDeliveryTarget::Explicit {
                 channel,

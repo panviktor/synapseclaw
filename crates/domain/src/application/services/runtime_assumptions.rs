@@ -5,6 +5,7 @@ use crate::domain::turn_admission::{
     admission_repair_hint_label, candidate_admission_reason_label, AdmissionRepairHint,
     CandidateAdmissionReason,
 };
+use crate::domain::user_profile::DELIVERY_TARGET_PREFERENCE_KEY;
 
 const MAX_ASSUMPTIONS: usize = 8;
 const MAX_VALUE_CHARS: usize = 160;
@@ -331,7 +332,7 @@ fn collect_interpretation_assumptions(
                 },
             );
         }
-        if let Some(target) = profile.get_delivery_target("delivery_target_preference") {
+        if let Some(target) = profile.get_delivery_target(DELIVERY_TARGET_PREFERENCE_KEY) {
             push_delivery_target_assumption(
                 assumptions,
                 RuntimeAssumptionSource::UserProfile,

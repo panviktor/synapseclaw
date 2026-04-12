@@ -8,6 +8,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// Optional convention for profile-backed delivery defaults.
+///
+/// User profiles remain arbitrary key/value stores; this key is consumed by
+/// delivery-default resolution, not modeled as a fixed profile field.
+pub const DELIVERY_TARGET_PREFERENCE_KEY: &str = "delivery_target_preference";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserProfile {
     #[serde(default)]
@@ -143,12 +149,12 @@ mod tests {
     fn delivery_target_fact_roundtrips() {
         let mut profile = UserProfile::default();
         profile.set(
-            "delivery_target_preference",
+            DELIVERY_TARGET_PREFERENCE_KEY,
             serde_json::to_value(ConversationDeliveryTarget::CurrentConversation).unwrap(),
         );
 
         assert!(matches!(
-            profile.get_delivery_target("delivery_target_preference"),
+            profile.get_delivery_target(DELIVERY_TARGET_PREFERENCE_KEY),
             Some(ConversationDeliveryTarget::CurrentConversation)
         ));
     }
